@@ -10,8 +10,13 @@
 package me.nettrash.familyconnect.data.repo
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -46,6 +51,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class SyncEngineTest {
 
@@ -55,6 +61,11 @@ class SyncEngineTest {
         const val FAMILY_CHAT = 1L
     }
 
+    // One scheduler for the tests AND for Room — see TestDb.kt. Repos
+    // live on a foreground scope, not backgroundScope, so runCurrent /
+    // advanceUntilIdle drive their collectors (see MessageRepositoryTest).
+    private val dispatcher = StandardTestDispatcher()
+    private val repoScope = CoroutineScope(dispatcher + SupervisorJob())
     private lateinit var db: AppDatabase
     private val authApi = FakeAuthApi()
     private val chatApi = FakeChatApi()
@@ -72,7 +83,7 @@ class SyncEngineTest {
 
     @Before
     fun setUp() {
-        db = createTestDb()
+        db = createTestDb(dispatcher)
         val family = FamilyDto(id = 3, name = "The Smiths", joinPolicy = "open")
         authApi.meResult = ApiResult.Ok(
             MeResponse(user = userDto(ME, "anna"), family = family, role = "member"),
@@ -90,6 +101,7 @@ class SyncEngineTest {
 
     @After
     fun tearDown() {
+        repoScope.cancel()
         db.close()
     }
 
@@ -100,7 +112,7 @@ class SyncEngineTest {
             settings = settings,
             wiper = wiper,
             unauthorizedEvents = MutableSharedFlow(),
-            scope = backgroundScope,
+            scope = repoScope,
         )
         val chatRepository = ChatRepository(chatApi, db.chatDao(), socket)
         val familyRepository = FamilyRepository(
@@ -109,7 +121,7 @@ class SyncEngineTest {
             settings = settings,
             sessionRepository = sessionRepository,
             socket = socket,
-            scope = backgroundScope,
+            scope = repoScope,
         )
         val messageRepository = MessageRepository(
             chatApi = chatApi,
@@ -118,7 +130,7 @@ class SyncEngineTest {
             socket = socket,
             settings = settings,
             chatRepository = chatRepository,
-            scope = backgroundScope,
+            scope = repoScope,
             clock = Clock { 1_000_000L },
         )
         runCurrent()
@@ -147,7 +159,7 @@ class SyncEngineTest {
     }
 
     @Test
-    fun resyncPullsChatsRosterAndCatchUpPages() = runTest {
+    fun resyncPullsChatsRosterAndCatchUpPages() = runTest(dispatcher) {
         val engine = newEngine()
         scriptChats(unread = 3)
         // Local cursor: we already hold messages up to id 5.
@@ -182,7 +194,7 @@ class SyncEngineTest {
     }
 
     @Test
-    fun resyncFlushesPendingOutboundMessages() = runTest {
+    fun resyncFlushesPendingOutboundMessages() = runTest(dispatcher) {
         val engine = newEngine()
         scriptChats()
         db.messageDao().insert(
@@ -198,7 +210,7 @@ class SyncEngineTest {
     }
 
     @Test
-    fun resyncStopsWhenMembershipIsGone() = runTest {
+    fun resyncStopsWhenMembershipIsGone() = runTest(dispatcher) {
         val engine = newEngine()
         // Server says: no family any more.
         authApi.meResult = ApiResult.Ok(MeResponse(user = userDto(ME)))
@@ -212,7 +224,7 @@ class SyncEngineTest {
     }
 
     @Test
-    fun resyncPreservesLocalReadMarkersWhileTakingServerUnread() = runTest {
+    fun resyncPreservesLocalReadMarkersWhileTakingServerUnread() = runTest(dispatcher) {
         val engine = newEngine()
         scriptChats(unread = 7)
         // Pre-existing chat row with local-only markers.

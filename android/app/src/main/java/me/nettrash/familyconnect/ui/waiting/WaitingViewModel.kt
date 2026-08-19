@@ -57,7 +57,10 @@ class WaitingViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            while (isActive) {
+            // The ticker dies with the first terminal state — approved
+            // and declined are both absorbing, polling past them would
+            // only burn battery (and, in tests, spin the virtual clock).
+            while (isActive && !_state.value.approved && !_state.value.declined) {
                 delay(POLL_INTERVAL_MS)
                 refresh()
             }

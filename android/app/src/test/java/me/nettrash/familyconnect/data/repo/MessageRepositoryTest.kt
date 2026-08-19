@@ -12,7 +12,12 @@
 package me.nettrash.familyconnect.data.repo
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -41,6 +46,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class MessageRepositoryTest {
 
@@ -51,6 +57,15 @@ class MessageRepositoryTest {
         const val NOW = 1_000_000L
     }
 
+    // One scheduler for the tests AND for Room — see TestDb.kt.
+    private val dispatcher = StandardTestDispatcher()
+
+    // The repository's "app scope" — deliberately NOT runTest's
+    // backgroundScope: background tasks are skipped by advanceUntilIdle
+    // (it stops once no *foreground* work remains), which would make
+    // every frame-collector assertion flaky. A plain scope on the same
+    // scheduler keeps all repository work foreground and deterministic.
+    private val repoScope = CoroutineScope(dispatcher + SupervisorJob())
     private lateinit var db: AppDatabase
     private lateinit var messageDao: MessageDao
     private lateinit var chatDao: ChatDao
@@ -61,7 +76,7 @@ class MessageRepositoryTest {
 
     @Before
     fun setUp() {
-        db = createTestDb()
+        db = createTestDb(dispatcher)
         messageDao = db.messageDao()
         chatDao = db.chatDao()
         chatApi = FakeChatApi()
@@ -77,10 +92,11 @@ class MessageRepositoryTest {
 
     @After
     fun tearDown() {
+        repoScope.cancel()
         db.close()
     }
 
-    /** Builds the repository on the test's background scope and lets its frame collector subscribe. */
+    /** Builds the repository on the foreground repoScope and lets its frame collector subscribe. */
     private fun TestScope.newRepository(): MessageRepository {
         chatRepository = ChatRepository(chatApi, chatDao, socket)
         val repository = MessageRepository(
@@ -90,7 +106,7 @@ class MessageRepositoryTest {
             socket = socket,
             settings = settings,
             chatRepository = chatRepository,
-            scope = backgroundScope,
+            scope = repoScope,
             clock = Clock { NOW },
         )
         runCurrent() // frame collector must be subscribed before any emit
@@ -126,7 +142,7 @@ class MessageRepositoryTest {
     // -- Optimistic send + ack --------------------------------------------------
 
     @Test
-    fun optimisticInsertThenAckUpdatesTheSameRow() = runTest {
+    fun optimisticInsertThenAckUpdatesTheSameRow() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         socket.setOpen(true)
@@ -157,7 +173,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun ackTimeoutFallsBackToRestWithTheSameClientMsgId() = runTest {
+    fun ackTimeoutFallsBackToRestWithTheSameClientMsgId() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         socket.setOpen(true)
@@ -183,7 +199,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun closedSocketGoesStraightToRest() = runTest {
+    fun closedSocketGoesStraightToRest() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         socket.setOpen(false)
@@ -205,7 +221,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun restFailureMarksTheRowFailed() = runTest {
+    fun restFailureMarksTheRowFailed() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         socket.setOpen(false)
@@ -221,7 +237,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun retryReentersThePipelineWithTheSameUuid() = runTest {
+    fun retryReentersThePipelineWithTheSameUuid() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         socket.setOpen(false)
@@ -256,7 +272,7 @@ class MessageRepositoryTest {
     // -- Inbound dedup ----------------------------------------------------------------
 
     @Test
-    fun ackThenMessageFrameDoesNotDuplicate() = runTest {
+    fun ackThenMessageFrameDoesNotDuplicate() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         socket.setOpen(true)
@@ -276,7 +292,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun messageThenAckFrameDoesNotDuplicate() = runTest {
+    fun messageThenAckFrameDoesNotDuplicate() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         socket.setOpen(true)
@@ -299,7 +315,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun resyncRowIsReplacedWhenTheLateAckArrives() = runTest {
+    fun resyncRowIsReplacedWhenTheLateAckArrives() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         // A pending send exists locally…
@@ -344,7 +360,7 @@ class MessageRepositoryTest {
     // -- Unread bump rules -----------------------------------------------------------------
 
     @Test
-    fun liveInboundMessageBumpsUnreadWhenChatIsNotOpen() = runTest {
+    fun liveInboundMessageBumpsUnreadWhenChatIsNotOpen() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         chatRepository.setOpenChat(null)
@@ -359,7 +375,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun liveInboundMessageForTheOpenChatDoesNotBumpUnread() = runTest {
+    fun liveInboundMessageForTheOpenChatDoesNotBumpUnread() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         chatRepository.setOpenChat(CHAT)
@@ -372,7 +388,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun myOwnEchoFromAnotherDeviceDoesNotBumpUnread() = runTest {
+    fun myOwnEchoFromAnotherDeviceDoesNotBumpUnread() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         chatRepository.setOpenChat(null)
@@ -391,7 +407,7 @@ class MessageRepositoryTest {
     // -- Peer read + error frames --------------------------------------------------------------
 
     @Test
-    fun peerReadFrameMovesPeerMarkerInDirectChatsOnly() = runTest {
+    fun peerReadFrameMovesPeerMarkerInDirectChatsOnly() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat(id = CHAT, kind = "direct", peerUserId = PEER)
         insertChat(id = 1L, kind = "family", peerUserId = null)
@@ -405,7 +421,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun sendErrorFrameMarksTheRowFailed() = runTest {
+    fun sendErrorFrameMarksTheRowFailed() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         socket.setOpen(true)
@@ -429,7 +445,7 @@ class MessageRepositoryTest {
     // -- History paging + flush ---------------------------------------------------------------------
 
     @Test
-    fun loadOlderReportsReachedStartOnShortPage() = runTest {
+    fun loadOlderReportsReachedStartOnShortPage() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         messageDao.insertIgnore(
@@ -458,7 +474,7 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun flushPendingResendsSendingRowsOverTheSocket() = runTest {
+    fun flushPendingResendsSendingRowsOverTheSocket() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
         messageDao.insert(

@@ -10,7 +10,9 @@
 package me.nettrash.familyconnect.data.db
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import me.nettrash.familyconnect.testutil.createTestDb
 import org.junit.After
@@ -19,15 +21,18 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class MessageDaoTest {
 
+    // One scheduler for the tests AND for Room — see TestDb.kt.
+    private val dispatcher = StandardTestDispatcher()
     private lateinit var db: AppDatabase
     private lateinit var dao: MessageDao
 
     @Before
     fun setUp() {
-        db = createTestDb()
+        db = createTestDb(dispatcher)
         dao = db.messageDao()
     }
 
@@ -54,7 +59,7 @@ class MessageDaoTest {
     )
 
     @Test
-    fun observeMessagesOrdersPendingFirstThenByServerIdDescending() = runTest {
+    fun observeMessagesOrdersPendingFirstThenByServerIdDescending() = runTest(dispatcher) {
         dao.insert(message("s10", serverId = 10, createdAt = 100))
         dao.insert(message("s30", serverId = 30, createdAt = 300))
         dao.insert(message("pending-b", serverId = null, createdAt = 250))
@@ -71,7 +76,7 @@ class MessageDaoTest {
     }
 
     @Test
-    fun observeMessagesHonorsLimitFromTheNewestSide() = runTest {
+    fun observeMessagesHonorsLimitFromTheNewestSide() = runTest(dispatcher) {
         dao.insert(message("s1", serverId = 1, createdAt = 1))
         dao.insert(message("s2", serverId = 2, createdAt = 2))
         dao.insert(message("s3", serverId = 3, createdAt = 3))
@@ -82,7 +87,7 @@ class MessageDaoTest {
     }
 
     @Test
-    fun observeMessagesIsScopedToTheChat() = runTest {
+    fun observeMessagesIsScopedToTheChat() = runTest(dispatcher) {
         dao.insert(message("mine", serverId = 1, createdAt = 1, chatId = 1L))
         dao.insert(message("other", serverId = 2, createdAt = 2, chatId = 2L))
 
@@ -92,7 +97,7 @@ class MessageDaoTest {
     }
 
     @Test
-    fun insertIgnoreDedupsBothByPrimaryKeyAndByServerId() = runTest {
+    fun insertIgnoreDedupsBothByPrimaryKeyAndByServerId() = runTest(dispatcher) {
         dao.insert(message("original", serverId = 5, createdAt = 100))
 
         dao.insertIgnore(
@@ -112,7 +117,7 @@ class MessageDaoTest {
     }
 
     @Test
-    fun markAckedPreservesThePrimaryKeyAndUpdatesInPlace() = runTest {
+    fun markAckedPreservesThePrimaryKeyAndUpdatesInPlace() = runTest(dispatcher) {
         dao.insert(message("uuid-1", serverId = null, createdAt = 100))
 
         dao.markAcked("uuid-1", serverId = 77, createdAt = 12345)
@@ -126,7 +131,7 @@ class MessageDaoTest {
     }
 
     @Test
-    fun multiplePendingRowsCoexistDespiteUniqueServerIdIndex() = runTest {
+    fun multiplePendingRowsCoexistDespiteUniqueServerIdIndex() = runTest(dispatcher) {
         // SQLite unique indexes permit any number of NULLs.
         dao.insert(message("p1", serverId = null, createdAt = 1))
         dao.insert(message("p2", serverId = null, createdAt = 2))
@@ -136,7 +141,7 @@ class MessageDaoTest {
     }
 
     @Test
-    fun cursorsReturnMaxAndMinServerIdPerChat() = runTest {
+    fun cursorsReturnMaxAndMinServerIdPerChat() = runTest(dispatcher) {
         dao.insert(message("a", serverId = 10, createdAt = 1, chatId = 1L))
         dao.insert(message("b", serverId = 25, createdAt = 2, chatId = 1L))
         dao.insert(message("c", serverId = 99, createdAt = 3, chatId = 2L))
@@ -149,7 +154,7 @@ class MessageDaoTest {
     }
 
     @Test
-    fun setStatusAndExistsByServerIdBehave() = runTest {
+    fun setStatusAndExistsByServerIdBehave() = runTest(dispatcher) {
         dao.insert(message("uuid-2", serverId = null, createdAt = 1))
 
         dao.setStatus("uuid-2", MessageStatus.FAILED)
@@ -161,7 +166,7 @@ class MessageDaoTest {
     }
 
     @Test
-    fun deleteByClientMsgIdRemovesExactlyThatRow() = runTest {
+    fun deleteByClientMsgIdRemovesExactlyThatRow() = runTest(dispatcher) {
         dao.insert(message("keep", serverId = 1, createdAt = 1))
         dao.insert(message("drop", serverId = null, createdAt = 2))
 

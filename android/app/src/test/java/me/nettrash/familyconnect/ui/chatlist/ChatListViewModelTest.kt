@@ -13,7 +13,9 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -61,6 +63,10 @@ class ChatListViewModelTest {
     }
 
     private val dispatcher = StandardTestDispatcher()
+
+    // Foreground scope for repositories + StateFlow subscriptions — see
+    // MessageRepositoryTest for why backgroundScope won't do.
+    private val repoScope = CoroutineScope(dispatcher + SupervisorJob())
     private lateinit var db: AppDatabase
     private lateinit var chatApi: FakeChatApi
     private lateinit var chatRepository: ChatRepository
@@ -76,12 +82,13 @@ class ChatListViewModelTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
-        db = createTestDb()
+        db = createTestDb(dispatcher)
         chatApi = FakeChatApi()
     }
 
     @After
     fun tearDown() {
+        repoScope.cancel()
         Dispatchers.resetMain()
         db.close()
     }
@@ -94,7 +101,7 @@ class ChatListViewModelTest {
             settings = settings,
             wiper = RecordingWiper(),
             unauthorizedEvents = MutableSharedFlow(),
-            scope = backgroundScope,
+            scope = repoScope,
         )
         val familyRepository = FamilyRepository(
             familyApi = FakeFamilyApi(),
@@ -102,7 +109,7 @@ class ChatListViewModelTest {
             settings = settings,
             sessionRepository = sessionRepository,
             socket = socket,
-            scope = backgroundScope,
+            scope = repoScope,
         )
         runCurrent()
         return ChatListViewModel(
@@ -142,7 +149,7 @@ class ChatListViewModelTest {
             ),
         )
         val viewModel = newViewModel()
-        val subscription = backgroundScope.launch { viewModel.chats.collect {} }
+        val subscription = repoScope.launch { viewModel.chats.collect {} }
         runCurrent()
 
         assertThat(viewModel.chats.value.map { it.id }).containsExactly(1L, 2L, 3L).inOrder()
@@ -158,7 +165,7 @@ class ChatListViewModelTest {
             ),
         )
         val viewModel = newViewModel()
-        val subscription = backgroundScope.launch { viewModel.pickableMembers.collect {} }
+        val subscription = repoScope.launch { viewModel.pickableMembers.collect {} }
         runCurrent()
 
         assertThat(viewModel.pickableMembers.value.map { it.userId }).containsExactly(PEER)

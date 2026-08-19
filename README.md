@@ -85,10 +85,12 @@ sudo systemctl enable --now family-connect
 
 # 6. nginx + TLS
 sudo cp server/nginx/family-connect.conf /etc/nginx/sites-available/family-connect
-# edit server_name, then:
+sudo sed -i 's/chat\.example\.com/chat.yourdomain.tld/' /etc/nginx/sites-available/family-connect
 sudo ln -s /etc/nginx/sites-available/family-connect /etc/nginx/sites-enabled/
-sudo certbot --nginx -d chat.example.com
-sudo systemctl reload nginx
+sudo nginx -t && sudo systemctl reload nginx
+# The shipped site is HTTP-only on purpose; certbot upgrades it to TLS in
+# place (adds the 443 listener, certificates, and the HTTP→HTTPS redirect):
+sudo certbot --nginx -d chat.yourdomain.tld
 
 # 7. Smoke test
 curl https://chat.example.com/api/v1/healthz        # → {"status":"ok"}

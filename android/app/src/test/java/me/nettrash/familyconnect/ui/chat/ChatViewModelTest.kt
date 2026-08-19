@@ -15,6 +15,8 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -65,6 +67,10 @@ class ChatViewModelTest {
     }
 
     private val dispatcher = StandardTestDispatcher()
+
+    // Foreground scope for repositories + item subscriptions — see
+    // MessageRepositoryTest for why backgroundScope won't do.
+    private val repoScope = CoroutineScope(dispatcher + SupervisorJob())
     private lateinit var db: AppDatabase
     private lateinit var chatApi: FakeChatApi
     private lateinit var socket: FakeChatSocket
@@ -75,7 +81,7 @@ class ChatViewModelTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
-        db = createTestDb()
+        db = createTestDb(dispatcher)
         chatApi = FakeChatApi()
         socket = FakeChatSocket()
         settings = FakeSettingsRepository(
@@ -89,6 +95,7 @@ class ChatViewModelTest {
 
     @After
     fun tearDown() {
+        repoScope.cancel()
         Dispatchers.resetMain()
         db.close()
     }
@@ -102,7 +109,7 @@ class ChatViewModelTest {
             socket = socket,
             settings = settings,
             chatRepository = chatRepository,
-            scope = backgroundScope,
+            scope = repoScope,
             clock = Clock { NOON },
         )
         runCurrent()
@@ -270,7 +277,7 @@ class ChatViewModelTest {
     @Test
     fun rapidInboundMessagesProduceOneDebouncedReadReport() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val itemsSubscription = backgroundScope.launch { viewModel.items.collect {} }
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         viewModel.setResumed(true)
         runCurrent()
 
@@ -294,7 +301,7 @@ class ChatViewModelTest {
     @Test
     fun noReadReportWhileNotResumed() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val itemsSubscription = backgroundScope.launch { viewModel.items.collect {} }
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         viewModel.setResumed(false)
         runCurrent()
 
@@ -310,7 +317,7 @@ class ChatViewModelTest {
     @Test
     fun readGoesOverTheSocketWhenOpen() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val itemsSubscription = backgroundScope.launch { viewModel.items.collect {} }
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         socket.setOpen(true)
         viewModel.setResumed(true)
         runCurrent()

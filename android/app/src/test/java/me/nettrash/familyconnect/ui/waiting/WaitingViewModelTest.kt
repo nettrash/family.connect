@@ -9,12 +9,15 @@
 
 package me.nettrash.familyconnect.ui.waiting
 
+import androidx.lifecycle.viewModelScope
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -87,9 +90,24 @@ class WaitingViewModelTest {
         return WaitingViewModel(sessionRepository)
     }
 
+    /**
+     * runTest wrapper that always cancels the ViewModel's scope before
+     * the test ends. The poll ticker reschedules itself on the shared
+     * virtual scheduler; left alive it would keep runTest's cleanup
+     * advancing the clock forever.
+     */
+    private fun runVmTest(block: suspend TestScope.(WaitingViewModel) -> Unit) =
+        runTest(dispatcher) {
+            val viewModel = newViewModel()
+            try {
+                block(viewModel)
+            } finally {
+                viewModel.viewModelScope.cancel()
+            }
+        }
+
     @Test
-    fun showsTheFamilyNameFromTheSnapshot() = runTest(dispatcher) {
-        val viewModel = newViewModel()
+    fun showsTheFamilyNameFromTheSnapshot() = runVmTest { viewModel ->
         runCurrent()
         assertThat(viewModel.state.value.familyName).isEqualTo("The Smiths")
         assertThat(viewModel.state.value.approved).isFalse()
@@ -97,8 +115,7 @@ class WaitingViewModelTest {
     }
 
     @Test
-    fun manualRefreshWhileStillPendingChangesNothing() = runTest(dispatcher) {
-        val viewModel = newViewModel()
+    fun manualRefreshWhileStillPendingChangesNothing() = runVmTest { viewModel ->
         runCurrent()
 
         viewModel.refresh()
@@ -110,8 +127,7 @@ class WaitingViewModelTest {
     }
 
     @Test
-    fun tickerPollsAndDiscoversApproval() = runTest(dispatcher) {
-        val viewModel = newViewModel()
+    fun tickerPollsAndDiscoversApproval() = runVmTest { viewModel ->
         runCurrent()
         assertThat(authApi.meCalls).isEqualTo(0) // ticker hasn't fired yet
 
@@ -124,8 +140,7 @@ class WaitingViewModelTest {
     }
 
     @Test
-    fun pendingGoneMeansDeclined() = runTest(dispatcher) {
-        val viewModel = newViewModel()
+    fun pendingGoneMeansDeclined() = runVmTest { viewModel ->
         runCurrent()
 
         authApi.meResult = rejectedMe
@@ -137,8 +152,7 @@ class WaitingViewModelTest {
     }
 
     @Test
-    fun declinedStateSticksAcrossFurtherPolls() = runTest(dispatcher) {
-        val viewModel = newViewModel()
+    fun declinedStateSticksAcrossFurtherPolls() = runVmTest { viewModel ->
         runCurrent()
 
         authApi.meResult = rejectedMe

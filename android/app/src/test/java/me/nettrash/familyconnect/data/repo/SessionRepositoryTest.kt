@@ -10,9 +10,13 @@
 package me.nettrash.familyconnect.data.repo
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -32,8 +36,14 @@ import me.nettrash.familyconnect.testutil.RecordingWiper
 import me.nettrash.familyconnect.testutil.userDto
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class SessionRepositoryTest {
 
+    private val dispatcher = StandardTestDispatcher()
+
+    // Foreground scope, not backgroundScope — advanceUntilIdle skips
+    // background-only work, which would starve the 401 collector.
+    private val repoScope = CoroutineScope(dispatcher + SupervisorJob())
     private val authApi = FakeAuthApi()
     private val tokenStore = FakeTokenStore()
     private val settings = FakeSettingsRepository()
@@ -47,7 +57,7 @@ class SessionRepositoryTest {
             settings = settings,
             wiper = wiper,
             unauthorizedEvents = unauthorized,
-            scope = backgroundScope,
+            scope = repoScope,
         )
         runCurrent() // let the 401 collector subscribe
         return repository
@@ -58,7 +68,7 @@ class SessionRepositoryTest {
     // -- Snapshot → route mapping ------------------------------------------------
 
     @Test
-    fun snapshotStatusIsDerivedAndMapsToStartRoutes() = runTest {
+    fun snapshotStatusIsDerivedAndMapsToStartRoutes() = runTest(dispatcher) {
         val repository = newRepository()
 
         // No server URL saved at all.
@@ -86,7 +96,7 @@ class SessionRepositoryTest {
     }
 
     @Test
-    fun canChatRequiresTokenAndMembership() = runTest {
+    fun canChatRequiresTokenAndMembership() = runTest(dispatcher) {
         val repository = newRepository()
         settings.setServerUrl("https://chat.example.com")
         tokenStore.save("tok")
@@ -104,7 +114,7 @@ class SessionRepositoryTest {
     // -- clearSession -------------------------------------------------------------
 
     @Test
-    fun clearSessionWipesEverythingButKeepsTheServerUrl() = runTest {
+    fun clearSessionWipesEverythingButKeepsTheServerUrl() = runTest(dispatcher) {
         val repository = newRepository()
         settings.setServerUrl("https://chat.example.com")
         settings.setProfile(7, "anna", "Anna")
@@ -126,7 +136,7 @@ class SessionRepositoryTest {
     // -- 401 propagation --------------------------------------------------------------
 
     @Test
-    fun unauthorizedEventClearsTheSessionAndEmitsExpired() = runTest {
+    fun unauthorizedEventClearsTheSessionAndEmitsExpired() = runTest(dispatcher) {
         val repository = newRepository()
         settings.setServerUrl("https://chat.example.com")
         tokenStore.save("tok")
@@ -146,7 +156,7 @@ class SessionRepositoryTest {
     // -- Auth flow ------------------------------------------------------------------------
 
     @Test
-    fun loginStoresTokenRefreshesMeAndRegistersDevice() = runTest {
+    fun loginStoresTokenRefreshesMeAndRegistersDevice() = runTest(dispatcher) {
         val repository = newRepository()
         settings.setServerUrl("https://chat.example.com")
         authApi.loginResult = ApiResult.Ok(AuthResponse(token = "fresh-token", user = userDto(7, "anna")))
@@ -163,7 +173,7 @@ class SessionRepositoryTest {
     }
 
     @Test
-    fun registerFailurePassesTheHttpErrorThrough() = runTest {
+    fun registerFailurePassesTheHttpErrorThrough() = runTest(dispatcher) {
         val repository = newRepository()
         settings.setServerUrl("https://chat.example.com")
         authApi.registerResult = ApiResult.HttpError(409, "username_taken", "username is already in use")
@@ -179,7 +189,7 @@ class SessionRepositoryTest {
     // -- refreshMe reconciliation ---------------------------------------------------------------
 
     @Test
-    fun refreshMeMapsFamilyRoleAndPendingOntoStatus() = runTest {
+    fun refreshMeMapsFamilyRoleAndPendingOntoStatus() = runTest(dispatcher) {
         val repository = newRepository()
         settings.setServerUrl("https://chat.example.com")
         tokenStore.save("tok")
@@ -197,7 +207,7 @@ class SessionRepositoryTest {
     }
 
     @Test
-    fun pendingToNoneEmitsJoinRequestRejected() = runTest {
+    fun pendingToNoneEmitsJoinRequestRejected() = runTest(dispatcher) {
         val repository = newRepository()
         settings.setServerUrl("https://chat.example.com")
         tokenStore.save("tok")
@@ -214,7 +224,7 @@ class SessionRepositoryTest {
     }
 
     @Test
-    fun memberToNoneEmitsRemovedFromFamilyAndWipes() = runTest {
+    fun memberToNoneEmitsRemovedFromFamilyAndWipes() = runTest(dispatcher) {
         val repository = newRepository()
         settings.setServerUrl("https://chat.example.com")
         tokenStore.save("tok")
