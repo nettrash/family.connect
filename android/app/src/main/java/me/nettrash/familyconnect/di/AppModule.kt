@@ -40,6 +40,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.serialization.json.Json
+import me.nettrash.familyconnect.BuildConfig
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.LocalDataWiper
@@ -57,6 +58,7 @@ import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.OkHttpChatSocket
 import me.nettrash.familyconnect.data.settings.DataStoreSettingsRepository
+import me.nettrash.familyconnect.data.settings.DefaultServerUrl
 import me.nettrash.familyconnect.data.settings.KeystoreTokenStore
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.data.settings.TokenStore
@@ -167,5 +169,15 @@ abstract class AppModule {
         @Provides
         @Singleton
         fun provideClock(): Clock = Clock { System.currentTimeMillis() }
+
+        // The one place BuildConfig leaks into the object graph. Store
+        // builds compile the hosted instance in via -PdefaultServerUrl
+        // (see app/build.gradle.kts); source builds leave it empty →
+        // null → first run still asks for a server.
+        @Provides
+        @Singleton
+        fun provideDefaultServerUrl(): DefaultServerUrl = DefaultServerUrl {
+            BuildConfig.DEFAULT_SERVER_URL.takeIf { it.isNotBlank() }
+        }
     }
 }

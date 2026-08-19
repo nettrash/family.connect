@@ -25,6 +25,35 @@ nonisolated enum AppSettings {
         static let deviceRegistered = "v1.deviceRegistered"
     }
 
+    /// The server URL compiled into this build, or nil for the generic
+    /// build. This is the "predefined default server" mechanism for the
+    /// App Store build: the `Release-nettrash` configuration sets the
+    /// user-defined build setting `FC_DEFAULT_SERVER_URL`, Info.plist
+    /// carries it as `FCDefaultServerURL = $(FC_DEFAULT_SERVER_URL)`, and
+    /// AppSession.bootstrap adopts it when no server URL is stored yet —
+    /// so store users land straight on Register/Login instead of the
+    /// server-setup screen. Debug/Release leave the setting empty, which
+    /// this accessor reports as nil (first run keeps asking for a URL).
+    ///
+    /// The raw plist string is trimmed and run through the same
+    /// `ServerURLNormalizer` the setup screen uses, so the `serverURL`
+    /// invariant (scheme present, no trailing slash) holds no matter how
+    /// the build setting was spelled; anything the normalizer rejects is
+    /// treated as "no default" rather than adopted broken.
+    static var defaultServerURL: URL? {
+        guard let raw = Bundle.main.object(forInfoDictionaryKey: "FCDefaultServerURL") as? String else {
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        switch ServerURLNormalizer.normalize(trimmed) {
+        case .ok(let url), .okInsecureLocal(let url):
+            return url
+        case .invalid:
+            return nil
+        }
+    }
+
     /// The user-entered server base URL (normalized: scheme present,
     /// no trailing slash). nil until the setup screen confirms one.
     static var serverURL: URL? {

@@ -3,8 +3,10 @@
  * Family Connect (Android)
  *
  * Session semantics: snapshot → start-route mapping, the protocol's
- * "wipe local state but KEEP the server URL" rule, and the global 401 →
- * Expired propagation. Plain JVM — every dependency is a fake.
+ * "wipe local state but KEEP the server URL" rule, the global 401 →
+ * Expired propagation, and the predefined-default-server adoption (store
+ * builds boot straight to AUTH; a stored URL always beats the default).
+ * Plain JVM — every dependency is a fake.
  */
 
 package me.nettrash.familyconnect.data.repo
@@ -50,7 +52,7 @@ class SessionRepositoryTest {
     private val wiper = RecordingWiper()
     private val unauthorized = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
-    private fun TestScope.newRepository(): SessionRepository {
+    private fun TestScope.newRepository(defaultServerUrl: String? = null): SessionRepository {
         val repository = SessionRepository(
             authApi = authApi,
             tokenStore = tokenStore,
@@ -58,6 +60,7 @@ class SessionRepositoryTest {
             wiper = wiper,
             unauthorizedEvents = unauthorized,
             scope = repoScope,
+            defaultServerUrl = { defaultServerUrl },
         )
         runCurrent() // let the 401 collector subscribe
         return repository
@@ -109,6 +112,71 @@ class SessionRepositoryTest {
 
         tokenStore.clear()
         assertThat(repository.snapshot().canChat).isFalse()
+    }
+
+    // -- Predefined default server (store builds) ----------------------------------
+
+    @Test
+    fun bootAdoptsTheCompiledInDefaultServerWhenNothingIsStored() = runTest(dispatcher) {
+        val repository = newRepository(defaultServerUrl = "https://fc.nettrash.me")
+
+        val snapshot = repository.snapshot()
+
+        // Straight past server setup: only the token is missing now.
+        assertThat(snapshot.status).isEqualTo(FamilyStatus.NO_TOKEN)
+        assertThat(startDestinationFor(snapshot.status)).isEqualTo(Routes.AUTH)
+        assertThat(snapshot.serverUrl).isEqualTo("https://fc.nettrash.me")
+        // Persisted, not just reported — the next boot reads it from settings.
+        assertThat(settings.state.first().serverUrl).isEqualTo("https://fc.nettrash.me")
+    }
+
+    @Test
+    fun compiledInDefaultIsNormalizedExactlyLikeTypedInput() = runTest(dispatcher) {
+        val repository = newRepository(defaultServerUrl = "fc.nettrash.me/")
+
+        assertThat(repository.snapshot().serverUrl).isEqualTo("https://fc.nettrash.me")
+    }
+
+    @Test
+    fun withoutACompiledInDefaultFirstRunStillGoesToServerSetup() = runTest(dispatcher) {
+        val repository = newRepository() // generic source build
+
+        val snapshot = repository.snapshot()
+
+        assertThat(snapshot.status).isEqualTo(FamilyStatus.NO_SERVER)
+        assertThat(startDestinationFor(snapshot.status)).isEqualTo(Routes.SERVER_SETUP)
+        assertThat(settings.state.first().serverUrl).isNull()
+    }
+
+    @Test
+    fun anUnparseableCompiledInDefaultIsIgnored() = runTest(dispatcher) {
+        val repository = newRepository(defaultServerUrl = "http://") // normalize() → null
+
+        assertThat(repository.snapshot().status).isEqualTo(FamilyStatus.NO_SERVER)
+        assertThat(settings.state.first().serverUrl).isNull()
+    }
+
+    @Test
+    fun storedUrlAlwaysWinsOverTheCompiledInDefault() = runTest(dispatcher) {
+        settings.setServerUrl("https://my-own-box.example.com")
+        val repository = newRepository(defaultServerUrl = "https://fc.nettrash.me")
+
+        val snapshot = repository.snapshot()
+
+        assertThat(snapshot.serverUrl).isEqualTo("https://my-own-box.example.com")
+        assertThat(settings.state.first().serverUrl).isEqualTo("https://my-own-box.example.com")
+    }
+
+    @Test
+    fun changingTheServerAfterAdoptionOverridesTheDefaultPersistently() = runTest(dispatcher) {
+        val repository = newRepository(defaultServerUrl = "https://fc.nettrash.me")
+        repository.snapshot() // boot: adopts the default
+
+        // The server-setup save path (what "Use a different server" leads to).
+        settings.setServerUrl("https://my-own-box.example.com")
+
+        assertThat(repository.snapshot().serverUrl).isEqualTo("https://my-own-box.example.com")
+        assertThat(settings.state.first().serverUrl).isEqualTo("https://my-own-box.example.com")
     }
 
     // -- clearSession -------------------------------------------------------------

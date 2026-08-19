@@ -95,6 +95,21 @@ android {
         targetSdk = 36
         versionCode = storedVersionCode
         versionName = resolvedVersionName
+
+        // Predefined default server. The Play Store build is compiled
+        // pre-pointed at the hosted instance so first run skips the
+        // server-setup screen and lands on Auth:
+        //     ./gradlew bundleRelease -PdefaultServerUrl=https://fc.nettrash.me
+        // Source builds omit the property → empty string → first run asks
+        // for the server URL, exactly as before. Deliberately NOT a product
+        // flavor: a flavor would rename every Gradle task (assembleStoreDebug,
+        // testStoreDebugUnitTest, …) for the sake of one string constant.
+        // Consumed via the DefaultServerUrl seam in di/AppModule.kt.
+        buildConfigField(
+            "String",
+            "DEFAULT_SERVER_URL",
+            "\"${project.findProperty("defaultServerUrl") ?: ""}\"",
+        )
     }
 
     signingConfigs {

@@ -55,6 +55,25 @@ xcodebuild test -project FamilyConnect.xcodeproj -scheme FamilyConnect \
   -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=NO
 ```
 
+## Store builds with a predefined server
+
+Builds from this source ask for a server address on first run. The store builds instead ship
+pre-pointed at a default server, landing straight on the sign-in screen ("Change server" there
+still reaches any self-hosted instance):
+
+```bash
+# iOS — archive with the dedicated scheme (its Release-nettrash configuration
+# feeds the FCDefaultServerURL Info.plist key):
+cd ios
+xcodebuild archive -project FamilyConnect.xcodeproj -scheme FamilyConnect-nettrash \
+  -destination 'generic/platform=iOS' -archivePath build/FamilyConnect.xcarchive
+
+# Android — pass the default as a Gradle property (no product flavor, so all
+# task names stay stable):
+cd android
+./gradlew bundleRelease -PdefaultServerUrl=https://fc.nettrash.me -PversionName=<tag>
+```
+
 ## Installing the server (Ubuntu)
 
 ```bash

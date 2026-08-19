@@ -5,8 +5,9 @@
 	<!--
 	  Deliberately minimal: everything else is generated
 	  (GENERATE_INFOPLIST_FILE = YES + INFOPLIST_KEY_* build settings)
-	  and merged with this file. The one thing that cannot be expressed
-	  as an INFOPLIST_KEY is the ATS dictionary below.
+	  and merged with this file. Only what cannot be expressed as an
+	  INFOPLIST_KEY lives here: the ATS dictionary and the custom
+	  default-server key below.
 
 	  NSAllowsLocalNetworking (and nothing broader): a family typically
 	  self-hosts the server on a LAN box reachable only over plain
@@ -19,5 +20,15 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!--
+	  FCDefaultServerURL: the server this build is pre-pointed at, read
+	  by AppSettings.defaultServerURL. Expanded from the user-defined
+	  build setting FC_DEFAULT_SERVER_URL — empty in Debug/Release (first
+	  run asks for a server), https://fc.nettrash.me in Release-nettrash
+	  (the App Store build lands straight on Register/Login). Users can
+	  still switch servers via "Change server…" on the auth screen.
+	-->
+	<key>FCDefaultServerURL</key>
+	<string>$(FC_DEFAULT_SERVER_URL)</string>
 </dict>
 </plist>

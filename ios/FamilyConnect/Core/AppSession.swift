@@ -111,28 +111,52 @@ final class AppSession {
 
     private let api: APIClient
 
+    /// The build's compiled-in default server, if any — a seam over
+    /// `AppSettings.defaultServerURL` so tests can drive both the
+    /// "store build with a default" and "generic build without one"
+    /// bootstrap branches without touching the real bundle.
+    private let defaultServerURL: () -> URL?
+
     // Store side effects, injected at wiring time (see file header).
     var hasCachedChats: () -> Bool = { false }
     var clearChatStore: () -> Void = {}
 
-    init(api: APIClient) {
+    init(api: APIClient, defaultServerURL: @escaping () -> URL? = { AppSettings.defaultServerURL }) {
         self.api = api
+        self.defaultServerURL = defaultServerURL
     }
 
     // MARK: - Bootstrap
 
     /// Cold-start routing, exactly the design's decision ladder:
-    /// no server URL → needsServer; no token → needsAuth; then GET /me
-    /// routes (family → active, pending → pendingApproval, neither →
-    /// needsFamily). 401 wipes the token and lands on needsAuth. A
-    /// transport error opens cached chats offline when we have any,
-    /// otherwise parks on booting with a retry affordance.
+    /// no server URL → adopt the build's compiled-in default when there
+    /// is one (store builds — see `AppSettings.defaultServerURL`), else
+    /// needsServer; no token → needsAuth; then GET /me routes (family →
+    /// active, pending → pendingApproval, neither → needsFamily). 401
+    /// wipes the token and lands on needsAuth. A transport error opens
+    /// cached chats offline when we have any, otherwise parks on booting
+    /// with a retry affordance.
+    ///
+    /// Adopting the default deliberately skips `setServer`'s network
+    /// probe: boot must not block on the network, and the URL is already
+    /// normalized by the accessor, so it is persisted directly — exactly
+    /// the state `setServer` would have left — and any connectivity
+    /// problem surfaces on the auth screen instead. A stored URL always
+    /// wins over the default, and "Change server" later overrides it
+    /// through the normal `setServer` path.
     func bootstrap() async {
         guard phase == .booting else { return }
         bootError = nil
 
         guard let serverURL = AppSettings.serverURL else {
-            phase = .needsServer
+            if let compiledDefault = defaultServerURL() {
+                AppLog.app.info("Adopting compiled-in default server")
+                AppSettings.serverURL = compiledDefault
+                await api.configure(serverURL: compiledDefault, token: nil)
+                phase = .needsAuth
+            } else {
+                phase = .needsServer
+            }
             return
         }
         guard let token = try? KeychainStore.getString(account: KeychainStore.tokenAccount) else {

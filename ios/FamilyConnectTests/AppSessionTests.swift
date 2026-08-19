@@ -90,9 +90,16 @@ struct AppSessionTransitionTests {
         var cachedChats = false
     }
 
-    private func makeSession() -> (AppSession, Spies) {
+    /// `defaultServerURL` is the compiled-in-default seam; tests default
+    /// it to "no default" so they stay deterministic regardless of which
+    /// build configuration hosts them (a Release-nettrash host would
+    /// otherwise leak its real default into every bootstrap test).
+    private func makeSession(
+        api: APIClient? = nil,
+        defaultServerURL: @escaping () -> URL? = { nil }
+    ) -> (AppSession, Spies) {
         let spies = Spies()
-        let session = AppSession(api: APIClient(serverURL: nil))
+        let session = AppSession(api: api ?? APIClient(serverURL: nil), defaultServerURL: defaultServerURL)
         session.clearChatStore = { spies.chatStoreCleared += 1 }
         session.hasCachedChats = { spies.cachedChats }
         return (session, spies)
@@ -203,15 +210,79 @@ struct AppSessionTransitionTests {
         #expect(AppSettings.currentUserID == nil)   // defaults wiped
     }
 
-    @Test("bootstrap: no server URL → needsServer without any I/O")
+    @Test("bootstrap: no server URL, no compiled-in default → needsServer without any I/O")
     func bootstrapNeedsServer() async {
         resetGlobals()
         defer { resetGlobals() }
-        let (session, _) = makeSession()
+        let (session, _) = makeSession(defaultServerURL: { nil })
 
         await session.bootstrap()
 
         #expect(session.phase == .needsServer)
+    }
+
+    @Test("bootstrap: no server URL but a compiled-in default → adopts it, persists it, → needsAuth")
+    func bootstrapAdoptsCompiledDefault() async {
+        resetGlobals()
+        defer { resetGlobals() }
+        let defaultURL = URL(string: "https://fc.example")!
+        let (session, _) = makeSession(defaultServerURL: { defaultURL })
+
+        await session.bootstrap()
+
+        // Straight to Register/Login — no server-setup screen and no
+        // network probe on the boot path.
+        #expect(session.phase == .needsAuth)
+        // Persisted exactly like a user-entered URL, so the auth screen's
+        // footer and "Change server…" prefill see it.
+        #expect(AppSettings.serverURL == defaultURL)
+    }
+
+    @Test("bootstrap: a stored server URL wins over the compiled-in default")
+    func bootstrapStoredURLWinsOverDefault() async {
+        resetGlobals()
+        defer { resetGlobals() }
+        let stored = URL(string: "https://family.example")!
+        AppSettings.serverURL = stored
+        let (session, _) = makeSession(defaultServerURL: { URL(string: "https://fc.example")! })
+
+        await session.bootstrap()
+
+        #expect(session.phase == .needsAuth)
+        #expect(AppSettings.serverURL == stored)
+    }
+
+    @Test("setServer after an adopted default: the user's choice overrides it persistently")
+    func changeServerOverridesAdoptedDefault() async throws {
+        resetGlobals()
+        defer {
+            resetGlobals()
+            StubURLProtocol.unregister(host: "family-b.test")
+        }
+        // Boot a "store build": the default gets adopted.
+        let api = APIClient(serverURL: nil, session: StubURLProtocol.makeSession())
+        let (session, _) = makeSession(api: api, defaultServerURL: { URL(string: "https://fc.example")! })
+        await session.bootstrap()
+        #expect(AppSettings.serverURL == URL(string: "https://fc.example"))
+
+        // "Change server…" → the normal setServer path (probe included).
+        StubURLProtocol.register(host: "family-b.test") { _ in
+            .json(401, #"{"error": {"code": "unauthorized", "message": "auth required"}}"#)
+        }
+        session.requestServerChange()
+        #expect(session.phase == .needsServer)
+        try await session.setServer(URL(string: "https://family-b.test")!)
+
+        #expect(session.phase == .needsAuth)
+        #expect(AppSettings.serverURL == URL(string: "https://family-b.test"))
+    }
+
+    @Test("this test host carries no compiled-in default (Debug/Release leave FC_DEFAULT_SERVER_URL empty)")
+    func hostBundleHasNoDefault() {
+        // Guards the committed builds' behavior: only Release-nettrash
+        // sets the build setting, so the generic app must report nil
+        // (Info.plist carries the key, but empty ⇒ nil).
+        #expect(AppSettings.defaultServerURL == nil)
     }
 
     @Test("bootstrap: server but no token → needsAuth")

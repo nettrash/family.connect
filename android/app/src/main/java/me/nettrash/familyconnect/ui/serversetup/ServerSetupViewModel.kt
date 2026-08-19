@@ -7,6 +7,12 @@
  * path (nginx 404, a random website's 401, connection refused) is not a
  * Family Connect server.
  *
+ * The field pre-fills with the URL currently in effect (typed earlier,
+ * or the store build's compiled-in default adopted at boot) so "Use a
+ * different server" edits the current address instead of a blank field;
+ * saving a different URL overrides the default persistently. On a true
+ * first run without a default there is nothing stored — stays blank.
+ *
  * iOS counterpart: ios/FamilyConnect/UI/ServerSetup/ServerSetupViewModel.swift
  */
 
@@ -17,6 +23,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.net.ApiResult
@@ -42,6 +49,25 @@ class ServerSetupViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
+
+    init {
+        // Pre-fill with the stored URL, if any. Guarded on url.isEmpty()
+        // so a user who starts typing before the DataStore read lands
+        // doesn't get their input clobbered.
+        viewModelScope.launch {
+            val existing = settings.state.first().serverUrl ?: return@launch
+            _state.update { current ->
+                if (current.url.isEmpty()) {
+                    current.copy(
+                        url = existing,
+                        isCleartext = ServerUrlNormalizer.isCleartext(existing),
+                    )
+                } else {
+                    current
+                }
+            }
+        }
+    }
 
     fun onUrlChange(value: String) {
         val normalized = ServerUrlNormalizer.normalize(value)

@@ -8,6 +8,12 @@
  *   FamilyStatus  — NO_SERVER / NO_TOKEN are derived (no URL saved / no
  *                   token stored); NONE / PENDING / MEMBER / OWNER are
  *                   reconciled from GET /me and persisted.
+ *   snapshot      — the boot read. If no server URL is stored but the
+ *                   build compiled one in (DefaultServerUrl seam — the
+ *                   Play Store build), it is adopted here: normalized
+ *                   and persisted exactly as if the user had typed it,
+ *                   no network probe, so store builds boot to AUTH
+ *                   instead of SERVER_SETUP. A stored URL always wins.
  *   register/login — store token → GET /me → POST /devices → persist.
  *   logout        — best-effort POST /auth/logout, then clearSession.
  *   clearSession  — token + Room wipe + settings reset EXCEPT serverUrl
@@ -36,6 +42,8 @@ import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
+import me.nettrash.familyconnect.data.settings.DefaultServerUrl
+import me.nettrash.familyconnect.data.settings.ServerUrlNormalizer
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.data.settings.TokenStore
@@ -97,6 +105,10 @@ class SessionRepository @Inject constructor(
     private val wiper: LocalDataWiper,
     @param:UnauthorizedEvents private val unauthorizedEvents: SharedFlow<Unit>,
     @param:AppScope private val scope: CoroutineScope,
+    // Kotlin default = "no default server", so tests that don't care never
+    // mention it. Dagger ignores default arguments — production always
+    // injects the AppModule binding backed by BuildConfig.DEFAULT_SERVER_URL.
+    private val defaultServerUrl: DefaultServerUrl = DefaultServerUrl { null },
 ) {
 
     // Bumped on every token save/clear so sessionFlow re-emits — the
@@ -120,7 +132,21 @@ class SessionRepository @Inject constructor(
         }
     }
 
-    suspend fun snapshot(): SessionSnapshot = snapshotFrom(settings.state.first())
+    /**
+     * Boot read. When nothing is stored yet and the build compiled a
+     * default server in, adopt it through the same normalize-and-persist
+     * path a typed URL takes — from then on it IS the stored URL (kept by
+     * clearSession, overridable from server setup). No network probe:
+     * boot must never block on the network.
+     */
+    suspend fun snapshot(): SessionSnapshot {
+        if (settings.state.first().serverUrl == null) {
+            defaultServerUrl.get()
+                ?.let(ServerUrlNormalizer::normalize)
+                ?.let { settings.setServerUrl(it) }
+        }
+        return snapshotFrom(settings.state.first())
+    }
 
     private fun snapshotFrom(state: SettingsState): SessionSnapshot {
         val token = tokenStore.load()
