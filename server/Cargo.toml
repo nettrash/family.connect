@@ -1,0 +1,112 @@
+[package]
+name = "family-connect"
+version = "0.1.0"
+edition = "2024"
+authors = ["nettrash <nettrash@nettrash.me>"]
+description = "Self-hosted family chat server: REST + WebSocket API over PostgreSQL (protocol v1)"
+license = "MIT"
+
+[lib]
+# Everything lives in a library crate so the integration tests under tests/
+# can drive the real router, migrator, and registry in-process; the binary
+# below is a thin wrapper around this crate.
+name = "family_connect"
+path = "src/lib.rs"
+
+[[bin]]
+name = "family-connect"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime. Deliberately not the "full" feature set: only what the
+# server actually uses, so a compromised transitive feature can't drag in
+# process/fs machinery we never asked for.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "sync",
+    "time",
+    "net",
+] }
+
+# CancellationToken — one token fans graceful shutdown out to every
+# WebSocket connection task.
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# HTTP framework; "ws" adds the WebSocket upgrade extractor used by /api/v1/ws.
+axum = { version = "0.8", features = ["ws"] }
+
+# PostgreSQL driver. default-features off so we opt into exactly the tokio +
+# rustls stack; no "migrate" feature — migrations are hand-rolled in
+# migrate.rs (advisory lock + schema_migrations table) to keep the dependency
+# surface small and the behavior obvious.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "uuid",
+    "time",
+] }
+
+# Serialization for REST bodies, WS frames, and the TOML config.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Password hashing (argon2id, PHC string format). "std" for the error trait.
+argon2 = { version = "0.5", features = ["std"] }
+
+# OS-backed randomness for session tokens and invite codes.
+rand = "0.8"
+
+# SHA-256 for session-token hashing (only the hash is stored server-side).
+sha2 = "0.10"
+hex = "0.4"
+
+# URL-safe base64 for the opaque session tokens handed to clients.
+base64 = "0.22"
+
+# client_msg_id is a UUID end to end; "v4" so tests and tools can mint them.
+uuid = { version = "1", features = ["serde", "v4"] }
+
+# Timestamps. RFC 3339 (de)serialization per protocol.md; "macros" for
+# datetime!() literals in the frame-shape unit tests.
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+
+# Error handling
+anyhow = "1"
+
+# PushSender is a dyn trait with async methods; async-trait keeps it object-safe.
+async-trait = "0.1"
+
+# Logging / tracing for the service itself.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# REST test client for the integration suites.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
+
+# WebSocket test client — exercises the real upgrade path from outside axum.
+# Kept on the same minor as axum's own ws dependency so the tree carries one
+# tungstenite, not two.
+tokio-tungstenite = "0.29"
+
+# SinkExt/StreamExt for driving the tungstenite client stream in tests.
+futures-util = "0.3"
+
+# Scoped temp files for Config::load unit tests; cleaned up on drop.
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3

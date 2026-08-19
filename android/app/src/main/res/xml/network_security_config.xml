@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Family Connect talks to a *self-hosted* server whose address is typed
+    in by the user — often a plain-http box on the home LAN
+    (http://192.168.1.10:8080). Those hosts can't be enumerated as
+    <domain-config> entries ahead of time, so cleartext must be permitted
+    at the base level. The trade-off is surfaced in the UI instead: the
+    server-setup screen shows a persistent warning card whenever the saved
+    URL is http://. TLS servers still validate against the system trust
+    anchors as usual.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

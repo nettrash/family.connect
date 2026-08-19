@@ -1,0 +1,173 @@
+/*
+ * MessageDaoTest.kt
+ * Family Connect (Android)
+ *
+ * The DAO carries the ordering contract the chat screen renders by and
+ * the dedup rules the sync pipeline leans on — Robolectric + in-memory
+ * Room, real SQLite semantics.
+ */
+
+package me.nettrash.familyconnect.data.db
+
+import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
+import me.nettrash.familyconnect.testutil.createTestDb
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
+@RunWith(RobolectricTestRunner::class)
+class MessageDaoTest {
+
+    private lateinit var db: AppDatabase
+    private lateinit var dao: MessageDao
+
+    @Before
+    fun setUp() {
+        db = createTestDb()
+        dao = db.messageDao()
+    }
+
+    @After
+    fun tearDown() {
+        db.close()
+    }
+
+    private fun message(
+        clientMsgId: String,
+        serverId: Long?,
+        createdAt: Long,
+        chatId: Long = 1L,
+        senderId: Long = 7L,
+        status: MessageStatus = if (serverId == null) MessageStatus.SENDING else MessageStatus.SENT,
+    ) = MessageEntity(
+        clientMsgId = clientMsgId,
+        serverId = serverId,
+        chatId = chatId,
+        senderId = senderId,
+        body = "body $clientMsgId",
+        createdAt = createdAt,
+        status = status,
+    )
+
+    @Test
+    fun observeMessagesOrdersPendingFirstThenByServerIdDescending() = runTest {
+        dao.insert(message("s10", serverId = 10, createdAt = 100))
+        dao.insert(message("s30", serverId = 30, createdAt = 300))
+        dao.insert(message("pending-b", serverId = null, createdAt = 250))
+        dao.insert(message("s20", serverId = 20, createdAt = 200))
+        dao.insert(message("pending-a", serverId = null, createdAt = 400))
+
+        val ordered = dao.observeMessages(chatId = 1L, limit = 50).first()
+
+        // Pending rows lead (they're the newest side under reverseLayout),
+        // newest local first; acked rows follow by server id descending.
+        assertThat(ordered.map { it.clientMsgId }).containsExactly(
+            "pending-a", "pending-b", "s30", "s20", "s10",
+        ).inOrder()
+    }
+
+    @Test
+    fun observeMessagesHonorsLimitFromTheNewestSide() = runTest {
+        dao.insert(message("s1", serverId = 1, createdAt = 1))
+        dao.insert(message("s2", serverId = 2, createdAt = 2))
+        dao.insert(message("s3", serverId = 3, createdAt = 3))
+
+        val window = dao.observeMessages(chatId = 1L, limit = 2).first()
+
+        assertThat(window.map { it.serverId }).containsExactly(3L, 2L).inOrder()
+    }
+
+    @Test
+    fun observeMessagesIsScopedToTheChat() = runTest {
+        dao.insert(message("mine", serverId = 1, createdAt = 1, chatId = 1L))
+        dao.insert(message("other", serverId = 2, createdAt = 2, chatId = 2L))
+
+        val ordered = dao.observeMessages(chatId = 1L, limit = 50).first()
+
+        assertThat(ordered.map { it.clientMsgId }).containsExactly("mine")
+    }
+
+    @Test
+    fun insertIgnoreDedupsBothByPrimaryKeyAndByServerId() = runTest {
+        dao.insert(message("original", serverId = 5, createdAt = 100))
+
+        dao.insertIgnore(
+            listOf(
+                // Same PK — dropped.
+                message("original", serverId = 99, createdAt = 999),
+                // Different PK, same serverId (resync echo) — dropped.
+                message("s5", serverId = 5, createdAt = 999),
+                // Genuinely new — inserted.
+                message("s6", serverId = 6, createdAt = 200),
+            ),
+        )
+
+        val all = dao.observeMessages(chatId = 1L, limit = 50).first()
+        assertThat(all.map { it.clientMsgId }).containsExactly("s6", "original").inOrder()
+        assertThat(dao.findByClientMsgId("original")!!.serverId).isEqualTo(5L)
+    }
+
+    @Test
+    fun markAckedPreservesThePrimaryKeyAndUpdatesInPlace() = runTest {
+        dao.insert(message("uuid-1", serverId = null, createdAt = 100))
+
+        dao.markAcked("uuid-1", serverId = 77, createdAt = 12345)
+
+        val row = dao.findByClientMsgId("uuid-1")!!
+        assertThat(row.clientMsgId).isEqualTo("uuid-1") // same row, same key
+        assertThat(row.serverId).isEqualTo(77L)
+        assertThat(row.createdAt).isEqualTo(12345L) // server clock wins
+        assertThat(row.status).isEqualTo(MessageStatus.SENT)
+        assertThat(dao.findByServerId(77L)!!.clientMsgId).isEqualTo("uuid-1")
+    }
+
+    @Test
+    fun multiplePendingRowsCoexistDespiteUniqueServerIdIndex() = runTest {
+        // SQLite unique indexes permit any number of NULLs.
+        dao.insert(message("p1", serverId = null, createdAt = 1))
+        dao.insert(message("p2", serverId = null, createdAt = 2))
+
+        assertThat(dao.pendingSending().map { it.clientMsgId })
+            .containsExactly("p1", "p2").inOrder()
+    }
+
+    @Test
+    fun cursorsReturnMaxAndMinServerIdPerChat() = runTest {
+        dao.insert(message("a", serverId = 10, createdAt = 1, chatId = 1L))
+        dao.insert(message("b", serverId = 25, createdAt = 2, chatId = 1L))
+        dao.insert(message("c", serverId = 99, createdAt = 3, chatId = 2L))
+        dao.insert(message("p", serverId = null, createdAt = 4, chatId = 1L))
+
+        assertThat(dao.maxServerId(1L)).isEqualTo(25L)
+        assertThat(dao.oldestServerId(1L)).isEqualTo(10L)
+        assertThat(dao.maxServerId(3L)).isNull()
+        assertThat(dao.oldestServerId(3L)).isNull()
+    }
+
+    @Test
+    fun setStatusAndExistsByServerIdBehave() = runTest {
+        dao.insert(message("uuid-2", serverId = null, createdAt = 1))
+
+        dao.setStatus("uuid-2", MessageStatus.FAILED)
+        assertThat(dao.findByClientMsgId("uuid-2")!!.status).isEqualTo(MessageStatus.FAILED)
+
+        assertThat(dao.existsByServerId(123L)).isFalse()
+        dao.markAcked("uuid-2", serverId = 123, createdAt = 5)
+        assertThat(dao.existsByServerId(123L)).isTrue()
+    }
+
+    @Test
+    fun deleteByClientMsgIdRemovesExactlyThatRow() = runTest {
+        dao.insert(message("keep", serverId = 1, createdAt = 1))
+        dao.insert(message("drop", serverId = null, createdAt = 2))
+
+        dao.deleteByClientMsgId("drop")
+
+        assertThat(dao.observeMessages(1L, 50).first().map { it.clientMsgId })
+            .containsExactly("keep")
+    }
+}

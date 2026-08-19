@@ -1,0 +1,280 @@
+/*
+ * Fakes.kt
+ * Family Connect (Android) — test fixtures
+ *
+ * Hand-rolled fakes for every seam the production code exposes as an
+ * interface. No mocking library: the fakes are tiny, the behavior under
+ * test is interaction *order* (frames, acks, retries), and recorded
+ * lists read better in assertions than verify() DSLs.
+ */
+
+package me.nettrash.familyconnect.testutil
+
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import me.nettrash.familyconnect.data.db.LocalDataWiper
+import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.AuthApi
+import me.nettrash.familyconnect.data.net.ChatApi
+import me.nettrash.familyconnect.data.net.ConnectivityObserver
+import me.nettrash.familyconnect.data.net.FamilyApi
+import me.nettrash.familyconnect.data.net.dto.ApproveResponse
+import me.nettrash.familyconnect.data.net.dto.AuthResponse
+import me.nettrash.familyconnect.data.net.dto.ChatResponse
+import me.nettrash.familyconnect.data.net.dto.ChatsResponse
+import me.nettrash.familyconnect.data.net.dto.DeviceResponse
+import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
+import me.nettrash.familyconnect.data.net.dto.FamilyResponse
+import me.nettrash.familyconnect.data.net.dto.JoinRequestsResponse
+import me.nettrash.familyconnect.data.net.dto.JoinResponse
+import me.nettrash.familyconnect.data.net.dto.MeResponse
+import me.nettrash.familyconnect.data.net.dto.MessageDto
+import me.nettrash.familyconnect.data.net.dto.MessageResponse
+import me.nettrash.familyconnect.data.net.dto.MessagesResponse
+import me.nettrash.familyconnect.data.net.dto.RotateInviteCodeResponse
+import me.nettrash.familyconnect.data.net.dto.UserDto
+import me.nettrash.familyconnect.data.net.ws.ChatSocket
+import me.nettrash.familyconnect.data.net.ws.ClientFrame
+import me.nettrash.familyconnect.data.net.ws.ServerFrame
+import me.nettrash.familyconnect.data.net.ws.SocketState
+import me.nettrash.familyconnect.data.repo.FamilyStatus
+import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.data.settings.SettingsState
+import me.nettrash.familyconnect.data.settings.TokenStore
+
+class FakeTokenStore(initial: String? = null) : TokenStore {
+    var token: String? = initial
+        private set
+
+    override fun load(): String? = token
+
+    override fun save(token: String) {
+        this.token = token
+    }
+
+    override fun clear() {
+        token = null
+    }
+}
+
+class FakeSettingsRepository(initial: SettingsState = SettingsState()) : SettingsRepository {
+    private val _state = MutableStateFlow(initial)
+    override val state: Flow<SettingsState> = _state
+
+    val current: SettingsState get() = _state.value
+
+    override suspend fun setServerUrl(url: String) {
+        _state.value = _state.value.copy(serverUrl = url)
+    }
+
+    override suspend fun setFamilyStatus(status: FamilyStatus) {
+        _state.value = _state.value.copy(familyStatus = status)
+    }
+
+    override suspend fun setProfile(userId: Long, username: String, displayName: String) {
+        _state.value = _state.value.copy(
+            myUserId = userId,
+            myUsername = username,
+            myDisplayName = displayName,
+        )
+    }
+
+    override suspend fun setFamilyName(name: String?) {
+        _state.value = _state.value.copy(familyName = name)
+    }
+
+    override suspend fun resetKeepingServerUrl() {
+        _state.value = SettingsState(serverUrl = _state.value.serverUrl)
+    }
+}
+
+class RecordingWiper : LocalDataWiper {
+    var wipeCount = 0
+        private set
+
+    override suspend fun wipeAll() {
+        wipeCount += 1
+    }
+}
+
+class FakeChatSocket : ChatSocket {
+    private val _frames = MutableSharedFlow<ServerFrame>(
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    override val frames: SharedFlow<ServerFrame> = _frames
+
+    private val _state = MutableStateFlow(SocketState.Disconnected)
+    override val state: StateFlow<SocketState> = _state
+
+    val sent = mutableListOf<ClientFrame>()
+
+    /** When false, trySend reports failure even while Open. */
+    var sendSucceeds = true
+
+    override fun connect(wsUrl: String, token: String) {
+        _state.value = SocketState.Open
+    }
+
+    override fun close(code: Int, reason: String) {
+        _state.value = SocketState.Disconnected
+    }
+
+    override fun trySend(frame: ClientFrame): Boolean {
+        if (_state.value != SocketState.Open || !sendSucceeds) return false
+        sent += frame
+        return true
+    }
+
+    fun setOpen(open: Boolean) {
+        _state.value = if (open) SocketState.Open else SocketState.Disconnected
+    }
+
+    fun emit(frame: ServerFrame) {
+        check(_frames.tryEmit(frame)) { "frame buffer full" }
+    }
+}
+
+class FakeConnectivityObserver(online: Boolean = true) : ConnectivityObserver {
+    override val isOnline = MutableStateFlow(online)
+    override val onAvailable = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+}
+
+/** Scripted AuthApi — assign the result fields per test. */
+class FakeAuthApi : AuthApi {
+    var registerResult: ApiResult<AuthResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
+    var loginResult: ApiResult<AuthResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
+    var meResult: ApiResult<MeResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
+    var probeResult: ApiResult<MeResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
+    var deviceResult: ApiResult<DeviceResponse> = ApiResult.Ok(DeviceResponse(deviceId = 1))
+
+    var registerCalls = 0
+    var loginCalls = 0
+    var meCalls = 0
+    var deviceCalls = 0
+    var logoutCalls = 0
+
+    override suspend fun register(
+        username: String,
+        displayName: String,
+        password: String,
+    ): ApiResult<AuthResponse> {
+        registerCalls += 1
+        return registerResult
+    }
+
+    override suspend fun login(username: String, password: String): ApiResult<AuthResponse> {
+        loginCalls += 1
+        return loginResult
+    }
+
+    override suspend fun logout(): ApiResult<Unit> {
+        logoutCalls += 1
+        return ApiResult.Ok(Unit)
+    }
+
+    override suspend fun me(): ApiResult<MeResponse> {
+        meCalls += 1
+        return meResult
+    }
+
+    override suspend fun probe(candidateServerUrl: String): ApiResult<MeResponse> = probeResult
+
+    override suspend fun registerDevice(): ApiResult<DeviceResponse> {
+        deviceCalls += 1
+        return deviceResult
+    }
+}
+
+/** Scripted ChatApi. `postMessageHandler` lets tests vary per call. */
+class FakeChatApi : ChatApi {
+    var chatsResult: ApiResult<ChatsResponse> = ApiResult.Ok(ChatsResponse(emptyList()))
+    var createDirectResult: ApiResult<ChatResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
+    var messagesHandler: (chatId: Long, beforeId: Long?, afterId: Long?, limit: Int) -> ApiResult<MessagesResponse> =
+        { _, _, _, _ -> ApiResult.Ok(MessagesResponse(emptyList())) }
+    var postMessageHandler: (chatId: Long, clientMsgId: String, body: String) -> ApiResult<MessageResponse> =
+        { _, _, _ -> ApiResult.NetworkError(IllegalStateException("unscripted")) }
+
+    val postedMessages = mutableListOf<Triple<Long, String, String>>()
+    val postedReads = mutableListOf<Pair<Long, Long>>()
+    var messagesCalls = 0
+
+    override suspend fun chats(): ApiResult<ChatsResponse> = chatsResult
+
+    override suspend fun createDirect(userId: Long): ApiResult<ChatResponse> = createDirectResult
+
+    override suspend fun messages(
+        chatId: Long,
+        beforeId: Long?,
+        afterId: Long?,
+        limit: Int,
+    ): ApiResult<MessagesResponse> {
+        messagesCalls += 1
+        return messagesHandler(chatId, beforeId, afterId, limit)
+    }
+
+    override suspend fun postMessage(
+        chatId: Long,
+        clientMsgId: String,
+        body: String,
+    ): ApiResult<MessageResponse> {
+        postedMessages += Triple(chatId, clientMsgId, body)
+        return postMessageHandler(chatId, clientMsgId, body)
+    }
+
+    override suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit> {
+        postedReads += chatId to lastReadMessageId
+        return ApiResult.Ok(Unit)
+    }
+}
+
+class FakeFamilyApi : FamilyApi {
+    var mineResult: ApiResult<FamilyMineResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
+    var createResult: ApiResult<FamilyResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
+    var joinResult: ApiResult<JoinResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
+    var joinRequestsResult: ApiResult<JoinRequestsResponse> = ApiResult.Ok(JoinRequestsResponse(emptyList()))
+
+    override suspend fun create(name: String): ApiResult<FamilyResponse> = createResult
+    override suspend fun join(inviteCode: String): ApiResult<JoinResponse> = joinResult
+    override suspend fun mine(): ApiResult<FamilyMineResponse> = mineResult
+    override suspend fun rotateInviteCode(): ApiResult<RotateInviteCodeResponse> =
+        ApiResult.Ok(RotateInviteCodeResponse("NEWCODE1"))
+
+    override suspend fun setJoinPolicy(policy: String): ApiResult<FamilyResponse> = createResult
+    override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult
+    override suspend fun approve(requestId: Long): ApiResult<ApproveResponse> =
+        ApiResult.NetworkError(IllegalStateException("unscripted"))
+
+    override suspend fun reject(requestId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
+    override suspend fun leave(): ApiResult<Unit> = ApiResult.Ok(Unit)
+    override suspend fun removeMember(userId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
+}
+
+// -- DTO builders ----------------------------------------------------------
+
+fun userDto(id: Long, name: String = "user$id") = UserDto(
+    id = id,
+    username = name,
+    displayName = name.replaceFirstChar { it.uppercase() },
+    createdAt = "2026-08-01T10:00:00Z",
+)
+
+fun messageDto(
+    id: Long,
+    chatId: Long = 42L,
+    senderId: Long = 9L,
+    clientMsgId: String = "srv-$id",
+    body: String = "msg $id",
+    createdAt: String = "2026-08-19T17:03:12Z",
+) = MessageDto(
+    id = id,
+    chatId = chatId,
+    senderId = senderId,
+    clientMsgId = clientMsgId,
+    body = body,
+    createdAt = createdAt,
+)

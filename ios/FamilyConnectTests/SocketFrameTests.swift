@@ -1,0 +1,156 @@
+//
+//  SocketFrameTests.swift
+//  FamilyConnectTests
+//
+//  Golden-JSON tests in both directions against the byte shapes in
+//  docs/protocol.md §WebSocket protocol. Client frames are encoded and
+//  compared field-by-field (JSON key order isn't stable, so no string
+//  comparison); server frames are decoded from the document's examples
+//  verbatim. The compatibility rule — unknown type never throws — gets
+//  its own test because deployed clients depend on it.
+//
+
+import Foundation
+import Testing
+@testable import FamilyConnect
+
+@Suite("SocketFrames")
+struct SocketFrameTests {
+
+    private func fields(of frame: ClientFrame) throws -> [String: Any] {
+        let data = try APICoding.encoder().encode(frame)
+        return (try JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    // MARK: - Client → server
+
+    @Test("send frame encodes per protocol.md")
+    func encodeSend() throws {
+        let json = try fields(of: .send(chatID: 42, clientMsgID: "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01", body: "Dinner at 7?"))
+        #expect(json["type"] as? String == "send")
+        #expect(json["chat_id"] as? Int == 42)
+        #expect(json["client_msg_id"] as? String == "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01")
+        #expect(json["body"] as? String == "Dinner at 7?")
+        #expect(json.count == 4)
+    }
+
+    @Test("read frame encodes per protocol.md")
+    func encodeRead() throws {
+        let json = try fields(of: .read(chatID: 42, lastReadMessageID: 1337))
+        #expect(json["type"] as? String == "read")
+        #expect(json["chat_id"] as? Int == 42)
+        #expect(json["last_read_message_id"] as? Int == 1337)
+        #expect(json.count == 3)
+    }
+
+    @Test("typing frame encodes per protocol.md")
+    func encodeTyping() throws {
+        let json = try fields(of: .typing(chatID: 42))
+        #expect(json["type"] as? String == "typing")
+        #expect(json["chat_id"] as? Int == 42)
+        #expect(json.count == 2)
+    }
+
+    @Test("ping frame encodes per protocol.md")
+    func encodePing() throws {
+        let json = try fields(of: .ping)
+        #expect(json["type"] as? String == "ping")
+        #expect(json.count == 1)
+    }
+
+    // MARK: - Server → client
+
+    private func decode(_ json: String) throws -> ServerFrame {
+        try APICoding.decoder().decode(ServerFrame.self, from: Data(json.utf8))
+    }
+
+    @Test("ack decodes with the embedded message")
+    func decodeAck() throws {
+        let frame = try decode("""
+        {"type": "ack", "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
+         "message": {"id": 1338, "chat_id": 42, "sender_id": 7,
+                     "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
+                     "body": "Dinner at 7?", "created_at": "2026-08-19T17:03:12Z"}}
+        """)
+        guard case .ack(let clientMsgID, let message) = frame else {
+            Issue.record("expected .ack, got \(frame)")
+            return
+        }
+        #expect(clientMsgID == "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01")
+        #expect(message.id == 1338)
+        #expect(message.chatID == 42)
+        #expect(message.senderID == 7)
+        #expect(message.body == "Dinner at 7?")
+        #expect(message.createdAt == ISO8601DateFormatter().date(from: "2026-08-19T17:03:12Z"))
+    }
+
+    @Test("message decodes")
+    func decodeMessage() throws {
+        let frame = try decode("""
+        {"type": "message", "message": {"id": 1339, "chat_id": 42, "sender_id": 9,
+         "client_msg_id": "0e7b2a01-1111-2222-3333-444455556666", "body": "Yes!",
+         "created_at": "2026-08-19T17:04:00Z"}}
+        """)
+        guard case .message(let message) = frame else {
+            Issue.record("expected .message, got \(frame)")
+            return
+        }
+        #expect(message.id == 1339)
+        #expect(message.senderID == 9)
+    }
+
+    @Test("read decodes")
+    func decodeRead() throws {
+        let frame = try decode(#"{"type": "read", "chat_id": 42, "user_id": 9, "last_read_message_id": 1338}"#)
+        #expect(frame == .read(chatID: 42, userID: 9, lastReadMessageID: 1338))
+    }
+
+    @Test("typing decodes")
+    func decodeTyping() throws {
+        let frame = try decode(#"{"type": "typing", "chat_id": 42, "user_id": 9}"#)
+        #expect(frame == .typing(chatID: 42, userID: 9))
+    }
+
+    @Test("member_joined decodes the reduced user object")
+    func decodeMemberJoined() throws {
+        let frame = try decode("""
+        {"type": "member_joined", "family_id": 3,
+         "user": {"id": 11, "username": "junior", "display_name": "Junior"}}
+        """)
+        guard case .memberJoined(let payload) = frame else {
+            Issue.record("expected .memberJoined, got \(frame)")
+            return
+        }
+        #expect(payload.familyID == 3)
+        #expect(payload.user.id == 11)
+        #expect(payload.user.username == "junior")
+        #expect(payload.user.displayName == "Junior")
+    }
+
+    @Test("member_left decodes")
+    func decodeMemberLeft() throws {
+        let frame = try decode(#"{"type": "member_left", "family_id": 3, "user_id": 11}"#)
+        #expect(frame == .memberLeft(userID: 11))
+    }
+
+    @Test("pong decodes")
+    func decodePong() throws {
+        let frame = try decode(#"{"type": "pong"}"#)
+        #expect(frame == .pong)
+    }
+
+    @Test("error decodes with and without client_msg_id")
+    func decodeError() throws {
+        let withID = try decode(#"{"type": "error", "code": "not_chat_member", "message": "nope", "client_msg_id": "8f14e45f"}"#)
+        #expect(withID == .error(code: "not_chat_member", message: "nope", clientMsgID: "8f14e45f"))
+
+        let withoutID = try decode(#"{"type": "error", "code": "internal", "message": "boom"}"#)
+        #expect(withoutID == .error(code: "internal", message: "boom", clientMsgID: nil))
+    }
+
+    @Test("unknown type NEVER throws — forward compatibility")
+    func decodeUnknown() throws {
+        let frame = try decode(#"{"type": "call_offer", "chat_id": 42, "sdp": "v=0..."}"#)
+        #expect(frame == .unknown(type: "call_offer"))
+    }
+}

@@ -1,0 +1,12 @@
+2026-08-19          v0.1.0
+
+                    Initial version. Self-hosted family chat: Rust
+                    server (Axum + PostgreSQL, REST + WebSocket API,
+                    opaque session tokens, families with invite codes
+                    and owner approval, family-wide chat plus 1:1
+                    member chats, push-notification hooks without a
+                    transport yet), SwiftUI iOS client (iOS 17+) and
+                    Jetpack Compose Android client (Android 8+), both
+                    with offline history caches, optimistic sending
+                    with retry, reconnect resync, unread counts, read
+                    markers and typing indicators.

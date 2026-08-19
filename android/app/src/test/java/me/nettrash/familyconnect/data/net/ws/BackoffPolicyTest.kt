@@ -1,0 +1,92 @@
+/*
+ * BackoffPolicyTest.kt
+ * Family Connect (Android)
+ *
+ * Full-jitter backoff: delay = random(0 .. min(cap, base * 2^attempt)).
+ * A recording Random pins the exact ceilings; a seeded Random checks the
+ * jitter stays inside them.
+ */
+
+package me.nettrash.familyconnect.data.net.ws
+
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+import kotlin.math.min
+import kotlin.random.Random
+
+/** Always returns the maximum and records the bound it was given. */
+private class MaxRandom : Random() {
+    val requestedCeilings = mutableListOf<Long>()
+
+    override fun nextBits(bitCount: Int): Int = 0
+
+    override fun nextLong(from: Long, until: Long): Long {
+        requestedCeilings += until - 1 // until is exclusive; ceiling = until-1
+        return until - 1
+    }
+}
+
+class BackoffPolicyTest {
+
+    @Test
+    fun ceilingGrowsExponentiallyAndCapsAtThirtySeconds() {
+        val random = MaxRandom()
+        val policy = BackoffPolicy(random = random)
+        repeat(8) { policy.nextDelayMillis() }
+        assertThat(random.requestedCeilings).containsExactly(
+            1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L, 30_000L, 30_000L,
+        ).inOrder()
+    }
+
+    @Test
+    fun delaysStayWithinJitterBounds() {
+        val policy = BackoffPolicy(random = Random(seed = 42))
+        for (attempt in 0 until 12) {
+            val ceiling = min(30_000L, 1_000L shl min(attempt, 20))
+            val delay = policy.nextDelayMillis()
+            assertThat(delay).isAtLeast(0L)
+            assertThat(delay).isAtMost(ceiling)
+        }
+    }
+
+    @Test
+    fun seededRandomYieldsDeterministicSequence() {
+        val a = BackoffPolicy(random = Random(seed = 7))
+        val b = BackoffPolicy(random = Random(seed = 7))
+        val seqA = List(6) { a.nextDelayMillis() }
+        val seqB = List(6) { b.nextDelayMillis() }
+        assertThat(seqA).isEqualTo(seqB)
+        // Jitter actually jitters: not all values identical.
+        assertThat(seqA.distinct().size).isGreaterThan(1)
+    }
+
+    @Test
+    fun resetRestartsTheExponent() {
+        val random = MaxRandom()
+        val policy = BackoffPolicy(random = random)
+        repeat(4) { policy.nextDelayMillis() } // ceilings 1s, 2s, 4s, 8s
+        policy.reset()
+        policy.nextDelayMillis()
+        assertThat(random.requestedCeilings.last()).isEqualTo(1_000L)
+    }
+
+    @Test
+    fun customBaseAndCapAreHonored() {
+        val random = MaxRandom()
+        val policy = BackoffPolicy(random = random, baseMillis = 500L, capMillis = 2_000L)
+        repeat(4) { policy.nextDelayMillis() }
+        assertThat(random.requestedCeilings).containsExactly(
+            500L, 1_000L, 2_000L, 2_000L,
+        ).inOrder()
+    }
+
+    @Test
+    fun veryLargeAttemptCountsDoNotOverflow() {
+        val policy = BackoffPolicy(random = Random(seed = 1))
+        repeat(100) {
+            val delay = policy.nextDelayMillis()
+            assertThat(delay).isAtLeast(0L)
+            assertThat(delay).isAtMost(30_000L)
+        }
+    }
+}

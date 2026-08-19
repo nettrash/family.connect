@@ -1,0 +1,12 @@
+# Machine-local — points at this machine's Android SDK.
+local.properties
+# Release signing material never enters git.
+keystore.properties
+*.jks
+# Build outputs / caches.
+.gradle/
+build/
+.kotlin/
+# IDE state.
+.idea/
+*.iml

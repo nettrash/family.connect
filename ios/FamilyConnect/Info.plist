@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Deliberately minimal: everything else is generated
+	  (GENERATE_INFOPLIST_FILE = YES + INFOPLIST_KEY_* build settings)
+	  and merged with this file. The one thing that cannot be expressed
+	  as an INFOPLIST_KEY is the ATS dictionary below.
+
+	  NSAllowsLocalNetworking (and nothing broader): a family typically
+	  self-hosts the server on a LAN box reachable only over plain
+	  http://192.168.x.x or http://name.local, which ATS would otherwise
+	  block. Public servers must still be https — no
+	  NSAllowsArbitraryLoads here, ever.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

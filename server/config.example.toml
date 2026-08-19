@@ -1,0 +1,66 @@
+# family-connect server configuration.
+#
+# Install location: /etc/family-connect/config.toml
+#
+# Every key below is optional and shown with its default, so an empty file is
+# a valid configuration for local experiments (loopback listener, PostgreSQL
+# on localhost as user family_connect). Copy this file, change what you need,
+# keep the rest as documentation.
+
+[server]
+# Address the HTTP + WebSocket listener binds to. Keep this on loopback in
+# production: nginx terminates TLS and proxies /api/v1 (including the
+# WebSocket upgrade) to this address — see nginx/family-connect.conf.
+bind = "127.0.0.1:8080"
+
+[database]
+# PostgreSQL connection parameters. The server opens a pool of at most
+# max_connections connections and fails startup if the database is not
+# reachable within connect_timeout_secs (fail fast under systemd; Restart=
+# on-failure retries every 5 s until PostgreSQL is up).
+host = "127.0.0.1"
+port = 5432
+user = "family_connect"
+password = ""
+database = "family_connect"
+max_connections = 10
+connect_timeout_secs = 10
+
+[auth]
+# Sessions slide: an authenticated request arriving more than
+# session_touch_interval_mins after the previous one pushes the session's
+# expiry out to now() + session_ttl_days. The interval batches the renewal
+# writes so a chatty client doesn't UPDATE the sessions row on every request.
+# 180 days keeps a rarely-used family device logged in without keeping a
+# stolen token alive forever.
+session_ttl_days = 180
+session_touch_interval_mins = 15
+
+[limits]
+# Maximum message body length in characters (Unicode scalar values, not
+# bytes) — protocol.md fixes the default at 4000.
+max_message_chars = 4000
+# GET /chats/{id}/messages page size: the default when the client sends no
+# limit, and the ceiling a client-supplied limit is clamped to.
+default_page_size = 50
+max_page_size = 200
+# Maximum accepted HTTP request body. 16 KiB comfortably fits a 4000-char
+# multi-byte message plus JSON overhead while bounding memory per request.
+max_body_bytes = 16384
+# Outbound frames buffered per WebSocket connection. When the buffer is full
+# the connection is considered too slow and dropped — the socket is a live
+# wire, not a queue; clients resync over REST (protocol.md "best-effort
+# delivery").
+ws_send_queue = 64
+# Protocol-level ping cadence, and the idle cutoff after which a silent
+# socket is closed. The idle timeout must exceed the ping interval so a
+# healthy client always gets at least one ping (and can answer it) before
+# being declared dead. protocol.md fixes the defaults at 30 s / 75 s.
+ws_ping_interval_secs = 30
+ws_idle_timeout_secs = 75
+
+[push]
+# Push notification driver. v1 ships only "log", which records would-be
+# notifications in the server log; real APNs/FCM delivery slots in later
+# behind the same PushSender trait without touching the fan-out code.
+driver = "log"

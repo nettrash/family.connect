@@ -1,0 +1,62 @@
+# family-connect systemd unit — hardened service definition.
+#
+# The server is a plain foreground process that logs to stdout/stderr
+# (journald) and binds a loopback HTTP listener; everything else — TLS,
+# public exposure — is nginx's job. The sandbox below is the full strict set:
+# unlike logpipe, family-connect touches nothing under /dev, so
+# PrivateDevices can stay on.
+
+[Unit]
+Description=family-connect: self-hosted family chat server
+Documentation=https://github.com/nettrash/family.connect
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+ExecStart=/usr/local/bin/family-connect --config /etc/family-connect/config.toml
+
+Restart=on-failure
+RestartSec=5s
+
+# Bound shutdown. The server drains WebSocket connections within ~10 s of
+# SIGTERM and then exits explicitly; if it ever wedges, fall back to SIGKILL
+# instead of waiting out the 90 s default.
+TimeoutStopSec=15s
+
+# Run as a dedicated unprivileged user. Create with:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin family-connect
+User=family-connect
+Group=family-connect
+
+# Config lives in /etc/family-connect (0750, readable by the service user);
+# StateDirectory is unused today but reserved for on-disk spool/exports later.
+StateDirectory=family-connect
+StateDirectoryMode=0750
+ConfigurationDirectory=family-connect
+ConfigurationDirectoryMode=0750
+
+# --- Sandboxing -----------------------------------------------------------
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+# AF_UNIX stays allowed for local PostgreSQL sockets and nscd/DNS lookups.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Resource limits — one fd per socket; families are small but many.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

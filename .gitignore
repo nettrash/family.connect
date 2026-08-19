@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Rust (server/)
+server/target/
+
+# Android (android/)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/keystore.properties
+android/*.jks
+android/play-service-account.json
+*.apk
+*.aab
+
+# iOS (ios/)
+ios/**/xcuserdata/
+ios/build/
+ios/DerivedData/
+
+# Editors
+.idea/
+.vscode/
