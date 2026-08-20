@@ -1,0 +1,18 @@
+Family Connect is a private messenger for one family — grandparents to kids — and nobody else. No feed, no strangers, no noise.
+
+It works out of the box: install, pick a username, then create your family — you become its owner — or join one with an invite code. The owner decides whether the code admits people instantly or each request needs approval, and can rotate the code or remove members at any time.
+
+What makes Family Connect different is where your messages live. There is no vendor cloud: every installation talks to a single Family Connect server. Out of the box that is the default server we operate, so you can start right away. But the server software is free and open source (MIT, written in Rust), and the app switches to your own server at any time — a home machine, a spare computer, a small box in a closet ("Change server" on the sign-in screen). Point your family's apps at your own hardware and your conversations exist in exactly two places: your server and your family's devices. No company can read, mine, or sell them, because no company has them. One server can host several families, so one technically inclined relative can cover everyone.
+
+Day to day it works like any modern messenger:
+
+• One shared chat for the whole family
+• Private one-to-one chats between any two members
+• Real-time delivery while the app is open, with typing indicators
+• Notifications when messages arrive while the app is closed
+• Read receipts in one-to-one chats, plus unread counts
+• History kept on the device for offline reading
+
+What it does not have: ads, analytics, tracking, or third-party SDKs beyond the push transport. And the honest limits of version 1: text messages only. Voice and video calls are planned.
+
+Accounts are a username and a password — no email address, no phone number, no contact-list upload, nothing to verify. If you want your family's conversations off big-tech servers and on hardware you own, this is what Family Connect is for.

@@ -24,3 +24,4 @@ ios/DerivedData/
 # Editors
 .idea/
 .vscode/
+android/app/src/nettrash/google-services.json

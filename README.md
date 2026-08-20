@@ -91,8 +91,12 @@ sudo install -m 0755 target/release/family-connect /usr/local/bin/
 # 3. Service user
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin family-connect
 
-# 4. Config
+# 4. Config — the directory must match what the unit's
+#    ConfigurationDirectory=family-connect (mode 0750) would create,
+#    or systemd logs a mode-mismatch warning on every start:
 sudo mkdir -p /etc/family-connect
+sudo chown family-connect:family-connect /etc/family-connect
+sudo chmod 750 /etc/family-connect
 sudo cp server/config.example.toml /etc/family-connect/config.toml
 sudo $EDITOR /etc/family-connect/config.toml        # set the [database] password
 sudo chown root:family-connect /etc/family-connect/config.toml
