@@ -47,7 +47,7 @@ cargo test -- --ignored                       # integration tests; need PG* env 
 
 # Android
 cd android
-./gradlew assembleDebug testDebugUnitTest lintDebug
+./gradlew assembleStandardDebug testStandardDebugUnitTest lintStandardDebug
 
 # iOS
 cd ios
@@ -68,10 +68,11 @@ cd ios
 xcodebuild archive -project FamilyConnect.xcodeproj -scheme FamilyConnect-nettrash \
   -destination 'generic/platform=iOS' -archivePath build/FamilyConnect.xcarchive
 
-# Android — pass the default as a Gradle property (no product flavor, so all
-# task names stay stable):
+# Android — the `nettrash` product flavor bakes the default in; in Android
+# Studio pick the variant in the Build Variants panel (nettrashDebug /
+# nettrashRelease). Play Store bundle:
 cd android
-./gradlew bundleRelease -PdefaultServerUrl=https://fc.nettrash.me -PversionName=<tag>
+./gradlew bundleNettrashRelease -PversionName=<tag>
 ```
 
 ## Installing the server (Ubuntu)

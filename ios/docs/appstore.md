@@ -68,6 +68,24 @@ NETWORK / ATS: Plain http:// addresses are accepted only for private LAN hosts, 
 
 If the demo server is ever unreachable, contact [SUPPORT_EMAIL] and we will restore it immediately.
 
+## Beta App Description (TestFlight → Test Information)
+
+Family Connect is a private messenger for one family — and this beta is how we make sure it feels right before it goes live.
+
+The app comes pre-connected to our family server, so there is nothing to configure: open it, register a username and password (no email or phone number needed), then create a family or join one with an invite code. Every family gets one shared chat for everyone, plus private one-to-one chats between any two members. The family owner manages who gets in: the invite code can admit people instantly or require the owner's approval, and it can be rotated at any time.
+
+What works in this beta: real-time messaging while the app is open, offline reading of your history, sending with automatic retry, unread counts, read receipts in one-to-one chats, and typing indicators. If you run your own Family Connect server, "Change server" on the sign-in screen points the app at it.
+
+What is not here yet, on purpose: push notifications (messages arrive while the app is open — this is the biggest thing we're adding next), photos and other media, and voice/video calls. Text only for now.
+
+There are no ads, no analytics, and no tracking in the app — so the only way we learn about problems is you telling us. If anything feels confusing, slow, or broken, use TestFlight's "Send Beta Feedback" (a screenshot helps) or email us directly. Thank you for testing.
+
+*(~1,450 chars of the 4,000 limit. Pairs with Feedback Email — set it to your support address.)*
+
+## What to Test (first TestFlight build)
+
+Fresh install: register, create a family, and share the invite code with a second tester. Second tester: join with the code (try both join policies — the owner can switch between instant and approval in Settings → Family). Then exchange messages in the family chat and a one-to-one chat: check messages arrive in real time both ways, read receipts appear in the 1:1 chat, unread badges clear when you read, and history is still there after force-quitting the app or going offline. Owners: try rotating the invite code and removing a member. Finally, background the app for a few minutes, return, and confirm the chat catches up and the "Connecting…" banner clears within a few seconds.
+
 ## Pre-submission checklist
 
 - [ ] Implement account deletion (server `DELETE /me` + Settings → Account → Delete Account) — see blocker above

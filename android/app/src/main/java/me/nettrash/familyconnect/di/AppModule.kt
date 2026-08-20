@@ -171,7 +171,7 @@ abstract class AppModule {
         fun provideClock(): Clock = Clock { System.currentTimeMillis() }
 
         // The one place BuildConfig leaks into the object graph. Store
-        // builds compile the hosted instance in via -PdefaultServerUrl
+        // builds (the `nettrash` product flavor) compile the hosted instance in
         // (see app/build.gradle.kts); source builds leave it empty →
         // null → first run still asks for a server.
         @Provides

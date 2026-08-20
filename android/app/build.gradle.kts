@@ -96,20 +96,26 @@ android {
         versionCode = storedVersionCode
         versionName = resolvedVersionName
 
-        // Predefined default server. The Play Store build is compiled
-        // pre-pointed at the hosted instance so first run skips the
-        // server-setup screen and lands on Auth:
-        //     ./gradlew bundleRelease -PdefaultServerUrl=https://fc.nettrash.me
-        // Source builds omit the property → empty string → first run asks
-        // for the server URL, exactly as before. Deliberately NOT a product
-        // flavor: a flavor would rename every Gradle task (assembleStoreDebug,
-        // testStoreDebugUnitTest, …) for the sake of one string constant.
-        // Consumed via the DefaultServerUrl seam in di/AppModule.kt.
-        buildConfigField(
-            "String",
-            "DEFAULT_SERVER_URL",
-            "\"${project.findProperty("defaultServerUrl") ?: ""}\"",
-        )
+    }
+
+    // Predefined default server, as product flavors so the variant is
+    // selectable (and sticky) in Android Studio's Build Variants panel —
+    // the same lesson as the iOS FamilyConnect-nettrash scheme: a -P
+    // property worked on the CLI but silently produced the generic build
+    // on every IDE Run. `standard` keeps the ask-for-server first run for
+    // source builds; `nettrash` ships pre-pointed at the hosted instance.
+    // The task-name churn (assembleNettrashRelease, …) is the accepted
+    // cost. Consumed via the DefaultServerUrl seam in di/AppModule.kt.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("standard") {
+            dimension = "distribution"
+            buildConfigField("String", "DEFAULT_SERVER_URL", "\"\"")
+        }
+        create("nettrash") {
+            dimension = "distribution"
+            buildConfigField("String", "DEFAULT_SERVER_URL", "\"https://fc.nettrash.me\"")
+        }
     }
 
     signingConfigs {
@@ -270,12 +276,13 @@ afterEvaluate {
 val bumpedInThisInvocation = AtomicBoolean(false)
 afterEvaluate {
     if (skipVersionBump) return@afterEvaluate
-    listOf(
-        "assembleDebug",
-        "assembleRelease",
-        "bundleDebug",
-        "bundleRelease",
-    ).forEach { taskName ->
+    // Aggregate tasks (assembleDebug) AND per-flavor ones
+    // (assembleNettrashRelease) — running either must bump exactly once.
+    listOf("assemble", "bundle").flatMap { prefix ->
+        listOf("", "Standard", "Nettrash").flatMap { flavor ->
+            listOf("Debug", "Release").map { type -> "$prefix$flavor$type" }
+        }
+    }.forEach { taskName ->
         tasks.findByName(taskName)?.doLast {
             if (!bumpedInThisInvocation.compareAndSet(false, true)) return@doLast
             val newValue = storedVersionCode + 1

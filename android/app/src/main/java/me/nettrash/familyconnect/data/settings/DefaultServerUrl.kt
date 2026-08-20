@@ -3,7 +3,7 @@
  * Family Connect (Android)
  *
  * Nominal seam for the build's compiled-in server URL. The Play Store
- * build is compiled with -PdefaultServerUrl=https://fc.nettrash.me
+ * build (the `nettrash` product flavor) compiles https://fc.nettrash.me in
  * (app/build.gradle.kts → BuildConfig.DEFAULT_SERVER_URL) so first run
  * skips server setup and boots straight to Auth; generic source builds
  * compile in an empty string and keep asking for the URL on first run.
