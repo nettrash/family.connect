@@ -27,7 +27,11 @@ pub fn connection_string(cfg: &DatabaseConfig, mask_password: bool) -> String {
 /// Open a connection pool, eagerly establishing one connection so an
 /// unreachable database fails startup instead of the first request.
 pub async fn connect(cfg: &DatabaseConfig) -> Result<PgPool> {
-    let options = PgConnectOptions::new()
+    // new_without_pgpass: the password always comes from the config file,
+    // so the libpq-style ~/.pgpass lookup is never wanted — and under the
+    // hardened unit (ProtectHome=true, no-home service user) that probe
+    // fails with EACCES and logs a spurious WARN on every connect.
+    let options = PgConnectOptions::new_without_pgpass()
         .host(&cfg.host)
         .port(cfg.port)
         .username(&cfg.user)
