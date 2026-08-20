@@ -61,7 +61,7 @@ nonisolated enum SessionLogic {
         let wipesToken: Bool
         let wipesServerURL: Bool
         let wipesChatData: Bool
-        /// currentUserID / joinPending / deviceRegistered defaults.
+        /// currentUserID / joinPending / push-registration defaults.
         let wipesDefaults: Bool
     }
 
@@ -106,6 +106,12 @@ final class AppSession {
     /// Non-nil when bootstrap hit a transport error with no cached chats
     /// to fall back on; BootingView shows it with a Retry button.
     private(set) var bootError: String?
+    /// A notification tap waiting to be acted on. Set by AppDelegate's
+    /// didReceive — possibly before bootstrap finishes (a cold-start
+    /// tap) — and consumed by ChatListView once the phase is .active.
+    /// Cleared by every purge: a route into a family we just left (or a
+    /// session we just dropped) must not navigate the next user.
+    var pendingPushRoute: PushRoute?
 
     var isOwner: Bool { role == "owner" }
 
@@ -120,6 +126,11 @@ final class AppSession {
     // Store side effects, injected at wiring time (see file header).
     var hasCachedChats: () -> Bool = { false }
     var clearChatStore: () -> Void = {}
+    /// Best-effort push deregistration (PushRegistrar.deregister), also
+    /// injected at wiring time so the phase machine stays UIKit-free.
+    /// logout() awaits it BEFORE /auth/logout, because DELETE /devices
+    /// authenticates with the very token logout revokes.
+    var deregisterDevice: () async -> Void = {}
 
     init(api: APIClient, defaultServerURL: @escaping () -> URL? = { AppSettings.defaultServerURL }) {
         self.api = api
@@ -330,7 +341,9 @@ final class AppSession {
     }
 
     func logout() async {
-        // Best-effort revoke; local state goes regardless.
+        // Best-effort device removal first (see deregisterDevice), then
+        // best-effort revoke; local state goes regardless.
+        await deregisterDevice()
         try? await api.logout()
         purge(.logout)
         currentUser = nil
@@ -365,6 +378,7 @@ final class AppSession {
         if scope.wipesDefaults {
             AppSettings.wipe(keepServerURL: !scope.wipesServerURL)
         }
+        pendingPushRoute = nil
         AppLog.app.info("Purged local state (\(String(describing: reason), privacy: .public))")
     }
 

@@ -291,7 +291,23 @@ pub async fn join_family(
     .execute(&state.pool)
     .await;
     match inserted {
-        Ok(_) => Ok((StatusCode::OK, Json(json!({"status": "pending"}))).into_response()),
+        Ok(_) => {
+            // The owner learns about the request by push when offline; the
+            // request itself is already committed, so failures here must
+            // not fail the response.
+            events::log_fanout_error(
+                "join_request_push",
+                events::push_join_request_created(
+                    &state,
+                    family.id,
+                    &family.name,
+                    family.owner_user_id,
+                    auth.user_id,
+                )
+                .await,
+            );
+            Ok((StatusCode::OK, Json(json!({"status": "pending"}))).into_response())
+        }
         Err(sqlx::Error::Database(db_err))
             if db_err.constraint() == Some("join_requests_pending_uq") =>
         {
@@ -508,6 +524,11 @@ pub async fn approve_join_request(
     events::log_fanout_error(
         "member_joined",
         events::deliver_member_joined(&state, family.id, joined).await,
+    );
+    // An offline requester learns they're in by push ("joined").
+    events::log_fanout_error(
+        "join_approved_push",
+        events::push_join_approved(&state, family.id, &family.name, applicant_id).await,
     );
     Ok((StatusCode::OK, Json(json!({"member": member}))).into_response())
 }

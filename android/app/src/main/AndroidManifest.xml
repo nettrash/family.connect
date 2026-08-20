@@ -6,6 +6,9 @@
     <!-- ConnectivityObserver — short-circuits the reconnect backoff the
          moment a network comes back instead of waiting out the delay. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Push notifications (runtime permission on Android 13+; requested
+         the first time the chat list is shown — see ChatListScreen). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".FamilyConnectApp"
@@ -16,15 +19,30 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.FamilyConnect">
 
+        <!-- singleTop: a notification tap while the app is already open
+             lands in onNewIntent instead of stacking a second copy. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- FCM entry point: token rotation (onNewToken) and foreground
+             message delivery (onMessageReceived). Inert when the build has
+             no google-services.json — FirebaseApp never initializes, so
+             FCM never binds this service. -->
+        <service
+            android:name=".data.push.FcPushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
 
     </application>
 

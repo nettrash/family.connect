@@ -162,6 +162,47 @@ Frames are JSON text messages tagged by `"type"`.
      page — message ids are globally monotonic, so `max(id)` is the sync cursor.
   4. Re-send any locally pending outbound messages (safe: `client_msg_id` dedups).
 
+## Push notifications
+
+The server pushes only to users with **no live socket** (an open WebSocket means the device is
+getting frames already). Three events push: a **new message** (to every offline chat member), a
+**join request created** (to the family owner), and a **join request approved** (to the
+requester). Typing, reads, and other frames never push.
+
+Device lifecycle: `POST /devices {platform, push_token}` upserts by token (re-login moves the
+token to the new account); the response `device_id` should be stored so `DELETE /devices/{id}`
+can be called on logout. Clients re-POST whenever the OS rotates the token. A push rejected as
+unregistered (APNs `410`/`BadDeviceToken`, FCM `UNREGISTERED`) deletes the device row.
+
+Titles: direct chat → sender's display name; family chat → `"<Family> — <Sender>"`. Body: the
+message text, or `"New message"` when the server's `[push] include_message_body = false`.
+
+APNs (token-based auth, HTTP/2): headers `apns-topic` = bundle id, `apns-push-type: alert`,
+`apns-priority: 10`; payload:
+
+```json
+{"aps": {"alert": {"title": "Anna", "body": "Dinner at 7?"}, "sound": "default",
+         "badge": 3, "thread-id": "chat-42"},
+ "chat_id": 42, "message_id": 1338, "kind": "message"}
+```
+
+(`badge` = the user's total unread across chats at send time. Join events use
+`"kind": "join_request"` / `"kind": "joined"` with `family_id` instead of chat/message ids.)
+
+FCM (HTTP v1): notification + data so the system tray renders when the app is dead, while a
+foregrounded app (socket live) is never pushed at all:
+
+```json
+{"message": {"token": "…",
+  "notification": {"title": "Anna", "body": "Dinner at 7?"},
+  "data": {"kind": "message", "chat_id": "42", "message_id": "1338"},
+  "android": {"priority": "HIGH",
+              "notification": {"channel_id": "messages", "tag": "chat-42"}}}}
+```
+
+Tapping a notification opens the chat named by `chat_id` (or the join-requests screen for
+`join_request`, the chat list for `joined`).
+
 ## Limits (server defaults, configurable)
 
 | Limit | Default |

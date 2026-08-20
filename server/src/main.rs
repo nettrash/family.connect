@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     let pool = db::connect(&cfg.database).await?;
     migrate::run(&pool).await.context("running migrations")?;
 
-    let push_sender = push::build(&cfg.push);
+    let push_sender = push::build(&cfg.push).context("building the push transports")?;
     let state = AppState::new(pool.clone(), Arc::new(cfg), push_sender);
     // The registry owns the shutdown token because the WS connection tasks
     // (spawned by axum, out of our reach) must be able to observe it.

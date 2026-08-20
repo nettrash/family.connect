@@ -24,10 +24,11 @@ Day to day it works like any modern messenger:
 - One shared chat for the whole family
 - Private one-to-one chats between any two members
 - Real-time delivery while the app is open, with typing indicators
+- Notifications when messages arrive while the app is closed
 - Read receipts in one-to-one chats, plus unread counts
 - History kept on the device for offline reading
 
-What it does not have: ads, analytics, tracking, or third-party SDKs of any kind. And the honest limits of version 1: text messages only, and no push notifications yet — messages arrive while the app is open. Notifications, voice and video calls are planned.
+What it does not have: ads, analytics, tracking, or third-party SDKs of any kind. And the honest limits of version 1: text messages only. Voice and video calls are planned.
 
 If you want your family's conversations off big-tech servers and on hardware you own, this is what Family Connect is for.
 
@@ -54,7 +55,7 @@ HOW TO REVIEW:
 1. Launch the app — it is already pointed at the default server; the sign-in screen appears directly. (The "Change server" footer on that screen is where self-hosted servers are entered; any URL can be tried there and reverted.)
 2. Sign in with the owner demo account, or register a new account.
 3. A newly registered account can create its own family (becoming owner, with an invite code under Settings > Family) or join the reviewer family with invite code [INVITE_CODE]. This code is set to instant join, so there is no approval wait. To see the approval flow, switch the reviewer family's join policy to "owner approval" from the owner account, then join with a fresh account.
-4. Chats update in real time over a WebSocket while the app is in the foreground. There are no push notifications in this version (planned for a later release).
+4. Chats update in real time over a WebSocket while the app is in the foreground. Push notifications (APNs) cover the rest: members without a live connection are notified of new messages, family owners of join requests, and requesters of approvals. A foregrounded app is never pushed — the socket already delivers — so notifications only appear when the app is backgrounded or closed.
 
 ACCOUNT DELETION (guideline 5.1.1(v)): Settings > Account > Delete Account permanently removes the account and its messages from the server. It is available to every account, including the demo accounts (we re-provision those if deleted).
 
@@ -74,17 +75,21 @@ Family Connect is a private messenger for one family — and this beta is how we
 
 The app comes pre-connected to our family server, so there is nothing to configure: open it, register a username and password (no email or phone number needed), then create a family or join one with an invite code. Every family gets one shared chat for everyone, plus private one-to-one chats between any two members. The family owner manages who gets in: the invite code can admit people instantly or require the owner's approval, and it can be rotated at any time.
 
-What works in this beta: real-time messaging while the app is open, offline reading of your history, sending with automatic retry, unread counts, read receipts in one-to-one chats, and typing indicators. If you run your own Family Connect server, "Change server" on the sign-in screen points the app at it.
+What works in this beta: real-time messaging while the app is open, push notifications when it is closed (new messages, plus join-request alerts if you own the family), offline reading of your history, sending with automatic retry, unread counts, read receipts in one-to-one chats, and typing indicators. If you run your own Family Connect server, "Change server" on the sign-in screen points the app at it.
 
-What is not here yet, on purpose: push notifications (messages arrive while the app is open — this is the biggest thing we're adding next), photos and other media, and voice/video calls. Text only for now.
+What is not here yet, on purpose: photos and other media, and voice/video calls. Text only for now.
 
 There are no ads, no analytics, and no tracking in the app — so the only way we learn about problems is you telling us. If anything feels confusing, slow, or broken, use TestFlight's "Send Beta Feedback" (a screenshot helps) or email us directly. Thank you for testing.
 
 *(~1,450 chars of the 4,000 limit. Pairs with Feedback Email — set it to your support address.)*
 
+*(Notification permission is requested in-app once the user is in a family, so TestFlight reviewers will see the standard iOS prompt.)*
+
 ## What to Test (first TestFlight build)
 
-Fresh install: register, create a family, and share the invite code with a second tester. Second tester: join with the code (try both join policies — the owner can switch between instant and approval in Settings → Family). Then exchange messages in the family chat and a one-to-one chat: check messages arrive in real time both ways, read receipts appear in the 1:1 chat, unread badges clear when you read, and history is still there after force-quitting the app or going offline. Owners: try rotating the invite code and removing a member. Finally, background the app for a few minutes, return, and confirm the chat catches up and the "Connecting…" banner clears within a few seconds.
+Fresh install: register, create a family, and share the invite code with a second tester. Second tester: join with the code (try both join policies — the owner can switch between instant and approval in Settings → Family). Then exchange messages in the family chat and a one-to-one chat: check messages arrive in real time both ways, read receipts appear in the 1:1 chat, unread badges clear when you read, and history is still there after force-quitting the app or going offline. Owners: try rotating the invite code and removing a member. Background the app for a few minutes, return, and confirm the chat catches up and the "Connecting…" banner clears within a few seconds.
+
+Push notifications, new in this build: allow notifications when the app asks (it asks once you're in a family). Close the app fully (swipe it away) and have the other tester message you — a notification should arrive, and tapping it should open that exact chat, even from a cold start. Owners with the join policy on approval: with the app closed, have someone request to join — the join-request notification should open the approval screen. Also check the negatives: notifications should NOT appear while you're actively in the app (messages arrive live instead), and the red badge on the app icon should clear as soon as you open the app.
 
 ## Pre-submission checklist
 

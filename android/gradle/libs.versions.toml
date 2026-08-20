@@ -25,6 +25,8 @@ navigationCompose = "2.9.7"
 kotlinxSerialization = "1.11.0"
 okhttp = "5.3.2"
 datastore = "1.2.1"
+firebaseBom = "34.18.0"
+googleServices = "4.5.0"
 junit = "4.13.2"
 robolectric = "4.15.1"
 truth = "1.4.4"
@@ -67,6 +69,14 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 # DataStore — small preference state (server URL, family status, profile).
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 
+# Firebase — messaging ONLY. Push is the sole Google service this app
+# uses; no analytics, no crashlytics, no firebase-core: the privacy
+# posture (docs/protocol.md — the server is the family's own box) means
+# nothing else may phone Google. The BoM pins the transitive graph so
+# firebase-messaging needs no version of its own.
+firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
+
 # Testing
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
@@ -79,3 +89,7 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+# Declared `apply false` at the root; :app applies it CONDITIONALLY —
+# only when a user-supplied google-services.json is present. See the
+# "Firebase / google-services" block in app/build.gradle.kts.
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }

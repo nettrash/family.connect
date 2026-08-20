@@ -12,6 +12,11 @@
 
 package me.nettrash.familyconnect.ui.chatlist
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,12 +49,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -78,6 +86,31 @@ fun ChatListScreen(
         viewModel.navigateToChat.collect { chatId ->
             showPicker = false
             onOpenChat(chatId)
+        }
+    }
+
+    // Android 13+ notification permission, asked the FIRST time the chat
+    // list becomes visible: this is the moment notifications visibly earn
+    // their keep (you're in a family, messages will arrive) — unlike an
+    // app-launch prompt with zero context, which users reflexively deny.
+    // A decline is non-fatal (everything works, foreground delivery rides
+    // the socket; pushes are simply never shown) and is deliberately not
+    // re-prompted in-session: nagging converts "not now" into "never
+    // allow". rememberSaveable scopes "in-session" to this back-stack
+    // entry's lifetime, which matches a session in practice.
+    val context = LocalContext.current
+    var notificationPermissionRequested by rememberSaveable { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* decline is non-fatal — see above */ }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !notificationPermissionRequested &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionRequested = true
+            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 

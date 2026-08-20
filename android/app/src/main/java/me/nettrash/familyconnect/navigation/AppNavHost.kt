@@ -4,9 +4,12 @@
  *
  * All navigation decisions in one file: the route table, the
  * status → start-destination mapping, per-screen forward navigation,
- * and the session-event reroutes (Expired → AUTH, RemovedFromFamily →
+ * the session-event reroutes (Expired → AUTH, RemovedFromFamily →
  * FAMILY_GATE) which clear the entire back stack — after either event
- * the old stack refers to state that no longer exists.
+ * the old stack refers to state that no longer exists — and the push-tap
+ * deep link (PendingRoute), consumed exactly once and only when the
+ * start destination is CHAT_LIST (any other start means there is no
+ * family UI to deep-link into).
  *
  * Routes are plain strings (navigation-compose's string API) — typed
  * routes would drag in a serialization plugin dependency on the nav
@@ -25,6 +28,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import kotlinx.coroutines.flow.SharedFlow
+import me.nettrash.familyconnect.data.push.PendingRoute
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.SessionEvent
 import me.nettrash.familyconnect.ui.auth.AuthScreen
@@ -62,6 +66,9 @@ fun startDestinationFor(status: FamilyStatus): String = when (status) {
 fun AppNavHost(
     startDestination: String,
     sessionEvents: SharedFlow<SessionEvent>,
+    pendingRoute: PendingRoute? = null,
+    onPendingRouteConsumed: () -> Unit = {},
+    isOwner: Boolean = false,
 ) {
     val navController = rememberNavController()
 
@@ -79,6 +86,32 @@ fun AppNavHost(
                 SessionEvent.JoinRequestRejected -> Unit
             }
         }
+    }
+
+    // Push-tap deep link. Routable only when the boot snapshot put us in
+    // the family UI (start == CHAT_LIST); otherwise the tap still opened
+    // the app, which is all a logged-out / pending user can get. Consumed
+    // in every case — replaying a stale tap after a later login would be
+    // surprising, not helpful.
+    LaunchedEffect(pendingRoute) {
+        val route = pendingRoute ?: return@LaunchedEffect
+        if (startDestination == Routes.CHAT_LIST) {
+            when (route) {
+                is PendingRoute.Chat -> navController.navigate(Routes.chat(route.chatId))
+                PendingRoute.JoinRequests ->
+                    // join_request pushes go to the owner (protocol), but a
+                    // stale/forged tap from a non-owner degrades to the list.
+                    if (isOwner) {
+                        navController.navigate(Routes.FAMILY_ADMIN)
+                    } else {
+                        navController.popBackStack(Routes.CHAT_LIST, inclusive = false)
+                    }
+                PendingRoute.ChatList ->
+                    // Already the start destination — just unwind to it.
+                    navController.popBackStack(Routes.CHAT_LIST, inclusive = false)
+            }
+        }
+        onPendingRouteConsumed()
     }
 
     NavHost(

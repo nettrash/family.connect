@@ -175,6 +175,38 @@ android {
     }
 }
 
+// ---- Firebase / google-services (conditional) ----------------------------
+//
+// The repo deliberately ships WITHOUT a google-services.json — it is the
+// user's own Firebase project config, added after cloning. The plugin
+// hard-fails when the json is missing, so it is applied only when one is
+// actually present. Recommended placement is FLAVOR-SCOPED:
+//
+//     app/src/nettrash/google-services.json
+//
+// so plain-source `standard` builds stay Firebase-free (no Google project
+// needed to build and run against your own server), while the hosted
+// `nettrash` flavor gets push. An app-level app/google-services.json also
+// works and then covers every flavor.
+//
+// When the json exists for SOME flavors only, the missing ones must still
+// assemble — strategy WARN instead of the default hard ERROR: that
+// variant simply ships without Firebase config, FirebaseApp never
+// initializes, and every Firebase call site no-ops at runtime (see
+// data/push/PushTokenProvider.kt and FcPushService.kt).
+val googleServicesJsonPresent = listOf(
+    "google-services.json",           // app-level: covers all flavors
+    "src/standard/google-services.json",
+    "src/nettrash/google-services.json",
+).any { file(it).exists() }
+if (googleServicesJsonPresent) {
+    apply(plugin = "com.google.gms.google-services")
+    extensions.configure<com.google.gms.googleservices.GoogleServicesPlugin.GoogleServicesPluginConfig> {
+        missingGoogleServicesStrategy =
+            com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy.WARN
+    }
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -210,6 +242,17 @@ dependencies {
 
     // DataStore — server URL, family status, and profile snapshot.
     implementation(libs.androidx.datastore.preferences)
+
+    // Firebase Cloud Messaging — push notifications (docs/protocol.md,
+    // "Push notifications"). Messaging is the ONLY Firebase artifact: no
+    // analytics, no crashlytics — the app's privacy posture is that user
+    // data goes to the family's own server and nowhere else; FCM is the
+    // unavoidable transport for waking a dead app. The dependency always
+    // compiles in; without a google-services.json (see the conditional
+    // plugin block above) FirebaseApp never initializes and all call
+    // sites no-op at runtime.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
 
     debugImplementation(libs.androidx.ui.tooling)
 

@@ -98,12 +98,30 @@ sudo $EDITOR /etc/family-connect/config.toml        # set the [database] passwor
 sudo chown root:family-connect /etc/family-connect/config.toml
 sudo chmod 0640 /etc/family-connect/config.toml
 
-# 5. systemd
+# 5. Push credentials (optional — without them, would-be notifications are
+#    only logged and everything else works unchanged)
+# APNs (iOS): Apple Developer -> Certificates, Identifiers & Profiles -> Keys
+# -> create a key with the APNs capability and download AuthKey_<KEYID>.p8
+# (one-time download). Note the Key ID and your Team ID.
+sudo cp AuthKey_FGHIJ67890.p8 /etc/family-connect/
+sudo chown root:family-connect /etc/family-connect/AuthKey_FGHIJ67890.p8
+sudo chmod 0640 /etc/family-connect/AuthKey_FGHIJ67890.p8
+# FCM (Android): Firebase console -> Project settings -> Service accounts ->
+# "Generate new private key" downloads a service-account JSON.
+sudo cp your-project-firebase-adminsdk.json /etc/family-connect/firebase-service-account.json
+sudo chown root:family-connect /etc/family-connect/firebase-service-account.json
+sudo chmod 0640 /etc/family-connect/firebase-service-account.json
+# Uncomment and fill in the [push.apns] / [push.fcm] sections of
+# /etc/family-connect/config.toml (team_id, key_id, key_file, bundle_id /
+# credentials_file). The server refuses to start on unreadable or malformed
+# key files, so a typo shows up in `journalctl`, not as silently lost pushes.
+
+# 6. systemd
 sudo cp server/systemd/family-connect.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now family-connect
 
-# 6. nginx + TLS
+# 7. nginx + TLS
 sudo cp server/nginx/family-connect.conf /etc/nginx/sites-available/family-connect
 sudo sed -i 's/chat\.example\.com/chat.yourdomain.tld/' /etc/nginx/sites-available/family-connect
 sudo ln -s /etc/nginx/sites-available/family-connect /etc/nginx/sites-enabled/
@@ -112,7 +130,7 @@ sudo nginx -t && sudo systemctl reload nginx
 # place (adds the 443 listener, certificates, and the HTTP→HTTPS redirect):
 sudo certbot --nginx -d chat.yourdomain.tld
 
-# 7. Smoke test
+# 8. Smoke test
 curl https://chat.example.com/api/v1/healthz        # → {"status":"ok"}
 journalctl -u family-connect -f                     # logs
 ```

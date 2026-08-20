@@ -23,5 +23,8 @@ nonisolated enum AppLog {
     static let socket = Logger(subsystem: subsystem, category: "socket")
     /// Resync passes, pagination loops, outbox sweeps.
     static let sync   = Logger(subsystem: subsystem, category: "sync")
+    /// Push lifecycle: authorization, token registration, tap routing.
+    /// Device ids and route kinds only — never tokens or payload bodies.
+    static let push   = Logger(subsystem: subsystem, category: "push")
     static let ui     = Logger(subsystem: subsystem, category: "ui")
 }

@@ -97,6 +97,12 @@ final class ChatSyncCoordinator {
     /// Pending rows older than this are re-sent by the outbox sweep.
     private let outboxAge: TimeInterval = 30
 
+    /// Push-registration hook (PushRegistrar.ensureRegistered), injected
+    /// at composition time and awaited at the end of every resync — see
+    /// step 6 there. A closure so the coordinator stays UIKit-free; the
+    /// no-op default keeps coordinator tests inert.
+    var ensurePushRegistration: () async -> Void = {}
+
     /// Test seam: lets tests attribute "mine" without touching the app's
     /// real UserDefaults. The app never sets it.
     var currentUserIDOverride: Int64?
@@ -484,8 +490,11 @@ final class ChatSyncCoordinator {
         // (same client_msg_id — the server dedups).
         await sweepOutbox()
 
-        // 6. One-time device registration (push hook; token null in v1).
-        await registerDeviceIfNeeded()
+        // 6. Push registration: the first pass asks for notification
+        // permission (we're .active, so the user is in a family and the
+        // prompt has context); later passes re-POST a rotated token or
+        // retry a registration that failed.
+        await ensurePushRegistration()
 
         AppLog.sync.info("Resync complete")
     }
@@ -510,16 +519,6 @@ final class ChatSyncCoordinator {
         AppLog.sync.info("Outbox sweep re-sending \(stale.count, privacy: .public) message(s)")
         for row in stale {
             await deliver(localID: row.localID)
-        }
-    }
-
-    private func registerDeviceIfNeeded() async {
-        guard !AppSettings.deviceRegistered else { return }
-        do {
-            _ = try await api.registerDevice(platform: "ios", pushToken: nil)
-            AppSettings.deviceRegistered = true
-        } catch {
-            AppLog.sync.info("Device registration deferred: \(String(describing: error))")
         }
     }
 

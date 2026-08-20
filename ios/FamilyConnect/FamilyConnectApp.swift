@@ -15,12 +15,22 @@
 //  data (protocol.md), and mirroring the same rows through a second
 //  channel would only manufacture conflicts.
 //
+//  Push wiring also happens here: PushRegistrar owns the token
+//  lifecycle, AppDelegate (the adaptor below) surfaces the UIKit-only
+//  callbacks, and the two closure seams — the coordinator's resync hook
+//  and the session's logout hook — are tied to the registrar so neither
+//  of those objects grows a UIKit dependency.
+//
 
 import SwiftData
 import SwiftUI
 
 @main
 struct FamilyConnectApp: App {
+    /// Surfaces the APNs token callbacks and owns the notification-center
+    /// delegate; see AppDelegate.swift.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     /// Result of the SwiftData container construction, captured at init
     /// so the scene can choose between the app and a recoverable error
     /// view. Never fatalError.
@@ -30,6 +40,7 @@ struct FamilyConnectApp: App {
     /// StoreErrorView and never reaches the bound state.
     private let session: AppSession?
     private let coordinator: ChatSyncCoordinator?
+    private let pushRegistrar: PushRegistrar?
 
     init() {
         // UI-test hook: launch with a clean slate so the smoke test can
@@ -69,11 +80,23 @@ struct FamilyConnectApp: App {
                 try? context.save()
             }
 
+            // Push: the registrar shares the coordinator's APIClient (same
+            // token, same server) and meets the rest of the app only
+            // through closures and the AppDelegate statics — set here,
+            // before UIApplicationMain delivers any delegate callback.
+            let registrar = PushRegistrar(api: coordinator.api)
+            coordinator.ensurePushRegistration = { await registrar.ensureRegistered() }
+            session.deregisterDevice = { await registrar.deregister() }
+            AppDelegate.registrar = registrar
+            AppDelegate.session = session
+
             self.session = session
             self.coordinator = coordinator
+            self.pushRegistrar = registrar
         } else {
             self.session = nil
             self.coordinator = nil
+            self.pushRegistrar = nil
         }
     }
 

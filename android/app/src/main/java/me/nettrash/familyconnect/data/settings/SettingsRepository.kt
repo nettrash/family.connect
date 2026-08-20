@@ -42,6 +42,10 @@ data class SettingsState(
     val myUsername: String? = null,
     val myDisplayName: String? = null,
     val familyName: String? = null,
+    /** Last FCM registration token seen — device-scoped, survives logout. */
+    val pushToken: String? = null,
+    /** `device_id` from POST /devices — account-scoped, cleared on logout. */
+    val pushDeviceId: Long? = null,
 )
 
 interface SettingsRepository {
@@ -51,8 +55,17 @@ interface SettingsRepository {
     suspend fun setFamilyStatus(status: FamilyStatus)
     suspend fun setProfile(userId: Long, username: String, displayName: String)
     suspend fun setFamilyName(name: String?)
+    suspend fun setPushToken(token: String?)
+    suspend fun setPushDeviceId(deviceId: Long?)
 
-    /** Session teardown: wipe everything EXCEPT the server URL. */
+    /**
+     * Session teardown: wipe everything EXCEPT the server URL (protocol:
+     * "the client wipes local state, keeping the server URL") and the FCM
+     * push token — the token identifies the *device*, not the account, so
+     * the next login can re-register /devices immediately instead of
+     * waiting for Firebase to deliver the token again. The device *id* is
+     * account-scoped and is dropped with everything else.
+     */
     suspend fun resetKeepingServerUrl()
 }
 
@@ -68,6 +81,8 @@ class DataStoreSettingsRepository @Inject constructor(
         val MY_USERNAME = stringPreferencesKey("my_username")
         val MY_DISPLAY_NAME = stringPreferencesKey("my_display_name")
         val FAMILY_NAME = stringPreferencesKey("family_name")
+        val PUSH_TOKEN = stringPreferencesKey("push_token")
+        val PUSH_DEVICE_ID = longPreferencesKey("push_device_id")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -80,6 +95,8 @@ class DataStoreSettingsRepository @Inject constructor(
             myUsername = prefs[Keys.MY_USERNAME],
             myDisplayName = prefs[Keys.MY_DISPLAY_NAME],
             familyName = prefs[Keys.FAMILY_NAME],
+            pushToken = prefs[Keys.PUSH_TOKEN],
+            pushDeviceId = prefs[Keys.PUSH_DEVICE_ID],
         )
     }
 
@@ -105,11 +122,26 @@ class DataStoreSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setPushToken(token: String?) {
+        dataStore.edit {
+            if (token == null) it.remove(Keys.PUSH_TOKEN) else it[Keys.PUSH_TOKEN] = token
+        }
+    }
+
+    override suspend fun setPushDeviceId(deviceId: Long?) {
+        dataStore.edit {
+            if (deviceId == null) it.remove(Keys.PUSH_DEVICE_ID) else it[Keys.PUSH_DEVICE_ID] = deviceId
+        }
+    }
+
     override suspend fun resetKeepingServerUrl() {
         dataStore.edit { prefs ->
             val keepUrl = prefs[Keys.SERVER_URL]
+            // Device-scoped, not account-scoped — see the interface doc.
+            val keepPushToken = prefs[Keys.PUSH_TOKEN]
             prefs.clear()
             keepUrl?.let { prefs[Keys.SERVER_URL] = it }
+            keepPushToken?.let { prefs[Keys.PUSH_TOKEN] = it }
         }
     }
 }

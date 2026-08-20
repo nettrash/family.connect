@@ -57,6 +57,8 @@ import me.nettrash.familyconnect.data.net.DefaultFamilyApi
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.OkHttpChatSocket
+import me.nettrash.familyconnect.data.push.FirebasePushTokenProvider
+import me.nettrash.familyconnect.data.push.PushTokenProvider
 import me.nettrash.familyconnect.data.settings.DataStoreSettingsRepository
 import me.nettrash.familyconnect.data.settings.DefaultServerUrl
 import me.nettrash.familyconnect.data.settings.KeystoreTokenStore
@@ -99,6 +101,11 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindChatSocket(impl: OkHttpChatSocket): ChatSocket
+
+    // The only Firebase touchpoint in the graph. Safely inert when the
+    // build has no google-services.json — see PushTokenProvider.kt.
+    @Binds
+    abstract fun bindPushTokenProvider(impl: FirebasePushTokenProvider): PushTokenProvider
 
     companion object {
 

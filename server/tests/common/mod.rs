@@ -6,34 +6,37 @@
 //! router on an ephemeral loopback port. Connection parameters come from
 //! PGHOST/PGPORT/PGUSER/PGPASSWORD with the usual local-postgres defaults.
 //! The push seam is replaced by a recording sender so tests can assert the
-//! offline-member hook fires.
+//! offline-member hook fires — unless a test supplies a `[push]` config via
+//! `spawn_server_with_push`, in which case the real APNs/FCM dispatcher is
+//! built (pointed at a mock server). Throwaway credentials for that mode
+//! come from `write_test_apns_key` / `write_test_service_account`.
 
 // Each integration-test binary compiles this module independently and uses
 // a different subset of the helpers; unused ones are expected, not dead.
 #![allow(dead_code)]
 
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use family_connect::app::build_router;
-use family_connect::config::{Config, DatabaseConfig};
-use family_connect::models::Message;
+use family_connect::config::{Config, DatabaseConfig, PushConfig};
 use family_connect::push::{DevicePush, PushSender};
+use family_connect::push_payload::Notification;
 use family_connect::state::AppState;
-use family_connect::{db, migrate};
+use family_connect::{db, migrate, push};
 
-/// One recorded `notify_new_message` call.
+/// One recorded `notify` call.
 #[derive(Debug, Clone)]
 pub struct PushCall {
     pub devices: Vec<DevicePush>,
-    pub message: Message,
+    pub note: Notification,
 }
 
-/// Test double for the push seam: records every call instead of logging.
+/// Test double for the push seam: records every call instead of delivering.
 #[derive(Default)]
 pub struct RecordingPushSender {
     calls: Mutex<Vec<PushCall>>,
@@ -47,14 +50,15 @@ impl RecordingPushSender {
 
 #[async_trait]
 impl PushSender for RecordingPushSender {
-    async fn notify_new_message(&self, devices: &[DevicePush], message: &Message) {
+    async fn notify(&self, devices: &[DevicePush], note: &Notification) -> Vec<i64> {
         self.calls
             .lock()
             .expect("push call log lock")
             .push(PushCall {
                 devices: devices.to_vec(),
-                message: message.clone(),
+                note: note.clone(),
             });
+        Vec::new()
     }
 }
 
@@ -95,8 +99,20 @@ fn admin_config() -> DatabaseConfig {
     }
 }
 
-/// Boot a complete server against a fresh scratch database.
+/// Boot a complete server against a fresh scratch database, with the push
+/// seam replaced by the recording test double.
 pub async fn spawn_server() -> TestServer {
+    spawn_server_inner(None).await
+}
+
+/// Boot a server whose push seam is the *real* dispatcher built from
+/// `push_cfg` — endpoints pointed at a mock by the caller. The recording
+/// sender in `TestServer::push` is not wired in this mode.
+pub async fn spawn_server_with_push(push_cfg: PushConfig) -> TestServer {
+    spawn_server_inner(Some(push_cfg)).await
+}
+
+async fn spawn_server_inner(push_cfg: Option<PushConfig>) -> TestServer {
     let admin = admin_config();
     let db_name = format!(
         "family_connect_test_{}_{}",
@@ -121,6 +137,9 @@ pub async fn spawn_server() -> TestServer {
         ..Config::default()
     };
     cfg.server.bind = "127.0.0.1:0".to_string();
+    if let Some(push_cfg) = push_cfg {
+        cfg.push = push_cfg;
+    }
     cfg.validate().expect("test config is valid");
 
     let pool = db::connect(&cfg.database)
@@ -129,7 +148,12 @@ pub async fn spawn_server() -> TestServer {
     migrate::run(&pool).await.expect("running migrations");
 
     let push = Arc::new(RecordingPushSender::default());
-    let state = AppState::new(pool, Arc::new(cfg), push.clone());
+    let push_sender: Arc<dyn PushSender> = if cfg.push.apns.is_some() || cfg.push.fcm.is_some() {
+        push::build(&cfg.push).expect("building the push dispatcher")
+    } else {
+        push.clone()
+    };
+    let state = AppState::new(pool, Arc::new(cfg), push_sender);
     let router = build_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -294,6 +318,46 @@ impl TestServer {
         )
         .await
     }
+}
+
+/// Write a throwaway P-256 private key in the shape of an Apple `.p8` file;
+/// returns its path. The caller owns `dir` and keeps it alive.
+pub fn write_test_apns_key(dir: &Path) -> PathBuf {
+    use p256::pkcs8::{EncodePrivateKey, LineEnding};
+    let key = p256::SecretKey::random(&mut rand::rngs::OsRng);
+    let pem = key
+        .to_pkcs8_pem(LineEnding::LF)
+        .expect("serializing the test P-256 key");
+    let path = dir.join("AuthKey_KEYID12345.p8");
+    std::fs::write(&path, pem.as_bytes()).expect("writing the test .p8");
+    path
+}
+
+/// Write a fake Google service-account JSON whose `token_uri` points at the
+/// test's mock server; returns its path. RSA-2048 generation is expensive
+/// (ring refuses anything shorter for RS256), so one key is generated per
+/// test binary and reused.
+pub fn write_test_service_account(dir: &Path, project_id: &str, token_uri: &str) -> PathBuf {
+    static RSA_PEM: OnceLock<String> = OnceLock::new();
+    let private_pem = RSA_PEM.get_or_init(|| {
+        use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+        rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048)
+            .expect("generating the test RSA key")
+            .to_pkcs8_pem(LineEnding::LF)
+            .expect("serializing the test RSA key")
+            .to_string()
+    });
+    let document = json!({
+        "type": "service_account",
+        "project_id": project_id,
+        "private_key_id": "test-key-id",
+        "private_key": private_pem,
+        "client_email": "push@test-project.iam.gserviceaccount.com",
+        "token_uri": token_uri,
+    });
+    let path = dir.join("service-account.json");
+    std::fs::write(&path, document.to_string()).expect("writing the test service account");
+    path
 }
 
 /// Assert a response is the protocol error shape with the expected code.

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  aps-environment stays "development" in source: with automatic
+	  signing, Xcode rewrites it to "production" when exporting an App
+	  Store / Ad Hoc archive, so this value only ever reaches
+	  Xcode-run development builds. Simulator builds ignore it.
+	-->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

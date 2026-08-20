@@ -87,8 +87,21 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(familyName = name)
     }
 
+    override suspend fun setPushToken(token: String?) {
+        _state.value = _state.value.copy(pushToken = token)
+    }
+
+    override suspend fun setPushDeviceId(deviceId: Long?) {
+        _state.value = _state.value.copy(pushDeviceId = deviceId)
+    }
+
     override suspend fun resetKeepingServerUrl() {
-        _state.value = SettingsState(serverUrl = _state.value.serverUrl)
+        // Mirrors production: server URL AND the device-scoped FCM token
+        // survive; the account-scoped device id does not.
+        _state.value = SettingsState(
+            serverUrl = _state.value.serverUrl,
+            pushToken = _state.value.pushToken,
+        )
     }
 }
 
@@ -151,12 +164,19 @@ class FakeAuthApi : AuthApi {
     var meResult: ApiResult<MeResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
     var probeResult: ApiResult<MeResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
     var deviceResult: ApiResult<DeviceResponse> = ApiResult.Ok(DeviceResponse(deviceId = 1))
+    var deleteDeviceResult: ApiResult<Unit> = ApiResult.Ok(Unit)
 
     var registerCalls = 0
     var loginCalls = 0
     var meCalls = 0
     var deviceCalls = 0
     var logoutCalls = 0
+
+    /** Every push_token handed to POST /devices, in call order. */
+    val deviceRegistrations = mutableListOf<String?>()
+
+    /** Every id handed to DELETE /devices/{id}, in call order. */
+    val deletedDeviceIds = mutableListOf<Long>()
 
     override suspend fun register(
         username: String,
@@ -184,9 +204,15 @@ class FakeAuthApi : AuthApi {
 
     override suspend fun probe(candidateServerUrl: String): ApiResult<MeResponse> = probeResult
 
-    override suspend fun registerDevice(): ApiResult<DeviceResponse> {
+    override suspend fun registerDevice(pushToken: String?): ApiResult<DeviceResponse> {
         deviceCalls += 1
+        deviceRegistrations += pushToken
         return deviceResult
+    }
+
+    override suspend fun deleteDevice(deviceId: Long): ApiResult<Unit> {
+        deletedDeviceIds += deviceId
+        return deleteDeviceResult
     }
 }
 

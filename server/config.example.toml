@@ -60,7 +60,36 @@ ws_ping_interval_secs = 30
 ws_idle_timeout_secs = 75
 
 [push]
-# Push notification driver. v1 ships only "log", which records would-be
-# notifications in the server log; real APNs/FCM delivery slots in later
-# behind the same PushSender trait without touching the fan-out code.
-driver = "log"
+# Notification body policy: true puts the message text into the notification
+# body, false always sends "New message" instead — for households that
+# consider lock screens too public for message content (protocol.md).
+include_message_body = true
+
+# Real delivery is enabled per platform by the PRESENCE of its section:
+# [push.apns] for iOS devices, [push.fcm] for Android. A platform without a
+# section only records its would-be notifications in the server log, so a
+# server with no push credentials keeps working exactly as before. (The old
+# `driver = "log"` key is deprecated: it is accepted and ignored.)
+
+# [push.apns]
+# # Token-based APNs authentication. Create an APNs auth key under Apple
+# # Developer → Certificates, Identifiers & Profiles → Keys, and download
+# # the AuthKey_<KEYID>.p8 (one-time download — keep it safe).
+# team_id = "ABCDE12345"                              # Apple Developer Team ID
+# key_id = "FGHIJ67890"                               # the auth key's Key ID
+# key_file = "/etc/family-connect/AuthKey_FGHIJ67890.p8"
+# The iOS app's bundle identifier (NOT the Android application id — note
+# the capitalization), sent as the apns-topic header. A mismatch makes
+# APNs reject every push with TopicDisallowed.
+# bundle_id = "me.nettrash.FamilyConnect"
+# # "production" for App Store / TestFlight builds, "sandbox" for Xcode
+# # development builds — device tokens are environment-specific.
+# environment = "production"
+# # endpoint = "https://api.push.apple.com"           # derived from environment;
+#                                                     # override for tests only
+
+# [push.fcm]
+# # Firebase service account: Firebase console → Project settings →
+# # Service accounts → "Generate new private key" downloads this JSON.
+# credentials_file = "/etc/family-connect/firebase-service-account.json"
+# # endpoint = "https://fcm.googleapis.com"           # override for tests only

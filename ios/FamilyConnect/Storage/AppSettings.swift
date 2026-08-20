@@ -22,7 +22,12 @@ nonisolated enum AppSettings {
         static let serverURL = "v1.serverURL"
         static let currentUserID = "v1.currentUserID"
         static let joinPending = "v1.joinPending"
-        static let deviceRegistered = "v1.deviceRegistered"
+        static let pushToken = "v1.push.token"
+        static let pushDeviceID = "v1.push.deviceID"
+        /// Pre-push installs stored a "registered once, token null"
+        /// boolean under this key; superseded by the pair above and only
+        /// referenced by wipe() so upgraded installs shed it.
+        static let legacyDeviceRegistered = "v1.deviceRegistered"
     }
 
     /// The server URL compiled into this build, or nil for the generic
@@ -91,11 +96,37 @@ nonisolated enum AppSettings {
         set { defaults.set(newValue, forKey: Key.joinPending) }
     }
 
-    /// True once POST /devices succeeded for this install, so the device
-    /// row is registered exactly once and not on every launch.
-    static var deviceRegistered: Bool {
-        get { defaults.bool(forKey: Key.deviceRegistered) }
-        set { defaults.set(newValue, forKey: Key.deviceRegistered) }
+    /// The APNs token (lowercase hex) most recently accepted by
+    /// POST /devices. Paired with `pushDeviceID` below — PushRegistrar
+    /// sets both together after a 2xx, so "token differs from stored" is
+    /// exactly the re-POST condition. The token itself is an opaque
+    /// routing handle, not a secret (it is useless without the server's
+    /// APNs key), so defaults — not the keychain — is the right home.
+    static var pushToken: String? {
+        get { defaults.string(forKey: Key.pushToken) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.pushToken)
+            } else {
+                defaults.removeObject(forKey: Key.pushToken)
+            }
+        }
+    }
+
+    /// The server's device row id for `pushToken` — what
+    /// DELETE /devices/{id} takes on logout.
+    static var pushDeviceID: Int64? {
+        get {
+            let value = defaults.object(forKey: Key.pushDeviceID) as? NSNumber
+            return value?.int64Value
+        }
+        set {
+            if let newValue {
+                defaults.set(NSNumber(value: newValue), forKey: Key.pushDeviceID)
+            } else {
+                defaults.removeObject(forKey: Key.pushDeviceID)
+            }
+        }
     }
 
     /// Remove everything this type owns; `keepServerURL` preserves the
@@ -104,6 +135,8 @@ nonisolated enum AppSettings {
         if !keepServerURL { defaults.removeObject(forKey: Key.serverURL) }
         defaults.removeObject(forKey: Key.currentUserID)
         defaults.removeObject(forKey: Key.joinPending)
-        defaults.removeObject(forKey: Key.deviceRegistered)
+        defaults.removeObject(forKey: Key.pushToken)
+        defaults.removeObject(forKey: Key.pushDeviceID)
+        defaults.removeObject(forKey: Key.legacyDeviceRegistered)
     }
 }

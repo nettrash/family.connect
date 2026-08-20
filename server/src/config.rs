@@ -8,9 +8,10 @@
 //! shorter than the ping interval would silently kill every socket).
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use jsonwebtoken::EncodingKey;
 use serde::Deserialize;
 
 /// Top-level configuration document.
@@ -114,13 +115,169 @@ pub struct LimitsConfig {
     pub ws_idle_timeout_secs: u64,
 }
 
-/// `[push]` — push notification driver selection.
+/// `[push]` — push notification delivery.
+///
+/// Each platform's transport is enabled by the *presence* of its section:
+/// `[push.apns]` for iOS devices, `[push.fcm]` for Android. A platform with
+/// no section falls back to logging the would-be notification (the v1
+/// behavior), so a server without push credentials keeps working unchanged.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PushConfig {
-    /// v1 supports only `"log"`; validation rejects anything else so a typo
-    /// fails at startup instead of silently dropping notifications.
-    #[serde(default = "default_push_driver")]
-    pub driver: String,
+    /// Deprecated v1 knob. Only `"log"` was ever valid and it is now the
+    /// implicit fallback; the key is accepted (and ignored) so existing
+    /// config files keep loading, but any other value still fails fast.
+    #[serde(default)]
+    pub driver: Option<String>,
+
+    /// `true` (default): notification bodies carry the message text.
+    /// `false`: the body is always `"New message"` — for households that
+    /// consider lock screens too public for message content (protocol.md).
+    #[serde(default = "default_include_message_body")]
+    pub include_message_body: bool,
+
+    /// APNs transport for iOS devices; absent = log fallback.
+    #[serde(default)]
+    pub apns: Option<ApnsConfig>,
+
+    /// FCM transport for Android devices; absent = log fallback.
+    #[serde(default)]
+    pub fcm: Option<FcmConfig>,
+}
+
+/// `[push.apns]` — token-based APNs authentication (an Apple Developer
+/// `.p8` auth key, not certificates: one key serves every app and never
+/// expires).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApnsConfig {
+    /// Apple Developer Team ID — the `iss` claim of the provider JWT.
+    pub team_id: String,
+
+    /// Key ID of the APNs auth key — the JWT header's `kid`.
+    pub key_id: String,
+
+    /// Path to the downloaded `AuthKey_<KEYID>.p8` (a PEM-encoded PKCS#8
+    /// P-256 private key).
+    pub key_file: PathBuf,
+
+    /// The app's bundle id — sent as the `apns-topic` header.
+    pub bundle_id: String,
+
+    /// `"production"` (App Store / TestFlight builds) or `"sandbox"` (Xcode
+    /// development builds). Tokens are environment-specific: the wrong
+    /// environment answers `BadDeviceToken`.
+    #[serde(default = "default_apns_environment")]
+    pub environment: String,
+
+    /// Explicit endpoint override for tests; when absent the endpoint is
+    /// derived from `environment`.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+}
+
+impl ApnsConfig {
+    /// The base URL notifications are POSTed to, without a trailing slash.
+    pub fn endpoint(&self) -> String {
+        self.endpoint.clone().unwrap_or_else(|| {
+            if self.environment == "sandbox" {
+                "https://api.sandbox.push.apple.com".to_string()
+            } else {
+                "https://api.push.apple.com".to_string()
+            }
+        })
+    }
+
+    /// Read and parse the `.p8` signing key. Called by `validate()` so a
+    /// missing or malformed key fails at startup, and again by the APNs
+    /// transport when it is built.
+    pub fn read_signing_key(&self) -> Result<EncodingKey> {
+        let pem = std::fs::read(&self.key_file)
+            .with_context(|| format!("reading push.apns.key_file {}", self.key_file.display()))?;
+        EncodingKey::from_ec_pem(&pem).with_context(|| {
+            format!(
+                "push.apns.key_file {} is not a PEM-encoded P-256 private key (.p8)",
+                self.key_file.display()
+            )
+        })
+    }
+}
+
+/// `[push.fcm]` — FCM HTTP v1 with OAuth2 service-account authentication.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FcmConfig {
+    /// Path to the Firebase service-account JSON (Project settings →
+    /// Service accounts → "Generate new private key").
+    pub credentials_file: PathBuf,
+
+    /// Explicit endpoint override for tests; defaults to the real FCM host.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+}
+
+impl FcmConfig {
+    /// The base URL `…/v1/projects/{project}/messages:send` is appended to,
+    /// without a trailing slash.
+    pub fn endpoint(&self) -> String {
+        self.endpoint
+            .clone()
+            .unwrap_or_else(|| "https://fcm.googleapis.com".to_string())
+    }
+
+    /// Read and parse the service-account file, verifying every field the
+    /// transport needs is present and the private key actually signs.
+    /// Called by `validate()` and again when the FCM transport is built.
+    pub fn read_service_account(&self) -> Result<ServiceAccount> {
+        let raw = std::fs::read_to_string(&self.credentials_file).with_context(|| {
+            format!(
+                "reading push.fcm.credentials_file {}",
+                self.credentials_file.display()
+            )
+        })?;
+        let account: ServiceAccount = serde_json::from_str(&raw).with_context(|| {
+            format!(
+                "parsing service-account JSON {}",
+                self.credentials_file.display()
+            )
+        })?;
+        for (name, value) in [
+            ("project_id", &account.project_id),
+            ("client_email", &account.client_email),
+            ("private_key", &account.private_key),
+            ("token_uri", &account.token_uri),
+        ] {
+            if value.is_empty() {
+                anyhow::bail!(
+                    "service account {} has an empty {name}",
+                    self.credentials_file.display()
+                );
+            }
+        }
+        account.signing_key().with_context(|| {
+            format!(
+                "service account {} private_key is not a PEM-encoded RSA key",
+                self.credentials_file.display()
+            )
+        })?;
+        Ok(account)
+    }
+}
+
+/// The subset of a Google service-account JSON the FCM transport uses.
+/// Unknown fields (there are many) are ignored. Deliberately no `Debug`:
+/// `private_key` is a credential and must never reach a log.
+#[derive(Clone, Deserialize)]
+pub struct ServiceAccount {
+    pub project_id: String,
+    pub client_email: String,
+    pub private_key: String,
+    pub token_uri: String,
+}
+
+impl ServiceAccount {
+    /// The RS256 signing key for the OAuth2 JWT-bearer assertion.
+    pub fn signing_key(&self) -> Result<EncodingKey> {
+        EncodingKey::from_rsa_pem(self.private_key.as_bytes())
+            .context("parsing the service-account private_key as an RSA PEM")
+    }
 }
 
 impl Default for ServerConfig {
@@ -171,7 +328,10 @@ impl Default for LimitsConfig {
 impl Default for PushConfig {
     fn default() -> Self {
         Self {
-            driver: default_push_driver(),
+            driver: None,
+            include_message_body: default_include_message_body(),
+            apns: None,
+            fcm: None,
         }
     }
 }
@@ -245,11 +405,36 @@ impl Config {
                 self.limits.ws_ping_interval_secs
             );
         }
-        if self.push.driver != "log" {
+        if let Some(driver) = &self.push.driver
+            && driver != "log"
+        {
             anyhow::bail!(
-                "push.driver must be \"log\" (the only driver in v1), got {:?}",
-                self.push.driver
+                "push.driver is deprecated and only accepts \"log\" (got {driver:?}); \
+                 enable real delivery with [push.apns] / [push.fcm] sections instead"
             );
+        }
+        if let Some(apns) = &self.push.apns {
+            if apns.environment != "production" && apns.environment != "sandbox" {
+                anyhow::bail!(
+                    "push.apns.environment must be \"production\" or \"sandbox\", got {:?}",
+                    apns.environment
+                );
+            }
+            for (name, value) in [
+                ("team_id", &apns.team_id),
+                ("key_id", &apns.key_id),
+                ("bundle_id", &apns.bundle_id),
+            ] {
+                if value.is_empty() {
+                    anyhow::bail!("push.apns.{name} must not be empty");
+                }
+            }
+            // Fail at startup, not on the first notification: a push key
+            // problem discovered days later would silently drop messages.
+            apns.read_signing_key()?;
+        }
+        if let Some(fcm) = &self.push.fcm {
+            fcm.read_service_account()?;
         }
         Ok(())
     }
@@ -319,8 +504,12 @@ fn default_ws_idle_timeout_secs() -> u64 {
     75
 }
 
-fn default_push_driver() -> String {
-    "log".to_string()
+fn default_include_message_body() -> bool {
+    true
+}
+
+fn default_apns_environment() -> String {
+    "production".to_string()
 }
 
 #[cfg(test)]
@@ -341,7 +530,14 @@ mod tests {
             defaults.limits.max_message_chars
         );
         assert_eq!(cfg.auth.session_ttl_days, defaults.auth.session_ttl_days);
-        assert_eq!(cfg.push.driver, defaults.push.driver);
+        assert_eq!(
+            cfg.push.include_message_body,
+            defaults.push.include_message_body
+        );
+        assert!(
+            cfg.push.apns.is_none() && cfg.push.fcm.is_none(),
+            "the example must ship with real transports commented out"
+        );
     }
 
     #[test]
@@ -359,7 +555,9 @@ mod tests {
         assert_eq!(cfg.limits.ws_send_queue, 64);
         assert_eq!(cfg.limits.ws_ping_interval_secs, 30);
         assert_eq!(cfg.limits.ws_idle_timeout_secs, 75);
-        assert_eq!(cfg.push.driver, "log");
+        assert!(cfg.push.include_message_body);
+        assert!(cfg.push.apns.is_none());
+        assert!(cfg.push.fcm.is_none());
     }
 
     #[test]
@@ -401,9 +599,99 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_an_unknown_push_driver() {
+    fn the_deprecated_log_driver_is_still_accepted_but_others_are_not() {
+        let cfg = Config::from_toml_str("[push]\ndriver = \"log\"\n")
+            .expect("existing configs with driver = \"log\" must keep loading");
+        assert!(cfg.push.apns.is_none() && cfg.push.fcm.is_none());
         let err = Config::from_toml_str("[push]\ndriver = \"apns\"\n").unwrap_err();
-        assert!(format!("{err:#}").contains("push.driver"));
+        let rendered = format!("{err:#}");
+        assert!(rendered.contains("push.driver"), "{rendered}");
+        assert!(
+            rendered.contains("[push.apns]"),
+            "the error must point at the replacement sections: {rendered}"
+        );
+    }
+
+    /// TOML for a `[push.apns]` section pointing at `key_file`.
+    fn apns_toml(key_file: &Path, environment: &str) -> String {
+        format!(
+            "[push.apns]\nteam_id = \"TEAMID9999\"\nkey_id = \"KEYID12345\"\n\
+             key_file = \"{}\"\nbundle_id = \"me.nettrash.familyconnect\"\n\
+             environment = \"{environment}\"\n",
+            key_file.display()
+        )
+    }
+
+    #[test]
+    fn a_missing_apns_key_file_is_rejected_at_validation_time() {
+        let toml = apns_toml(Path::new("/nonexistent/AuthKey_X.p8"), "production");
+        let err = Config::from_toml_str(&toml).unwrap_err();
+        assert!(format!("{err:#}").contains("push.apns.key_file"));
+    }
+
+    #[test]
+    fn an_apns_key_file_that_is_not_an_ec_key_is_rejected() {
+        let mut f = NamedTempFile::new().expect("tempfile");
+        f.write_all(b"this is not a key").expect("write");
+        f.flush().expect("flush");
+        let err = Config::from_toml_str(&apns_toml(f.path(), "production")).unwrap_err();
+        assert!(format!("{err:#}").contains("P-256"));
+    }
+
+    #[test]
+    fn a_valid_apns_section_validates_and_derives_endpoints_per_environment() {
+        let (private_pem, _) = crate::test_keys::ec_p256_key_pair_pems();
+        let mut f = NamedTempFile::new().expect("tempfile");
+        f.write_all(private_pem.as_bytes()).expect("write");
+        f.flush().expect("flush");
+
+        let cfg = Config::from_toml_str(&apns_toml(f.path(), "sandbox")).expect("valid config");
+        let apns = cfg.push.apns.expect("apns section parsed");
+        assert_eq!(apns.endpoint(), "https://api.sandbox.push.apple.com");
+
+        let cfg = Config::from_toml_str(&apns_toml(f.path(), "production")).expect("valid config");
+        let apns = cfg.push.apns.expect("apns section parsed");
+        assert_eq!(apns.endpoint(), "https://api.push.apple.com");
+
+        let err = Config::from_toml_str(&apns_toml(f.path(), "staging")).unwrap_err();
+        assert!(format!("{err:#}").contains("push.apns.environment"));
+    }
+
+    #[test]
+    fn a_service_account_missing_required_fields_is_rejected() {
+        let mut f = NamedTempFile::new().expect("tempfile");
+        f.write_all(br#"{"project_id": "p"}"#).expect("write");
+        f.flush().expect("flush");
+        let toml = format!(
+            "[push.fcm]\ncredentials_file = \"{}\"\n",
+            f.path().display()
+        );
+        let err = Config::from_toml_str(&toml).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("client_email"),
+            "the missing field must be named: {err:#}"
+        );
+    }
+
+    #[test]
+    fn a_valid_fcm_section_validates_and_defaults_the_endpoint() {
+        let json = crate::test_keys::service_account_json(
+            "test-project",
+            "push@test-project.iam.gserviceaccount.com",
+            "https://oauth2.googleapis.com/token",
+        );
+        let mut f = NamedTempFile::new().expect("tempfile");
+        f.write_all(json.as_bytes()).expect("write");
+        f.flush().expect("flush");
+        let toml = format!(
+            "[push.fcm]\ncredentials_file = \"{}\"\n",
+            f.path().display()
+        );
+        let cfg = Config::from_toml_str(&toml).expect("valid config");
+        let fcm = cfg.push.fcm.expect("fcm section parsed");
+        assert_eq!(fcm.endpoint(), "https://fcm.googleapis.com");
+        let account = fcm.read_service_account().expect("account parses");
+        assert_eq!(account.project_id, "test-project");
     }
 
     #[test]

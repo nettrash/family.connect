@@ -14,8 +14,11 @@
  *                   and persisted exactly as if the user had typed it,
  *                   no network probe, so store builds boot to AUTH
  *                   instead of SERVER_SETUP. A stored URL always wins.
- *   register/login — store token → GET /me → POST /devices → persist.
- *   logout        — best-effort POST /auth/logout, then clearSession.
+ *   register/login — store token → GET /me → POST /devices (with the FCM
+ *                   token when Firebase is configured, see
+ *                   PushTokenRepository) → persist.
+ *   logout        — best-effort DELETE /devices/{id} + POST /auth/logout,
+ *                   then clearSession.
  *   clearSession  — token + Room wipe + settings reset EXCEPT serverUrl
  *                   (protocol: on 401 "the client wipes local state,
  *                   keeping the server URL").
@@ -42,6 +45,8 @@ import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
+import me.nettrash.familyconnect.data.push.PushTokenProvider
+import me.nettrash.familyconnect.data.push.PushTokenRepository
 import me.nettrash.familyconnect.data.settings.DefaultServerUrl
 import me.nettrash.familyconnect.data.settings.ServerUrlNormalizer
 import me.nettrash.familyconnect.data.settings.SettingsRepository
@@ -109,6 +114,13 @@ class SessionRepository @Inject constructor(
     // mention it. Dagger ignores default arguments — production always
     // injects the AppModule binding backed by BuildConfig.DEFAULT_SERVER_URL.
     private val defaultServerUrl: DefaultServerUrl = DefaultServerUrl { null },
+    // Same trick: the default builds a real PushTokenRepository over this
+    // constructor's own collaborators with a "no Firebase" token provider,
+    // so existing tests keep exercising the device-registration flow
+    // unchanged. Production always injects the Hilt singleton (whose
+    // provider actually asks Firebase — see AppModule).
+    private val pushTokenRepository: PushTokenRepository =
+        PushTokenRepository(authApi, settings, tokenStore, PushTokenProvider { null }),
 ) {
 
     // Bumped on every token save/clear so sessionFlow re-emits — the
@@ -187,8 +199,8 @@ class SessionRepository @Inject constructor(
                 settings.setProfile(user.id, user.username, user.displayName)
                 refreshMe()
                 // Best-effort: a failed device registration must not block
-                // login — v1 has no push delivery anyway.
-                authApi.registerDevice()
+                // login — PushTokenRepository retries on the next resync.
+                pushTokenRepository.registerCurrentToken()
                 ApiResult.Ok(snapshot())
             }
             is ApiResult.HttpError -> result
@@ -196,6 +208,12 @@ class SessionRepository @Inject constructor(
         }
 
     suspend fun logout() {
+        // Best-effort: remove the push device row FIRST (it needs the
+        // session that /auth/logout is about to revoke) so a logged-out
+        // phone stops getting this account's notifications. clearSession's
+        // resetKeepingServerUrl drops the stored device id but keeps the
+        // cached FCM token — the next login re-registers immediately.
+        settings.state.first().pushDeviceId?.let { authApi.deleteDevice(it) }
         // Best-effort revoke; local teardown happens regardless.
         authApi.logout()
         clearSession()

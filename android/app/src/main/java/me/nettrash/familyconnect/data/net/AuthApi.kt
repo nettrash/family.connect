@@ -34,8 +34,17 @@ interface AuthApi {
      */
     suspend fun probe(candidateServerUrl: String): ApiResult<MeResponse>
 
-    /** POST /devices — push hook; v1 sends a null token, delivery comes later. */
-    suspend fun registerDevice(): ApiResult<DeviceResponse>
+    /**
+     * POST /devices {platform: "android", push_token} → {device_id}.
+     * Upserts by token when non-null; a null token still creates the
+     * device row (the push hook without delivery — e.g. builds without
+     * a google-services.json). PushTokenRepository owns when to call this.
+     */
+    suspend fun registerDevice(pushToken: String?): ApiResult<DeviceResponse>
+
+    /** DELETE /devices/{id} — best-effort on logout so a logged-out phone
+     *  stops receiving this account's pushes. */
+    suspend fun deleteDevice(deviceId: Long): ApiResult<Unit>
 }
 
 @Singleton
@@ -66,6 +75,9 @@ class DefaultAuthApi @Inject constructor(
             overrideBase = ServerUrlNormalizer.apiBase(candidateServerUrl),
         )
 
-    override suspend fun registerDevice(): ApiResult<DeviceResponse> =
-        client.post("/devices", DeviceRequest(platform = "android", pushToken = null))
+    override suspend fun registerDevice(pushToken: String?): ApiResult<DeviceResponse> =
+        client.post("/devices", DeviceRequest(platform = "android", pushToken = pushToken))
+
+    override suspend fun deleteDevice(deviceId: Long): ApiResult<Unit> =
+        client.delete("/devices/$deviceId")
 }

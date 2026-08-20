@@ -11,7 +11,11 @@
 //  are tens of rows, not thousands.
 //
 //  Navigation is path-based (NavigationStack(path:)) so the New Chat
-//  sheet can push the freshly created conversation programmatically.
+//  sheet can push the freshly created conversation programmatically —
+//  and so a tapped push notification can do the same: this view is the
+//  consumer of AppSession.pendingPushRoute, which makes cold-start taps
+//  work for free (the route waits on the session until bootstrap
+//  reaches .active and this view exists to act on it).
 //
 
 import SwiftData
@@ -25,6 +29,7 @@ struct ChatListView: View {
     @State private var path: [Int64] = []
     @State private var showsNewChat = false
     @State private var showsSettings = false
+    @State private var showsJoinRequests = false
 
     /// pinRank asc (family first), then recency desc, then stable id.
     private var sortedChats: [ChatEntity] {
@@ -88,6 +93,63 @@ struct ChatListView: View {
             .sheet(isPresented: $showsSettings) {
                 SettingsView()
             }
+            .sheet(isPresented: $showsJoinRequests) {
+                JoinRequestsSheet()
+            }
+        }
+        .task {
+            consumePendingRoute() // parked before this view existed (cold start)
+        }
+        .onChange(of: session.pendingPushRoute) { _, _ in
+            consumePendingRoute() // arrived while the list is up (warm tap)
+        }
+    }
+
+    /// Act on a parked notification tap, then clear it so it fires once.
+    private func consumePendingRoute() {
+        guard let route = session.pendingPushRoute else { return }
+        session.pendingPushRoute = nil
+        switch route {
+        case .chat(let chatID):
+            // Straight to the conversation, over whatever was on screen.
+            // No local-existence check: after a reinstall the chat may
+            // not be cached yet, and ConversationView + resync handle a
+            // not-yet-known id gracefully.
+            showsNewChat = false
+            showsSettings = false
+            showsJoinRequests = false
+            path = [chatID]
+        case .joinRequests:
+            // Owner-only screen; a member who somehow gets this push
+            // falls back to the list itself.
+            guard session.isOwner else { return }
+            showsNewChat = false
+            showsSettings = false
+            path = []
+            showsJoinRequests = true
+        case .chatList:
+            // "joined" and unknown kinds: this list is the destination.
+            break
+        }
+    }
+}
+
+/// Push-route target for kind "join_request": the owner's manage screen,
+/// wrapped in its own stack and model so it can be presented directly
+/// without walking through Settings. FamilyManageView's own .task loads
+/// the fresh model (family, members, pending requests).
+private struct JoinRequestsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var model = SettingsModel()
+
+    var body: some View {
+        NavigationStack {
+            FamilyManageView(settingsModel: model)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
         }
     }
 }

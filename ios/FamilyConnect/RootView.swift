@@ -7,10 +7,14 @@
 //  exists, …) instead of re-checking them. Also the single owner of the
 //  scenePhase → coordinator lifecycle mapping: background suspends the
 //  socket, active resumes it and resyncs (the socket is a live wire —
-//  everything missed while suspended comes back over REST).
+//  everything missed while suspended comes back over REST), and
+//  becoming active always clears the app badge — the number meant
+//  "unread while you were away", and the server recomputes it fresh on
+//  its next push anyway.
 //
 
 import SwiftUI
+import UserNotifications
 
 struct RootView: View {
     @Environment(AppSession.self) private var session
@@ -45,6 +49,11 @@ struct RootView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                // Regardless of session phase — a badge on the icon of a
+                // logged-out app would be just as stale.
+                Task { try? await UNUserNotificationCenter.current().setBadgeCount(0) }
+            }
             guard session.phase == .active else { return }
             switch newPhase {
             case .background:

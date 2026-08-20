@@ -286,7 +286,15 @@ async fn offline_members_with_push_tokens_reach_the_push_seam() {
     };
     assert_eq!(calls.len(), 1, "exactly one notify call for one message");
     let call = &calls[0];
-    assert_eq!(call.message.body, "anyone home?");
+    assert_eq!(call.note.body, "anyone home?");
+    assert_eq!(
+        call.note.title, "The Smiths — Olive",
+        "family chat pushes are titled '<Family> — <Sender>'"
+    );
+    assert_eq!(
+        call.note.badge, 1,
+        "one unread message for the offline member"
+    );
     assert_eq!(call.devices.len(), 1, "only the offline member's device");
     assert_eq!(call.devices[0].user_id, third_id);
     assert_eq!(call.devices[0].push_token, "tok-third");

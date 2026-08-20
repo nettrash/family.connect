@@ -4,15 +4,21 @@
 //! Both the REST handlers and the WS frame handlers call these functions, so
 //! fan-out rules (who gets `message` vs `ack`, who is excluded from `read`/
 //! `typing` relays, when the push hook fires) exist exactly once. Push
-//! dispatch is `tokio::spawn`ed fire-and-forget: notification delivery must
-//! never add latency or failure modes to the message write path.
+//! composition (titles, badge) happens here on the request path — it is a
+//! couple of indexed queries — but the actual transport calls are
+//! `tokio::spawn`ed fire-and-forget: notification *delivery* must never add
+//! latency or failure modes to the write path. Devices a transport reports
+//! as unregistered are deleted from the same spawned task.
+
+use std::collections::BTreeMap;
 
 use sqlx::{PgPool, Row};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::error::ApiError;
 use crate::models::{Message, UserBrief};
 use crate::push::DevicePush;
+use crate::push_payload::{self, Notification};
 use crate::state::AppState;
 use crate::ws::ServerFrame;
 
@@ -60,15 +66,113 @@ pub async fn deliver_new_message(
         return Ok(());
     }
 
+    let devices = devices_for_users(&state.pool, &push_targets).await?;
+    if devices.is_empty() {
+        return Ok(());
+    }
+
+    // Composition context: the chat kind picks the title rule, the family
+    // and sender names fill it in (protocol.md "Push notifications").
+    let row = sqlx::query(
+        "SELECT c.kind, f.name AS family_name, u.display_name AS sender_name
+         FROM chats c
+         JOIN families f ON f.id = c.family_id
+         JOIN users u ON u.id = $2
+         WHERE c.id = $1",
+    )
+    .bind(message.chat_id)
+    .bind(message.sender_id)
+    .fetch_one(&state.pool)
+    .await?;
+    let chat_kind: String = row.get("kind");
+    let family_name: String = row.get("family_name");
+    let sender_name: String = row.get("sender_name");
+
+    // One notification per recipient user: the badge is that user's total
+    // unread, so it differs between recipients of the same message.
+    let mut by_user: BTreeMap<i64, Vec<DevicePush>> = BTreeMap::new();
+    for device in devices {
+        by_user.entry(device.user_id).or_default().push(device);
+    }
+    let mut batch = Vec::with_capacity(by_user.len());
+    for (user_id, user_devices) in by_user {
+        let badge = unread_badge(&state.pool, user_id).await?;
+        let note = push_payload::message_notification(
+            state.cfg.push.include_message_body,
+            &chat_kind,
+            &family_name,
+            &sender_name,
+            message,
+            badge,
+        );
+        batch.push((user_devices, note));
+    }
+    spawn_notify(state, batch);
+    Ok(())
+}
+
+/// Push to the family owner when a join request is created — but only when
+/// the owner has no live socket, the same rule messages follow (protocol.md
+/// pushes exclusively to offline users). Join requests have no WS frame, so
+/// the check is a plain registry probe rather than a fan-out result.
+pub async fn push_join_request_created(
+    state: &AppState,
+    family_id: i64,
+    family_name: &str,
+    owner_user_id: i64,
+    requester_id: i64,
+) -> Result<(), ApiError> {
+    if state.registry.has_connections(owner_user_id).await {
+        return Ok(());
+    }
+    let devices = devices_for_users(&state.pool, &[owner_user_id]).await?;
+    if devices.is_empty() {
+        return Ok(());
+    }
+    let requester_name: String = sqlx::query_scalar("SELECT display_name FROM users WHERE id = $1")
+        .bind(requester_id)
+        .fetch_one(&state.pool)
+        .await?;
+    let badge = unread_badge(&state.pool, owner_user_id).await?;
+    let note =
+        push_payload::join_request_notification(family_name, &requester_name, family_id, badge);
+    spawn_notify(state, vec![(devices, note)]);
+    Ok(())
+}
+
+/// Push to the requester when their join request is approved — only when
+/// they have no live socket (an open socket already received the
+/// `member_joined` frame).
+pub async fn push_join_approved(
+    state: &AppState,
+    family_id: i64,
+    family_name: &str,
+    requester_id: i64,
+) -> Result<(), ApiError> {
+    if state.registry.has_connections(requester_id).await {
+        return Ok(());
+    }
+    let devices = devices_for_users(&state.pool, &[requester_id]).await?;
+    if devices.is_empty() {
+        return Ok(());
+    }
+    let badge = unread_badge(&state.pool, requester_id).await?;
+    let note = push_payload::joined_notification(family_name, family_id, badge);
+    spawn_notify(state, vec![(devices, note)]);
+    Ok(())
+}
+
+/// The devices (with push tokens) of the listed users.
+async fn devices_for_users(pool: &PgPool, user_ids: &[i64]) -> Result<Vec<DevicePush>, ApiError> {
     let rows = sqlx::query(
         "SELECT id, user_id, platform, push_token
          FROM devices
          WHERE user_id = ANY($1) AND push_token IS NOT NULL",
     )
-    .bind(push_targets)
-    .fetch_all(&state.pool)
+    .bind(user_ids)
+    .fetch_all(pool)
     .await?;
-    let devices: Vec<DevicePush> = rows
+    Ok(rows
         .iter()
         .map(|row| DevicePush {
             device_id: row.get("id"),
@@ -76,18 +180,45 @@ pub async fn deliver_new_message(
             platform: row.get("platform"),
             push_token: row.get("push_token"),
         })
-        .collect();
-    if devices.is_empty() {
-        return Ok(());
-    }
+        .collect())
+}
 
-    // Fire-and-forget: push is best-effort by design in v1.
+/// The recipient's total unread across chats — the APNs badge value.
+async fn unread_badge(pool: &PgPool, user_id: i64) -> Result<i64, ApiError> {
+    let badge = sqlx::query_scalar(push_payload::build_unread_badge_query())
+        .bind(user_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(badge)
+}
+
+/// Fire-and-forget delivery of composed notifications: push is best-effort
+/// by design in v1 — the write path never waits on a push service. Devices
+/// the transports report as unregistered (APNs 410/BadDeviceToken, FCM
+/// 404/UNREGISTERED) are deleted here, per protocol.md.
+fn spawn_notify(state: &AppState, batch: Vec<(Vec<DevicePush>, Notification)>) {
     let push = state.push.clone();
-    let message = message.clone();
+    let pool = state.pool.clone();
     tokio::spawn(async move {
-        push.notify_new_message(&devices, &message).await;
+        let mut dead: Vec<i64> = Vec::new();
+        for (devices, note) in &batch {
+            dead.extend(push.notify(devices, note).await);
+        }
+        if dead.is_empty() {
+            return;
+        }
+        match sqlx::query("DELETE FROM devices WHERE id = ANY($1)")
+            .bind(&dead)
+            .execute(&pool)
+            .await
+        {
+            Ok(result) => info!(
+                deleted = result.rows_affected(),
+                "removed devices with unregistered push tokens"
+            ),
+            Err(err) => warn!(error = ?err, "failed to delete unregistered devices"),
+        }
     });
-    Ok(())
 }
 
 /// Relay a read marker to the *other* members of the chat (all connections

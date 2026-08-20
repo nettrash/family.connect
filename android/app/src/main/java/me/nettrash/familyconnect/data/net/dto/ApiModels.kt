@@ -118,8 +118,9 @@ data class ReadRequest(@SerialName("last_read_message_id") val lastReadMessageId
 data class DeviceRequest(
     val platform: String,
     // No default so `push_token: null` is serialized explicitly, exactly
-    // as the protocol table writes it. v1 registers the device row only —
-    // push delivery comes later.
+    // as the protocol table writes it. Null when the build has no FCM
+    // config (no google-services.json) — the device row still registers,
+    // it just can't be pushed to.
     @SerialName("push_token") val pushToken: String?,
 )
 

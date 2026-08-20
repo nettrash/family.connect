@@ -37,6 +37,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
+import me.nettrash.familyconnect.data.push.PushTokenRepository
 import me.nettrash.familyconnect.data.repo.SessionRepository
 import me.nettrash.familyconnect.data.repo.SyncEngine
 import me.nettrash.familyconnect.data.settings.ServerUrlNormalizer
@@ -50,6 +51,7 @@ class ChatSocketManager @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val connectivity: ConnectivityObserver,
     private val syncEngine: SyncEngine,
+    private val pushTokenRepository: PushTokenRepository,
     @param:AppScope private val scope: CoroutineScope,
 ) : DefaultLifecycleObserver {
 
@@ -100,6 +102,11 @@ class ChatSocketManager @Inject constructor(
                     // The wire may have been dark for any amount of time —
                     // REST is the truth, go fetch it.
                     runCatching { syncEngine.resync() }
+                    // Push-token upkeep piggybacks the resync moment: a
+                    // registration that failed at login is retried here;
+                    // an unchanged token no-ops (protocol: re-POST /devices
+                    // on rotation, not on every connect).
+                    runCatching { pushTokenRepository.registerCurrentToken() }
                     socket.state.first { it == SocketState.Disconnected }
                 }
                 if (!isActive) break

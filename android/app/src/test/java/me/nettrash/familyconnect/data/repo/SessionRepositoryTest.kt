@@ -235,6 +235,11 @@ class SessionRepositoryTest {
         assertThat(tokenStore.token).isEqualTo("fresh-token")
         assertThat(authApi.meCalls).isEqualTo(1)
         assertThat(authApi.deviceCalls).isEqualTo(1)
+        // No Firebase in tests (provider yields null) → the protocol's
+        // null-token device row; the returned device_id is persisted so
+        // logout can DELETE /devices/{id}.
+        assertThat(authApi.deviceRegistrations).containsExactly(null as String?)
+        assertThat(settings.current.pushDeviceId).isEqualTo(1L)
         val snapshot = (result as ApiResult.Ok).value
         assertThat(snapshot.status).isEqualTo(FamilyStatus.MEMBER)
         assertThat(snapshot.familyName).isEqualTo("The Smiths")

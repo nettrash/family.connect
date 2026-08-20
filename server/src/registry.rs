@@ -187,6 +187,18 @@ impl Registry {
         }
     }
 
+    /// Whether the user has at least one live connection. The protocol
+    /// pushes only to users with *no* socket; message fan-out learns this
+    /// from `fan_out`'s return value, but join-request events have no WS
+    /// frame whose fan-out could be reused, so they need a plain probe.
+    pub async fn has_connections(&self, user_id: i64) -> bool {
+        self.inner
+            .read()
+            .await
+            .get(&user_id)
+            .is_some_and(|conns| !conns.is_empty())
+    }
+
     /// Number of live connections — used by main's bounded shutdown drain.
     pub async fn connection_count(&self) -> usize {
         self.inner.read().await.values().map(Vec::len).sum()
@@ -246,6 +258,17 @@ mod tests {
         registry.close_session(100).await;
         assert_eq!(*same.close.borrow_and_update(), Some(CLOSE_SESSION_GONE));
         assert_eq!(*other.close.borrow_and_update(), None);
+    }
+
+    #[tokio::test]
+    async fn has_connections_tracks_register_and_unregister() {
+        let registry = Registry::new(4);
+        assert!(!registry.has_connections(1).await);
+        let reg = registry.register(1, 100).await;
+        assert!(registry.has_connections(1).await);
+        assert!(!registry.has_connections(2).await);
+        registry.unregister(1, reg.conn_id).await;
+        assert!(!registry.has_connections(1).await);
     }
 
     #[tokio::test]

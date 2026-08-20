@@ -80,6 +80,20 @@ anyhow = "1"
 # PushSender is a dyn trait with async methods; async-trait keeps it object-safe.
 async-trait = "0.1"
 
+# HTTP client for the APNs/FCM push transports (also reused by the
+# integration suites as their REST test client). APNs requires HTTP/2, hence
+# the "http2" feature (negotiated via TLS ALPN); rustls, never native-tls,
+# matching the sqlx TLS stack so the tree carries one TLS implementation.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "http2",
+] }
+
+# JWT signing for both push transports: ES256 for the APNs provider token,
+# RS256 for the FCM OAuth2 service-account assertion — one crate covers both.
+jsonwebtoken = "9"
+
 # Logging / tracing for the service itself.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -88,11 +102,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
-# REST test client for the integration suites.
-reqwest = { version = "0.12", default-features = false, features = [
-    "json",
-    "rustls-tls",
-] }
+# (The REST test client for the integration suites is the main `reqwest`
+# dependency above — [dependencies] are visible to test targets too.)
+
+# Throwaway P-256 keys for the push tests: the tests mint a fake APNs .p8 and
+# verify the ES256 provider JWT against its public half.
+p256 = { version = "0.13", features = ["pkcs8", "pem"] }
+
+# Throwaway RSA-2048 keys for the fake FCM service account (ring, and hence
+# jsonwebtoken, refuses RSA keys shorter than 2048 bits).
+rsa = "0.9"
 
 # WebSocket test client — exercises the real upgrade path from outside axum.
 # Kept on the same minor as axum's own ws dependency so the tree carries one
@@ -104,6 +123,14 @@ futures-util = "0.3"
 
 # Scoped temp files for Config::load unit tests; cleaned up on drop.
 tempfile = "3"
+
+# The rsa crate's prime generation is unusably slow at opt-level 0; the test
+# suites generate a throwaway 2048-bit key for the fake FCM service account,
+# so optimize just the arithmetic crates in dev/test builds.
+[profile.dev.package.rsa]
+opt-level = 3
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
 
 [profile.release]
 lto = "thin"
