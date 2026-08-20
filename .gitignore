@@ -3,6 +3,7 @@
 
 # Rust (server/)
 server/target/
+server/target-linux/
 
 # Android (android/)
 android/.gradle/
