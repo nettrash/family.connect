@@ -77,6 +77,17 @@ interface ChatDao {
     )
     suspend fun setPeerLastRead(chatId: Long, messageId: Long)
 
+    /**
+     * Advance the reaction catch-up cursor. Scalar MAX() keeps it
+     * monotonic, so applying frames/pages in any order is safe.
+     */
+    @Query("UPDATE chats SET maxReactionSeq = MAX(maxReactionSeq, :seq) WHERE id = :chatId")
+    suspend fun advanceMaxReactionSeq(chatId: Long, seq: Long)
+
+    /** The stored reaction cursor (null when the chat row is absent). */
+    @Query("SELECT maxReactionSeq FROM chats WHERE id = :chatId")
+    suspend fun maxReactionSeq(chatId: Long): Long?
+
     @Query("DELETE FROM chats")
     suspend fun deleteAll()
 }

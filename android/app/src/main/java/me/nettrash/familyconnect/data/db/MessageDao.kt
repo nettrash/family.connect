@@ -77,6 +77,38 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE status = 'SENDING' ORDER BY createdAt ASC")
     suspend fun pendingSending(): List<MessageEntity>
 
+    /**
+     * The one write path for server-authored reaction state (WS frame,
+     * catch-up page, or reactions embedded on a fetched Message). The
+     * `reactionSeq < :seq` guard makes the apply atomic AND idempotent:
+     * a stale or re-delivered state simply matches zero rows. Returns
+     * the number of rows updated (0 = stale or message not held).
+     */
+    @Query(
+        """
+        UPDATE messages SET reactionsJson = :json, reactionSeq = :seq
+        WHERE serverId = :serverId AND reactionSeq < :seq
+        """,
+    )
+    suspend fun applyReactionState(serverId: Long, json: String, seq: Long): Int
+
+    /**
+     * Optimistic local rewrite for the toggle path — deliberately does
+     * NOT touch reactionSeq, so the authoritative response (or any WS
+     * frame) still passes the seq guard afterwards. Also the revert.
+     * Compare-and-set on the seq observed at read time: a WS frame that
+     * lands mid-toggle bumps the seq, and the stale optimistic write (or
+     * the revert after a failed call) then matches zero rows instead of
+     * clobbering the newer state — which nothing would re-deliver.
+     */
+    @Query(
+        """
+        UPDATE messages SET reactionsJson = :json
+        WHERE serverId = :serverId AND reactionSeq = :expectedSeq
+        """,
+    )
+    suspend fun setReactionsJson(serverId: Long, json: String?, expectedSeq: Long)
+
     /** Resync cursor: message ids are globally monotonic (protocol). */
     @Query("SELECT MAX(serverId) FROM messages WHERE chatId = :chatId")
     suspend fun maxServerId(chatId: Long): Long?

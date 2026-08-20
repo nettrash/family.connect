@@ -16,6 +16,7 @@ use sqlx::{PgPool, Row};
 use tracing::{info, warn};
 
 use crate::error::ApiError;
+use crate::handlers_chat::ReactionState;
 use crate::models::{Message, UserBrief};
 use crate::push::DevicePush;
 use crate::push_payload::{self, Notification};
@@ -237,6 +238,24 @@ pub async fn deliver_read(
         last_read_message_id,
     };
     state.registry.send_to_users(&recipients, &frame).await;
+    Ok(())
+}
+
+/// Fan a message's full reaction state out to every chat member — the
+/// actor's connections included: the acting request is answered by its HTTP
+/// response, but the actor's *other* devices learn about the change only
+/// from this frame. Reactions never reach the push seam (protocol.md:
+/// typing, reads, and reactions never push) — `send_to_users` discards the
+/// offline list.
+pub async fn deliver_reaction(state: &AppState, reaction: &ReactionState) -> Result<(), ApiError> {
+    let members = chat_member_ids(&state.pool, reaction.chat_id).await?;
+    let frame = ServerFrame::Reaction {
+        chat_id: reaction.chat_id,
+        message_id: reaction.message_id,
+        reaction_seq: reaction.reaction_seq,
+        reactions: reaction.reactions.clone(),
+    };
+    state.registry.send_to_users(&members, &frame).await;
     Ok(())
 }
 

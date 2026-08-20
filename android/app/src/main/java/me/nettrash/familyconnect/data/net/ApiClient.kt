@@ -95,6 +95,11 @@ class ApiClient @Inject constructor(
     suspend inline fun <reified T> postEmpty(path: String): ApiResult<T> =
         decode(raw("POST", path, null))
 
+    suspend inline fun <reified B, reified T> put(
+        path: String,
+        body: B,
+    ): ApiResult<T> = decode(raw("PUT", path, json.encodeToString(body)))
+
     suspend inline fun <reified B, reified T> patch(
         path: String,
         body: B,

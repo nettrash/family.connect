@@ -122,4 +122,41 @@ struct MessageGroupingTests {
         let pending = Self.snapshot(localID: "c:x", serverID: nil, senderID: 7, at: "2026-08-19T08:00:00Z", state: .pending)
         #expect(!MessagePresentation.isRead(pending, othersReadUpTo: .max))
     }
+
+    // MARK: - Reaction chips
+
+    @Test("chips aggregate per emoji in first-seen order with counts and includesMe")
+    func reactionChipAggregation() {
+        let reactions = [
+            ReactionSnapshot(userID: 9, emoji: "❤️"),
+            ReactionSnapshot(userID: 11, emoji: "👍"),
+            ReactionSnapshot(userID: 7, emoji: "❤️"),
+            ReactionSnapshot(userID: 12, emoji: "😂"),
+        ]
+        let chips = MessagePresentation.reactionChips(reactions, currentUserID: 7)
+        #expect(chips == [
+            ReactionChip(emoji: "❤️", count: 2, includesMe: true),
+            ReactionChip(emoji: "👍", count: 1, includesMe: false),
+            ReactionChip(emoji: "😂", count: 1, includesMe: false),
+        ])
+    }
+
+    @Test("first-seen order holds even when a later emoji outnumbers an earlier one")
+    func reactionChipOrderIsFirstSeenNotPopularity() {
+        let reactions = [
+            ReactionSnapshot(userID: 1, emoji: "👍"),
+            ReactionSnapshot(userID: 2, emoji: "❤️"),
+            ReactionSnapshot(userID: 3, emoji: "❤️"),
+            ReactionSnapshot(userID: 4, emoji: "❤️"),
+        ]
+        let chips = MessagePresentation.reactionChips(reactions, currentUserID: 99)
+        #expect(chips.map(\.emoji) == ["👍", "❤️"])
+        #expect(chips.map(\.count) == [1, 3])
+        #expect(chips.allSatisfy { !$0.includesMe })
+    }
+
+    @Test("no reactions yield no chips")
+    func reactionChipsEmpty() {
+        #expect(MessagePresentation.reactionChips([], currentUserID: 7).isEmpty)
+    }
 }

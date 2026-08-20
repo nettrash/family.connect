@@ -6,7 +6,7 @@
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 
 use crate::state::AppState;
 use crate::{handlers_auth, handlers_chat, handlers_device, handlers_family, ws};
@@ -60,6 +60,14 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers_chat::get_messages).post(handlers_chat::post_message),
         )
         .route("/api/v1/chats/{id}/read", post(handlers_chat::mark_read))
+        .route(
+            "/api/v1/chats/{id}/messages/{message_id}/reaction",
+            put(handlers_chat::put_reaction).delete(handlers_chat::delete_reaction),
+        )
+        .route(
+            "/api/v1/chats/{id}/reactions",
+            get(handlers_chat::get_reactions),
+        )
         // Devices
         .route("/api/v1/devices", post(handlers_device::register_device))
         .route(

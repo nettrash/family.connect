@@ -13,6 +13,8 @@
  *     differs in sender or day).
  *   - showTimestamp: on the last message of a same-sender same-minute
  *     run — consecutive rapid-fire messages share one timestamp.
+ *   - reactionChips: the row's reactionsJson aggregated into
+ *     (emoji, count, includesMe) chips in first-seen order.
  *
  * iOS counterpart: ios/FamilyConnect/UI/Chat/ChatItems.swift
  */
@@ -20,8 +22,41 @@
 package me.nettrash.familyconnect.ui.chat
 
 import me.nettrash.familyconnect.data.db.MessageEntity
+import me.nettrash.familyconnect.data.net.dto.ReactionDto
+import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.util.TimeFormat
 import java.time.ZoneId
+
+/**
+ * The quick-set the long-press sheet offers. Client UI only — the
+ * protocol accepts any emoji ≤ 32 bytes, so other clients' choices
+ * outside this list still render as chips.
+ */
+val QUICK_REACTIONS = listOf("❤️", "👍", "👎", "😂", "😮", "😢")
+
+/** One aggregated reaction chip under a bubble. */
+data class ReactionChip(
+    val emoji: String,
+    val count: Int,
+    /** My reaction is in this group — the chip highlights, tap removes. */
+    val includesMe: Boolean,
+)
+
+/**
+ * Aggregate raw per-user reactions into ordered chips: one per emoji in
+ * FIRST-SEEN order (stable while people pile onto existing emojis).
+ */
+fun buildReactionChips(reactions: List<ReactionDto>, myUserId: Long): List<ReactionChip> {
+    if (reactions.isEmpty()) return emptyList()
+    val byEmoji = LinkedHashMap<String, Pair<Int, Boolean>>()
+    for (reaction in reactions) {
+        val (count, mine) = byEmoji[reaction.emoji] ?: (0 to false)
+        byEmoji[reaction.emoji] = (count + 1) to (mine || reaction.userId == myUserId)
+    }
+    return byEmoji.map { (emoji, aggregate) ->
+        ReactionChip(emoji = emoji, count = aggregate.first, includesMe = aggregate.second)
+    }
+}
 
 sealed interface ChatListItem {
     /** Stable LazyColumn key. */
@@ -32,8 +67,12 @@ sealed interface ChatListItem {
         val showSenderName: Boolean,
         val senderName: String?,
         val showTimestamp: Boolean,
+        val reactionChips: List<ReactionChip> = emptyList(),
     ) : ChatListItem {
         override val key: String get() = entity.clientMsgId
+
+        /** My current reaction, if any (one per user per message). */
+        val myReaction: String? get() = reactionChips.firstOrNull { it.includesMe }?.emoji
     }
 
     data class DateSeparator(
@@ -67,6 +106,10 @@ fun buildChatItems(
             showSenderName = isFamilyChat && message.senderId != myUserId && startsRun,
             senderName = memberNames[message.senderId],
             showTimestamp = endsMinuteRun,
+            reactionChips = buildReactionChips(
+                reactions = ReactionsCodec.decode(message.reactionsJson),
+                myUserId = myUserId,
+            ),
         )
 
         val dayEnds = older == null ||

@@ -203,6 +203,8 @@ mod tests {
             client_msg_id: Uuid::nil(),
             body: "Dinner at 7?".to_string(),
             created_at: datetime!(2026-08-19 17:03:12 UTC),
+            reactions: None,
+            reaction_seq: None,
         }
     }
 

@@ -43,7 +43,7 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `join_request_pending`, `join_request_not_pending`, `user_already_in_family`,
 `owner_cannot_leave`, `cannot_remove_owner`, `cannot_dm_self`, `not_same_family`,
 `user_not_found`, `chat_not_found`, `not_chat_member`, `message_empty`, `message_too_long`,
-`invalid_pagination`, `device_not_found`, `internal`.
+`message_not_found`, `invalid_emoji`, `invalid_pagination`, `device_not_found`, `internal`.
 
 ## Objects
 
@@ -59,7 +59,16 @@ Chat      {"id": 42, "kind": "family|direct", "title": "The Smiths", "peer_user_
 Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
            "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
            "body": "Dinner at 7?", "created_at": "…"}
+          — plus "reactions": [Reaction] and "reaction_seq": 123 when (and only when) the
+            message has ever been reacted to. After the last reaction is removed the fields
+            stay present with "reactions": [] — clients distinguish "cleared" from "no data".
+Reaction  {"user_id": 9, "emoji": "❤️"}
 ```
+
+Every mutation of a message's reactions (set, replace, remove) takes the next value of one
+server-wide sequence and stamps it on the message as `reaction_seq`; each chat exposes the
+maximum such value over its messages as `max_reaction_seq` in `GET /chats`. Together they give
+clients a monotonic cursor for reaction catch-up, exactly as message ids drive `after_id`.
 
 ## REST endpoints
 
@@ -91,11 +100,14 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3}]}`. Family chat included always; direct chats once they exist. |
+| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to; `last_message` previews never carry `reactions`. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self`, `not_same_family`, `user_not_found`. |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body}` → `201 {message: Message}`. Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. Errors: `message_empty`, `message_too_long`, `not_chat_member`. |
 | `POST /chats/{id}/read` | `{last_read_message_id}` → `204`. Monotonic — the server keeps the max ever reported. |
+| `PUT /chats/{id}/messages/{mid}/reaction` | `{emoji}` → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Sets or replaces the caller's reaction on the message — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or remove). One reaction per user per message. Emoji: trimmed, non-empty, ≤ 32 bytes UTF-8. Re-PUT of the current emoji is a no-op: no seq bump, no fan-out. Errors: `invalid_emoji`, `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
+| `DELETE /chats/{id}/messages/{mid}/reaction` | → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Removes the caller's reaction; idempotent (deleting nothing returns the current state unchanged). Same errors minus `invalid_emoji`. |
+| `GET /chats/{id}/reactions` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {message_reactions: [{message_id, reaction_seq, reactions: [Reaction]}]}` ordered by `reaction_seq` ascending — the reaction catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 
 ### Devices (push hook — no delivery in v1)
 
@@ -135,6 +147,8 @@ Frames are JSON text messages tagged by `"type"`.
 {"type": "typing",  "chat_id": 42, "user_id": 9}
 {"type": "member_joined", "family_id": 3, "user": {"id": 11, "username": "junior", "display_name": "Junior"}}
 {"type": "member_left",   "family_id": 3, "user_id": 11}
+{"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
+                     "reactions": [{"user_id": 9, "emoji": "❤️"}]}
 {"type": "pong"}
 {"type": "error",   "code": "not_chat_member", "message": "…", "client_msg_id": "8f14e45f-…"}
 ```
@@ -151,6 +165,16 @@ Frames are JSON text messages tagged by `"type"`.
   the `ack` with the original message and does not re-fan-out.
 - **Read/typing**: relayed to the other members of the chat. `typing` is never persisted and is
   throttled server-side to one per chat per 3 s per connection.
+- **Reactions**: the `reaction` frame carries the message's **full current reaction state**
+  (never a delta), so it is idempotent and ordering races resolve locally: a client applies it
+  only when `reaction_seq` is greater than the last value it stored for that message. It goes
+  to every connection of every chat member, the actor's own included (the actor's originating
+  request is answered by its HTTP response). Reaction mutations are REST-only in v1; a
+  client-to-server `reaction` frame may be added later under the unknown-frame rule.
+  Sequence values are assigned before commit, so a catch-up read can theoretically skip a
+  not-yet-committed lower seq on a *different* message — the same accepted gap `after_id` has
+  for message ids, and self-healing here because any later reaction to the same message
+  re-delivers its full state.
 - **Keepalive**: the server pings (WS protocol level) every 30 s and drops sockets idle for
   75 s. Clients should send `{"type":"ping"}` every ~25 s if their WS library hides protocol
   pings, and treat a missing `pong` as a dead connection.
@@ -160,6 +184,11 @@ Frames are JSON text messages tagged by `"type"`.
   2. `GET /chats` — chat list, previews, authoritative unread counts.
   3. Per chat: `GET /chats/{id}/messages?after_id=<max known message id>` looped until a short
      page — message ids are globally monotonic, so `max(id)` is the sync cursor.
+     Then, when the chat's `max_reaction_seq` from step 2 exceeds the locally stored reaction
+     cursor: `GET /chats/{id}/reactions?after_seq=<stored cursor>` looped until a short page,
+     applied per message under the `reaction_seq` guard. The stored cursor advances with every
+     page **even for messages the client does not hold** (states for unknown messages are
+     dropped; history paging re-delivers them embedded on the `Message` objects).
   4. Re-send any locally pending outbound messages (safe: `client_msg_id` dedups).
 
 ## Push notifications
@@ -167,7 +196,7 @@ Frames are JSON text messages tagged by `"type"`.
 The server pushes only to users with **no live socket** (an open WebSocket means the device is
 getting frames already). Three events push: a **new message** (to every offline chat member), a
 **join request created** (to the family owner), and a **join request approved** (to the
-requester). Typing, reads, and other frames never push.
+requester). Typing, reads, reactions, and other frames never push.
 
 Device lifecycle: `POST /devices {platform, push_token}` upserts by token (re-login moves the
 token to the new account); the response `device_id` should be stored so `DELETE /devices/{id}`
@@ -208,6 +237,7 @@ Tapping a notification opens the chat named by `chat_id` (or the join-requests s
 | Limit | Default |
 |---|---|
 | Message body | 4000 chars |
+| Reaction emoji | 32 bytes UTF-8 (fixed) |
 | Page size | 50 default / 200 max |
 | HTTP body | 16 KiB |
 | Per-socket outbound queue | 64 frames |

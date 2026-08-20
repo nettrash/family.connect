@@ -165,6 +165,73 @@ class MessageDaoTest {
         assertThat(dao.existsByServerId(123L)).isTrue()
     }
 
+    // -- Reaction state (seq guard) -----------------------------------------
+
+    @Test
+    fun applyReactionStateAppliesOnlyWhenSeqIsStrictlyGreater() = runTest(dispatcher) {
+        dao.insert(message("s5", serverId = 5, createdAt = 1))
+
+        // Fresh row (seq 0): any positive seq applies.
+        assertThat(dao.applyReactionState(5L, """[{"user_id":9,"emoji":"x"}]""", 10L)).isEqualTo(1)
+        var row = dao.findByServerId(5L)!!
+        assertThat(row.reactionSeq).isEqualTo(10L)
+        assertThat(row.reactionsJson).isEqualTo("""[{"user_id":9,"emoji":"x"}]""")
+
+        // Same seq re-delivered — strictly-greater guard drops it.
+        assertThat(dao.applyReactionState(5L, "[]", 10L)).isEqualTo(0)
+        // Stale seq — dropped too.
+        assertThat(dao.applyReactionState(5L, "[]", 3L)).isEqualTo(0)
+        row = dao.findByServerId(5L)!!
+        assertThat(row.reactionSeq).isEqualTo(10L)
+        assertThat(row.reactionsJson).isEqualTo("""[{"user_id":9,"emoji":"x"}]""")
+
+        // Newer seq wins — including the "cleared" [] state.
+        assertThat(dao.applyReactionState(5L, "[]", 11L)).isEqualTo(1)
+        row = dao.findByServerId(5L)!!
+        assertThat(row.reactionSeq).isEqualTo(11L)
+        assertThat(row.reactionsJson).isEqualTo("[]")
+    }
+
+    @Test
+    fun applyReactionStateForUnknownServerIdMatchesNothing() = runTest(dispatcher) {
+        assertThat(dao.applyReactionState(404L, "[]", 99L)).isEqualTo(0)
+    }
+
+    @Test
+    fun setReactionsJsonRewritesStateButNeverTheSeq() = runTest(dispatcher) {
+        dao.insert(message("s5", serverId = 5, createdAt = 1))
+        dao.applyReactionState(5L, "[]", 7L)
+
+        // Optimistic rewrite: json changes, guard seq stays 7 — so the
+        // authoritative response (seq 8) still passes the guard.
+        dao.setReactionsJson(5L, """[{"user_id":7,"emoji":"y"}]""", expectedSeq = 7L)
+        var row = dao.findByServerId(5L)!!
+        assertThat(row.reactionsJson).isEqualTo("""[{"user_id":7,"emoji":"y"}]""")
+        assertThat(row.reactionSeq).isEqualTo(7L)
+
+        // Revert path: back to null works too.
+        dao.setReactionsJson(5L, null, expectedSeq = 7L)
+        row = dao.findByServerId(5L)!!
+        assertThat(row.reactionsJson).isNull()
+        assertThat(row.reactionSeq).isEqualTo(7L)
+    }
+
+    @Test
+    fun setReactionsJsonIsSkippedWhenTheSeqMovedSinceTheRead() = runTest(dispatcher) {
+        dao.insert(message("s5", serverId = 5, createdAt = 1))
+        dao.applyReactionState(5L, "[]", 7L)
+
+        // A WS frame lands mid-toggle and bumps the seq to 8: the stale
+        // optimistic write (or revert) read the row at seq 7 and must
+        // now match zero rows instead of clobbering the frame's state.
+        dao.applyReactionState(5L, """[{"user_id":9,"emoji":"x"}]""", 8L)
+        dao.setReactionsJson(5L, null, expectedSeq = 7L)
+
+        val row = dao.findByServerId(5L)!!
+        assertThat(row.reactionsJson).isEqualTo("""[{"user_id":9,"emoji":"x"}]""")
+        assertThat(row.reactionSeq).isEqualTo(8L)
+    }
+
     @Test
     fun deleteByClientMsgIdRemovesExactlyThatRow() = runTest(dispatcher) {
         dao.insert(message("keep", serverId = 1, createdAt = 1))

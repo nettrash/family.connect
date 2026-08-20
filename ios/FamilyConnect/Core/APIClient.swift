@@ -243,6 +243,37 @@ actor APIClient {
         try await requestVoid("POST", "/chats/\(chatID)/read", body: ReadRequest(lastReadMessageID: lastReadMessageID))
     }
 
+    // MARK: - Reactions
+
+    private struct SetReactionRequest: Encodable {
+        let emoji: String
+    }
+
+    /// Set or replace the caller's reaction — an idempotent state-set,
+    /// not a toggle (the coordinator decides set vs remove locally).
+    /// Returns the message's full authoritative reaction state.
+    func setReaction(chatID: Int64, messageID: Int64, emoji: String) async throws -> ReactionStateDTO {
+        try await request("PUT", "/chats/\(chatID)/messages/\(messageID)/reaction",
+                          body: SetReactionRequest(emoji: emoji))
+    }
+
+    /// Remove the caller's reaction; idempotent (removing nothing returns
+    /// the current state unchanged, seq included).
+    func removeReaction(chatID: Int64, messageID: Int64) async throws -> ReactionStateDTO {
+        try await request("DELETE", "/chats/\(chatID)/messages/\(messageID)/reaction")
+    }
+
+    /// Reaction catch-up pages, ascending by reaction_seq; the caller
+    /// loops (advancing afterSeq) until a short page, like `after_id`.
+    func reactions(chatID: Int64, afterSeq: Int64, limit: Int = 50) async throws -> [ReactionStateDTO] {
+        let query = [
+            URLQueryItem(name: "after_seq", value: String(afterSeq)),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        let response: MessageReactionsResponse = try await request("GET", "/chats/\(chatID)/reactions", query: query)
+        return response.messageReactions
+    }
+
     // MARK: - Devices
 
     private struct DeviceRequest: Encodable {

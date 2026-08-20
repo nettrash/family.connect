@@ -29,7 +29,7 @@ use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::events;
 use crate::handlers_chat;
-use crate::models::{Message, UserBrief};
+use crate::models::{Message, Reaction, UserBrief};
 use crate::registry::{CLOSE_GOING_AWAY, CLOSE_SESSION_GONE};
 use crate::state::AppState;
 
@@ -83,6 +83,15 @@ pub enum ServerFrame {
     MemberLeft {
         family_id: i64,
         user_id: i64,
+    },
+    /// A message's full current reaction state — state transfer, never a
+    /// delta, so delivery order races resolve client-side by comparing
+    /// `reaction_seq`.
+    Reaction {
+        chat_id: i64,
+        message_id: i64,
+        reaction_seq: i64,
+        reactions: Vec<Reaction>,
     },
     Pong,
     Error {
@@ -410,6 +419,8 @@ mod tests {
                 .expect("valid uuid"),
             body: "Dinner at 7?".to_string(),
             created_at: datetime!(2026-08-19 17:03:12 UTC),
+            reactions: None,
+            reaction_seq: None,
         }
     }
 
@@ -532,6 +543,46 @@ mod tests {
         assert_serializes_to(
             &frame,
             r#"{"type": "member_left", "family_id": 3, "user_id": 11}"#,
+        );
+    }
+
+    #[test]
+    fn reaction_frame_matches_the_protocol_shape() {
+        let frame = ServerFrame::Reaction {
+            chat_id: 42,
+            message_id: 1338,
+            reaction_seq: 124,
+            reactions: vec![Reaction {
+                user_id: 9,
+                emoji: "❤️".to_string(),
+            }],
+        };
+        assert_serializes_to(
+            &frame,
+            r#"{"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
+                "reactions": [{"user_id": 9, "emoji": "❤️"}]}"#,
+        );
+    }
+
+    #[test]
+    fn a_message_with_reactions_serializes_them_and_a_bare_message_omits_them() {
+        let mut message = sample_message();
+        message.reactions = Some(vec![Reaction {
+            user_id: 9,
+            emoji: "❤️".to_string(),
+        }]);
+        message.reaction_seq = Some(124);
+        let json = serde_json::to_value(&message).expect("serializes");
+        assert_eq!(
+            json["reactions"],
+            serde_json::json!([{"user_id": 9, "emoji": "❤️"}])
+        );
+        assert_eq!(json["reaction_seq"], 124);
+
+        let bare = serde_json::to_value(sample_message()).expect("serializes");
+        assert!(
+            bare.get("reactions").is_none() && bare.get("reaction_seq").is_none(),
+            "reaction fields must be absent, not null: {bare}"
         );
     }
 

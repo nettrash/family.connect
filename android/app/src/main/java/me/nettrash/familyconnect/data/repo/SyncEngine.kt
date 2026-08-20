@@ -10,6 +10,9 @@
  *   2. GET /chats             — chat list, previews, authoritative unread.
  *   3. Per chat: after_id=<max known id> pages (limit 200) until short —
  *      message ids are globally monotonic, so max(serverId) is the cursor.
+ *      Then, when the server's max_reaction_seq (step 2) beats the
+ *      locally stored reaction cursor: after_seq pages until short —
+ *      this is what repairs reactions missed while offline.
  *   4. Re-send locally pending outbound messages (client_msg_id dedups).
  *
  * Also refreshes the family roster so sender names resolve.
@@ -42,8 +45,9 @@ class SyncEngine @Inject constructor(
 
         familyRepository.refreshMine()
 
-        // 2. Chat list + authoritative unread counts.
-        chatRepository.refreshChats()
+        // 2. Chat list + authoritative unread counts (and the server's
+        // per-chat max_reaction_seq, driving step 3b below).
+        val serverReactionSeqs = chatRepository.refreshChats().okOrNull() ?: emptyMap()
 
         // 3. Catch-up per chat, looped while pages come back full.
         for (chatId in chatDao.allChatIds()) {
@@ -51,6 +55,12 @@ class SyncEngine @Inject constructor(
                 val after = messageDao.maxServerId(chatId) ?: 0L
                 val pageSize = messageRepository.catchUp(chatId, after, CATCH_UP_PAGE) ?: break
                 if (pageSize < CATCH_UP_PAGE) break
+            }
+            // 3b. Reactions missed while offline: the server's cursor
+            // beats ours → page /reactions from the stored cursor.
+            val localSeq = chatDao.maxReactionSeq(chatId) ?: 0L
+            if ((serverReactionSeqs[chatId] ?: 0L) > localSeq) {
+                messageRepository.catchUpReactions(chatId, localSeq)
             }
         }
 

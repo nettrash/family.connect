@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 1.
+ * Room database, version 2.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -19,6 +19,8 @@ package me.nettrash.familyconnect.data.db
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -37,7 +39,7 @@ fun interface LocalDataWiper {
         MessageEntity::class,
         MemberEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -50,5 +52,21 @@ abstract class AppDatabase : RoomDatabase() {
     /** Logout / removed-from-family: drop every table, keep the schema. */
     suspend fun wipeAll() = withContext(Dispatchers.IO) {
         clearAllTables()
+    }
+
+    companion object {
+
+        /**
+         * v2: emoji reactions. The DEFAULTs match the entities'
+         * @ColumnInfo(defaultValue) so a migrated schema and a fresh
+         * install validate identically.
+         */
+        val MIGRATION_1_2: Migration = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN reactionsJson TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN reactionSeq INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE chats ADD COLUMN maxReactionSeq INTEGER NOT NULL DEFAULT 0")
+            }
+        }
     }
 }

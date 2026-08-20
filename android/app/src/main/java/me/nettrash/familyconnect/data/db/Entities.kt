@@ -19,6 +19,7 @@
 
 package me.nettrash.familyconnect.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -56,6 +57,14 @@ data class ChatEntity(
     val lastMessageBody: String?,
     val lastMessageAt: Long?,
     val lastMessageSenderId: Long?,
+    /**
+     * Reaction catch-up cursor: the highest reaction_seq this client has
+     * APPLIED (or deliberately skipped) for this chat — advanced by
+     * catch-up pages and live frames, never derived from held messages.
+     * defaultValue keeps a fresh install and a 1→2 migrated schema
+     * byte-identical under Room's validation.
+     */
+    @ColumnInfo(defaultValue = "0") val maxReactionSeq: Long = 0,
 )
 
 @Entity(
@@ -76,6 +85,18 @@ data class MessageEntity(
     /** Epoch millis. Local clock until acked; server clock (authoritative) after. */
     val createdAt: Long,
     val status: MessageStatus,
+    /**
+     * The message's reactions, stored as the wire-shape JSON array
+     * (see ReactionsCodec). Null = never reacted, "[]" = cleared —
+     * mirroring the protocol's absent-vs-empty distinction.
+     */
+    val reactionsJson: String? = null,
+    /**
+     * The reaction_seq stamped on the state in [reactionsJson]. Guards
+     * out-of-order applies: a state only lands when its seq is greater
+     * (see MessageDao.applyReactionState). 0 = no state ever applied.
+     */
+    @ColumnInfo(defaultValue = "0") val reactionSeq: Long = 0,
 )
 
 @Entity(tableName = "members")

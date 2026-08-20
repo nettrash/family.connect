@@ -12,11 +12,13 @@
 package me.nettrash.familyconnect.data.repo
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -30,7 +32,10 @@ import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
+import me.nettrash.familyconnect.data.net.dto.ReactionDto
+import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.settings.SettingsState
@@ -39,6 +44,7 @@ import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
+import me.nettrash.familyconnect.testutil.reactionState
 import me.nettrash.familyconnect.util.Clock
 import org.junit.After
 import org.junit.Before
@@ -471,6 +477,207 @@ class MessageRepositoryTest {
         assertThat(messageDao.oldestServerId(CHAT)).isEqualTo(48L)
         // History inserts never bump unread.
         assertThat(chatDao.getById(CHAT)!!.unreadCount).isEqualTo(0)
+    }
+
+    // -- Reactions -----------------------------------------------------------------------
+
+    private suspend fun insertServerMessage(serverId: Long, chatId: Long = CHAT) {
+        messageDao.insertIgnore(
+            listOf(
+                MessageEntity("s$serverId", serverId, chatId, PEER, "msg", NOW, MessageStatus.SENT),
+            ),
+        )
+    }
+
+    @Test
+    fun reactionFrameAppliesStateAndAdvancesTheChatCursor() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+
+        socket.emit(
+            ServerFrame.Reaction(
+                chatId = CHAT,
+                messageId = 100,
+                reactionSeq = 5,
+                reactions = listOf(ReactionDto(PEER, "❤️")),
+            ),
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(ReactionsCodec.decode(row.reactionsJson)).containsExactly(ReactionDto(PEER, "❤️"))
+        assertThat(row.reactionSeq).isEqualTo(5L)
+        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(5L)
+    }
+
+    @Test
+    fun staleReactionFrameIsIgnored() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+
+        socket.emit(ServerFrame.Reaction(CHAT, 100, 5, listOf(ReactionDto(PEER, "❤️"))))
+        advanceUntilIdle()
+        // Out-of-order older state — full-state semantics + the seq
+        // guard mean it must NOT overwrite the newer one.
+        socket.emit(ServerFrame.Reaction(CHAT, 100, 3, listOf(ReactionDto(PEER, "👍"))))
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(ReactionsCodec.decode(row.reactionsJson)).containsExactly(ReactionDto(PEER, "❤️"))
+        assertThat(row.reactionSeq).isEqualTo(5L)
+        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(5L) // MAX guard held too
+    }
+
+    @Test
+    fun reactionFrameForUnknownMessageIsDroppedButStillAdvancesTheCursor() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+
+        socket.emit(ServerFrame.Reaction(CHAT, 999, 7, listOf(ReactionDto(PEER, "❤️"))))
+        advanceUntilIdle()
+
+        // No row conjured up — the state comes back embedded on the
+        // Message when history pages there.
+        assertThat(messageDao.findByServerId(999L)).isNull()
+        // But the cursor moved: a live socket delivers in order, so seq
+        // 7 is proof nothing below it is missing.
+        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(7L)
+    }
+
+    @Test
+    fun redeliveredMessageAppliesNewerEmbeddedReactionsToTheExistingRow() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        repository.applyServerMessage(
+            messageDto(id = 100, chatId = CHAT, senderId = PEER, reactions = listOf(ReactionDto(PEER, "❤️")), reactionSeq = 5),
+            live = false,
+        )
+        assertThat(messageDao.findByServerId(100L)!!.reactionSeq).isEqualTo(5L)
+
+        // The same message re-delivered (history page overlap) with a
+        // NEWER embedded state — before the existsByServerId early
+        // return learned about reactions, this update was discarded.
+        repository.applyServerMessage(
+            messageDto(id = 100, chatId = CHAT, senderId = PEER, reactions = emptyList(), reactionSeq = 6),
+            live = false,
+        )
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(ReactionsCodec.decode(row.reactionsJson)).isEmpty()
+        assertThat(row.reactionSeq).isEqualTo(6L)
+
+        // A STALE embedded state on yet another re-delivery is dropped.
+        repository.applyServerMessage(
+            messageDto(id = 100, chatId = CHAT, senderId = PEER, reactions = listOf(ReactionDto(PEER, "👍")), reactionSeq = 4),
+            live = false,
+        )
+        assertThat(messageDao.findByServerId(100L)!!.reactionSeq).isEqualTo(6L)
+
+        // Embedded reactions never move the chat cursor (protocol:
+        // never derive it from held messages).
+        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(0L)
+    }
+
+    @Test
+    fun toggleReactionAppliesOptimisticallyThenTheAuthoritativeState() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        val gate = CompletableDeferred<ApiResult<MessageReactionStateDto>>()
+        chatApi.putReactionHandler = { _, _, _ -> gate.await() }
+
+        val toggle = repoScope.launch { repository.toggleReaction(CHAT, 100L, "❤️") }
+        runCurrent()
+
+        // REST still in flight — the chip is already visible, and the
+        // guard seq is untouched so the response can still land.
+        val optimistic = messageDao.findByServerId(100L)!!
+        assertThat(ReactionsCodec.decode(optimistic.reactionsJson)).containsExactly(ReactionDto(ME, "❤️"))
+        assertThat(optimistic.reactionSeq).isEqualTo(0L)
+        assertThat(chatApi.putReactions).containsExactly(Triple(CHAT, 100L, "❤️"))
+
+        gate.complete(ApiResult.Ok(reactionState(100L, 7L, listOf(ReactionDto(ME, "❤️")))))
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(ReactionsCodec.decode(row.reactionsJson)).containsExactly(ReactionDto(ME, "❤️"))
+        assertThat(row.reactionSeq).isEqualTo(7L)
+        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(7L)
+        assertThat(toggle.isCompleted).isTrue()
+    }
+
+    @Test
+    fun togglingMyCurrentEmojiDeletesInsteadOfPuts() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        messageDao.applyReactionState(
+            100L,
+            ReactionsCodec.encode(listOf(ReactionDto(ME, "❤️"), ReactionDto(PEER, "👍"))),
+            5L,
+        )
+        chatApi.deleteReactionHandler = { _, _ ->
+            ApiResult.Ok(reactionState(100L, 8L, listOf(ReactionDto(PEER, "👍"))))
+        }
+
+        repository.toggleReaction(CHAT, 100L, "❤️")
+
+        assertThat(chatApi.deletedReactions).containsExactly(CHAT to 100L)
+        assertThat(chatApi.putReactions).isEmpty()
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(ReactionsCodec.decode(row.reactionsJson)).containsExactly(ReactionDto(PEER, "👍"))
+        assertThat(row.reactionSeq).isEqualTo(8L)
+        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(8L)
+    }
+
+    @Test
+    fun toggleReactionRevertsTheOptimisticChangeOnApiFailure() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        val before = ReactionsCodec.encode(listOf(ReactionDto(PEER, "❤️")))
+        messageDao.applyReactionState(100L, before, 5L)
+        val gate = CompletableDeferred<ApiResult<MessageReactionStateDto>>()
+        chatApi.putReactionHandler = { _, _, _ -> gate.await() }
+
+        val toggle = repoScope.launch { repository.toggleReaction(CHAT, 100L, "👍") }
+        runCurrent()
+
+        // Optimistic state really was applied…
+        assertThat(ReactionsCodec.decode(messageDao.findByServerId(100L)!!.reactionsJson))
+            .containsExactly(ReactionDto(PEER, "❤️"), ReactionDto(ME, "👍"))
+
+        gate.complete(ApiResult.HttpError(404, "message_not_found", "gone"))
+        advanceUntilIdle()
+
+        // …and rolled back wholesale; no retry (mirrors postRead).
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(row.reactionsJson).isEqualTo(before)
+        assertThat(row.reactionSeq).isEqualTo(5L)
+        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(0L) // cursor untouched
+        assertThat(toggle.isCompleted).isTrue()
+        assertThat(chatApi.putReactions).hasSize(1)
+    }
+
+    @Test
+    fun catchUpReactionsAdvancesTheCursorEvenWhenNoMessageIsHeld() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        chatApi.reactionsHandler = { _, afterSeq, _ ->
+            assertThat(afterSeq).isEqualTo(0L)
+            ApiResult.Ok(
+                me.nettrash.familyconnect.data.net.dto.ReactionsCatchUpResponse(
+                    listOf(reactionState(999L, 12L, listOf(ReactionDto(PEER, "❤️")))),
+                ),
+            )
+        }
+
+        repository.catchUpReactions(CHAT, 0L)
+
+        assertThat(messageDao.findByServerId(999L)).isNull() // dropped silently
+        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(12L) // cursor advanced anyway
+        assertThat(chatApi.reactionsCalls).isEqualTo(1) // short page ended the loop
     }
 
     @Test

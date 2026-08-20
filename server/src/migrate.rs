@@ -22,11 +22,18 @@ pub struct Migration {
 }
 
 /// All migrations, in application order. Append-only.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("../migrations/0001_init.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "reactions",
+        sql: include_str!("../migrations/0002_reactions.sql"),
+    },
+];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among
 /// advisory locks on the database ("famconn" left-padded, as it were).

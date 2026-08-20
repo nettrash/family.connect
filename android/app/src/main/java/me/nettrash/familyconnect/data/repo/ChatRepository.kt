@@ -55,7 +55,14 @@ class ChatRepository @Inject constructor(
 
     fun observeChat(chatId: Long): Flow<ChatEntity?> = chatDao.observeById(chatId)
 
-    suspend fun refreshChats(): ApiResult<Unit> =
+    /**
+     * On success, returns the server's `max_reaction_seq` per chat id
+     * (0 where the server omitted it) — SyncEngine compares it against
+     * the locally stored cursor to decide whether reaction catch-up is
+     * needed. The stored cursor itself is local-only and survives the
+     * merge exactly like the read markers.
+     */
+    suspend fun refreshChats(): ApiResult<Map<Long, Long>> =
         when (val result = chatApi.chats()) {
             is ApiResult.Ok -> {
                 val merged = result.value.chats.map { item ->
@@ -76,10 +83,15 @@ class ChatRepository @Inject constructor(
                             ?: existing?.lastMessageAt,
                         lastMessageSenderId = item.lastMessage?.senderId
                             ?: existing?.lastMessageSenderId,
+                        // Local-only reaction cursor — NEVER the server's
+                        // value: only applied states may advance it.
+                        maxReactionSeq = existing?.maxReactionSeq ?: 0L,
                     )
                 }
                 chatDao.upsertAll(merged)
-                ApiResult.Ok(Unit)
+                ApiResult.Ok(
+                    result.value.chats.associate { it.chat.id to (it.maxReactionSeq ?: 0L) },
+                )
             }
             is ApiResult.HttpError -> result
             is ApiResult.NetworkError -> result

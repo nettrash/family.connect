@@ -37,6 +37,8 @@ import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.dto.MessageDto
+import me.nettrash.familyconnect.data.net.dto.ReactionDto
+import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
@@ -72,6 +74,7 @@ class MessageRepository @Inject constructor(
                     is ServerFrame.Ack -> ackMessage(frame.clientMsgId, frame.message)
                     is ServerFrame.Message -> applyServerMessage(frame.message, live = true)
                     is ServerFrame.Read -> onPeerRead(frame)
+                    is ServerFrame.Reaction -> onReaction(frame)
                     is ServerFrame.Error -> onSendError(frame)
                     else -> Unit
                 }
@@ -177,13 +180,20 @@ class MessageRepository @Inject constructor(
      * (live=true) or a resync/history page (live=false).
      */
     suspend fun applyServerMessage(message: MessageDto, live: Boolean) {
-        if (messageDao.existsByServerId(message.id)) return
+        if (messageDao.existsByServerId(message.id)) {
+            // Already held — but a re-delivered message (history page,
+            // resync overlap) may carry NEWER embedded reactions. The
+            // seq guard makes the apply a no-op when it doesn't.
+            applyEmbeddedReactions(message)
+            return
+        }
         // My own message echoing back (WS ack lost, other path delivered,
         // or another of my devices sent it and this one holds the
         // optimistic row from a previous session): fold into that row.
         val own = messageDao.findByClientMsgId(message.clientMsgId)
         if (own != null && own.chatId == message.chatId && own.senderId == message.senderId) {
             ackMessage(message.clientMsgId, message)
+            applyEmbeddedReactions(message)
             return
         }
         val createdAt = TimeFormat.parseTimestamp(message.createdAt) ?: clock.now()
@@ -198,6 +208,8 @@ class MessageRepository @Inject constructor(
                     body = message.body,
                     createdAt = createdAt,
                     status = MessageStatus.SENT,
+                    reactionsJson = message.reactions?.let(ReactionsCodec::encode),
+                    reactionSeq = message.reactionSeq ?: 0L,
                 ),
             ),
         )
@@ -224,6 +236,112 @@ class MessageRepository @Inject constructor(
         val clientMsgId = frame.clientMsgId ?: return
         pendingAcks.remove(clientMsgId)?.cancel()
         messageDao.setStatus(clientMsgId, MessageStatus.FAILED)
+    }
+
+    // -- Reactions ------------------------------------------------------------------
+
+    /**
+     * Live `reaction` frame: full state, applied under the seq guard
+     * (an unknown message matches zero rows — dropped silently, history
+     * paging re-delivers the state embedded on the Message). The chat
+     * cursor advances regardless: frames arrive in order on a live
+     * socket, so this seq is proof everything below it was delivered.
+     */
+    private suspend fun onReaction(frame: ServerFrame.Reaction) {
+        messageDao.applyReactionState(
+            serverId = frame.messageId,
+            json = ReactionsCodec.encode(frame.reactions),
+            seq = frame.reactionSeq,
+        )
+        chatDao.advanceMaxReactionSeq(frame.chatId, frame.reactionSeq)
+    }
+
+    /**
+     * Reactions riding on a fetched/re-delivered Message. Deliberately
+     * does NOT advance the chat cursor: a history page proves nothing
+     * about OTHER messages' lower seqs — only catch-up pages and live
+     * frames may move it (protocol: never derive it from held messages).
+     */
+    private suspend fun applyEmbeddedReactions(message: MessageDto) {
+        val seq = message.reactionSeq ?: return
+        messageDao.applyReactionState(
+            serverId = message.id,
+            json = ReactionsCodec.encode(message.reactions.orEmpty()),
+            seq = seq,
+        )
+    }
+
+    /**
+     * A tap on an emoji (chip or quick-set): my current reaction equals
+     * it → remove, else set. Optimistic rewrite of reactionsJson first
+     * (never the seq — the authoritative state must still pass the
+     * guard), then REST; failure reverts. No retry — mirrors postRead's
+     * stance, but WITH revert since the chips are visible state.
+     */
+    suspend fun toggleReaction(chatId: Long, messageServerId: Long, emoji: String) {
+        val me = settings.state.first().myUserId ?: return
+        val row = messageDao.findByServerId(messageServerId) ?: return
+        val current = ReactionsCodec.decode(row.reactionsJson)
+        val removing = current.any { it.userId == me && it.emoji == emoji }
+        val optimistic = current.filterNot { it.userId == me } +
+            if (removing) emptyList() else listOf(ReactionDto(userId = me, emoji = emoji))
+        messageDao.setReactionsJson(
+            messageServerId,
+            ReactionsCodec.encode(optimistic),
+            expectedSeq = row.reactionSeq,
+        )
+
+        val result = if (removing) {
+            chatApi.deleteReaction(chatId, messageServerId)
+        } else {
+            chatApi.putReaction(chatId, messageServerId, emoji)
+        }
+        when (result) {
+            is ApiResult.Ok -> {
+                val state = result.value
+                // Authoritative — through the guarded path, so a newer
+                // WS frame that raced us is never overwritten.
+                messageDao.applyReactionState(
+                    serverId = state.messageId,
+                    json = ReactionsCodec.encode(state.reactions),
+                    seq = state.reactionSeq,
+                )
+                chatDao.advanceMaxReactionSeq(chatId, state.reactionSeq)
+            }
+            else -> messageDao.setReactionsJson(
+                messageServerId,
+                row.reactionsJson,
+                expectedSeq = row.reactionSeq,
+            )
+        }
+    }
+
+    /**
+     * Reaction catch-up (resync step 3b): pages strictly after
+     * [afterSeq] until a short page. Each state applies under the seq
+     * guard; the stored chat cursor advances to every page's max EVEN
+     * when the referenced message isn't held locally — dropped states
+     * come back embedded on Message objects when history pages there.
+     */
+    suspend fun catchUpReactions(chatId: Long, afterSeq: Long) {
+        var cursor = afterSeq
+        while (true) {
+            val page = chatApi.getReactions(chatId, cursor, REACTION_PAGE)
+                .okOrNull()?.messageReactions ?: return
+            page.forEach { state ->
+                messageDao.applyReactionState(
+                    serverId = state.messageId,
+                    json = ReactionsCodec.encode(state.reactions),
+                    seq = state.reactionSeq,
+                )
+            }
+            val pageMax = page.maxOfOrNull { it.reactionSeq }
+            if (pageMax != null) {
+                chatDao.advanceMaxReactionSeq(chatId, pageMax)
+                cursor = pageMax
+            }
+            if (page.size < REACTION_PAGE) return
+        }
     }
 
     // -- History paging ---------------------------------------------------------------
@@ -256,5 +374,6 @@ class MessageRepository @Inject constructor(
     private companion object {
         const val ACK_TIMEOUT_MS = 15_000L
         const val HISTORY_PAGE = 50
+        const val REACTION_PAGE = 200
     }
 }

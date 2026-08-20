@@ -129,6 +129,16 @@ nonisolated struct ChatDTO: Codable, Equatable, Sendable {
     }
 }
 
+nonisolated struct ReactionDTO: Codable, Equatable, Sendable {
+    let userID: Int64
+    let emoji: String
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case emoji
+    }
+}
+
 nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     let id: Int64
     let chatID: Int64
@@ -136,6 +146,12 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     let clientMsgID: String?
     let body: String
     let createdAt: Date
+    /// Both reaction fields are present when (and only when) the message
+    /// has ever been reacted to — after clearing, `reactions` is [] with
+    /// the seq still present. Optional matters: ABSENCE means "no data"
+    /// and must never wipe locally-held reaction state.
+    let reactions: [ReactionDTO]?
+    let reactionSeq: Int64?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -144,6 +160,30 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         case clientMsgID = "client_msg_id"
         case body
         case createdAt = "created_at"
+        case reactions
+        case reactionSeq = "reaction_seq"
+    }
+
+    /// Explicit memberwise init so the reaction fields default to absent
+    /// — pre-reaction construction sites (tests included) stay valid.
+    init(
+        id: Int64,
+        chatID: Int64,
+        senderID: Int64,
+        clientMsgID: String?,
+        body: String,
+        createdAt: Date,
+        reactions: [ReactionDTO]? = nil,
+        reactionSeq: Int64? = nil
+    ) {
+        self.id = id
+        self.chatID = chatID
+        self.senderID = senderID
+        self.clientMsgID = clientMsgID
+        self.body = body
+        self.createdAt = createdAt
+        self.reactions = reactions
+        self.reactionSeq = reactionSeq
     }
 }
 
@@ -203,11 +243,24 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
     let chat: ChatDTO
     let lastMessage: MessageDTO?
     let unreadCount: Int
+    /// Max reaction_seq over the chat's messages; omitted by the server
+    /// while no message in the chat has ever been reacted to (treat as 0).
+    let maxReactionSeq: Int64?
 
     enum CodingKeys: String, CodingKey {
         case chat
         case lastMessage = "last_message"
         case unreadCount = "unread_count"
+        case maxReactionSeq = "max_reaction_seq"
+    }
+
+    /// Explicit memberwise init so `maxReactionSeq` defaults to absent —
+    /// pre-reaction construction sites stay valid.
+    init(chat: ChatDTO, lastMessage: MessageDTO?, unreadCount: Int, maxReactionSeq: Int64? = nil) {
+        self.chat = chat
+        self.lastMessage = lastMessage
+        self.unreadCount = unreadCount
+        self.maxReactionSeq = maxReactionSeq
     }
 }
 
@@ -225,6 +278,28 @@ nonisolated struct MessagesResponse: Codable, Equatable, Sendable {
 
 nonisolated struct MessageResponse: Codable, Equatable, Sendable {
     let message: MessageDTO
+}
+
+/// One message's full reaction state: the body of the PUT/DELETE
+/// reaction endpoints and the page entry of GET /chats/{id}/reactions.
+nonisolated struct ReactionStateDTO: Codable, Equatable, Sendable {
+    let messageID: Int64
+    let reactionSeq: Int64
+    let reactions: [ReactionDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
+        case reactionSeq = "reaction_seq"
+        case reactions
+    }
+}
+
+nonisolated struct MessageReactionsResponse: Codable, Equatable, Sendable {
+    let messageReactions: [ReactionStateDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case messageReactions = "message_reactions"
+    }
 }
 
 nonisolated struct DeviceResponse: Codable, Equatable, Sendable {

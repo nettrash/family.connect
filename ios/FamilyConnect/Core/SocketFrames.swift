@@ -84,6 +84,23 @@ nonisolated struct MemberJoinedPayload: Decodable, Equatable, Sendable {
     }
 }
 
+/// Payload of `reaction`: one message's FULL current reaction state —
+/// never a delta — so re-delivery is idempotent and ordering races
+/// resolve locally under the reaction_seq guard (the coordinator applies
+/// it only when reaction_seq exceeds what the message row already holds).
+nonisolated struct ReactionPayload: Decodable, Equatable, Sendable {
+    let chatID: Int64
+    let messageID: Int64
+    let reactionSeq: Int64
+    let reactions: [ReactionDTO]
+    enum CodingKeys: String, CodingKey {
+        case chatID = "chat_id"
+        case messageID = "message_id"
+        case reactionSeq = "reaction_seq"
+        case reactions
+    }
+}
+
 nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     case ack(clientMsgID: String, message: MessageDTO)
     case message(MessageDTO)
@@ -91,6 +108,7 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     case typing(chatID: Int64, userID: Int64)
     case memberJoined(MemberJoinedPayload)
     case memberLeft(userID: Int64)
+    case reaction(ReactionPayload)
     case pong
     /// `clientMsgID` is present when the error answers a `send` frame.
     case error(code: String, message: String, clientMsgID: String?)
@@ -107,6 +125,9 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case code
         case user
         case familyID = "family_id"
+        case messageID = "message_id"
+        case reactionSeq = "reaction_seq"
+        case reactions
     }
 
     init(from decoder: Decoder) throws {
@@ -133,6 +154,9 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
             self = .memberJoined(try MemberJoinedPayload(from: decoder))
         case "member_left":
             self = .memberLeft(userID: try container.decode(Int64.self, forKey: .userID))
+        case "reaction":
+            // Re-decode from the top so ReactionPayload owns its keys.
+            self = .reaction(try ReactionPayload(from: decoder))
         case "pong":
             self = .pong
         case "error":

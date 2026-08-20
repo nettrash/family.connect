@@ -32,6 +32,9 @@ import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.MeResponse
 import me.nettrash.familyconnect.data.net.dto.MemberDto
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
+import me.nettrash.familyconnect.data.net.dto.ReactionDto
+import me.nettrash.familyconnect.data.net.dto.ReactionsCatchUpResponse
+import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAuthApi
@@ -43,6 +46,7 @@ import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
+import me.nettrash.familyconnect.testutil.reactionState
 import me.nettrash.familyconnect.testutil.userDto
 import me.nettrash.familyconnect.util.Clock
 import org.junit.After
@@ -144,7 +148,7 @@ class SyncEngineTest {
         )
     }
 
-    private fun scriptChats(unread: Int = 3) {
+    private fun scriptChats(unread: Int = 3, maxReactionSeq: Long? = null) {
         chatApi.chatsResult = ApiResult.Ok(
             ChatsResponse(
                 listOf(
@@ -152,6 +156,7 @@ class SyncEngineTest {
                         chat = ChatDto(id = FAMILY_CHAT, kind = "family", title = "The Smiths"),
                         lastMessage = messageDto(id = 5, chatId = FAMILY_CHAT, senderId = PEER),
                         unreadCount = unread,
+                        maxReactionSeq = maxReactionSeq,
                     ),
                 ),
             ),
@@ -223,6 +228,76 @@ class SyncEngineTest {
         assertThat(db.chatDao().getById(FAMILY_CHAT)).isNull()
     }
 
+    // -- Reactions ----------------------------------------------------------
+
+    @Test
+    fun resyncRepairsReactionsMissedWhileOffline() = runTest(dispatcher) {
+        // The gap this step closes: someone reacted while this device
+        // was offline — no frame ever arrived, and the message itself
+        // is already held, so message catch-up won't re-deliver it.
+        val engine = newEngine()
+        scriptChats(maxReactionSeq = 10L)
+        db.messageDao().insertIgnore(
+            listOf(MessageEntity("s5", 5, FAMILY_CHAT, PEER, "old", 1L, MessageStatus.SENT)),
+        )
+        chatApi.reactionsHandler = { chatId, afterSeq, _ ->
+            assertThat(chatId).isEqualTo(FAMILY_CHAT)
+            assertThat(afterSeq).isEqualTo(0L) // the stored cursor, not the server's
+            ApiResult.Ok(
+                ReactionsCatchUpResponse(
+                    listOf(reactionState(5L, 10L, listOf(ReactionDto(PEER, "❤️")))),
+                ),
+            )
+        }
+
+        engine.resync()
+
+        val row = db.messageDao().findByServerId(5L)!!
+        assertThat(ReactionsCodec.decode(row.reactionsJson)).containsExactly(ReactionDto(PEER, "❤️"))
+        assertThat(row.reactionSeq).isEqualTo(10L)
+        assertThat(db.chatDao().maxReactionSeq(FAMILY_CHAT)).isEqualTo(10L)
+        assertThat(chatApi.reactionsCalls).isEqualTo(1) // short page — one fetch
+
+        // A second resync with the server no further ahead skips the
+        // reaction fetch entirely.
+        engine.resync()
+        assertThat(chatApi.reactionsCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun resyncAdvancesTheReactionCursorEvenForMessagesNotHeldLocally() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats(maxReactionSeq = 10L)
+        // No local copy of message 999 — its state is dropped, but the
+        // cursor must still advance or every future resync would refetch
+        // (and re-drop) the same page forever.
+        chatApi.reactionsHandler = { _, _, _ ->
+            ApiResult.Ok(
+                ReactionsCatchUpResponse(
+                    listOf(reactionState(999L, 10L, listOf(ReactionDto(PEER, "❤️")))),
+                ),
+            )
+        }
+
+        engine.resync()
+
+        assertThat(db.messageDao().findByServerId(999L)).isNull()
+        assertThat(db.chatDao().maxReactionSeq(FAMILY_CHAT)).isEqualTo(10L)
+
+        engine.resync()
+        assertThat(chatApi.reactionsCalls).isEqualTo(1) // cursor caught up — no refetch
+    }
+
+    @Test
+    fun resyncSkipsReactionCatchUpWhenTheServerReportsNone() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats() // max_reaction_seq absent — nothing ever reacted
+
+        engine.resync()
+
+        assertThat(chatApi.reactionsCalls).isEqualTo(0)
+    }
+
     @Test
     fun resyncPreservesLocalReadMarkersWhileTakingServerUnread() = runTest(dispatcher) {
         val engine = newEngine()
@@ -231,6 +306,7 @@ class SyncEngineTest {
         engine.resync() // creates the chat
         db.chatDao().setMyLastRead(FAMILY_CHAT, 4)
         db.chatDao().setPeerLastRead(FAMILY_CHAT, 2)
+        db.chatDao().advanceMaxReactionSeq(FAMILY_CHAT, 9)
 
         scriptChats(unread = 0)
         engine.resync()
@@ -239,5 +315,6 @@ class SyncEngineTest {
         assertThat(chat.unreadCount).isEqualTo(0) // server wins
         assertThat(chat.myLastReadId).isEqualTo(4L) // local survives
         assertThat(chat.peerLastReadId).isEqualTo(2L)
+        assertThat(chat.maxReactionSeq).isEqualTo(9L) // reaction cursor too
     }
 }

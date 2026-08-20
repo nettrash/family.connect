@@ -91,7 +91,20 @@ pub struct Chat {
     pub peer_user_id: Option<i64>,
 }
 
+/// One user's reaction on a message (protocol.md `Reaction`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Reaction {
+    pub user_id: i64,
+    pub emoji: String,
+}
+
 /// `Message` object — identical over REST and WS.
+///
+/// `reactions`/`reaction_seq` are present iff the message has ever been
+/// reacted to (`reaction_seq > 0` in the database); after the last reaction
+/// is removed they stay present with an empty list, so clients can tell
+/// "cleared" from "not provided". Absent-not-null keeps the pre-reaction
+/// frame shapes byte-identical for old clients and old tests alike.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     pub id: i64,
@@ -101,11 +114,16 @@ pub struct Message {
     pub body: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reactions: Option<Vec<Reaction>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reaction_seq: Option<i64>,
 }
 
 impl Message {
     /// Map a row exposing `id, chat_id, sender_id, client_msg_id, body,
-    /// created_at`.
+    /// created_at`. Reaction fields start `None`; the paths that expose
+    /// them (`get_messages`) enrich afterwards.
     pub fn from_row(row: &PgRow) -> Self {
         Self {
             id: row.get("id"),
@@ -114,16 +132,22 @@ impl Message {
             client_msg_id: row.get("client_msg_id"),
             body: row.get("body"),
             created_at: row.get("created_at"),
+            reactions: None,
+            reaction_seq: None,
         }
     }
 }
 
 /// Entry of the `GET /chats` list: chat + preview + authoritative unread.
+/// `max_reaction_seq` is omitted while nothing in the chat was ever reacted
+/// to; `last_message` previews never carry reactions.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatListEntry {
     pub chat: Chat,
     pub last_message: Option<Message>,
     pub unread_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_reaction_seq: Option<i64>,
 }
 
 /// `GET /me` — the caller's own pending join request, if any.

@@ -22,8 +22,13 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Chat, ChatListEntry, Message};
+use crate::models::{Chat, ChatListEntry, Message, Reaction};
 use crate::state::AppState;
+
+/// Upper bound on a reaction emoji, in UTF-8 bytes. Fixed by protocol.md's
+/// Limits table — generous enough for ZWJ family sequences, tight enough
+/// that reactions stay reactions.
+const MAX_EMOJI_BYTES: usize = 32;
 
 #[derive(Debug, Deserialize)]
 pub struct DirectChatRequest {
@@ -39,6 +44,22 @@ pub struct PostMessageRequest {
 #[derive(Debug, Deserialize)]
 pub struct ReadRequest {
     pub last_read_message_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReactionRequest {
+    pub emoji: String,
+}
+
+/// A message's full reaction state after a mutation — what the REST
+/// response returns and what the `reaction` WS frame carries. `changed`
+/// tells the caller whether anything actually moved (no fan-out on no-ops).
+pub struct ReactionState {
+    pub chat_id: i64,
+    pub message_id: i64,
+    pub reaction_seq: i64,
+    pub reactions: Vec<Reaction>,
+    pub changed: bool,
 }
 
 /// Order a user-id pair for the `direct` chat shape constraint
@@ -173,6 +194,140 @@ pub async fn apply_read_marker(
     Ok(effective)
 }
 
+/// Set (`Some(emoji)`) or remove (`None`) the caller's reaction on a
+/// message — an idempotent state-set, one reaction per user per message.
+///
+/// The transaction locks the message row *first*: that serializes
+/// concurrent reactions to the same message so the state SELECT below
+/// always sees every committed reaction (without it, two READ COMMITTED
+/// writers each ship a frame missing the other's row), and it doubles as
+/// the existence + belongs-to-this-chat check. Lock order is uniform
+/// (message row, then chat row) and nothing else takes both — no deadlock.
+pub async fn apply_reaction(
+    state: &AppState,
+    chat_id: i64,
+    message_id: i64,
+    user_id: i64,
+    emoji: Option<&str>,
+) -> Result<ReactionState, ApiError> {
+    ensure_chat_access(state, chat_id, user_id).await?;
+
+    let emoji = match emoji {
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || trimmed.len() > MAX_EMOJI_BYTES {
+                return Err(ApiError::bad_request(
+                    codes::INVALID_EMOJI,
+                    format!("emoji must be non-empty and at most {MAX_EMOJI_BYTES} bytes"),
+                ));
+            }
+            Some(trimmed.to_string())
+        }
+        None => None,
+    };
+
+    let mut tx = state.pool.begin().await?;
+    let locked =
+        sqlx::query("SELECT reaction_seq FROM messages WHERE id = $1 AND chat_id = $2 FOR UPDATE")
+            .bind(message_id)
+            .bind(chat_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(locked) = locked else {
+        return Err(ApiError::not_found(
+            codes::MESSAGE_NOT_FOUND,
+            "no such message in this chat",
+        ));
+    };
+    let current_seq: i64 = locked.get("reaction_seq");
+
+    // RETURNING yields a row only when something was actually written, so
+    // a re-PUT of the same emoji or a DELETE of nothing is detected here
+    // and burns neither a sequence value nor a fan-out.
+    let changed = match &emoji {
+        Some(emoji) => sqlx::query(
+            "INSERT INTO message_reactions (message_id, user_id, emoji)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (message_id, user_id) DO UPDATE
+             SET emoji = EXCLUDED.emoji, created_at = now()
+             WHERE message_reactions.emoji IS DISTINCT FROM EXCLUDED.emoji
+             RETURNING message_id",
+        )
+        .bind(message_id)
+        .bind(user_id)
+        .bind(emoji)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some(),
+        None => sqlx::query(
+            "DELETE FROM message_reactions
+             WHERE message_id = $1 AND user_id = $2
+             RETURNING message_id",
+        )
+        .bind(message_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some(),
+    };
+
+    let reaction_seq = if changed {
+        let seq: i64 = sqlx::query_scalar("SELECT nextval('message_reaction_seq')")
+            .fetch_one(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE messages SET reaction_seq = $2 WHERE id = $1")
+            .bind(message_id)
+            .bind(seq)
+            .execute(&mut *tx)
+            .await?;
+        // GREATEST, not plain SET: two messages in one chat can commit out
+        // of seq order, and the chat cursor must never move backwards.
+        sqlx::query(
+            "UPDATE chats SET last_reaction_seq = GREATEST(last_reaction_seq, $2) WHERE id = $1",
+        )
+        .bind(chat_id)
+        .bind(seq)
+        .execute(&mut *tx)
+        .await?;
+        seq
+    } else {
+        current_seq
+    };
+
+    let reactions = fetch_reaction_rows(&mut *tx, message_id).await?;
+    tx.commit().await?;
+
+    Ok(ReactionState {
+        chat_id,
+        message_id,
+        reaction_seq,
+        reactions,
+        changed,
+    })
+}
+
+/// A message's current reactions, in stable (created_at, user_id) order.
+async fn fetch_reaction_rows<'e, E>(executor: E, message_id: i64) -> Result<Vec<Reaction>, ApiError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let rows = sqlx::query(
+        "SELECT user_id, emoji FROM message_reactions
+         WHERE message_id = $1
+         ORDER BY created_at, user_id",
+    )
+    .bind(message_id)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|row| Reaction {
+            user_id: row.get("user_id"),
+            emoji: row.get("emoji"),
+        })
+        .collect())
+}
+
 /// `GET /chats` — every chat the caller is a member of, with a last-message
 /// preview and the authoritative unread count.
 pub async fn list_chats(
@@ -189,7 +344,8 @@ pub async fn list_chats(
                 lm.id AS last_id, lm.sender_id AS last_sender_id,
                 lm.client_msg_id AS last_client_msg_id, lm.body AS last_body,
                 lm.created_at AS last_created_at,
-                uc.unread AS unread_count
+                uc.unread AS unread_count,
+                c.last_reaction_seq
          FROM chat_members m
          JOIN chats c ON c.id = m.chat_id
          JOIN families f ON f.id = c.family_id
@@ -233,7 +389,10 @@ pub async fn list_chats(
                 client_msg_id: row.get("last_client_msg_id"),
                 body: row.get("last_body"),
                 created_at: row.get("last_created_at"),
+                reactions: None,
+                reaction_seq: None,
             });
+            let last_reaction_seq: i64 = row.get("last_reaction_seq");
             ChatListEntry {
                 chat: Chat {
                     id: chat_id,
@@ -243,6 +402,7 @@ pub async fn list_chats(
                 },
                 last_message,
                 unread_count: row.get("unread_count"),
+                max_reaction_seq: (last_reaction_seq > 0).then_some(last_reaction_seq),
             }
         })
         .collect();
@@ -346,7 +506,7 @@ pub async fn get_messages(
         state.cfg.limits.max_page_size,
     );
 
-    const COLS: &str = "id, chat_id, sender_id, client_msg_id, body, created_at";
+    const COLS: &str = "id, chat_id, sender_id, client_msg_id, body, created_at, reaction_seq";
     let rows = if let Some(before) = before_id {
         // History paging: strictly older, newest first.
         sqlx::query(&format!(
@@ -377,7 +537,46 @@ pub async fn get_messages(
         .await?
     };
 
-    let messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
+    let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
+
+    // Attach reaction state to every message that has ever been reacted to.
+    // `Some(vec![])` (not `None`) when the seq is set but all reactions were
+    // removed — clients must see "cleared", not "no data".
+    let mut reacted_ids: Vec<i64> = Vec::new();
+    for (row, message) in rows.iter().zip(messages.iter_mut()) {
+        let seq: i64 = row.get("reaction_seq");
+        if seq > 0 {
+            message.reaction_seq = Some(seq);
+            message.reactions = Some(Vec::new());
+            reacted_ids.push(message.id);
+        }
+    }
+    if !reacted_ids.is_empty() {
+        let reaction_rows = sqlx::query(
+            "SELECT message_id, user_id, emoji FROM message_reactions
+             WHERE message_id = ANY($1)
+             ORDER BY created_at, user_id",
+        )
+        .bind(&reacted_ids)
+        .fetch_all(&state.pool)
+        .await?;
+        let mut by_message: HashMap<i64, Vec<Reaction>> = HashMap::new();
+        for row in &reaction_rows {
+            by_message
+                .entry(row.get("message_id"))
+                .or_default()
+                .push(Reaction {
+                    user_id: row.get("user_id"),
+                    emoji: row.get("emoji"),
+                });
+        }
+        for message in messages.iter_mut() {
+            if let Some(list) = by_message.remove(&message.id) {
+                message.reactions = Some(list);
+            }
+        }
+    }
+
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }
 
@@ -423,6 +622,121 @@ pub async fn mark_read(
         events::deliver_read(&state, chat_id, auth.user_id, effective).await,
     );
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `PUT /chats/{id}/messages/{mid}/reaction` — set/replace the caller's
+/// reaction. The 200 body is the caller's ack; the `reaction` frame goes to
+/// every member connection (the caller's other devices included).
+pub async fn put_reaction(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((chat_id, message_id)): Path<(i64, i64)>,
+    AppJson(req): AppJson<ReactionRequest>,
+) -> Result<Response, ApiError> {
+    let reaction_state =
+        apply_reaction(&state, chat_id, message_id, auth.user_id, Some(&req.emoji)).await?;
+    respond_with_reaction_state(&state, reaction_state).await
+}
+
+/// `DELETE /chats/{id}/messages/{mid}/reaction` — remove the caller's
+/// reaction; idempotent (removing nothing returns the state unchanged).
+pub async fn delete_reaction(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((chat_id, message_id)): Path<(i64, i64)>,
+) -> Result<Response, ApiError> {
+    let reaction_state = apply_reaction(&state, chat_id, message_id, auth.user_id, None).await?;
+    respond_with_reaction_state(&state, reaction_state).await
+}
+
+async fn respond_with_reaction_state(
+    state: &AppState,
+    reaction_state: ReactionState,
+) -> Result<Response, ApiError> {
+    if reaction_state.changed {
+        events::log_fanout_error(
+            "reaction",
+            events::deliver_reaction(state, &reaction_state).await,
+        );
+    }
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "message_id": reaction_state.message_id,
+            "reaction_seq": reaction_state.reaction_seq,
+            "reactions": reaction_state.reactions,
+        })),
+    )
+        .into_response())
+}
+
+/// `GET /chats/{id}/reactions` — reaction catch-up: every message of the
+/// chat whose reaction state changed after `after_seq`, oldest change
+/// first, full current state per message. Clients loop until a short page,
+/// exactly as with `after_id`.
+pub async fn get_reactions(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(chat_id): Path<i64>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Response, ApiError> {
+    ensure_chat_access(&state, chat_id, auth.user_id).await?;
+
+    let after_seq = parse_pagination_param(&params, "after_seq")?.unwrap_or(0);
+    let requested_limit = parse_pagination_param(&params, "limit")?;
+    let limit = clamp_limit(
+        requested_limit,
+        state.cfg.limits.default_page_size,
+        state.cfg.limits.max_page_size,
+    );
+
+    // The literal `reaction_seq > 0` predicate keeps the partial index
+    // usable under a generic plan; `> $2` alone would not prove it.
+    let message_rows = sqlx::query(
+        "SELECT id, reaction_seq FROM messages
+         WHERE chat_id = $1 AND reaction_seq > 0 AND reaction_seq > $2
+         ORDER BY reaction_seq ASC LIMIT $3",
+    )
+    .bind(chat_id)
+    .bind(after_seq)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let ids: Vec<i64> = message_rows.iter().map(|row| row.get("id")).collect();
+    let mut by_message: HashMap<i64, Vec<Reaction>> = HashMap::new();
+    if !ids.is_empty() {
+        let reaction_rows = sqlx::query(
+            "SELECT message_id, user_id, emoji FROM message_reactions
+             WHERE message_id = ANY($1)
+             ORDER BY created_at, user_id",
+        )
+        .bind(&ids)
+        .fetch_all(&state.pool)
+        .await?;
+        for row in &reaction_rows {
+            by_message
+                .entry(row.get("message_id"))
+                .or_default()
+                .push(Reaction {
+                    user_id: row.get("user_id"),
+                    emoji: row.get("emoji"),
+                });
+        }
+    }
+
+    let entries: Vec<serde_json::Value> = message_rows
+        .iter()
+        .map(|row| {
+            let id: i64 = row.get("id");
+            json!({
+                "message_id": id,
+                "reaction_seq": row.get::<i64, _>("reaction_seq"),
+                "reactions": by_message.remove(&id).unwrap_or_default(),
+            })
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(json!({"message_reactions": entries}))).into_response())
 }
 
 fn parse_pagination_param(

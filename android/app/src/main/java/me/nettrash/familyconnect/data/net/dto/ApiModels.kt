@@ -16,6 +16,7 @@ package me.nettrash.familyconnect.data.net.dto
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 // -- Objects ---------------------------------------------------------------
 
@@ -69,6 +70,12 @@ data class ChatDto(
 )
 
 @Serializable
+data class ReactionDto(
+    @SerialName("user_id") val userId: Long,
+    val emoji: String,
+)
+
+@Serializable
 data class MessageDto(
     val id: Long,
     @SerialName("chat_id") val chatId: Long,
@@ -76,7 +83,27 @@ data class MessageDto(
     @SerialName("client_msg_id") val clientMsgId: String,
     val body: String,
     @SerialName("created_at") val createdAt: String,
+    // Both absent when (and only when) the message was never reacted
+    // to; after clearing, reactions is [] with the seq still present.
+    val reactions: List<ReactionDto>? = null,
+    @SerialName("reaction_seq") val reactionSeq: Long? = null,
 )
+
+/**
+ * Local persistence codec: the messages table stores a message's
+ * reactions verbatim as the wire-shape JSON array (`reactionsJson`
+ * column — null = never reacted, "[]" = cleared). Private Json so a
+ * house-config change can never silently re-shape stored rows.
+ */
+object ReactionsCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(reactions: List<ReactionDto>): String = json.encodeToString(reactions)
+
+    fun decode(raw: String?): List<ReactionDto> =
+        raw?.let { runCatching { json.decodeFromString<List<ReactionDto>>(it) }.getOrNull() }
+            .orEmpty()
+}
 
 // -- Request bodies ----------------------------------------------------------
 
@@ -113,6 +140,9 @@ data class SendMessageRequest(
 
 @Serializable
 data class ReadRequest(@SerialName("last_read_message_id") val lastReadMessageId: Long)
+
+@Serializable
+data class ReactionRequest(val emoji: String)
 
 @Serializable
 data class DeviceRequest(
@@ -166,6 +196,8 @@ data class ChatListItemDto(
     val chat: ChatDto,
     @SerialName("last_message") val lastMessage: MessageDto? = null,
     @SerialName("unread_count") val unreadCount: Int,
+    // Absent while no message in the chat has ever been reacted to.
+    @SerialName("max_reaction_seq") val maxReactionSeq: Long? = null,
 )
 
 @Serializable
@@ -179,6 +211,23 @@ data class MessagesResponse(val messages: List<MessageDto>)
 
 @Serializable
 data class MessageResponse(val message: MessageDto)
+
+/**
+ * One message's full reaction state — the PUT/DELETE reaction response
+ * AND each entry of the GET /chats/{id}/reactions catch-up (protocol:
+ * the same shape on purpose; frames carry it too, never a delta).
+ */
+@Serializable
+data class MessageReactionStateDto(
+    @SerialName("message_id") val messageId: Long,
+    @SerialName("reaction_seq") val reactionSeq: Long,
+    val reactions: List<ReactionDto>,
+)
+
+@Serializable
+data class ReactionsCatchUpResponse(
+    @SerialName("message_reactions") val messageReactions: List<MessageReactionStateDto>,
+)
 
 @Serializable
 data class DeviceResponse(@SerialName("device_id") val deviceId: Long)

@@ -12,10 +12,17 @@
 //    double checkmark someone else read it (serverID ≤ othersReadUpTo),
 //                     tinted; composed from two offset SF checkmarks
 //                     because the system font has no double-check glyph
-//    red exclamation  failed — tap to retry, context menu to delete
+//    red exclamation  failed — tap to retry; long-press for the sheet
+//                     with Retry/Delete
 //
 //  The sender-name caption (family chat, sender change — rules in
 //  MessagePresentation) renders above the bubble in the accent color.
+//
+//  Reactions: aggregated chips (emoji + count, tinted when the current
+//  user is included — aggregation rules in MessagePresentation) render
+//  between the bubble and the timestamp; tapping a chip toggles that
+//  emoji, long-pressing the bubble opens the picker sheet the parent
+//  presents via `onLongPress`.
 //
 
 import SwiftUI
@@ -26,8 +33,11 @@ struct MessageBubbleView: View {
     let showsSenderName: Bool
     let senderName: String?
     let isRead: Bool
+    var reactionChips: [ReactionChip] = []
     var onRetry: () -> Void = {}
     var onDelete: () -> Void = {}
+    var onToggleReaction: (String) -> Void = { _ in }
+    var onLongPress: () -> Void = {}
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
@@ -43,6 +53,10 @@ struct MessageBubbleView: View {
 
                 bubble
 
+                if !reactionChips.isEmpty {
+                    reactionRow
+                }
+
                 HStack(spacing: 4) {
                     Text(message.createdAt, format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
                         .font(.caption2)
@@ -56,20 +70,46 @@ struct MessageBubbleView: View {
 
             if !isMine { Spacer(minLength: 48) }
         }
-        .contextMenu {
-            if message.state == .failed {
+        .onLongPressGesture {
+            onLongPress()
+        }
+    }
+
+    /// The aggregated reaction chips under the bubble. A chip the current
+    /// user is part of gets the tinted treatment; tapping any chip
+    /// toggles that emoji for the current user.
+    private var reactionRow: some View {
+        HStack(spacing: 4) {
+            ForEach(reactionChips) { chip in
                 Button {
-                    onRetry()
+                    onToggleReaction(chip.emoji)
                 } label: {
-                    Label("Try Again", systemImage: "arrow.clockwise")
+                    HStack(spacing: 3) {
+                        Text(chip.emoji)
+                            .font(.footnote)
+                        if chip.count > 1 {
+                            Text("\(chip.count)")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(chip.includesMe ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        chip.includesMe ? AnyShapeStyle(.tint.opacity(0.15)) : AnyShapeStyle(Color(.secondarySystemFill)),
+                        in: Capsule())
+                    .overlay {
+                        if chip.includesMe {
+                            Capsule().strokeBorder(.tint, lineWidth: 1)
+                        }
+                    }
                 }
-                Button(role: .destructive) {
-                    onDelete()
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(chip.emoji) \(chip.count)")
             }
         }
+        .padding(.horizontal, 4)
+        .padding(.top, 1)
     }
 
     private var bubble: some View {

@@ -18,8 +18,11 @@ package me.nettrash.familyconnect.data.net
 import me.nettrash.familyconnect.data.net.dto.ChatResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.CreateDirectChatRequest
+import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
+import me.nettrash.familyconnect.data.net.dto.ReactionRequest
+import me.nettrash.familyconnect.data.net.dto.ReactionsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.ReadRequest
 import me.nettrash.familyconnect.data.net.dto.SendMessageRequest
 import javax.inject.Inject
@@ -37,6 +40,15 @@ interface ChatApi {
 
     suspend fun postMessage(chatId: Long, clientMsgId: String, body: String): ApiResult<MessageResponse>
     suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit>
+
+    /** Sets/replaces MY reaction — an idempotent state-set, not a toggle. */
+    suspend fun putReaction(chatId: Long, messageId: Long, emoji: String): ApiResult<MessageReactionStateDto>
+
+    /** Removes MY reaction; idempotent (returns the current state either way). */
+    suspend fun deleteReaction(chatId: Long, messageId: Long): ApiResult<MessageReactionStateDto>
+
+    /** Reaction catch-up page: strictly after [afterSeq], ascending. */
+    suspend fun getReactions(chatId: Long, afterSeq: Long, limit: Int = 50): ApiResult<ReactionsCatchUpResponse>
 }
 
 @Singleton
@@ -78,4 +90,24 @@ class DefaultChatApi @Inject constructor(
 
     override suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit> =
         client.post("/chats/$chatId/read", ReadRequest(lastReadMessageId))
+
+    override suspend fun putReaction(
+        chatId: Long,
+        messageId: Long,
+        emoji: String,
+    ): ApiResult<MessageReactionStateDto> =
+        client.put("/chats/$chatId/messages/$messageId/reaction", ReactionRequest(emoji))
+
+    override suspend fun deleteReaction(
+        chatId: Long,
+        messageId: Long,
+    ): ApiResult<MessageReactionStateDto> =
+        client.delete("/chats/$chatId/messages/$messageId/reaction")
+
+    override suspend fun getReactions(
+        chatId: Long,
+        afterSeq: Long,
+        limit: Int,
+    ): ApiResult<ReactionsCatchUpResponse> =
+        client.get("/chats/$chatId/reactions?after_seq=$afterSeq&limit=$limit")
 }

@@ -109,6 +109,30 @@ class WsFrameSerdeTest {
     }
 
     @Test
+    fun messageFrameWithEmbeddedReactionsRoundTrips() {
+        // Message objects grow OPTIONAL reactions + reaction_seq once
+        // the message has ever been reacted to (protocol, "Objects") —
+        // and encodeDefaults=false keeps them absent otherwise, which
+        // the plain messageFrameRoundTrips above already pins.
+        val reactedJson =
+            """{"id": 1338, "chat_id": 42, "sender_id": 7,
+               "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
+               "body": "Dinner at 7?", "created_at": "2026-08-19T17:03:12Z",
+               "reactions": [{"user_id": 9, "emoji": "❤️"}], "reaction_seq": 123}"""
+        assertRoundTrips(
+            """{"type": "message", "message": $reactedJson}""",
+            ServerFrame.Message(
+                message = messageDto.copy(
+                    reactions = listOf(
+                        me.nettrash.familyconnect.data.net.dto.ReactionDto(userId = 9, emoji = "❤️"),
+                    ),
+                    reactionSeq = 123,
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun readFrameRoundTrips() {
         assertRoundTrips(
             """{"type": "read", "chat_id": 42, "user_id": 9, "last_read_message_id": 1338}""",
@@ -144,6 +168,39 @@ class WsFrameSerdeTest {
         assertRoundTrips(
             """{"type": "member_left", "family_id": 3, "user_id": 11}""",
             ServerFrame.MemberLeft(familyId = 3, userId = 11),
+        )
+    }
+
+    @Test
+    fun reactionFrameRoundTrips() {
+        // protocol.md, "Server → client" — the frame carries the FULL
+        // current reaction state, never a delta.
+        assertRoundTrips(
+            """{"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
+                "reactions": [{"user_id": 9, "emoji": "❤️"}]}""",
+            ServerFrame.Reaction(
+                chatId = 42,
+                messageId = 1338,
+                reactionSeq = 124,
+                reactions = listOf(
+                    me.nettrash.familyconnect.data.net.dto.ReactionDto(userId = 9, emoji = "❤️"),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun reactionFrameWithEmptyReactionsRoundTrips() {
+        // "Cleared" state: the last reaction was removed — reactions is
+        // [] with the seq still present.
+        assertRoundTrips(
+            """{"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 125, "reactions": []}""",
+            ServerFrame.Reaction(
+                chatId = 42,
+                messageId = 1338,
+                reactionSeq = 125,
+                reactions = emptyList(),
+            ),
         )
     }
 

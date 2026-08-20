@@ -146,6 +146,7 @@ abstract class AppModule {
             Room.databaseBuilder(context, AppDatabase::class.java, "familyconnect.db")
                 // Deliberately NO fallbackToDestructiveMigration — this
                 // is the family's message history. See AppDatabase.
+                .addMigrations(AppDatabase.MIGRATION_1_2)
                 .build()
 
         @Provides

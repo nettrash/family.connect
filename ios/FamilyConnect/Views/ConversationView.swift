@@ -25,6 +25,11 @@
 //  inbound messages for this chat advance the read marker instead of the
 //  unread badge (the coordinator owns that rule).
 //
+//  Long-pressing a bubble opens a compact sheet: the quick-reaction row
+//  for messages the server knows (a reaction needs a server message id),
+//  and Retry/Delete for failed ones (which never have a server id — the
+//  two gates are disjoint). Pending-but-unfailed bubbles get no sheet.
+//
 
 import SwiftData
 import SwiftUI
@@ -47,11 +52,20 @@ final class ConversationModel {
 struct ConversationView: View {
     let chatID: Int64
 
+    /// Identity of the bubble the long-press sheet is up for. A tiny
+    /// Identifiable wrapper because `.sheet(item:)` wants one and the
+    /// stable identity of a bubble is its localID string.
+    private struct ReactionTarget: Identifiable {
+        let localID: String
+        var id: String { localID }
+    }
+
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Query private var messages: [MessageEntity]
     @Query private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
     @State private var model = ConversationModel()
+    @State private var reactionTarget: ReactionTarget?
 
     init(chatID: Int64) {
         self.chatID = chatID
@@ -106,8 +120,21 @@ struct ConversationView: View {
                                 isRead: MessagePresentation.isRead(
                                     message,
                                     othersReadUpTo: chat?.othersReadUpTo ?? 0),
+                                reactionChips: MessagePresentation.reactionChips(
+                                    message.reactions,
+                                    currentUserID: currentUserID),
                                 onRetry: { coordinator.retry(localID: message.localID) },
-                                onDelete: { coordinator.deleteLocalMessage(localID: message.localID) })
+                                onDelete: { coordinator.deleteLocalMessage(localID: message.localID) },
+                                onToggleReaction: { emoji in
+                                    toggleReaction(localID: message.localID, emoji: emoji)
+                                },
+                                onLongPress: {
+                                    // Nothing to offer on a pending bubble:
+                                    // no server id to react to, no failure
+                                    // to retry.
+                                    guard message.serverID != nil || message.state == .failed else { return }
+                                    reactionTarget = ReactionTarget(localID: message.localID)
+                                })
                                 .id(message.localID)
                         }
                     }
@@ -128,6 +155,9 @@ struct ConversationView: View {
         }
         .safeAreaInset(edge: .bottom) {
             inputBar
+        }
+        .sheet(item: $reactionTarget) { target in
+            reactionSheet(for: target)
         }
         .navigationTitle(chat?.title ?? "")
         .navigationBarTitleDisplayMode(.inline)
@@ -193,12 +223,78 @@ struct ConversationView: View {
         }
     }
 
+    // MARK: - Reaction sheet
+
+    /// The long-press sheet's content, resolved against the LIVE entity
+    /// (not a captured snapshot) so a state change while the sheet is up
+    /// — the ack landing, say — shows current truth.
+    @ViewBuilder
+    private func reactionSheet(for target: ReactionTarget) -> some View {
+        let message = messages.first { $0.localID == target.localID }
+        VStack(spacing: 20) {
+            if let message {
+                if message.serverID != nil {
+                    // Reacting needs a server message id to PUT against.
+                    HStack(spacing: 8) {
+                        let mine = message.reactionList.first { $0.userID == currentUserID }?.emoji
+                        ForEach(MessagePresentation.quickReactions, id: \.self) { emoji in
+                            Button {
+                                toggleReaction(localID: message.localID, emoji: emoji)
+                                reactionTarget = nil
+                            } label: {
+                                Text(emoji)
+                                    .font(.system(size: 32))
+                                    .padding(8)
+                                    .background {
+                                        if mine == emoji {
+                                            Circle().fill(.tint.opacity(0.2))
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                if message.state == .failed {
+                    // The failed-bubble actions (no server id, so the two
+                    // gates never show together).
+                    VStack(spacing: 12) {
+                        Button {
+                            coordinator.retry(localID: message.localID)
+                            reactionTarget = nil
+                        } label: {
+                            Label("Try Again", systemImage: "arrow.clockwise")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        Button(role: .destructive) {
+                            coordinator.deleteLocalMessage(localID: message.localID)
+                            reactionTarget = nil
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(.horizontal, 24)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .presentationDetents([.height(200)])
+        .presentationDragIndicator(.visible)
+    }
+
     // MARK: - Actions
 
     private func send() {
         let body = model.draft
         model.draft = ""
         coordinator.send(body: body, in: chatID)
+    }
+
+    private func toggleReaction(localID: String, emoji: String) {
+        Task { await coordinator.toggleReaction(localID: localID, emoji: emoji) }
     }
 
     private func loadOlder(proxy: ScrollViewProxy) {

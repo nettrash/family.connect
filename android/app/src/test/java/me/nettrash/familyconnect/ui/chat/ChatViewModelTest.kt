@@ -31,6 +31,8 @@ import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
+import me.nettrash.familyconnect.data.net.dto.ReactionDto
+import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
@@ -150,6 +152,7 @@ class ChatViewModelTest {
         serverId: Long?,
         senderId: Long,
         createdAt: Long,
+        reactionsJson: String? = null,
     ) = MessageEntity(
         clientMsgId = clientMsgId,
         serverId = serverId,
@@ -158,6 +161,7 @@ class ChatViewModelTest {
         body = "b",
         createdAt = createdAt,
         status = MessageStatus.SENT,
+        reactionsJson = reactionsJson,
     )
 
     // -- Grouping (pure) ------------------------------------------------------
@@ -236,6 +240,73 @@ class ChatViewModelTest {
         val items = buildChatItems(messages, isFamilyChat = false, myUserId = ME, memberNames = emptyMap(), nowMillis = NOON, zone = ZONE)
             .filterIsInstance<ChatListItem.MessageItem>()
         assertThat(items.first().key).isEqualTo("local-uuid")
+    }
+
+    // -- Reaction chips (pure) ------------------------------------------------
+
+    @Test
+    fun reactionChipsAggregateInFirstSeenOrderWithCountsAndIncludesMe() {
+        val chips = buildReactionChips(
+            reactions = listOf(
+                ReactionDto(11L, "❤️"),
+                ReactionDto(12L, "👍"),
+                ReactionDto(13L, "❤️"),
+                ReactionDto(ME, "👍"),
+            ),
+            myUserId = ME,
+        )
+
+        // One chip per emoji, ordered by FIRST appearance — piling onto
+        // an existing emoji must not reorder the row.
+        assertThat(chips).containsExactly(
+            ReactionChip(emoji = "❤️", count = 2, includesMe = false),
+            ReactionChip(emoji = "👍", count = 2, includesMe = true),
+        ).inOrder()
+    }
+
+    @Test
+    fun reactionChipsAreEmptyForNoReactions() {
+        assertThat(buildReactionChips(emptyList(), ME)).isEmpty()
+    }
+
+    @Test
+    fun buildChatItemsThreadsChipsAndMyReactionFromTheRowJson() {
+        val messages = listOf(
+            entity(
+                "s2",
+                2,
+                PEER,
+                NOON,
+                reactionsJson = ReactionsCodec.encode(
+                    listOf(ReactionDto(PEER, "😂"), ReactionDto(ME, "❤️")),
+                ),
+            ),
+            entity("s1", 1, PEER, NOON - MINUTE), // never reacted
+        )
+        val items = buildChatItems(messages, isFamilyChat = false, myUserId = ME, memberNames = emptyMap(), nowMillis = NOON, zone = ZONE)
+            .filterIsInstance<ChatListItem.MessageItem>()
+
+        assertThat(items[0].reactionChips).containsExactly(
+            ReactionChip(emoji = "😂", count = 1, includesMe = false),
+            ReactionChip(emoji = "❤️", count = 1, includesMe = true),
+        ).inOrder()
+        assertThat(items[0].myReaction).isEqualTo("❤️")
+        assertThat(items[1].reactionChips).isEmpty()
+        assertThat(items[1].myReaction).isNull()
+    }
+
+    @Test
+    fun malformedReactionsJsonYieldsNoChipsInsteadOfCrashing() {
+        val items = buildChatItems(
+            listOf(entity("s1", 1, PEER, NOON, reactionsJson = "{not json")),
+            isFamilyChat = false,
+            myUserId = ME,
+            memberNames = emptyMap(),
+            nowMillis = NOON,
+            zone = ZONE,
+        ).filterIsInstance<ChatListItem.MessageItem>()
+
+        assertThat(items.single().reactionChips).isEmpty()
     }
 
     // -- loadOlder guard ------------------------------------------------------------

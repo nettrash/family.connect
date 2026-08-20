@@ -66,12 +66,34 @@ final class MessageEntity {
     var createdAt: Date
     /// 0 pending, 1 sent, 2 failed — see `MessageStatus`.
     var status: Int
+    /// Full current reaction state, JSON-encoded in the wire shape
+    /// (`[{"user_id":9,"emoji":"❤️"}]`). nil = never reacted to; "[]" =
+    /// reacted and later cleared — the distinction the protocol keeps.
+    var reactionsJSON: String?
+    /// Highest reaction_seq applied to this row (0 = none). The
+    /// per-message guard: a state only lands when its seq is greater.
+    var reactionSeq: Int64 = 0
 
     /// Typed view over the raw `status` int (SwiftData persists the int;
     /// the enum keeps call sites honest).
     var state: MessageStatus {
         get { MessageStatus(rawValue: status) ?? .sent }
         set { status = newValue.rawValue }
+    }
+
+    /// Typed view over the raw `reactionsJSON` blob (SwiftData persists
+    /// the string; the array keeps call sites honest). Reading a
+    /// never-reacted row yields []; writing always stores full state.
+    var reactionList: [ReactionSnapshot] {
+        get {
+            guard let reactionsJSON else { return [] }
+            let data = Data(reactionsJSON.utf8)
+            return (try? JSONDecoder().decode([ReactionSnapshot].self, from: data)) ?? []
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue) else { return }
+            reactionsJSON = String(decoding: data, as: UTF8.self)
+        }
     }
 
     init(
@@ -82,7 +104,9 @@ final class MessageEntity {
         senderID: Int64,
         body: String,
         createdAt: Date,
-        status: MessageStatus
+        status: MessageStatus,
+        reactionsJSON: String? = nil,
+        reactionSeq: Int64 = 0
     ) {
         self.localID = localID
         self.serverID = serverID
@@ -92,5 +116,7 @@ final class MessageEntity {
         self.body = body
         self.createdAt = createdAt
         self.status = status.rawValue
+        self.reactionsJSON = reactionsJSON
+        self.reactionSeq = reactionSeq
     }
 }

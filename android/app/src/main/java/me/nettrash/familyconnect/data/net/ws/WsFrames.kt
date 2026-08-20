@@ -8,7 +8,7 @@
  *
  *   ClientFrame — send / read / typing / ping
  *   ServerFrame — ack / message / read / typing / member_joined /
- *                 member_left / pong / error
+ *                 member_left / reaction / pong / error
  *
  * Compatibility rule: unknown `type` values must be *dropped*, not crash
  * the socket — that is how call_offer / call_answer signaling arrives for
@@ -26,6 +26,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonClassDiscriminator
 import me.nettrash.familyconnect.data.net.dto.MessageDto
+import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.UserDto
 
 // -- Client → server ---------------------------------------------------------
@@ -108,6 +109,19 @@ sealed interface ServerFrame {
     data class MemberLeft(
         @SerialName("family_id") val familyId: Long,
         @SerialName("user_id") val userId: Long,
+    ) : ServerFrame
+
+    /**
+     * A message's FULL current reaction state (protocol: never a delta) —
+     * idempotent; applied only when reactionSeq beats the stored one.
+     */
+    @Serializable
+    @SerialName("reaction")
+    data class Reaction(
+        @SerialName("chat_id") val chatId: Long,
+        @SerialName("message_id") val messageId: Long,
+        @SerialName("reaction_seq") val reactionSeq: Long,
+        val reactions: List<ReactionDto>,
     ) : ServerFrame
 
     @Serializable

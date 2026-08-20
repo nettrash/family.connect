@@ -20,6 +20,10 @@
 //      marker is only sent when it would advance this value.
 //    - `othersReadUpTo` — max(last_read_message_id) observed from *other*
 //      members' read frames; drives the double-checkmark on own bubbles.
+//    - `maxReactionSeq` — the reaction resync cursor, the reaction twin
+//      of `maxServerMessageID`: compared against the server's
+//      max_reaction_seq (GET /chats) to decide whether a reaction
+//      catch-up loop is needed.
 //
 //  `pinRank` (0 family / 1 direct) exists so the chat list can sort
 //  "family chat always first, then direct chats by recency" with a plain
@@ -59,6 +63,12 @@ final class ChatEntity {
     var myLastReadID: Int64 = 0
     /// Largest id any *other* member reported reading.
     var othersReadUpTo: Int64 = 0
+    /// Reaction resync cursor: the largest reaction_seq this client has
+    /// *processed* for the chat — advanced by catch-up pages (even when
+    /// the referenced message isn't held locally) and by live frames.
+    /// Never derived from held messages; compared against the server's
+    /// max_reaction_seq from GET /chats to decide whether to catch up.
+    var maxReactionSeq: Int64 = 0
 
     init(
         chatID: Int64,
@@ -74,7 +84,8 @@ final class ChatEntity {
         oldestLoadedMessageID: Int64? = nil,
         hasFullHistory: Bool = false,
         myLastReadID: Int64 = 0,
-        othersReadUpTo: Int64 = 0
+        othersReadUpTo: Int64 = 0,
+        maxReactionSeq: Int64 = 0
     ) {
         self.chatID = chatID
         self.kind = kind
@@ -90,5 +101,6 @@ final class ChatEntity {
         self.hasFullHistory = hasFullHistory
         self.myLastReadID = myLastReadID
         self.othersReadUpTo = othersReadUpTo
+        self.maxReactionSeq = maxReactionSeq
     }
 }

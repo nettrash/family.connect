@@ -29,6 +29,24 @@ nonisolated struct ChatSnapshot: Equatable, Sendable, Identifiable {
     var isFamilyChat: Bool { kind == "family" }
 }
 
+/// One user's reaction to one message. Codable in the wire shape
+/// (`{"user_id":9,"emoji":"❤️"}`) because MessageEntity persists its full
+/// reaction state as exactly this JSON — one spelling, no translation.
+nonisolated struct ReactionSnapshot: Equatable, Sendable, Codable {
+    let userID: Int64
+    let emoji: String
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case emoji
+    }
+
+    init(userID: Int64, emoji: String) {
+        self.userID = userID
+        self.emoji = emoji
+    }
+}
+
 nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     var id: String { localID }
     let localID: String
@@ -38,6 +56,9 @@ nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     let body: String
     let createdAt: Date
     let state: MessageStatus
+    /// Full current reaction state; [] both for "never reacted" and
+    /// "cleared" — the view only cares whether there is anything to draw.
+    var reactions: [ReactionSnapshot] = []
 }
 
 nonisolated struct MemberSnapshot: Equatable, Sendable, Identifiable {
@@ -61,7 +82,8 @@ extension MessageSnapshot {
             senderID: entity.senderID,
             body: entity.body,
             createdAt: entity.createdAt,
-            state: entity.state
+            state: entity.state,
+            reactions: entity.reactionList
         )
     }
 }
@@ -103,7 +125,22 @@ nonisolated struct DaySection: Equatable, Sendable, Identifiable {
     let messages: [MessageSnapshot]
 }
 
+/// One aggregated chip in the reaction row under a bubble: an emoji, how
+/// many members chose it, and whether the current user is among them
+/// (tints the chip and flips the tap from set to remove).
+nonisolated struct ReactionChip: Equatable, Sendable, Identifiable {
+    var id: String { emoji }
+    let emoji: String
+    let count: Int
+    let includesMe: Bool
+}
+
 nonisolated enum MessagePresentation {
+
+    /// The quick-set offered by the long-press picker. Client UI only —
+    /// the server accepts any emoji (≤ 32 bytes UTF-8), so chips render
+    /// whatever arrives; this is just what WE offer to send.
+    static let quickReactions = ["❤️", "👍", "👎", "😂", "😮", "😢"]
 
     /// Group an already-sorted message list into calendar-day sections.
     /// The input order is preserved inside each section, and sections come
@@ -151,5 +188,26 @@ nonisolated enum MessagePresentation {
     static func isRead(_ message: MessageSnapshot, othersReadUpTo: Int64) -> Bool {
         guard let serverID = message.serverID else { return false }
         return serverID <= othersReadUpTo
+    }
+
+    /// Aggregate a message's raw reaction list into the chips the bubble
+    /// draws: one per distinct emoji, in the order each emoji first
+    /// appears in the list (the server preserves reaction order, so this
+    /// is stable across re-renders — no popularity re-sorting jumps).
+    static func reactionChips(
+        _ reactions: [ReactionSnapshot],
+        currentUserID: Int64
+    ) -> [ReactionChip] {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        var mine: Set<String> = []
+        for reaction in reactions {
+            if counts[reaction.emoji] == nil { order.append(reaction.emoji) }
+            counts[reaction.emoji, default: 0] += 1
+            if reaction.userID == currentUserID { mine.insert(reaction.emoji) }
+        }
+        return order.map { emoji in
+            ReactionChip(emoji: emoji, count: counts[emoji] ?? 0, includesMe: mine.contains(emoji))
+        }
     }
 }

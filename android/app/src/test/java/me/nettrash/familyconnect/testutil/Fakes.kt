@@ -33,8 +33,11 @@ import me.nettrash.familyconnect.data.net.dto.JoinRequestsResponse
 import me.nettrash.familyconnect.data.net.dto.JoinResponse
 import me.nettrash.familyconnect.data.net.dto.MeResponse
 import me.nettrash.familyconnect.data.net.dto.MessageDto
+import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
+import me.nettrash.familyconnect.data.net.dto.ReactionDto
+import me.nettrash.familyconnect.data.net.dto.ReactionsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.RotateInviteCodeResponse
 import me.nettrash.familyconnect.data.net.dto.UserDto
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
@@ -225,9 +228,21 @@ class FakeChatApi : ChatApi {
     var postMessageHandler: (chatId: Long, clientMsgId: String, body: String) -> ApiResult<MessageResponse> =
         { _, _, _ -> ApiResult.NetworkError(IllegalStateException("unscripted")) }
 
+    // Suspend-typed so a test can park the REST call on a gate and
+    // observe the optimistic state mid-flight.
+    var putReactionHandler: suspend (chatId: Long, messageId: Long, emoji: String) -> ApiResult<MessageReactionStateDto> =
+        { _, _, _ -> ApiResult.NetworkError(IllegalStateException("unscripted")) }
+    var deleteReactionHandler: suspend (chatId: Long, messageId: Long) -> ApiResult<MessageReactionStateDto> =
+        { _, _ -> ApiResult.NetworkError(IllegalStateException("unscripted")) }
+    var reactionsHandler: (chatId: Long, afterSeq: Long, limit: Int) -> ApiResult<ReactionsCatchUpResponse> =
+        { _, _, _ -> ApiResult.Ok(ReactionsCatchUpResponse(emptyList())) }
+
     val postedMessages = mutableListOf<Triple<Long, String, String>>()
     val postedReads = mutableListOf<Pair<Long, Long>>()
+    val putReactions = mutableListOf<Triple<Long, Long, String>>()
+    val deletedReactions = mutableListOf<Pair<Long, Long>>()
     var messagesCalls = 0
+    var reactionsCalls = 0
 
     override suspend fun chats(): ApiResult<ChatsResponse> = chatsResult
 
@@ -255,6 +270,32 @@ class FakeChatApi : ChatApi {
     override suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit> {
         postedReads += chatId to lastReadMessageId
         return ApiResult.Ok(Unit)
+    }
+
+    override suspend fun putReaction(
+        chatId: Long,
+        messageId: Long,
+        emoji: String,
+    ): ApiResult<MessageReactionStateDto> {
+        putReactions += Triple(chatId, messageId, emoji)
+        return putReactionHandler(chatId, messageId, emoji)
+    }
+
+    override suspend fun deleteReaction(
+        chatId: Long,
+        messageId: Long,
+    ): ApiResult<MessageReactionStateDto> {
+        deletedReactions += chatId to messageId
+        return deleteReactionHandler(chatId, messageId)
+    }
+
+    override suspend fun getReactions(
+        chatId: Long,
+        afterSeq: Long,
+        limit: Int,
+    ): ApiResult<ReactionsCatchUpResponse> {
+        reactionsCalls += 1
+        return reactionsHandler(chatId, afterSeq, limit)
     }
 }
 
@@ -296,6 +337,8 @@ fun messageDto(
     clientMsgId: String = "srv-$id",
     body: String = "msg $id",
     createdAt: String = "2026-08-19T17:03:12Z",
+    reactions: List<ReactionDto>? = null,
+    reactionSeq: Long? = null,
 ) = MessageDto(
     id = id,
     chatId = chatId,
@@ -303,4 +346,16 @@ fun messageDto(
     clientMsgId = clientMsgId,
     body = body,
     createdAt = createdAt,
+    reactions = reactions,
+    reactionSeq = reactionSeq,
+)
+
+fun reactionState(
+    messageId: Long,
+    reactionSeq: Long,
+    reactions: List<ReactionDto> = emptyList(),
+) = MessageReactionStateDto(
+    messageId = messageId,
+    reactionSeq = reactionSeq,
+    reactions = reactions,
 )

@@ -32,7 +32,9 @@
 //                           chats the server no longer lists are dropped,
 //    4. SyncPlan after_id  — per-chat catch-up loops (limit 100) until a
 //                           short page,
-//    5. outbox sweep      — pending rows older than 30 s re-delivered.
+//    5. SyncPlan after_seq — per-chat reaction catch-up loops where the
+//                           server's max_reaction_seq is ahead of ours,
+//    6. outbox sweep      — pending rows older than 30 s re-delivered.
 //
 //  @MainActor because it mutates ModelContainer.mainContext and
 //  @Observable state that SwiftUI reads; the blocking work all lives in
@@ -239,6 +241,20 @@ final class ChatSyncCoordinator {
                 displayName: payload.user.displayName,
                 role: "member")
 
+        case .reaction(let payload):
+            // Full-state apply under the per-message seq guard; the chat
+            // cursor MAX-advances regardless of whether the row is held,
+            // so resync knows this seq needs no re-fetch (a dropped state
+            // is re-delivered embedded on the Message by history paging).
+            applyReactionState(
+                messageServerID: payload.messageID,
+                seq: payload.reactionSeq,
+                reactions: payload.reactions)
+            if let chat = fetchChat(payload.chatID), payload.reactionSeq > chat.maxReactionSeq {
+                chat.maxReactionSeq = payload.reactionSeq
+                saveContext()
+            }
+
         case .memberLeft(let userID):
             if userID == currentUserID {
                 // We were removed. Resync's /me reconcile routes the
@@ -306,6 +322,13 @@ final class ChatSyncCoordinator {
                 status: .sent)
             modelContext.insert(entity)
         }
+        // Embedded reaction state (history/resync pages): the same seq
+        // guard as live frames, so a page fetched before a live frame can
+        // never clobber newer state — and ABSENT fields never wipe.
+        if let seq = dto.reactionSeq, seq > entity.reactionSeq {
+            entity.reactionSeq = seq
+            entity.reactionList = Self.reactionSnapshots(dto.reactions ?? [])
+        }
         updateChat(after: dto, bumpUnread: bumpUnread)
         saveContext()
         return entity
@@ -328,6 +351,78 @@ final class ChatSyncCoordinator {
                 markRead(chatID: chat.chatID)
             } else if bumpUnread {
                 chat.unreadCount += 1
+            }
+        }
+    }
+
+    // MARK: - Reactions
+
+    /// [ReactionDTO] → the entity's stored value shape.
+    private static func reactionSnapshots(_ reactions: [ReactionDTO]) -> [ReactionSnapshot] {
+        reactions.map { ReactionSnapshot(userID: $0.userID, emoji: $0.emoji) }
+    }
+
+    /// THE seq-guarded apply path for one message's full reaction state —
+    /// live `reaction` frames, catch-up pages and toggle responses all
+    /// land here (embedded fields on a fetched Message get the same guard
+    /// inside `upsert`). The state is full, never a delta, so applying is
+    /// a plain rewrite; a seq at or below what the row holds is a stale
+    /// re-delivery and a no-op. Returns false when the message isn't held
+    /// locally — the state is dropped silently (history paging
+    /// re-delivers it embedded on the Message objects).
+    @discardableResult
+    func applyReactionState(messageServerID: Int64, seq: Int64, reactions: [ReactionDTO]) -> Bool {
+        guard let row = fetchMessage(serverID: messageServerID) else { return false }
+        if seq > row.reactionSeq {
+            row.reactionSeq = seq
+            row.reactionList = Self.reactionSnapshots(reactions)
+            saveContext()
+        }
+        return true
+    }
+
+    /// Toggle the current user's reaction from the UI: tapping the emoji
+    /// they already set removes it (DELETE), anything else sets/replaces
+    /// it (PUT — the server keeps one reaction per user per message).
+    /// Optimistic: the local list is rewritten before the REST call, but
+    /// `reactionSeq` is NOT touched — only the server mints seqs — so the
+    /// authoritative response (seq greater) applies through the normal
+    /// guarded path, and a no-op response (seq equal) changes nothing the
+    /// optimistic write didn't already show. On a REST error the
+    /// pre-toggle state is restored — unless a newer authoritative state
+    /// landed meanwhile (the seq moved), which the revert must not
+    /// clobber. No retry: reactions are cheap to re-tap, and APIClient
+    /// deliberately auto-retries GETs only.
+    func toggleReaction(localID: String, emoji: String) async {
+        guard let row = fetchMessage(localID: localID),
+              let serverID = row.serverID else { return }
+        let chatID = row.chatID
+        let userID = currentUserID
+        let previousJSON = row.reactionsJSON
+        let seqAtToggle = row.reactionSeq
+
+        var list = row.reactionList
+        let removing = list.first(where: { $0.userID == userID })?.emoji == emoji
+        list.removeAll { $0.userID == userID }
+        if !removing { list.append(ReactionSnapshot(userID: userID, emoji: emoji)) }
+        row.reactionList = list
+        saveContext()
+
+        do {
+            let state = removing
+                ? try await api.removeReaction(chatID: chatID, messageID: serverID)
+                : try await api.setReaction(chatID: chatID, messageID: serverID, emoji: emoji)
+            applyReactionState(
+                messageServerID: state.messageID,
+                seq: state.reactionSeq,
+                reactions: state.reactions)
+        } catch APIError.unauthorized {
+            session?.handleUnauthorized()
+        } catch {
+            AppLog.sync.info("Reaction toggle failed for \(localID, privacy: .public): \(String(describing: error))")
+            if let current = fetchMessage(localID: localID), current.reactionSeq == seqAtToggle {
+                current.reactionsJSON = previousJSON
+                saveContext()
             }
         }
     }
@@ -480,17 +575,28 @@ final class ChatSyncCoordinator {
 
         // 4. Per-chat catch-up: after_id loops until a short page.
         let cursors = chatList.chats.map {
-            SyncPlan.ChatCursor(chatID: $0.chat.id, serverLatestMessageID: $0.lastMessage?.id)
+            SyncPlan.ChatCursor(
+                chatID: $0.chat.id,
+                serverLatestMessageID: $0.lastMessage?.id,
+                serverMaxReactionSeq: $0.maxReactionSeq ?? 0)
         }
         for step in SyncPlan.make(chats: cursors, localCursors: localCursors()) {
             await runCatchUp(step)
         }
 
-        // 5. Outbox sweep: anything still pending after 30 s gets re-sent
+        // 5. Reaction catch-up, after the messages so freshly fetched
+        // rows exist to receive their states: after_seq loops for every
+        // chat whose server max_reaction_seq is ahead of our stored
+        // cursor.
+        for step in SyncPlan.makeReactionSteps(chats: cursors, localCursors: localReactionCursors()) {
+            await runReactionCatchUp(step)
+        }
+
+        // 6. Outbox sweep: anything still pending after 30 s gets re-sent
         // (same client_msg_id — the server dedups).
         await sweepOutbox()
 
-        // 6. Push registration: the first pass asks for notification
+        // 7. Push registration: the first pass asks for notification
         // permission (we're .active, so the user is in a family and the
         // prompt has context); later passes re-POST a rotated token or
         // retry a registration that failed.
@@ -506,6 +612,32 @@ final class ChatSyncCoordinator {
             guard let page = try? await api.messages(chatID: step.chatID, afterID: afterID, limit: limit) else { return }
             for dto in page { _ = upsert(dto, bumpUnread: false) }
             if let last = page.last { afterID = max(afterID, last.id) }
+            if page.count < limit { return }
+        }
+    }
+
+    /// One reaction catch-up loop: after_seq pages until a short page,
+    /// each state applied under the per-message seq guard. The chat's
+    /// stored cursor advances to every page's max seq EVEN when entries
+    /// referenced messages we don't hold (those states are dropped —
+    /// history paging re-delivers them embedded on the Message objects);
+    /// the cursor is what we've processed, never what we've kept.
+    private func runReactionCatchUp(_ step: SyncPlan.ReactionFetchStep) async {
+        let limit = 100
+        var afterSeq = step.afterSeq
+        while true {
+            guard let page = try? await api.reactions(chatID: step.chatID, afterSeq: afterSeq, limit: limit) else { return }
+            for state in page {
+                applyReactionState(
+                    messageServerID: state.messageID,
+                    seq: state.reactionSeq,
+                    reactions: state.reactions)
+            }
+            if let last = page.last { afterSeq = max(afterSeq, last.reactionSeq) }
+            if let chat = fetchChat(step.chatID), afterSeq > chat.maxReactionSeq {
+                chat.maxReactionSeq = afterSeq
+                saveContext()
+            }
             if page.count < limit { return }
         }
     }
@@ -722,6 +854,16 @@ final class ChatSyncCoordinator {
         return (try? modelContext.fetch(descriptor))?.first
     }
 
+    /// By server id, regardless of localID prefix: a reaction can target
+    /// a message we sent (a "c:" row that has since gained its serverID)
+    /// just as well as one first seen from the server ("s:" row).
+    private func fetchMessage(serverID: Int64) -> MessageEntity? {
+        let target: Int64? = serverID
+        var descriptor = FetchDescriptor<MessageEntity>(predicate: #Predicate { $0.serverID == target })
+        descriptor.fetchLimit = 1
+        return (try? modelContext.fetch(descriptor))?.first
+    }
+
     private func fetchMessage(clientMsgID: String, chatID: Int64) -> MessageEntity? {
         let target: String? = clientMsgID
         var descriptor = FetchDescriptor<MessageEntity>(
@@ -741,6 +883,11 @@ final class ChatSyncCoordinator {
     private func localCursors() -> [Int64: Int64] {
         guard let chats = try? modelContext.fetch(FetchDescriptor<ChatEntity>()) else { return [:] }
         return Dictionary(uniqueKeysWithValues: chats.map { ($0.chatID, $0.maxServerMessageID) })
+    }
+
+    private func localReactionCursors() -> [Int64: Int64] {
+        guard let chats = try? modelContext.fetch(FetchDescriptor<ChatEntity>()) else { return [:] }
+        return Dictionary(uniqueKeysWithValues: chats.map { ($0.chatID, $0.maxReactionSeq) })
     }
 
     private func saveContext() {

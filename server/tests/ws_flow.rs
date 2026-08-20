@@ -350,3 +350,79 @@ async fn logging_out_closes_the_sessions_sockets_with_4401() {
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_reaction_fans_out_full_state_to_every_member_connection_and_never_pushes() {
+    let ts = spawn_server().await;
+    let (owner, _, member, member_id, _) = family_of_two(&ts).await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    let response = ts
+        .post_message(&owner, chat_id, &Uuid::new_v4().to_string(), "react to me")
+        .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("message response is JSON");
+    let message_id = body["message"]["id"].as_i64().expect("message id");
+    let reaction_path = format!("/chats/{chat_id}/messages/{message_id}/reaction");
+
+    // Give the owner a push token so a wrongly-pushing implementation would
+    // be caught by the quiet check at the bottom.
+    let response = ts
+        .post(
+            &owner,
+            "/devices",
+            json!({"platform": "ios", "push_token": "tok-owner"}),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+
+    let mut owner_ws = connect_ws(&ts, &owner).await;
+    let mut owner_ws2 = connect_ws(&ts, &owner).await;
+    // The actor's *other* device: the acting request is answered over HTTP,
+    // but this connection must still hear the frame.
+    let mut member_ws = connect_ws(&ts, &member).await;
+
+    let response = ts
+        .put(&member, &reaction_path, json!({"emoji": "❤️"}))
+        .await;
+    assert_eq!(response.status(), 200);
+
+    for ws in [&mut owner_ws, &mut owner_ws2, &mut member_ws] {
+        let frame = next_frame_of_type(ws, "reaction").await;
+        assert_eq!(frame["chat_id"], chat_id);
+        assert_eq!(frame["message_id"], message_id);
+        assert_eq!(
+            frame["reactions"],
+            json!([{"user_id": member_id, "emoji": "❤️"}])
+        );
+        assert!(frame["reaction_seq"].as_i64().expect("seq") > 0);
+    }
+
+    // A no-op re-PUT changes nothing and fans nothing out.
+    let response = ts
+        .put(&member, &reaction_path, json!({"emoji": "❤️"}))
+        .await;
+    assert_eq!(response.status(), 200);
+    assert_no_frame_of_type(&mut owner_ws, "reaction", Duration::from_millis(1200)).await;
+
+    // Reactions never push: take the owner (who has a registered push
+    // token) fully offline and react again. The member's live socket
+    // proves delivery happened; the push log must stay empty (push
+    // dispatch is spawned, hence the grace sleep).
+    drop(owner_ws);
+    drop(owner_ws2);
+    let response = ts
+        .put(&member, &reaction_path, json!({"emoji": "👍"}))
+        .await;
+    assert_eq!(response.status(), 200);
+    let frame = next_frame_of_type(&mut member_ws, "reaction").await;
+    assert_eq!(
+        frame["reactions"],
+        json!([{"user_id": member_id, "emoji": "👍"}])
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        ts.push.calls().is_empty(),
+        "reactions must never reach the push seam"
+    );
+}

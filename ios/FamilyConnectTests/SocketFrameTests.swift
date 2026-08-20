@@ -133,6 +133,33 @@ struct SocketFrameTests {
         #expect(frame == .memberLeft(userID: 11))
     }
 
+    @Test("reaction decodes the full-state payload")
+    func decodeReaction() throws {
+        let frame = try decode("""
+        {"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
+         "reactions": [{"user_id": 9, "emoji": "❤️"}]}
+        """)
+        guard case .reaction(let payload) = frame else {
+            Issue.record("expected .reaction, got \(frame)")
+            return
+        }
+        #expect(payload.chatID == 42)
+        #expect(payload.messageID == 1338)
+        #expect(payload.reactionSeq == 124)
+        #expect(payload.reactions == [ReactionDTO(userID: 9, emoji: "❤️")])
+    }
+
+    @Test("reaction decodes an emptied state (last reaction removed)")
+    func decodeReactionCleared() throws {
+        let frame = try decode(#"{"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 125, "reactions": []}"#)
+        guard case .reaction(let payload) = frame else {
+            Issue.record("expected .reaction, got \(frame)")
+            return
+        }
+        #expect(payload.reactions.isEmpty)
+        #expect(payload.reactionSeq == 125)
+    }
+
     @Test("pong decodes")
     func decodePong() throws {
         let frame = try decode(#"{"type": "pong"}"#)

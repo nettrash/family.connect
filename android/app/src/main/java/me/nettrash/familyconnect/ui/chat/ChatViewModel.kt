@@ -186,6 +186,15 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * Tap on a chip or a quick-set emoji. The repository decides set vs
+     * remove from the row's current state; only acked messages
+     * (serverId != null) can be reacted to — the UI gates on that.
+     */
+    fun toggleReaction(messageServerId: Long, emoji: String) {
+        viewModelScope.launch { messageRepository.toggleReaction(chatId, messageServerId, emoji) }
+    }
+
+    /**
      * Called when the list scrolls near its old end. Guarded: one fetch
      * at a time, and none once the start of history is reached.
      */

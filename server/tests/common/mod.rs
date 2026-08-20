@@ -213,6 +213,16 @@ impl TestServer {
             .expect("request sends")
     }
 
+    pub async fn put(&self, token: &str, path: &str, body: Value) -> reqwest::Response {
+        self.client
+            .put(self.url(path))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .expect("request sends")
+    }
+
     pub async fn patch(&self, token: &str, path: &str, body: Value) -> reqwest::Response {
         self.client
             .patch(self.url(path))

@@ -4,7 +4,9 @@
 //
 //  The pure "what do we need to fetch" half of resync step 3
 //  (protocol.md §Best-effort delivery): given the server's chat list and
-//  our local per-chat cursors, produce the `after_id` fetch steps.
+//  our local per-chat cursors, produce the `after_id` fetch steps — and,
+//  by the same rule over the reaction cursors, the `after_seq` reaction
+//  catch-up steps.
 //
 //  Message ids are globally monotonic, so comparing the server's
 //  last-message id against the largest id we hold locally decides, per
@@ -24,10 +26,14 @@ nonisolated enum SyncPlan {
         let chatID: Int64
         /// id of the chat's newest message, nil when the chat is empty.
         let serverLatestMessageID: Int64?
+        /// max_reaction_seq from GET /chats; 0 when the server omitted it
+        /// (no message in the chat was ever reacted to).
+        let serverMaxReactionSeq: Int64
 
-        init(chatID: Int64, serverLatestMessageID: Int64?) {
+        init(chatID: Int64, serverLatestMessageID: Int64?, serverMaxReactionSeq: Int64 = 0) {
             self.chatID = chatID
             self.serverLatestMessageID = serverLatestMessageID
+            self.serverMaxReactionSeq = serverMaxReactionSeq
         }
     }
 
@@ -55,6 +61,35 @@ nonisolated enum SyncPlan {
             let local = localCursors[chat.chatID] ?? 0
             guard latest > local else { return nil }
             return FetchStep(chatID: chat.chatID, afterID: local)
+        }
+    }
+
+    /// One reaction catch-up loop to run: GET /chats/{chatID}/reactions?
+    /// after_seq={afterSeq}, repeated (advancing afterSeq) until a short
+    /// page.
+    struct ReactionFetchStep: Equatable, Sendable {
+        let chatID: Int64
+        let afterSeq: Int64
+
+        init(chatID: Int64, afterSeq: Int64) {
+            self.chatID = chatID
+            self.afterSeq = afterSeq
+        }
+    }
+
+    /// Plan the reaction catch-ups. `localCursors` maps chatID → the
+    /// stored ChatEntity.maxReactionSeq (absent = nothing processed,
+    /// cursor 0). A step is emitted only when the server's
+    /// max_reaction_seq is ahead of the stored cursor — chats with no
+    /// reaction activity (server 0 or equal) cost no request.
+    static func makeReactionSteps(
+        chats: [ChatCursor],
+        localCursors: [Int64: Int64]
+    ) -> [ReactionFetchStep] {
+        chats.compactMap { chat in
+            let local = localCursors[chat.chatID] ?? 0
+            guard chat.serverMaxReactionSeq > local else { return nil }
+            return ReactionFetchStep(chatID: chat.chatID, afterSeq: local)
         }
     }
 }
