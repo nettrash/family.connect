@@ -74,6 +74,21 @@ object MessageLinks {
     }
 
     /**
+     * TalkBack label for the custom action that opens [span] in [body]:
+     * the matched text with the verb its scheme implies. Needed because
+     * the tap detector is a raw pointerInput, which exposes no click
+     * action of its own — without these the links would be sighted-only.
+     */
+    fun accessibilityLabel(body: String, span: LinkSpan): String {
+        val text = body.substring(span.start.coerceIn(0, body.length), span.end.coerceIn(0, body.length))
+        return when {
+            span.url.startsWith("tel:") -> "Call $text"
+            span.url.startsWith("mailto:") -> "Email $text"
+            else -> "Open $text"
+        }
+    }
+
+    /**
      * [text] with [style] applied over every span in [spans] — the link
      * LOOK only; tap handling lives in BubbleContent's own detector
      * (see the header for why this is not LinkAnnotation.Url).

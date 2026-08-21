@@ -130,6 +130,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -137,6 +138,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
@@ -149,6 +151,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextDecoration
@@ -890,6 +895,16 @@ private fun MessageBubble(
     // preserves the long-press semantics) — a casual tap should not
     // ripple, the capsule's spring-out is the long-press feedback.
     var bubbleBounds by remember { mutableStateOf(Rect.Zero) }
+    // Detected links are resolved once here because two places need
+    // them: BubbleContent draws and hit-tests them, and the bubble's
+    // semantics below turns each into a custom action — the tap
+    // detector is a raw pointerInput, which contributes no click action,
+    // so without these the links would be sighted-only.
+    val emojiFontSize = remember(entity.body) { EmojiOnly.displayFontSize(entity.body) }
+    val linkSpans = remember(entity.body, emojiFontSize) {
+        if (emojiFontSize != null) emptyList() else MessageLinks.linkSpans(entity.body)
+    }
+    val uriHandler = LocalUriHandler.current
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val bubbleMaxWidth = maxWidth * 0.8f
         val bubbleModifier = Modifier
@@ -899,6 +914,21 @@ private fun MessageBubble(
                 onPositioned(item, bubbleBounds)
             }
             .clip(bubbleShape)
+            .then(
+                if (linkSpans.isEmpty()) {
+                    Modifier
+                } else {
+                    Modifier.semantics {
+                        customActions = linkSpans.map { span ->
+                            CustomAccessibilityAction(
+                                MessageLinks.accessibilityLabel(entity.body, span),
+                            ) {
+                                runCatching { uriHandler.openUri(span.url) }.isSuccess
+                            }
+                        }
+                    }
+                },
+            )
             .then(
                 if (entity.serverId != null) {
                     Modifier.combinedClickable(
@@ -959,6 +989,8 @@ private fun MessageBubble(
                     item = item,
                     chat = chat,
                     isMine = isMine,
+                    emojiFontSize = emojiFontSize,
+                    linkSpans = linkSpans,
                     onFailedTap = onFailedTap,
                     onDoubleTap = {
                         entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
@@ -1165,6 +1197,10 @@ private fun BubbleContent(
     item: ChatListItem.MessageItem,
     chat: ChatEntity?,
     isMine: Boolean,
+    /** Emoji-ladder size for an emoji-only body, else null. Resolved by the caller. */
+    emojiFontSize: Float?,
+    /** Links detected in the body (empty for emoji-only). Resolved by the caller. */
+    linkSpans: List<LinkSpan>,
     onFailedTap: (String) -> Unit,
     /** Double-tap over link text — the quick heart, same as the bubble's own gesture. */
     onDoubleTap: () -> Unit,
@@ -1177,16 +1213,10 @@ private fun BubbleContent(
         // text. Same ladder as iOS. lineHeight goes back to the font's
         // own metrics — bodyMedium's fixed line height would clip a
         // 96sp glyph.
-        val emojiFontSize = remember(entity.body) { EmojiOnly.displayFontSize(entity.body) }
-        // Text messages go through MessageLinks so URLs, emails and
-        // phone numbers are tappable (browser / mail / dialer);
-        // emoji-only ones skip the detector. Links underline; on my
-        // bubble they keep the content color (primary can run out of
-        // contrast on primaryContainer under dynamic color), on theirs
-        // they take primary — mirrors iOS (white vs accent).
-        val linkSpans = remember(entity.body, emojiFontSize) {
-            if (emojiFontSize != null) emptyList() else MessageLinks.linkSpans(entity.body)
-        }
+        // Detected links underline; on my bubble they keep the content
+        // color (primary can run out of contrast on primaryContainer
+        // under dynamic color), on theirs they take primary — mirrors
+        // iOS (white vs accent).
         val linkColor = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
         val body = remember(entity.body, linkSpans, linkColor) {
             MessageLinks.styled(
@@ -1206,6 +1236,14 @@ private fun BubbleContent(
         var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
         val uriHandler = LocalUriHandler.current
         val acked = entity.serverId != null
+        // The detector coroutine outlives recomposition and keeps the
+        // lambda instance it started with (pointerInput only restarts on
+        // a KEY change, and these keys never move), so the callbacks are
+        // read through rememberUpdatedState — captured directly, the
+        // capsule would reopen against the `item` snapshot from this
+        // bubble's very first touch and show a stale reaction.
+        val currentDoubleTap by rememberUpdatedState(onDoubleTap)
+        val currentLongPress by rememberUpdatedState(onTextLongPress)
         val textModifier = if (linkSpans.isEmpty()) {
             Modifier
         } else {
@@ -1213,19 +1251,14 @@ private fun BubbleContent(
                 detectTapGestures(
                     onTap = { position ->
                         val layout = textLayout ?: return@detectTapGestures
-                        val offset = layout.getOffsetForPosition(position)
-                        val span = linkSpans.firstOrNull { offset >= it.start && offset < it.end }
+                        val span = linkSpanAt(layout, linkSpans, position)
                             ?: return@detectTapGestures
-                        val box = layout.getBoundingBox(
-                            offset.coerceIn(0, layout.layoutInput.text.length - 1),
-                        )
-                        if (position.x < box.left || position.x > box.right) return@detectTapGestures
                         // openUri throws when no app handles the scheme
                         // (tel: on some tablets) — a dead tap beats a crash.
                         runCatching { uriHandler.openUri(span.url) }
                     },
-                    onDoubleTap = if (acked) ({ onDoubleTap() }) else null,
-                    onLongPress = if (acked) ({ onTextLongPress() }) else null,
+                    onDoubleTap = if (acked) ({ currentDoubleTap() }) else null,
+                    onLongPress = if (acked) ({ currentLongPress() }) else null,
                 )
             }
         }
@@ -1266,6 +1299,42 @@ private fun BubbleContent(
             }
         }
     }
+}
+
+/**
+ * The link span under [position] in a laid-out body, or null when the
+ * point misses the text.
+ *
+ * Neither half of this is what the text APIs hand you directly.
+ * getOffsetForPosition answers with the nearest CURSOR BOUNDARY, so a
+ * tap on the right half of a glyph rounds UP to the next character —
+ * comparing that character's box against the finger rejects the tap and
+ * leaves every glyph half dead. And on the y axis the lookup CLAMPS
+ * rather than misses, so a point above or below the text resolves to
+ * the first or last line at that x; that is reachable here because a
+ * pointerInput node also receives taps from the 48dp minimum-touch-
+ * target expansion around it, i.e. from the bubble's padding.
+ *
+ * So: reject anything outside the resolved line's own box, then turn
+ * the boundary back into the character actually under the finger.
+ */
+private fun linkSpanAt(
+    layout: TextLayoutResult,
+    spans: List<LinkSpan>,
+    position: Offset,
+): LinkSpan? {
+    val length = layout.layoutInput.text.length
+    if (length == 0) return null
+    val line = layout.getLineForVerticalPosition(position.y)
+    if (position.y < layout.getLineTop(line) || position.y > layout.getLineBottom(line)) return null
+    if (position.x < layout.getLineLeft(line) || position.x > layout.getLineRight(line)) return null
+    val boundary = layout.getOffsetForPosition(position)
+    val index = when {
+        boundary >= length -> length - 1
+        boundary > 0 && position.x < layout.getBoundingBox(boundary).left -> boundary - 1
+        else -> boundary
+    }
+    return spans.firstOrNull { index >= it.start && index < it.end }
 }
 
 @Composable

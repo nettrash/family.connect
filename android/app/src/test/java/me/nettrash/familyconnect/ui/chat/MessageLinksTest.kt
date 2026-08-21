@@ -73,6 +73,21 @@ class MessageLinksTest {
     }
 
     @Test
+    fun accessibilityLabelsNameTheActionByScheme() {
+        val web = "docs at https://example.com ok"
+        assertThat(MessageLinks.accessibilityLabel(web, MessageLinks.linkSpans(web)[0]))
+            .isEqualTo("Open https://example.com")
+
+        val mail = "write to nettrash@nettrash.me"
+        assertThat(MessageLinks.accessibilityLabel(mail, MessageLinks.linkSpans(mail)[0]))
+            .isEqualTo("Email nettrash@nettrash.me")
+
+        val phone = "call 555-123-4567 tonight"
+        assertThat(MessageLinks.accessibilityLabel(phone, MessageLinks.linkSpans(phone)[0]))
+            .isEqualTo("Call 555-123-4567")
+    }
+
+    @Test
     fun styledKeepsTheTextAndStylesExactlyTheSpanRanges() {
         val text = "docs: https://example.com ok"
         val spans = MessageLinks.linkSpans(text)
