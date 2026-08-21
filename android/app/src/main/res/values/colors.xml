@@ -1,5 +1,5 @@
 <resources>
-    <!-- Warm family-green — matches the FamilyGreen seed in ui/theme/Color.kt. -->
+    <!-- NETTRASH brand blue — matches BluePrimary in ui/theme/Color.kt. -->
     <color name="ic_launcher_background">#0D47A1</color>
     <color name="window_background">#FAFAFA</color>
 </resources>

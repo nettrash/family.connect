@@ -20,7 +20,17 @@
 
 package me.nettrash.familyconnect.navigation
 
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
+import androidx.navigation.NavBackStackEntry
 import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -52,6 +62,56 @@ object Routes {
 
     fun chat(chatId: Long) = "chat/$chatId"
 }
+
+// Shared-axis X (M3): forward pushes slide in from the right, pops slide
+// back out — quarter-width offset so the motion reads as depth, not a
+// full-page swipe. Phase resets use a fade-through instead: after a
+// popUpTo(0) stack wipe there is no spatial "back", so a slide would
+// imply a hierarchy that no longer exists. Whether a transition is a
+// phase reset is a property of the transition — either endpoint being a
+// phase-gate route — so it is decided here in the NavHost-level
+// defaults, not by per-destination overrides (which would leave the
+// other half of the transition sliding).
+private val phaseGateRoutes = setOf(
+    Routes.SERVER_SETUP,
+    Routes.AUTH,
+    Routes.FAMILY_GATE,
+    Routes.WAITING,
+)
+
+private fun AnimatedContentTransitionScope<NavBackStackEntry>.isPhaseReset(): Boolean =
+    initialState.destination.route in phaseGateRoutes ||
+        targetState.destination.route in phaseGateRoutes
+
+private fun sharedAxisEnter(): EnterTransition =
+    slideInHorizontally(
+        initialOffsetX = { it / 4 },
+        animationSpec = tween(300, easing = FastOutSlowInEasing),
+    ) + fadeIn(tween(300))
+
+private fun sharedAxisExit(): ExitTransition =
+    slideOutHorizontally(
+        targetOffsetX = { -it / 4 },
+        animationSpec = tween(300, easing = FastOutSlowInEasing),
+    ) + fadeOut(tween(300))
+
+private fun sharedAxisPopEnter(): EnterTransition =
+    slideInHorizontally(
+        initialOffsetX = { -it / 4 },
+        animationSpec = tween(300, easing = FastOutSlowInEasing),
+    ) + fadeIn(tween(300))
+
+private fun sharedAxisPopExit(): ExitTransition =
+    slideOutHorizontally(
+        targetOffsetX = { it / 4 },
+        animationSpec = tween(300, easing = FastOutSlowInEasing),
+    ) + fadeOut(tween(300))
+
+// Fade-through halves for phase-reset transitions: outgoing screen
+// fades fully before the incoming one starts (90ms overlap gap).
+private fun fadeThroughEnter(): EnterTransition = fadeIn(tween(200, delayMillis = 90))
+
+private fun fadeThroughExit(): ExitTransition = fadeOut(tween(150))
 
 /** Boot-time route for a session status. Pure — pinned by unit tests. */
 fun startDestinationFor(status: FamilyStatus): String = when (status) {
@@ -117,6 +177,10 @@ fun AppNavHost(
     NavHost(
         navController = navController,
         startDestination = startDestination,
+        enterTransition = { if (isPhaseReset()) fadeThroughEnter() else sharedAxisEnter() },
+        exitTransition = { if (isPhaseReset()) fadeThroughExit() else sharedAxisExit() },
+        popEnterTransition = { if (isPhaseReset()) fadeThroughEnter() else sharedAxisPopEnter() },
+        popExitTransition = { if (isPhaseReset()) fadeThroughExit() else sharedAxisPopExit() },
     ) {
         composable(Routes.SERVER_SETUP) {
             ServerSetupScreen(

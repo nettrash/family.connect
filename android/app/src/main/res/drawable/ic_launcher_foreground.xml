@@ -5,8 +5,14 @@
     asset-pipeline dependency. The bubble spans ~50dp of the 108dp adaptive
     canvas, inside the 66dp safe zone every mask shape preserves. The
     figures are drawn in the launcher background blue so they read as
-    cutouts; the child is separated from the adults by a white gap stroke,
-    matching the iOS 1024px icon (same geometry, scaled by 0.0622).
+    cutouts; the child is separated from the adults by a white gap stroke.
+
+    Every shape is mirror-symmetric about x = 54 and the bubble + tail
+    composite is optically centered: circular masks (Pixel launchers show
+    the icon as a circle) would turn the iOS icon's corner tail into a
+    lopsided glyph, so the Android tail is a short centered one instead —
+    a deliberate divergence from the iOS 1024px icon, whose squircle
+    keeps the corner tail. Figure geometry matches iOS (scaled 0.0622).
     iOS counterpart: ios/FamilyConnect/Assets.xcassets/AppIcon.appiconset
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -17,30 +23,31 @@
     <!-- Bubble body. -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M 39.7 29.0 H 68.3 A 10.6 10.6 0 0 1 78.9 39.6 V 58.7 A 10.6 10.6 0 0 1 68.3 69.3 H 39.7 A 10.6 10.6 0 0 1 29.1 58.7 V 39.6 A 10.6 10.6 0 0 1 39.7 29.0 Z" />
-    <!-- Bubble tail, filled separately so path winding can never cancel. -->
+        android:pathData="M 39.7 30.5 H 68.3 A 10.6 10.6 0 0 1 78.9 41.1 V 60.2 A 10.6 10.6 0 0 1 68.3 70.8 H 39.7 A 10.6 10.6 0 0 1 29.1 60.2 V 41.1 A 10.6 10.6 0 0 1 39.7 30.5 Z" />
+    <!-- Centered tail: straight sides + rounded tip so it reads "speech
+         bubble", not "map pin". Base overlaps the body so no seam shows. -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M 37.5 59.6 Q 37.9 72.0 35.3 78.4 Q 42.0 76.2 49.5 68.3 Z" />
+        android:pathData="M 45.5 69.5 L 52.8 75.4 Q 54.0 76.4 55.2 75.4 L 62.5 69.5 Z" />
     <!-- Figures, clipped to the bubble so flat body bottoms end on white. -->
     <group>
         <clip-path
-            android:pathData="M 39.7 29.0 H 68.3 A 10.6 10.6 0 0 1 78.9 39.6 V 58.7 A 10.6 10.6 0 0 1 68.3 69.3 H 39.7 A 10.6 10.6 0 0 1 29.1 58.7 V 39.6 A 10.6 10.6 0 0 1 39.7 29.0 Z" />
+            android:pathData="M 39.7 30.5 H 68.3 A 10.6 10.6 0 0 1 78.9 41.1 V 60.2 A 10.6 10.6 0 0 1 68.3 70.8 H 39.7 A 10.6 10.6 0 0 1 29.1 60.2 V 41.1 A 10.6 10.6 0 0 1 39.7 30.5 Z" />
         <!-- Adult left: head circle + capsule-top body. -->
         <path
             android:fillColor="#FF0D47A1"
-            android:pathData="M 42.3 41.9 A 3.86 3.86 0 1 0 50.1 41.9 A 3.86 3.86 0 1 0 42.3 41.9 Z M 39.9 63.3 L 39.9 53.8 A 6.35 6.35 0 0 1 52.6 53.8 L 52.6 63.3 Z" />
-        <!-- Adult right. -->
+            android:pathData="M 42.3 43.4 A 3.9 3.9 0 1 0 50.1 43.4 A 3.9 3.9 0 1 0 42.3 43.4 Z M 39.9 64.8 L 39.9 55.3 A 6.35 6.35 0 0 1 52.6 55.3 L 52.6 64.8 Z" />
+        <!-- Adult right: exact mirror of adult left about x = 54. -->
         <path
             android:fillColor="#FF0D47A1"
-            android:pathData="M 57.8 41.9 A 3.86 3.86 0 1 0 65.6 41.9 A 3.86 3.86 0 1 0 57.8 41.9 Z M 55.4 63.3 L 55.4 53.8 A 6.35 6.35 0 0 1 68.1 53.8 L 68.1 63.3 Z" />
+            android:pathData="M 57.9 43.4 A 3.9 3.9 0 1 0 65.7 43.4 A 3.9 3.9 0 1 0 57.9 43.4 Z M 55.4 64.8 L 55.4 55.3 A 6.35 6.35 0 0 1 68.1 55.3 L 68.1 64.8 Z" />
         <!-- Child, in front: white gap stroke first, then the brand-blue fill. -->
         <path
             android:strokeColor="#FFFFFFFF"
             android:strokeWidth="1.74"
-            android:pathData="M 51.0 49.0 A 2.99 2.99 0 1 0 57.0 49.0 A 2.99 2.99 0 1 0 51.0 49.0 Z M 49.3 63.3 L 49.3 58.0 A 4.73 4.73 0 0 1 58.8 58.0 L 58.8 63.3 Z" />
+            android:pathData="M 51.0 50.5 A 3.0 3.0 0 1 0 57.0 50.5 A 3.0 3.0 0 1 0 51.0 50.5 Z M 49.25 64.8 L 49.25 59.5 A 4.75 4.75 0 0 1 58.75 59.5 L 58.75 64.8 Z" />
         <path
             android:fillColor="#FF0D47A1"
-            android:pathData="M 51.0 49.0 A 2.99 2.99 0 1 0 57.0 49.0 A 2.99 2.99 0 1 0 51.0 49.0 Z M 49.3 63.3 L 49.3 58.0 A 4.73 4.73 0 0 1 58.8 58.0 L 58.8 63.3 Z" />
+            android:pathData="M 51.0 50.5 A 3.0 3.0 0 1 0 57.0 50.5 A 3.0 3.0 0 1 0 51.0 50.5 Z M 49.25 64.8 L 49.25 59.5 A 4.75 4.75 0 0 1 58.75 59.5 L 58.75 64.8 Z" />
     </group>
 </vector>

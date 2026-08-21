@@ -309,6 +309,87 @@ class ChatViewModelTest {
         assertThat(items.single().reactionChips).isEmpty()
     }
 
+    // -- Reaction details (pure) ----------------------------------------------
+
+    @Test
+    fun reactionDetailsGroupPerEmojiInFirstSeenOrderWithNamesInReactionOrder() {
+        val details = buildReactionDetails(
+            reactions = listOf(
+                ReactionDto(11L, "❤️"),
+                ReactionDto(12L, "👍"),
+                ReactionDto(13L, "❤️"),
+            ),
+            names = mapOf(11L to "Anna", 12L to "Ben", 13L to "Cleo"),
+            myUserId = ME,
+        )
+
+        // Same emoji order as the chips (first seen), names in reaction
+        // order within each emoji.
+        assertThat(details).containsExactly(
+            ReactionDetail(emoji = "❤️", names = listOf("Anna", "Cleo")),
+            ReactionDetail(emoji = "👍", names = listOf("Ben")),
+        ).inOrder()
+    }
+
+    @Test
+    fun reactionDetailsShowMeAsYouListedFirstWithinMyEmoji() {
+        val details = buildReactionDetails(
+            reactions = listOf(
+                ReactionDto(11L, "😂"),
+                ReactionDto(12L, "😂"),
+                ReactionDto(ME, "😂"), // I reacted LAST — still listed first
+            ),
+            names = mapOf(11L to "Anna", 12L to "Ben", ME to "Me Myself"),
+            myUserId = ME,
+        )
+
+        // "You" replaces my roster name and leads its group; the others
+        // keep their order.
+        assertThat(details).containsExactly(
+            ReactionDetail(emoji = "😂", names = listOf("You", "Anna", "Ben")),
+        )
+    }
+
+    @Test
+    fun reactionDetailsAcrossSeveralEmojisKeepYouOnlyInMyGroup() {
+        val details = buildReactionDetails(
+            reactions = listOf(
+                ReactionDto(11L, "❤️"),
+                ReactionDto(ME, "👍"),
+                ReactionDto(12L, "❤️"),
+                ReactionDto(13L, "👍"),
+                ReactionDto(14L, "😮"),
+            ),
+            names = mapOf(11L to "Anna", 12L to "Ben", 13L to "Cleo", 14L to "Dan"),
+            myUserId = ME,
+        )
+
+        assertThat(details).containsExactly(
+            ReactionDetail(emoji = "❤️", names = listOf("Anna", "Ben")),
+            ReactionDetail(emoji = "👍", names = listOf("You", "Cleo")),
+            ReactionDetail(emoji = "😮", names = listOf("Dan")),
+        ).inOrder()
+    }
+
+    @Test
+    fun reactionDetailsFallBackToMemberIdForUnknownReactors() {
+        val details = buildReactionDetails(
+            reactions = listOf(ReactionDto(99L, "❤️")),
+            names = emptyMap(), // roster does not know user 99
+            myUserId = ME,
+        )
+
+        // Same fallback the sender-name label uses.
+        assertThat(details).containsExactly(
+            ReactionDetail(emoji = "❤️", names = listOf("Member 99")),
+        )
+    }
+
+    @Test
+    fun reactionDetailsAreEmptyForNoReactions() {
+        assertThat(buildReactionDetails(emptyList(), emptyMap(), ME)).isEmpty()
+    }
+
     // -- loadOlder guard ------------------------------------------------------------
 
     @Test

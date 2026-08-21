@@ -152,7 +152,7 @@ class ChatListViewModelTest {
         val subscription = repoScope.launch { viewModel.chats.collect {} }
         runCurrent()
 
-        assertThat(viewModel.chats.value.map { it.id }).containsExactly(1L, 2L, 3L).inOrder()
+        assertThat(viewModel.chats.value.orEmpty().map { it.id }).containsExactly(1L, 2L, 3L).inOrder()
         subscription.cancel()
     }
 

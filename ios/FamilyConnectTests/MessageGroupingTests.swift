@@ -159,4 +159,73 @@ struct MessageGroupingTests {
     func reactionChipsEmpty() {
         #expect(MessagePresentation.reactionChips([], currentUserID: 7).isEmpty)
     }
+
+    // MARK: - Reaction details (who reacted)
+
+    @Test("details follow chip order; names resolve in reaction order")
+    func reactionDetailsOrder() {
+        let reactions = [
+            ReactionSnapshot(userID: 9, emoji: "❤️"),
+            ReactionSnapshot(userID: 11, emoji: "👍"),
+            ReactionSnapshot(userID: 12, emoji: "❤️"),
+        ]
+        let names: [Int64: String] = [9: "Anna", 11: "Ben", 12: "Kim"]
+        let details = MessagePresentation.reactionDetails(reactions, names: names, currentUserID: 7)
+        #expect(details == [
+            ReactionDetail(emoji: "❤️", names: ["Anna", "Kim"]),
+            ReactionDetail(emoji: "👍", names: ["Ben"]),
+        ])
+    }
+
+    @Test("detail order matches the chips for the same input")
+    func reactionDetailsMatchChipOrder() {
+        let reactions = [
+            ReactionSnapshot(userID: 1, emoji: "👍"),
+            ReactionSnapshot(userID: 2, emoji: "❤️"),
+            ReactionSnapshot(userID: 3, emoji: "😂"),
+            ReactionSnapshot(userID: 4, emoji: "❤️"),
+        ]
+        let chips = MessagePresentation.reactionChips(reactions, currentUserID: 2)
+        let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 2)
+        #expect(details.map(\.emoji) == chips.map(\.emoji))
+    }
+
+    @Test("You leads its emoji no matter when I reacted", arguments: [0, 1, 2])
+    func reactionDetailsYouFirst(position: Int) {
+        var reactions = [
+            ReactionSnapshot(userID: 9, emoji: "❤️"),
+            ReactionSnapshot(userID: 11, emoji: "❤️"),
+        ]
+        reactions.insert(ReactionSnapshot(userID: 7, emoji: "❤️"), at: position)
+        let details = MessagePresentation.reactionDetails(
+            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7)
+        #expect(details == [ReactionDetail(emoji: "❤️", names: ["You", "Anna", "Ben"])])
+    }
+
+    @Test("You substitutes only in the emoji I chose, others keep their names")
+    func reactionDetailsYouPerEmoji() {
+        let reactions = [
+            ReactionSnapshot(userID: 9, emoji: "👍"),
+            ReactionSnapshot(userID: 7, emoji: "😂"),
+            ReactionSnapshot(userID: 11, emoji: "😂"),
+        ]
+        let details = MessagePresentation.reactionDetails(
+            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7)
+        #expect(details == [
+            ReactionDetail(emoji: "👍", names: ["Anna"]),
+            ReactionDetail(emoji: "😂", names: ["You", "Ben"]),
+        ])
+    }
+
+    @Test("a reactor missing from the member list falls back to Someone")
+    func reactionDetailsUnknownReactor() {
+        let reactions = [ReactionSnapshot(userID: 99, emoji: "👍")]
+        let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 7)
+        #expect(details == [ReactionDetail(emoji: "👍", names: ["Someone"])])
+    }
+
+    @Test("no reactions yield no details")
+    func reactionDetailsEmpty() {
+        #expect(MessagePresentation.reactionDetails([], names: [:], currentUserID: 7).isEmpty)
+    }
 }

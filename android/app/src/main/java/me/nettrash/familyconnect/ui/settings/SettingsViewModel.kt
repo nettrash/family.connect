@@ -35,6 +35,7 @@ class SettingsViewModel @Inject constructor(
     data class UiState(
         val displayName: String? = null,
         val username: String? = null,
+        val userId: Long? = null,
         val serverUrl: String? = null,
         val familyName: String? = null,
         val isOwner: Boolean = false,
@@ -58,6 +59,7 @@ class SettingsViewModel @Inject constructor(
                 it.copy(
                     displayName = snapshot.myDisplayName,
                     username = snapshot.myUsername,
+                    userId = snapshot.myUserId,
                     serverUrl = snapshot.serverUrl,
                     familyName = snapshot.familyName,
                     isOwner = snapshot.isOwner,

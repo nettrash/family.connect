@@ -135,6 +135,15 @@ nonisolated struct ReactionChip: Equatable, Sendable, Identifiable {
     let includesMe: Bool
 }
 
+/// One emoji's row in the "who reacted" popover: the emoji plus the
+/// display names of everyone who chose it, current user rendered as
+/// "You" and listed first.
+nonisolated struct ReactionDetail: Equatable, Sendable, Identifiable {
+    var id: String { emoji }
+    let emoji: String
+    let names: [String]
+}
+
 nonisolated enum MessagePresentation {
 
     /// The quick-set offered by the long-press picker. Client UI only —
@@ -208,6 +217,39 @@ nonisolated enum MessagePresentation {
         }
         return order.map { emoji in
             ReactionChip(emoji: emoji, count: counts[emoji] ?? 0, includesMe: mine.contains(emoji))
+        }
+    }
+
+    /// Expand a message's raw reaction list into the "who reacted"
+    /// popover's rows: one per distinct emoji, in the same first-seen
+    /// order as `reactionChips` (the two views must agree). Within an
+    /// emoji, the current user shows as "You" and comes first; everyone
+    /// else keeps reaction-list order under their display name from
+    /// `names` ("Someone" when a reactor is no longer a known member).
+    static func reactionDetails(
+        _ reactions: [ReactionSnapshot],
+        names: [Int64: String],
+        currentUserID: Int64
+    ) -> [ReactionDetail] {
+        var order: [String] = []
+        var others: [String: [String]] = [:]
+        var mine: Set<String> = []
+        for reaction in reactions {
+            if others[reaction.emoji] == nil {
+                order.append(reaction.emoji)
+                others[reaction.emoji] = []
+            }
+            if reaction.userID == currentUserID {
+                mine.insert(reaction.emoji)
+            } else {
+                others[reaction.emoji, default: []].append(
+                    names[reaction.userID] ?? String(localized: "Someone"))
+            }
+        }
+        return order.map { emoji in
+            let rest = others[emoji] ?? []
+            let all = mine.contains(emoji) ? [String(localized: "You")] + rest : rest
+            return ReactionDetail(emoji: emoji, names: all)
         }
     }
 }

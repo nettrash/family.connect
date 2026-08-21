@@ -44,8 +44,11 @@ class ChatListViewModel @Inject constructor(
     socket: ChatSocket,
 ) : ViewModel() {
 
-    val chats: StateFlow<List<ChatEntity>> = chatRepository.observeChats()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    // Seeded with null, not emptyList(): null means "Room hasn't answered
+    // yet" so the screen can show skeleton rows instead of flashing the
+    // "No chats yet" empty state on cold entry.
+    val chats: StateFlow<List<ChatEntity>?> = chatRepository.observeChats()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Picker candidates: everyone but me. */
     val pickableMembers: StateFlow<List<MemberEntity>> =

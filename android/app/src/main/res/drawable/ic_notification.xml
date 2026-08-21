@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Status-bar notification icon. Android draws small icons as pure alpha
+    masks, so this is the monochrome bubble-with-family silhouette from
+    ic_launcher_monochrome, re-framed on the standard 24dp notification
+    canvas with ~1dp padding (the 108dp adaptive canvas would render the
+    glyph at less than half size in the status bar). The transform maps
+    glyph bounds x 29.1..78.9 / y 30.5..75.9 onto 1..23.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <group
+        android:scaleX="0.4418"
+        android:scaleY="0.4418"
+        android:translateX="-11.86"
+        android:translateY="-11.5">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M 39.7 30.5 H 68.3 A 10.6 10.6 0 0 1 78.9 41.1 V 60.2 A 10.6 10.6 0 0 1 68.3 70.8 H 60.9 L 55.2 75.4 Q 54.0 76.4 52.8 75.4 L 47.1 70.8 H 39.7 A 10.6 10.6 0 0 1 29.1 60.2 V 41.1 A 10.6 10.6 0 0 1 39.7 30.5 Z M 42.3 43.4 A 3.9 3.9 0 1 0 50.1 43.4 A 3.9 3.9 0 1 0 42.3 43.4 Z M 57.9 43.4 A 3.9 3.9 0 1 0 65.7 43.4 A 3.9 3.9 0 1 0 57.9 43.4 Z M 51.0 50.5 A 3.0 3.0 0 1 0 57.0 50.5 A 3.0 3.0 0 1 0 51.0 50.5 Z M 39.9 64.8 L 39.9 55.3 A 6.4 6.4 0 0 1 52.6 54.96 A 4.75 4.75 0 0 1 55.4 54.96 A 6.4 6.4 0 0 1 68.1 55.3 L 68.1 64.8 Z" />
+    </group>
+</vector>

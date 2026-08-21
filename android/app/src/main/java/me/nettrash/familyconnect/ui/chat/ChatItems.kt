@@ -13,8 +13,14 @@
  *     differs in sender or day).
  *   - showTimestamp: on the last message of a same-sender same-minute
  *     run — consecutive rapid-fire messages share one timestamp.
+ *   - isRunStart/isRunEnd: position within a same-sender same-day run;
+ *     in reverseLayout the OLDER neighbor renders above, so isRunStart
+ *     is the visually-top bubble of the run and isRunEnd the bottom one.
+ *     Drives the bubble corner tightening in ChatScreen.
  *   - reactionChips: the row's reactionsJson aggregated into
  *     (emoji, count, includesMe) chips in first-seen order.
+ *   - buildReactionDetails: the same raw reactions resolved to display
+ *     names for the who-reacted popup (chip long-press).
  *
  * iOS counterpart: ios/FamilyConnect/UI/Chat/ChatItems.swift
  */
@@ -58,6 +64,45 @@ fun buildReactionChips(reactions: List<ReactionDto>, myUserId: Long): List<React
     }
 }
 
+/** One emoji's reactors, resolved to display names, for the who-reacted popup. */
+data class ReactionDetail(
+    val emoji: String,
+    /** Reaction order, except my own entry renders as "You" and leads. */
+    val names: List<String>,
+)
+
+/**
+ * Resolve raw per-user reactions into per-emoji name lists for the
+ * who-reacted popup (chip long-press). Emojis appear in FIRST-SEEN order
+ * — the same order buildReactionChips renders the chips — and within an
+ * emoji names keep reaction order, except my own entry, which shows as
+ * "You" and moves to the front. Unknown user ids fall back to
+ * "Member <id>", matching the sender-name fallback in the bubble.
+ */
+fun buildReactionDetails(
+    reactions: List<ReactionDto>,
+    names: Map<Long, String>,
+    myUserId: Long,
+): List<ReactionDetail> {
+    if (reactions.isEmpty()) return emptyList()
+    val othersByEmoji = LinkedHashMap<String, MutableList<String>>()
+    val mine = HashSet<String>()
+    for (reaction in reactions) {
+        val others = othersByEmoji.getOrPut(reaction.emoji) { mutableListOf() }
+        if (reaction.userId == myUserId) {
+            mine += reaction.emoji
+        } else {
+            others += names[reaction.userId] ?: "Member ${reaction.userId}"
+        }
+    }
+    return othersByEmoji.map { (emoji, others) ->
+        ReactionDetail(
+            emoji = emoji,
+            names = if (emoji in mine) listOf("You") + others else others,
+        )
+    }
+}
+
 sealed interface ChatListItem {
     /** Stable LazyColumn key. */
     val key: String
@@ -68,6 +113,10 @@ sealed interface ChatListItem {
         val senderName: String?,
         val showTimestamp: Boolean,
         val reactionChips: List<ReactionChip> = emptyList(),
+        /** Visually-top bubble of a same-sender same-day run. Defaults model a run of one. */
+        val isRunStart: Boolean = true,
+        /** Visually-bottom bubble of a same-sender same-day run. */
+        val isRunEnd: Boolean = true,
     ) : ChatListItem {
         override val key: String get() = entity.clientMsgId
 
@@ -97,6 +146,9 @@ fun buildChatItems(
         val startsRun = older == null ||
             older.senderId != message.senderId ||
             !TimeFormat.sameDay(older.createdAt, message.createdAt, zone)
+        val endsRun = newer == null ||
+            newer.senderId != message.senderId ||
+            !TimeFormat.sameDay(newer.createdAt, message.createdAt, zone)
         val endsMinuteRun = newer == null ||
             newer.senderId != message.senderId ||
             TimeFormat.bubbleTime(newer.createdAt, zone) != TimeFormat.bubbleTime(message.createdAt, zone)
@@ -110,6 +162,8 @@ fun buildChatItems(
                 reactions = ReactionsCodec.decode(message.reactionsJson),
                 myUserId = myUserId,
             ),
+            isRunStart = startsRun,
+            isRunEnd = endsRun,
         )
 
         val dayEnds = older == null ||

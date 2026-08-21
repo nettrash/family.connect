@@ -81,9 +81,11 @@ class FamilyAdminViewModel @Inject constructor(
         }
     }
 
-    fun approve(requestId: Long) = mutate { familyRepository.approve(requestId) }
+    fun approve(requestId: Long, onSuccess: () -> Unit = {}) =
+        mutate(onSuccess) { familyRepository.approve(requestId) }
 
-    fun reject(requestId: Long) = mutate { familyRepository.reject(requestId) }
+    fun reject(requestId: Long, onSuccess: () -> Unit = {}) =
+        mutate(onSuccess) { familyRepository.reject(requestId) }
 
     fun rotateInviteCode() {
         viewModelScope.launch {
@@ -113,13 +115,15 @@ class FamilyAdminViewModel @Inject constructor(
         }
     }
 
-    fun removeMember(userId: Long) = mutate { familyRepository.removeMember(userId) }
+    fun removeMember(userId: Long, onSuccess: () -> Unit = {}) =
+        mutate(onSuccess) { familyRepository.removeMember(userId) }
 
-    private fun mutate(block: suspend () -> ApiResult<*>) {
+    /** Runs [block]; [onSuccess] fires only when the server confirms. */
+    private fun mutate(onSuccess: () -> Unit = {}, block: suspend () -> ApiResult<*>) {
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null) }
             when (val result = block()) {
-                is ApiResult.Ok -> Unit
+                is ApiResult.Ok -> onSuccess()
                 is ApiResult.HttpError ->
                     _state.update { it.copy(error = result.message ?: "Action failed") }
                 is ApiResult.NetworkError ->

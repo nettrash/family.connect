@@ -20,9 +20,17 @@
 //
 //  Reactions: aggregated chips (emoji + count, tinted when the current
 //  user is included — aggregation rules in MessagePresentation) render
-//  between the bubble and the timestamp; tapping a chip toggles that
-//  emoji, long-pressing the bubble opens the picker sheet the parent
-//  presents via `onLongPress`.
+//  between the bubble and the timestamp in a wrapping FlowLayout, so
+//  many chips fold to new lines instead of overflowing. Tapping a chip
+//  toggles that emoji; long-pressing a chip pops the "who reacted" list
+//  (rows from MessagePresentation.reactionDetails, passed in by the
+//  parent). Chips spring in and out keyed by their emoji, counts roll
+//  with numericText, and a soft impact fires when the current user's own
+//  reaction state changes — i.e. when their toggle lands.
+//
+//  Long-pressing the bubble itself calls `onLongPress` — the parent
+//  floats its reaction picker over the bubble, finding it through the
+//  BubbleAnchorKey bounds this view publishes under its localID.
 //
 
 import SwiftUI
@@ -34,10 +42,20 @@ struct MessageBubbleView: View {
     let senderName: String?
     let isRead: Bool
     var reactionChips: [ReactionChip] = []
+    var reactionDetails: [ReactionDetail] = []
     var onRetry: () -> Void = {}
     var onDelete: () -> Void = {}
     var onToggleReaction: (String) -> Void = { _ in }
     var onLongPress: () -> Void = {}
+    /// True only while THIS bubble hosts the floating reaction picker.
+    /// Anchors are position-dependent, so publishing them from every
+    /// bubble makes the overlay's preference re-evaluate on every
+    /// scrolled frame — with tall bubbles that is real jank. Only the
+    /// pressed bubble's anchor is ever read, so only it publishes.
+    var publishesAnchor: Bool = false
+
+    /// Drives the "who reacted" popover a chip long-press opens.
+    @State private var showsReactionDetails = false
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
@@ -70,16 +88,17 @@ struct MessageBubbleView: View {
 
             if !isMine { Spacer(minLength: 48) }
         }
-        .onLongPressGesture {
-            onLongPress()
-        }
+        // A toggle landing = the set of chips that include me changing —
+        // whether from the optimistic write or the server's echo.
+        .sensoryFeedback(.impact(flexibility: .soft), trigger: reactionChips.filter(\.includesMe).map(\.emoji))
     }
 
-    /// The aggregated reaction chips under the bubble. A chip the current
-    /// user is part of gets the tinted treatment; tapping any chip
-    /// toggles that emoji for the current user.
+    /// The aggregated reaction chips under the bubble, wrapping to new
+    /// lines when they outgrow the column. A chip the current user is
+    /// part of gets the tinted treatment; tapping any chip toggles that
+    /// emoji for the current user; long-pressing one pops who reacted.
     private var reactionRow: some View {
-        HStack(spacing: 4) {
+        FlowLayout(rowAlignment: isMine ? .trailing : .leading, spacing: 4) {
             ForEach(reactionChips) { chip in
                 Button {
                     onToggleReaction(chip.emoji)
@@ -91,6 +110,7 @@ struct MessageBubbleView: View {
                             Text("\(chip.count)")
                                 .font(.caption2.weight(.medium))
                                 .foregroundStyle(chip.includesMe ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                                .contentTransition(.numericText())
                         }
                     }
                     .padding(.horizontal, 8)
@@ -105,11 +125,41 @@ struct MessageBubbleView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                // Simultaneous so the Button's tap keeps working; being
+                // deeper than the bubble's own long-press, this one wins
+                // when the press starts on a chip.
+                .simultaneousGesture(LongPressGesture().onEnded { _ in
+                    showsReactionDetails = true
+                })
+                .transition(.scale.combined(with: .opacity))
                 .accessibilityLabel("\(chip.emoji) \(chip.count)")
             }
         }
         .padding(.horizontal, 4)
         .padding(.top, 1)
+        // Scoped to the chip row: an animation watching the whole bubble
+        // row's frame kept a spring alive against layout re-passes.
+        .animation(.spring(duration: 0.25, bounce: 0.3), value: reactionChips)
+        .popover(isPresented: $showsReactionDetails) {
+            reactionDetailsList
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    /// The "who reacted" popover body: each emoji in chip order with the
+    /// names of its reactors ("You" first when the current user is one).
+    private var reactionDetailsList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(reactionDetails) { detail in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(detail.emoji)
+                    Text(detail.names.formatted(.list(type: .and)))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
     }
 
     private var bubble: some View {
@@ -121,6 +171,15 @@ struct MessageBubbleView: View {
             .background(
                 isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.secondarySystemFill)),
                 in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            // The floating reaction picker grows out of this exact rect;
+            // the parent resolves it from the preference by localID. Empty
+            // unless this bubble is the picker's host (see publishesAnchor).
+            .anchorPreference(key: BubbleAnchorKey.self, value: .bounds) {
+                publishesAnchor ? [message.localID: $0] : [:]
+            }
+            .onLongPressGesture {
+                onLongPress()
+            }
     }
 
     @ViewBuilder

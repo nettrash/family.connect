@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatEntity
@@ -71,7 +72,11 @@ class ChatViewModel @Inject constructor(
 
     // Window into the message table; loadOlder widens it.
     private val visibleLimit = MutableStateFlow(INITIAL_LIMIT)
-    private val loadingOlder = MutableStateFlow(false)
+    private val _loadingOlder = MutableStateFlow(false)
+
+    /** True while an older history page is in flight — drives the list's oldest-end spinner. */
+    val loadingOlder: StateFlow<Boolean> = _loadingOlder
+
     private var reachedStart = false
 
     private val resumed = MutableStateFlow(false)
@@ -85,12 +90,20 @@ class ChatViewModel @Inject constructor(
     val myUserId: StateFlow<Long?> = settings.state.map { it.myUserId }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    // Roster snapshot — sender names in family bubbles and the typing
-    // indicator both resolve through it. Eagerly shared: typing frames
-    // can arrive before the items flow has any subscriber.
-    private val memberNames: StateFlow<Map<Long, String>> = memberDao.observeMembers()
+    // Roster snapshot — sender names in family bubbles, the typing
+    // indicator, and the who-reacted popup all resolve through it.
+    // Eagerly shared: typing frames can arrive before the items flow has
+    // any subscriber.
+    val memberNames: StateFlow<Map<Long, String>> = memberDao.observeMembers()
         .map { members -> members.associate { it.userId to it.displayName } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    // UI-only: flips on the first items emission, so the empty state can
+    // tell an actually-empty chat from "the DB flow hasn't answered yet".
+    private val _initialLoadSettled = MutableStateFlow(false)
+
+    /** True once the first (possibly empty) items emission has landed. */
+    val initialLoadSettled: StateFlow<Boolean> = _initialLoadSettled
 
     val items: StateFlow<List<ChatListItem>> = combine(
         visibleLimit.flatMapLatest { messageRepository.observeMessages(chatId, it) },
@@ -105,7 +118,9 @@ class ChatViewModel @Inject constructor(
             memberNames = members,
             nowMillis = clock.now(),
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    }
+        .onEach { _initialLoadSettled.value = true }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _input = MutableStateFlow("")
     val input: StateFlow<String> = _input
@@ -199,13 +214,13 @@ class ChatViewModel @Inject constructor(
      * at a time, and none once the start of history is reached.
      */
     fun loadOlder() {
-        if (reachedStart || !loadingOlder.compareAndSet(expect = false, update = true)) return
+        if (reachedStart || !_loadingOlder.compareAndSet(expect = false, update = true)) return
         viewModelScope.launch {
             try {
                 reachedStart = messageRepository.loadOlder(chatId)
                 visibleLimit.value += PAGE_SIZE
             } finally {
-                loadingOlder.value = false
+                _loadingOlder.value = false
             }
         }
     }
