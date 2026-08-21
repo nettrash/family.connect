@@ -69,4 +69,12 @@ class EmojiCatalogTest {
             }
         }
     }
+
+    @Test
+    fun doubleTapReactionIsAQuickReactionWithinTheLimit() {
+        assertThat(DOUBLE_TAP_REACTION.toByteArray(Charsets.UTF_8).size).isAtMost(32)
+        // Inside the quick set so the capsule shows it selected after
+        // a double-tap. iOS pins the same value.
+        assertThat(QUICK_REACTIONS).contains(DOUBLE_TAP_REACTION)
+    }
 }

@@ -1,0 +1,172 @@
+//
+//  EmojiOnly.swift
+//  FamilyConnect
+//
+//  Emoji-only message detection behind the bubble's font ladder: a
+//  message whose visible content is exclusively emoji renders big and
+//  bare (no balloon), scaled by how many emoji it carries — one emoji
+//  biggest, then smaller per extra emoji through four; five or more, or
+//  any text mixed in, and it is an ordinary text message again.
+//
+//  Deliberately NOT the system's Unicode property API: Android has no
+//  JVM-testable equivalent, and the two apps must agree on what counts
+//  as "emoji only" — so both embed this same hand-rolled scanner over
+//  the same code-point table (the EmojiCatalog discipline, applied to
+//  logic). The table is Extended_Pictographic in broad strokes: bare
+//  text-presentation pictographs (☂, ™) count as emoji on purpose —
+//  Android renders most of them as color emoji anyway, and a
+//  symbol-only message reads as an emoji message either way. An
+//  explicit text selector (U+FE0E) opts the whole message out. The
+//  unit tests sweep the full picker catalog through the scanner on
+//  both platforms.
+//
+//  Kotlin counterpart: android/…/ui/chat/EmojiOnly.kt — keep the table
+//  and the sequence grammar in lockstep.
+//
+
+import Foundation
+
+nonisolated enum EmojiOnly {
+
+    /// Bubble font size for an emoji-only message: 1 emoji → 96 pt,
+    /// 2 → 80, 3 → 68, 4 → 56. nil = render as a normal text message
+    /// (five or more emoji, any text, or nothing but whitespace).
+    static func displayFontSize(for text: String) -> CGFloat? {
+        guard let count = count(in: text), (1...4).contains(count) else { return nil }
+        return [96, 80, 68, 56][count - 1]
+    }
+
+    /// How many emoji an emoji-only message carries; nil when the text
+    /// is not emoji-only. Whitespace between emoji is allowed and not
+    /// counted, but whitespace alone is not an emoji message.
+    static func count(in text: String) -> Int? {
+        let scalars = Array(text.unicodeScalars)
+        var index = 0
+        var count = 0
+        while index < scalars.count {
+            if isWhitespace(scalars[index].value) {
+                index += 1
+                continue
+            }
+            let length = emojiSequenceLength(scalars, from: index)
+            guard length > 0 else { return nil }
+            index += length
+            count += 1
+        }
+        return count > 0 ? count : nil
+    }
+
+    /// The whitespace the scanner skips — Unicode White_Space, encoded
+    /// here rather than delegated to a platform predicate: Swift's
+    /// scalar properties and java.lang disagree at the edges (U+0085,
+    /// U+001C–U+001F), and the two scanners must classify identically.
+    private static func isWhitespace(_ value: UInt32) -> Bool {
+        switch value {
+        case 0x09...0x0D, 0x20, 0x85, 0xA0, 0x1680,
+             0x2000...0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000:
+            true
+        default:
+            false
+        }
+    }
+
+    // MARK: - Sequence grammar
+
+    private static let zwj: UInt32 = 0x200D
+    private static let textSelector: UInt32 = 0xFE0E
+    private static let emojiSelector: UInt32 = 0xFE0F
+    private static let combiningKeycap: UInt32 = 0x20E3
+
+    /// Length in scalars of the one emoji sequence starting at `start`,
+    /// or 0 when what starts there is not emoji.
+    private static func emojiSequenceLength(_ scalars: [Unicode.Scalar], from start: Int) -> Int {
+        let value = scalars[start].value
+
+        // A flag is two regional indicators; a lone indicator still
+        // renders as an emoji letter symbol, so it counts on its own.
+        if isRegionalIndicator(value) {
+            let paired = start + 1 < scalars.count && isRegionalIndicator(scalars[start + 1].value)
+            return paired ? 2 : 1
+        }
+
+        // Keycaps (5️⃣, #️⃣): digits, # and * are ordinary text unless
+        // at least one of the enclosing marks follows.
+        if isKeycapBase(value) {
+            var index = start + 1
+            var marked = false
+            if index < scalars.count, scalars[index].value == emojiSelector {
+                index += 1
+                marked = true
+            }
+            if index < scalars.count, scalars[index].value == combiningKeycap {
+                index += 1
+                marked = true
+            }
+            return marked ? index - start : 0
+        }
+
+        guard isEmojiBase(value) else { return 0 }
+
+        var index = start + 1
+        while index < scalars.count {
+            let next = scalars[index].value
+            if next == textSelector {
+                // The author explicitly asked for the text glyph — the
+                // message is not an emoji message.
+                return 0
+            }
+            if next == emojiSelector || isSkinTone(next) || isTag(next) {
+                index += 1
+                continue
+            }
+            if next == zwj, index + 1 < scalars.count, isEmojiBase(scalars[index + 1].value) {
+                index += 2
+                continue
+            }
+            break
+        }
+        return index - start
+    }
+
+    private static func isRegionalIndicator(_ value: UInt32) -> Bool {
+        (0x1F1E6...0x1F1FF).contains(value)
+    }
+
+    private static func isKeycapBase(_ value: UInt32) -> Bool {
+        value == 0x23 || value == 0x2A || (0x30...0x39).contains(value)
+    }
+
+    private static func isSkinTone(_ value: UInt32) -> Bool {
+        (0x1F3FB...0x1F3FF).contains(value)
+    }
+
+    /// Tag characters — the payload of subdivision flags (🏴󠁧󠁢󠁳󠁣󠁴󠁿).
+    private static func isTag(_ value: UInt32) -> Bool {
+        (0xE0020...0xE007F).contains(value)
+    }
+
+    /// Code points that can open an emoji sequence (and follow a ZWJ).
+    /// Extended_Pictographic in broad strokes; regional indicators and
+    /// keycap bases are handled by their own branches above.
+    private static let baseRanges: [ClosedRange<UInt32>] = [
+        0x00A9...0x00A9, 0x00AE...0x00AE,
+        0x203C...0x203C, 0x2049...0x2049, 0x2122...0x2122, 0x2139...0x2139,
+        0x2194...0x2199, 0x21A9...0x21AA,
+        0x231A...0x231B, 0x2328...0x2328, 0x23CF...0x23CF, 0x23E9...0x23F3, 0x23F8...0x23FA,
+        0x24C2...0x24C2,
+        0x25AA...0x25AB, 0x25B6...0x25B6, 0x25C0...0x25C0, 0x25FB...0x25FE,
+        0x2600...0x27BF,
+        0x2934...0x2935,
+        0x2B05...0x2B07, 0x2B1B...0x2B1C, 0x2B50...0x2B50, 0x2B55...0x2B55,
+        0x3030...0x3030, 0x303D...0x303D, 0x3297...0x3297, 0x3299...0x3299,
+        0x1F000...0x1F0FF,
+        0x1F170...0x1F171, 0x1F17E...0x1F17F, 0x1F18E...0x1F18E, 0x1F191...0x1F19A,
+        0x1F201...0x1F202, 0x1F21A...0x1F21A, 0x1F22F...0x1F22F, 0x1F232...0x1F23A,
+        0x1F250...0x1F251,
+        0x1F300...0x1FAFF,
+    ]
+
+    private static func isEmojiBase(_ value: UInt32) -> Bool {
+        baseRanges.contains { $0.contains(value) }
+    }
+}

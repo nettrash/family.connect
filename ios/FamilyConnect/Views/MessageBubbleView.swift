@@ -4,7 +4,11 @@
 //
 //  One bubble. Mine: trailing, tint background, white text. Theirs:
 //  leading, secondarySystemFill — semantic colors so both appearances
-//  work without a palette. Below the bubble: HH:mm plus, on own
+//  work without a palette. Emoji-only messages render bare: transparent
+//  balloon, glyphs on the EmojiOnly size ladder (identical on Android).
+//  Text bodies go through MessageLinks: URLs, emails and phone numbers
+//  render as tappable links (browser / Mail / call).
+//  Below the bubble: HH:mm plus, on own
 //  messages, the delivery glyph ladder —
 //
 //    clock            pending (optimistic row, not yet on the server)
@@ -31,6 +35,9 @@
 //  Long-pressing the bubble itself calls `onLongPress` — the parent
 //  floats its reaction picker over the bubble, finding it through the
 //  BubbleAnchorKey bounds this view publishes under its localID.
+//  Double-tapping an acked bubble toggles the quick heart
+//  (MessagePresentation.doubleTapReaction), same as picking ❤️ from
+//  the capsule.
 //
 
 import SwiftUI
@@ -56,6 +63,21 @@ struct MessageBubbleView: View {
 
     /// Drives the "who reacted" popover a chip long-press opens.
     @State private var showsReactionDetails = false
+
+    /// The in-flight deferred link open (see handleLinkTap). Non-nil
+    /// exactly while a first link-tap waits out the double-tap window.
+    @State private var pendingLinkOpen: Task<Void, Never>?
+
+    /// The environment's own openURL, captured BEFORE the bubble
+    /// overrides it — the override defers into this, never into itself.
+    @Environment(\.openURL) private var systemOpenURL
+
+    /// Dynamic Type factor for the emoji ladder: base 1, scaled with the
+    /// body style, so the wrapped value IS the current body-relative
+    /// scale. A fixed .system(size:) would invert the feature at
+    /// accessibility sizes (emoji-only bubbles smaller than scaled body
+    /// text); Android gets the same scaling for free from sp units.
+    @ScaledMetric(relativeTo: .body) private var emojiFontScale: CGFloat = 1
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
@@ -163,13 +185,27 @@ struct MessageBubbleView: View {
     }
 
     private var bubble: some View {
-        Text(message.body)
-            .font(.body)
-            .foregroundStyle(isMine ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+        // Emoji-only messages render bare: no balloon, just the glyphs
+        // (the padding stays so the long-press target and the picker
+        // anchor keep their size). Foreground goes primary on both
+        // sides — the rare monochrome pictograph (☂, ™) would vanish
+        // as white-on-transparent on own messages. Text messages go
+        // through MessageLinks so URLs, emails and phone numbers are
+        // tappable; emoji-only ones skip the detector.
+        let isEmojiOnly = EmojiOnly.displayFontSize(for: message.body) != nil
+        return Text(
+            isEmojiOnly
+                ? AttributedString(message.body)
+                : MessageLinks.attributedBody(message.body, isMine: isMine))
+            .font(bubbleFont)
+            .foregroundStyle(
+                !isEmojiOnly && isMine ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(
-                isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.secondarySystemFill)),
+                isEmojiOnly
+                    ? AnyShapeStyle(Color.clear)
+                    : isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.secondarySystemFill)),
                 in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             // The floating reaction picker grows out of this exact rect;
             // the parent resolves it from the preference by localID. Empty
@@ -177,9 +213,69 @@ struct MessageBubbleView: View {
             .anchorPreference(key: BubbleAnchorKey.self, value: .bounds) {
                 publishesAnchor ? [message.localID: $0] : [:]
             }
+            .onTapGesture(count: 2) {
+                // Double-tap = the quick heart (Tapback idiom), through
+                // the same toggle path as the capsule, so a second
+                // double-tap removes it. Only reachable over NON-link
+                // glyphs — Text's internal link tap preempts this
+                // gesture, so over links the heart comes from
+                // handleLinkTap's own double-tap arbitration.
+                toggleQuickHeart()
+            }
             .onLongPressGesture {
                 onLongPress()
             }
+            // Text fires link taps through the environment's openURL —
+            // and, measured on device: it fires them for EACH tap of a
+            // double-tap while the count-2 gesture above never runs over
+            // link glyphs. So the override below is the arbitration
+            // layer: defer every open past the double-tap window, and
+            // treat a second fire inside the window as the heart.
+            .environment(\.openURL, OpenURLAction { url in
+                handleLinkTap(url)
+                return .handled
+            })
+    }
+
+    /// One tap on a link run. First fire: schedule the open after the
+    /// double-tap window. Second fire inside the window: the user is
+    /// double-tapping link glyphs — cancel the open and heart instead
+    /// (falling back to opening when the bubble cannot take a reaction
+    /// yet, so a pending bubble's links never go dead).
+    private func handleLinkTap(_ url: URL) {
+        if pendingLinkOpen != nil {
+            pendingLinkOpen?.cancel()
+            pendingLinkOpen = nil
+            if message.serverID != nil {
+                toggleQuickHeart()
+            } else {
+                systemOpenURL(url)
+            }
+            return
+        }
+        pendingLinkOpen = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            pendingLinkOpen = nil
+            systemOpenURL(url)
+        }
+    }
+
+    /// The double-tap reaction, gated exactly like the capsule: a
+    /// reaction needs a server message id.
+    private func toggleQuickHeart() {
+        guard message.serverID != nil else { return }
+        onToggleReaction(MessagePresentation.doubleTapReaction)
+    }
+
+    /// Emoji-only messages render on the EmojiOnly size ladder (one
+    /// emoji biggest through four smallest), scaled with Dynamic Type;
+    /// everything else is body text. Same ladder as Android.
+    private var bubbleFont: Font {
+        if let size = EmojiOnly.displayFontSize(for: message.body) {
+            return .system(size: size * emojiFontScale)
+        }
+        return .body
     }
 
     @ViewBuilder

@@ -61,4 +61,12 @@ struct EmojiCatalogTests {
             #expect(emoji.utf8.count <= 32)
         }
     }
+
+    @Test("the double-tap reaction is a quick reaction within the limit")
+    func doubleTapReactionValid() {
+        #expect(MessagePresentation.doubleTapReaction.utf8.count <= 32)
+        // Inside the quick set so the capsule shows it selected after
+        // a double-tap. Android pins the same value.
+        #expect(MessagePresentation.quickReactions.contains(MessagePresentation.doubleTapReaction))
+    }
 }

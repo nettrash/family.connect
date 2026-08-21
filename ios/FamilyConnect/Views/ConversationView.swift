@@ -525,8 +525,18 @@ struct ConversationView: View {
 
     private func send() {
         let body = model.draft
-        model.draft = ""
+        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         coordinator.send(body: body, in: chatID)
+        // Cleared on the NEXT main-actor turn, not synchronously in the
+        // button action: clearing a focused multi-line field in the same
+        // turn can leave the sent text sitting in the field — UIKit may
+        // re-commit in-flight marked text / autocorrect over a same-turn
+        // programmatic clear, and a repeat write of the same "" would not
+        // invalidate the view. One deferred write lands after those
+        // events and actually empties the field.
+        Task { @MainActor in
+            model.draft = ""
+        }
     }
 
     private func toggleReaction(localID: String, emoji: String) {

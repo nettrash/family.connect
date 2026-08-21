@@ -8,6 +8,10 @@
  * — mine end-aligned on primaryContainer, theirs start-aligned on
  * surfaceContainerHigh — with 18dp corners tightened to 4dp against
  * same-sender run neighbors, capped at 80% of the row width.
+ * Emoji-only messages render bare: transparent balloon, glyphs on the
+ * EmojiOnly size ladder (identical on iOS). Text bodies go through
+ * MessageLinks: URLs, emails and phone numbers render as tappable
+ * links (browser / mail / dialer).
  * Status glyphs on my bubbles: clock (sending), ✓ (sent), ✓✓ (read —
  * direct chats only, serverId ≤ peerLastReadId), red error → retry/
  * delete dialog. Date pills between days; typing shows on a permanently
@@ -19,7 +23,8 @@
  * reacted); long-press on an acked bubble opens a floating capsule
  * anchored above it (below near the top) with the quick set + my
  * off-list reaction + a "+" into the full categorized emoji picker
- * sheet (EMOJI_CATALOG).
+ * sheet (EMOJI_CATALOG); double-tap on an acked bubble toggles the
+ * quick heart (DOUBLE_TAP_REACTION).
  *
  * iOS counterpart: ios/FamilyConnect/Views/ConversationView.swift
  */
@@ -43,6 +48,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -80,6 +86,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -137,8 +145,13 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
@@ -146,7 +159,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
@@ -185,7 +200,6 @@ fun ChatScreen(
 ) {
     val items by viewModel.items.collectAsStateWithLifecycle()
     val chat by viewModel.chat.collectAsStateWithLifecycle()
-    val input by viewModel.input.collectAsStateWithLifecycle()
     val typingUser by viewModel.typingUser.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
@@ -236,6 +250,32 @@ fun ChatScreen(
     }
     LaunchedEffect(nearOldEnd) {
         if (nearOldEnd) viewModel.loadOlder()
+    }
+
+    // Follow new messages explicitly. The LazyColumn only auto-follows
+    // an index-0 insert while resting at EXACTLY offset zero — a few
+    // pixels of drift (keyboard churn, a hair of overscroll) and a
+    // fresh message stays hidden below the fold. Same rules as iOS: my
+    // own send always lands the list on the new bubble, an inbound
+    // message follows only when the user is already at the bottom
+    // (index ≤ 1 covers "the anchor held onto the previous newest
+    // row"); a reader deep in history is never yanked down.
+    val newestMessage by remember {
+        derivedStateOf {
+            items.firstOrNull { it is ChatListItem.MessageItem } as? ChatListItem.MessageItem
+        }
+    }
+    var lastNewestKey by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(newestMessage?.key) {
+        val newest = newestMessage ?: return@LaunchedEffect
+        val previousKey = lastNewestKey
+        lastNewestKey = newest.key
+        // First emission = the chat opening at the bottom, not a new
+        // message; a same-key relaunch is just this effect settling.
+        if (previousKey == null || previousKey == newest.key) return@LaunchedEffect
+        if (newest.entity.senderId == myUserId || listState.firstVisibleItemIndex <= 1) {
+            listState.animateScrollToItem(0)
+        }
     }
 
     // The bar tonally lifts once messages scroll beneath it. Driven
@@ -445,8 +485,7 @@ fun ChatScreen(
             }
 
             InputBar(
-                value = input,
-                onValueChange = viewModel::onInputChange,
+                state = viewModel.inputState,
                 onSend = viewModel::send,
             )
         }
@@ -866,6 +905,13 @@ private fun MessageBubble(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                         onClick = {},
+                        // Double-tap = the quick heart (Tapback idiom),
+                        // through the same toggle path as the capsule,
+                        // so a second double-tap removes it. onClick is
+                        // a no-op, so the double-tap wait delays nothing.
+                        onDoubleClick = {
+                            entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
+                        },
                         onLongClick = { onLongPress(item, bubbleBounds) },
                     )
                 } else {
@@ -886,21 +932,39 @@ private fun MessageBubble(
                     modifier = Modifier.padding(start = 12.dp, bottom = 2.dp),
                 )
             }
+            // Emoji-only messages render bare: no balloon, just the
+            // glyphs (padding, long-press target and capsule anchoring
+            // unchanged). Content color goes onSurface on both sides so
+            // the timestamp/status row stays readable on the bare
+            // background. Same treatment as iOS.
+            val isEmojiOnly = remember(entity.body) {
+                EmojiOnly.displayFontSize(entity.body) != null
+            }
             Surface(
                 shape = bubbleShape,
-                color = if (isMine) {
-                    MaterialTheme.colorScheme.primaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerHigh
+                color = when {
+                    isEmojiOnly -> Color.Transparent
+                    isMine -> MaterialTheme.colorScheme.primaryContainer
+                    else -> MaterialTheme.colorScheme.surfaceContainerHigh
                 },
-                contentColor = if (isMine) {
+                contentColor = if (isMine && !isEmojiOnly) {
                     MaterialTheme.colorScheme.onPrimaryContainer
                 } else {
                     MaterialTheme.colorScheme.onSurface
                 },
                 modifier = bubbleModifier,
             ) {
-                BubbleContent(entity = entity, item = item, chat = chat, isMine = isMine, onFailedTap = onFailedTap)
+                BubbleContent(
+                    entity = entity,
+                    item = item,
+                    chat = chat,
+                    isMine = isMine,
+                    onFailedTap = onFailedTap,
+                    onDoubleTap = {
+                        entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
+                    },
+                    onTextLongPress = { onLongPress(item, bubbleBounds) },
+                )
             }
             // In the bubble's Column (not BubbleContent) so the chips inherit
             // the side alignment of the bubble they belong to.
@@ -1102,11 +1166,81 @@ private fun BubbleContent(
     chat: ChatEntity?,
     isMine: Boolean,
     onFailedTap: (String) -> Unit,
+    /** Double-tap over link text — the quick heart, same as the bubble's own gesture. */
+    onDoubleTap: () -> Unit,
+    /** Long-press over link text — opens the reaction capsule, same as the bubble's own gesture. */
+    onTextLongPress: () -> Unit,
 ) {
     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        // Emoji-only messages render on the EmojiOnly size ladder (one
+        // emoji biggest through four smallest); everything else is body
+        // text. Same ladder as iOS. lineHeight goes back to the font's
+        // own metrics — bodyMedium's fixed line height would clip a
+        // 96sp glyph.
+        val emojiFontSize = remember(entity.body) { EmojiOnly.displayFontSize(entity.body) }
+        // Text messages go through MessageLinks so URLs, emails and
+        // phone numbers are tappable (browser / mail / dialer);
+        // emoji-only ones skip the detector. Links underline; on my
+        // bubble they keep the content color (primary can run out of
+        // contrast on primaryContainer under dynamic color), on theirs
+        // they take primary — mirrors iOS (white vs accent).
+        val linkSpans = remember(entity.body, emojiFontSize) {
+            if (emojiFontSize != null) emptyList() else MessageLinks.linkSpans(entity.body)
+        }
+        val linkColor = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
+        val body = remember(entity.body, linkSpans, linkColor) {
+            MessageLinks.styled(
+                entity.body,
+                linkSpans,
+                SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline),
+            )
+        }
+        // Tap arbitration is OURS, not LinkAnnotation's: a linked body
+        // must still heart on double-tap and open the reaction capsule
+        // on long-press, so one detector over the text handles all
+        // three, resolving a tap to a character offset and opening the
+        // span under it (glyph-box check so the empty space past a
+        // short line does not count as its last link). Messages without
+        // links skip the detector entirely and keep the bubble's own
+        // combinedClickable behavior.
+        var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
+        val uriHandler = LocalUriHandler.current
+        val acked = entity.serverId != null
+        val textModifier = if (linkSpans.isEmpty()) {
+            Modifier
+        } else {
+            Modifier.pointerInput(linkSpans, acked) {
+                detectTapGestures(
+                    onTap = { position ->
+                        val layout = textLayout ?: return@detectTapGestures
+                        val offset = layout.getOffsetForPosition(position)
+                        val span = linkSpans.firstOrNull { offset >= it.start && offset < it.end }
+                            ?: return@detectTapGestures
+                        val box = layout.getBoundingBox(
+                            offset.coerceIn(0, layout.layoutInput.text.length - 1),
+                        )
+                        if (position.x < box.left || position.x > box.right) return@detectTapGestures
+                        // openUri throws when no app handles the scheme
+                        // (tel: on some tablets) — a dead tap beats a crash.
+                        runCatching { uriHandler.openUri(span.url) }
+                    },
+                    onDoubleTap = if (acked) ({ onDoubleTap() }) else null,
+                    onLongPress = if (acked) ({ onTextLongPress() }) else null,
+                )
+            }
+        }
         Text(
-            text = entity.body,
-            style = MaterialTheme.typography.bodyMedium,
+            text = body,
+            onTextLayout = { textLayout = it },
+            modifier = textModifier,
+            style = if (emojiFontSize != null) {
+                MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = emojiFontSize.sp,
+                    lineHeight = TextUnit.Unspecified,
+                )
+            } else {
+                MaterialTheme.typography.bodyMedium
+            },
         )
         if (item.showTimestamp || isMine) {
             Spacer(Modifier.size(2.dp))
@@ -1180,8 +1314,7 @@ private fun StatusGlyph(
 
 @Composable
 private fun InputBar(
-    value: String,
-    onValueChange: (String) -> Unit,
+    state: TextFieldState,
     onSend: () -> Unit,
 ) {
     Surface(tonalElevation = 3.dp) {
@@ -1194,17 +1327,24 @@ private fun InputBar(
                 verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // The state-based field, on purpose: it edits the
+                // TextFieldState buffer synchronously (the IME talks to
+                // that same buffer), so the ViewModel's clear-on-send
+                // cannot race a late IME event resurrecting the sent
+                // text — the failure mode of value/onValueChange over
+                // an async flow.
                 TextField(
-                    value = value,
-                    onValueChange = onValueChange,
+                    state = state,
                     // heightIn beats the field's 56.dp defaultMinSize, which
                     // only applies when the incoming min constraint is zero.
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 44.dp),
                     placeholder = { Text("Message") },
-                    minLines = 1,
-                    maxLines = 5,
+                    lineLimits = TextFieldLineLimits.MultiLine(
+                        minHeightInLines = 1,
+                        maxHeightInLines = 5,
+                    ),
                     shape = RoundedCornerShape(24.dp),
                     colors = TextFieldDefaults.colors(
                         focusedIndicatorColor = Color.Transparent,
@@ -1213,7 +1353,7 @@ private fun InputBar(
                         unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     ),
                 )
-                val canSend = value.isNotBlank()
+                val canSend = state.text.isNotBlank()
                 // The disabled slots get the same animated colors as the
                 // enabled ones — otherwise the tween would be invisible
                 // because the button snaps to its disabled palette.

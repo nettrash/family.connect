@@ -40,6 +40,13 @@ import java.time.ZoneId
  */
 val QUICK_REACTIONS = listOf("❤️", "👍", "👎", "😂", "😮", "😢")
 
+/**
+ * The reaction a bubble double-tap toggles (the Tapback-heart idiom).
+ * Kept inside the quick set so the capsule shows it selected. Same
+ * value on iOS.
+ */
+const val DOUBLE_TAP_REACTION = "❤️"
+
 /** One aggregated reaction chip under a bubble. */
 data class ReactionChip(
     val emoji: String,

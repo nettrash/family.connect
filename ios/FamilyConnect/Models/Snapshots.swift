@@ -151,6 +151,11 @@ nonisolated enum MessagePresentation {
     /// whatever arrives; this is just what WE offer to send.
     static let quickReactions = ["❤️", "👍", "👎", "😂", "😮", "😢"]
 
+    /// The reaction a bubble double-tap toggles (the Tapback-heart
+    /// idiom). Kept inside the quick set so the capsule shows it
+    /// selected. Same value on Android.
+    static let doubleTapReaction = "❤️"
+
     /// Group an already-sorted message list into calendar-day sections.
     /// The input order is preserved inside each section, and sections come
     /// out in the order their first message appears — so a correctly

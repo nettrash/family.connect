@@ -24,6 +24,9 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.clearText
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -122,8 +125,15 @@ class ChatViewModel @Inject constructor(
         .onEach { _initialLoadSettled.value = true }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    private val _input = MutableStateFlow("")
-    val input: StateFlow<String> = _input
+    /**
+     * The input field's text, owned as TextFieldState rather than a
+     * StateFlow<String>: the field edits this buffer synchronously — it
+     * is the same buffer the IME talks to — so the programmatic clear in
+     * [send] cannot race a late IME event resurrecting the sent text,
+     * which is the documented failure mode of driving a TextField
+     * through a value/onValueChange round-trip over an async flow.
+     */
+    val inputState = TextFieldState()
 
     private val _typingUser = MutableStateFlow<String?>(null)
 
@@ -154,6 +164,21 @@ class ChatViewModel @Inject constructor(
                 }
         }
 
+        // Outbound typing, throttled to the server's own 1-per-3s limit —
+        // anything faster would be dropped server-side anyway. Watches
+        // the field's snapshot state directly (there is no
+        // onValueChange to hook since the input became TextFieldState).
+        viewModelScope.launch {
+            snapshotFlow { inputState.text.toString() }.collect { value ->
+                val now = clock.now()
+                if (value.isNotBlank() && now - lastTypingSentAt >= TYPING_THROTTLE_MS) {
+                    if (socket.trySend(ClientFrame.Typing(chatId))) {
+                        lastTypingSentAt = now
+                    }
+                }
+            }
+        }
+
         // Inbound typing for this chat; each frame restarts the 5 s expiry.
         viewModelScope.launch {
             socket.frames
@@ -173,22 +198,10 @@ class ChatViewModel @Inject constructor(
         chatRepository.setOpenChat(if (isResumed) chatId else null)
     }
 
-    fun onInputChange(value: String) {
-        _input.value = value
-        // Outbound typing, throttled to the server's own 1-per-3s limit —
-        // anything faster would be dropped server-side anyway.
-        val now = clock.now()
-        if (value.isNotBlank() && now - lastTypingSentAt >= TYPING_THROTTLE_MS) {
-            if (socket.trySend(ClientFrame.Typing(chatId))) {
-                lastTypingSentAt = now
-            }
-        }
-    }
-
     fun send() {
-        val body = _input.value
+        val body = inputState.text.toString()
         if (body.isBlank()) return
-        _input.value = ""
+        inputState.clearText()
         viewModelScope.launch { messageRepository.send(chatId, body) }
     }
 
