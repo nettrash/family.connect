@@ -29,7 +29,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.navigation.NavBackStackEntry
 import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavType
@@ -174,7 +178,15 @@ fun AppNavHost(
         onPendingRouteConsumed()
     }
 
+    // The NavHost paints its own ground. Every transition below offsets
+    // AND cross-fades two screens at once, so for ~300ms neither covers
+    // the window opaquely; without a background here the platform
+    // window shows through (and under dynamic color it would not match
+    // the scheme even when its XML colour does).
     NavHost(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
         navController = navController,
         startDestination = startDestination,
         enterTransition = { if (isPhaseReset()) fadeThroughEnter() else sharedAxisEnter() },

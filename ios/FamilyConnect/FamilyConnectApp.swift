@@ -42,6 +42,11 @@ struct FamilyConnectApp: App {
     private let coordinator: ChatSyncCoordinator?
     private let pushRegistrar: PushRegistrar?
 
+    /// App-wide link-preview cache. Independent of the store, so it is
+    /// built even when the container failed (the error view just never
+    /// reads it).
+    @State private var previewLoader = LinkPreviewLoader()
+
     init() {
         // UI-test hook: launch with a clean slate so the smoke test can
         // assert the server-setup screen deterministically.
@@ -109,6 +114,9 @@ struct FamilyConnectApp: App {
                         .modelContainer(container)
                         .environment(session)
                         .environment(coordinator)
+                        // One preview cache for the app: a link posted in
+                        // a busy chat is fetched once, not once per bubble.
+                        .environment(previewLoader)
                 }
             case .failure(let error):
                 StoreErrorView(error: error)

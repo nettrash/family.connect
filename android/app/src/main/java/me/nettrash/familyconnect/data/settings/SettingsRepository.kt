@@ -21,6 +21,7 @@ package me.nettrash.familyconnect.data.settings
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
@@ -46,6 +47,13 @@ data class SettingsState(
     val pushToken: String? = null,
     /** `device_id` from POST /devices — account-scoped, cleared on logout. */
     val pushDeviceId: Long? = null,
+    /**
+     * Whether a message's first web link gets a preview card. On by
+     * default, but switchable because building one means THIS device
+     * requests the linked page — the only routine traffic the app sends
+     * anywhere but the family's own server.
+     */
+    val linkPreviewsEnabled: Boolean = true,
 )
 
 interface SettingsRepository {
@@ -57,6 +65,7 @@ interface SettingsRepository {
     suspend fun setFamilyName(name: String?)
     suspend fun setPushToken(token: String?)
     suspend fun setPushDeviceId(deviceId: Long?)
+    suspend fun setLinkPreviewsEnabled(enabled: Boolean)
 
     /**
      * Session teardown: wipe everything EXCEPT the server URL (protocol:
@@ -83,6 +92,8 @@ class DataStoreSettingsRepository @Inject constructor(
         val FAMILY_NAME = stringPreferencesKey("family_name")
         val PUSH_TOKEN = stringPreferencesKey("push_token")
         val PUSH_DEVICE_ID = longPreferencesKey("push_device_id")
+        // Stored inverted so a missing key reads as "on".
+        val LINK_PREVIEWS_DISABLED = booleanPreferencesKey("link_previews_disabled")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -97,6 +108,7 @@ class DataStoreSettingsRepository @Inject constructor(
             familyName = prefs[Keys.FAMILY_NAME],
             pushToken = prefs[Keys.PUSH_TOKEN],
             pushDeviceId = prefs[Keys.PUSH_DEVICE_ID],
+            linkPreviewsEnabled = prefs[Keys.LINK_PREVIEWS_DISABLED] != true,
         )
     }
 
@@ -134,14 +146,23 @@ class DataStoreSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setLinkPreviewsEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.LINK_PREVIEWS_DISABLED] = !enabled }
+    }
+
     override suspend fun resetKeepingServerUrl() {
         dataStore.edit { prefs ->
             val keepUrl = prefs[Keys.SERVER_URL]
             // Device-scoped, not account-scoped — see the interface doc.
             val keepPushToken = prefs[Keys.PUSH_TOKEN]
+            // Likewise device-scoped, and a PRIVACY choice: a logout —
+            // or any 401 — silently turning link previews back on would
+            // start contacting third-party sites the user opted out of.
+            val keepLinkPreviews = prefs[Keys.LINK_PREVIEWS_DISABLED]
             prefs.clear()
             keepUrl?.let { prefs[Keys.SERVER_URL] = it }
             keepPushToken?.let { prefs[Keys.PUSH_TOKEN] = it }
+            keepLinkPreviews?.let { prefs[Keys.LINK_PREVIEWS_DISABLED] = it }
         }
     }
 }

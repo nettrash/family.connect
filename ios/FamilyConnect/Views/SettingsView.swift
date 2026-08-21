@@ -45,12 +45,16 @@ struct SettingsView: View {
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(\.dismiss) private var dismiss
     @State private var model = SettingsModel()
+    /// Mirrors AppSettings.linkPreviewsEnabled — defaults are not
+    /// observable, so the toggle owns the state and writes through.
+    @State private var linkPreviewsEnabled = AppSettings.linkPreviewsEnabled
 
     var body: some View {
         NavigationStack {
             Form {
                 profileSection
                 familySection
+                privacySection
                 serverSection
                 sessionSection
             }
@@ -146,6 +150,21 @@ struct SettingsView: View {
                 Label(error, systemImage: "xmark.circle")
                     .foregroundStyle(.red)
             }
+        }
+    }
+
+    /// The one setting that changes who the app talks to, so it says so
+    /// plainly rather than hiding behind a label.
+    private var privacySection: some View {
+        Section {
+            Toggle("Link Previews", isOn: $linkPreviewsEnabled)
+                .onChange(of: linkPreviewsEnabled) { _, newValue in
+                    AppSettings.linkPreviewsEnabled = newValue
+                }
+        } header: {
+            Text("Privacy")
+        } footer: {
+            Text("Shows a preview under links in messages. Building one asks the linked website for its title and image, so that site sees a request from this device.")
         }
     }
 

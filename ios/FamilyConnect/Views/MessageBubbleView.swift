@@ -79,6 +79,30 @@ struct MessageBubbleView: View {
     /// text); Android gets the same scaling for free from sp units.
     @ScaledMetric(relativeTo: .body) private var emojiFontScale: CGFloat = 1
 
+    /// Shared preview cache — asking it for a link's state is what
+    /// starts the (single, app-wide) fetch for that link.
+    @Environment(LinkPreviewLoader.self) private var previewLoader
+
+    /// True once this bubble has actually been on screen. The thread
+    /// renders a ~60-row window, not just the viewport, so binding the
+    /// fetch to rendering would contact every host in the window —
+    /// links the reader has not scrolled to, and may never see.
+    @State private var hasBeenVisible = false
+
+    /// The web link this bubble would preview, if any. Emoji-only
+    /// bodies have no links, and tel:/mailto: are not previewable.
+    private var previewableLink: URL? {
+        guard !isEmojiOnly else { return nil }
+        return MessageLinks.firstWebLink(in: message.body)
+    }
+
+    /// The card to draw under this bubble, once its fetch has landed.
+    private var linkPreview: LinkPreview? {
+        guard hasBeenVisible, let url = previewableLink,
+              case .loaded(let preview) = previewLoader.state(for: url) else { return nil }
+        return preview
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
             if isMine { Spacer(minLength: 48) }
@@ -92,10 +116,6 @@ struct MessageBubbleView: View {
                 }
 
                 bubble
-
-                if !reactionChips.isEmpty {
-                    reactionRow
-                }
 
                 HStack(spacing: 4) {
                     Text(message.createdAt, format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
@@ -113,51 +133,84 @@ struct MessageBubbleView: View {
         // A toggle landing = the set of chips that include me changing —
         // whether from the optimistic write or the server's echo.
         .sensoryFeedback(.impact(flexibility: .soft), trigger: reactionChips.filter(\.includesMe).map(\.emoji))
+        // Arms the preview only once the bubble is really in the
+        // viewport — geometry, not onAppear, because in this non-lazy
+        // window every row "appears" at creation.
+        .onGeometryChange(for: Bool.self) { geometry in
+            guard previewableLink != nil, let viewport = geometry.bounds(of: .scrollView) else {
+                return false
+            }
+            let frame = geometry.frame(in: .scrollView)
+            return frame.maxY >= 0 && frame.minY <= viewport.height
+        } action: { visible in
+            if visible { hasBeenVisible = true }
+        }
     }
 
-    /// The aggregated reaction chips under the bubble, wrapping to new
-    /// lines when they outgrow the column. A chip the current user is
-    /// part of gets the tinted treatment; tapping any chip toggles that
-    /// emoji for the current user; long-pressing one pops who reacted.
+    /// The aggregated reaction chips, inside the balloon and wrapping to
+    /// new lines when they outgrow it.
+    ///
+    /// A tap never takes a reaction away: on a chip the current user is
+    /// not part of it joins that reaction (moving theirs if they had a
+    /// different one — the protocol allows one per user), and on a chip
+    /// they ARE part of it opens the who-reacted list, where their own
+    /// row is the explicit "tap to remove". Removing used to ride on the
+    /// same press that shows who reacted — a Button action plus a
+    /// simultaneous long press fires BOTH, so looking at who reacted
+    /// usually took your own reaction off — and undoing something you
+    /// never meant to do is a worse failure than one extra tap. No
+    /// Button here for the same reason: its action and the long press
+    /// are not mutually exclusive.
     private var reactionRow: some View {
         FlowLayout(rowAlignment: isMine ? .trailing : .leading, spacing: 4) {
             ForEach(reactionChips) { chip in
-                Button {
-                    onToggleReaction(chip.emoji)
-                } label: {
-                    HStack(spacing: 3) {
-                        Text(chip.emoji)
-                            .font(.footnote)
-                        if chip.count > 1 {
-                            Text("\(chip.count)")
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(chip.includesMe ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                                .contentTransition(.numericText())
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(
-                        chip.includesMe ? AnyShapeStyle(.tint.opacity(0.15)) : AnyShapeStyle(Color(.secondarySystemFill)),
-                        in: Capsule())
-                    .overlay {
-                        if chip.includesMe {
-                            Capsule().strokeBorder(.tint, lineWidth: 1)
-                        }
+                HStack(spacing: 3) {
+                    Text(chip.emoji)
+                        .font(.footnote)
+                    if chip.count > 1 {
+                        Text("\(chip.count)")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .contentTransition(.numericText())
                     }
                 }
-                .buttonStyle(.plain)
-                // Simultaneous so the Button's tap keeps working; being
-                // deeper than the bubble's own long-press, this one wins
-                // when the press starts on a chip.
-                .simultaneousGesture(LongPressGesture().onEnded { _ in
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                // A solid pill in the app's own background colour, not a
+                // wash of the balloon's content colour: on my balloon
+                // that content colour is white over a saturated accent,
+                // and white-on-white-over-accent puts the count near 2:1
+                // contrast in dark mode. Cut out of the balloon it reads
+                // on both tones and in both appearances, and "mine" is
+                // carried by the accent outline.
+                .background(Color(.systemBackground), in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(
+                        chip.includesMe ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.separator)),
+                        lineWidth: 1)
+                }
+                .contentShape(Capsule())
+                .onTapGesture { chipPrimaryAction(chip) }
+                .onLongPressGesture {
                     showsReactionDetails = true
-                })
+                }
                 .transition(.scale.combined(with: .opacity))
+                // Gestures carry no accessibility action of their own and
+                // the Button that used to provide one is gone (it fired
+                // together with the long press — the bug this replaced),
+                // so the chip publishes its own element, trait and both
+                // actions explicitly. Android gets these from
+                // combinedClickable.
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
                 .accessibilityLabel("\(chip.emoji) \(chip.count)")
+                .accessibilityHint(chip.includesMe ? "Shows who reacted" : "Reacts with \(chip.emoji)")
+                .accessibilityAction { chipPrimaryAction(chip) }
+                .accessibilityAction(named: "See who reacted") {
+                    showsReactionDetails = true
+                }
             }
         }
-        .padding(.horizontal, 4)
         .padding(.top, 1)
         // Scoped to the chip row: an animation watching the whole bubble
         // row's frame kept a spring alive against layout re-passes.
@@ -170,14 +223,29 @@ struct MessageBubbleView: View {
 
     /// The "who reacted" popover body: each emoji in chip order with the
     /// names of its reactors ("You" first when the current user is one).
+    /// The current user's own row is the remove control — the only way a
+    /// reaction comes off, so it can never happen by accident. Mine-ness
+    /// comes from the chips, not from matching the localized "You".
     private var reactionDetailsList: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(reactionDetails) { detail in
+                let isMineReaction = reactionChips.first { $0.emoji == detail.emoji }?.includesMe == true
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(detail.emoji)
                     Text(detail.names.formatted(.list(type: .and)))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    if isMineReaction {
+                        Text("Tap to remove")
+                            .font(.caption2)
+                            .foregroundStyle(.tint)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard isMineReaction else { return }
+                    showsReactionDetails = false
+                    onToggleReaction(detail.emoji)
                 }
             }
         }
@@ -192,14 +260,30 @@ struct MessageBubbleView: View {
         // as white-on-transparent on own messages. Text messages go
         // through MessageLinks so URLs, emails and phone numbers are
         // tappable; emoji-only ones skip the detector.
-        let isEmojiOnly = EmojiOnly.displayFontSize(for: message.body) != nil
-        return Text(
-            isEmojiOnly
-                ? AttributedString(message.body)
-                : MessageLinks.attributedBody(message.body, isMine: isMine))
-            .font(bubbleFont)
-            .foregroundStyle(
-                !isEmojiOnly && isMine ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+        //
+        // The chips render INSIDE this balloon, under the text: they
+        // belong to the message, and outside they made the bubble's
+        // footprint ragged.
+        VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
+            Text(
+                isEmojiOnly
+                    ? AttributedString(message.body)
+                    : MessageLinks.attributedBody(message.body, isMine: isMine))
+                .font(bubbleFont)
+                .foregroundStyle(bubbleContentColor)
+
+            if let preview = linkPreview {
+                LinkPreviewCard(
+                    preview: preview,
+                    image: previewLoader.image(for: preview.url),
+                    onOpen: { systemOpenURL($0) })
+                    .padding(.top, 4)
+            }
+
+            if !reactionChips.isEmpty {
+                reactionRow
+            }
+        }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(
@@ -261,11 +345,37 @@ struct MessageBubbleView: View {
         }
     }
 
+    /// What tapping a chip does — the one place the rule lives, shared
+    /// by the touch gesture and the accessibility action.
+    private func chipPrimaryAction(_ chip: ReactionChip) {
+        if chip.includesMe {
+            showsReactionDetails = true
+        } else {
+            onToggleReaction(chip.emoji)
+        }
+    }
+
     /// The double-tap reaction, gated exactly like the capsule: a
     /// reaction needs a server message id.
     private func toggleQuickHeart() {
         guard message.serverID != nil else { return }
         onToggleReaction(MessagePresentation.doubleTapReaction)
+    }
+
+    /// True when the body is nothing but emoji — the bare, big-glyph
+    /// treatment. Cheap for ordinary text: the scan stops at the first
+    /// non-emoji scalar.
+    private var isEmojiOnly: Bool {
+        EmojiOnly.displayFontSize(for: message.body) != nil
+    }
+
+    /// What everything drawn ON the balloon derives from: white on my
+    /// tinted balloon, primary otherwise — including bare emoji-only
+    /// bubbles, where white would vanish against the chat background.
+    /// One rule keeps the text, the chips and their outlines legible on
+    /// both balloon tones.
+    private var bubbleContentColor: Color {
+        isMine && !isEmojiOnly ? .white : .primary
     }
 
     /// Emoji-only messages render on the EmojiOnly size ladder (one

@@ -48,6 +48,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -272,6 +273,39 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.outlineVariant,
                 )
             }
+
+            // -- Privacy ----------------------------------------------------
+            // The one setting that changes who the app talks to, so it
+            // says so plainly rather than hiding behind a label.
+            Text(
+                text = "Privacy",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+            )
+            ListItem(
+                headlineContent = { Text("Link previews") },
+                supportingContent = {
+                    Text(
+                        "Shows a preview under links in messages. Building one asks the " +
+                            "linked website for its title and image, so that site sees a " +
+                            "request from this device.",
+                    )
+                },
+                trailingContent = {
+                    Switch(
+                        checked = state.linkPreviewsEnabled,
+                        onCheckedChange = viewModel::setLinkPreviewsEnabled,
+                    )
+                },
+                modifier = Modifier.clickable {
+                    viewModel.setLinkPreviewsEnabled(!state.linkPreviewsEnabled)
+                },
+            )
+            HorizontalDivider(
+                modifier = Modifier.padding(start = 16.dp),
+                color = MaterialTheme.colorScheme.outlineVariant,
+            )
 
             // -- Session ----------------------------------------------------
             Spacer(Modifier.height(8.dp))

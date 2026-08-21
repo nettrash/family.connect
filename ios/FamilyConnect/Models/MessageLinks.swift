@@ -45,6 +45,45 @@ nonisolated enum MessageLinks {
         return built
     }
 
+    /// The first https link in a body — what the preview card
+    /// describes. Phone numbers and email addresses are detected too but
+    /// have nothing to preview, previewing every link in a message would
+    /// bury the message itself, and plain http is excluded on purpose
+    /// (ATS blocks it, so a card would appear on Android and not here).
+    ///
+    /// Memoized for the same reason `attributedBody` is: this runs from
+    /// a bubble's body, which re-evaluates for the whole window.
+    static func firstWebLink(in text: String) -> URL? {
+        let key = ("first|" + text) as NSString
+        if let boxed = firstLinkCache.object(forKey: key) {
+            return boxed.value
+        }
+        let found = detectFirstWebLink(in: text)
+        firstLinkCache.setObject(URLBox(found), forKey: key)
+        return found
+    }
+
+    private static func detectFirstWebLink(in text: String) -> URL? {
+        guard let detector, text.contains(".") else { return nil }
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        for match in detector.matches(in: text, range: range) where match.resultType == .link {
+            guard let url = match.url else { continue }
+            if url.scheme?.lowercased() == "https" { return url }
+        }
+        return nil
+    }
+
+    private final class URLBox {
+        let value: URL?
+        init(_ value: URL?) { self.value = value }
+    }
+
+    private static let firstLinkCache: NSCache<NSString, URLBox> = {
+        let cache = NSCache<NSString, URLBox>()
+        cache.countLimit = 512
+        return cache
+    }()
+
     // MARK: - Internals
 
     /// One detector for the process — building one compiles its

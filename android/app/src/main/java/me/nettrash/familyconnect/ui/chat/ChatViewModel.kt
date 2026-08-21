@@ -48,6 +48,8 @@ import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
+import me.nettrash.familyconnect.data.net.LinkPreviewRepository
+import me.nettrash.familyconnect.data.net.LinkPreviewState
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
@@ -67,6 +69,7 @@ class ChatViewModel @Inject constructor(
     private val settings: SettingsRepository,
     private val socket: ChatSocket,
     private val clock: Clock,
+    private val linkPreviewRepository: LinkPreviewRepository,
     memberDao: MemberDao,
     connectivity: ConnectivityObserver,
 ) : ViewModel() {
@@ -142,6 +145,23 @@ class ChatViewModel @Inject constructor(
 
     val isOnline: StateFlow<Boolean> = connectivity.isOnline
     val socketState: StateFlow<SocketState> = socket.state
+
+    /** Every known link's preview state, keyed by URL. */
+    val linkPreviews: StateFlow<Map<String, LinkPreviewState>> = linkPreviewRepository.states
+
+    /**
+     * Whether bubbles may show link previews at all — off means this
+     * device never requests a linked page (see LinkPreviewRepository).
+     */
+    val linkPreviewsEnabled: StateFlow<Boolean> = settings.state
+        .map { it.linkPreviewsEnabled }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    /** Composition asks for a link the first time a bubble renders it. */
+    fun requestLinkPreview(url: String) {
+        if (!linkPreviewsEnabled.value) return
+        linkPreviewRepository.request(url)
+    }
 
     private var lastTypingSentAt = 0L
 

@@ -19,6 +19,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import me.nettrash.familyconnect.data.net.LinkPreviewRepository
+import okhttp3.OkHttpClient
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
@@ -144,6 +146,12 @@ class ChatViewModelTest {
             clock = Clock { NOON },
             memberDao = db.memberDao(),
             connectivity = FakeConnectivityObserver(),
+            // Real instance over a client that is never called: these
+            // tests never render a bubble, so nothing requests a preview.
+            linkPreviewRepository = LinkPreviewRepository(
+                okHttp = OkHttpClient(),
+                scope = CoroutineScope(StandardTestDispatcher(testScheduler)),
+            ),
         )
     }
 

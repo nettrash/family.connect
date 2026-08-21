@@ -24,12 +24,14 @@ import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.SessionRepository
+import me.nettrash.familyconnect.data.settings.SettingsRepository
 import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val familyRepository: FamilyRepository,
+    private val settings: SettingsRepository,
 ) : ViewModel() {
 
     data class UiState(
@@ -43,6 +45,8 @@ class SettingsViewModel @Inject constructor(
         val joinPolicy: String? = null,
         val error: String? = null,
         val loggedOut: Boolean = false,
+        /** Whether this device may fetch link previews. */
+        val linkPreviewsEnabled: Boolean = true,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -50,6 +54,17 @@ class SettingsViewModel @Inject constructor(
 
     init {
         load()
+        // The flag lives in the store, so the switch follows it rather
+        // than holding its own copy.
+        viewModelScope.launch {
+            settings.state.collect { stored ->
+                _state.update { it.copy(linkPreviewsEnabled = stored.linkPreviewsEnabled) }
+            }
+        }
+    }
+
+    fun setLinkPreviewsEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setLinkPreviewsEnabled(enabled) }
     }
 
     fun load() {

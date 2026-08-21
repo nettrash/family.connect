@@ -74,6 +74,7 @@ struct ConversationView: View {
     }
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    @Environment(LinkPreviewLoader.self) private var previewLoader
     @Query private var messages: [MessageEntity]
     @Query private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
@@ -211,6 +212,14 @@ struct ConversationView: View {
                 guard model.state == .idle, let last = messages.last else { return }
                 guard last.senderID == currentUserID || isPinnedToBottom || !hasSettled else { return }
                 pinToBottom(proxy, animated: true)
+            }
+            .onChange(of: previewLoader.generation) {
+                // A link-preview card just landed: the bubble hosting it
+                // grew, and a bubble above the viewport growing slides
+                // the visible region into older content — same problem
+                // as reaction catch-up below, same repair.
+                guard isPinnedToBottom else { return }
+                pinToBottom(proxy, animated: false)
             }
             .onChange(of: chats.first?.maxReactionSeq) {
                 // Reaction catch-up landed: chip rows above the viewport

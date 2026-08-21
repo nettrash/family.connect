@@ -98,6 +98,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(pushDeviceId = deviceId)
     }
 
+    override suspend fun setLinkPreviewsEnabled(enabled: Boolean) {
+        _state.value = _state.value.copy(linkPreviewsEnabled = enabled)
+    }
+
     override suspend fun resetKeepingServerUrl() {
         // Mirrors production: server URL AND the device-scoped FCM token
         // survive; the account-scoped device id does not.

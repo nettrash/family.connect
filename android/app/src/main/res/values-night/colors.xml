@@ -1,0 +1,9 @@
+<resources>
+    <!-- Night half of the window background. The platform window sits
+         under Compose and shows through wherever Compose is not opaque —
+         most visibly BETWEEN screens, where the nav transition offsets
+         and fades both of them at once. Left at the light #FAFAFA it
+         flashed near-white on every navigation in dark mode.
+         Matches DarkBackground in ui/theme/Color.kt. -->
+    <color name="window_background">#111316</color>
+</resources>

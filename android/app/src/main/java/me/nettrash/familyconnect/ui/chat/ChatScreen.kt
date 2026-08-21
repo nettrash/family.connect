@@ -49,6 +49,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -141,8 +142,10 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -158,7 +161,6 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -177,6 +179,7 @@ import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
+import me.nettrash.familyconnect.data.net.LinkPreviewState
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
@@ -212,6 +215,8 @@ fun ChatScreen(
     val socketState by viewModel.socketState.collectAsStateWithLifecycle()
     val loadingOlder by viewModel.loadingOlder.collectAsStateWithLifecycle()
     val initialLoadSettled by viewModel.initialLoadSettled.collectAsStateWithLifecycle()
+    val linkPreviews by viewModel.linkPreviews.collectAsStateWithLifecycle()
+    val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
 
     var failedActionTarget by remember { mutableStateOf<String?>(null) }
 
@@ -406,6 +411,9 @@ fun ChatScreen(
                                     isMine = item.entity.senderId == myUserId,
                                     myUserId = myUserId,
                                     memberNames = memberNames,
+                                    linkPreviews = linkPreviews,
+                                    previewsEnabled = linkPreviewsEnabled,
+                                    onRequestPreview = viewModel::requestLinkPreview,
                                     onFailedTap = { failedActionTarget = it },
                                     onToggleReaction = applyToggle,
                                     onLongPress = { pressed, bounds ->
@@ -855,6 +863,9 @@ private fun MessageBubble(
     isMine: Boolean,
     myUserId: Long?,
     memberNames: Map<Long, String>,
+    linkPreviews: Map<String, LinkPreviewState>,
+    previewsEnabled: Boolean,
+    onRequestPreview: (String) -> Unit,
     onFailedTap: (String) -> Unit,
     onToggleReaction: (Long, String) -> Unit,
     onLongPress: (ChatListItem.MessageItem, Rect) -> Unit,
@@ -991,22 +1002,20 @@ private fun MessageBubble(
                     isMine = isMine,
                     emojiFontSize = emojiFontSize,
                     linkSpans = linkSpans,
+                    memberNames = memberNames,
+                    myUserId = myUserId,
+                    linkPreviews = linkPreviews,
+                    previewsEnabled = previewsEnabled,
+                    onRequestPreview = onRequestPreview,
+                    onOpenLink = { runCatching { uriHandler.openUri(it) } },
                     onFailedTap = onFailedTap,
+                    onToggleReaction = { emoji ->
+                        entity.serverId?.let { onToggleReaction(it, emoji) }
+                    },
                     onDoubleTap = {
                         entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
                     },
                     onTextLongPress = { onLongPress(item, bubbleBounds) },
-                )
-            }
-            // In the bubble's Column (not BubbleContent) so the chips inherit
-            // the side alignment of the bubble they belong to.
-            if (item.reactionChips.isNotEmpty()) {
-                ReactionChipsRow(
-                    item = item,
-                    memberNames = memberNames,
-                    myUserId = myUserId,
-                    maxWidth = bubbleMaxWidth,
-                    onTap = { emoji -> entity.serverId?.let { onToggleReaction(it, emoji) } },
                 )
             }
         }
@@ -1014,9 +1023,20 @@ private fun MessageBubble(
 }
 
 /**
- * The wrapping chip row plus the who-reacted DropdownMenu a chip
- * long-press opens (tap still toggles). New chips scale+fade in; the
- * row animates its size as chips come and go.
+ * The wrapping chip row plus the who-reacted DropdownMenu.
+ *
+ * A tap never takes a reaction away. On a chip I am not part of it
+ * joins that reaction (moving mine if I had a different one — the
+ * protocol allows one per user); on a chip I AM part of it opens the
+ * who-reacted list instead, where my own row is the explicit "tap to
+ * remove". Removing used to ride on the same tap that shows who
+ * reacted — miss the long-press threshold by a hair and your reaction
+ * was gone — and undoing something you never meant to do is a worse
+ * failure than one extra tap. Long-press still opens the list from any
+ * chip.
+ *
+ * New chips scale+fade in; the row animates its size as chips come and
+ * go.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -1024,11 +1044,11 @@ private fun ReactionChipsRow(
     item: ChatListItem.MessageItem,
     memberNames: Map<Long, String>,
     myUserId: Long?,
-    maxWidth: Dp,
-    onTap: (String) -> Unit,
+    isMine: Boolean,
+    onToggle: (String) -> Unit,
 ) {
-    // Resolved lazily on long-press — no per-frame decode of the row's
-    // reactionsJson for every visible bubble.
+    // Resolved lazily when the list opens — no per-frame decode of the
+    // row's reactionsJson for every visible bubble.
     var details by remember { mutableStateOf<List<ReactionDetail>?>(null) }
     // Reactor display name → user id, captured alongside details so each
     // popup row can lead with that reactor's Avatar (hue keyed by id).
@@ -1043,13 +1063,40 @@ private fun ReactionChipsRow(
     var menuOffsetX by remember { mutableStateOf(0.dp) }
     val density = LocalDensity.current
     val haptics = LocalHapticFeedback.current
+    // Opening the list: decode the reactions once, resolve the names,
+    // and point the menu at the chip that was pressed.
+    val openDetails: (String) -> Unit = { emoji ->
+        val reactions = ReactionsCodec.decode(item.entity.reactionsJson)
+        reactorIds = buildMap {
+            for (reaction in reactions) {
+                val name = if (reaction.userId == myUserId) {
+                    "You"
+                } else {
+                    memberNames[reaction.userId] ?: "Member ${reaction.userId}"
+                }
+                if (name !in this) put(name, reaction.userId)
+            }
+        }
+        menuOffsetX = with(density) {
+            ((chipLefts[emoji] ?: rowLeft[0]) - rowLeft[0]).toDp()
+        }
+        details = buildReactionDetails(
+            reactions = reactions,
+            names = memberNames,
+            myUserId = myUserId ?: -1L,
+        )
+    }
     Box(modifier = Modifier.onGloballyPositioned { rowLeft[0] = it.boundsInWindow().left }) {
         FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            // Wrapped rows hug the balloon's own edge, like iOS's
+            // FlowLayout rowAlignment.
+            horizontalArrangement = Arrangement.spacedBy(
+                4.dp,
+                if (isMine) Alignment.End else Alignment.Start,
+            ),
             verticalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier
-                .widthIn(max = maxWidth)
-                .padding(top = 4.dp, bottom = 4.dp)
+                .padding(top = 4.dp)
                 .animateContentSize(),
         ) {
             item.reactionChips.forEach { chip ->
@@ -1071,29 +1118,18 @@ private fun ReactionChipsRow(
                     ) {
                         ReactionChipView(
                             chip = chip,
-                            onTap = { onTap(chip.emoji) },
+                            // Additive tap only; removing goes through
+                            // the list (see this composable's header).
+                            onTap = {
+                                if (chip.includesMe) {
+                                    openDetails(chip.emoji)
+                                } else {
+                                    onToggle(chip.emoji)
+                                }
+                            },
                             onLongPress = {
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                val reactions = ReactionsCodec.decode(item.entity.reactionsJson)
-                                reactorIds = buildMap {
-                                    for (reaction in reactions) {
-                                        val name = if (reaction.userId == myUserId) {
-                                            "You"
-                                        } else {
-                                            memberNames[reaction.userId]
-                                                ?: "Member ${reaction.userId}"
-                                        }
-                                        if (name !in this) put(name, reaction.userId)
-                                    }
-                                }
-                                menuOffsetX = with(density) {
-                                    ((chipLefts[chip.emoji] ?: rowLeft[0]) - rowLeft[0]).toDp()
-                                }
-                                details = buildReactionDetails(
-                                    reactions = reactions,
-                                    names = memberNames,
-                                    myUserId = myUserId ?: -1L,
-                                )
+                                openDetails(chip.emoji)
                             },
                             modifier = Modifier.onGloballyPositioned {
                                 chipLefts[chip.emoji] = it.boundsInWindow().left
@@ -1111,9 +1147,26 @@ private fun ReactionChipsRow(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
             details?.forEach { detail ->
+                // My own row is the remove control — the only place a
+                // reaction comes off, so it can never happen by accident.
+                // Mine-ness comes from the chip, not from matching the
+                // "You" label, which is display text.
+                val mine = item.reactionChips.firstOrNull { it.emoji == detail.emoji }
+                    ?.includesMe == true
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .then(
+                            if (mine) {
+                                Modifier.clickable {
+                                    onToggle(detail.emoji)
+                                    details = null
+                                }
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
                 ) {
                     // The row aggregates one emoji's reactors; its avatar is
                     // the first (my "You" entry resolves to my real name so
@@ -1135,6 +1188,14 @@ private fun ReactionChipsRow(
                         text = detail.names.joinToString(", "),
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    if (mine) {
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = "Tap to remove",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
             }
         }
@@ -1150,18 +1211,24 @@ private fun ReactionChipView(
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(12.dp)
+    // A solid pill cut out of the balloon rather than a wash of the
+    // balloon's own colour: inside, the chip sits on primaryContainer
+    // (mine) or surfaceContainerHigh (theirs), and any wash of either
+    // leaves the count short of contrast on one of them (worse under
+    // dynamic color). surfaceContainerLowest reads on both tones in
+    // both themes, and "mine" is carried by the primary outline.
     Surface(
         shape = shape,
-        color = if (chip.includesMe) {
-            MaterialTheme.colorScheme.primaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceVariant
-        },
-        border = if (chip.includesMe) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
-        } else {
-            null
-        },
+        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(
+            1.dp,
+            if (chip.includesMe) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.outlineVariant
+            },
+        ),
         modifier = modifier
             .clip(shape)
             .combinedClickable(onClick = onTap, onLongClick = onLongPress),
@@ -1201,13 +1268,30 @@ private fun BubbleContent(
     emojiFontSize: Float?,
     /** Links detected in the body (empty for emoji-only). Resolved by the caller. */
     linkSpans: List<LinkSpan>,
+    memberNames: Map<Long, String>,
+    myUserId: Long?,
+    /** Preview state for every link the app has looked at, keyed by URL. */
+    linkPreviews: Map<String, LinkPreviewState>,
+    /** False = this device never requests a linked page (Settings). */
+    previewsEnabled: Boolean,
+    onRequestPreview: (String) -> Unit,
+    onOpenLink: (String) -> Unit,
     onFailedTap: (String) -> Unit,
+    /** Toggle one emoji for me on this message (no-op until the message is acked). */
+    onToggleReaction: (String) -> Unit,
     /** Double-tap over link text — the quick heart, same as the bubble's own gesture. */
     onDoubleTap: () -> Unit,
     /** Long-press over link text — opens the reaction capsule, same as the bubble's own gesture. */
     onTextLongPress: () -> Unit,
 ) {
-    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+    // Aligned to the balloon's own side so the chip row (and a short
+    // body under a wide row) hugs the same edge as the timestamp —
+    // matching iOS, whose balloon VStack aligns the same way. The chips
+    // used to inherit this from the outer Column they hung below.
+    Column(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
+    ) {
         // Emoji-only messages render on the EmojiOnly size ladder (one
         // emoji biggest through four smallest); everything else is body
         // text. Same ladder as iOS. lineHeight goes back to the font's
@@ -1275,6 +1359,36 @@ private fun BubbleContent(
                 MaterialTheme.typography.bodyMedium
             },
         )
+        // The first web link's preview, once it has landed. Asking for
+        // it is what starts the fetch — gated on the setting, so a
+        // switched-off device never touches the linked site.
+        val previewUrl = remember(linkSpans) { linkSpans.firstWebLinkUrl() }
+        if (previewUrl != null && previewsEnabled) {
+            LaunchedEffect(previewUrl) { onRequestPreview(previewUrl) }
+            val state = linkPreviews[previewUrl]
+            if (state is LinkPreviewState.Loaded) {
+                LinkPreviewCard(
+                    preview = state.preview,
+                    image = state.image,
+                    onOpen = onOpenLink,
+                )
+            }
+        }
+
+        // Chips live INSIDE the balloon, under the text and above the
+        // timestamp: they belong to the message, and outside they made
+        // the bubble's footprint ragged. Their own colours are derived
+        // from the bubble's content colour, so one rule works on both
+        // tones (a primaryContainer chip is invisible on my bubble).
+        if (item.reactionChips.isNotEmpty()) {
+            ReactionChipsRow(
+                item = item,
+                memberNames = memberNames,
+                myUserId = myUserId,
+                isMine = isMine,
+                onToggle = onToggleReaction,
+            )
+        }
         if (item.showTimestamp || isMine) {
             Spacer(Modifier.size(2.dp))
             Row(
@@ -1295,6 +1409,74 @@ private fun BubbleContent(
                 if (isMine) {
                     Spacer(Modifier.width(4.dp))
                     StatusGlyph(entity = entity, chat = chat, onFailedTap = onFailedTap)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The preview under a message's first web link: image (when the page
+ * offers one), title, description, host.
+ *
+ * It renders only once the fetch has landed — no skeleton, no reserved
+ * space, so a linked bubble changes height once rather than twice.
+ * Cut out of the balloon in the app's own low tone for the same reason
+ * the reaction chips are: washes of the balloon's own colour lose
+ * contrast on one tone or the other.
+ *
+ * iOS counterpart: ios/FamilyConnect/Views/LinkPreviewCard.swift.
+ */
+@Composable
+private fun LinkPreviewCard(
+    preview: LinkPreview,
+    image: ImageBitmap?,
+    onOpen: (String) -> Unit,
+) {
+    val shape = RoundedCornerShape(12.dp)
+    Surface(
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier
+            .padding(top = 6.dp)
+            .clip(shape)
+            .clickable(onClickLabel = "Open link") { onOpen(preview.url) },
+    ) {
+        Column {
+            if (image != null) {
+                Image(
+                    bitmap = image,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp),
+                )
+            }
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                Text(
+                    text = preview.siteName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = preview.title,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                preview.description?.let { description ->
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }

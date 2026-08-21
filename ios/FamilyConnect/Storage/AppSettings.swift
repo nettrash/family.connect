@@ -24,6 +24,8 @@ nonisolated enum AppSettings {
         static let joinPending = "v1.joinPending"
         static let pushToken = "v1.push.token"
         static let pushDeviceID = "v1.push.deviceID"
+        /// Stores the DISABLED flag, so a missing key reads as "on".
+        static let linkPreviewsDisabled = "v1.linkPreviewsDisabled"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
@@ -94,6 +96,16 @@ nonisolated enum AppSettings {
     static var joinPending: Bool {
         get { defaults.bool(forKey: Key.joinPending) }
         set { defaults.set(newValue, forKey: Key.joinPending) }
+    }
+
+    /// Whether a message's first web link gets a preview card. On by
+    /// default, but switchable because building one means THIS device
+    /// requests the linked page — the only routine traffic the app sends
+    /// anywhere but the family's own server. Stored inverted so the
+    /// absent key (`.bool` → false) reads as on.
+    static var linkPreviewsEnabled: Bool {
+        get { !defaults.bool(forKey: Key.linkPreviewsDisabled) }
+        set { defaults.set(!newValue, forKey: Key.linkPreviewsDisabled) }
     }
 
     /// The APNs token (lowercase hex) most recently accepted by

@@ -46,6 +46,15 @@ data class LinkSpan(
     val url: String,
 )
 
+/**
+ * The first http(s) link among these spans — what the preview card
+ * describes. Phone numbers and email addresses are detected too but
+ * have nothing to preview, and previewing every link in a message would
+ * bury the message itself.
+ */
+fun List<LinkSpan>.firstWebLinkUrl(): String? =
+    firstOrNull { it.url.startsWith("http://") || it.url.startsWith("https://") }?.url
+
 object MessageLinks {
 
     /**
