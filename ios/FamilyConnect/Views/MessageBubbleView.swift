@@ -164,30 +164,45 @@ struct MessageBubbleView: View {
     private var reactionRow: some View {
         FlowLayout(rowAlignment: isMine ? .trailing : .leading, spacing: 4) {
             ForEach(reactionChips) { chip in
-                HStack(spacing: 3) {
+                HStack(spacing: 4) {
                     Text(chip.emoji)
-                        .font(.footnote)
+                        // Explicit, and the same number Android uses: the
+                        // two were drifting apart (.footnote is 13pt,
+                        // bodyLarge is 16sp) for the same UI element.
+                        .font(.system(size: 18))
                     if chip.count > 1 {
                         Text("\(chip.count)")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.primary)
+                            .font(.caption.weight(.medium))
+                            // The BALLOON's content colour, because with
+                            // no fill the count sits directly on the
+                            // balloon: .primary is black in light mode,
+                            // which is unreadable over the tint. This is
+                            // the colour the message text already uses,
+                            // so contrast is whatever the bubble already
+                            // guarantees.
+                            .foregroundStyle(bubbleContentColor)
                             .contentTransition(.numericText())
                     }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                // A solid pill in the app's own background colour, not a
-                // wash of the balloon's content colour: on my balloon
-                // that content colour is white over a saturated accent,
-                // and white-on-white-over-accent puts the count near 2:1
-                // contrast in dark mode. Cut out of the balloon it reads
-                // on both tones and in both appearances, and "mine" is
-                // carried by the accent outline.
-                .background(Color(.systemBackground), in: Capsule())
+                // No fill. A filled pill has to pick a surface colour,
+                // and every choice is wrong somewhere: the app background
+                // reads as a black blob on a dark theme, and a wash of
+                // the balloon's own colour loses contrast on the tinted
+                // side. Transparent sidesteps both — the padding is still
+                // the tap target (contentShape below).
                 .overlay {
-                    Capsule().strokeBorder(
-                        chip.includesMe ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.separator)),
-                        lineWidth: 1)
+                    if chip.includesMe {
+                        // Full strength, never a wash: this hairline is
+                        // the ONLY thing separating my reaction from
+                        // someone else's (a count of 1 draws no number),
+                        // and the tap rule diverges on exactly that. At
+                        // half alpha it computes to ~2:1 over the tinted
+                        // balloon in dark mode — invisible. Not .tint
+                        // either: on my balloon that IS the background.
+                        Capsule().strokeBorder(bubbleContentColor, lineWidth: 1)
+                    }
                 }
                 .contentShape(Capsule())
                 .onTapGesture { chipPrimaryAction(chip) }
@@ -211,7 +226,10 @@ struct MessageBubbleView: View {
                 }
             }
         }
-        .padding(.top, 1)
+        // Breathing room between the message and its reactions — they
+        // are about the message, not part of it. Plus the balloon
+        // VStack's own 2pt spacing.
+        .padding(.top, 6)
         // Scoped to the chip row: an animation watching the whole bubble
         // row's frame kept a spring alive against layout re-passes.
         .animation(.spring(duration: 0.25, bounce: 0.3), value: reactionChips)

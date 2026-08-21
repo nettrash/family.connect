@@ -1096,7 +1096,10 @@ private fun ReactionChipsRow(
             ),
             verticalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier
-                .padding(top = 4.dp)
+                // Breathing room between the message and its reactions —
+                // they are about the message, not part of it. Matches the
+                // 6pt + 2pt the iOS balloon ends up with.
+                .padding(top = 8.dp)
                 .animateContentSize(),
         ) {
             item.reactionChips.forEach { chip ->
@@ -1211,24 +1214,25 @@ private fun ReactionChipView(
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(12.dp)
-    // A solid pill cut out of the balloon rather than a wash of the
-    // balloon's own colour: inside, the chip sits on primaryContainer
-    // (mine) or surfaceContainerHigh (theirs), and any wash of either
-    // leaves the count short of contrast on one of them (worse under
-    // dynamic color). surfaceContainerLowest reads on both tones in
-    // both themes, and "mine" is carried by the primary outline.
+    // No fill. A filled pill has to pick a surface colour, and every
+    // choice is wrong somewhere: surfaceContainerLowest is the DARKEST
+    // tone in a dark scheme, so it read as a black blob on the balloon,
+    // and a wash of the balloon's own colour loses contrast on the
+    // tinted side. Transparent sidesteps both, and the emoji and count
+    // then inherit the balloon's content colour — the colour the
+    // message text already uses, so contrast is whatever the bubble
+    // already guarantees.
+    val onBubble = LocalContentColor.current
     Surface(
         shape = shape,
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(
-            1.dp,
-            if (chip.includesMe) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.outlineVariant
-            },
-        ),
+        color = Color.Transparent,
+        contentColor = onBubble,
+        // Full strength, never a wash: this hairline is the ONLY thing
+        // separating my reaction from someone else's (a count of 1 draws
+        // no number), and the tap rule diverges on exactly that. Not
+        // `primary` either — on my own balloon that is close to the
+        // background it would sit on.
+        border = if (chip.includesMe) BorderStroke(1.dp, onBubble) else null,
         modifier = modifier
             .clip(shape)
             .combinedClickable(onClick = onTap, onLongClick = onLongPress),
@@ -1237,7 +1241,13 @@ private fun ReactionChipView(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
         ) {
-            Text(chip.emoji, style = MaterialTheme.typography.bodyLarge)
+            // Explicit, and the same number iOS uses: the two were
+            // drifting apart (bodyLarge is 16sp, .footnote is 13pt) for
+            // the same UI element.
+            Text(
+                text = chip.emoji,
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp),
+            )
             // Count changes pop: old value scales+fades out, new one in;
             // the default SizeTransform animates the width when a chip
             // crosses the 1 ↔ 2 "shows a number at all" boundary.
