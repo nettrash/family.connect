@@ -145,6 +145,7 @@ class ChatViewModelTest {
         }
         runCurrent()
         return ChatViewModel(
+            appContext = RuntimeEnvironment.getApplication(),
             savedStateHandle = SavedStateHandle(mapOf("chatId" to CHAT)),
             messageRepository = messageRepository,
             chatRepository = chatRepository,

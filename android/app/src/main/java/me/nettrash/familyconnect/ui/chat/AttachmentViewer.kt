@@ -41,6 +41,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -58,6 +59,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.net.toUri
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.ui.components.rememberAttachmentImage
 
@@ -101,7 +103,7 @@ fun AttachmentViewer(
                     contentColor = Color.White,
                 ),
             ) {
-                Icon(imageVector = Icons.Filled.Close, contentDescription = "Close")
+                Icon(imageVector = Icons.Filled.Close, contentDescription = stringResource(R.string.s_close))
             }
             Row(
                 modifier = Modifier
@@ -118,7 +120,7 @@ fun AttachmentViewer(
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Download,
-                        contentDescription = "Save to gallery",
+                        contentDescription = stringResource(R.string.s_save_to_gallery),
                     )
                 }
                 IconButton(
@@ -128,7 +130,7 @@ fun AttachmentViewer(
                         contentColor = Color.White,
                     ),
                 ) {
-                    Icon(imageVector = Icons.Filled.Share, contentDescription = "Share")
+                    Icon(imageVector = Icons.Filled.Share, contentDescription = stringResource(R.string.s_share))
                 }
             }
         }
@@ -159,7 +161,7 @@ private fun ZoomablePhoto(attachment: AttachmentDto) {
     }
     Image(
         bitmap = image,
-        contentDescription = "Photo",
+        contentDescription = stringResource(R.string.s_photo),
         contentScale = ContentScale.Fit,
         modifier = Modifier
             .fillMaxSize()

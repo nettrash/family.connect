@@ -34,6 +34,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +45,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.components.BusyButtonContent
 import me.nettrash.familyconnect.ui.components.ErrorCard
 
@@ -79,12 +81,12 @@ fun FamilyGateScreen(
                 .padding(24.dp),
         ) {
             Text(
-                text = "Your family",
+                text = stringResource(R.string.s_your_family),
                 style = MaterialTheme.typography.headlineMedium,
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Start a new family space, or join one you were invited to.",
+                text = stringResource(R.string.s_start_a_new_family_space_or_join_one_you_were_invited_to),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -107,13 +109,13 @@ fun FamilyGateScreen(
             Spacer(Modifier.height(24.dp))
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Create a family", style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.s_create_a_family), style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
                         value = state.familyName,
                         onValueChange = viewModel::onFamilyNameChange,
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Family name") },
+                        label = { Text(stringResource(R.string.s_family_name)) },
                         singleLine = true,
                         isError = state.nameError != null,
                         supportingText = state.nameError?.let { { Text(it) } },
@@ -128,7 +130,7 @@ fun FamilyGateScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         BusyButtonContent(
-                            label = "Create",
+                            label = stringResource(R.string.s_create),
                             busy = state.busy && busyAction == GateAction.CREATE,
                         )
                     }
@@ -138,13 +140,13 @@ fun FamilyGateScreen(
             Spacer(Modifier.height(16.dp))
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Join with an invite code", style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.s_join_with_an_invite_code), style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
                         value = state.inviteCode,
                         onValueChange = viewModel::onInviteCodeChange,
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Invite code") },
+                        label = { Text(stringResource(R.string.s_invite_code)) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
                             capitalization = KeyboardCapitalization.Characters,
@@ -164,7 +166,7 @@ fun FamilyGateScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         BusyButtonContent(
-                            label = "Join",
+                            label = stringResource(R.string.s_join),
                             busy = state.busy && busyAction == GateAction.JOIN,
                         )
                     }

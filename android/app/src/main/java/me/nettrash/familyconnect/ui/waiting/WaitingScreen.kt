@@ -12,6 +12,7 @@
 
 package me.nettrash.familyconnect.ui.waiting
 
+import me.nettrash.familyconnect.R
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloat
@@ -44,6 +45,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -105,20 +107,19 @@ fun WaitingScreen(
                         )
                         Spacer(Modifier.height(16.dp))
                         Text(
-                            text = "Request declined",
+                            text = stringResource(R.string.s_request_declined),
                             style = MaterialTheme.typography.titleLarge,
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            text = "The family owner declined your request. " +
-                                "You can try a different invite code or start your own family.",
+                            text = stringResource(R.string.s_request_declined_explanation),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
                         )
                         Spacer(Modifier.height(24.dp))
                         Button(onClick = onBackToGate) {
-                            Text("Back")
+                            Text(stringResource(R.string.s_back))
                         }
                     }
                 } else {
@@ -153,7 +154,7 @@ fun WaitingScreen(
                         )
                         Spacer(Modifier.height(16.dp))
                         Text(
-                            text = "Waiting for approval",
+                            text = stringResource(R.string.s_waiting_for_approval),
                             style = MaterialTheme.typography.titleLarge,
                         )
                         Spacer(Modifier.height(8.dp))
@@ -167,8 +168,7 @@ fun WaitingScreen(
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            text = "There's nothing to cancel from here — the owner " +
-                                "either lets you in or declines the request.",
+                            text = stringResource(R.string.s_waiting_explanation),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
@@ -191,7 +191,7 @@ fun WaitingScreen(
                                     CircularProgressIndicator(modifier = Modifier.size(24.dp))
                                 } else {
                                     TextButton(onClick = viewModel::refresh) {
-                                        Text("Check again")
+                                        Text(stringResource(R.string.s_check_again))
                                     }
                                 }
                             }

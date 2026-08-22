@@ -3,7 +3,7 @@
  * Family Connect (Android)
  *
  * The family board: a wall of sticker notes anyone can add to and rearrange
- * (docs/protocol.md, "Board").
+ * (docs/protocol.md, stringResource(R.string.s_board)).
  *
  * Positions are FRACTIONS of the board, not pixels, so the wall looks the
  * same on a phone and a tablet — this screen multiplies by its own size on
@@ -52,6 +52,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -74,6 +75,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.ui.components.EmptyState
 import kotlin.math.roundToInt
@@ -120,10 +122,10 @@ fun BoardScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Board") },
+                title = { Text(stringResource(R.string.s_board)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.s_back))
                     }
                 },
             )
@@ -143,7 +145,7 @@ fun BoardScreen(
                     authorId = myUserId ?: -1L,
                 )
             }) {
-                Icon(Icons.Filled.Add, contentDescription = "Add note")
+                Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.s_add_note))
             }
         },
     ) { padding ->
@@ -161,8 +163,8 @@ fun BoardScreen(
             if (notes.isEmpty()) {
                 EmptyState(
                     icon = Icons.Outlined.StickyNote2,
-                    title = "The board is empty",
-                    subtitle = "Add a note — everyone in the family sees it.",
+                    title = stringResource(R.string.s_the_board_is_empty),
+                    subtitle = stringResource(R.string.s_add_a_note_everyone_in_the_family_sees_it),
                     modifier = Modifier.align(Alignment.Center),
                 )
             }
@@ -328,14 +330,14 @@ private fun NoteDialog(
     if (confirmDelete && onDelete != null) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete this note?") },
+            title = { Text(stringResource(R.string.s_delete_this_note)) },
             confirmButton = {
                 TextButton(onClick = onDelete) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(R.string.s_delete), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+                TextButton(onClick = { confirmDelete = false }) { Text(stringResource(R.string.s_cancel)) }
             },
         )
         return
@@ -343,14 +345,14 @@ private fun NoteDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (draft.noteId == null) "New note" else "Note") },
+        title = { Text(if (draft.noteId == null) "New note" else stringResource(R.string.s_note)) },
         text = {
             Column {
                 if (canEdit) {
                     OutlinedTextField(
                         value = text,
                         onValueChange = { text = it },
-                        label = { Text("Note") },
+                        label = { Text(stringResource(R.string.s_note)) },
                         minLines = 3,
                         maxLines = 8,
                     )
@@ -397,7 +399,7 @@ private fun NoteDialog(
                     onClick = { onSave(text, color) },
                     enabled = text.isNotBlank(),
                 ) {
-                    Text("Save")
+                    Text(stringResource(R.string.s_save))
                 }
             }
         },
@@ -405,11 +407,11 @@ private fun NoteDialog(
             Row {
                 if (onDelete != null && canEdit) {
                     TextButton(onClick = { confirmDelete = true }) {
-                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                        Text(stringResource(R.string.s_delete), color = MaterialTheme.colorScheme.error)
                     }
                     Spacer(Modifier.width(8.dp))
                 }
-                TextButton(onClick = onDismiss) { Text("Cancel") }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_cancel)) }
             }
         },
     )

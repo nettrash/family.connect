@@ -18,6 +18,9 @@
 
 package me.nettrash.familyconnect.ui.serversetup
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import me.nettrash.familyconnect.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,6 +37,19 @@ import javax.inject.Inject
 
 @HiltViewModel
 class ServerSetupViewModel @Inject constructor(
+    /**
+     * The application context, for `getString` only.
+     *
+     * A ViewModel holding a Context is usually a smell; the APPLICATION
+     * context is the exception — it outlives every screen, so there is
+     * nothing to leak. The alternative, carrying @StringRes ids through
+     * every state field, spreads resource plumbing across code whose job
+     * is state. The trade-off: a message is resolved when it is produced
+     * rather than when it is drawn, so one already on screen keeps its
+     * language if the system locale changes underneath it — and Android
+     * recreates the activity then anyway.
+     */
+    @param:ApplicationContext private val appContext: Context,
     private val authApi: AuthApi,
     private val settings: SettingsRepository,
 ) : ViewModel() {
@@ -84,7 +100,7 @@ class ServerSetupViewModel @Inject constructor(
     fun probeAndSave() {
         val normalized = ServerUrlNormalizer.normalize(_state.value.url)
         if (normalized == null) {
-            _state.update { it.copy(error = "That doesn't look like a valid address") }
+            _state.update { it.copy(error = appContext.getString(R.string.e_invalid_address)) }
             return
         }
         viewModelScope.launch {

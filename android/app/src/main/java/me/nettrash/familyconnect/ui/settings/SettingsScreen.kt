@@ -57,6 +57,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material3.ListItem
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.familyadmin.SetPasswordDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -68,6 +69,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -101,6 +103,8 @@ fun SettingsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val shareTitle = stringResource(R.string.s_share_invite_code)
+    val inviteLabel = stringResource(R.string.s_invite_code)
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -136,10 +140,10 @@ fun SettingsScreen(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
+                title = { Text(stringResource(R.string.s_settings)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.s_back))
                     }
                 },
                 scrollBehavior = scrollBehavior,
@@ -218,7 +222,7 @@ fun SettingsScreen(
             if (state.avatarVersion > 0) {
                 ListItem(
                     headlineContent = {
-                        Text("Remove photo", color = MaterialTheme.colorScheme.error)
+                        Text(stringResource(R.string.s_remove_photo), color = MaterialTheme.colorScheme.error)
                     },
                     leadingContent = {
                         Icon(
@@ -241,7 +245,7 @@ fun SettingsScreen(
             // -- Family -----------------------------------------------------
             state.familyName?.let { familyName ->
                 Text(
-                    text = "Family",
+                    text = stringResource(R.string.s_family),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
@@ -266,10 +270,10 @@ fun SettingsScreen(
                                     "Server: ${state.serverUrl} — invite code: $code",
                             )
                         }
-                        context.startActivity(Intent.createChooser(send, "Share invite code"))
+                        context.startActivity(Intent.createChooser(send, shareTitle))
                     }
                     ListItem(
-                        overlineContent = { Text("Invite code") },
+                        overlineContent = { Text(stringResource(R.string.s_invite_code)) },
                         headlineContent = {
                             Text(
                                 text = code,
@@ -277,7 +281,7 @@ fun SettingsScreen(
                                 letterSpacing = 1.sp,
                             )
                         },
-                        supportingContent = { Text("Share it to invite family members") },
+                        supportingContent = { Text(stringResource(R.string.s_share_it_to_invite_family_members)) },
                         leadingContent = {
                             Icon(
                                 Icons.Outlined.Key,
@@ -291,7 +295,7 @@ fun SettingsScreen(
                                     // setClipEntry is suspend, hence the scope.
                                     scope.launch {
                                         clipboard.setClipEntry(
-                                            ClipData.newPlainText("Invite code", code)
+                                            ClipData.newPlainText(inviteLabel, code)
                                                 .toClipEntry(),
                                         )
                                         snackbarHostState.showSnackbar("Copied")
@@ -299,13 +303,13 @@ fun SettingsScreen(
                                 }) {
                                     Icon(
                                         Icons.Outlined.ContentCopy,
-                                        contentDescription = "Copy invite code",
+                                        contentDescription = stringResource(R.string.s_copy_invite_code),
                                     )
                                 }
                                 IconButton(onClick = shareCode) {
                                     Icon(
                                         Icons.Outlined.Share,
-                                        contentDescription = "Share invite code",
+                                        contentDescription = stringResource(R.string.s_share_invite_code),
                                     )
                                 }
                             }
@@ -351,7 +355,7 @@ fun SettingsScreen(
                 }
                 ListItem(
                     headlineContent = {
-                        Text("Leave family", color = MaterialTheme.colorScheme.error)
+                        Text(stringResource(R.string.s_leave_family), color = MaterialTheme.colorScheme.error)
                     },
                     leadingContent = {
                         Icon(
@@ -373,18 +377,16 @@ fun SettingsScreen(
             // The one setting that changes who the app talks to, so it
             // says so plainly rather than hiding behind a label.
             Text(
-                text = "Privacy",
+                text = stringResource(R.string.s_privacy),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
             )
             ListItem(
-                headlineContent = { Text("Link previews") },
+                headlineContent = { Text(stringResource(R.string.s_link_previews)) },
                 supportingContent = {
                     Text(
-                        "Shows a preview under links in messages. Building one asks the " +
-                            "linked website for its title and image, so that site sees a " +
-                            "request from this device.",
+                        stringResource(R.string.s_link_previews_explanation),
                     )
                 },
                 trailingContent = {
@@ -405,9 +407,9 @@ fun SettingsScreen(
             // -- Session ----------------------------------------------------
             Spacer(Modifier.height(8.dp))
             ListItem(
-                headlineContent = { Text("Change password") },
+                headlineContent = { Text(stringResource(R.string.s_change_password)) },
                 supportingContent = {
-                    Text("Your other devices will be signed out. This one stays signed in.")
+                    Text(stringResource(R.string.s_your_other_devices_will_be_signed_out_this_one_stays_signe))
                 },
                 leadingContent = { Icon(Icons.Filled.Key, contentDescription = null) },
                 modifier = Modifier.clickable { changingPassword = true },
@@ -418,7 +420,7 @@ fun SettingsScreen(
             )
             ListItem(
                 headlineContent = {
-                    Text("Log out", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(R.string.s_log_out), color = MaterialTheme.colorScheme.error)
                 },
                 leadingContent = {
                     Icon(
@@ -445,17 +447,15 @@ fun SettingsScreen(
     if (confirmLeave) {
         AlertDialog(
             onDismissRequest = { confirmLeave = false },
-            title = { Text("Leave the family?") },
+            title = { Text(stringResource(R.string.s_leave_the_family)) },
             text = {
                 Text(
-                    "You'll lose access to the family chat and your direct " +
-                        "chats. History stays on the server and comes back if " +
-                        "you rejoin.",
+                    stringResource(R.string.s_leave_family_explanation),
                 )
             },
             confirmButton = {
                 DestructiveTextButton(
-                    label = "Leave",
+                    label = stringResource(R.string.s_leave),
                     onClick = {
                         confirmLeave = false
                         viewModel.leaveFamily()
@@ -464,7 +464,7 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { confirmLeave = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.s_cancel))
                 }
             },
         )
@@ -472,9 +472,9 @@ fun SettingsScreen(
 
     if (changingPassword) {
         SetPasswordDialog(
-            title = "Change password",
-            explanation = "Your other devices will be signed out. This one stays signed in.",
-            confirmLabel = "Save",
+            title = stringResource(R.string.s_change_password),
+            explanation = stringResource(R.string.s_your_other_devices_will_be_signed_out_this_one_stays_signe),
+            confirmLabel = stringResource(R.string.s_save),
             busy = state.busy,
             currentPassword = currentPassword,
             onCurrentPasswordChange = { currentPassword = it },
@@ -495,11 +495,11 @@ fun SettingsScreen(
     if (confirmLogout) {
         AlertDialog(
             onDismissRequest = { confirmLogout = false },
-            title = { Text("Log out?") },
-            text = { Text("Local messages are removed from this device.") },
+            title = { Text(stringResource(R.string.s_log_out_2)) },
+            text = { Text(stringResource(R.string.s_local_messages_are_removed_from_this_device)) },
             confirmButton = {
                 DestructiveTextButton(
-                    label = "Log out",
+                    label = stringResource(R.string.s_log_out),
                     onClick = {
                         confirmLogout = false
                         viewModel.logout()
@@ -508,7 +508,7 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { confirmLogout = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.s_cancel))
                 }
             },
         )

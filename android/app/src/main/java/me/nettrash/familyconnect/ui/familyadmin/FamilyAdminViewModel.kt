@@ -12,6 +12,9 @@
 
 package me.nettrash.familyconnect.ui.familyadmin
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import me.nettrash.familyconnect.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -33,6 +36,19 @@ import javax.inject.Inject
 
 @HiltViewModel
 class FamilyAdminViewModel @Inject constructor(
+    /**
+     * The application context, for `getString` only.
+     *
+     * A ViewModel holding a Context is usually a smell; the APPLICATION
+     * context is the exception — it outlives every screen, so there is
+     * nothing to leak. The alternative, carrying @StringRes ids through
+     * every state field, spreads resource plumbing across code whose job
+     * is state. The trade-off: a message is resolved when it is produced
+     * rather than when it is drawn, so one already on screen keeps its
+     * language if the system locale changes underneath it — and Android
+     * recreates the activity then anyway.
+     */
+    @param:ApplicationContext private val appContext: Context,
     private val familyRepository: FamilyRepository,
     private val settings: SettingsRepository,
 ) : ViewModel() {
@@ -92,9 +108,9 @@ class FamilyAdminViewModel @Inject constructor(
         when (val result = familyRepository.joinRequests()) {
             is ApiResult.Ok -> _state.update { it.copy(requests = result.value.requests) }
             is ApiResult.HttpError ->
-                _state.update { it.copy(error = result.message ?: "Couldn't load join requests") }
+                _state.update { it.copy(error = result.message ?: appContext.getString(R.string.e_load_requests_failed)) }
             is ApiResult.NetworkError ->
-                _state.update { it.copy(error = "Can't reach the server") }
+                _state.update { it.copy(error = appContext.getString(R.string.e_unreachable)) }
         }
     }
 
@@ -111,9 +127,9 @@ class FamilyAdminViewModel @Inject constructor(
                 is ApiResult.Ok ->
                     _state.update { it.copy(busy = false, inviteCode = result.value.inviteCode) }
                 is ApiResult.HttpError ->
-                    _state.update { it.copy(busy = false, error = result.message ?: "Rotation failed") }
+                    _state.update { it.copy(busy = false, error = result.message ?: appContext.getString(R.string.e_rotate_failed)) }
                 is ApiResult.NetworkError ->
-                    _state.update { it.copy(busy = false, error = "Can't reach the server") }
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
             }
         }
     }
@@ -125,9 +141,9 @@ class FamilyAdminViewModel @Inject constructor(
                 is ApiResult.Ok ->
                     _state.update { it.copy(busy = false, joinPolicy = result.value.family.joinPolicy) }
                 is ApiResult.HttpError ->
-                    _state.update { it.copy(busy = false, error = result.message ?: "Couldn't change the policy") }
+                    _state.update { it.copy(busy = false, error = result.message ?: appContext.getString(R.string.e_change_policy_failed)) }
                 is ApiResult.NetworkError ->
-                    _state.update { it.copy(busy = false, error = "Can't reach the server") }
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
             }
         }
     }
@@ -149,9 +165,9 @@ class FamilyAdminViewModel @Inject constructor(
             when (val result = block()) {
                 is ApiResult.Ok -> onSuccess()
                 is ApiResult.HttpError ->
-                    _state.update { it.copy(error = result.message ?: "Action failed") }
+                    _state.update { it.copy(error = result.message ?: appContext.getString(R.string.e_action_failed)) }
                 is ApiResult.NetworkError ->
-                    _state.update { it.copy(error = "Can't reach the server") }
+                    _state.update { it.copy(error = appContext.getString(R.string.e_unreachable)) }
             }
             loadRequests()
             _state.update { it.copy(busy = false) }

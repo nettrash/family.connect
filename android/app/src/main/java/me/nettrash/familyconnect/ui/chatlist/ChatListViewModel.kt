@@ -13,6 +13,9 @@
 
 package me.nettrash.familyconnect.ui.chatlist
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import me.nettrash.familyconnect.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -38,6 +41,19 @@ import javax.inject.Inject
 
 @HiltViewModel
 class ChatListViewModel @Inject constructor(
+    /**
+     * The application context, for `getString` only.
+     *
+     * A ViewModel holding a Context is usually a smell; the APPLICATION
+     * context is the exception — it outlives every screen, so there is
+     * nothing to leak. The alternative, carrying @StringRes ids through
+     * every state field, spreads resource plumbing across code whose job
+     * is state. The trade-off: a message is resolved when it is produced
+     * rather than when it is drawn, so one already on screen keeps its
+     * language if the system locale changes underneath it — and Android
+     * recreates the activity then anyway.
+     */
+    @param:ApplicationContext private val appContext: Context,
     private val chatRepository: ChatRepository,
     familyRepository: FamilyRepository,
     settings: SettingsRepository,
@@ -86,9 +102,9 @@ class ChatListViewModel @Inject constructor(
             when (val result = chatRepository.createDirect(userId)) {
                 is ApiResult.Ok -> _navigateToChat.tryEmit(result.value.id)
                 is ApiResult.HttpError ->
-                    _error.value = result.message ?: "Couldn't open the chat"
+                    _error.value = result.message ?: appContext.getString(R.string.e_open_chat_failed)
                 is ApiResult.NetworkError ->
-                    _error.value = "Can't reach the server"
+                    _error.value = appContext.getString(R.string.e_unreachable)
             }
         }
     }

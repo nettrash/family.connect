@@ -44,6 +44,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,6 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.ui.components.BusyButtonContent
 import me.nettrash.familyconnect.ui.components.ErrorCard
@@ -91,7 +93,7 @@ fun AuthScreen(
             verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                text = "Welcome",
+                text = stringResource(R.string.s_welcome),
                 style = MaterialTheme.typography.headlineMedium,
             )
             Spacer(Modifier.height(24.dp))
@@ -102,14 +104,14 @@ fun AuthScreen(
                     onClick = { viewModel.setMode(AuthViewModel.Mode.LOGIN) },
                     shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
                 ) {
-                    Text("Log in")
+                    Text(stringResource(R.string.s_log_in))
                 }
                 SegmentedButton(
                     selected = state.mode == AuthViewModel.Mode.REGISTER,
                     onClick = { viewModel.setMode(AuthViewModel.Mode.REGISTER) },
                     shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                 ) {
-                    Text("Register")
+                    Text(stringResource(R.string.s_register))
                 }
             }
             Spacer(Modifier.height(24.dp))
@@ -120,7 +122,7 @@ fun AuthScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .semantics { contentType = ContentType.Username },
-                label = { Text("Username") },
+                label = { Text(stringResource(R.string.s_username)) },
                 singleLine = true,
                 isError = state.usernameError != null,
                 supportingText = state.usernameError?.let { { Text(it) } },
@@ -138,7 +140,7 @@ fun AuthScreen(
                         value = state.displayName,
                         onValueChange = viewModel::onDisplayNameChange,
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Display name") },
+                        label = { Text(stringResource(R.string.s_display_name)) },
                         singleLine = true,
                         isError = state.displayNameError != null,
                         supportingText = state.displayNameError?.let { { Text(it) } },
@@ -157,7 +159,7 @@ fun AuthScreen(
                             if (state.mode == AuthViewModel.Mode.REGISTER) ContentType.NewPassword
                             else ContentType.Password
                     },
-                label = { Text("Password") },
+                label = { Text(stringResource(R.string.s_password)) },
                 singleLine = true,
                 visualTransformation =
                     if (passwordVisible) VisualTransformation.None
@@ -190,14 +192,14 @@ fun AuthScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 BusyButtonContent(
-                    label = if (state.mode == AuthViewModel.Mode.LOGIN) "Log in" else "Create account",
+                    label = if (state.mode == AuthViewModel.Mode.LOGIN) stringResource(R.string.s_log_in) else "Create account",
                     busy = state.submitting,
                 )
             }
 
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = onChangeServer) {
-                Text("Use a different server")
+                Text(stringResource(R.string.s_use_a_different_server))
             }
             Text(
                 // Host only — the scheme is noise here. Rendered

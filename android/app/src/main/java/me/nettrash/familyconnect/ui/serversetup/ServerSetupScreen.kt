@@ -6,7 +6,7 @@
  * unauthenticated GET /me — a live Family Connect server answers 401
  * WITH the protocol error body, so that exact response is the success
  * signal (2xx would actually be suspicious). A failed probe still
- * offers "Save anyway" — the server might simply be off right now.
+ * offers stringResource(R.string.s_save_anyway) — the server might simply be off right now.
  *
  * http:// URLs work (self-hosted LAN boxes) but show a persistent
  * warning card: the network-security-config allows cleartext, the UX
@@ -50,6 +50,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -58,6 +59,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.components.BusyButtonContent
 
 @Composable
@@ -98,12 +100,12 @@ fun ServerSetupScreen(
             }
             Spacer(Modifier.height(16.dp))
             Text(
-                text = "Family Connect",
+                text = stringResource(R.string.s_family_connect),
                 style = MaterialTheme.typography.headlineMedium,
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Where does your family's server live?",
+                text = stringResource(R.string.s_where_does_your_family_s_server_live),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -113,8 +115,8 @@ fun ServerSetupScreen(
                 value = state.url,
                 onValueChange = viewModel::onUrlChange,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Server address") },
-                placeholder = { Text("chat.example.com or http://192.168.1.10:8080") },
+                label = { Text(stringResource(R.string.s_server_address)) },
+                placeholder = { Text(stringResource(R.string.s_chat_example_com_or_http_192_168_1_10_8080)) },
                 singleLine = true,
                 isError = state.error != null,
                 supportingText = state.error?.let { { Text(it) } },
@@ -136,9 +138,7 @@ fun ServerSetupScreen(
                         ),
                     ) {
                         Text(
-                            text = "This address uses plain http — messages travel " +
-                                "unencrypted on the network. Fine on a trusted home " +
-                                "LAN, risky anywhere else.",
+                            text = stringResource(R.string.s_plain_http_warning),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                             modifier = Modifier.padding(12.dp),
@@ -153,16 +153,16 @@ fun ServerSetupScreen(
                 enabled = !state.probing && state.url.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                BusyButtonContent(label = "Connect", busy = state.probing)
+                BusyButtonContent(label = stringResource(R.string.s_connect), busy = state.probing)
             }
 
             if (state.showSaveAnyway) {
                 Spacer(Modifier.height(8.dp))
                 TextButton(onClick = viewModel::saveAnyway) {
-                    Text("Save anyway")
+                    Text(stringResource(R.string.s_save_anyway))
                 }
                 Text(
-                    text = "The server may be offline right now",
+                    text = stringResource(R.string.s_the_server_may_be_offline_right_now),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

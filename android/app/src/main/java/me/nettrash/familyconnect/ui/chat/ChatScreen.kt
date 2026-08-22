@@ -141,6 +141,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
@@ -207,6 +208,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
@@ -286,6 +288,8 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     // Copy and share from the message context menu.
     val clipboard = LocalClipboard.current
+    // Hoisted: a coroutine is not a composable context.
+    val clipLabel = stringResource(R.string.s_message)
     val context = LocalContext.current
 
     // The system photo picker: no permission, no gallery access — it
@@ -554,7 +558,7 @@ fun ChatScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.s_back))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = barColor),
@@ -592,7 +596,7 @@ fun ChatScreen(
                             ) {
                                 EmptyState(
                                     icon = Icons.Outlined.Forum,
-                                    title = "No messages yet",
+                                    title = stringResource(R.string.s_no_messages_yet),
                                     // kind is "family" | "direct" (ChatEntity)
                                     // — a 1:1 chat is not "your family chat".
                                     subtitle = if (chat?.kind == "direct") {
@@ -724,7 +728,7 @@ fun ChatScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Filled.KeyboardArrowDown,
-                            contentDescription = "Scroll to newest",
+                            contentDescription = stringResource(R.string.s_scroll_to_newest),
                         )
                     }
                 }
@@ -813,7 +817,7 @@ fun ChatScreen(
                 // setClipEntry is suspend, hence the scope.
                 scope.launch {
                     clipboard.setClipEntry(
-                        ClipData.newPlainText("Message", body).toClipEntry(),
+                        ClipData.newPlainText(clipLabel, body).toClipEntry(),
                     )
                     // Android 13+ shows its own copy confirmation; ours
                     // on top of it would be a second one. A toast rather
@@ -854,7 +858,7 @@ fun ChatScreen(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         ) {
             Text(
-                text = "React",
+                text = stringResource(R.string.s_react),
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
             )
@@ -873,19 +877,19 @@ fun ChatScreen(
     failedActionTarget?.let { clientMsgId ->
         AlertDialog(
             onDismissRequest = { failedActionTarget = null },
-            title = { Text("Message not sent") },
-            text = { Text("Try sending it again, or delete the draft.") },
+            title = { Text(stringResource(R.string.s_message_not_sent)) },
+            text = { Text(stringResource(R.string.s_try_sending_it_again_or_delete_the_draft)) },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.retry(clientMsgId)
                     failedActionTarget = null
                 }) {
-                    Text("Retry")
+                    Text(stringResource(R.string.s_retry))
                 }
             },
             dismissButton = {
                 DestructiveTextButton(
-                    label = "Delete",
+                    label = stringResource(R.string.s_delete),
                     onClick = {
                         viewModel.deleteFailed(clientMsgId)
                         failedActionTarget = null
@@ -1102,7 +1106,7 @@ private fun ReplyBanner(
         IconButton(onClick = onCancel) {
             Icon(
                 imageVector = Icons.Filled.Close,
-                contentDescription = "Cancel reply",
+                contentDescription = stringResource(R.string.s_cancel_reply),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -1110,7 +1114,7 @@ private fun ReplyBanner(
 }
 
 /**
- * "Editing message" above the input field, with the way out. Cancelling
+ * stringResource(R.string.s_editing_message) above the input field, with the way out. Cancelling
  * puts the displaced draft back — the composer was borrowed, and giving it
  * back unchanged is the least surprising thing it can do.
  */
@@ -1130,7 +1134,7 @@ private fun EditBanner(onCancel: () -> Unit) {
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = "Editing message",
+            text = stringResource(R.string.s_editing_message),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.weight(1f),
@@ -1138,7 +1142,7 @@ private fun EditBanner(onCancel: () -> Unit) {
         IconButton(onClick = onCancel) {
             Icon(
                 imageVector = Icons.Filled.Close,
-                contentDescription = "Cancel editing",
+                contentDescription = stringResource(R.string.s_cancel_editing),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -1175,21 +1179,21 @@ private fun MessageContextMenu(
         Column(modifier = Modifier.padding(vertical = 4.dp)) {
             if (canReply) {
                 MessageContextMenuItem(
-                    label = "Reply",
+                    label = stringResource(R.string.s_reply),
                     icon = Icons.AutoMirrored.Outlined.Reply,
                     onClick = onReply,
                 )
             }
             if (canEdit) {
                 MessageContextMenuItem(
-                    label = "Edit",
+                    label = stringResource(R.string.s_edit),
                     icon = Icons.Outlined.Edit,
                     onClick = onEdit,
                 )
             }
             if (canCopy) {
                 MessageContextMenuItem(
-                    label = "Copy",
+                    label = stringResource(R.string.s_copy),
                     icon = Icons.Outlined.ContentCopy,
                     onClick = onCopy,
                 )
@@ -1198,13 +1202,13 @@ private fun MessageContextMenu(
                 // Android's chooser cannot do this on its own, unlike
                 // iOS's share sheet — hence a row of its own here.
                 MessageContextMenuItem(
-                    label = "Save to gallery",
+                    label = stringResource(R.string.s_save_to_gallery),
                     icon = Icons.Outlined.Download,
                     onClick = onSave,
                 )
             }
             MessageContextMenuItem(
-                label = "Share",
+                label = stringResource(R.string.s_share),
                 icon = Icons.Outlined.Share,
                 onClick = onShare,
             )
@@ -1305,7 +1309,7 @@ private fun ReactionCapsule(
             ) {
                 Icon(
                     imageVector = Icons.Filled.Add,
-                    contentDescription = "More reactions",
+                    contentDescription = stringResource(R.string.s_more_reactions),
                     modifier = Modifier.size(22.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1846,7 +1850,7 @@ private fun ReactionChipsRow(
                     if (mine) {
                         Spacer(Modifier.width(12.dp))
                         Text(
-                            text = "Tap to remove",
+                            text = stringResource(R.string.s_tap_to_remove),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                         )
@@ -2133,7 +2137,7 @@ private fun BubbleContent(
                     // placement as iOS.
                     if (item.showTimestamp) Spacer(Modifier.width(4.dp))
                     Text(
-                        text = "edited",
+                        text = stringResource(R.string.s_edited),
                         style = MaterialTheme.typography.labelSmall,
                         color = LocalContentColor.current.copy(alpha = 0.72f),
                     )
@@ -2175,7 +2179,7 @@ private fun LinkPreviewCard(
         modifier = modifier
             .padding(top = 6.dp)
             .clip(shape)
-            .clickable(onClickLabel = "Open link") { onOpen(preview.url) },
+            .clickable(onClickLabel = stringResource(R.string.s_open_link)) { onOpen(preview.url) },
     ) {
         Column {
             if (image != null) {
@@ -2274,7 +2278,7 @@ private fun StatusGlyph(
         when (status) {
             MessageStatus.SENDING -> Icon(
                 imageVector = Icons.Filled.Schedule,
-                contentDescription = "Sending",
+                contentDescription = stringResource(R.string.s_sending),
                 modifier = Modifier.size(14.dp),
                 tint = metaColor,
             )
@@ -2286,7 +2290,7 @@ private fun StatusGlyph(
             )
             MessageStatus.FAILED -> Icon(
                 imageVector = Icons.Filled.ErrorOutline,
-                contentDescription = "Failed — tap to retry",
+                contentDescription = stringResource(R.string.s_failed_tap_to_retry),
                 modifier = Modifier
                     .size(16.dp)
                     .clickable { onFailedTap(entity.clientMsgId) },
@@ -2345,7 +2349,7 @@ private fun MediaStrip(
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.weight(1f),
                 )
-                TextButton(onClick = onDismiss) { Text("Dismiss") }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_dismiss)) }
             }
             ChatViewModel.MediaSendState.Idle -> Unit
         }
@@ -2409,7 +2413,7 @@ private fun InputBar(
                     ) {
                         Icon(
                             imageVector = Icons.Filled.AddCircleOutline,
-                            contentDescription = "Attach a photo, video or file",
+                            contentDescription = stringResource(R.string.s_attach_a_photo_video_or_file),
                         )
                     }
                     DropdownMenu(
@@ -2417,7 +2421,7 @@ private fun InputBar(
                         onDismissRequest = { attachMenuOpen = false },
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Photo or video") },
+                            text = { Text(stringResource(R.string.s_photo_or_video)) },
                             leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
                             onClick = {
                                 attachMenuOpen = false
@@ -2425,7 +2429,7 @@ private fun InputBar(
                             },
                         )
                         DropdownMenuItem(
-                            text = { Text("File") },
+                            text = { Text(stringResource(R.string.s_file)) },
                             leadingIcon = {
                                 Icon(Icons.Filled.InsertDriveFile, contentDescription = null)
                             },
@@ -2444,7 +2448,7 @@ private fun InputBar(
                         .weight(1f)
                         .heightIn(min = 44.dp)
                         .focusRequester(focusRequester),
-                    placeholder = { Text("Message") },
+                    placeholder = { Text(stringResource(R.string.s_message)) },
                     lineLimits = TextFieldLineLimits.MultiLine(
                         minHeightInLines = 1,
                         maxHeightInLines = 5,
@@ -2501,7 +2505,7 @@ private fun InputBar(
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
+                        contentDescription = stringResource(R.string.s_send),
                     )
                 }
             }

@@ -51,6 +51,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -62,6 +63,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 
@@ -224,6 +226,9 @@ private fun MediaThumbnail(
 ) {
     val image = rememberAttachmentImage(attachment, preview = true)
         ?: rememberAttachmentImage(attachment, preview = false)
+    // Resolved out here: a semantics block is not a composable context.
+    val mediaDescription = stringResource(
+        if (attachment.isVideo) R.string.s_video else R.string.s_photo)
 
     Box(
         modifier = modifier
@@ -237,7 +242,7 @@ private fun MediaThumbnail(
                 onDoubleClick = onDoubleTap,
             )
             .semantics {
-                contentDescription = if (attachment.isVideo) "Video" else "Photo"
+                contentDescription = mediaDescription
             },
         contentAlignment = Alignment.Center,
     ) {

@@ -65,6 +65,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,6 +84,7 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.EmptyState
@@ -101,7 +103,7 @@ fun ChatListScreen(
     // The chats StateFlow seeds with null in the ViewModel until Room's
     // first read lands: the null sentinel separates "not settled yet"
     // (skeleton rows) from "settled and truly empty" (real empty state),
-    // so cold entry never flashes "No chats yet".
+    // so cold entry never flashes stringResource(R.string.s_no_chats_yet).
     val chats by viewModel.chats.collectAsStateWithLifecycle()
     val members by viewModel.pickableMembers.collectAsStateWithLifecycle()
     val avatarVersions by viewModel.avatarVersions.collectAsStateWithLifecycle()
@@ -153,16 +155,16 @@ fun ChatListScreen(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
-                title = { Text("Chats") },
+                title = { Text(stringResource(R.string.s_chats)) },
                 actions = {
                     IconButton(onClick = onOpenBoard) {
                         Icon(
                             Icons.Outlined.StickyNote2,
-                            contentDescription = "Board",
+                            contentDescription = stringResource(R.string.s_board),
                         )
                     }
                     IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                        Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.s_settings))
                     }
                 },
                 scrollBehavior = scrollBehavior,
@@ -170,8 +172,8 @@ fun ChatListScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                text = { Text("New chat") },
-                icon = { Icon(Icons.Filled.Add, contentDescription = "New chat") },
+                text = { Text(stringResource(R.string.s_new_chat)) },
+                icon = { Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.s_new_chat)) },
                 onClick = { showPicker = true },
                 expanded = !listState.canScrollBackward,
             )
@@ -205,8 +207,8 @@ fun ChatListScreen(
                     ) {
                         EmptyState(
                             icon = Icons.AutoMirrored.Filled.Chat,
-                            title = "No chats yet",
-                            subtitle = "The family chat appears as soon as you're connected.",
+                            title = stringResource(R.string.s_no_chats_yet),
+                            subtitle = stringResource(R.string.s_the_family_chat_appears_as_soon_as_you_re_connected),
                         )
                     }
                 }
@@ -236,13 +238,13 @@ fun ChatListScreen(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         ) {
             Text(
-                text = "New chat",
+                text = stringResource(R.string.s_new_chat),
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
             )
             if (members.isEmpty()) {
                 Text(
-                    text = "No other family members yet — share the invite code first.",
+                    text = stringResource(R.string.s_no_other_family_members_yet_share_the_invite_code_first),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
@@ -308,7 +310,7 @@ private fun ChatRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = chat.lastMessageBody ?: "No messages yet",
+                text = chat.lastMessageBody ?: stringResource(R.string.s_no_messages_yet),
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (hasUnread) {
                     MaterialTheme.colorScheme.onSurface

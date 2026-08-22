@@ -13,6 +13,9 @@
 
 package me.nettrash.familyconnect.ui.settings
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import me.nettrash.familyconnect.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -36,6 +39,19 @@ import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
+    /**
+     * The application context, for `getString` only.
+     *
+     * A ViewModel holding a Context is usually a smell; the APPLICATION
+     * context is the exception — it outlives every screen, so there is
+     * nothing to leak. The alternative, carrying @StringRes ids through
+     * every state field, spreads resource plumbing across code whose job
+     * is state. The trade-off: a message is resolved when it is produced
+     * rather than when it is drawn, so one already on screen keeps its
+     * language if the system locale changes underneath it — and Android
+     * recreates the activity then anyway.
+     */
+    @param:ApplicationContext private val appContext: Context,
     private val sessionRepository: SessionRepository,
     private val authApi: AuthApi,
     private val familyRepository: FamilyRepository,
@@ -135,14 +151,14 @@ class SettingsViewModel @Inject constructor(
             val source = avatarSource.read(uri)
             if (source == null) {
                 _state.update {
-                    it.copy(uploadingAvatar = false, avatarError = "That image couldn't be read.")
+                    it.copy(uploadingAvatar = false, avatarError = appContext.getString(R.string.e_image_unreadable))
                 }
                 return@launch
             }
             val jpeg = withContext(Dispatchers.Default) { AvatarImage.squareJpeg(source) }
             if (jpeg == null) {
                 _state.update {
-                    it.copy(uploadingAvatar = false, avatarError = "That image couldn't be read.")
+                    it.copy(uploadingAvatar = false, avatarError = appContext.getString(R.string.e_image_unreadable))
                 }
                 return@launch
             }
@@ -159,7 +175,7 @@ class SettingsViewModel @Inject constructor(
                     it.copy(uploadingAvatar = false, avatarError = uploadFailure(result))
                 }
                 is ApiResult.NetworkError -> _state.update {
-                    it.copy(uploadingAvatar = false, avatarError = "Can't reach the server")
+                    it.copy(uploadingAvatar = false, avatarError = appContext.getString(R.string.e_unreachable))
                 }
             }
         }
@@ -179,7 +195,7 @@ class SettingsViewModel @Inject constructor(
                     it.copy(uploadingAvatar = false, avatarError = uploadFailure(result))
                 }
                 is ApiResult.NetworkError -> _state.update {
-                    it.copy(uploadingAvatar = false, avatarError = "Can't reach the server")
+                    it.copy(uploadingAvatar = false, avatarError = appContext.getString(R.string.e_unreachable))
                 }
             }
         }
@@ -224,7 +240,7 @@ class SettingsViewModel @Inject constructor(
                     )
                 }
                 is ApiResult.NetworkError ->
-                    _state.update { it.copy(error = "Can't reach the server") }
+                    _state.update { it.copy(error = appContext.getString(R.string.e_unreachable)) }
             }
         }
     }
@@ -247,14 +263,14 @@ class SettingsViewModel @Inject constructor(
                                 // wrong, not that the session died —
                                 // treating it as a dead session would sign
                                 // the user out over a typo.
-                                "That current password is not right."
+                                appContext.getString(R.string.e_wrong_current_password)
                             } else {
-                                result.message ?: "Couldn't change your password."
+                                result.message ?: appContext.getString(R.string.e_change_password_failed)
                             },
                         )
                     }
                 is ApiResult.NetworkError ->
-                    _state.update { it.copy(error = "Can't reach the server") }
+                    _state.update { it.copy(error = appContext.getString(R.string.e_unreachable)) }
             }
             _state.update { it.copy(busy = false) }
         }

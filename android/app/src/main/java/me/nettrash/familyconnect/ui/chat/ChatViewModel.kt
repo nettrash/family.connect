@@ -24,6 +24,8 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import dagger.hilt.android.qualifiers.ApplicationContext
+import me.nettrash.familyconnect.R
 import android.net.Uri
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
@@ -75,6 +77,19 @@ import javax.inject.Inject
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class ChatViewModel @Inject constructor(
+    /**
+     * The application context, for `getString` only.
+     *
+     * A ViewModel holding a Context is usually a smell; the APPLICATION
+     * context is the exception — it outlives every screen, so there is
+     * nothing to leak. The alternative, carrying @StringRes ids through
+     * every state field, spreads resource plumbing across code whose job
+     * is state. The trade-off: a message is resolved when it is produced
+     * rather than when it is drawn, so one already on screen keeps its
+     * language if the system locale changes underneath it — and Android
+     * recreates the activity then anyway.
+     */
+    @param:ApplicationContext private val appContext: Context,
     savedStateHandle: SavedStateHandle,
     private val messageRepository: MessageRepository,
     private val chatRepository: ChatRepository,
@@ -347,11 +362,11 @@ class ChatViewModel @Inject constructor(
                 // The one failure the user can act on, so it says what
                 // would help rather than just refusing.
                 _mediaState.value = MediaSendState.Failed(
-                    "Still too large after compressing — try a shorter clip.",
+                    appContext.getString(R.string.e_still_too_large),
                 )
                 return@launch
             } catch (_: Exception) {
-                _mediaState.value = MediaSendState.Failed("Couldn't prepare that item.")
+                _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_prepare_failed))
                 return@launch
             }
 
@@ -363,7 +378,7 @@ class ChatViewModel @Inject constructor(
                 inputState.clearText()
                 _mediaState.value = MediaSendState.Idle
             } else {
-                _mediaState.value = MediaSendState.Failed("Couldn't send that — try again.")
+                _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_send_failed))
             }
         }
     }
@@ -389,10 +404,10 @@ class ChatViewModel @Inject constructor(
             } catch (_: MediaPrep.TooLargeAfterCompression) {
                 // A document cannot be compressed the way a video can, so
                 // the advice is different: there is nothing to try.
-                _mediaState.value = MediaSendState.Failed("That file is over the 100 MB limit.")
+                _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_file_too_large))
                 return@launch
             } catch (_: Exception) {
-                _mediaState.value = MediaSendState.Failed("Couldn't read that file.")
+                _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_read_file_failed))
                 return@launch
             }
 
@@ -402,7 +417,7 @@ class ChatViewModel @Inject constructor(
                 inputState.clearText()
                 _mediaState.value = MediaSendState.Idle
             } else {
-                _mediaState.value = MediaSendState.Failed("Couldn't send that — try again.")
+                _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_send_failed))
             }
         }
     }
@@ -420,9 +435,9 @@ class ChatViewModel @Inject constructor(
     fun reportAttachmentOpenFailed(downloaded: Boolean) {
         _mediaState.value = MediaSendState.Failed(
             if (downloaded) {
-                "No app on this phone can open that file."
+                appContext.getString(R.string.e_no_app_for_file)
             } else {
-                "Couldn't download that file."
+                appContext.getString(R.string.e_download_failed)
             },
         )
     }
@@ -437,7 +452,7 @@ class ChatViewModel @Inject constructor(
         _mediaState.value = MediaSendState.Working("Saving…")
         val file = attachments.fileFor(attachment)
         if (file == null) {
-            _mediaState.value = MediaSendState.Failed("Couldn't download that to save.")
+            _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_download_to_save_failed))
             return GallerySaver.Result.FAILED
         }
         val result = gallerySaver.save(
@@ -450,7 +465,7 @@ class ChatViewModel @Inject constructor(
         _mediaState.value = when (result) {
             GallerySaver.Result.SAVED -> MediaSendState.Idle
             GallerySaver.Result.NEEDS_PERMISSION -> MediaSendState.Idle
-            GallerySaver.Result.FAILED -> MediaSendState.Failed("Couldn't save that.")
+            GallerySaver.Result.FAILED -> MediaSendState.Failed(appContext.getString(R.string.e_save_failed))
         }
         return result
     }
@@ -458,7 +473,7 @@ class ChatViewModel @Inject constructor(
     /** The user declined (or the system refused) the storage permission. */
     fun reportSaveNeedsPermission() {
         _mediaState.value = MediaSendState.Failed(
-            "Family needs permission to save to your gallery.",
+            appContext.getString(R.string.e_gallery_permission),
         )
     }
 

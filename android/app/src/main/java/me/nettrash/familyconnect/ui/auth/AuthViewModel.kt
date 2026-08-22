@@ -18,6 +18,9 @@
 
 package me.nettrash.familyconnect.ui.auth
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import me.nettrash.familyconnect.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -35,6 +38,19 @@ import javax.inject.Inject
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
+    /**
+     * The application context, for `getString` only.
+     *
+     * A ViewModel holding a Context is usually a smell; the APPLICATION
+     * context is the exception — it outlives every screen, so there is
+     * nothing to leak. The alternative, carrying @StringRes ids through
+     * every state field, spreads resource plumbing across code whose job
+     * is state. The trade-off: a message is resolved when it is produced
+     * rather than when it is drawn, so one already on screen keeps its
+     * language if the system locale changes underneath it — and Android
+     * recreates the activity then anyway.
+     */
+    @param:ApplicationContext private val appContext: Context,
     private val sessionRepository: SessionRepository,
 ) : ViewModel() {
 
@@ -109,9 +125,9 @@ class AuthViewModel @Inject constructor(
                 is ApiResult.HttpError -> _state.update {
                     when {
                         result.code == "username_taken" || result.status == 409 ->
-                            it.copy(submitting = false, usernameError = "Username already taken")
+                            it.copy(submitting = false, usernameError = appContext.getString(R.string.e_username_taken))
                         result.code == "invalid_credentials" ->
-                            it.copy(submitting = false, generalError = "Wrong username or password")
+                            it.copy(submitting = false, generalError = appContext.getString(R.string.e_wrong_credentials))
                         else -> it.copy(
                             submitting = false,
                             generalError = result.message ?: "Request failed (HTTP ${result.status})",
@@ -119,7 +135,7 @@ class AuthViewModel @Inject constructor(
                     }
                 }
                 is ApiResult.NetworkError -> _state.update {
-                    it.copy(submitting = false, generalError = "Can't reach the server — check your connection")
+                    it.copy(submitting = false, generalError = appContext.getString(R.string.e_unreachable_check_connection))
                 }
             }
         }
@@ -135,7 +151,7 @@ class AuthViewModel @Inject constructor(
             ok = false
         }
         if (s.password.length < 8) {
-            _state.update { it.copy(passwordError = "At least 8 characters") }
+            _state.update { it.copy(passwordError = appContext.getString(R.string.e_password_too_short)) }
             ok = false
         }
         if (s.mode == Mode.REGISTER) {

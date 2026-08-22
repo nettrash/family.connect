@@ -1,3 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  User-facing text for the Android app.
+
+  Extracted from the Compose sources when localization arrived: a string
+  inline in a composable cannot be translated, and the six languages here
+  match the iOS String Catalog key for key wherever the English does.
+
+  Register is INFORMAL throughout (du / tu / ты / tú) — this is a family
+  chat, not a bank. Japanese uses plain polite です/ます. Keep new strings
+  consistent with that.
+-->
 <resources>
-    <string name="app_name">Family</string>
+    <!-- The app name is a name, not a word: it reads the same in every language. -->
+    <string name="app_name" translatable="false">Family</string>
+    <string name="s_add_a_note_everyone_in_the_family_sees_it">Add a note — everyone in the family sees it.</string>
+    <string name="s_add_note">Add note</string>
+    <string name="s_approval">Approval</string>
+    <string name="s_attach_a_photo_video_or_file">Attach a photo, video or file</string>
+    <string name="s_back">Back</string>
+    <string name="s_board">Board</string>
+    <string name="s_cancel">Cancel</string>
+    <string name="s_cancel_editing">Cancel editing</string>
+    <string name="s_cancel_reply">Cancel reply</string>
+    <string name="s_change_password">Change password</string>
+    <string name="s_chat_example_com_or_http_192_168_1_10_8080">chat.example.com or http://192.168.1.10:8080</string>
+    <string name="s_chats">Chats</string>
+    <string name="s_check_again">Check again</string>
+    <string name="s_close">Close</string>
+    <string name="s_confirm_new_password">Confirm new password</string>
+    <string name="s_connect">Connect</string>
+    <string name="s_copy">Copy</string>
+    <string name="s_copy_invite_code">Copy invite code</string>
+    <string name="s_create">Create</string>
+    <string name="s_create_a_family">Create a family</string>
+    <string name="s_current_password">Current password</string>
+    <string name="s_delete">Delete</string>
+    <string name="s_delete_this_note">Delete this note?</string>
+    <string name="s_dismiss">Dismiss</string>
+    <string name="s_display_name">Display name</string>
+    <string name="s_edit">Edit</string>
+    <string name="s_editing_message">Editing message</string>
+    <string name="s_failed_tap_to_retry">Failed — tap to retry</string>
+    <string name="s_family">Family</string>
+    <string name="s_family_connect" translatable="false">Family Connect</string>
+    <string name="s_family_name">Family name</string>
+    <string name="s_file">File</string>
+    <string name="s_invite_code">Invite code</string>
+    <string name="s_join">Join</string>
+    <string name="s_join_policy">Join policy</string>
+    <string name="s_join_requests">Join requests</string>
+    <string name="s_join_with_an_invite_code">Join with an invite code</string>
+    <string name="s_leave">Leave</string>
+    <string name="s_leave_family">Leave family</string>
+    <string name="s_leave_the_family">Leave the family?</string>
+    <string name="s_link_previews">Link previews</string>
+    <string name="s_local_messages_are_removed_from_this_device">Local messages are removed from this device.</string>
+    <string name="s_log_in">Log in</string>
+    <string name="s_log_out">Log out</string>
+    <string name="s_log_out_2">Log out?</string>
+    <string name="s_members">Members</string>
+    <string name="s_message">Message</string>
+    <string name="s_message_not_sent">Message not sent</string>
+    <string name="s_more_reactions">More reactions</string>
+    <string name="s_new_chat">New chat</string>
+    <string name="s_new_password">New password</string>
+    <string name="s_no_chats_yet">No chats yet</string>
+    <string name="s_no_messages_yet">No messages yet</string>
+    <string name="s_no_other_family_members_yet_share_the_invite_code_first">No other family members yet — share the invite code first.</string>
+    <string name="s_no_pending_requests">No pending requests</string>
+    <string name="s_note">Note</string>
+    <string name="s_open">Open</string>
+    <string name="s_open_link">Open link</string>
+    <string name="s_password">Password</string>
+    <string name="s_video">Video</string>
+    <string name="s_photo">Photo</string>
+    <string name="s_photo_or_video">Photo or video</string>
+    <string name="s_privacy">Privacy</string>
+    <string name="s_react">React</string>
+    <string name="s_register">Register</string>
+    <string name="s_remove">Remove</string>
+    <string name="s_remove_photo">Remove photo</string>
+    <string name="s_reply">Reply</string>
+    <string name="s_request_declined">Request declined</string>
+    <string name="s_reset_password">Reset password</string>
+    <string name="s_retry">Retry</string>
+    <string name="s_rotate">Rotate</string>
+    <string name="s_rotate_invite_code">Rotate invite code</string>
+    <string name="s_rotate_the_invite_code">Rotate the invite code?</string>
+    <string name="s_rotating_invalidates_the_current_code_immediately">Rotating invalidates the current code immediately</string>
+    <string name="s_save">Save</string>
+    <string name="s_save_anyway">Save anyway</string>
+    <string name="s_save_to_gallery">Save to gallery</string>
+    <string name="s_scroll_to_newest">Scroll to newest</string>
+    <string name="s_send">Send</string>
+    <string name="s_sending">Sending</string>
+    <string name="s_server_address">Server address</string>
+    <string name="s_settings">Settings</string>
+    <string name="s_share">Share</string>
+    <string name="s_share_invite_code">Share invite code</string>
+    <string name="s_share_it_to_invite_family_members">Share it to invite family members</string>
+    <string name="s_share_the_invite_code_below_to_add_someone">Share the invite code below to add someone.</string>
+    <string name="s_start_a_new_family_space_or_join_one_you_were_invited_to">Start a new family space, or join one you were invited to.</string>
+    <string name="s_tap_to_remove">Tap to remove</string>
+    <string name="s_the_board_is_empty">The board is empty</string>
+    <string name="s_the_current_code_stops_working_immediately_pending_request">The current code stops working immediately. Pending requests survive.</string>
+    <string name="s_the_family_chat_appears_as_soon_as_you_re_connected">The family chat appears as soon as you\'re connected.</string>
+    <string name="s_the_server_may_be_offline_right_now">The server may be offline right now</string>
+    <string name="s_they_lose_access_to_the_family_chats_history_stays_and_ret">They lose access to the family chats. History stays and returns if they rejoin.</string>
+    <string name="s_try_sending_it_again_or_delete_the_draft">Try sending it again, or delete the draft.</string>
+    <string name="s_use_a_different_server">Use a different server</string>
+    <string name="s_username">Username</string>
+    <string name="s_waiting_for_approval">Waiting for approval</string>
+    <string name="s_welcome">Welcome</string>
+    <string name="s_where_does_your_family_s_server_live">Where does your family\'s server live?</string>
+    <string name="s_your_family">Your family</string>
+    <string name="s_your_other_devices_will_be_signed_out_this_one_stays_signe">Your other devices will be signed out. This one stays signed in.</string>
+    <string name="e_action_failed">Action failed</string>
+    <string name="e_already_in_family">You\'re already in a family — pull to refresh</string>
+    <string name="e_change_password_failed">Couldn\'t change your password.</string>
+    <string name="e_change_policy_failed">Couldn\'t change the policy</string>
+    <string name="e_create_family_failed">Couldn\'t create the family</string>
+    <string name="e_download_failed">Couldn\'t download that file.</string>
+    <string name="e_download_to_save_failed">Couldn\'t download that to save.</string>
+    <string name="e_enter_invite_code">Enter the invite code</string>
+    <string name="e_file_too_large">That file is over the 100 MB limit.</string>
+    <string name="e_gallery_permission">Family needs permission to save to your gallery.</string>
+    <string name="e_image_unreadable">That image couldn\'t be read.</string>
+    <string name="e_invalid_address">That doesn\'t look like a valid address</string>
+    <string name="e_invalid_invite_code">Invalid invite code</string>
+    <string name="e_join_failed">Couldn\'t join</string>
+    <string name="e_load_requests_failed">Couldn\'t load join requests</string>
+    <string name="e_no_app_for_file">No app on this phone can open that file.</string>
+    <string name="e_open_chat_failed">Couldn\'t open the chat</string>
+    <string name="e_password_too_short">At least 8 characters</string>
+    <string name="e_prepare_failed">Couldn\'t prepare that item.</string>
+    <string name="e_read_file_failed">Couldn\'t read that file.</string>
+    <string name="e_rotate_failed">Rotation failed</string>
+    <string name="e_save_failed">Couldn\'t save that.</string>
+    <string name="e_send_failed">Couldn\'t send that — try again.</string>
+    <string name="e_still_too_large">Still too large after compressing — try a shorter clip.</string>
+    <string name="e_unreachable">Can\'t reach the server</string>
+    <string name="e_unreachable_check_connection">Can\'t reach the server — check your connection</string>
+    <string name="e_username_taken">Username already taken</string>
+    <string name="e_wrong_credentials">Wrong username or password</string>
+    <string name="e_wrong_current_password">That current password is not right.</string>
+    <string name="s_copied">Copied</string>
+    <string name="s_password_changed">Password changed</string>
+    <string name="s_saved_to_gallery">Saved to gallery</string>
+    <string name="s_edited">edited</string>
+    <string name="s_leave_family_explanation">You\'ll lose access to the family chat and your direct chats. History stays on the server and comes back if you rejoin.</string>
+    <string name="s_link_previews_explanation">Shows a preview under links in messages. Building one asks the linked website for its title and image, so that site sees a request from this device.</string>
+    <string name="s_plain_http_warning">This address uses plain http — messages travel unencrypted on the network. Fine on a trusted home LAN, risky anywhere else.</string>
+    <string name="s_request_declined_explanation">The family owner declined your request. You can try a different invite code or start your own family.</string>
+    <string name="s_waiting_explanation">There\'s nothing to cancel from here — the owner either lets you in or declines the request.</string>
 </resources>

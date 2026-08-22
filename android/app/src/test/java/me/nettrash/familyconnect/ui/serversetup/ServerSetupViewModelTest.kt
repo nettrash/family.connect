@@ -23,11 +23,15 @@ import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAuthApi
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
+import org.robolectric.RuntimeEnvironment
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
 class ServerSetupViewModelTest {
 
     private val dispatcher = StandardTestDispatcher()
@@ -46,7 +50,7 @@ class ServerSetupViewModelTest {
     @Test
     fun prefillsTheFieldWithTheUrlCurrentlyInEffect() = runTest(dispatcher) {
         val settings = FakeSettingsRepository(SettingsState(serverUrl = "https://fc.nettrash.me"))
-        val viewModel = ServerSetupViewModel(authApi, settings)
+        val viewModel = ServerSetupViewModel(RuntimeEnvironment.getApplication(), authApi, settings)
         advanceUntilIdle()
 
         assertThat(viewModel.state.value.url).isEqualTo("https://fc.nettrash.me")
@@ -55,7 +59,7 @@ class ServerSetupViewModelTest {
 
     @Test
     fun staysBlankOnATrueFirstRunWithoutAStoredUrl() = runTest(dispatcher) {
-        val viewModel = ServerSetupViewModel(authApi, FakeSettingsRepository())
+        val viewModel = ServerSetupViewModel(RuntimeEnvironment.getApplication(), authApi, FakeSettingsRepository())
         advanceUntilIdle()
 
         assertThat(viewModel.state.value.url).isEmpty()
@@ -64,7 +68,7 @@ class ServerSetupViewModelTest {
     @Test
     fun prefillNeverClobbersInputTheUserAlreadyStartedTyping() = runTest(dispatcher) {
         val settings = FakeSettingsRepository(SettingsState(serverUrl = "https://fc.nettrash.me"))
-        val viewModel = ServerSetupViewModel(authApi, settings)
+        val viewModel = ServerSetupViewModel(RuntimeEnvironment.getApplication(), authApi, settings)
 
         // Typed before the DataStore read lands (init's launch hasn't run
         // yet on the StandardTestDispatcher).
@@ -77,7 +81,7 @@ class ServerSetupViewModelTest {
     @Test
     fun savingADifferentUrlOverridesTheStoredOnePersistently() = runTest(dispatcher) {
         val settings = FakeSettingsRepository(SettingsState(serverUrl = "https://fc.nettrash.me"))
-        val viewModel = ServerSetupViewModel(authApi, settings)
+        val viewModel = ServerSetupViewModel(RuntimeEnvironment.getApplication(), authApi, settings)
         advanceUntilIdle()
 
         // A live Family Connect server answers the unauthenticated probe

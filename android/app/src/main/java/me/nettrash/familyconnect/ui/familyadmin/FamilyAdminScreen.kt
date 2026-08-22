@@ -65,6 +65,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -77,6 +78,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -84,6 +86,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
@@ -101,6 +104,8 @@ fun FamilyAdminScreen(
     val isOwner by viewModel.isOwner.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
     val clipboard = LocalClipboard.current
+    val context = LocalContext.current
+    val inviteLabel = stringResource(R.string.s_invite_code)
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
@@ -130,7 +135,7 @@ fun FamilyAdminScreen(
                 title = { Text(if (isOwner) "Manage family" else "Family members") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.s_back))
                     }
                 },
                 scrollBehavior = scrollBehavior,
@@ -154,7 +159,7 @@ fun FamilyAdminScreen(
             if (isOwner) {
                 // -- Pending requests ---------------------------------------------
                 Text(
-                    text = "Join requests",
+                    text = stringResource(R.string.s_join_requests),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
@@ -162,8 +167,8 @@ fun FamilyAdminScreen(
                 if (state.requests.isEmpty()) {
                     EmptyState(
                         icon = Icons.Outlined.Inbox,
-                        title = "No pending requests",
-                        subtitle = "Share the invite code below to add someone.",
+                        title = stringResource(R.string.s_no_pending_requests),
+                        subtitle = stringResource(R.string.s_share_the_invite_code_below_to_add_someone),
                         modifier = Modifier.fillMaxWidth(),
                     )
                 } else {
@@ -248,7 +253,7 @@ fun FamilyAdminScreen(
 
                 // -- Invite code -----------------------------------------------------
                 Text(
-                    text = "Invite code",
+                    text = stringResource(R.string.s_invite_code),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
@@ -277,22 +282,22 @@ fun FamilyAdminScreen(
                                 val code = state.inviteCode ?: return@IconButton
                                 scope.launch {
                                     clipboard.setClipEntry(
-                                        ClipData.newPlainText("Invite code", code).toClipEntry(),
+                                        ClipData.newPlainText(inviteLabel, code).toClipEntry(),
                                     )
                                     snackbarHostState.showSnackbar("Copied")
                                 }
                             },
                             enabled = state.inviteCode != null,
                         ) {
-                            Icon(Icons.Filled.ContentCopy, contentDescription = "Copy invite code")
+                            Icon(Icons.Filled.ContentCopy, contentDescription = stringResource(R.string.s_copy_invite_code))
                         }
                         IconButton(onClick = { confirmRotate = true }, enabled = !state.busy) {
-                            Icon(Icons.Filled.Autorenew, contentDescription = "Rotate invite code")
+                            Icon(Icons.Filled.Autorenew, contentDescription = stringResource(R.string.s_rotate_invite_code))
                         }
                     }
                 }
                 Text(
-                    text = "Rotating invalidates the current code immediately",
+                    text = stringResource(R.string.s_rotating_invalidates_the_current_code_immediately),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -301,7 +306,7 @@ fun FamilyAdminScreen(
 
                 // -- Join policy ------------------------------------------------------
                 Text(
-                    text = "Join policy",
+                    text = stringResource(R.string.s_join_policy),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
@@ -317,7 +322,7 @@ fun FamilyAdminScreen(
                         shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
                         enabled = !state.busy,
                     ) {
-                        Text("Open")
+                        Text(stringResource(R.string.s_open))
                     }
                     SegmentedButton(
                         selected = state.joinPolicy == "approval",
@@ -325,7 +330,7 @@ fun FamilyAdminScreen(
                         shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                         enabled = !state.busy,
                     ) {
-                        Text("Approval")
+                        Text(stringResource(R.string.s_approval))
                     }
                 }
                 Text(
@@ -343,7 +348,7 @@ fun FamilyAdminScreen(
 
             // -- Members ------------------------------------------------------------
             Text(
-                text = "Members",
+                text = stringResource(R.string.s_members),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
@@ -412,11 +417,11 @@ fun FamilyAdminScreen(
     if (confirmRotate) {
         AlertDialog(
             onDismissRequest = { confirmRotate = false },
-            title = { Text("Rotate the invite code?") },
-            text = { Text("The current code stops working immediately. Pending requests survive.") },
+            title = { Text(stringResource(R.string.s_rotate_the_invite_code)) },
+            text = { Text(stringResource(R.string.s_the_current_code_stops_working_immediately_pending_request)) },
             confirmButton = {
                 DestructiveTextButton(
-                    label = "Rotate",
+                    label = stringResource(R.string.s_rotate),
                     onClick = {
                         confirmRotate = false
                         viewModel.rotateInviteCode()
@@ -425,7 +430,7 @@ fun FamilyAdminScreen(
             },
             dismissButton = {
                 TextButton(onClick = { confirmRotate = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.s_cancel))
                 }
             },
         )
@@ -435,10 +440,10 @@ fun FamilyAdminScreen(
         AlertDialog(
             onDismissRequest = { confirmRemove = null },
             title = { Text("Remove ${member.displayName}?") },
-            text = { Text("They lose access to the family chats. History stays and returns if they rejoin.") },
+            text = { Text(stringResource(R.string.s_they_lose_access_to_the_family_chats_history_stays_and_ret)) },
             confirmButton = {
                 DestructiveTextButton(
-                    label = "Remove",
+                    label = stringResource(R.string.s_remove),
                     onClick = {
                         departingMembers += member.userId
                         viewModel.removeMember(member.userId) {
@@ -452,7 +457,7 @@ fun FamilyAdminScreen(
             },
             dismissButton = {
                 TextButton(onClick = { confirmRemove = null }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.s_cancel))
                 }
             },
         )
@@ -460,7 +465,7 @@ fun FamilyAdminScreen(
 
     resetTarget?.let { member ->
         SetPasswordDialog(
-            title = "Reset password",
+            title = stringResource(R.string.s_reset_password),
             // Said plainly, because it is not obvious and not undoable.
             explanation = "${member.displayName} will be signed out on every device and will " +
                 "need this password to sign back in. Tell it to them somewhere safe — the " +
@@ -515,7 +520,7 @@ fun SetPasswordDialog(
                     OutlinedTextField(
                         value = currentPassword.orEmpty(),
                         onValueChange = onCurrentPasswordChange,
-                        label = { Text("Current password") },
+                        label = { Text(stringResource(R.string.s_current_password)) },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -524,7 +529,7 @@ fun SetPasswordDialog(
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it; problem = null },
-                    label = { Text("New password") },
+                    label = { Text(stringResource(R.string.s_new_password)) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -532,7 +537,7 @@ fun SetPasswordDialog(
                 OutlinedTextField(
                     value = confirmation,
                     onValueChange = { confirmation = it; problem = null },
-                    label = { Text("Confirm new password") },
+                    label = { Text(stringResource(R.string.s_confirm_new_password)) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -563,7 +568,7 @@ fun SetPasswordDialog(
             ) { Text(confirmLabel) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+            TextButton(onClick = onDismiss, enabled = !busy) { Text(stringResource(R.string.s_cancel)) }
         },
     )
 }

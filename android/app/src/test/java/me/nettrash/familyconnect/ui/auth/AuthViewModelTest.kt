@@ -31,11 +31,15 @@ import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
 import me.nettrash.familyconnect.testutil.userDto
+import org.robolectric.RuntimeEnvironment
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
 class AuthViewModelTest {
 
     private val dispatcher = StandardTestDispatcher()
@@ -62,7 +66,7 @@ class AuthViewModelTest {
             unauthorizedEvents = MutableSharedFlow(),
             scope = CoroutineScope(dispatcher),
         )
-        return AuthViewModel(sessionRepository)
+        return AuthViewModel(RuntimeEnvironment.getApplication(), sessionRepository)
     }
 
     @Test
