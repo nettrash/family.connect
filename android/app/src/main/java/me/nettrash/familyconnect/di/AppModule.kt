@@ -47,14 +47,17 @@ import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.MessageDao
+import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.net.AndroidConnectivityObserver
 import me.nettrash.familyconnect.data.net.ApiClient
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.AvatarApi
+import me.nettrash.familyconnect.data.net.BoardApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.DefaultAuthApi
 import me.nettrash.familyconnect.data.net.DefaultAvatarApi
+import me.nettrash.familyconnect.data.net.DefaultBoardApi
 import me.nettrash.familyconnect.data.net.DefaultChatApi
 import me.nettrash.familyconnect.data.net.DefaultFamilyApi
 import me.nettrash.familyconnect.data.net.FamilyApi
@@ -97,6 +100,9 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindAvatarApi(impl: DefaultAvatarApi): AvatarApi
+
+    @Binds
+    abstract fun bindBoardApi(impl: DefaultBoardApi): BoardApi
 
     @Binds
     abstract fun bindAvatarSource(impl: ContentResolverAvatarSource): AvatarSource
@@ -162,6 +168,7 @@ abstract class AppModule {
                     AppDatabase.MIGRATION_2_3,
                     AppDatabase.MIGRATION_3_4,
                     AppDatabase.MIGRATION_4_5,
+                    AppDatabase.MIGRATION_5_6,
                 )
                 .build()
 
@@ -169,6 +176,9 @@ abstract class AppModule {
         @Singleton
         fun provideContentResolver(@ApplicationContext context: Context): ContentResolver =
             context.contentResolver
+
+        @Provides
+        fun provideNoteDao(db: AppDatabase): NoteDao = db.noteDao()
 
         @Provides
         fun provideChatDao(db: AppDatabase): ChatDao = db.chatDao()

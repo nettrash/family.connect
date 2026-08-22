@@ -355,11 +355,20 @@ pub async fn my_family(
         })
         .collect();
     let is_owner = family.owner_user_id == auth.user_id;
-    Ok((
-        StatusCode::OK,
-        Json(json!({"family": family.to_api(is_owner), "members": members})),
-    )
-        .into_response())
+    // The board cursor rides along: this is the call every client already
+    // makes on resync, so learning whether a board catch-up is needed
+    // costs no extra request. Omitted while the board has never been
+    // written to, like max_reaction_seq on an unreacted chat.
+    let last_board_seq: i64 =
+        sqlx::query_scalar("SELECT last_board_seq FROM families WHERE id = $1")
+            .bind(family.id)
+            .fetch_one(&state.pool)
+            .await?;
+    let mut body = json!({"family": family.to_api(is_owner), "members": members});
+    if last_board_seq > 0 {
+        body["max_board_seq"] = json!(last_board_seq);
+    }
+    Ok((StatusCode::OK, Json(body)).into_response())
 }
 
 /// `POST /families/invite-code/rotate` (owner)

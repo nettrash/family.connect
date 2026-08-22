@@ -89,6 +89,12 @@ pub struct LimitsConfig {
     #[serde(default = "default_max_message_chars")]
     pub max_message_chars: usize,
 
+    /// Most notes one family board may hold at once (tombstones excluded).
+    /// A runaway guard, not a budget: a wall nobody could read is not a
+    /// feature anyone asked for.
+    #[serde(default = "default_max_board_notes")]
+    pub max_board_notes: i64,
+
     /// Page size for GET /chats/{id}/messages when the client sends none.
     #[serde(default = "default_default_page_size")]
     pub default_page_size: i64,
@@ -321,6 +327,7 @@ impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             max_message_chars: default_max_message_chars(),
+            max_board_notes: default_max_board_notes(),
             default_page_size: default_default_page_size(),
             max_page_size: default_max_page_size(),
             max_body_bytes: default_max_body_bytes(),
@@ -485,6 +492,10 @@ fn default_session_touch_interval_mins() -> i64 {
 
 fn default_max_message_chars() -> usize {
     4000
+}
+
+fn default_max_board_notes() -> i64 {
+    500
 }
 
 fn default_default_page_size() -> i64 {

@@ -219,6 +219,10 @@ final class ChatSyncCoordinator {
         case .message(let message):
             _ = upsert(message, bumpUnread: true)
 
+        case .boardNote(let note):
+            applyNote(note)
+            saveContext()
+
         case .messageEdited(let message):
             // bumpUnread: false — an edit is not new mail. The body write
             // itself is guarded by edit_seq inside upsert, and the chat's
@@ -304,6 +308,139 @@ final class ChatSyncCoordinator {
     }
 
     // MARK: - Message upsert (the dedup matrix)
+
+    // MARK: - Board
+
+    /// The board catch-up cursor, persisted so a relaunch resumes rather
+    /// than re-reading the whole wall.
+    var boardCursor: Int64 {
+        get { AppSettings.boardCursor }
+        set { AppSettings.boardCursor = newValue }
+    }
+
+    /// Apply one note under the per-note seq guard.
+    ///
+    /// A TOMBSTONE deletes the local row: the server keeps one so its feed
+    /// can say "gone", but a client that has been told has nothing left to
+    /// remember. The guard still applies — an out-of-order tombstone must
+    /// not remove a note that has since been re-created… which cannot
+    /// happen (ids are never reused), but the same rule covers an
+    /// out-of-order MOVE, which very much can.
+    @discardableResult
+    func applyNote(_ dto: NoteDTO) -> Bool {
+        let existing = fetchNote(dto.id)
+        if let existing, dto.boardSeq <= existing.boardSeq { return false }
+
+        if dto.isTombstone {
+            if let existing { modelContext.delete(existing) }
+            return true
+        }
+        guard let authorID = dto.authorID,
+              let text = dto.text,
+              let color = dto.color,
+              let x = dto.x,
+              let y = dto.y
+        else {
+            // A live note missing content is a server bug; dropping it
+            // beats drawing a blank sticker.
+            return false
+        }
+        if let existing {
+            existing.authorID = authorID
+            existing.text = text
+            existing.color = color
+            existing.x = x
+            existing.y = y
+            existing.updatedAt = dto.updatedAt ?? existing.updatedAt
+            existing.boardSeq = dto.boardSeq
+        } else {
+            modelContext.insert(NoteEntity(
+                noteID: dto.id,
+                authorID: authorID,
+                text: text,
+                color: color,
+                x: x,
+                y: y,
+                createdAt: dto.createdAt ?? Date(),
+                updatedAt: dto.updatedAt ?? Date(),
+                boardSeq: dto.boardSeq))
+        }
+        return true
+    }
+
+    private func fetchNote(_ noteID: Int64) -> NoteEntity? {
+        let descriptor = FetchDescriptor<NoteEntity>(predicate: #Predicate { $0.noteID == noteID })
+        return (try? modelContext.fetch(descriptor))?.first
+    }
+
+    /// Full board read — used the first time a board is opened, and
+    /// whenever the local cursor is 0 (nothing applied yet).
+    func loadBoard() async {
+        guard let response = try? await api.board() else { return }
+        for note in response.notes { applyNote(note) }
+        boardCursor = max(boardCursor, response.maxBoardSeq)
+        saveContext()
+    }
+
+    /// Board catch-up: after_seq pages until a short page, tombstones
+    /// included. Mirrors the reaction and edit loops.
+    func catchUpBoard(serverMaxSeq: Int64) async {
+        if boardCursor == 0 {
+            // Nothing applied yet: one full read is cheaper than replaying
+            // the whole history of every note that ever existed.
+            await loadBoard()
+            return
+        }
+        guard serverMaxSeq > boardCursor else { return }
+        let limit = 100
+        while true {
+            guard let page = try? await api.boardChanges(afterSeq: boardCursor, limit: limit) else { return }
+            for note in page { applyNote(note) }
+            if let last = page.last { boardCursor = max(boardCursor, last.boardSeq) }
+            saveContext()
+            if page.count < limit { return }
+        }
+    }
+
+    func addNote(text: String, color: String, x: Double, y: Double) async -> Bool {
+        guard let dto = try? await api.createNote(text: text, color: color, x: x, y: y) else {
+            return false
+        }
+        applyNote(dto)
+        boardCursor = max(boardCursor, dto.boardSeq)
+        saveContext()
+        return true
+    }
+
+    /// Move (anyone) or rewrite (the author) — which fields are sent is
+    /// what the server checks permission against.
+    @discardableResult
+    func updateNote(
+        id: Int64,
+        text: String? = nil,
+        color: String? = nil,
+        x: Double? = nil,
+        y: Double? = nil
+    ) async -> Bool {
+        guard let dto = try? await api.patchNote(id: id, text: text, color: color, x: x, y: y) else {
+            return false
+        }
+        applyNote(dto)
+        boardCursor = max(boardCursor, dto.boardSeq)
+        saveContext()
+        return true
+    }
+
+    func deleteNote(id: Int64) async -> Bool {
+        do {
+            try await api.deleteNote(id: id)
+        } catch {
+            return false
+        }
+        if let existing = fetchNote(id) { modelContext.delete(existing) }
+        saveContext()
+        return true
+    }
 
     /// Write the body ONLY when the incoming copy is at least as new as
     /// the stored one.
@@ -715,6 +852,13 @@ final class ChatSyncCoordinator {
         // holds was rewritten.
         for step in SyncPlan.makeEditSteps(chats: cursors, localCursors: localEditCursors()) {
             await runEditCatchUp(step)
+        }
+
+        // 7. Board catch-up, on the third cursor. The family read already
+        // told us the server's max, so a board nothing has happened on
+        // costs no request at all.
+        if let mine = try? await api.myFamily() {
+            await catchUpBoard(serverMaxSeq: mine.maxBoardSeq ?? 0)
         }
 
         // 6. Outbox sweep: anything still pending after 30 s gets re-sent

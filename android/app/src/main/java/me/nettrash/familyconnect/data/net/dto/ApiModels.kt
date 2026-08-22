@@ -196,6 +196,64 @@ data class SendMessageRequest(
 @Serializable
 data class EditMessageRequest(val body: String)
 
+/**
+ * One sticker note on the family board.
+ *
+ * A TOMBSTONE is the same object with `deleted: true` and no content: the
+ * change feed has to be able to say "this note is gone", and an absent row
+ * cannot say anything (docs/protocol.md, "Board"). Every content field is
+ * therefore nullable.
+ */
+@Serializable
+data class NoteDto(
+    val id: Long,
+    @SerialName("author_id") val authorId: Long? = null,
+    val text: String? = null,
+    val color: String? = null,
+    val x: Double? = null,
+    val y: Double? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("board_seq") val boardSeq: Long,
+    val deleted: Boolean? = null,
+) {
+    val isTombstone: Boolean get() = deleted == true
+}
+
+@Serializable
+data class BoardResponse(
+    val notes: List<NoteDto>,
+    @SerialName("max_board_seq") val maxBoardSeq: Long,
+)
+
+@Serializable
+data class BoardChangesResponse(val notes: List<NoteDto>)
+
+@Serializable
+data class NoteResponse(val note: NoteDto)
+
+@Serializable
+data class CreateNoteRequest(
+    val text: String,
+    val color: String,
+    val x: Double,
+    val y: Double,
+)
+
+/**
+ * Every field optional: a MOVE sends only x/y (any member may), an edit
+ * sends text and/or color (author only). Which fields are present is what
+ * decides the permission the server applies — so nulls must be OMITTED,
+ * which the house Json does via encodeDefaults=false.
+ */
+@Serializable
+data class PatchNoteRequest(
+    val text: String? = null,
+    val color: String? = null,
+    val x: Double? = null,
+    val y: Double? = null,
+)
+
 @Serializable
 data class ReadRequest(@SerialName("last_read_message_id") val lastReadMessageId: Long)
 
@@ -242,6 +300,8 @@ data class FamilyResponse(val family: FamilyDto)
 data class FamilyMineResponse(
     val family: FamilyDto,
     val members: List<MemberDto>,
+    // The board cursor, omitted while the board has never been written to.
+    @SerialName("max_board_seq") val maxBoardSeq: Long? = null,
 )
 
 @Serializable

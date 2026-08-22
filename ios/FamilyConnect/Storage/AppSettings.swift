@@ -26,6 +26,11 @@ nonisolated enum AppSettings {
         static let pushDeviceID = "v1.push.deviceID"
         /// Stores the DISABLED flag, so a missing key reads as "on".
         static let linkPreviewsDisabled = "v1.linkPreviewsDisabled"
+        /// The board catch-up cursor: the highest board_seq this device
+        /// has APPLIED. Local-only and account-scoped, so it is wiped with
+        /// the session — a different family's board must never be caught
+        /// up from another's cursor.
+        static let boardCursor = "v1.board.cursor"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
@@ -143,6 +148,14 @@ nonisolated enum AppSettings {
 
     /// Remove everything this type owns; `keepServerURL` preserves the
     /// server row (logout keeps it; server change does not).
+    /// Highest board_seq applied on this device; 0 = nothing yet, which is
+    /// what makes the first open do a full board read rather than replay
+    /// every note that ever existed.
+    static var boardCursor: Int64 {
+        get { Int64(defaults.integer(forKey: Key.boardCursor)) }
+        set { defaults.set(Int(newValue), forKey: Key.boardCursor) }
+    }
+
     static func wipe(keepServerURL: Bool) {
         if !keepServerURL { defaults.removeObject(forKey: Key.serverURL) }
         defaults.removeObject(forKey: Key.currentUserID)
@@ -150,5 +163,6 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.pushToken)
         defaults.removeObject(forKey: Key.pushDeviceID)
         defaults.removeObject(forKey: Key.legacyDeviceRegistered)
+        defaults.removeObject(forKey: Key.boardCursor)
     }
 }

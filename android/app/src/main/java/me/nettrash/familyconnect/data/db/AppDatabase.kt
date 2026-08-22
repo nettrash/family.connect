@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 5.
+ * Room database, version 6.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -38,8 +38,9 @@ fun interface LocalDataWiper {
         ChatEntity::class,
         MessageEntity::class,
         MemberEntity::class,
+        NoteEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -48,6 +49,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun chatDao(): ChatDao
     abstract fun messageDao(): MessageDao
     abstract fun memberDao(): MemberDao
+    abstract fun noteDao(): NoteDao
 
     /** Logout / removed-from-family: drop every table, keep the schema. */
     suspend fun wipeAll() = withContext(Dispatchers.IO) {
@@ -87,6 +89,27 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE messages ADD COLUMN replyToMessageId INTEGER")
                 db.execSQL("ALTER TABLE messages ADD COLUMN replySenderId INTEGER")
                 db.execSQL("ALTER TABLE messages ADD COLUMN replyExcerpt TEXT")
+            }
+        }
+
+        /** v6: the family board. */
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS notes (
+                        id INTEGER NOT NULL PRIMARY KEY,
+                        authorId INTEGER NOT NULL,
+                        text TEXT NOT NULL,
+                        color TEXT NOT NULL,
+                        x REAL NOT NULL,
+                        y REAL NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        boardSeq INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
             }
         }
 

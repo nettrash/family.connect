@@ -43,7 +43,8 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `join_request_pending`, `join_request_not_pending`, `user_already_in_family`,
 `owner_cannot_leave`, `cannot_remove_owner`, `cannot_dm_self`, `not_same_family`,
 `user_not_found`, `chat_not_found`, `not_chat_member`, `message_empty`, `message_too_long`,
-`message_not_found`, `not_message_author`, `invalid_emoji`, `invalid_pagination`, `device_not_found`,
+`message_not_found`, `not_message_author`, `invalid_emoji`, `note_not_found`,
+`not_note_author`, `invalid_note_color`, `board_full`, `invalid_pagination`, `device_not_found`,
 `avatar_too_large`, `invalid_image`, `internal`.
 
 ## Objects
@@ -70,6 +71,9 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
             edited. Both absent on a message still in its original form.
 ReplyTo   {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
 Reaction  {"user_id": 9, "emoji": "❤️"}
+Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow",
+           "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88}
+          — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
 ```
 
 `avatar_version` counts how many times that user has set a profile picture: `0` means they have
@@ -140,6 +144,37 @@ A quote is a snapshot of the body at read time (see "Replies"), so editing a quo
 what later readers see quoted. Clients that hold the quoting message locally should refresh its
 excerpt when they apply the edit, cutting it the same way the server does.
 
+### Board
+
+Each family has exactly one board: a wall of sticker notes anyone in the family can add to and
+rearrange. Notes are not messages — they carry no unread count, raise no notification, and never
+appear in a chat.
+
+Who may do what: **anyone in the family may MOVE a note; only its author may change its text or
+colour, or delete it.** Moving is the shared act (tidying the wall together), authorship is the
+personal one.
+
+`x` and `y` are fractions of the board, `0.0`–`1.0` from the top-left, so a note sits in the same
+relative place on a phone and a tablet. Values outside that range are CLAMPED rather than
+rejected — a drag that ends past the edge should stick to the edge, not fail. `color` is one of
+`yellow`, `pink`, `blue`, `green`, `orange`, `purple`; anything else is `invalid_note_color`.
+`text` is trimmed, non-empty and at most 280 characters.
+
+Every board mutation — create, edit, move, delete — takes the next value of a third server-wide
+sequence and stamps it on the note as `board_seq`, with the family exposing its maximum as
+`max_board_seq`. It is the same catch-up machinery as reactions and edits, for the same reason:
+`after_id` cannot see a change to an older row, and a board is nothing BUT changes to older rows.
+
+The change feed carries each note **once, in the state it is now in** — it is a state feed, not an
+event log. A note created and then moved five times appears as a single entry with its latest
+`board_seq`, which is what lets a client apply entries idempotently and in any order, exactly as the
+reaction feed carries a message's full reaction state rather than a delta.
+
+**Deletes leave tombstones.** A deleted note keeps its row, takes a new `board_seq`, and appears in
+the change feed as `{"id": 12, "deleted": true, "board_seq": 91}` with no content. Without that a
+client who was offline when a note was removed would go on showing it forever — there is no other
+signal that it is gone. The full-board read never returns tombstones; only the change feed does.
+
 ## REST endpoints
 
 ### Auth
@@ -172,7 +207,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 |---|---|
 | `POST /families` | `{name}` (1–64 chars) → `201 {family: Family}`. Caller becomes owner; the family chat is created automatically. Error: `already_in_family`. |
 | `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`. |
-| `GET /families/mine` | → `200 {family: Family, members: [Member]}`. `family.invite_code` present for the owner only. Error: `not_in_family`. |
+| `GET /families/mine` | → `200 {family: Family, members: [Member], max_board_seq: 88}`. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `family.invite_code` present for the owner only. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
 | `PATCH /families/mine` | (owner) `{join_policy: "open"\|"approval"}` → `200 {family: Family}`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
@@ -180,6 +215,16 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/join-requests/{id}/reject` | (owner) → `204`. Error: `join_request_not_pending`. |
 | `POST /families/leave` | → `204`. The owner may leave only as the sole member (the family is then deleted); otherwise `409 owner_cannot_leave`. Leaving removes the caller from the family chat and their direct chats; history is retained and resurfaces on rejoin. |
 | `DELETE /families/members/{user_id}` | (owner) → `204`. Error: `cannot_remove_owner`. |
+
+### Board
+
+| Method & path | Body → Response |
+|---|---|
+| `GET /families/mine/board` | → `200 {notes: [Note], max_board_seq: 88}`. The whole board as it now stands, tombstones excluded, newest `board_seq` first. `max_board_seq` is `0` for a board nothing has ever been written to. Error: `not_in_family`. |
+| `GET /families/mine/board/changes` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {notes: [Note]}` ordered by `board_seq` ascending, INCLUDING tombstones — the board catch-up, looped until a short page. Errors: `not_in_family`, `invalid_pagination`. |
+| `POST /families/mine/board/notes` | `{text, color, x, y}` → `201 {note: Note}`. Caller becomes the author. Errors: `validation` (text empty or > 280), `invalid_note_color`, `board_full` (409, over the note ceiling), `not_in_family`. |
+| `PATCH /families/mine/board/notes/{id}` | `{text?, color?, x?, y?}` → `200 {note: Note}`. Any member may send `x`/`y`; only the author may send `text` or `color` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `validation`, `not_in_family`. |
+| `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |
 
 ### Chats & messages
 
@@ -239,6 +284,7 @@ Frames are JSON text messages tagged by `"type"`.
 {"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
                      "reactions": [{"user_id": 9, "emoji": "❤️"}]}
 {"type": "message_edited", "message": {Message}}
+{"type": "board_note", "note": {Note}}
 {"type": "pong"}
 {"type": "error",   "code": "not_chat_member", "message": "…", "client_msg_id": "8f14e45f-…"}
 ```
@@ -248,6 +294,11 @@ Frames are JSON text messages tagged by `"type"`.
 `message_edited` carries the whole message, exactly as `message` does, and is a SEPARATE frame
 type on purpose: `message` is what bumps unread counts and raises a notification, and an edit must
 do neither. Clients apply it under the `edit_seq` guard described under "Editing".
+
+`board_note` carries one note in whatever state it now has — created, edited, moved, or a
+tombstone — to every member of the family. It never notifies and never counts as unread. Clients
+apply it under the same rule the board catch-up uses: a note is written only when the incoming
+`board_seq` is greater than the one held, so an out-of-order frame cannot undo a newer move.
 
 ### Semantics
 

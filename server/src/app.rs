@@ -9,7 +9,10 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, patch, post, put};
 
 use crate::state::AppState;
-use crate::{handlers_auth, handlers_avatar, handlers_chat, handlers_device, handlers_family, ws};
+use crate::{
+    handlers_auth, handlers_avatar, handlers_board, handlers_chat, handlers_device,
+    handlers_family, ws,
+};
 
 /// Build the full application router for the given state. Used identically
 /// by the binary and by the integration tests.
@@ -90,6 +93,23 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers_chat::get_reactions),
         )
         .route("/api/v1/chats/{id}/edits", get(handlers_chat::get_edits))
+        // Board
+        .route(
+            "/api/v1/families/mine/board",
+            get(handlers_board::get_board),
+        )
+        .route(
+            "/api/v1/families/mine/board/changes",
+            get(handlers_board::get_board_changes),
+        )
+        .route(
+            "/api/v1/families/mine/board/notes",
+            post(handlers_board::create_note),
+        )
+        .route(
+            "/api/v1/families/mine/board/notes/{note_id}",
+            patch(handlers_board::patch_note).delete(handlers_board::delete_note),
+        )
         // Devices
         .route("/api/v1/devices", post(handlers_device::register_device))
         .route(

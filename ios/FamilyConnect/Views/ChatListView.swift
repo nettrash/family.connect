@@ -34,6 +34,7 @@ struct ChatListView: View {
     @State private var showsNewChat = false
     @State private var showsSettings = false
     @State private var showsJoinRequests = false
+    @State private var showsBoard = false
 
     /// pinRank asc (family first), then recency desc, then stable id.
     private var sortedChats: [ChatEntity] {
@@ -89,6 +90,13 @@ struct ChatListView: View {
                         Label("Settings", systemImage: "gearshape")
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showsBoard = true
+                    } label: {
+                        Label("Board", systemImage: "square.grid.2x2")
+                    }
+                }
             }
             .safeAreaInset(edge: .top) {
                 ConnectionBanner()
@@ -106,6 +114,9 @@ struct ChatListView: View {
             }
             .sheet(isPresented: $showsJoinRequests) {
                 JoinRequestsSheet()
+            }
+            .sheet(isPresented: $showsBoard) {
+                BoardView()
             }
         }
         .task {

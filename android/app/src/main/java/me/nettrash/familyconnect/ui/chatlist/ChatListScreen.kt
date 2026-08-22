@@ -50,6 +50,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.StickyNote2
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material3.Badge
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -94,6 +95,7 @@ import me.nettrash.familyconnect.util.TimeFormat
 fun ChatListScreen(
     onOpenChat: (Long) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenBoard: () -> Unit,
     viewModel: ChatListViewModel = hiltViewModel(),
 ) {
     // The chats StateFlow seeds with null in the ViewModel until Room's
@@ -153,6 +155,12 @@ fun ChatListScreen(
             TopAppBar(
                 title = { Text("Chats") },
                 actions = {
+                    IconButton(onClick = onOpenBoard) {
+                        Icon(
+                            Icons.Outlined.StickyNote2,
+                            contentDescription = "Board",
+                        )
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings")
                     }

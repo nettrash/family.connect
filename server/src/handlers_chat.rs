@@ -994,7 +994,7 @@ pub async fn get_reactions(
     Ok((StatusCode::OK, Json(json!({"message_reactions": entries}))).into_response())
 }
 
-fn parse_pagination_param(
+pub fn parse_pagination_param(
     params: &HashMap<String, String>,
     name: &'static str,
 ) -> Result<Option<i64>, ApiError> {

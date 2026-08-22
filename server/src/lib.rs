@@ -17,6 +17,7 @@ pub mod error;
 pub mod events;
 pub mod handlers_auth;
 pub mod handlers_avatar;
+pub mod handlers_board;
 pub mod handlers_chat;
 pub mod handlers_device;
 pub mod handlers_family;

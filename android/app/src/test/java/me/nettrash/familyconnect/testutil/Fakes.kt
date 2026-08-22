@@ -39,6 +39,12 @@ import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
+import me.nettrash.familyconnect.data.net.BoardApi
+import me.nettrash.familyconnect.data.net.dto.BoardChangesResponse
+import me.nettrash.familyconnect.data.net.dto.BoardResponse
+import me.nettrash.familyconnect.data.net.dto.NoteDto
+import me.nettrash.familyconnect.data.net.dto.NoteResponse
+import me.nettrash.familyconnect.data.net.dto.PatchNoteRequest
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
@@ -114,6 +120,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
 
     override suspend fun setLinkPreviewsEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(linkPreviewsEnabled = enabled)
+    }
+
+    override suspend fun setBoardCursor(seq: Long) {
+        _state.value = _state.value.copy(boardCursor = seq)
     }
 
     override suspend fun resetKeepingServerUrl() {
@@ -405,7 +415,91 @@ class FakeAvatarApi : AvatarApi {
     }
 }
 
+/** Scripted BoardApi — assign the result fields per test. */
+class FakeBoardApi : BoardApi {
+    var board: BoardResponse = BoardResponse(emptyList(), 0)
+    /** Pages the catch-up will serve, oldest first. */
+    var changePages: MutableList<List<NoteDto>> = mutableListOf()
+    val created = mutableListOf<Triple<String, String, Pair<Double, Double>>>()
+    val patched = mutableListOf<Pair<Long, PatchNoteRequest>>()
+    val deleted = mutableListOf<Long>()
+
+    var createResult: ((NoteDto) -> ApiResult<NoteResponse>)? = null
+    var nextSeq = 1L
+
+    override suspend fun getBoard(): ApiResult<BoardResponse> = ApiResult.Ok(board)
+
+    override suspend fun getBoardChanges(
+        afterSeq: Long,
+        limit: Int,
+    ): ApiResult<BoardChangesResponse> =
+        ApiResult.Ok(
+            BoardChangesResponse(if (changePages.isEmpty()) emptyList() else changePages.removeAt(0)),
+        )
+
+    override suspend fun createNote(
+        text: String,
+        color: String,
+        x: Double,
+        y: Double,
+    ): ApiResult<NoteResponse> {
+        created += Triple(text, color, x to y)
+        val note = noteDto(id = nextSeq, text = text, color = color, x = x, y = y, boardSeq = nextSeq)
+        nextSeq++
+        return createResult?.invoke(note) ?: ApiResult.Ok(NoteResponse(note))
+    }
+
+    override suspend fun patchNote(
+        id: Long,
+        text: String?,
+        color: String?,
+        x: Double?,
+        y: Double?,
+    ): ApiResult<NoteResponse> {
+        patched += id to PatchNoteRequest(text, color, x, y)
+        val note = noteDto(
+            id = id,
+            text = text ?: "note $id",
+            color = color ?: "yellow",
+            x = x ?: 0.0,
+            y = y ?: 0.0,
+            boardSeq = nextSeq++,
+        )
+        return ApiResult.Ok(NoteResponse(note))
+    }
+
+    override suspend fun deleteNote(id: Long): ApiResult<Unit> {
+        deleted += id
+        return ApiResult.Ok(Unit)
+    }
+}
+
 // -- DTO builders ----------------------------------------------------------
+
+fun noteDto(
+    id: Long,
+    authorId: Long = 7L,
+    text: String = "note $id",
+    color: String = "yellow",
+    x: Double = 0.2,
+    y: Double = 0.3,
+    boardSeq: Long,
+    deleted: Boolean? = null,
+) = NoteDto(
+    id = id,
+    authorId = if (deleted == true) null else authorId,
+    text = if (deleted == true) null else text,
+    color = if (deleted == true) null else color,
+    x = if (deleted == true) null else x,
+    y = if (deleted == true) null else y,
+    createdAt = if (deleted == true) null else "2026-08-22T12:00:00Z",
+    updatedAt = if (deleted == true) null else "2026-08-22T12:00:00Z",
+    boardSeq = boardSeq,
+    deleted = deleted,
+)
+
+/** A tombstone: id and seq only, which is all the server sends. */
+fun noteTombstone(id: Long, boardSeq: Long) = noteDto(id = id, boardSeq = boardSeq, deleted = true)
 
 fun userDto(id: Long, name: String = "user$id") = UserDto(
     id = id,

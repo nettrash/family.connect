@@ -282,6 +282,63 @@ actor APIClient {
         return response.message
     }
 
+    // MARK: - Board
+
+    private struct CreateNoteRequest: Encodable {
+        let text: String
+        let color: String
+        let x: Double
+        let y: Double
+    }
+
+    /// Every field optional: a MOVE sends only x/y (any member may), an
+    /// edit sends text and/or color (author only). Which fields are present
+    /// is what decides the permission the server applies.
+    private struct PatchNoteRequest: Encodable {
+        let text: String?
+        let color: String?
+        let x: Double?
+        let y: Double?
+    }
+
+    func board() async throws -> BoardResponse {
+        try await request("GET", "/families/mine/board")
+    }
+
+    func boardChanges(afterSeq: Int64, limit: Int) async throws -> [NoteDTO] {
+        let response: BoardChangesResponse = try await request(
+            "GET", "/families/mine/board/changes",
+            query: [
+                URLQueryItem(name: "after_seq", value: String(afterSeq)),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ])
+        return response.notes
+    }
+
+    func createNote(text: String, color: String, x: Double, y: Double) async throws -> NoteDTO {
+        let response: NoteResponse = try await request(
+            "POST", "/families/mine/board/notes",
+            body: CreateNoteRequest(text: text, color: color, x: x, y: y))
+        return response.note
+    }
+
+    func patchNote(
+        id: Int64,
+        text: String? = nil,
+        color: String? = nil,
+        x: Double? = nil,
+        y: Double? = nil
+    ) async throws -> NoteDTO {
+        let response: NoteResponse = try await request(
+            "PATCH", "/families/mine/board/notes/\(id)",
+            body: PatchNoteRequest(text: text, color: color, x: x, y: y))
+        return response.note
+    }
+
+    func deleteNote(id: Int64) async throws {
+        try await requestVoid("DELETE", "/families/mine/board/notes/\(id)")
+    }
+
     private struct EditMessageRequest: Encodable {
         let body: String
     }

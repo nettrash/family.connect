@@ -276,6 +276,92 @@ pub struct ChatListEntry {
     pub max_edit_seq: Option<i64>,
 }
 
+/// One sticker note on the family board.
+///
+/// A tombstone is the same object with `deleted: true` and no content: the
+/// change feed has to be able to say "this note is gone", and an absent row
+/// cannot say anything (protocol.md, "Board").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Note {
+    pub id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<f64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "crate::models::opt_rfc3339"
+    )]
+    pub created_at: Option<OffsetDateTime>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "crate::models::opt_rfc3339"
+    )]
+    pub updated_at: Option<OffsetDateTime>,
+    pub board_seq: i64,
+    /// Present and true ONLY on a tombstone; absent otherwise, so a live
+    /// note never carries `"deleted": false`.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub deleted: bool,
+}
+
+impl Note {
+    /// Colours a note may take. A fixed set so the two clients can render
+    /// them identically without negotiating; anything else is rejected
+    /// rather than stored and silently drawn as a default.
+    pub const COLORS: [&'static str; 6] = ["yellow", "pink", "blue", "green", "orange", "purple"];
+
+    /// Longest note text. A sticker, not a message.
+    pub const MAX_TEXT_CHARS: usize = 280;
+
+    /// Fractions of the board, clamped rather than rejected: a drag that
+    /// ends past the edge should stick to the edge, not fail.
+    pub fn clamp_position(value: f64) -> f64 {
+        if value.is_nan() {
+            return 0.0;
+        }
+        value.clamp(0.0, 1.0)
+    }
+
+    pub fn from_row(row: &PgRow) -> Self {
+        let deleted_at: Option<OffsetDateTime> = row.get("deleted_at");
+        if deleted_at.is_some() {
+            return Self {
+                id: row.get("id"),
+                author_id: None,
+                text: None,
+                color: None,
+                x: None,
+                y: None,
+                created_at: None,
+                updated_at: None,
+                board_seq: row.get("board_seq"),
+                deleted: true,
+            };
+        }
+        Self {
+            id: row.get("id"),
+            author_id: Some(row.get("author_id")),
+            text: Some(row.get("text")),
+            color: Some(row.get("color")),
+            x: Some(row.get("x")),
+            y: Some(row.get("y")),
+            created_at: Some(row.get("created_at")),
+            updated_at: Some(row.get("updated_at")),
+            board_seq: row.get("board_seq"),
+            deleted: false,
+        }
+    }
+}
+
 /// `GET /me` — the caller's own pending join request, if any.
 #[derive(Debug, Clone, Serialize)]
 pub struct PendingJoinRequest {

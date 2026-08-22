@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::error::ApiError;
 use crate::handlers_chat::ReactionState;
-use crate::models::{Message, UserBrief};
+use crate::models::{Message, Note, UserBrief};
 use crate::push::DevicePush;
 use crate::push_payload::{self, Notification};
 use crate::state::AppState;
@@ -48,6 +48,27 @@ async fn family_member_ids(pool: &PgPool, family_id: i64) -> Result<Vec<i64>, Ap
 /// origin connection, so all connections, including the sender's own,
 /// receive `message`, per protocol.md). Members with no live connection at
 /// all are handed to the push seam, except the sender.
+/// One board note — created, moved, edited or tombstoned — to every member
+/// of the family.
+///
+/// Family-wide rather than chat-wide: the board belongs to the family, not
+/// to any conversation. Like `message_edited` it deliberately raises no
+/// push and touches no unread count; a note appearing on the wall is
+/// ambient, not mail.
+pub async fn deliver_board_note(
+    state: &AppState,
+    family_id: i64,
+    note: &Note,
+) -> Result<(), ApiError> {
+    let members: Vec<i64> = sqlx::query_scalar("SELECT id FROM users WHERE family_id = $1")
+        .bind(family_id)
+        .fetch_all(&state.pool)
+        .await?;
+    let frame = ServerFrame::BoardNote { note: note.clone() };
+    state.registry.fan_out(&members, &frame, None).await;
+    Ok(())
+}
+
 /// An edited message to every member connection.
 ///
 /// A separate frame from `message` on purpose (protocol.md, "Editing"): an

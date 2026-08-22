@@ -46,6 +46,7 @@ import me.nettrash.familyconnect.data.push.PendingRoute
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.SessionEvent
 import me.nettrash.familyconnect.ui.auth.AuthScreen
+import me.nettrash.familyconnect.ui.board.BoardScreen
 import me.nettrash.familyconnect.ui.chat.ChatScreen
 import me.nettrash.familyconnect.ui.chatlist.ChatListScreen
 import me.nettrash.familyconnect.ui.familyadmin.FamilyAdminScreen
@@ -63,6 +64,7 @@ object Routes {
     const val CHAT = "chat/{chatId}"
     const val SETTINGS = "settings"
     const val FAMILY_ADMIN = "family_admin"
+    const val BOARD = "board"
 
     fun chat(chatId: Long) = "chat/$chatId"
 }
@@ -253,6 +255,7 @@ fun AppNavHost(
             ChatListScreen(
                 onOpenChat = { chatId -> navController.navigate(Routes.chat(chatId)) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                onOpenBoard = { navController.navigate(Routes.BOARD) },
             )
         }
 
@@ -263,6 +266,10 @@ fun AppNavHost(
             ChatScreen(
                 onBack = { navController.popBackStack() },
             )
+        }
+
+        composable(Routes.BOARD) {
+            BoardScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Routes.SETTINGS) {

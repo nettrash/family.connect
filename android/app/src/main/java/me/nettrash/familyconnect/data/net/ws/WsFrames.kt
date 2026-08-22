@@ -26,6 +26,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonClassDiscriminator
 import me.nettrash.familyconnect.data.net.dto.MessageDto
+import me.nettrash.familyconnect.data.net.dto.NoteDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.UserDto
 
@@ -117,6 +118,14 @@ sealed interface ServerFrame {
         @SerialName("family_id") val familyId: Long,
         @SerialName("user_id") val userId: Long,
     ) : ServerFrame
+
+    /**
+     * One board note in whatever state it now has — created, edited, moved,
+     * or a tombstone. Never notifies and never counts as unread.
+     */
+    @Serializable
+    @SerialName("board_note")
+    data class BoardNote(val note: NoteDto) : ServerFrame
 
     /**
      * An edit of an existing message. A SEPARATE frame from [Message]

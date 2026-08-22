@@ -56,6 +56,8 @@ data class SettingsState(
      * anywhere but the family's own server.
      */
     val linkPreviewsEnabled: Boolean = true,
+    /** Highest board_seq applied on this device; 0 = nothing yet. */
+    val boardCursor: Long = 0,
 )
 
 interface SettingsRepository {
@@ -75,6 +77,14 @@ interface SettingsRepository {
     suspend fun setPushToken(token: String?)
     suspend fun setPushDeviceId(deviceId: Long?)
     suspend fun setLinkPreviewsEnabled(enabled: Boolean)
+
+    /**
+     * The board catch-up cursor: the highest board_seq this device has
+     * APPLIED. Local-only and account-scoped, so it is wiped with the
+     * session — a different family's board must never be caught up from
+     * another's cursor.
+     */
+    suspend fun setBoardCursor(seq: Long)
 
     /**
      * Session teardown: wipe everything EXCEPT the server URL (protocol:
@@ -104,6 +114,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val PUSH_DEVICE_ID = longPreferencesKey("push_device_id")
         // Stored inverted so a missing key reads as "on".
         val LINK_PREVIEWS_DISABLED = booleanPreferencesKey("link_previews_disabled")
+        val BOARD_CURSOR = longPreferencesKey("board_cursor")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -120,6 +131,7 @@ class DataStoreSettingsRepository @Inject constructor(
             pushToken = prefs[Keys.PUSH_TOKEN],
             pushDeviceId = prefs[Keys.PUSH_DEVICE_ID],
             linkPreviewsEnabled = prefs[Keys.LINK_PREVIEWS_DISABLED] != true,
+            boardCursor = prefs[Keys.BOARD_CURSOR] ?: 0L,
         )
     }
 
@@ -169,6 +181,10 @@ class DataStoreSettingsRepository @Inject constructor(
 
     override suspend fun setLinkPreviewsEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.LINK_PREVIEWS_DISABLED] = !enabled }
+    }
+
+    override suspend fun setBoardCursor(seq: Long) {
+        dataStore.edit { it[Keys.BOARD_CURSOR] = seq }
     }
 
     override suspend fun resetKeepingServerUrl() {

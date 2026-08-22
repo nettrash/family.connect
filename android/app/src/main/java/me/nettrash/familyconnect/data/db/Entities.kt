@@ -118,6 +118,33 @@ data class MessageEntity(
     val editedAt: Long? = null,
 )
 
+/**
+ * One sticker note on the family board.
+ *
+ * Tombstones are NOT stored: the server keeps one so its change feed can
+ * say "gone", but a client that has been told simply deletes its row —
+ * there is nothing left to remember, and a stored tombstone would only have
+ * to be filtered out of every read.
+ *
+ * [boardSeq] is the apply guard, the same shape as [MessageEntity.reactionSeq]:
+ * a note is written only when the incoming seq is greater than the one
+ * held, so an out-of-order frame cannot undo a newer move.
+ */
+@Entity(tableName = "notes")
+data class NoteEntity(
+    @PrimaryKey val id: Long,
+    val authorId: Long,
+    val text: String,
+    /** One of the protocol's six names; kept as text so an unknown one still renders. */
+    val color: String,
+    /** Fractions of the board, 0..1 from the top-left. */
+    val x: Double,
+    val y: Double,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val boardSeq: Long,
+)
+
 @Entity(tableName = "members")
 data class MemberEntity(
     @PrimaryKey val userId: Long,

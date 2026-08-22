@@ -61,7 +61,7 @@ struct FamilyConnectApp: App {
             try? KeychainStore.delete(account: KeychainStore.tokenAccount)
         }
 
-        let schema = Schema([ChatEntity.self, MessageEntity.self, MemberEntity.self])
+        let schema = Schema([ChatEntity.self, MessageEntity.self, MemberEntity.self, NoteEntity.self])
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
@@ -88,6 +88,7 @@ struct FamilyConnectApp: App {
                 try? context.delete(model: MessageEntity.self)
                 try? context.delete(model: ChatEntity.self)
                 try? context.delete(model: MemberEntity.self)
+                try? context.delete(model: NoteEntity.self)
                 try? context.save()
             }
 

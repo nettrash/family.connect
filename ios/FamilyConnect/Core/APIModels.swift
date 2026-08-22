@@ -309,6 +309,22 @@ nonisolated struct JoinResponse: Codable, Equatable, Sendable {
 nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     let family: FamilyDTO
     let members: [MemberDTO]
+    /// The board cursor, omitted while the board has never been written to.
+    /// It rides along on the call every client already makes on resync, so
+    /// learning whether a board catch-up is needed costs no extra request.
+    let maxBoardSeq: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case family
+        case members
+        case maxBoardSeq = "max_board_seq"
+    }
+
+    init(family: FamilyDTO, members: [MemberDTO], maxBoardSeq: Int64? = nil) {
+        self.family = family
+        self.members = members
+        self.maxBoardSeq = maxBoardSeq
+    }
 }
 
 nonisolated struct InviteCodeResponse: Codable, Equatable, Sendable {
@@ -325,6 +341,59 @@ nonisolated struct JoinRequestsResponse: Codable, Equatable, Sendable {
 
 nonisolated struct MemberResponse: Codable, Equatable, Sendable {
     let member: MemberDTO
+}
+
+/// One sticker note on the family board.
+///
+/// A TOMBSTONE is the same object with `deleted: true` and no content: the
+/// change feed has to be able to say "this note is gone", and an absent row
+/// cannot say anything (docs/protocol.md, "Board"). Every content field is
+/// therefore optional — a tombstone carries only `id`, `deleted` and
+/// `boardSeq`.
+nonisolated struct NoteDTO: Codable, Equatable, Sendable {
+    let id: Int64
+    let authorID: Int64?
+    let text: String?
+    let color: String?
+    let x: Double?
+    let y: Double?
+    let createdAt: Date?
+    let updatedAt: Date?
+    let boardSeq: Int64
+    let deleted: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case authorID = "author_id"
+        case text
+        case color
+        case x
+        case y
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case boardSeq = "board_seq"
+        case deleted
+    }
+
+    var isTombstone: Bool { deleted == true }
+}
+
+nonisolated struct BoardResponse: Codable, Equatable, Sendable {
+    let notes: [NoteDTO]
+    let maxBoardSeq: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case notes
+        case maxBoardSeq = "max_board_seq"
+    }
+}
+
+nonisolated struct BoardChangesResponse: Codable, Equatable, Sendable {
+    let notes: [NoteDTO]
+}
+
+nonisolated struct NoteResponse: Codable, Equatable, Sendable {
+    let note: NoteDTO
 }
 
 nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {

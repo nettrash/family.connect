@@ -29,7 +29,7 @@ use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::events;
 use crate::handlers_chat;
-use crate::models::{Message, Reaction, UserBrief};
+use crate::models::{Message, Note, Reaction, UserBrief};
 use crate::registry::{CLOSE_GOING_AWAY, CLOSE_SESSION_GONE};
 use crate::state::AppState;
 
@@ -92,6 +92,9 @@ pub enum ServerFrame {
     /// `reaction_seq`.
     MessageEdited {
         message: Message,
+    },
+    BoardNote {
+        note: Note,
     },
     Reaction {
         chat_id: i64,
