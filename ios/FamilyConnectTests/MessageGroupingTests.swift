@@ -160,6 +160,44 @@ struct MessageGroupingTests {
         #expect(MessagePresentation.reactionChips([], currentUserID: 7).isEmpty)
     }
 
+    // MARK: - Reply excerpt
+
+    /// The server cuts at 120 Unicode SCALARS (`chars().take(120)`), and a
+    /// client cuts its own while a send is pending. Swift's `prefix` counts
+    /// extended grapheme clusters, so cutting that way keeps far more text
+    /// for emoji-heavy bodies and the quote visibly shrinks when the ack
+    /// lands. Android's `take` counts UTF-16 units and can split a
+    /// surrogate pair outright.
+    @Test("the local excerpt is cut by scalars, matching the server")
+    func excerptCutsByScalars() {
+        // 7 scalars each, 1 grapheme each.
+        let family = "👨‍👩‍👧‍👦"
+        let body = String(repeating: family, count: 40)
+        let excerpt = ReplyToSnapshot.excerpt(of: body)
+        #expect(excerpt.unicodeScalars.count == 120)
+        // The same 120 scalars the server would send. Compared as SCALARS
+        // on purpose: 120 does not divide 7, so the cut lands inside a
+        // family cluster, and `hasPrefix` — which compares whole grapheme
+        // clusters — would call that a mismatch. Splitting a cluster is
+        // explicitly allowed (protocol.md: "never cut mid-SCALAR").
+        #expect(Array(body.unicodeScalars.prefix(120)) == Array(excerpt.unicodeScalars))
+    }
+
+    @Test("a short body is quoted whole")
+    func excerptShortBody() {
+        #expect(ReplyToSnapshot.excerpt(of: "See you at six") == "See you at six")
+        #expect(ReplyToSnapshot.excerpt(of: "") == "")
+    }
+
+    @Test("the cut never splits a scalar")
+    func excerptNeverSplitsAScalar() {
+        let body = String(repeating: "é中😀", count: 100)
+        let excerpt = ReplyToSnapshot.excerpt(of: body)
+        #expect(excerpt.unicodeScalars.count == 120)
+        // Round-trips as valid UTF-8 (a split scalar could not).
+        #expect(String(data: Data(excerpt.utf8), encoding: .utf8) == excerpt)
+    }
+
     // MARK: - Reaction details (who reacted)
 
     @Test("details follow chip order; names resolve in reaction order")

@@ -67,6 +67,41 @@ interface MessageDao {
     )
     suspend fun markAcked(clientMsgId: String, serverId: Long, createdAt: Long)
 
+    /**
+     * Overwrite the quote from the server's copy.
+     *
+     * The server RECOMPUTES the snippet on every read (protocol.md,
+     * "Replies"), so its version is always the authority: it reflects the
+     * quoted message as it stands now, and it is cut the way the server
+     * cuts. A row that kept the excerpt its own device guessed at send
+     * time would drift the moment the quoted message was edited.
+     */
+    @Query(
+        """
+        UPDATE messages
+        SET replyToMessageId = :replyToMessageId,
+            replySenderId = :replySenderId,
+            replyExcerpt = :replyExcerpt
+        WHERE clientMsgId = :clientMsgId
+        """,
+    )
+    suspend fun setReply(
+        clientMsgId: String,
+        replyToMessageId: Long?,
+        replySenderId: Long?,
+        replyExcerpt: String?,
+    )
+
+    /** Refresh the quote on every reply that points at this message. */
+    @Query(
+        """
+        UPDATE messages
+        SET replyExcerpt = :excerpt
+        WHERE replyToMessageId = :quotedMessageId
+        """,
+    )
+    suspend fun refreshQuotesOf(quotedMessageId: Long, excerpt: String)
+
     @Query("UPDATE messages SET status = :status WHERE clientMsgId = :clientMsgId")
     suspend fun setStatus(clientMsgId: String, status: MessageStatus)
 

@@ -36,6 +36,11 @@ pub struct DirectChatRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct EditMessageRequest {
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PostMessageRequest {
     pub client_msg_id: Uuid,
     pub body: String,
@@ -106,6 +111,89 @@ pub async fn ensure_chat_access(
     }
 }
 
+/// The columns every full message read returns, and the self-join that
+/// resolves a reply's quote.
+///
+/// A self-join, so every reply carries its quote without the client having
+/// to hold the quoted message (which may be pages back, or not fetched at
+/// all). It is a primary-key lookup per row and never recurses: the
+/// parent's own quote is not expanded.
+///
+/// The join is scoped to the same chat as a second line of defence. The
+/// write path already refuses a cross-chat target (protocol.md makes that a
+/// security property), so this can only matter if that check is ever
+/// weakened — at which point a quote must still not leak text out of a chat
+/// the reader cannot see.
+const MESSAGE_COLS: &str = "m.id, m.chat_id, m.sender_id, m.client_msg_id, m.body, m.created_at, \
+                            m.reaction_seq, m.edit_seq, m.edited_at, m.reply_to_message_id, \
+                            p.sender_id AS reply_sender_id, p.body AS reply_body";
+const MESSAGE_FROM: &str = "FROM messages m LEFT JOIN messages p \
+                            ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id";
+
+/// Fill in reaction state for messages whose `reaction_seq` says they have
+/// any. `Some(vec![])` (not `None`) when the seq is set but every reaction
+/// was removed — clients must see "cleared", not "no data".
+async fn attach_reactions(state: &AppState, messages: &mut [Message]) -> Result<(), ApiError> {
+    let reacted_ids: Vec<i64> = messages
+        .iter()
+        .filter(|m| m.reaction_seq.is_some_and(|seq| seq > 0))
+        .map(|m| m.id)
+        .collect();
+    if reacted_ids.is_empty() {
+        return Ok(());
+    }
+    for message in messages.iter_mut() {
+        if message.reaction_seq.is_some_and(|seq| seq > 0) {
+            message.reactions = Some(Vec::new());
+        }
+    }
+    let reaction_rows = sqlx::query(
+        "SELECT message_id, user_id, emoji FROM message_reactions
+         WHERE message_id = ANY($1)
+         ORDER BY created_at, user_id",
+    )
+    .bind(&reacted_ids)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut by_message: HashMap<i64, Vec<Reaction>> = HashMap::new();
+    for row in &reaction_rows {
+        by_message
+            .entry(row.get("message_id"))
+            .or_default()
+            .push(Reaction {
+                user_id: row.get("user_id"),
+                emoji: row.get("emoji"),
+            });
+    }
+    for message in messages.iter_mut() {
+        if let Some(list) = by_message.remove(&message.id) {
+            message.reactions = Some(list);
+        }
+    }
+    Ok(())
+}
+
+/// Trim and bounds-check a message body. Shared by send and edit on
+/// purpose: the protocol gives them the same rules, and two copies would
+/// eventually disagree about which one is authoritative.
+fn validate_body(state: &AppState, body: &str) -> Result<String, ApiError> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err(ApiError::bad_request(
+            codes::MESSAGE_EMPTY,
+            "message body is empty",
+        ));
+    }
+    let max_chars = state.cfg.limits.max_message_chars;
+    if body.chars().count() > max_chars {
+        return Err(ApiError::bad_request(
+            codes::MESSAGE_TOO_LONG,
+            format!("message body exceeds {max_chars} characters"),
+        ));
+    }
+    Ok(body.to_string())
+}
+
 /// Insert a message, idempotently.
 ///
 /// Returns `(message, created)`: `created == false` means the
@@ -121,20 +209,8 @@ pub async fn create_message(
 ) -> Result<(Message, bool), ApiError> {
     ensure_chat_access(state, chat_id, sender_id).await?;
 
-    let body = body.trim();
-    if body.is_empty() {
-        return Err(ApiError::bad_request(
-            codes::MESSAGE_EMPTY,
-            "message body is empty",
-        ));
-    }
-    let max_chars = state.cfg.limits.max_message_chars;
-    if body.chars().count() > max_chars {
-        return Err(ApiError::bad_request(
-            codes::MESSAGE_TOO_LONG,
-            format!("message body exceeds {max_chars} characters"),
-        ));
-    }
+    let body = validate_body(state, body)?;
+    let body = body.as_str();
 
     // The quote is resolved BEFORE the insert, both to reject a bad target
     // without writing anything and because the row we read here is exactly
@@ -206,6 +282,106 @@ pub async fn create_message(
     .fetch_one(&state.pool)
     .await?;
     Ok((Message::from_row(&row), false))
+}
+
+/// The outcome of an edit: the message as it now stands, plus whether
+/// anything actually changed. Re-sending the identical body burns no
+/// sequence value and raises no fan-out, exactly like re-PUTing the
+/// reaction you already have.
+pub struct EditOutcome {
+    pub message: Message,
+    pub changed: bool,
+}
+
+/// Replace a message's body. Author only, no time limit; nothing else about
+/// the message moves (protocol.md, "Editing").
+pub async fn apply_edit(
+    state: &AppState,
+    chat_id: i64,
+    message_id: i64,
+    user_id: i64,
+    body: &str,
+) -> Result<EditOutcome, ApiError> {
+    ensure_chat_access(state, chat_id, user_id).await?;
+    let body = validate_body(state, body)?;
+
+    let mut tx = state.pool.begin().await?;
+    // FOR UPDATE: two devices of the same author can edit at once, and the
+    // seq must be stamped against a body nobody else is rewriting.
+    let locked = sqlx::query(
+        "SELECT sender_id, body, edit_seq FROM messages WHERE id = $1 AND chat_id = $2 FOR UPDATE",
+    )
+    .bind(message_id)
+    .bind(chat_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(locked) = locked else {
+        // Same answer as a message in another chat — the endpoint never
+        // confirms that an id exists elsewhere.
+        return Err(ApiError::not_found(
+            codes::MESSAGE_NOT_FOUND,
+            "no such message in this chat",
+        ));
+    };
+
+    let sender_id: i64 = locked.get("sender_id");
+    if sender_id != user_id {
+        return Err(ApiError::forbidden(
+            codes::NOT_MESSAGE_AUTHOR,
+            "only the author can edit this message",
+        ));
+    }
+
+    let current_body: String = locked.get("body");
+    let changed = current_body != body;
+    if changed {
+        let seq: i64 = sqlx::query_scalar("SELECT nextval('message_edit_seq')")
+            .fetch_one(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE messages SET body = $2, edit_seq = $3, edited_at = now() WHERE id = $1",
+        )
+        .bind(message_id)
+        .bind(&body)
+        .bind(seq)
+        .execute(&mut *tx)
+        .await?;
+        // GREATEST, not plain SET: two messages in one chat can commit out
+        // of seq order, and the chat cursor must never move backwards.
+        sqlx::query("UPDATE chats SET last_edit_seq = GREATEST(last_edit_seq, $2) WHERE id = $1")
+            .bind(chat_id)
+            .bind(seq)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+
+    let message = fetch_message(state, chat_id, message_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::not_found(codes::MESSAGE_NOT_FOUND, "no such message in this chat")
+        })?;
+    Ok(EditOutcome { message, changed })
+}
+
+/// One whole message — quote joined, reactions attached — as every read
+/// path returns it.
+pub async fn fetch_message(
+    state: &AppState,
+    chat_id: i64,
+    message_id: i64,
+) -> Result<Option<Message>, ApiError> {
+    let row = sqlx::query(&format!(
+        "SELECT {MESSAGE_COLS} {MESSAGE_FROM} WHERE m.chat_id = $1 AND m.id = $2"
+    ))
+    .bind(chat_id)
+    .bind(message_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(row) = row else { return Ok(None) };
+    let mut message = Message::from_row(&row);
+    attach_reactions(state, std::slice::from_mut(&mut message)).await?;
+    Ok(Some(message))
 }
 
 /// Advance a read marker, monotonically (the max ever reported wins).
@@ -388,7 +564,8 @@ pub async fn list_chats(
                 lm.client_msg_id AS last_client_msg_id, lm.body AS last_body,
                 lm.created_at AS last_created_at,
                 uc.unread AS unread_count,
-                c.last_reaction_seq
+                c.last_reaction_seq,
+                c.last_edit_seq
          FROM chat_members m
          JOIN chats c ON c.id = m.chat_id
          JOIN families f ON f.id = c.family_id
@@ -437,8 +614,13 @@ pub async fn list_chats(
                 // Previews carry neither reactions nor the quote: the chat
                 // list draws one line of text, not a bubble.
                 reply_to: None,
+                // Nor the edit stamps — the preview is the current text,
+                // and whether it was edited is a bubble's business.
+                edited_at: None,
+                edit_seq: None,
             });
             let last_reaction_seq: i64 = row.get("last_reaction_seq");
+            let last_edit_seq: i64 = row.get("last_edit_seq");
             ChatListEntry {
                 chat: Chat {
                     id: chat_id,
@@ -449,6 +631,7 @@ pub async fn list_chats(
                 last_message,
                 unread_count: row.get("unread_count"),
                 max_reaction_seq: (last_reaction_seq > 0).then_some(last_reaction_seq),
+                max_edit_seq: (last_edit_seq > 0).then_some(last_edit_seq),
             }
         })
         .collect();
@@ -552,18 +735,10 @@ pub async fn get_messages(
         state.cfg.limits.max_page_size,
     );
 
-    // A self-join, so every reply carries its quote without the client
-    // having to hold the quoted message (which may be pages back, or not
-    // fetched at all). It is a primary-key lookup per row and never
-    // recurses: the parent's own quote is not expanded.
-    const COLS: &str = "m.id, m.chat_id, m.sender_id, m.client_msg_id, m.body, m.created_at, \
-                        m.reaction_seq, m.reply_to_message_id, \
-                        p.sender_id AS reply_sender_id, p.body AS reply_body";
-    const FROM: &str = "FROM messages m LEFT JOIN messages p ON p.id = m.reply_to_message_id";
     let rows = if let Some(before) = before_id {
         // History paging: strictly older, newest first.
         sqlx::query(&format!(
-            "SELECT {COLS} {FROM} WHERE m.chat_id = $1 AND m.id < $2 ORDER BY m.id DESC LIMIT $3"
+            "SELECT {MESSAGE_COLS} {MESSAGE_FROM} WHERE m.chat_id = $1 AND m.id < $2 ORDER BY m.id DESC LIMIT $3"
         ))
         .bind(chat_id)
         .bind(before)
@@ -573,7 +748,7 @@ pub async fn get_messages(
     } else if let Some(after) = after_id {
         // Reconnect catch-up: strictly newer, oldest first.
         sqlx::query(&format!(
-            "SELECT {COLS} {FROM} WHERE m.chat_id = $1 AND m.id > $2 ORDER BY m.id ASC LIMIT $3"
+            "SELECT {MESSAGE_COLS} {MESSAGE_FROM} WHERE m.chat_id = $1 AND m.id > $2 ORDER BY m.id ASC LIMIT $3"
         ))
         .bind(chat_id)
         .bind(after)
@@ -582,7 +757,7 @@ pub async fn get_messages(
         .await?
     } else {
         sqlx::query(&format!(
-            "SELECT {COLS} {FROM} WHERE m.chat_id = $1 ORDER BY m.id DESC LIMIT $2"
+            "SELECT {MESSAGE_COLS} {MESSAGE_FROM} WHERE m.chat_id = $1 ORDER BY m.id DESC LIMIT $2"
         ))
         .bind(chat_id)
         .bind(limit)
@@ -591,44 +766,7 @@ pub async fn get_messages(
     };
 
     let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
-
-    // Attach reaction state to every message that has ever been reacted to.
-    // `Some(vec![])` (not `None`) when the seq is set but all reactions were
-    // removed — clients must see "cleared", not "no data".
-    let mut reacted_ids: Vec<i64> = Vec::new();
-    for (row, message) in rows.iter().zip(messages.iter_mut()) {
-        let seq: i64 = row.get("reaction_seq");
-        if seq > 0 {
-            message.reaction_seq = Some(seq);
-            message.reactions = Some(Vec::new());
-            reacted_ids.push(message.id);
-        }
-    }
-    if !reacted_ids.is_empty() {
-        let reaction_rows = sqlx::query(
-            "SELECT message_id, user_id, emoji FROM message_reactions
-             WHERE message_id = ANY($1)
-             ORDER BY created_at, user_id",
-        )
-        .bind(&reacted_ids)
-        .fetch_all(&state.pool)
-        .await?;
-        let mut by_message: HashMap<i64, Vec<Reaction>> = HashMap::new();
-        for row in &reaction_rows {
-            by_message
-                .entry(row.get("message_id"))
-                .or_default()
-                .push(Reaction {
-                    user_id: row.get("user_id"),
-                    emoji: row.get("emoji"),
-                });
-        }
-        for message in messages.iter_mut() {
-            if let Some(list) = by_message.remove(&message.id) {
-                message.reactions = Some(list);
-            }
-        }
-    }
+    attach_reactions(&state, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }
@@ -734,6 +872,63 @@ async fn respond_with_reaction_state(
 /// chat whose reaction state changed after `after_seq`, oldest change
 /// first, full current state per message. Clients loop until a short page,
 /// exactly as with `after_id`.
+/// `PATCH /chats/{id}/messages/{mid}` — replace the body. The 200 is the
+/// author's ack; `message_edited` goes to every member connection, the
+/// author's other devices included.
+pub async fn patch_message(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((chat_id, message_id)): Path<(i64, i64)>,
+    AppJson(req): AppJson<EditMessageRequest>,
+) -> Result<Response, ApiError> {
+    let outcome = apply_edit(&state, chat_id, message_id, auth.user_id, &req.body).await?;
+    if outcome.changed {
+        // No-ops fan nothing out: re-sending the body it already has is
+        // not an event anyone needs to hear about.
+        events::log_fanout_error(
+            "message_edited",
+            events::deliver_message_edited(&state, &outcome.message, None).await,
+        );
+    }
+    Ok((StatusCode::OK, Json(json!({"message": outcome.message}))).into_response())
+}
+
+/// `GET /chats/{id}/edits?after_seq=` — the edit catch-up. Whole messages,
+/// ordered by edit_seq, so a client applies them through exactly the path a
+/// page of history takes.
+pub async fn get_edits(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(chat_id): Path<i64>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Response, ApiError> {
+    ensure_chat_access(&state, chat_id, auth.user_id).await?;
+
+    let after_seq = parse_pagination_param(&params, "after_seq")?.unwrap_or(0);
+    let requested_limit = parse_pagination_param(&params, "limit")?;
+    let limit = clamp_limit(
+        requested_limit,
+        state.cfg.limits.default_page_size,
+        state.cfg.limits.max_page_size,
+    );
+
+    let rows = sqlx::query(&format!(
+        "SELECT {MESSAGE_COLS} {MESSAGE_FROM}
+         WHERE m.chat_id = $1 AND m.edit_seq > $2
+         ORDER BY m.edit_seq ASC LIMIT $3"
+    ))
+    .bind(chat_id)
+    .bind(after_seq)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
+    attach_reactions(&state, &mut messages).await?;
+
+    Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
+}
+
 pub async fn get_reactions(
     auth: AuthUser,
     State(state): State<AppState>,

@@ -90,6 +90,9 @@ pub enum ServerFrame {
     /// A message's full current reaction state — state transfer, never a
     /// delta, so delivery order races resolve client-side by comparing
     /// `reaction_seq`.
+    MessageEdited {
+        message: Message,
+    },
     Reaction {
         chat_id: i64,
         message_id: i64,
@@ -433,6 +436,8 @@ mod tests {
             reactions: None,
             reaction_seq: None,
             reply_to: None,
+            edited_at: None,
+            edit_seq: None,
         }
     }
 

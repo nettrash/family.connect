@@ -48,6 +48,25 @@ async fn family_member_ids(pool: &PgPool, family_id: i64) -> Result<Vec<i64>, Ap
 /// origin connection, so all connections, including the sender's own,
 /// receive `message`, per protocol.md). Members with no live connection at
 /// all are handed to the push seam, except the sender.
+/// An edited message to every member connection.
+///
+/// A separate frame from `message` on purpose (protocol.md, "Editing"): an
+/// edit must not raise a notification or bump an unread count, so it
+/// deliberately skips the push fan-out that `deliver_new_message` performs.
+/// Nobody is told twice about the same message.
+pub async fn deliver_message_edited(
+    state: &AppState,
+    message: &Message,
+    origin_conn: Option<u64>,
+) -> Result<(), ApiError> {
+    let members = chat_member_ids(&state.pool, message.chat_id).await?;
+    let frame = ServerFrame::MessageEdited {
+        message: message.clone(),
+    };
+    state.registry.fan_out(&members, &frame, origin_conn).await;
+    Ok(())
+}
+
 pub async fn deliver_new_message(
     state: &AppState,
     message: &Message,

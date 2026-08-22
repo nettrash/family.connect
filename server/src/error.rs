@@ -40,6 +40,7 @@ pub mod codes {
     pub const MESSAGE_EMPTY: &str = "message_empty";
     pub const MESSAGE_TOO_LONG: &str = "message_too_long";
     pub const MESSAGE_NOT_FOUND: &str = "message_not_found";
+    pub const NOT_MESSAGE_AUTHOR: &str = "not_message_author";
     pub const INVALID_EMOJI: &str = "invalid_emoji";
     pub const INVALID_PAGINATION: &str = "invalid_pagination";
     pub const DEVICE_NOT_FOUND: &str = "device_not_found";

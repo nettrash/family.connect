@@ -9,9 +9,13 @@
 -- stored here. It is recomputed from the parent row on every read, so a
 -- quote cannot go on showing text its author has since edited.
 --
--- No ON DELETE clause: nothing in this server deletes a message, and the
--- default RESTRICT is the honest expression of that — a future delete
--- feature has to decide what a dangling quote means rather than silently
--- cascading.
+-- No ON DELETE clause, so the default NO ACTION applies: a future
+-- delete-a-message feature has to decide what a dangling quote means rather
+-- than silently cascading.
+--
+-- Note that messages ARE deleted in bulk on one path — deleting a family
+-- cascades to its chats and their messages — so this FK is checked per
+-- deleted row. 0006 adds the index that makes that check cheap; without it
+-- the cascade is quadratic.
 
 ALTER TABLE messages ADD COLUMN reply_to_message_id BIGINT REFERENCES messages(id);

@@ -189,6 +189,14 @@ class MessageRepository @Inject constructor(
         }
         val createdAt = TimeFormat.parseTimestamp(message.createdAt) ?: clock.now()
         messageDao.markAcked(clientMsgId, message.id, createdAt)
+        // The server's recomputed snippet replaces the one this device
+        // guessed when it enqueued the row — same rule as iOS's applyReply.
+        messageDao.setReply(
+            clientMsgId,
+            message.replyTo?.messageId,
+            message.replyTo?.senderId,
+            message.replyTo?.excerpt,
+        )
         chatDao.updateLastMessage(message.chatId, message.body, createdAt, message.senderId)
     }
 

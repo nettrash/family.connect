@@ -63,13 +63,30 @@ nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     var replyTo: ReplyToSnapshot?
 }
 
-/// The quote a reply draws above its own text. A flat snapshot, not a
+/// The quote a reply draws above its own text.
+///
+/// `excerpt` is normally the SERVER's — recomputed on every read — but a
+/// client cuts its own while a send is still pending, and must cut it the
+/// same way or the quote visibly changes length when the ack lands. A flat snapshot, not a
 /// reference: the quoted message may be far outside the cached window, or
 /// never have been fetched at all.
 nonisolated struct ReplyToSnapshot: Equatable, Sendable {
     let messageID: Int64
     let senderID: Int64
     let excerpt: String
+
+    /// Longest excerpt, in Unicode scalar values — matching
+    /// `ReplyTo::MAX_EXCERPT_CHARS` on the server and `MAX_EXCERPT_CHARS`
+    /// on Android.
+    static let maxExcerptScalars = 120
+
+    /// Cut like the server does: by SCALARS, not by Swift Characters.
+    /// `String.prefix` counts extended grapheme clusters, so a body of
+    /// family emoji (7 scalars each) would keep ~7x more text than the
+    /// server returns and the quote would visibly shrink on ack.
+    static func excerpt(of body: String) -> String {
+        String(String.UnicodeScalarView(body.unicodeScalars.prefix(maxExcerptScalars)))
+    }
 }
 
 nonisolated struct MemberSnapshot: Equatable, Sendable, Identifiable {

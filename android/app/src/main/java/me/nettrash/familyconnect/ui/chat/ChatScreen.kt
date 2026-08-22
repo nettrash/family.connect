@@ -166,6 +166,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
@@ -253,6 +254,12 @@ fun ChatScreen(
     var pendingJumpId by remember { mutableStateOf<Long?>(null) }
     var highlightedMessageId by remember { mutableStateOf<Long?>(null) }
     var jumpPagesTried by remember { mutableIntStateOf(0) }
+    var scrollToMessageId by remember { mutableStateOf<Long?>(null) }
+    // Half the viewport, so animateScrollToItem's top-edge alignment lands
+    // the target in the middle instead.
+    val centreOffsetPx = with(LocalDensity.current) {
+        (LocalConfiguration.current.screenHeightDp.dp / 2).roundToPx()
+    }
     val focusRequester = remember { FocusRequester() }
     val replyDraft by viewModel.replyDraft.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
@@ -282,31 +289,56 @@ fun ChatScreen(
     // target and then gives up — the excerpt is already on screen, which
     // is most of what the tap was asking for. Pages OLDER only: a quote
     // always points backwards.
+    // Searching for the target: pages older, bounded, then gives up. It
+    // deliberately does NOT scroll or highlight — writing pendingJumpId
+    // from inside an effect keyed on pendingJumpId cancels that same
+    // effect, which is what silently killed the scroll and the highlight
+    // mid-flight. Finding it hands over to the effect below.
     LaunchedEffect(pendingJumpId, items) {
         val target = pendingJumpId ?: return@LaunchedEffect
-        val index = items.indexOfFirst {
+        val found = items.any {
             it is ChatListItem.MessageItem && it.entity.serverId == target
         }
-        if (index >= 0) {
-            pendingJumpId = null
-            jumpPagesTried = 0
-            listState.animateScrollToItem(index)
-            highlightedMessageId = target
-            delay(1_600)
-            if (highlightedMessageId == target) highlightedMessageId = null
-        } else if (loadingOlder) {
+        when {
+            found -> {
+                jumpPagesTried = 0
+                pendingJumpId = null
+                scrollToMessageId = target
+            }
             // A page is already in flight; this effect re-runs when it lands.
-        } else if (items.isNotEmpty() && jumpPagesTried < MAX_JUMP_PAGES) {
+            loadingOlder -> Unit
             // Bounded: without a cap this re-fires on every later change to
             // `items` (a new message arriving is enough) and would keep
             // paging a history that does not contain the target — which is
             // the normal case once a chat is old enough.
-            jumpPagesTried++
-            viewModel.loadOlder()
-        } else {
-            pendingJumpId = null
-            jumpPagesTried = 0
+            items.isNotEmpty() && jumpPagesTried < MAX_JUMP_PAGES -> {
+                jumpPagesTried++
+                viewModel.loadOlder()
+            }
+            else -> {
+                pendingJumpId = null
+                jumpPagesTried = 0
+            }
         }
+    }
+
+    // Doing the move, keyed only on the id it is moving to, so nothing it
+    // writes can restart it. `items` is read but not a key: a message
+    // arriving mid-scroll must not cancel the highlight.
+    LaunchedEffect(scrollToMessageId) {
+        val target = scrollToMessageId ?: return@LaunchedEffect
+        val index = items.indexOfFirst {
+            it is ChatListItem.MessageItem && it.entity.serverId == target
+        }
+        if (index >= 0) {
+            // Centred, like iOS: the quoted message with its neighbourhood
+            // still visible, rather than jammed against the bottom edge.
+            listState.animateScrollToItem(index, scrollOffset = -centreOffsetPx)
+            highlightedMessageId = target
+            delay(HIGHLIGHT_MS)
+            if (highlightedMessageId == target) highlightedMessageId = null
+        }
+        scrollToMessageId = null
     }
 
     // guarded loadOlder. derivedStateOf collapses scroll churn into a
@@ -615,10 +647,9 @@ fun ChatScreen(
                         ReplyToDto(
                             messageId = serverId,
                             senderId = entity.senderId,
-                            // The local body, cut the way the server cuts
-                            // it; the server's own excerpt replaces this
-                            // as soon as the message comes back.
-                            excerpt = entity.body.take(120),
+                            // Cut exactly as the server will, so the
+                            // banner and the final bubble agree.
+                            excerpt = ReplyToDto.excerpt(entity.body),
                         ),
                     )
                     focusRequester.requestFocus()
@@ -1339,12 +1370,17 @@ private fun MessageBubble(
 /** How many older pages a quote tap will fetch before giving up. */
 private const val MAX_JUMP_PAGES = 3
 
+/** How long a jumped-to bubble stays tinted. Same as iOS. */
+private const val HIGHLIGHT_MS = 1_600L
+
 @Composable
 private fun QuoteBlock(
     authorName: String,
     excerpt: String,
     isMine: Boolean,
     onClick: () -> Unit,
+    onDoubleClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     // On my own balloon the accent runs out of contrast against
     // primaryContainer, so the bar and name take the balloon's content
@@ -1355,7 +1391,16 @@ private fun QuoteBlock(
         modifier = Modifier
             .clip(RoundedRectangle6)
             .background(LocalContentColor.current.copy(alpha = 0.08f))
-            .clickable(onClick = onClick)
+            // combinedClickable, not clickable: a child that only handles
+            // taps still CONSUMES the press, so long-pressing or
+            // double-tapping over the quote silently did nothing instead of
+            // opening the capsule or leaving a heart. The bubble's own
+            // gestures are handed through.
+            .combinedClickable(
+                onClick = onClick,
+                onDoubleClick = onDoubleClick,
+                onLongClick = onLongClick,
+            )
             .padding(end = 6.dp)
             .semantics {
                 contentDescription = "Replying to $authorName: $excerpt"
@@ -1690,6 +1735,8 @@ private fun BubbleContent(
                 excerpt = quotedExcerpt,
                 isMine = isMine,
                 onClick = { onTapQuote(quotedId) },
+                onDoubleClick = onDoubleTap,
+                onLongClick = onTextLongPress,
             )
             Spacer(Modifier.height(4.dp))
         }

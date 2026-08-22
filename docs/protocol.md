@@ -43,7 +43,7 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `join_request_pending`, `join_request_not_pending`, `user_already_in_family`,
 `owner_cannot_leave`, `cannot_remove_owner`, `cannot_dm_self`, `not_same_family`,
 `user_not_found`, `chat_not_found`, `not_chat_member`, `message_empty`, `message_too_long`,
-`message_not_found`, `invalid_emoji`, `invalid_pagination`, `device_not_found`,
+`message_not_found`, `not_message_author`, `invalid_emoji`, `invalid_pagination`, `device_not_found`,
 `avatar_too_large`, `invalid_image`, `internal`.
 
 ## Objects
@@ -66,6 +66,8 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
             message has ever been reacted to. After the last reaction is removed the fields
             stay present with "reactions": [] — clients distinguish "cleared" from "no data".
           — plus "reply_to": {ReplyTo} when (and only when) the message is a reply.
+          — plus "edited_at": "…" and "edit_seq": 88 when (and only when) the body has been
+            edited. Both absent on a message still in its original form.
 ReplyTo   {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
 Reaction  {"user_id": 9, "emoji": "❤️"}
 ```
@@ -110,6 +112,33 @@ Every mutation of a message's reactions (set, replace, remove) takes the next va
 server-wide sequence and stamps it on the message as `reaction_seq`; each chat exposes the
 maximum such value over its messages as `max_reaction_seq` in `GET /chats`. Together they give
 clients a monotonic cursor for reaction catch-up, exactly as message ids drive `after_id`.
+
+### Editing
+
+Only the author may edit, there is no time limit, and only the body changes — id, sender,
+timestamp, reactions and any reply the message carries all survive untouched. An edit is not a
+new message: it never re-notifies, never bumps an unread count, and never moves the chat's
+ordering.
+
+Editing has the same catch-up problem reactions have, and takes the same shape. `after_id` is
+`WHERE id > cursor`, so it can never see a change to an OLDER row — a client that was offline
+while a message three pages back was edited would never learn of it. So every edit takes the next
+value of a second server-wide sequence, stamped on the message as `edit_seq`, with each chat
+exposing its maximum as `max_edit_seq` in `GET /chats`, and `GET /chats/{id}/edits?after_seq=`
+replaying what changed. It is a SEPARATE sequence from `reaction_seq`, deliberately: consolidating
+the two would change the shape of an endpoint deployed clients already speak.
+
+The catch-up returns whole `Message` objects rather than a bespoke patch, so a client applies them
+through exactly the same path as a page of history.
+
+**Applying an edit is guarded, and this is load-bearing.** A client must overwrite a stored body
+only when the incoming `edit_seq` is greater than or equal to the one it holds (absent counts as
+`0`). Without that guard, a history page fetched BEFORE an edit — but delivered after it — quietly
+restores the old text, and the two devices in a family disagree about what was said.
+
+A quote is a snapshot of the body at read time (see "Replies"), so editing a quoted message changes
+what later readers see quoted. Clients that hold the quoting message locally should refresh its
+excerpt when they apply the edit, cutting it the same way the server does.
 
 ## REST endpoints
 
@@ -156,10 +185,12 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to; `last_message` previews never carry `reactions`. |
+| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, and `max_edit_seq` likewise while nothing in it has been edited; `last_message` previews never carry `reactions`. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self`, `not_same_family`, `user_not_found`. |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?}` → `201 {message: Message}`. Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). Errors: `message_empty`, `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat). |
+| `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
+| `GET /chats/{id}/edits` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {messages: [Message]}` ordered by `edit_seq` ascending — the edit catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `POST /chats/{id}/read` | `{last_read_message_id}` → `204`. Monotonic — the server keeps the max ever reported. |
 | `PUT /chats/{id}/messages/{mid}/reaction` | `{emoji}` → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Sets or replaces the caller's reaction on the message — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or remove). One reaction per user per message. Emoji: trimmed, non-empty, ≤ 32 bytes UTF-8. Re-PUT of the current emoji is a no-op: no seq bump, no fan-out. Errors: `invalid_emoji`, `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/reaction` | → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Removes the caller's reaction; idempotent (deleting nothing returns the current state unchanged). Same errors minus `invalid_emoji`. |
@@ -207,11 +238,16 @@ Frames are JSON text messages tagged by `"type"`.
 {"type": "member_left",   "family_id": 3, "user_id": 11}
 {"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
                      "reactions": [{"user_id": 9, "emoji": "❤️"}]}
+{"type": "message_edited", "message": {Message}}
 {"type": "pong"}
 {"type": "error",   "code": "not_chat_member", "message": "…", "client_msg_id": "8f14e45f-…"}
 ```
 
 (`client_msg_id` on `error` is present when the error answers a `send`.)
+
+`message_edited` carries the whole message, exactly as `message` does, and is a SEPARATE frame
+type on purpose: `message` is what bumps unread counts and raises a notification, and an edit must
+do neither. Clients apply it under the `edit_seq` guard described under "Editing".
 
 ### Semantics
 

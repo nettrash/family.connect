@@ -129,6 +129,48 @@ pub struct Message {
     /// every read from the quoted row, never stored — see `ReplyTo`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reply_to: Option<ReplyTo>,
+    /// Both present when (and only when) the body has been edited. Absent —
+    /// not null, and not a zero seq — on a message still in its original
+    /// form, which is how a client tells "never edited" from "edited".
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "crate::models::opt_rfc3339"
+    )]
+    pub edited_at: Option<OffsetDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub edit_seq: Option<i64>,
+}
+
+/// RFC3339 for an OPTIONAL timestamp. `time::serde::rfc3339::option` exists
+/// but pairs badly with skip_serializing_if, so this thin wrapper keeps the
+/// absent case absent rather than null.
+pub mod opt_rfc3339 {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
+
+    pub fn serialize<S: Serializer>(
+        value: &Option<OffsetDateTime>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(stamp) => stamp
+                .format(&Rfc3339)
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<OffsetDateTime>, D::Error> {
+        let raw = Option::<String>::deserialize(deserializer)?;
+        raw.map(|s| OffsetDateTime::parse(&s, &Rfc3339))
+            .transpose()
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// The quoted message, as much of it as a client needs to draw the quote
@@ -188,6 +230,21 @@ impl Message {
             }
             _ => None,
         };
+        // Both sequences: zero in the column means "never happened" and is
+        // ABSENT on the wire. Read here rather than by each caller — a read
+        // path that forgot the reaction_seq loop silently dropped every
+        // reaction from its response, which is exactly how this moved.
+        let reaction_seq = match row.try_get::<i64, _>("reaction_seq") {
+            Ok(seq) if seq > 0 => Some(seq),
+            _ => None,
+        };
+        let edit_seq = match row.try_get::<i64, _>("edit_seq") {
+            Ok(seq) if seq > 0 => Some(seq),
+            _ => None,
+        };
+        let edited_at = row
+            .try_get::<Option<OffsetDateTime>, _>("edited_at")
+            .unwrap_or_default();
         Self {
             id: row.get("id"),
             chat_id: row.get("chat_id"),
@@ -196,8 +253,10 @@ impl Message {
             body: row.get("body"),
             created_at: row.get("created_at"),
             reactions: None,
-            reaction_seq: None,
+            reaction_seq,
             reply_to,
+            edited_at,
+            edit_seq,
         }
     }
 }
@@ -212,6 +271,9 @@ pub struct ChatListEntry {
     pub unread_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_reaction_seq: Option<i64>,
+    /// Omitted while nothing in the chat has ever been edited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_edit_seq: Option<i64>,
 }
 
 /// `GET /me` — the caller's own pending join request, if any.

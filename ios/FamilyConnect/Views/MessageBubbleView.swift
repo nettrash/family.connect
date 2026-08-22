@@ -299,6 +299,16 @@ struct MessageBubbleView: View {
                     showsReactionDetails = false
                     onToggleReaction(detail.emoji)
                 }
+                // My own row is the one and only way to take a reaction
+                // off, and a bare gesture is unreachable by VoiceOver —
+                // so it gets a real action, named for what it does.
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(isMineReaction ? .isButton : [])
+                .accessibilityAction(named: Text("Remove reaction")) {
+                    guard isMineReaction else { return }
+                    showsReactionDetails = false
+                    onToggleReaction(detail.emoji)
+                }
             }
         }
         .padding(12)
@@ -329,19 +339,30 @@ struct MessageBubbleView: View {
                     .foregroundStyle(bubbleContentColor.opacity(0.75))
                     .lineLimit(2)
             }
-            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
         .padding(.trailing, 4)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(Color.primary.opacity(0.06)))
         .contentShape(Rectangle())
+        // count: 1 with the balloon's own double-tap still reachable: a
+        // bare .onTapGesture on a CHILD wins outright over the parent's
+        // count-2 gesture, so double-tapping the quote used to fire two
+        // jumps and never the heart. simultaneousGesture lets both see
+        // the touch; the 2-tap recognizer claims the double.
+        .simultaneousGesture(TapGesture(count: 2).onEnded { toggleQuickHeart() })
         .onTapGesture { onTapQuote(quote.messageID) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Replying to \(quoteAuthorName(quote)): \(quote.excerpt)")
         .accessibilityAddTraits(.isButton)
+        // The trait alone is a LIE: a bare .onTapGesture publishes no
+        // accessibility action, so VoiceOver announces "button" and
+        // double-tapping does nothing (measured — ZZAXProbeTests:
+        // tap-only gives accessibilityActivate()=false, tap + this
+        // modifier gives true). Same lesson as the reaction chips above
+        // and the Android link spans.
+        .accessibilityAction { onTapQuote(quote.messageID) }
     }
 
     private func quoteAuthorName(_ quote: ReplyToSnapshot) -> String {

@@ -205,6 +205,8 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             reactions: None,
             reply_to: None,
+            edited_at: None,
+            edit_seq: None,
             reaction_seq: None,
         }
     }

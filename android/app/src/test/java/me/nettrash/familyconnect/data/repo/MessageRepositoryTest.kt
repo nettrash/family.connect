@@ -571,6 +571,48 @@ class MessageRepositoryTest {
         assertThat(row.replyExcerpt).isEqualTo("See you at six")
     }
 
+    /// The server recomputes the quote on every read, so its copy is the
+    /// authority — the excerpt this device guessed at send time must be
+    /// replaced when the ack lands, or a long quote keeps the local cut
+    /// forever and drifts as soon as the quoted message is edited.
+    @Test
+    fun theAckReplacesTheOptimisticQuoteWithTheServers() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        repository.send(
+            CHAT,
+            "Six works",
+            ReplyToDto(messageId = 1337, senderId = 9, excerpt = "locally guessed"),
+        )
+        advanceUntilIdle()
+        val clientMsgId = sentClientMsgId()
+
+        socket.emit(
+            ServerFrame.Ack(
+                clientMsgId = clientMsgId,
+                message = messageDto(
+                    id = 500,
+                    chatId = CHAT,
+                    senderId = ME,
+                    clientMsgId = clientMsgId,
+                    body = "Six works",
+                    replyTo = ReplyToDto(
+                        messageId = 1337,
+                        senderId = 9,
+                        excerpt = "what the server actually says",
+                    ),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByClientMsgId(clientMsgId)!!
+        assertThat(row.replyExcerpt).isEqualTo("what the server actually says")
+        assertThat(row.replyToMessageId).isEqualTo(1337)
+    }
+
     // -- History paging + flush ---------------------------------------------------------------------
 
     @Test

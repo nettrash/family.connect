@@ -95,7 +95,30 @@ data class ReplyToDto(
     @SerialName("message_id") val messageId: Long,
     @SerialName("sender_id") val senderId: Long,
     val excerpt: String,
-)
+) {
+    companion object {
+        /**
+         * Longest excerpt, in Unicode CODE POINTS — matching
+         * `ReplyTo::MAX_EXCERPT_CHARS` on the server and
+         * `ReplyToSnapshot.maxExcerptScalars` on iOS.
+         */
+        const val MAX_EXCERPT_CHARS = 120
+
+        /**
+         * Cut like the server does. `String.take` counts UTF-16 CODE
+         * UNITS, so it both keeps the wrong amount of text for
+         * astral characters and can slice a surrogate pair in half —
+         * which renders as a replacement glyph, in a quote the user did
+         * not write. Code points, therefore, like `chars().take(120)`
+         * server-side.
+         */
+        fun excerpt(body: String): String {
+            if (body.codePointCount(0, body.length) <= MAX_EXCERPT_CHARS) return body
+            val end = body.offsetByCodePoints(0, MAX_EXCERPT_CHARS)
+            return body.substring(0, end)
+        }
+    }
+}
 
 @Serializable
 data class MessageDto(

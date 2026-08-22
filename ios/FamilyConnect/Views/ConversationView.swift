@@ -148,7 +148,16 @@ struct ConversationView: View {
     /// row's id is not a scroll target. A ~60-row window keeps estimates
     /// honest, every pin target materialized, and rendering cheap.
     @State private var visibleCount = ConversationView.windowStep
+
     private static let windowStep = 60
+    /// Rows kept ABOVE a jumped-to message. Enough that the target does
+    /// not land against the top sentinel, whose appearance triggers a
+    /// history page whose scroll restore would undo the jump.
+    private static let jumpMargin = 15
+    /// Most rows a quote tap may render at once. Roughly five windows —
+    /// far enough for any quote a reader is plausibly following, short of
+    /// laying out a whole family history.
+    private static let maxJumpWindow = 300
 
     private var visibleMessages: ArraySlice<MessageEntity> {
         messages.suffix(visibleCount)
@@ -487,7 +496,11 @@ struct ConversationView: View {
             }
             Spacer(minLength: 0)
             Button {
-                replyDraft = nil
+                // Animated, so the banner leaves the way it arrived; a
+                // bare assignment plays no transition on the way out.
+                withAnimation(.spring(duration: 0.25)) {
+                    replyDraft = nil
+                }
                 replyStartedFromHistory = false
             } label: {
                 Image(systemName: "xmark.circle.fill")
@@ -515,22 +528,36 @@ struct ConversationView: View {
     /// be reached simply does nothing — the excerpt is already on screen,
     /// which is most of what the tap was asking for.
     private func jumpToMessage(_ serverID: Int64, proxy: ScrollViewProxy) {
-        guard let target = messages.first(where: { $0.serverID == serverID }) else { return }
-        if !visibleMessages.contains(where: { $0.localID == target.localID }) {
-            // It is cached but outside the rendered window: grow the window
-            // to include it, then scroll on the next turn once the rows
-            // exist to scroll to.
-            if let index = messages.firstIndex(where: { $0.localID == target.localID }) {
-                visibleCount = max(visibleCount, messages.count - index + 1)
-            }
-            Task { @MainActor in
-                withAnimation { proxy.scrollTo(target.localID, anchor: .center) }
-                highlight(target.localID)
-            }
-            return
+        guard let index = messages.firstIndex(where: { $0.serverID == serverID }) else { return }
+        let target = messages[index]
+
+        // Widen with MARGIN, not to exactly the target: the top sentinel
+        // triggers pagination when it appears, so parking the target one
+        // row below it fires a history load whose own scroll restore
+        // fights the jump.
+        let needed = messages.count - index + Self.jumpMargin
+        // The window is a SUFFIX and the rows are non-lazy, so reaching a
+        // message thousands back would materialize everything after it in
+        // one layout pass. Past the cap the jump simply does not happen —
+        // the excerpt is already on screen, which is most of what the tap
+        // was asking for. (Android gives up the same way, after
+        // MAX_JUMP_PAGES.)
+        guard needed <= Self.maxJumpWindow else { return }
+        if needed > visibleCount {
+            visibleCount = min(needed, messages.count)
         }
-        withAnimation { proxy.scrollTo(target.localID, anchor: .center) }
-        highlight(target.localID)
+
+        // Scrolling in the same turn as the window change silently
+        // no-ops: the rows the widened window adds have not been laid out
+        // yet, and scrollTo to an id that does not exist does nothing.
+        // Twice, like the opening pin: once as layout lands, once after
+        // it settles.
+        Task { @MainActor in
+            withAnimation { proxy.scrollTo(target.localID, anchor: .center) }
+            highlight(target.localID)
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            proxy.scrollTo(target.localID, anchor: .center)
+        }
     }
 
     /// Tint the jumped-to bubble, then let it fade. The token guards the
@@ -555,10 +582,9 @@ struct ConversationView: View {
             replyDraft = ReplyToDTO(
                 messageID: serverID,
                 senderID: senderID,
-                // The local body, cut the same way the server would — the
-                // banner is replaced by the server's own excerpt as soon
-                // as the message comes back.
-                excerpt: String(body.prefix(120)))
+                // Cut exactly as the server will, so the banner and the
+                // final bubble agree.
+                excerpt: ReplyToSnapshot.excerpt(of: body))
         }
         inputFocused = true
     }
@@ -756,7 +782,9 @@ struct ConversationView: View {
         let body = model.draft
         guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         coordinator.send(body: body, in: chatID, replyTo: replyDraft)
-        replyDraft = nil
+        withAnimation(.spring(duration: 0.25)) {
+            replyDraft = nil
+        }
         // Sending moves the thread to my own new message by the normal
         // path, so the suppression ends here.
         replyStartedFromHistory = false
