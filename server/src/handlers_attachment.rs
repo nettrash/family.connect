@@ -1,4 +1,4 @@
-//! Photos and videos (docs/protocol.md, "Photos and videos").
+//! Photos and videos (docs/protocol.md, "Photos, videos and files").
 //!
 //! Uploading is a separate request from sending: the bytes go up on their
 //! own, and the message that follows names the attachment by id. A 100 MB
@@ -23,6 +23,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::Row;
+use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 
 use crate::auth::AuthUser;
@@ -38,9 +39,13 @@ pub struct UploadParams {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub duration_ms: Option<i32>,
+    /// Required for `kind=file`, ignored otherwise: a document's name is
+    /// its whole identity (protocol.md, "Files").
+    pub name: Option<String>,
 }
 
-const ATTACHMENT_COLS: &str = "id, kind, mime, size_bytes, width, height, duration_ms, has_preview";
+const ATTACHMENT_COLS: &str =
+    "id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name";
 
 /// The declared type must match the bytes. Same rule as avatars: a magic
 /// number is the whole check, because deciding otherwise would mean an
@@ -72,28 +77,57 @@ pub async fn upload_attachment(
         .map(|value| value.split(';').next().unwrap_or(value).trim().to_string())
         .unwrap_or_default();
 
-    let Some(kind) = Attachment::kind_for(&mime) else {
-        return Err(ApiError::unsupported_media_type(
-            codes::INVALID_ATTACHMENT,
-            format!("unsupported media type {mime:?}"),
-        ));
+    // A FILE is whatever the sender says it is. The type is metadata, not
+    // a claim the server verifies, and no list is consulted — a family
+    // sending each other documents must never be told their file is not
+    // allowed (protocol.md, "Files"). What makes that safe is `serve`
+    // below, which hands a file back as an attachment that cannot render.
+    let is_file = params.kind.as_deref() == Some(Attachment::KIND_FILE);
+    let (kind, mime, name) = if is_file {
+        let name =
+            params.name.as_deref().map(str::trim).filter(|name| {
+                !name.is_empty() && name.chars().count() <= Attachment::MAX_NAME_LEN
+            });
+        let Some(name) = name else {
+            return Err(ApiError::bad_request(
+                codes::INVALID_ATTACHMENT,
+                format!(
+                    "a file needs a name of 1..={} characters",
+                    Attachment::MAX_NAME_LEN
+                ),
+            ));
+        };
+        let mime = if mime.is_empty() {
+            Attachment::DEFAULT_FILE_MIME.to_string()
+        } else {
+            mime
+        };
+        (Attachment::KIND_FILE, mime, Some(name.to_string()))
+    } else {
+        let Some(kind) = Attachment::kind_for(&mime) else {
+            return Err(ApiError::unsupported_media_type(
+                codes::INVALID_ATTACHMENT,
+                format!("unsupported media type {mime:?}"),
+            ));
+        };
+        if let Some(declared) = params.kind.as_deref()
+            && declared != kind
+        {
+            return Err(ApiError::bad_request(
+                codes::INVALID_ATTACHMENT,
+                format!("{mime} is a {kind}, not a {declared}"),
+            ));
+        }
+        (kind, mime, None)
     };
-    if let Some(declared) = params.kind.as_deref()
-        && declared != kind
-    {
-        return Err(ApiError::bad_request(
-            codes::INVALID_ATTACHMENT,
-            format!("{mime} is a {kind}, not a {declared}"),
-        ));
-    }
 
     // The row is created first so its id names the file — one identifier,
     // no second allocation scheme to keep in step.
     let storage_key = format!("{}-{}", auth.user_id, crate::tokens::gen_session_token());
     let row = sqlx::query(&format!(
         "INSERT INTO attachments
-            (uploader_id, kind, mime, size_bytes, width, height, duration_ms, storage_key)
-         VALUES ($1, $2, $3, 0, $4, $5, $6, $7)
+            (uploader_id, kind, mime, size_bytes, width, height, duration_ms, storage_key, name)
+         VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8)
          RETURNING {ATTACHMENT_COLS}"
     ))
     .bind(auth.user_id)
@@ -103,6 +137,7 @@ pub async fn upload_attachment(
     .bind(params.height)
     .bind(params.duration_ms)
     .bind(&storage_key)
+    .bind(name.as_deref())
     .fetch_one(&state.pool)
     .await?;
     let id: i64 = row.get("id");
@@ -131,8 +166,13 @@ pub async fn upload_attachment(
 
     // Magic check AFTER the write: the head is on disk by then and reading
     // 12 bytes back is cheaper than buffering the stream to inspect it.
-    let head = read_head(&path).await;
-    if !matches_magic(&mime, &head) {
+    // Files skip it entirely — there is no type to contradict.
+    let head = if is_file {
+        Vec::new()
+    } else {
+        read_head(&path).await
+    };
+    if !is_file && !matches_magic(&mime, &head) {
         let _ = sqlx::query("DELETE FROM attachments WHERE id = $1")
             .bind(id)
             .execute(&state.pool)
@@ -196,17 +236,26 @@ pub async fn upload_preview(
     // Uploader only, and only before the row is claimed or after — either
     // way it is theirs; a member who did not upload it has no business
     // replacing what a bubble draws.
-    let row = sqlx::query("SELECT storage_key FROM attachments WHERE id = $1 AND uploader_id = $2")
-        .bind(id)
-        .bind(auth.user_id)
-        .fetch_optional(&state.pool)
-        .await?;
+    let row =
+        sqlx::query("SELECT storage_key, kind FROM attachments WHERE id = $1 AND uploader_id = $2")
+            .bind(id)
+            .bind(auth.user_id)
+            .fetch_optional(&state.pool)
+            .await?;
     let Some(row) = row else {
         return Err(ApiError::not_found(
             codes::ATTACHMENT_NOT_FOUND,
             "no such attachment",
         ));
     };
+    if row.get::<String, _>("kind") == Attachment::KIND_FILE {
+        // Nothing draws a file as a picture, so a preview on one is a
+        // client bug worth reporting rather than silently storing.
+        return Err(ApiError::bad_request(
+            codes::INVALID_ATTACHMENT,
+            "a file has no preview",
+        ));
+    }
     let storage_key: String = row.get("storage_key");
 
     let path = state.storage.preview_path(&storage_key);
@@ -257,7 +306,7 @@ async fn serve(
     preview: bool,
 ) -> Result<Response, ApiError> {
     let row = sqlx::query(
-        "SELECT a.storage_key, a.mime, a.has_preview
+        "SELECT a.storage_key, a.mime, a.has_preview, a.kind, a.name
          FROM attachments a
          LEFT JOIN messages m ON m.id = a.message_id
          WHERE a.id = $1
@@ -312,12 +361,65 @@ async fn serve(
     } else {
         mime
     };
-    let stream = ReaderStream::new(file);
-    Ok((
-        StatusCode::OK,
+    // A FILE is served so that it cannot be anything but a download.
+    //
+    // This is the other half of accepting any type at all: without it, a
+    // member could upload HTML or SVG and hand the family a link that runs
+    // script from the family server's own origin. `attachment` disposition
+    // stops it rendering, `nosniff` stops a browser deciding for itself
+    // that the bytes look like HTML, and the filename is sanitised because
+    // a header is a line and a newline in a name would let the uploader
+    // write headers of their own.
+    let disposition =
+        (!preview && row.get::<String, _>("kind") == Attachment::KIND_FILE).then(|| {
+            let name: Option<String> = row.get("name");
+            let name = name.unwrap_or_else(|| "download".to_string());
+            let ascii = Attachment::ascii_filename(&name);
+            // RFC 5987: the ASCII form for old clients, filename* for the
+            // real name, which is usually the one anybody sees.
+            let encoded = percent_encode(&name);
+            format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
+        });
+
+    // A video player asks for byte ranges — that is how seeking works, and
+    // how playback starts before the whole file has arrived. Answering the
+    // full body to every request would make a scrub through a 90 MB clip
+    // re-download it from the beginning.
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map_or(RangeSpec::Whole, |value| parse_range(value, len));
+    let (status, start, count) = match range {
+        RangeSpec::Whole => (StatusCode::OK, 0, len),
+        RangeSpec::Bytes(start, end) => (StatusCode::PARTIAL_CONTENT, start, end - start + 1),
+        RangeSpec::Unsatisfiable => {
+            // A range this file cannot satisfy. 416 carries the real size
+            // so the player can ask again correctly.
+            return Ok((
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [
+                    (header::CONTENT_RANGE, format!("bytes */{len}")),
+                    (header::ACCEPT_RANGES, "bytes".to_string()),
+                ],
+            )
+                .into_response());
+        }
+    };
+
+    let mut file = file;
+    if start > 0 {
+        use tokio::io::AsyncSeekExt;
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|err| ApiError::Internal(anyhow::anyhow!("seeking {path:?}: {err}")))?;
+    }
+    let stream = ReaderStream::new(file.take(count));
+
+    let mut response = (
+        status,
         [
             (header::CONTENT_TYPE, content_type),
-            (header::CONTENT_LENGTH, len.to_string()),
+            (header::CONTENT_LENGTH, count.to_string()),
             (header::ETAG, etag),
             (
                 header::CACHE_CONTROL,
@@ -327,7 +429,102 @@ async fn serve(
         ],
         Body::from_stream(stream),
     )
-        .into_response())
+        .into_response();
+    if let Some(disposition) = disposition {
+        let headers = response.headers_mut();
+        if let Ok(value) = disposition.parse() {
+            headers.insert(header::CONTENT_DISPOSITION, value);
+        }
+        headers.insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            "nosniff".parse().expect("ASCII"),
+        );
+    }
+    if status == StatusCode::PARTIAL_CONTENT {
+        let end = start + count - 1;
+        response.headers_mut().insert(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{len}").parse().expect("ASCII"),
+        );
+    }
+    Ok(response)
+}
+
+/// Percent-encode a filename for RFC 5987's `filename*` form.
+///
+/// Hand-rolled rather than pulling in a crate: the attr-char set is small,
+/// and everything outside it — including every byte of a non-ASCII name —
+/// becomes %XX, which is exactly what makes the value safe to put in a
+/// header no matter what the uploader called their file.
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        let c = *byte as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '~') {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// What a `Range` header asks of a file of `len` bytes.
+enum RangeSpec {
+    /// No range, or one to ignore — send the whole body with a 200.
+    Whole,
+    /// An inclusive byte range: 206 with a Content-Range.
+    Bytes(u64, u64),
+    /// A range this file cannot satisfy: 416.
+    Unsatisfiable,
+}
+
+/// Parse one `Range` header.
+///
+/// Anything not understood — a unit other than bytes, several ranges, a
+/// malformed value — is [`RangeSpec::Whole`] rather than an error: RFC 9110
+/// says to ignore such a header and send the whole body, which is also the
+/// safest answer for a player that asked for something exotic. Multiple
+/// ranges would mean a multipart body no media player asks for. Only a
+/// well-formed range that lies outside the file is refused.
+fn parse_range(value: &str, len: u64) -> RangeSpec {
+    let Some(spec) = value.trim().strip_prefix("bytes=").map(str::trim) else {
+        return RangeSpec::Whole;
+    };
+    if spec.contains(',') {
+        return RangeSpec::Whole;
+    }
+    let Some((first, last)) = spec.split_once('-') else {
+        return RangeSpec::Whole;
+    };
+    // An empty file can satisfy no range at all.
+    if len == 0 {
+        return RangeSpec::Unsatisfiable;
+    }
+    let parsed = match (first.trim(), last.trim()) {
+        ("", "") => return RangeSpec::Whole,
+        // "bytes=-500": the LAST 500 bytes, not "from 0 to 500".
+        ("", suffix) => suffix
+            .parse::<u64>()
+            .ok()
+            .map(|wanted| (len.saturating_sub(wanted), len - 1, wanted > 0)),
+        (first, "") => first
+            .parse::<u64>()
+            .ok()
+            .map(|start| (start, len - 1, true)),
+        (first, last) => match (first.parse::<u64>(), last.parse::<u64>()) {
+            (Ok(start), Ok(end)) => Some((start, end.min(len - 1), true)),
+            _ => None,
+        },
+    };
+    match parsed {
+        // Unparseable numbers are a malformed header, not a refusal.
+        None => RangeSpec::Whole,
+        Some((start, end, wanted)) if wanted && start <= end && start < len => {
+            RangeSpec::Bytes(start, end)
+        }
+        Some(_) => RangeSpec::Unsatisfiable,
+    }
 }
 
 /// Delete unclaimed uploads past the grace period.

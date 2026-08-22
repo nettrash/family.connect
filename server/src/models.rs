@@ -259,6 +259,7 @@ impl Message {
                 height: row.try_get("att_height").unwrap_or_default(),
                 duration_ms: row.try_get("att_duration_ms").unwrap_or_default(),
                 has_preview: row.try_get("att_has_preview").unwrap_or_default(),
+                name: row.try_get("att_name").unwrap_or_default(),
             }),
             _ => None,
         };
@@ -303,7 +304,7 @@ pub struct ChatListEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Attachment {
     pub id: i64,
-    /// "photo" | "video".
+    /// "photo" | "video" | "file".
     pub kind: String,
     pub mime: String,
     pub size: i64,
@@ -315,13 +316,22 @@ pub struct Attachment {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i32>,
     /// False until the client has uploaded the downscaled photo or poster
-    /// frame — a message may be sent before its preview arrives.
+    /// frame — a message may be sent before its preview arrives. Always
+    /// false for a file, which has nothing to draw.
     pub has_preview: bool,
+    /// Files only, and required there: a document's name is its whole
+    /// identity, where a photo renders itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl Attachment {
-    /// The media types accepted, paired with the kind they belong to.
-    /// HEIC/HEIF are here because that is what an iPhone actually produces.
+    /// The media types accepted FOR A PHOTO OR VIDEO, paired with the kind
+    /// they belong to. HEIC/HEIF are here because that is what an iPhone
+    /// actually produces.
+    ///
+    /// A file is not on this list and never will be: `kind=file` accepts any
+    /// type and verifies none (protocol.md, "Files").
     pub const ACCEPTED: [(&'static str, &'static str); 6] = [
         ("image/jpeg", "photo"),
         ("image/png", "photo"),
@@ -331,11 +341,45 @@ impl Attachment {
         ("video/quicktime", "video"),
     ];
 
+    pub const KIND_FILE: &'static str = "file";
+    /// What a file's bytes are called when the client declared nothing
+    /// usable. Deliberately the least interesting type there is.
+    pub const DEFAULT_FILE_MIME: &'static str = "application/octet-stream";
+    pub const MAX_NAME_LEN: usize = 255;
+
     pub fn kind_for(mime: &str) -> Option<&'static str> {
         Self::ACCEPTED
             .iter()
             .find(|(accepted, _)| *accepted == mime)
             .map(|(_, kind)| *kind)
+    }
+
+    /// A filename safe to put in a `Content-Disposition` header.
+    ///
+    /// A header is a LINE: an unescaped CR or LF in a filename ends it and
+    /// lets the uploader write headers of their own, and a quote closes the
+    /// quoted-string early. Path separators go too — the name is a label,
+    /// and a client that joins it onto a directory should never be handed
+    /// `../`. What survives is printable ASCII; the caller pairs this with
+    /// an RFC 5987 `filename*` that carries the real name.
+    pub fn ascii_filename(name: &str) -> String {
+        let cleaned: String = name
+            .chars()
+            .map(|c| match c {
+                '/' | '\\' => '_',
+                '"' => '\'',
+                c if c.is_ascii_graphic() || c == ' ' => c,
+                // Control characters and everything non-ASCII.
+                _ => '_',
+            })
+            .take(Self::MAX_NAME_LEN)
+            .collect();
+        let trimmed = cleaned.trim().trim_matches('.').trim().to_string();
+        if trimmed.is_empty() {
+            "download".to_string()
+        } else {
+            trimmed
+        }
     }
 
     pub fn from_row(row: &PgRow) -> Self {
@@ -348,6 +392,7 @@ impl Attachment {
             height: row.get("height"),
             duration_ms: row.get("duration_ms"),
             has_preview: row.get("has_preview"),
+            name: row.get("name"),
         }
     }
 }
@@ -526,5 +571,42 @@ mod tests {
     #[test]
     fn an_empty_body_quotes_as_empty() {
         assert_eq!(ReplyTo::excerpt(""), "");
+    }
+
+    /// A filename ends up in a `Content-Disposition` header, and a header
+    /// is a LINE. Everything here is about the uploader not being able to
+    /// write the rest of that line themselves.
+    #[test]
+    fn a_filename_cannot_escape_its_header() {
+        let hostile = "a\r\nSet-Cookie: x=1\r\n\r\nb.txt";
+        let safe = Attachment::ascii_filename(hostile);
+        assert!(!safe.contains('\r') && !safe.contains('\n'), "{safe}");
+        // A quote would close the quoted-string early.
+        assert!(!Attachment::ascii_filename(r#"in"voice.pdf"#).contains('"'));
+        // Path separators are dropped: the name is a label, not a path.
+        let traversed = Attachment::ascii_filename("../../etc/passwd");
+        assert!(!traversed.contains('/'), "{traversed}");
+        assert!(!Attachment::ascii_filename(r"..\..\windows\hosts").contains('\\'));
+    }
+
+    #[test]
+    fn a_filename_always_survives_as_something() {
+        // Non-ASCII is replaced in the ASCII form (the caller pairs this
+        // with filename*, which carries the real name).
+        assert_eq!(
+            Attachment::ascii_filename("Rechnung März.pdf"),
+            "Rechnung M_rz.pdf"
+        );
+        // A name made entirely of characters we drop still has to produce
+        // a usable filename rather than an empty one.
+        assert_eq!(Attachment::ascii_filename("   "), "download");
+        assert_eq!(Attachment::ascii_filename("..."), "download");
+        assert_eq!(Attachment::ascii_filename(""), "download");
+        // And a long one is cut rather than refused.
+        let long = "x".repeat(400);
+        assert_eq!(
+            Attachment::ascii_filename(&long).len(),
+            Attachment::MAX_NAME_LEN
+        );
     }
 }

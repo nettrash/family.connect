@@ -40,6 +40,7 @@ import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.settings.SettingsState
+import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
@@ -77,6 +78,7 @@ class MessageRepositoryTest {
     private lateinit var messageDao: MessageDao
     private lateinit var chatDao: ChatDao
     private lateinit var chatApi: FakeChatApi
+    private val attachmentApi = FakeAttachmentApi()
     private lateinit var socket: FakeChatSocket
     private lateinit var settings: FakeSettingsRepository
     private lateinit var chatRepository: ChatRepository
@@ -108,6 +110,7 @@ class MessageRepositoryTest {
         chatRepository = ChatRepository(chatApi, chatDao, socket)
         val repository = MessageRepository(
             chatApi = chatApi,
+            attachmentApi = attachmentApi,
             messageDao = messageDao,
             chatDao = chatDao,
             socket = socket,

@@ -24,6 +24,7 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 
 /** Lifecycle of an outbound message; inbound rows are always SENT. */
 enum class MessageStatus {
@@ -116,7 +117,40 @@ data class MessageEntity(
      */
     @ColumnInfo(defaultValue = "0") val editSeq: Long = 0,
     val editedAt: Long? = null,
-)
+    /**
+     * The message's photo or video, flattened into columns rather than
+     * kept as a relation: an attachment belongs to exactly one message,
+     * is written once with it, and is read on every row of the thread —
+     * a join would buy nothing. `attachmentId == null` means no media,
+     * which is what [attachment] keys on.
+     */
+    val attachmentId: Long? = null,
+    val attachmentKind: String? = null,
+    val attachmentMime: String? = null,
+    @ColumnInfo(defaultValue = "0") val attachmentSize: Long = 0,
+    val attachmentWidth: Int? = null,
+    val attachmentHeight: Int? = null,
+    val attachmentDurationMs: Int? = null,
+    @ColumnInfo(defaultValue = "0") val attachmentHasPreview: Boolean = false,
+    /** Files only: the name is the whole thing a row shows. */
+    val attachmentName: String? = null,
+) {
+    /** The wire shape back out of the flat columns, or null for no media. */
+    val attachment: AttachmentDto?
+        get() = attachmentId?.let { id ->
+            AttachmentDto(
+                id = id,
+                kind = attachmentKind.orEmpty(),
+                mime = attachmentMime.orEmpty(),
+                size = attachmentSize,
+                width = attachmentWidth,
+                height = attachmentHeight,
+                durationMs = attachmentDurationMs,
+                hasPreview = attachmentHasPreview,
+                name = attachmentName,
+            )
+        }
+}
 
 /**
  * One sticker note on the family board.

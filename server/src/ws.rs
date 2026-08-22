@@ -49,7 +49,7 @@ pub enum ClientFrame {
         #[serde(default)]
         reply_to_message_id: Option<i64>,
         /// Optional: an attachment this caller uploaded (protocol.md,
-        /// "Photos and videos"). The bytes never travel in a frame.
+        /// "Photos, videos and files"). The bytes never travel in a frame.
         #[serde(default)]
         attachment_id: Option<i64>,
     },

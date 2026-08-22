@@ -203,6 +203,70 @@ nonisolated struct ReplyToDTO: Codable, Equatable, Sendable {
     }
 }
 
+/// A photo or video carried by a message.
+///
+/// The bytes are never in here — they come from `GET /attachments/{id}`.
+/// This is what a bubble needs to lay itself out BEFORE a single byte
+/// arrives: what it is, how big, what shape, and whether a preview exists
+/// yet (docs/protocol.md, "Photos, videos and files").
+nonisolated struct AttachmentDTO: Codable, Equatable, Identifiable, Sendable {
+    let id: Int64
+    /// "photo" | "video" | "file".
+    let kind: String
+    let mime: String
+    let size: Int64
+    let width: Int?
+    let height: Int?
+    let durationMS: Int?
+    let hasPreview: Bool
+    /// Files only, and their whole identity — a photo renders itself,
+    /// where "attachment 34" tells nobody anything.
+    let name: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case mime
+        case size
+        case width
+        case height
+        case durationMS = "duration_ms"
+        case hasPreview = "has_preview"
+        case name
+    }
+
+    var isVideo: Bool { kind == Kind.video }
+    var isFile: Bool { kind == Kind.file }
+
+    enum Kind {
+        static let photo = "photo"
+        static let video = "video"
+        static let file = "file"
+    }
+
+    /// What the bubble calls it: the name for a file, a word for the rest.
+    var displayName: String {
+        if let name, !name.isEmpty { return name }
+        return isVideo ? "Video" : (isFile ? "File" : "Photo")
+    }
+
+    /// "1.2 MB" — the other half of what a file row shows.
+    var displaySize: String {
+        ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    }
+
+    /// Aspect ratio for the bubble, or a sane default when the uploader
+    /// could not determine the dimensions.
+    var aspectRatio: Double {
+        guard let width, let height, width > 0, height > 0 else { return 4.0 / 3.0 }
+        return Double(width) / Double(height)
+    }
+}
+
+nonisolated struct AttachmentResponse: Codable, Equatable, Sendable {
+    let attachment: AttachmentDTO
+}
+
 nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     let id: Int64
     let chatID: Int64
@@ -226,6 +290,8 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     /// at least as new (docs/protocol.md, "Editing").
     let editedAt: Date?
     let editSeq: Int64?
+    /// Present when the message carries a photo or video.
+    let attachment: AttachmentDTO?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -239,6 +305,7 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         case replyTo = "reply_to"
         case editedAt = "edited_at"
         case editSeq = "edit_seq"
+        case attachment
     }
 
     /// Explicit memberwise init so the reaction fields default to absent
@@ -254,7 +321,8 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         reactionSeq: Int64? = nil,
         replyTo: ReplyToDTO? = nil,
         editedAt: Date? = nil,
-        editSeq: Int64? = nil
+        editSeq: Int64? = nil,
+        attachment: AttachmentDTO? = nil
     ) {
         self.id = id
         self.chatID = chatID
@@ -267,6 +335,7 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         self.replyTo = replyTo
         self.editedAt = editedAt
         self.editSeq = editSeq
+        self.attachment = attachment
     }
 }
 

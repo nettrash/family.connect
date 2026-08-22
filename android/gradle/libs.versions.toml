@@ -14,6 +14,14 @@
 # exifinterface is the one concession: minSdk 26 predates ImageDecoder, and
 # BitmapFactory ignores EXIF orientation, so without it a photo taken in
 # portrait uploads sideways on Android 8.
+#
+# media3-transformer is the second, and the larger one: a phone shoots
+# 4K video at ~50 Mbit/s, so a two-minute clip is far past the 100 MB
+# ceiling and has to be re-encoded before it can be sent at all. The
+# platform offers no transcoder — only MediaCodec, i.e. writing one. Play-
+# back deliberately does NOT use it: android.widget.VideoView streams the
+# file with the auth header the protocol needs, so ExoPlayer and media3-ui
+# stay out of the build.
 
 [versions]
 agp = "9.3.1"
@@ -31,6 +39,7 @@ kotlinxSerialization = "1.11.0"
 okhttp = "5.3.2"
 datastore = "1.2.1"
 exifinterface = "1.4.1"
+media3 = "1.11.0"
 firebaseBom = "34.18.0"
 googleServices = "4.5.0"
 junit = "4.13.2"
@@ -77,6 +86,10 @@ androidx-datastore-preferences = { group = "androidx.datastore", name = "datasto
 
 # EXIF orientation for uploaded profile pictures — see the header note.
 androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
+
+# Video re-encoding for the attachment upload — see the header note.
+androidx-media3-transformer = { group = "androidx.media3", name = "media3-transformer", version.ref = "media3" }
+androidx-media3-effect = { group = "androidx.media3", name = "media3-effect", version.ref = "media3" }
 
 # Firebase — messaging ONLY. Push is the sole Google service this app
 # uses; no analytics, no crashlytics, no firebase-core: the privacy

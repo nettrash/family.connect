@@ -38,8 +38,11 @@ import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
+import me.nettrash.familyconnect.data.repo.AttachmentRepository
+import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
+import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeConnectivityObserver
@@ -52,6 +55,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import java.time.ZoneOffset
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -77,6 +81,7 @@ class ChatViewModelTest {
     private val repoScope = CoroutineScope(dispatcher + SupervisorJob())
     private lateinit var db: AppDatabase
     private lateinit var chatApi: FakeChatApi
+    private val attachmentApi = FakeAttachmentApi()
     private lateinit var socket: FakeChatSocket
     private lateinit var settings: FakeSettingsRepository
     private lateinit var chatRepository: ChatRepository
@@ -108,6 +113,7 @@ class ChatViewModelTest {
         chatRepository = ChatRepository(chatApi, db.chatDao(), socket)
         messageRepository = MessageRepository(
             chatApi = chatApi,
+            attachmentApi = attachmentApi,
             messageDao = db.messageDao(),
             chatDao = db.chatDao(),
             socket = socket,
@@ -151,6 +157,20 @@ class ChatViewModelTest {
             linkPreviewRepository = LinkPreviewRepository(
                 okHttp = OkHttpClient(),
                 scope = CoroutineScope(StandardTestDispatcher(testScheduler)),
+            ),
+            // Real MediaPrep over Robolectric's ContentResolver: these
+            // tests never pick media, so nothing here is exercised.
+            mediaPrep = MediaPrep(
+                context = RuntimeEnvironment.getApplication(),
+                contentResolver = RuntimeEnvironment.getApplication().contentResolver,
+            ),
+            attachmentApi = attachmentApi,
+            attachments = AttachmentRepository(
+                context = RuntimeEnvironment.getApplication(),
+                attachmentApi = attachmentApi,
+                settings = settings,
+                connectivity = FakeConnectivityObserver(),
+                scope = repoScope,
             ),
         )
     }

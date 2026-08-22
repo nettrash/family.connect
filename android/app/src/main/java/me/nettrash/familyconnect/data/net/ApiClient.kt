@@ -42,8 +42,12 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.File
+import java.io.IOException
+import java.time.Duration
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -168,9 +172,70 @@ class ApiClient @Inject constructor(
             it.body.string()
         }
 
-    /** Fetch a binary response body (profile pictures). */
+    /** Fetch a binary response body (profile pictures, previews). */
     suspend fun rawDownload(path: String): ApiResult<ByteArray> =
         send("GET", path, null, auth = true, overrideBase = null) { it.body.bytes() }
+
+    /**
+     * Send a FILE as the request body — the attachment upload.
+     *
+     * `asRequestBody` streams from disk: a 100 MB video is never held in
+     * memory in one piece, on a phone that also has to keep the chat
+     * scrolling. That is the whole reason this exists next to [rawUpload],
+     * which takes the bytes it is given.
+     */
+    suspend fun rawUploadFile(
+        method: String,
+        path: String,
+        file: File,
+        contentType: String,
+    ): ApiResult<String> =
+        send(
+            method,
+            path,
+            file.asRequestBody(contentType.toMediaType()),
+            auth = true,
+            overrideBase = null,
+            timeout = UPLOAD_TIMEOUT,
+        ) { it.body.string() }
+
+    /**
+     * Stream a response body straight into [destination].
+     *
+     * Writes to a `.part` file and renames on completion, so a download cut
+     * off half-way can never be mistaken for a cached photo — the same
+     * trick the server uses on the way in (server/src/storage.rs).
+     */
+    suspend fun rawDownloadToFile(path: String, destination: File): ApiResult<Unit> =
+        send("GET", path, null, auth = true, overrideBase = null) { response ->
+            val part = File(destination.parentFile, destination.name + ".part")
+            part.parentFile?.mkdirs()
+            try {
+                response.body.byteStream().use { input ->
+                    part.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (!part.renameTo(destination)) {
+                    part.delete()
+                    throw IOException("could not move the download into place")
+                }
+            } catch (e: Exception) {
+                part.delete()
+                throw e
+            }
+        }
+
+    /**
+     * An absolute URL plus the headers a media player needs to fetch it
+     * itself. The video is streamed by the player, not downloaded by us:
+     * playback starts in a second and a 90 MB clip never lands on disk.
+     */
+    suspend fun authorizedUrl(path: String): Pair<String, Map<String, String>>? {
+        val base = apiBase() ?: return null
+        val headers = tokenStore.load()
+            ?.let { mapOf("Authorization" to "Bearer $it") }
+            .orEmpty()
+        return base + path to headers
+    }
 
     /**
      * The one place a request is actually executed: shared so the 401
@@ -186,6 +251,7 @@ class ApiClient @Inject constructor(
         body: RequestBody?,
         auth: Boolean,
         overrideBase: String?,
+        timeout: Duration = Duration.ZERO,
         onSuccess: (Response) -> T,
     ): ApiResult<T> = withContext(Dispatchers.IO) {
         val base = overrideBase ?: apiBase()
@@ -199,8 +265,21 @@ class ApiClient @Inject constructor(
         }
         builder.method(method, body)
 
+        // An upload of up to 100 MB over a home connection outlives the
+        // default read/write timeouts; ZERO leaves the shared client's
+        // own values in place for every other call.
+        val call = if (timeout == Duration.ZERO) {
+            client
+        } else {
+            client.newBuilder()
+                .writeTimeout(timeout)
+                .readTimeout(timeout)
+                .callTimeout(timeout)
+                .build()
+        }
+
         try {
-            client.newCall(builder.build()).execute().use { response ->
+            call.newCall(builder.build()).execute().use { response ->
                 if (response.isSuccessful) {
                     ApiResult.Ok(onSuccess(response))
                 } else {
@@ -222,5 +301,8 @@ class ApiClient @Inject constructor(
 
     companion object {
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+        /** Long enough for a 100 MB video on a slow upstream link. */
+        val UPLOAD_TIMEOUT: Duration = Duration.ofMinutes(10)
     }
 }

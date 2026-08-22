@@ -21,7 +21,7 @@ import Foundation
 // MARK: - Client → server
 
 nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
-    case send(chatID: Int64, clientMsgID: String, body: String, replyToMessageID: Int64?)
+    case send(chatID: Int64, clientMsgID: String, body: String, replyToMessageID: Int64?, attachmentID: Int64?)
     case read(chatID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64)
     case ping
@@ -32,13 +32,14 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         case clientMsgID = "client_msg_id"
         case body
         case replyToMessageID = "reply_to_message_id"
+        case attachmentID = "attachment_id"
         case lastReadMessageID = "last_read_message_id"
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .send(let chatID, let clientMsgID, let body, let replyToMessageID):
+        case .send(let chatID, let clientMsgID, let body, let replyToMessageID, let attachmentID):
             try container.encode("send", forKey: .type)
             try container.encode(chatID, forKey: .chatID)
             try container.encode(clientMsgID, forKey: .clientMsgID)
@@ -47,6 +48,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
             // carry "reply_to_message_id": null — the protocol writes the
             // field as absent.
             try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
+            try container.encodeIfPresent(attachmentID, forKey: .attachmentID)
         case .read(let chatID, let lastReadMessageID):
             try container.encode("read", forKey: .type)
             try container.encode(chatID, forKey: .chatID)

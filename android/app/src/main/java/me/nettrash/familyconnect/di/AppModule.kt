@@ -51,11 +51,13 @@ import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.net.AndroidConnectivityObserver
 import me.nettrash.familyconnect.data.net.ApiClient
 import me.nettrash.familyconnect.data.net.AuthApi
+import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.AvatarApi
 import me.nettrash.familyconnect.data.net.BoardApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.DefaultAuthApi
+import me.nettrash.familyconnect.data.net.DefaultAttachmentApi
 import me.nettrash.familyconnect.data.net.DefaultAvatarApi
 import me.nettrash.familyconnect.data.net.DefaultBoardApi
 import me.nettrash.familyconnect.data.net.DefaultChatApi
@@ -100,6 +102,9 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindAvatarApi(impl: DefaultAvatarApi): AvatarApi
+
+    @Binds
+    abstract fun bindAttachmentApi(impl: DefaultAttachmentApi): AttachmentApi
 
     @Binds
     abstract fun bindBoardApi(impl: DefaultBoardApi): BoardApi
@@ -169,6 +174,8 @@ abstract class AppModule {
                     AppDatabase.MIGRATION_3_4,
                     AppDatabase.MIGRATION_4_5,
                     AppDatabase.MIGRATION_5_6,
+                    AppDatabase.MIGRATION_6_7,
+                    AppDatabase.MIGRATION_7_8,
                 )
                 .build()
 

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What FileProvider may hand out.
+
+  Deliberately ONE directory, not the whole cache: the only files this app
+  shares are the attachments it downloaded for the user to open. Anything
+  broader would let a malformed Uri reach the message database or the
+  session cache that sit beside it.
+-->
+<paths>
+    <cache-path
+        name="attachment_files"
+        path="attachments/files/" />
+</paths>

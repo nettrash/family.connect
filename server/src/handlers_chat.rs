@@ -134,7 +134,7 @@ const MESSAGE_COLS: &str = "m.id, m.chat_id, m.sender_id, m.client_msg_id, m.bod
                             att.id AS att_id, att.kind AS att_kind, att.mime AS att_mime, \
                             att.size_bytes AS att_size, att.width AS att_width, \
                             att.height AS att_height, att.duration_ms AS att_duration_ms, \
-                            att.has_preview AS att_has_preview";
+                            att.has_preview AS att_has_preview, att.name AS att_name";
 const MESSAGE_FROM: &str = "FROM messages m LEFT JOIN messages p \
                             ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id \
                             LEFT JOIN attachments att ON att.message_id = m.id";
@@ -415,7 +415,7 @@ async fn claim_attachment(
     let row = sqlx::query(
         "UPDATE attachments SET message_id = $3
          WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL
-         RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview",
+         RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name",
     )
     .bind(attachment_id)
     .bind(uploader_id)

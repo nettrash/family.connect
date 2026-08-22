@@ -244,6 +244,13 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.exifinterface)
 
+    // Video transcoding for photo/video messages (docs/protocol.md,
+    // "Photos and videos"). Only the sending side: a clip over the size
+    // ceiling is re-encoded to 720p before upload. Playback uses the
+    // platform's VideoView, so no ExoPlayer/media3-ui here.
+    implementation(libs.androidx.media3.transformer)
+    implementation(libs.androidx.media3.effect)
+
     // Firebase Cloud Messaging — push notifications (docs/protocol.md,
     // "Push notifications"). Messaging is the ONLY Firebase artifact: no
     // analytics, no crashlytics — the app's privacy posture is that user

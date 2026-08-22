@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 6.
+ * Room database, version 8.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 6,
+    version = 8,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -124,6 +124,38 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE messages ADD COLUMN editSeq INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE messages ADD COLUMN editedAt INTEGER")
                 db.execSQL("ALTER TABLE chats ADD COLUMN maxEditSeq INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v7: photos and videos. The two NOT NULL columns carry DEFAULTs
+         * because an existing message has an answer for them ("no bytes",
+         * "no preview"); the rest are nullable because their absence is
+         * the meaning — a message with no attachment has no width.
+         */
+        val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentId INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentKind TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentMime TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentSize INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentWidth INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentHeight INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentDurationMs INTEGER")
+                db.execSQL(
+                    "ALTER TABLE messages ADD COLUMN attachmentHasPreview INTEGER NOT NULL DEFAULT 0",
+                )
+            }
+        }
+
+        /**
+         * v8: the third attachment kind. A file's NAME is its identity —
+         * nullable with no default, because a photo has none and "" would
+         * be a name that renders as nothing.
+         */
+        val MIGRATION_7_8: Migration = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentName TEXT")
             }
         }
     }

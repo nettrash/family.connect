@@ -50,6 +50,12 @@ sealed interface ClientFrame {
          * byte-identical to what it was before replies existed.
          */
         @SerialName("reply_to_message_id") val replyToMessageId: Long? = null,
+        /**
+         * Optional: an uploaded photo or video this message claims
+         * (protocol.md, "Photos, videos and files"). Omitted the same way, for
+         * the same reason.
+         */
+        @SerialName("attachment_id") val attachmentId: Long? = null,
     ) : ClientFrame
 
     @Serializable

@@ -63,6 +63,8 @@ nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     var replyTo: ReplyToSnapshot?
     /// True once the body has been edited — the bubble says so.
     var isEdited: Bool = false
+    /// The photo or video this message carries.
+    var attachment: AttachmentDTO?
 }
 
 /// The quote a reply draws above its own text.
@@ -116,7 +118,8 @@ extension MessageSnapshot {
             state: entity.state,
             reactions: entity.reactionList,
             replyTo: entity.replySnapshot,
-            isEdited: entity.editSeq > 0
+            isEdited: entity.editSeq > 0,
+            attachment: entity.attachmentSnapshot
         )
     }
 }

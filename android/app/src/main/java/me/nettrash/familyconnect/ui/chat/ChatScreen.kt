@@ -54,6 +54,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Image
+import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -98,9 +102,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Schedule
@@ -112,6 +119,7 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
@@ -203,7 +211,11 @@ import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.LinkPreviewState
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
+import androidx.core.content.FileProvider
+import java.io.File
+import me.nettrash.familyconnect.ui.components.AttachmentBlock
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
 import me.nettrash.familyconnect.ui.components.EmptyState
@@ -242,7 +254,12 @@ fun ChatScreen(
     val linkPreviews by viewModel.linkPreviews.collectAsStateWithLifecycle()
     val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
 
+    val mediaState by viewModel.mediaState.collectAsStateWithLifecycle()
+
     var failedActionTarget by remember { mutableStateOf<String?>(null) }
+
+    // The attachment open full screen, and the picker that starts a send.
+    var viewingAttachment by remember { mutableStateOf<AttachmentDto?>(null) }
 
     // The message the floating capsule is open for, and the one the "+"
     // full-picker sheet is open for. Both are transient snapshots.
@@ -268,6 +285,36 @@ fun ChatScreen(
     // Copy and share from the message context menu.
     val clipboard = LocalClipboard.current
     val context = LocalContext.current
+
+    // The system photo picker: no permission, no gallery access — it
+    // hands back one item's Uri and nothing else, which is the whole
+    // reason this app never asks for READ_MEDIA_IMAGES.
+    val pickMedia = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            val type = context.contentResolver.getType(uri).orEmpty()
+            viewModel.sendMedia(uri, isVideo = type.startsWith("video/"))
+        }
+    }
+    // OpenDocument, not GetContent: it returns a Uri whose read permission
+    // this process actually holds, which is what makes the copy in
+    // MediaPrep.prepareFile work. "*/*" because the family is never told
+    // what they may send (protocol.md, "Files").
+    val pickFile = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> if (uri != null) viewModel.sendFile(uri) }
+
+    // Downloading a file and handing it to whatever app can read it.
+    // Failures land in the composer's strip, which is the one place this
+    // screen already reports trouble with an attachment.
+    val openFile: (AttachmentDto) -> Unit = { attachment ->
+        scope.launch {
+            val file = viewModel.localFile(attachment)
+            val opened = file != null && openWithSystem(context, file, attachment.mime)
+            if (!opened) viewModel.reportAttachmentOpenFailed(file != null)
+        }
+    }
 
     val haptics = LocalHapticFeedback.current
     // Every path that actually applies a toggle (chip tap, capsule pick,
@@ -533,6 +580,13 @@ fun ChatScreen(
                                     onFailedTap = { failedActionTarget = it },
                                     onToggleReaction = applyToggle,
                                     onTapQuote = { pendingJumpId = it },
+                                    onOpenAttachment = { attachment ->
+                                        if (attachment.isFile) {
+                                            openFile(attachment)
+                                        } else {
+                                            viewingAttachment = attachment
+                                        }
+                                    },
                                     onLongPress = { pressed, bounds ->
                                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                         pickerTarget = ReactionPickerTarget(pressed, bounds)
@@ -614,6 +668,13 @@ fun ChatScreen(
                 }
             }
 
+            viewingAttachment?.let { attachment ->
+                AttachmentViewer(
+                    attachment = attachment,
+                    streamUrl = viewModel::attachmentStreamUrl,
+                    onDismiss = { viewingAttachment = null },
+                )
+            }
             InputBar(
                 state = viewModel.inputState,
                 onSend = viewModel::send,
@@ -625,6 +686,14 @@ fun ChatScreen(
                 focusRequester = focusRequester,
                 isEditing = editTarget != null,
                 onCancelEdit = viewModel::cancelEdit,
+                mediaState = mediaState,
+                onPickMedia = {
+                    pickMedia.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
+                    )
+                },
+                onPickFile = { pickFile.launch(arrayOf("*/*")) },
+                onDismissMediaError = viewModel::clearMediaState,
             )
         }
     }
@@ -1252,6 +1321,7 @@ private fun MessageBubble(
     onLongPress: (ChatListItem.MessageItem, Rect) -> Unit,
     onPositioned: (ChatListItem.MessageItem, Rect) -> Unit,
     onTapQuote: (Long) -> Unit,
+    onOpenAttachment: (AttachmentDto) -> Unit,
 ) {
     val entity = item.entity
     // 18dp corners, tightened to 4dp where a bubble meets a same-sender
@@ -1416,6 +1486,7 @@ private fun MessageBubble(
                     },
                     onTextLongPress = { onLongPress(item, bubbleBounds) },
                     onTapQuote = onTapQuote,
+                    onOpenAttachment = onOpenAttachment,
                 )
             }
         }
@@ -1776,6 +1847,8 @@ private fun BubbleContent(
     onTextLongPress: () -> Unit,
     /** Tapping the quote asks to jump to the quoted message. */
     onTapQuote: (Long) -> Unit,
+    /** Tapping a photo or video opens it full screen. */
+    onOpenAttachment: (AttachmentDto) -> Unit,
 ) {
     // Aligned to the balloon's own side so the chip row (and a short
     // body under a wide row) hugs the same edge as the timestamp —
@@ -1858,19 +1931,31 @@ private fun BubbleContent(
                 )
             }
         }
-        Text(
-            text = body,
-            onTextLayout = { textLayout = it },
-            modifier = textModifier,
-            style = if (emojiFontSize != null) {
-                MaterialTheme.typography.bodyMedium.copy(
-                    fontSize = emojiFontSize.sp,
-                    lineHeight = TextUnit.Unspecified,
-                )
-            } else {
-                MaterialTheme.typography.bodyMedium
-            },
-        )
+        // A photo or video sits above the caption, inside the balloon.
+        entity.attachment?.let { attachment ->
+            AttachmentBlock(
+                attachment = attachment,
+                onOpen = { onOpenAttachment(attachment) },
+            )
+            if (entity.body.isNotEmpty()) Spacer(Modifier.height(6.dp))
+        }
+        // A photo needs no caption, and an empty Text would still take a
+        // line's height inside the balloon.
+        if (entity.body.isNotEmpty()) {
+            Text(
+                text = body,
+                onTextLayout = { textLayout = it },
+                modifier = textModifier,
+                style = if (emojiFontSize != null) {
+                    MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = emojiFontSize.sp,
+                        lineHeight = TextUnit.Unspecified,
+                    )
+                } else {
+                    MaterialTheme.typography.bodyMedium
+                },
+            )
+        }
         // The first web link's preview, once it has landed. Asking for
         // it is what starts the fetch — gated on the setting, so a
         // switched-off device never touches the linked site.
@@ -2088,6 +2173,54 @@ private fun StatusGlyph(
     }
 }
 
+/** What the composer shows while a photo or video is on its way. */
+@Composable
+private fun MediaStrip(
+    state: ChatViewModel.MediaSendState,
+    onDismiss: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        when (state) {
+            ChatViewModel.MediaSendState.Preparing,
+            ChatViewModel.MediaSendState.Uploading,
+            -> {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text(
+                    text = if (state == ChatViewModel.MediaSendState.Preparing) {
+                        "Preparing…"
+                    } else {
+                        "Sending…"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            is ChatViewModel.MediaSendState.Failed -> {
+                Icon(
+                    imageVector = Icons.Filled.ErrorOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    text = state.reason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onDismiss) { Text("Dismiss") }
+            }
+            ChatViewModel.MediaSendState.Idle -> Unit
+        }
+    }
+}
+
 @Composable
 private fun InputBar(
     state: TextFieldState,
@@ -2098,6 +2231,10 @@ private fun InputBar(
     focusRequester: FocusRequester,
     isEditing: Boolean,
     onCancelEdit: () -> Unit,
+    mediaState: ChatViewModel.MediaSendState,
+    onPickMedia: () -> Unit,
+    onPickFile: () -> Unit,
+    onDismissMediaError: () -> Unit,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
@@ -2112,6 +2249,9 @@ private fun InputBar(
             if (isEditing) {
                 EditBanner(onCancel = onCancelEdit)
             }
+            if (mediaState != ChatViewModel.MediaSendState.Idle) {
+                MediaStrip(state = mediaState, onDismiss = onDismissMediaError)
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2125,6 +2265,46 @@ private fun InputBar(
                 // cannot race a late IME event resurrecting the sent
                 // text — the failure mode of value/onValueChange over
                 // an async flow.
+                // Editing borrows the composer to rewrite an existing
+                // message, which has no second attachment to add.
+                // One "attach" intent with two sources — the composer is
+                // too narrow for two buttons beside the field.
+                var attachMenuOpen by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(
+                        onClick = { attachMenuOpen = true },
+                        enabled = !isEditing && mediaState == ChatViewModel.MediaSendState.Idle,
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AddCircleOutline,
+                            contentDescription = "Attach a photo, video or file",
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = attachMenuOpen,
+                        onDismissRequest = { attachMenuOpen = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Photo or video") },
+                            leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
+                            onClick = {
+                                attachMenuOpen = false
+                                onPickMedia()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("File") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.InsertDriveFile, contentDescription = null)
+                            },
+                            onClick = {
+                                attachMenuOpen = false
+                                onPickFile()
+                            },
+                        )
+                    }
+                }
                 TextField(
                     state = state,
                     // heightIn beats the field's 56.dp defaultMinSize, which
@@ -2196,4 +2376,26 @@ private fun InputBar(
             }
         }
     }
+}
+
+/**
+ * Hand a downloaded attachment to whatever app can read it.
+ *
+ * The Uri comes from FileProvider: a `file://` one has thrown
+ * FileUriExposedException since Android 7, and the grant here is scoped to
+ * this single Intent rather than to the directory. Returns false when
+ * nothing on the device can open the type — the caller says so rather than
+ * letting the tap do nothing.
+ */
+private fun openWithSystem(context: Context, file: File, mime: String): Boolean {
+    val uri = runCatching {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }.getOrNull() ?: return false
+
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, mime.ifEmpty { "*/*" })
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    return runCatching { context.startActivity(intent); true }.getOrDefault(false)
 }

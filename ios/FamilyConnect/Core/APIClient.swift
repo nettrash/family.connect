@@ -61,6 +61,10 @@ actor APIClient {
 
     /// Per-request timeout. See file header.
     private let timeout: TimeInterval = 15
+    /// Uploads get their own, far longer budget: 100 MB over a phone's
+    /// uplink is minutes, not seconds, and the 15 s that suits a JSON call
+    /// would cancel every video.
+    private let uploadTimeout: TimeInterval = 600
 
     /// `session` is the only test seam — see file header.
     init(serverURL: URL?, session: URLSession = .shared) {
@@ -258,10 +262,12 @@ actor APIClient {
         /// Absent, never null, on an ordinary message — Encodable omits a
         /// nil optional, which is exactly what the protocol writes.
         let replyToMessageID: Int64?
+        let attachmentID: Int64?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
             case replyToMessageID = "reply_to_message_id"
+            case attachmentID = "attachment_id"
         }
     }
 
@@ -271,15 +277,110 @@ actor APIClient {
         chatID: Int64,
         clientMsgID: String,
         body: String,
-        replyToMessageID: Int64? = nil
+        replyToMessageID: Int64? = nil,
+        attachmentID: Int64? = nil
     ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
             "POST", "/chats/\(chatID)/messages",
             body: SendMessageRequest(
                 clientMsgID: clientMsgID,
                 body: body,
-                replyToMessageID: replyToMessageID))
+                replyToMessageID: replyToMessageID,
+                attachmentID: attachmentID))
         return response.message
+    }
+
+    // MARK: - Photos, videos and files
+
+    /// Upload a prepared file, STREAMING IT FROM DISK.
+    ///
+    /// `upload(for:fromFile:)`, not a Data body: a 100 MB video read into
+    /// memory is 100 MB resident on a phone that also has to render a chat.
+    /// Metadata rides in the query string, so there is no multipart body
+    /// for either side to assemble or parse.
+    func uploadAttachment(
+        fileURL: URL,
+        mime: String,
+        kind: String,
+        width: Int?,
+        height: Int?,
+        durationMS: Int?,
+        name: String? = nil
+    ) async throws -> AttachmentDTO {
+        guard let serverURL else { throw APIError.notConfigured }
+        var query = [URLQueryItem(name: "kind", value: kind)]
+        if let width { query.append(URLQueryItem(name: "width", value: String(width))) }
+        if let height { query.append(URLQueryItem(name: "height", value: String(height))) }
+        if let durationMS {
+            query.append(URLQueryItem(name: "duration_ms", value: String(durationMS)))
+        }
+        // Required for a file, ignored otherwise. URLComponents percent-
+        // encodes it, so a name with spaces or umlauts survives the trip.
+        if let name { query.append(URLQueryItem(name: "name", value: name)) }
+        guard let url = Self.endpointURL(base: serverURL, path: "/attachments", query: query) else {
+            throw APIError.notConfigured
+        }
+
+        var request = URLRequest(url: url, timeoutInterval: uploadTimeout)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(mime, forHTTPHeaderField: "Content-Type")
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        let (data, response) = try await uploadFromFile(request, fileURL: fileURL)
+        guard (200..<300).contains(response.statusCode) else {
+            throw Self.mapError(status: response.statusCode, data: data)
+        }
+        let decoded: AttachmentResponse = try decodeResponse(data)
+        return decoded.attachment
+    }
+
+    /// The bubble's preview: a small JPEG, so a plain Data body is fine.
+    func uploadPreview(attachmentID: Int64, jpeg: Data) async throws {
+        _ = try await perform(
+            "PUT", "/attachments/\(attachmentID)/preview",
+            query: [], bodyData: jpeg, contentType: "image/jpeg")
+    }
+
+    /// The bytes of an attachment, or its preview. Returns nil on a 404 —
+    /// which is also what "not visible to you" answers.
+    func attachmentData(id: Int64, preview: Bool) async throws -> Data? {
+        do {
+            let path = preview ? "/attachments/\(id)/preview" : "/attachments/\(id)"
+            let (data, _) = try await perform("GET", path, query: [], bodyData: nil)
+            return data
+        } catch APIError.notFound(_) {
+            return nil
+        }
+    }
+
+    /// A URL an AVPlayer can stream from directly, with the session token
+    /// attached — the player fetches bytes itself rather than waiting for
+    /// the whole video to download.
+    func attachmentStreamURL(id: Int64) -> (url: URL, headers: [String: String])? {
+        guard let serverURL,
+              let url = Self.endpointURL(base: serverURL, path: "/attachments/\(id)")
+        else { return nil }
+        var headers: [String: String] = [:]
+        if let token { headers["Authorization"] = "Bearer \(token)" }
+        return (url, headers)
+    }
+
+    private func uploadFromFile(
+        _ request: URLRequest,
+        fileURL: URL
+    ) async throws -> (Data, HTTPURLResponse) {
+        do {
+            let (data, response) = try await session.upload(for: request, fromFile: fileURL)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.transport(URLError(.badServerResponse))
+            }
+            return (data, http)
+        } catch let error as URLError {
+            throw APIError.transport(error)
+        }
     }
 
     // MARK: - Board

@@ -63,6 +63,8 @@ struct MessageBubbleView: View {
     var currentUserID: Int64 = 0
     /// Tapping a quote asks to jump to the quoted message.
     var onTapQuote: (Int64) -> Void = { _ in }
+    /// Tapping a photo or video asks to open it full-screen.
+    var onOpenAttachment: (AttachmentDTO) -> Void = { _ in }
     var onRetry: () -> Void = {}
     var onDelete: () -> Void = {}
     var onToggleReaction: (String) -> Void = { _ in }
@@ -394,12 +396,20 @@ struct MessageBubbleView: View {
             if let quote = message.replyTo {
                 quoteBlock(quote)
             }
-            Text(
-                isEmojiOnly
-                    ? AttributedString(message.body)
-                    : MessageLinks.attributedBody(message.body, isMine: isMine))
-                .font(bubbleFont)
-                .foregroundStyle(bubbleContentColor)
+            if let attachment = message.attachment {
+                AttachmentView(attachment: attachment, onOpen: { onOpenAttachment(attachment) })
+                    .padding(.bottom, message.body.isEmpty ? 0 : 4)
+            }
+            // A photo needs no caption, and an empty Text would still take
+            // a line's height inside the balloon.
+            if !message.body.isEmpty {
+                Text(
+                    isEmojiOnly
+                        ? AttributedString(message.body)
+                        : MessageLinks.attributedBody(message.body, isMine: isMine))
+                    .font(bubbleFont)
+                    .foregroundStyle(bubbleContentColor)
+            }
 
             if let preview = linkPreview {
                 LinkPreviewCard(

@@ -38,6 +38,7 @@ import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAuthApi
+import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeFamilyApi
@@ -73,6 +74,7 @@ class SyncEngineTest {
     private lateinit var db: AppDatabase
     private val authApi = FakeAuthApi()
     private val chatApi = FakeChatApi()
+    private val attachmentApi = FakeAttachmentApi()
     private val familyApi = FakeFamilyApi()
     private val socket = FakeChatSocket()
     private val tokenStore = FakeTokenStore("tok")
@@ -129,6 +131,7 @@ class SyncEngineTest {
         )
         val messageRepository = MessageRepository(
             chatApi = chatApi,
+            attachmentApi = attachmentApi,
             messageDao = db.messageDao(),
             chatDao = db.chatDao(),
             socket = socket,

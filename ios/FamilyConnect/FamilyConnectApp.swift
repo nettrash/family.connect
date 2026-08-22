@@ -52,6 +52,7 @@ struct FamilyConnectApp: App {
     /// stored property, not @State: rebuilding it per render would throw
     /// the cache away every time anything above it changed.
     private let avatars: AvatarStore?
+    private let attachments: AttachmentStore?
 
     init() {
         // UI-test hook: launch with a clean slate so the smoke test can
@@ -106,17 +107,23 @@ struct FamilyConnectApp: App {
             self.coordinator = coordinator
             self.pushRegistrar = registrar
             let avatars = AvatarStore(api: coordinator.api)
+            let attachments = AttachmentStore(api: coordinator.api)
             // Logout wipes the store; faces must go with it, or the next
             // account inherits this one's.
-            session.clearAvatarCache = { avatars.clear() }
+            session.clearAvatarCache = {
+                avatars.clear()
+                attachments.clear()
+            }
             // A 401 on a picture is as final as a 401 on a message.
             avatars.onUnauthorized = { [weak session] in session?.handleUnauthorized() }
             self.avatars = avatars
+            self.attachments = attachments
         } else {
             self.session = nil
             self.coordinator = nil
             self.pushRegistrar = nil
             self.avatars = nil
+            self.attachments = nil
         }
     }
 
@@ -133,6 +140,7 @@ struct FamilyConnectApp: App {
                         // a busy chat is fetched once, not once per bubble.
                         .environment(previewLoader)
                         .environment(avatars ?? AvatarStore(api: coordinator.api))
+                        .environment(attachments ?? AttachmentStore(api: coordinator.api))
                 }
             case .failure(let error):
                 StoreErrorView(error: error)

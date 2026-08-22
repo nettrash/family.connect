@@ -70,13 +70,15 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
           — plus "reply_to": {ReplyTo} when (and only when) the message is a reply.
           — plus "edited_at": "…" and "edit_seq": 88 when (and only when) the body has been
             edited. Both absent on a message still in its original form.
-          — plus "attachment": {Attachment} when the message carries a photo or video.
+          — plus "attachment": {Attachment} when the message carries a photo, video or file.
 ReplyTo   {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
 Reaction  {"user_id": 9, "emoji": "❤️"}
-Attachment {"id": 34, "kind": "photo|video", "mime": "image/jpeg", "size": 182734,
-            "width": 1600, "height": 1200, "duration_ms": 8400, "has_preview": true}
+Attachment {"id": 34, "kind": "photo|video|file", "mime": "image/jpeg", "size": 182734,
+            "width": 1600, "height": 1200, "duration_ms": 8400, "has_preview": true,
+            "name": "receipts.pdf"}
            — "duration_ms" on videos only; "width"/"height" absent when the uploader
-             could not determine them
+             could not determine them; "name" on files only (their whole identity),
+             and a file never has a preview or dimensions
 Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow",
            "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88}
           — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
@@ -181,11 +183,11 @@ the change feed as `{"id": 12, "deleted": true, "board_seq": 91}` with no conten
 client who was offline when a note was removed would go on showing it forever — there is no other
 signal that it is gone. The full-board read never returns tombstones; only the change feed does.
 
-### Photos and videos
+### Photos, videos and files
 
-A message may carry one photo or one video. One, not many: sending three photos makes three
-messages, which is what a thread shows anyway, and it keeps both the wire shape and the bubble
-layout honest.
+A message may carry one attachment: a photo, a video, or any other file. One, not many: sending
+three photos makes three messages, which is what a thread shows anyway, and it keeps both the wire
+shape and the bubble layout honest.
 
 **Uploading is a separate step from sending.** The bytes go up first, on their own request, and the
 message that follows names the attachment by id. A 100 MB video and a 30-byte message have nothing
@@ -209,6 +211,25 @@ magic number and stores what it is given, exactly as it does for avatars. That m
 the downscaled photo, or the poster frame of a video — is produced and uploaded by the client. A
 message may be sent before its preview arrives; `has_preview` says whether one is there yet.
 
+#### Files
+
+`kind=file` is the third kind, and it is the one that accepts ANYTHING: a family sending each other
+documents should never be told their file is not allowed, and a fixed list would refuse the very
+things a particular family lives on. A file therefore skips the magic-number check entirely — its
+declared type is metadata, not a claim the server verifies — and carries a `name`, which for a
+document is its whole identity. `name` is required for `kind=file` (1–255 characters), ignored for
+a photo or a video, and echoed back on the attachment.
+
+Accepting anything is safe only because the DOWNLOAD is defensive. `GET /attachments/{id}` for a
+file answers with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`, so
+nothing a member uploads can be coaxed into rendering or executing from the family server's own
+origin. The filename in that header is sanitised: control characters, quotes and path separators
+are stripped (a header is a line — an unescaped newline in a filename is a header injection), and
+anything non-ASCII goes in the RFC 5987 `filename*` form.
+
+A file has no preview, no dimensions and no duration; clients draw a row with its name and size.
+`PUT /attachments/{id}/preview` on one is `invalid_attachment`.
+
 An attachment belongs to whoever uploaded it until a message claims it, and to that message's chat
 afterwards. Before it is claimed only the uploader may read it; after, every member of the chat
 may. An attachment can be claimed once: a second message naming it is `attachment_already_used`.
@@ -219,9 +240,13 @@ A message carrying an attachment MAY have an empty body: a photo needs no captio
 applies only to a message with neither.
 
 Size ceiling: **100 MB** by default (`limits.max_attachment_bytes`), and the preview has its own
-much smaller ceiling. Over either is `attachment_too_large` (413). Accepted types are `image/jpeg`,
-`image/png`, `image/heic`, `image/heif`, `video/mp4` and `video/quicktime`; anything else, or bytes
-that do not match the type declared, is `invalid_attachment`.
+much smaller ceiling. Over either is `attachment_too_large` (413).
+
+For `kind=photo` and `kind=video` the accepted types are `image/jpeg`, `image/png`, `image/heic`,
+`image/heif`, `video/mp4` and `video/quicktime`; a type outside that list, a type that contradicts
+the kind, or bytes that do not match the type declared, is `invalid_attachment`. For `kind=file`
+any type is accepted and none is verified — an absent or unparseable one is stored as
+`application/octet-stream`.
 
 Bytes are stored on the server's filesystem, not in PostgreSQL — at this size a database row means
 buffering 100 MB in memory on every read and write, and a `pg_dump` that grows without bound.
@@ -273,9 +298,9 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`), `width`, `height`, `duration_ms` (all optional; `duration_ms` for video). → `201 {attachment: Attachment}`. Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a type not accepted, 400 when the bytes do not match the declared type), `not_in_family`. |
-| `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only. Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
-| `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. Readable by the uploader always, and by every member of the chat once a message claims it; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Supports `Range`. |
+| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`file`), `width`, `height`, `duration_ms`, `name` (all optional except `name`, which is REQUIRED for `kind=file` and 1–255 characters). → `201 {attachment: Attachment}`. Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video, 400 when the bytes do not match the declared type or a file has no name), `not_in_family`. |
+| `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only, and never on a `file` (`invalid_attachment`). Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
+| `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. A `file` additionally gets `Content-Disposition: attachment; filename=…` (sanitised) and `X-Content-Type-Options: nosniff`, so an uploaded document can never render or execute from the server's own origin. Readable by the uploader always, and by every member of the chat once a message claims it; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Honours a single-byte-range `Range` request with `206` + `Content-Range` (`416` for a range past the end) — that is how a video player seeks, and without it scrubbing a 90 MB clip re-downloads it from the start. A multi-range or unrecognised `Range` is ignored and the whole body sent, per RFC 9110. |
 | `GET /attachments/{id}/preview` | → `200` with the preview JPEG, same access rules. `404` when there is no preview yet. |
 
 ### Board

@@ -88,6 +88,34 @@ final class MessageEntity {
     /// (docs/protocol.md, "Editing"). 0 = never edited.
     var editSeq: Int64 = 0
     var editedAt: Date?
+    /// The photo or video this message carries. Flat columns rather than a
+    /// relationship: an attachment belongs to exactly one message and is
+    /// never queried on its own, and the bytes are not here at all.
+    var attachmentID: Int64?
+    var attachmentKind: String?
+    var attachmentMIME: String?
+    var attachmentSize: Int64 = 0
+    var attachmentWidth: Int?
+    var attachmentHeight: Int?
+    var attachmentDurationMS: Int?
+    var attachmentHasPreview: Bool = false
+    /// Files only: their name is the whole thing a row shows.
+    var attachmentName: String?
+
+    /// The attachment as the views want it, or nil when there is none.
+    var attachmentSnapshot: AttachmentDTO? {
+        guard let attachmentID, let attachmentKind, let attachmentMIME else { return nil }
+        return AttachmentDTO(
+            id: attachmentID,
+            kind: attachmentKind,
+            mime: attachmentMIME,
+            size: attachmentSize,
+            width: attachmentWidth,
+            height: attachmentHeight,
+            durationMS: attachmentDurationMS,
+            hasPreview: attachmentHasPreview,
+            name: attachmentName)
+    }
 
     /// The quote as the views want it, or nil when this is not a reply.
     /// All three columns move together — a half-set row would be a bug
@@ -137,7 +165,8 @@ final class MessageEntity {
         replySenderID: Int64? = nil,
         replyExcerpt: String? = nil,
         editSeq: Int64 = 0,
-        editedAt: Date? = nil
+        editedAt: Date? = nil,
+        attachment: AttachmentDTO? = nil
     ) {
         self.localID = localID
         self.serverID = serverID
@@ -154,5 +183,14 @@ final class MessageEntity {
         self.replyExcerpt = replyExcerpt
         self.editSeq = editSeq
         self.editedAt = editedAt
+        self.attachmentID = attachment?.id
+        self.attachmentKind = attachment?.kind
+        self.attachmentMIME = attachment?.mime
+        self.attachmentSize = attachment?.size ?? 0
+        self.attachmentWidth = attachment?.width
+        self.attachmentHeight = attachment?.height
+        self.attachmentDurationMS = attachment?.durationMS
+        self.attachmentHasPreview = attachment?.hasPreview ?? false
+        self.attachmentName = attachment?.name
     }
 }

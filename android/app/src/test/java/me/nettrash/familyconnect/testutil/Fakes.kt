@@ -20,11 +20,14 @@ import kotlinx.coroutines.flow.StateFlow
 import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
+import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.AvatarApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.dto.ApproveResponse
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.AttachmentResponse
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
 import me.nettrash.familyconnect.data.net.dto.AvatarResponse
 import me.nettrash.familyconnect.data.net.dto.ChatResponse
@@ -58,6 +61,7 @@ import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.data.settings.TokenStore
+import java.io.File
 
 class FakeTokenStore(initial: String? = null) : TokenStore {
     var token: String? = initial
@@ -289,14 +293,19 @@ class FakeChatApi : ChatApi {
     /** Every reply target a REST send carried, in order. */
     val postedReplyTargets = mutableListOf<Long?>()
 
+    /** Every attachment id a REST send carried, in order. */
+    val postedAttachmentIds = mutableListOf<Long?>()
+
     override suspend fun postMessage(
         chatId: Long,
         clientMsgId: String,
         body: String,
         replyToMessageId: Long?,
+        attachmentId: Long?,
     ): ApiResult<MessageResponse> {
         postedMessages += Triple(chatId, clientMsgId, body)
         postedReplyTargets += replyToMessageId
+        postedAttachmentIds += attachmentId
         return postMessageHandler(chatId, clientMsgId, body)
     }
 
@@ -543,3 +552,84 @@ fun reactionState(
     reactionSeq = reactionSeq,
     reactions = reactions,
 )
+
+/**
+ * Scriptable AttachmentApi. Records what was uploaded, in order, so the
+ * send-order invariant (bytes, then preview, then the message) can be
+ * asserted without a server.
+ */
+class FakeAttachmentApi : AttachmentApi {
+
+    /** What `upload` answers with; a failure by default would hide bugs. */
+    var uploadHandler: (File, String, String) -> ApiResult<AttachmentResponse> = { _, _, _ ->
+        ApiResult.Ok(AttachmentResponse(attachment(id = 34)))
+    }
+    var previewHandler: (Long, ByteArray) -> ApiResult<Unit> = { _, _ -> ApiResult.Ok(Unit) }
+
+    /** Every call this fake saw, in order: "upload", "preview", "download". */
+    val calls = mutableListOf<String>()
+    val uploadedFiles = mutableListOf<File>()
+    val uploadedMetadata = mutableListOf<Triple<String, Int?, Int?>>()
+    /** Every name a file upload carried, in order. */
+    val uploadedNames = mutableListOf<String?>()
+    val uploadedPreviews = mutableListOf<Pair<Long, Int>>()
+
+    override suspend fun upload(
+        file: File,
+        mime: String,
+        kind: String,
+        width: Int?,
+        height: Int?,
+        durationMs: Int?,
+        name: String?,
+    ): ApiResult<AttachmentResponse> {
+        calls += "upload"
+        uploadedFiles += file
+        uploadedMetadata += Triple(kind, width, height)
+        uploadedNames += name
+        return uploadHandler(file, mime, kind)
+    }
+
+    override suspend fun uploadPreview(attachmentId: Long, jpeg: ByteArray): ApiResult<Unit> {
+        calls += "preview"
+        uploadedPreviews += attachmentId to jpeg.size
+        return previewHandler(attachmentId, jpeg)
+    }
+
+    override suspend fun download(
+        attachmentId: Long,
+        preview: Boolean,
+        destination: File,
+    ): ApiResult<Unit> {
+        calls += "download"
+        return ApiResult.HttpError(404, "attachment_not_found", "no")
+    }
+
+    override suspend fun streamUrl(attachmentId: Long): Pair<String, Map<String, String>>? =
+        "https://home.example/api/v1/attachments/$attachmentId" to
+            mapOf("Authorization" to "Bearer test")
+
+    companion object {
+        fun attachment(
+            id: Long = 34,
+            kind: String = "photo",
+            hasPreview: Boolean = false,
+            name: String? = null,
+        ) = AttachmentDto(
+            id = id,
+            kind = kind,
+            mime = when (kind) {
+                "video" -> "video/mp4"
+                "file" -> "application/pdf"
+                else -> "image/jpeg"
+            },
+            size = 4096,
+            // A file has no shape and no preview to reserve one from.
+            width = if (kind == "file") null else 1600,
+            height = if (kind == "file") null else 1200,
+            durationMs = if (kind == "video") 8400 else null,
+            hasPreview = hasPreview,
+            name = name ?: if (kind == "file") "receipts.pdf" else null,
+        )
+    }
+}

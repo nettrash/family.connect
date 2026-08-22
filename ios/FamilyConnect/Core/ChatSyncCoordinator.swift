@@ -110,6 +110,16 @@ final class ChatSyncCoordinator {
     var currentUserIDOverride: Int64?
     private var currentUserID: Int64 { currentUserIDOverride ?? AppSettings.currentUserID ?? -1 }
 
+    /// The delivery started by the most recent `send`/`sendMedia`.
+    ///
+    /// Test seam, and a sharp one: those two return as soon as the row is
+    /// enqueued, leaving delivery running in a detached Task. A test whose
+    /// ModelContainer goes out of scope while that Task is still touching
+    /// the context does not fail — SwiftData TRAPS, taking the whole test
+    /// process with it. Awaiting this is how a test stays alive until the
+    /// row has settled. Nothing in the app reads it.
+    private(set) var pendingDelivery: Task<Void, Never>?
+
     /// The coordinator owns its network collaborators; tests inject
     /// stub-session-backed instances through the same initializer.
     init(
@@ -488,6 +498,22 @@ final class ChatSyncCoordinator {
         entity.replyToMessageID = dto.replyTo?.messageID
         entity.replySenderID = dto.replyTo?.senderID
         entity.replyExcerpt = dto.replyTo?.excerpt
+        applyAttachment(dto, to: entity)
+    }
+
+    /// An attachment is fixed at send time and never changes — except
+    /// `has_preview`, which flips once the client's preview upload lands,
+    /// so the newest copy always wins.
+    private func applyAttachment(_ dto: MessageDTO, to entity: MessageEntity) {
+        entity.attachmentID = dto.attachment?.id
+        entity.attachmentKind = dto.attachment?.kind
+        entity.attachmentMIME = dto.attachment?.mime
+        entity.attachmentSize = dto.attachment?.size ?? 0
+        entity.attachmentWidth = dto.attachment?.width
+        entity.attachmentHeight = dto.attachment?.height
+        entity.attachmentDurationMS = dto.attachment?.durationMS
+        entity.attachmentHasPreview = dto.attachment?.hasPreview ?? false
+        entity.attachmentName = dto.attachment?.name
     }
 
     /// Apply one server message. `bumpUnread` is true only for live
@@ -530,7 +556,8 @@ final class ChatSyncCoordinator {
                 replySenderID: dto.replyTo?.senderID,
                 replyExcerpt: dto.replyTo?.excerpt,
                 editSeq: dto.editSeq ?? 0,
-                editedAt: dto.editedAt)
+                editedAt: dto.editedAt,
+                attachment: dto.attachment)
             modelContext.insert(entity)
         }
         // Embedded reaction state (history/resync pages): the same seq
@@ -645,8 +672,131 @@ final class ChatSyncCoordinator {
     @discardableResult
     func send(body: String, in chatID: Int64, replyTo: ReplyToDTO? = nil) -> String? {
         guard let localID = enqueue(body: body, in: chatID, replyTo: replyTo) else { return nil }
-        Task { await self.deliver(localID: localID) }
+        pendingDelivery = Task { await self.deliver(localID: localID) }
         return localID
+    }
+
+    /// Send a photo or video.
+    ///
+    /// The upload happens FIRST and the message is enqueued only once it
+    /// has an id — a message referring to bytes that never arrived would be
+    /// a bubble pointing at nothing. Which is also why this is not
+    /// optimistic: the composer holds the picked media, with progress,
+    /// until the server has it.
+    ///
+    /// The preview upload is deliberately best-effort and AFTER the send:
+    /// a bubble with no preview is a bubble that fetches the full image,
+    /// which is worse but not broken — whereas delaying the message on a
+    /// thumbnail would be silly.
+    func sendMedia(_ prepared: MediaPrep.Prepared, caption: String, in chatID: Int64) async -> Bool {
+        defer {
+            // The prepared file is ours; the picker's original is not.
+            try? FileManager.default.removeItem(at: prepared.fileURL)
+        }
+        let attachment: AttachmentDTO
+        do {
+            attachment = try await api.uploadAttachment(
+                fileURL: prepared.fileURL,
+                mime: prepared.mime,
+                kind: prepared.kind,
+                width: prepared.width,
+                height: prepared.height,
+                durationMS: prepared.durationMS,
+                name: prepared.name)
+        } catch APIError.unauthorized {
+            session?.handleUnauthorized()
+            return false
+        } catch {
+            AppLog.sync.info("Attachment upload failed: \(String(describing: error))")
+            return false
+        }
+
+        var hasPreview = false
+        if let preview = prepared.previewJPEG {
+            // Best-effort: a bubble with no preview fetches the full
+            // image, which is worse but not broken. The RESULT is what
+            // the pending row records — claiming a preview that failed
+            // would leave the bubble waiting for bytes that are not there
+            // until the ack corrects it.
+            do {
+                try await api.uploadPreview(attachmentID: attachment.id, jpeg: preview)
+                hasPreview = true
+            } catch {
+                AppLog.sync.info("Preview upload failed: \(String(describing: error))")
+            }
+        }
+
+        guard let localID = enqueue(body: caption, in: chatID, allowEmpty: true) else {
+            return false
+        }
+        if let row = fetchMessage(localID: localID) {
+            // The pending bubble draws its own attachment straight away;
+            // the ack replaces it with the server's copy.
+            row.attachmentID = attachment.id
+            row.attachmentKind = attachment.kind
+            row.attachmentMIME = attachment.mime
+            row.attachmentSize = attachment.size
+            row.attachmentWidth = attachment.width
+            row.attachmentHeight = attachment.height
+            row.attachmentDurationMS = attachment.durationMS
+            row.attachmentHasPreview = hasPreview
+            row.attachmentName = attachment.name
+            saveContext()
+        }
+        pendingDelivery = Task { await self.deliver(localID: localID) }
+        return true
+    }
+
+    /// A local URL for a file attachment, downloading it if this device
+    /// does not have it yet.
+    ///
+    /// The file is written under its REAL NAME inside a per-attachment
+    /// directory, because the name is what Quick Look puts in its title
+    /// bar and what Share hands to the next app — a cache keyed
+    /// "34.bin" would send "34.bin" to the recipient. The directory is
+    /// what keeps two files called `Invoice.pdf` apart.
+    ///
+    /// Returns nil when the bytes could not be fetched; the caller says so.
+    func localFileURL(for attachment: AttachmentDTO) async -> URL? {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let directory = caches
+            .appendingPathComponent("files", isDirectory: true)
+            .appendingPathComponent(String(attachment.id), isDirectory: true)
+        let name = Self.safeFileName(attachment.name ?? "file")
+        let destination = directory.appendingPathComponent(name)
+
+        if FileManager.default.fileExists(atPath: destination.path) {
+            return destination
+        }
+        guard let data = try? await api.attachmentData(id: attachment.id, preview: false) ?? nil
+        else {
+            // A 404 (gone, or not ours) and a transport failure look the
+            // same to the caller: it says "couldn't download" either way.
+            return nil
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true)
+            try data.write(to: destination, options: .atomic)
+        } catch {
+            AppLog.sync.info("Caching attachment failed: \(String(describing: error))")
+            return nil
+        }
+        return destination
+    }
+
+    /// A filename safe to create on this device. The server sanitises what
+    /// goes in its header; this is about the local filesystem — a name
+    /// with a slash in it would silently become a path.
+    nonisolated static func safeFileName(_ name: String) -> String {
+        let cleaned = name
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Leading dots hide the file from every picker it is handed to —
+        // all of them, so "..\u{2009}/x" style names cannot leave one behind.
+        let visible = String(cleaned.drop(while: { $0 == "." }))
+        return visible.isEmpty ? "file" : String(visible.prefix(255))
     }
 
     /// Edit a message's body. Author-only server-side; the UI hides the
@@ -679,9 +829,16 @@ final class ChatSyncCoordinator {
 
     /// Insert the pending row only (split from `send` so tests can drive
     /// `deliver` deterministically).
-    func enqueue(body: String, in chatID: Int64, replyTo: ReplyToDTO? = nil) -> String? {
+    func enqueue(
+        body: String,
+        in chatID: Int64,
+        replyTo: ReplyToDTO? = nil,
+        allowEmpty: Bool = false
+    ) -> String? {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+        // A photo needs no caption (docs/protocol.md) — but only an
+        // attachment may waive the non-empty rule.
+        guard !trimmed.isEmpty || allowEmpty else { return nil }
         let uuid = UUID().uuidString.lowercased()
         let now = Date()
         let entity = MessageEntity(
@@ -722,6 +879,7 @@ final class ChatSyncCoordinator {
         let chatID = row.chatID
         let body = row.body
         let replyToMessageID = row.replyToMessageID
+        let attachmentID = row.attachmentID
         row.state = .pending
         saveContext()
 
@@ -732,7 +890,8 @@ final class ChatSyncCoordinator {
                 chatID: chatID,
                 clientMsgID: clientMsgID,
                 body: body,
-                replyToMessageID: replyToMessageID))
+                replyToMessageID: replyToMessageID,
+                attachmentID: attachmentID))
             if await waitForAck(clientMsgID: clientMsgID, timeout: ackTimeout) { return }
         } catch {
             // fall through to REST
@@ -748,7 +907,8 @@ final class ChatSyncCoordinator {
                 chatID: chatID,
                 clientMsgID: clientMsgID,
                 body: body,
-                replyToMessageID: replyToMessageID)
+                replyToMessageID: replyToMessageID,
+                attachmentID: attachmentID)
             _ = upsert(dto, bumpUnread: false)
         } catch APIError.unauthorized {
             session?.handleUnauthorized()

@@ -10,6 +10,16 @@
          the first time the chat list is shown — see ChatListScreen). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Package visibility (Android 11+): without this, resolving "who can
+         open a PDF" returns nothing and every downloaded file looks
+         unopenable. Scoped to VIEW intents, not a blanket QUERY_ALL. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="*/*" />
+        </intent>
+    </queries>
+
     <application
         android:name=".FamilyConnectApp"
         android:allowBackup="true"
@@ -31,6 +41,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Hands a downloaded attachment to whatever app can open it.
+             A content:// Uri with a one-shot read grant is the only way
+             to share a file since Android 7 — a file:// Uri throws
+             FileUriExposedException — and `grantUriPermissions` keeps the
+             grant scoped to the single Intent rather than the directory. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- FCM entry point: token rotation (onNewToken) and foreground
              message delivery (onMessageReceived). Inert when the build has

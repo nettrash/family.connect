@@ -35,6 +35,7 @@ import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
@@ -56,6 +57,7 @@ import javax.inject.Singleton
 @Singleton
 class MessageRepository @Inject constructor(
     private val chatApi: ChatApi,
+    private val attachmentApi: AttachmentApi,
     private val messageDao: MessageDao,
     private val chatDao: ChatDao,
     private val socket: ChatSocket,
@@ -113,7 +115,76 @@ class MessageRepository @Inject constructor(
             ),
         )
         chatDao.updateLastMessage(chatId, trimmed, now, me)
-        dispatch(clientMsgId, chatId, trimmed, replyTo?.messageId)
+        dispatch(clientMsgId, chatId, trimmed, replyTo?.messageId, attachmentId = null)
+    }
+
+    /**
+     * Send a photo or video.
+     *
+     * The upload happens FIRST and the row is inserted only once the
+     * bytes have an id — a bubble pointing at an upload that never landed
+     * would be worse than a composer that is visibly busy. Which is why,
+     * unlike [send], this one is not optimistic.
+     *
+     * The preview upload is best-effort and comes BEFORE the message so
+     * the first render of the bubble already has a thumbnail; failing it
+     * is survivable (the bubble fetches the full photo instead), so it
+     * never fails the send.
+     *
+     * Returns false when the bytes did not make it — the caller keeps the
+     * picked media and says so.
+     */
+    suspend fun sendMedia(prepared: MediaPrep.Prepared, caption: String, chatId: Long): Boolean {
+        try {
+            val me = settings.state.first().myUserId ?: return false
+            val uploaded = attachmentApi.upload(
+                file = prepared.file,
+                mime = prepared.mime,
+                kind = prepared.kind,
+                width = prepared.width,
+                height = prepared.height,
+                durationMs = prepared.durationMs,
+                name = prepared.name,
+            )
+            val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment ?: return false
+
+            var hasPreview = false
+            prepared.previewJpeg?.let { jpeg ->
+                hasPreview = attachmentApi.uploadPreview(attachment.id, jpeg) is ApiResult.Ok
+            }
+
+            val body = caption.trim()
+            val clientMsgId = UUID.randomUUID().toString()
+            val now = clock.now()
+            messageDao.insert(
+                MessageEntity(
+                    clientMsgId = clientMsgId,
+                    serverId = null,
+                    chatId = chatId,
+                    senderId = me,
+                    // A photo needs no caption: an empty body is allowed
+                    // WITH an attachment (protocol.md), and only then.
+                    body = body,
+                    createdAt = now,
+                    status = MessageStatus.SENDING,
+                    attachmentId = attachment.id,
+                    attachmentKind = attachment.kind,
+                    attachmentMime = attachment.mime,
+                    attachmentSize = attachment.size,
+                    attachmentWidth = attachment.width,
+                    attachmentHeight = attachment.height,
+                    attachmentDurationMs = attachment.durationMs,
+                    attachmentHasPreview = hasPreview,
+                    attachmentName = attachment.name,
+                ),
+            )
+            chatDao.updateLastMessage(chatId, body, now, me)
+            dispatch(clientMsgId, chatId, body, null, attachment.id)
+            return true
+        } finally {
+            // The prepared file is ours whatever happened to it.
+            prepared.file.delete()
+        }
     }
 
     /** Re-enter the pipeline with the SAME UUID — the server dedups. */
@@ -121,7 +192,7 @@ class MessageRepository @Inject constructor(
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // already landed
         messageDao.setStatus(clientMsgId, MessageStatus.SENDING)
-        dispatch(clientMsgId, row.chatId, row.body, row.replyToMessageId)
+        dispatch(clientMsgId, row.chatId, row.body, row.replyToMessageId, row.attachmentId)
     }
 
     /** Discard a FAILED draft the user gave up on. */
@@ -136,7 +207,7 @@ class MessageRepository @Inject constructor(
     suspend fun flushPending() {
         messageDao.pendingSending().forEach { row ->
             if (!pendingAcks.containsKey(row.clientMsgId)) {
-                dispatch(row.clientMsgId, row.chatId, row.body, row.replyToMessageId)
+                dispatch(row.clientMsgId, row.chatId, row.body, row.replyToMessageId, row.attachmentId)
             }
         }
     }
@@ -146,19 +217,22 @@ class MessageRepository @Inject constructor(
         chatId: Long,
         body: String,
         replyToMessageId: Long?,
+        attachmentId: Long?,
     ) {
         val overSocket = socket.state.value == SocketState.Open &&
-            socket.trySend(ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId))
+            socket.trySend(
+                ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId, attachmentId),
+            )
         if (overSocket) {
             pendingAcks[clientMsgId] = scope.launch {
                 delay(ACK_TIMEOUT_MS)
                 pendingAcks.remove(clientMsgId)
                 // No ack in time — the frame may or may not have landed.
                 // REST with the same client_msg_id is safe either way.
-                restFallback(clientMsgId, chatId, body, replyToMessageId)
+                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentId)
             }
         } else {
-            scope.launch { restFallback(clientMsgId, chatId, body, replyToMessageId) }
+            scope.launch { restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentId) }
         }
     }
 
@@ -167,10 +241,12 @@ class MessageRepository @Inject constructor(
         chatId: Long,
         body: String,
         replyToMessageId: Long?,
+        attachmentId: Long?,
     ) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // ack won the race
-        when (val result = chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId)) {
+        val result = chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentId)
+        when (result) {
             is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message)
             else -> messageDao.setStatus(clientMsgId, MessageStatus.FAILED)
         }
@@ -197,6 +273,21 @@ class MessageRepository @Inject constructor(
             message.replyTo?.messageId,
             message.replyTo?.senderId,
             message.replyTo?.excerpt,
+        )
+        // An attachment is fixed at send time — except has_preview, which
+        // flips once the preview upload lands. The server's copy is the
+        // one that counts, so it replaces what this device guessed.
+        messageDao.setAttachment(
+            clientMsgId,
+            message.attachment?.id,
+            message.attachment?.kind,
+            message.attachment?.mime,
+            message.attachment?.size ?: 0L,
+            message.attachment?.width,
+            message.attachment?.height,
+            message.attachment?.durationMs,
+            message.attachment?.hasPreview ?: false,
+            message.attachment?.name,
         )
         chatDao.updateLastMessage(message.chatId, message.body, createdAt, message.senderId)
     }
@@ -261,6 +352,15 @@ class MessageRepository @Inject constructor(
                     replyExcerpt = message.replyTo?.excerpt,
                     editSeq = message.editSeq ?: 0L,
                     editedAt = message.editedAt?.let(TimeFormat::parseTimestamp),
+                    attachmentId = message.attachment?.id,
+                    attachmentKind = message.attachment?.kind,
+                    attachmentMime = message.attachment?.mime,
+                    attachmentSize = message.attachment?.size ?: 0L,
+                    attachmentWidth = message.attachment?.width,
+                    attachmentHeight = message.attachment?.height,
+                    attachmentDurationMs = message.attachment?.durationMs,
+                    attachmentHasPreview = message.attachment?.hasPreview ?: false,
+                    attachmentName = message.attachment?.name,
                 ),
             ),
         )

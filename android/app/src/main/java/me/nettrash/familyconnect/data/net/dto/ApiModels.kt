@@ -138,7 +138,72 @@ data class MessageDto(
     // is the apply guard — see MessageRepository.applyBody.
     @SerialName("edited_at") val editedAt: String? = null,
     @SerialName("edit_seq") val editSeq: Long? = null,
+    // Present when (and only when) the message carries a photo or video.
+    val attachment: AttachmentDto? = null,
 )
+
+/**
+ * A photo or video on a message (docs/protocol.md, "Photos, videos and files").
+ *
+ * Immutable once sent, with one exception: [hasPreview] flips from false
+ * to true when the sender's preview upload lands, which may be after the
+ * message itself.
+ *
+ * Dimensions are optional — the uploader may not have been able to work
+ * them out — so a bubble that needs a shape before the bytes arrive uses
+ * [aspectRatio], which has an answer either way.
+ */
+@Serializable
+data class AttachmentDto(
+    val id: Long,
+    /** "photo" | "video". */
+    val kind: String,
+    val mime: String,
+    val size: Long,
+    val width: Int? = null,
+    val height: Int? = null,
+    @SerialName("duration_ms") val durationMs: Int? = null,
+    @SerialName("has_preview") val hasPreview: Boolean = false,
+    /**
+     * Files only, and their whole identity — a photo renders itself,
+     * where "attachment 34" tells nobody anything.
+     */
+    val name: String? = null,
+) {
+    val isVideo: Boolean get() = kind == KIND_VIDEO
+    val isFile: Boolean get() = kind == KIND_FILE
+
+    /** What a bubble calls it: the name for a file, a word for the rest. */
+    val displayName: String
+        get() = name?.takeIf { it.isNotEmpty() }
+            ?: when {
+                isVideo -> "Video"
+                isFile -> "File"
+                else -> "Photo"
+            }
+
+    /**
+     * Width over height, or 4:3 when the uploader could not say. Reserving
+     * the right shape before the image arrives is what stops a photo from
+     * shoving the thread when it finishes loading.
+     */
+    val aspectRatio: Float
+        get() {
+            val w = width ?: return DEFAULT_ASPECT
+            val h = height ?: return DEFAULT_ASPECT
+            return if (w > 0 && h > 0) w.toFloat() / h.toFloat() else DEFAULT_ASPECT
+        }
+
+    companion object {
+        const val KIND_PHOTO = "photo"
+        const val KIND_VIDEO = "video"
+        const val KIND_FILE = "file"
+        const val DEFAULT_ASPECT = 4f / 3f
+    }
+}
+
+@Serializable
+data class AttachmentResponse(val attachment: AttachmentDto)
 
 /**
  * Local persistence codec: the messages table stores a message's
@@ -191,6 +256,8 @@ data class SendMessageRequest(
     // rather than sent as "reply_to_message_id": null — which is what the
     // protocol writes for an ordinary message.
     @SerialName("reply_to_message_id") val replyToMessageId: Long? = null,
+    /** The uploaded attachment this message claims, if any. */
+    @SerialName("attachment_id") val attachmentId: Long? = null,
 )
 
 @Serializable

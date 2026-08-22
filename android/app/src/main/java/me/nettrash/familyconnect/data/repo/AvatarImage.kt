@@ -75,7 +75,7 @@ object AvatarImage {
         // Decode at ~2x the target so the final downscale still has
         // detail to work with, then let the scale step do the rest.
         val decoded = decode(source, maxPixels = edge * 2) ?: return null
-        val oriented = applyExifOrientation(decoded, source)
+        val oriented = orientedByExif(decoded, source)
         val square = centreCropSquare(oriented)
         val resized = scaleTo(square, edge)
         try {
@@ -201,8 +201,12 @@ object AvatarImage {
     /**
      * Rotate/flip per the original's EXIF tag. Unreadable EXIF is not an
      * error — most images have none.
+     *
+     * Internal rather than private because MediaPrep needs the same
+     * correction for photo attachments: BitmapFactory ignores orientation
+     * whatever the picture is destined for.
      */
-    private fun applyExifOrientation(bitmap: Bitmap, source: ByteArray): Bitmap {
+    internal fun orientedByExif(bitmap: Bitmap, source: ByteArray): Bitmap {
         val orientation = runCatching {
             ByteArrayInputStream(source).use {
                 ExifInterface(it).getAttributeInt(

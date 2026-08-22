@@ -24,6 +24,7 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import android.net.Uri
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
@@ -47,8 +48,10 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatEntity
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.data.db.MemberDao
+import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.LinkPreviewRepository
 import me.nettrash.familyconnect.data.net.LinkPreviewState
@@ -57,9 +60,12 @@ import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.net.ws.SocketState
 import me.nettrash.familyconnect.data.repo.ChatRepository
+import me.nettrash.familyconnect.data.repo.AttachmentRepository
+import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.util.Clock
+import java.io.File
 import javax.inject.Inject
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -72,6 +78,9 @@ class ChatViewModel @Inject constructor(
     private val socket: ChatSocket,
     private val clock: Clock,
     private val linkPreviewRepository: LinkPreviewRepository,
+    private val mediaPrep: MediaPrep,
+    private val attachmentApi: AttachmentApi,
+    private val attachments: AttachmentRepository,
     memberDao: MemberDao,
     connectivity: ConnectivityObserver,
 ) : ViewModel() {
@@ -258,6 +267,19 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /** What the composer is doing with a picked photo or video. */
+    sealed interface MediaSendState {
+        data object Idle : MediaSendState
+        data object Preparing : MediaSendState
+        data object Uploading : MediaSendState
+        data class Failed(val reason: String) : MediaSendState
+    }
+
+    private val _mediaState = MutableStateFlow<MediaSendState>(MediaSendState.Idle)
+
+    /** Drives the input bar's busy strip. */
+    val mediaState: StateFlow<MediaSendState> = _mediaState
+
     /** Screen calls this from a LifecycleResumeEffect. */
     fun setResumed(isResumed: Boolean) {
         resumed.value = isResumed
@@ -287,6 +309,108 @@ class ChatViewModel @Inject constructor(
         val quote = _replyDraft.value
         _replyDraft.value = null
         viewModelScope.launch { messageRepository.send(chatId, body, quote) }
+    }
+
+    /**
+     * Prepare and send a picked photo or video.
+     *
+     * Not optimistic, unlike [send]: the bubble appears once the server
+     * has the bytes, so the composer stays visibly busy until then (see
+     * MessageRepository.sendMedia). [mediaState] is what the input bar
+     * draws while that runs.
+     */
+    fun sendMedia(uri: Uri, isVideo: Boolean) {
+        if (_mediaState.value != MediaSendState.Idle) return
+        _mediaState.value = MediaSendState.Preparing
+        viewModelScope.launch {
+            val prepared = try {
+                if (isVideo) mediaPrep.prepareVideo(uri) else mediaPrep.preparePhoto(uri)
+            } catch (_: MediaPrep.TooLargeAfterCompression) {
+                // The one failure the user can act on, so it says what
+                // would help rather than just refusing.
+                _mediaState.value = MediaSendState.Failed(
+                    "Still too large after compressing — try a shorter clip.",
+                )
+                return@launch
+            } catch (_: Exception) {
+                _mediaState.value = MediaSendState.Failed("Couldn't prepare that item.")
+                return@launch
+            }
+
+            _mediaState.value = MediaSendState.Uploading
+            // The caption is whatever is in the composer; it goes with
+            // the photo and the field is cleared only once it lands.
+            val caption = inputState.text.toString()
+            if (messageRepository.sendMedia(prepared, caption, chatId)) {
+                inputState.clearText()
+                _mediaState.value = MediaSendState.Idle
+            } else {
+                _mediaState.value = MediaSendState.Failed("Couldn't send that — try again.")
+            }
+        }
+    }
+
+    /**
+     * Where the video player streams from, with the auth header it needs.
+     * Suspending because the token is a stored read.
+     */
+    suspend fun attachmentStreamUrl(attachmentId: Long): Pair<String, Map<String, String>>? =
+        attachmentApi.streamUrl(attachmentId)
+
+    /**
+     * Prepare and send a picked document. Nothing is re-encoded — a file
+     * goes as it is (protocol.md, "Files").
+     */
+    fun sendFile(uri: Uri) {
+        if (_mediaState.value != MediaSendState.Idle) return
+        _mediaState.value = MediaSendState.Preparing
+        viewModelScope.launch {
+            val prepared = try {
+                mediaPrep.prepareFile(uri)
+            } catch (_: MediaPrep.TooLargeAfterCompression) {
+                // A document cannot be compressed the way a video can, so
+                // the advice is different: there is nothing to try.
+                _mediaState.value = MediaSendState.Failed("That file is over the 100 MB limit.")
+                return@launch
+            } catch (_: Exception) {
+                _mediaState.value = MediaSendState.Failed("Couldn't read that file.")
+                return@launch
+            }
+
+            _mediaState.value = MediaSendState.Uploading
+            val caption = inputState.text.toString()
+            if (messageRepository.sendMedia(prepared, caption, chatId)) {
+                inputState.clearText()
+                _mediaState.value = MediaSendState.Idle
+            } else {
+                _mediaState.value = MediaSendState.Failed("Couldn't send that — try again.")
+            }
+        }
+    }
+
+    /**
+     * Download a file attachment if needed and hand back where it landed,
+     * for the screen to open with whatever app can read it.
+     */
+    suspend fun localFile(attachment: AttachmentDto): File? = attachments.fileFor(attachment)
+
+    /**
+     * Opening a file failed. Two different causes, two different messages:
+     * the bytes never arrived, or nothing on this phone can read them.
+     */
+    fun reportAttachmentOpenFailed(downloaded: Boolean) {
+        _mediaState.value = MediaSendState.Failed(
+            if (downloaded) {
+                "No app on this phone can open that file."
+            } else {
+                "Couldn't download that file."
+            },
+        )
+    }
+
+    /** Dismiss a media failure notice. */
+    fun clearMediaState() {
+        _mediaState.value = MediaSendState.Idle
     }
 
     fun retry(clientMsgId: String) {

@@ -46,8 +46,10 @@ import dagger.hilt.android.AndroidEntryPoint
 import me.nettrash.familyconnect.data.push.PushNotifications
 import me.nettrash.familyconnect.data.push.PushRouteParser
 import me.nettrash.familyconnect.navigation.AppNavHost
+import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.AvatarRepository
 import me.nettrash.familyconnect.navigation.startDestinationFor
+import me.nettrash.familyconnect.ui.components.LocalAttachments
 import me.nettrash.familyconnect.ui.components.LocalAvatars
 import me.nettrash.familyconnect.ui.theme.FamilyConnectTheme
 import javax.inject.Inject
@@ -65,6 +67,10 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var avatars: AvatarRepository
 
+    /** Photos and previews, cached on disk; provided the same way. */
+    @Inject
+    lateinit var attachments: AttachmentRepository
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -75,7 +81,10 @@ class MainActivity : ComponentActivity() {
             handlePushIntent(intent)
         }
         setContent {
-            CompositionLocalProvider(LocalAvatars provides avatars) {
+            CompositionLocalProvider(
+                LocalAvatars provides avatars,
+                LocalAttachments provides attachments,
+            ) {
                 val boot by viewModel.bootState.collectAsStateWithLifecycle()
                 val pendingRoute by viewModel.pendingRoute.collectAsStateWithLifecycle()
                 val snapshot = boot

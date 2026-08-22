@@ -93,6 +93,42 @@ interface MessageDao {
     )
 
     /**
+     * Replace a row's attachment with the server's copy.
+     *
+     * An attachment is fixed at send time with one exception — has_preview
+     * flips from false to true when the sender's preview upload lands —
+     * so the ack, not the optimistic row, is the authority. Written as one
+     * statement for the same reason the reply snapshot is.
+     */
+    @Query(
+        """
+        UPDATE messages
+        SET attachmentId = :attachmentId,
+            attachmentKind = :kind,
+            attachmentMime = :mime,
+            attachmentSize = :size,
+            attachmentWidth = :width,
+            attachmentHeight = :height,
+            attachmentDurationMs = :durationMs,
+            attachmentHasPreview = :hasPreview,
+            attachmentName = :name
+        WHERE clientMsgId = :clientMsgId
+        """,
+    )
+    suspend fun setAttachment(
+        clientMsgId: String,
+        attachmentId: Long?,
+        kind: String?,
+        mime: String?,
+        size: Long,
+        width: Int?,
+        height: Int?,
+        durationMs: Int?,
+        hasPreview: Boolean,
+        name: String?,
+    )
+
+    /**
      * Overwrite the body ONLY when the incoming copy is at least as new.
      *
      * The guard the protocol calls load-bearing. Deliveries are not

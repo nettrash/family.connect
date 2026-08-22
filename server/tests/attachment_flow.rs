@@ -410,6 +410,325 @@ async fn unclaimed_uploads_are_swept() {
     );
 }
 
+/// Files are the kind that accepts anything — the point of the feature.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn any_file_is_accepted_and_carries_its_name() {
+    let server = spawn_server().await;
+    let (owner, member, chat_id) = family_of_two(&server).await;
+
+    // Bytes that are not any accepted media type, declared as something
+    // the server has never heard of. Both are fine for a file.
+    let bytes = b"%PDF-1.7\nnot really a pdf either".to_vec();
+    let response = upload(
+        &server,
+        &owner,
+        "?kind=file&name=Rechnung%20M%C3%A4rz.pdf",
+        "application/pdf",
+        bytes.clone(),
+    )
+    .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("JSON");
+    let attachment = &body["attachment"];
+    let id = attachment["id"].as_i64().expect("id");
+    assert_eq!(attachment["kind"], "file");
+    assert_eq!(attachment["mime"], "application/pdf");
+    assert_eq!(attachment["name"], "Rechnung März.pdf");
+    assert_eq!(attachment["has_preview"], false);
+
+    // A type the server has no opinion about at all.
+    assert_eq!(
+        upload(
+            &server,
+            &owner,
+            "?kind=file&name=notes.xyz",
+            "application/x-nettrash-invented",
+            b"anything at all".to_vec(),
+        )
+        .await
+        .status(),
+        201
+    );
+
+    // It rides on a message like any other attachment.
+    let sent = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_id": id,
+            }),
+        )
+        .await;
+    assert_eq!(sent.status(), 201);
+    let body: Value = sent.json().await.expect("JSON");
+    assert_eq!(body["message"]["attachment"]["name"], "Rechnung März.pdf");
+
+    // And the family can fetch it — as a DOWNLOAD, never as something a
+    // browser might render.
+    let fetched = server.get(&member, &format!("/attachments/{id}")).await;
+    assert_eq!(fetched.status(), 200);
+    assert_eq!(fetched.headers()["content-type"], "application/pdf");
+    assert_eq!(fetched.headers()["x-content-type-options"], "nosniff");
+    let disposition = fetched.headers()["content-disposition"]
+        .to_str()
+        .expect("ASCII");
+    assert!(disposition.starts_with("attachment;"), "{disposition}");
+    // The ASCII form for old clients, the real name in filename*.
+    assert!(
+        disposition.contains(r#"filename="Rechnung M_rz.pdf""#),
+        "{disposition}"
+    );
+    assert!(
+        disposition.contains("filename*=UTF-8''Rechnung%20M%C3%A4rz.pdf"),
+        "{disposition}"
+    );
+    assert_eq!(fetched.bytes().await.unwrap().as_ref(), bytes.as_slice());
+}
+
+/// A photo is still served for rendering: the defensive headers are for
+/// files, whose type nobody checked.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_photo_is_not_served_as_a_download() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let body: Value = upload(&server, &owner, "?kind=photo", "image/jpeg", jpeg_bytes(64))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let id = body["attachment"]["id"].as_i64().expect("id");
+    // `name` is a file's field; a photo does not carry the key at all.
+    assert!(body["attachment"].get("name").is_none());
+
+    let fetched = server.get(&owner, &format!("/attachments/{id}")).await;
+    assert_eq!(fetched.status(), 200);
+    assert!(fetched.headers().get("content-disposition").is_none());
+}
+
+/// A name is a header value, and a header is a LINE. An uploader who can
+/// put a newline in one can write headers of their own.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_hostile_filename_cannot_inject_a_header() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let hostile = "eco\r\nSet-Cookie: pwned=1\r\n\r\n<script>alert(1)</script>.html";
+    let query = format!("?kind=file&name={}", urlencoding(hostile));
+    let body: Value = upload(
+        &server,
+        &owner,
+        &query,
+        "text/html",
+        b"<h1>hi</h1>".to_vec(),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let id = body["attachment"]["id"].as_i64().expect("id");
+    // Stored verbatim — the name is data; it is the HEADER that is escaped.
+    assert_eq!(body["attachment"]["name"], hostile);
+
+    let fetched = server.get(&owner, &format!("/attachments/{id}")).await;
+    assert_eq!(fetched.status(), 200);
+    // No header the uploader wrote survived.
+    assert!(fetched.headers().get("set-cookie").is_none());
+    let disposition = fetched.headers()["content-disposition"]
+        .to_str()
+        .expect("ASCII");
+    // The words "Set-Cookie" DO survive inside the quoted filename, and
+    // that is fine — they are a value, not a header. What must not survive
+    // is the line break that would have made them one, or the quote that
+    // would have ended the string early.
+    assert!(!disposition.contains('\r') && !disposition.contains('\n'));
+    assert_eq!(disposition.matches('"').count(), 2, "{disposition}");
+    // Path separators go too: the name is a label, and a client that
+    // joins it onto a directory must never be handed `../`.
+    let quoted = disposition
+        .split_once("filename=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(name, _)| name)
+        .expect("a quoted filename");
+    assert!(!quoted.contains('/') && !quoted.contains('\\'), "{quoted}");
+    // And an uploaded page is a download, never a rendered page.
+    assert_eq!(fetched.headers()["x-content-type-options"], "nosniff");
+    assert!(disposition.starts_with("attachment;"));
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_file_needs_a_name_and_has_no_preview() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    // Nameless: nobody recognises "attachment 34".
+    assert_error(
+        upload(
+            &server,
+            &owner,
+            "?kind=file",
+            "application/pdf",
+            b"x".to_vec(),
+        )
+        .await,
+        400,
+        "invalid_attachment",
+    )
+    .await;
+    assert_error(
+        upload(
+            &server,
+            &owner,
+            "?kind=file&name=%20%20",
+            "application/pdf",
+            b"x".to_vec(),
+        )
+        .await,
+        400,
+        "invalid_attachment",
+    )
+    .await;
+
+    let body: Value = upload(
+        &server,
+        &owner,
+        "?kind=file&name=taxes.zip",
+        "application/zip",
+        b"PK\x03\x04".to_vec(),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let id = body["attachment"]["id"].as_i64().expect("id");
+
+    assert_error(
+        server
+            .put_bytes(
+                &owner,
+                &format!("/attachments/{id}/preview"),
+                "image/jpeg",
+                jpeg_bytes(64),
+            )
+            .await,
+        400,
+        "invalid_attachment",
+    )
+    .await;
+}
+
+/// The ceiling is the same for every kind.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_oversized_file_is_refused_too() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let over = server.state.cfg.limits.max_attachment_bytes + 1;
+    assert_error(
+        upload(
+            &server,
+            &owner,
+            "?kind=file&name=big.bin",
+            "application/octet-stream",
+            vec![0u8; over],
+        )
+        .await,
+        413,
+        "attachment_too_large",
+    )
+    .await;
+}
+
+/// Percent-encode for a query string; enough for these tests' names.
+fn urlencoding(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            let c = byte as char;
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '~') {
+                c.to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
+/// A player seeks by asking for byte ranges; the endpoint advertises
+/// `Accept-Ranges: bytes`, so it has to mean it.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_video_is_served_in_ranges() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    // Bytes with a recognisable tail, so a suffix range proves it seeked
+    // rather than re-sending the head.
+    let mut bytes = mp4_bytes(1000);
+    for (index, byte) in bytes.iter_mut().enumerate().skip(12) {
+        *byte = (index % 251) as u8;
+    }
+    let body: Value = upload(&server, &owner, "?kind=video", "video/mp4", bytes.clone())
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let id = body["attachment"]["id"].as_i64().expect("id");
+    let path = format!("/attachments/{id}");
+
+    // A middle range.
+    let response = server
+        .get_with(&owner, &path, &[("range", "bytes=100-199")])
+        .await;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-range"], "bytes 100-199/1000");
+    assert_eq!(response.headers()["content-length"], "100");
+    assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[100..200]);
+
+    // Open-ended: "from here to the end", which is what a player sends
+    // after seeking.
+    let response = server
+        .get_with(&owner, &path, &[("range", "bytes=900-")])
+        .await;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-range"], "bytes 900-999/1000");
+    assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[900..]);
+
+    // A suffix range: the LAST 50 bytes — where an MP4 keeps its index.
+    let response = server
+        .get_with(&owner, &path, &[("range", "bytes=-50")])
+        .await;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["content-range"], "bytes 950-999/1000");
+    assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[950..]);
+
+    // Past the end is 416 carrying the real size, not a truncated 206.
+    let response = server
+        .get_with(&owner, &path, &[("range", "bytes=5000-6000")])
+        .await;
+    assert_eq!(response.status(), 416);
+    assert_eq!(response.headers()["content-range"], "bytes */1000");
+
+    // No Range header still means the whole file, and a range unit the
+    // server does not speak is ignored rather than refused (RFC 9110).
+    let response = server.get(&owner, &path).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().len(), 1000);
+    let response = server
+        .get_with(&owner, &path, &[("range", "furlongs=1-2")])
+        .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().len(), 1000);
+}
+
 /// A message with neither text nor attachment is still empty.
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]

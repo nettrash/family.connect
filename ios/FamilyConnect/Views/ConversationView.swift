@@ -44,8 +44,11 @@
 //  while it is up — the ack landing, say — shows current truth.
 //
 
+import PhotosUI
+import QuickLook
 import SwiftData
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class ConversationModel {
@@ -120,6 +123,26 @@ struct ConversationView: View {
     /// message they are answering. Suppressed only when they were not at
     /// the bottom already; ends with the draft.
     @State private var replyStartedFromHistory = false
+    /// The picked photo or video, while it is being prepared and uploaded.
+    @State private var pickedMedia: PhotosPickerItem?
+    @State private var showPhotoPicker = false
+    @State private var showFilePicker = false
+    @State private var mediaState: MediaSendState = .idle
+    /// The attachment being viewed full-screen.
+    @State private var viewingAttachment: AttachmentDTO?
+    /// A downloaded file on its way to Quick Look.
+    @State private var previewedFile: URL?
+
+    /// What the composer is doing with a picked photo or video. Sending is
+    /// NOT optimistic: the message appears once the server has the bytes,
+    /// because a bubble pointing at an upload that failed is worse than a
+    /// composer that is visibly busy.
+    private enum MediaSendState: Equatable {
+        case idle
+        case preparing
+        case uploading
+        case failed(String)
+    }
     /// localID of the bubble the floating reaction picker is up over;
     /// nil = no picker. Set/cleared inside withAnimation so the capsule
     /// springs in and out.
@@ -297,6 +320,9 @@ struct ConversationView: View {
         .sensoryFeedback(.selection, trigger: reactionPickerID) { _, newValue in
             newValue != nil
         }
+        // Grouped into one modifier: the chain here is long enough that
+        // the type checker gives up on it as separate steps.
+        .modifier(attachmentSurfaces)
         .sheet(item: $shareText) { share in
             ShareSheet(text: share.text)
         }
@@ -379,6 +405,13 @@ struct ConversationView: View {
                                 memberNames: memberNames,
                                 currentUserID: currentUserID,
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
+                                onOpenAttachment: { attachment in
+                                    if attachment.isFile {
+                                        openFile(attachment)
+                                    } else {
+                                        viewingAttachment = attachment
+                                    }
+                                },
                                 onRetry: { coordinator.retry(localID: message.localID) },
                                 onDelete: { coordinator.deleteLocalMessage(localID: message.localID) },
                                 onToggleReaction: { emoji in
@@ -454,7 +487,35 @@ struct ConversationView: View {
             if editTarget != nil {
                 editBanner()
             }
+            if mediaState != .idle {
+                mediaStrip
+            }
             HStack(alignment: .bottom, spacing: 8) {
+                // A Menu rather than two buttons: the composer is narrow,
+                // and "attach" is one intent with two sources.
+                Menu {
+                    Button {
+                        showPhotoPicker = true
+                    } label: {
+                        Label("Photo or Video", systemImage: "photo.on.rectangle")
+                    }
+                    Button {
+                        showFilePicker = true
+                    } label: {
+                        Label("File", systemImage: "doc")
+                    }
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.tint)
+                }
+                .disabled(mediaState != .idle)
+                .accessibilityLabel("Attach a photo, video or file")
+                .photosPicker(
+                    isPresented: $showPhotoPicker,
+                    selection: $pickedMedia,
+                    matching: .any(of: [.images, .videos]),
+                    photoLibrary: .shared())
                 TextField("Message", text: Bindable(model).draft, axis: .vertical)
                     .focused($inputFocused)
                     .lineLimit(1...5)
@@ -645,6 +706,146 @@ struct ConversationView: View {
                 excerpt: ReplyToSnapshot.excerpt(of: body))
         }
         inputFocused = true
+    }
+
+    /// What the composer shows while a photo or video is on its way.
+    @ViewBuilder
+    private var mediaStrip: some View {
+        HStack(spacing: 8) {
+            switch mediaState {
+            case .preparing, .uploading:
+                ProgressView()
+                    .controlSize(.small)
+                Text(mediaState == .preparing ? "Preparing…" : "Sending…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .failed(let reason):
+                Image(systemName: "exclamationmark.circle")
+                    .foregroundStyle(.red)
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            case .idle:
+                EmptyView()
+            }
+            Spacer(minLength: 0)
+            if case .failed = mediaState {
+                Button("Dismiss") { mediaState = .idle }
+                    .font(.caption)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+    }
+
+    /// The three things attachments hang off the thread: the photo
+    /// picker's result, the document picker, and the two ways an
+    /// attachment opens (Quick Look for a file, the viewer for media).
+    private var attachmentSurfaces: some ViewModifier {
+        AttachmentSurfaces(
+            pickedMedia: $pickedMedia,
+            showFilePicker: $showFilePicker,
+            previewedFile: $previewedFile,
+            viewingAttachment: $viewingAttachment,
+            onPickedMedia: sendPickedMedia,
+            onPickedFile: sendPickedFile,
+            onImportFailed: { mediaState = .failed("Couldn't read that file.") })
+    }
+
+    /// Send a picked document. Nothing is re-encoded — a file goes as it is.
+    private func sendPickedFile(_ url: URL) {
+        mediaState = .preparing
+        Task {
+            let prepared: MediaPrep.Prepared
+            do {
+                prepared = try MediaPrep.prepareFile(from: url, limit: MediaPrep.sizeLimit)
+            } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                // A document cannot be compressed the way a video can, so
+                // the advice is different: there is nothing to try.
+                mediaState = .failed("That file is over the 100 MB limit.")
+                return
+            } catch {
+                mediaState = .failed("Couldn't read that file.")
+                return
+            }
+
+            mediaState = .uploading
+            let caption = model.draft
+            if await coordinator.sendMedia(prepared, caption: caption, in: chatID) {
+                model.draft = ""
+                mediaState = .idle
+            } else {
+                mediaState = .failed("Couldn't send that — try again.")
+            }
+        }
+    }
+
+    /// Fetch a file's bytes and hand them to Quick Look, which previews
+    /// what it can and offers Share for everything else.
+    private func openFile(_ attachment: AttachmentDTO) {
+        Task {
+            guard let url = await coordinator.localFileURL(for: attachment) else {
+                mediaState = .failed("Couldn't download that file.")
+                return
+            }
+            previewedFile = url
+        }
+    }
+
+    /// Prepare and send a picked photo or video.
+    ///
+    /// Preparation happens off the main actor: re-encoding a video is
+    /// seconds of work, and the thread has to keep scrolling while it runs.
+    private func sendPickedMedia(_ item: PhotosPickerItem) {
+        mediaState = .preparing
+        Task {
+            defer { pickedMedia = nil }
+            let limit = MediaPrep.sizeLimit
+            // Decide from what the item SAYS it is, rather than trying a
+            // movie transfer and reading the failure as "must be a photo" —
+            // a transfer can fail for reasons that have nothing to do with
+            // the kind (iCloud, cancellation), and that path would then
+            // hand a video's bytes to the photo decoder.
+            let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+            let prepared: MediaPrep.Prepared
+            do {
+                if isVideo {
+                    guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
+                        mediaState = .failed("Couldn't read that video.")
+                        return
+                    }
+                    prepared = try await MediaPrep.prepareVideo(from: movie.url, limit: limit)
+                    // prepareVideo returns the source itself when it already
+                    // fits; only delete the copy when it made a new file.
+                    if prepared.fileURL != movie.url {
+                        try? FileManager.default.removeItem(at: movie.url)
+                    }
+                } else if let data = try await item.loadTransferable(type: Data.self) {
+                    prepared = try MediaPrep.preparePhoto(from: data, limit: limit)
+                } else {
+                    mediaState = .failed("Couldn't read that item.")
+                    return
+                }
+            } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                // The one case the user has to act on: compression was not
+                // enough, so say what would help rather than just refusing.
+                mediaState = .failed("Still too large after compressing — try a shorter clip.")
+                return
+            } catch {
+                mediaState = .failed("Couldn't prepare that item.")
+                return
+            }
+
+            mediaState = .uploading
+            let caption = model.draft
+            let sent = await coordinator.sendMedia(prepared, caption: caption, in: chatID)
+            if sent {
+                model.draft = ""
+                mediaState = .idle
+            } else {
+                mediaState = .failed("Couldn't send that — try again.")
+            }
+        }
     }
 
     private var typingLine: String? {
@@ -983,5 +1184,49 @@ private struct DayPill: View {
         if calendar.isDateInToday(day) { return String(localized: "Today") }
         if calendar.isDateInYesterday(day) { return String(localized: "Yesterday") }
         return day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+    }
+}
+
+/// The pickers and viewers attachments need, as one modifier.
+///
+/// Split out of ConversationView's body for a mundane reason: applied
+/// inline, the modifier chain there grew past what the Swift type checker
+/// will solve in reasonable time. Grouping them also keeps the four
+/// bindings that only attachments touch in one place.
+private struct AttachmentSurfaces: ViewModifier {
+    @Binding var pickedMedia: PhotosPickerItem?
+    @Binding var showFilePicker: Bool
+    @Binding var previewedFile: URL?
+    @Binding var viewingAttachment: AttachmentDTO?
+
+    let onPickedMedia: (PhotosPickerItem) -> Void
+    let onPickedFile: (URL) -> Void
+    let onImportFailed: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: pickedMedia) { _, item in
+                guard let item else { return }
+                onPickedMedia(item)
+            }
+            .fileImporter(
+                isPresented: $showFilePicker,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: false
+            ) { result in
+                // .item, not a list of types: the whole point of files is
+                // that the family is never told what they may send.
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    onPickedFile(url)
+                case .failure:
+                    onImportFailed()
+                }
+            }
+            .quickLookPreview($previewedFile)
+            .fullScreenCover(item: $viewingAttachment) { attachment in
+                AttachmentViewer(attachment: attachment)
+            }
     }
 }
