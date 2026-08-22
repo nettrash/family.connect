@@ -59,6 +59,17 @@ nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     /// Full current reaction state; [] both for "never reacted" and
     /// "cleared" — the view only cares whether there is anything to draw.
     var reactions: [ReactionSnapshot] = []
+    /// The quoted message when this one is a reply. nil otherwise.
+    var replyTo: ReplyToSnapshot?
+}
+
+/// The quote a reply draws above its own text. A flat snapshot, not a
+/// reference: the quoted message may be far outside the cached window, or
+/// never have been fetched at all.
+nonisolated struct ReplyToSnapshot: Equatable, Sendable {
+    let messageID: Int64
+    let senderID: Int64
+    let excerpt: String
 }
 
 nonisolated struct MemberSnapshot: Equatable, Sendable, Identifiable {
@@ -84,7 +95,8 @@ extension MessageSnapshot {
             body: entity.body,
             createdAt: entity.createdAt,
             state: entity.state,
-            reactions: entity.reactionList
+            reactions: entity.reactionList,
+            replyTo: entity.replySnapshot
         )
     }
 }

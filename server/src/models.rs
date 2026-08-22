@@ -125,13 +125,69 @@ pub struct Message {
     pub reactions: Option<Vec<Reaction>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reaction_seq: Option<i64>,
+    /// Present when (and only when) this message is a reply. Recomputed on
+    /// every read from the quoted row, never stored — see `ReplyTo`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reply_to: Option<ReplyTo>,
+}
+
+/// The quoted message, as much of it as a client needs to draw the quote
+/// without having the original in its cache (protocol.md, "Replies").
+///
+/// Deliberately a snapshot computed AT READ TIME rather than columns stored
+/// beside the reply: a quoted message can be edited later, and a snippet
+/// frozen at send time would go on showing text its author has since
+/// changed. It is never nested — a reply to a reply carries its parent's
+/// excerpt, not its grandparent's.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplyTo {
+    pub message_id: i64,
+    pub sender_id: i64,
+    pub excerpt: String,
+}
+
+impl ReplyTo {
+    /// Longest excerpt sent, in Unicode scalar values. Enough to recognise
+    /// the quoted message; a client that wants the rest has the id.
+    pub const MAX_EXCERPT_CHARS: usize = 120;
+
+    pub fn new(message_id: i64, sender_id: i64, body: &str) -> Self {
+        Self {
+            message_id,
+            sender_id,
+            excerpt: Self::excerpt(body),
+        }
+    }
+
+    /// Cut to [`MAX_EXCERPT_CHARS`] scalar values — `chars()`, never bytes,
+    /// so the cut can never land inside a character and produce invalid
+    /// UTF-8 (or, on the clients, tofu).
+    pub fn excerpt(body: &str) -> String {
+        body.chars().take(Self::MAX_EXCERPT_CHARS).collect()
+    }
 }
 
 impl Message {
     /// Map a row exposing `id, chat_id, sender_id, client_msg_id, body,
     /// created_at`. Reaction fields start `None`; the paths that expose
     /// them (`get_messages`) enrich afterwards.
+    ///
+    /// The reply snippet is read with `try_get` from the joined columns
+    /// `reply_to_message_id` / `reply_sender_id` / `reply_body`, so the
+    /// SAME mapper serves both the narrow SELECTs (chat-list previews,
+    /// which carry no quote) and the joined one in `get_messages`. All
+    /// three must be present and non-NULL for a snippet to appear.
     pub fn from_row(row: &PgRow) -> Self {
+        let reply_to = match (
+            row.try_get::<Option<i64>, _>("reply_to_message_id"),
+            row.try_get::<Option<i64>, _>("reply_sender_id"),
+            row.try_get::<Option<String>, _>("reply_body"),
+        ) {
+            (Ok(Some(message_id)), Ok(Some(sender_id)), Ok(Some(body))) => {
+                Some(ReplyTo::new(message_id, sender_id, &body))
+            }
+            _ => None,
+        };
         Self {
             id: row.get("id"),
             chat_id: row.get("chat_id"),
@@ -141,6 +197,7 @@ impl Message {
             created_at: row.get("created_at"),
             reactions: None,
             reaction_seq: None,
+            reply_to,
         }
     }
 }
@@ -210,5 +267,40 @@ mod tests {
         };
         let json = serde_json::to_value(&user).expect("serialize");
         assert_eq!(json["created_at"], "2026-08-19T17:03:12Z");
+    }
+
+    #[test]
+    fn a_short_body_is_quoted_whole() {
+        let reply = ReplyTo::new(41, 9, "See you at six");
+        assert_eq!(reply.excerpt, "See you at six");
+        assert_eq!(reply.message_id, 41);
+        assert_eq!(reply.sender_id, 9);
+    }
+
+    #[test]
+    fn a_long_body_is_cut_to_the_documented_length() {
+        let body = "x".repeat(500);
+        let excerpt = ReplyTo::excerpt(&body);
+        assert_eq!(excerpt.chars().count(), ReplyTo::MAX_EXCERPT_CHARS);
+    }
+
+    /// The cut counts SCALAR VALUES, not bytes: cutting a multi-byte
+    /// character in half would produce invalid UTF-8 — which serde would
+    /// refuse to serialize, taking the whole message page down with it.
+    #[test]
+    fn the_cut_never_lands_inside_a_character() {
+        // 'é' is 2 bytes, '中' 3, '😀' 4 — a byte-based cut at 120 would
+        // split one of them.
+        let body: String = "é中😀".repeat(100);
+        let excerpt = ReplyTo::excerpt(&body);
+        assert_eq!(excerpt.chars().count(), ReplyTo::MAX_EXCERPT_CHARS);
+        // Round-trips as valid UTF-8 through JSON.
+        let json = serde_json::to_string(&ReplyTo::new(1, 2, &body)).expect("serializes");
+        assert!(json.contains("\"message_id\":1"));
+    }
+
+    #[test]
+    fn an_empty_body_quotes_as_empty() {
+        assert_eq!(ReplyTo::excerpt(""), "");
     }
 }

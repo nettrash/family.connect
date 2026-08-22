@@ -84,6 +84,19 @@ data class ReactionDto(
     val emoji: String,
 )
 
+/**
+ * The quoted message on a reply — as much of it as a bubble needs to draw
+ * the quote without holding the original. The server recomputes this on
+ * every read, so it follows the quoted message rather than freezing at send
+ * time (docs/protocol.md, "Replies").
+ */
+@Serializable
+data class ReplyToDto(
+    @SerialName("message_id") val messageId: Long,
+    @SerialName("sender_id") val senderId: Long,
+    val excerpt: String,
+)
+
 @Serializable
 data class MessageDto(
     val id: Long,
@@ -96,6 +109,8 @@ data class MessageDto(
     // to; after clearing, reactions is [] with the seq still present.
     val reactions: List<ReactionDto>? = null,
     @SerialName("reaction_seq") val reactionSeq: Long? = null,
+    // Present when (and only when) this message is a reply.
+    @SerialName("reply_to") val replyTo: ReplyToDto? = null,
 )
 
 /**
@@ -145,6 +160,10 @@ data class CreateDirectChatRequest(@SerialName("user_id") val userId: Long)
 data class SendMessageRequest(
     @SerialName("client_msg_id") val clientMsgId: String,
     val body: String,
+    // encodeDefaults=false in the house Json config, so a null is omitted
+    // rather than sent as "reply_to_message_id": null — which is what the
+    // protocol writes for an ordinary message.
+    @SerialName("reply_to_message_id") val replyToMessageId: Long? = null,
 )
 
 @Serializable

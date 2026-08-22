@@ -57,6 +57,12 @@ struct MessageBubbleView: View {
     /// userID → profile-picture version, for the faces in the
     /// who-reacted list. Empty is fine; it just means initials.
     var avatarVersions: [Int64: Int64] = [:]
+    /// userID → display name, so a quote can name its author.
+    var memberNames: [Int64: String] = [:]
+    /// Who is reading, so a quote of my own message says "You".
+    var currentUserID: Int64 = 0
+    /// Tapping a quote asks to jump to the quoted message.
+    var onTapQuote: (Int64) -> Void = { _ in }
     var onRetry: () -> Void = {}
     var onDelete: () -> Void = {}
     var onToggleReaction: (String) -> Void = { _ in }
@@ -298,6 +304,51 @@ struct MessageBubbleView: View {
         .padding(12)
     }
 
+    /// The quoted message, drawn inside the balloon above the reply's own
+    /// text: a tinted bar, the author, and the server's excerpt.
+    ///
+    /// It is deliberately NOT a link to a live row — the quoted message may
+    /// be pages back or not cached at all, so this draws the snapshot the
+    /// server sent and leaves jumping to the tap handler, which degrades to
+    /// nothing when the target is not loaded.
+    @ViewBuilder
+    private func quoteBlock(_ quote: ReplyToSnapshot) -> some View {
+        HStack(spacing: 6) {
+            // The accent bar reads as "quoted" at a glance; on my own
+            // balloon it takes the content colour, since .tint on
+            // primaryContainer is nearly invisible.
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(isMine ? bubbleContentColor : Color.accentColor)
+                .frame(width: 3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(quoteAuthorName(quote))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(isMine ? bubbleContentColor : Color.accentColor)
+                Text(quote.excerpt)
+                    .font(.caption)
+                    .foregroundStyle(bubbleContentColor.opacity(0.75))
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
+        .padding(.trailing, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.primary.opacity(0.06)))
+        .contentShape(Rectangle())
+        .onTapGesture { onTapQuote(quote.messageID) }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Replying to \(quoteAuthorName(quote)): \(quote.excerpt)")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private func quoteAuthorName(_ quote: ReplyToSnapshot) -> String {
+        if quote.senderID == currentUserID { return String(localized: "You") }
+        return memberNames[quote.senderID] ?? String(localized: "Someone")
+    }
+
     private var bubble: some View {
         // Emoji-only messages render bare: no balloon, just the glyphs
         // (the padding stays so the long-press target and the picker
@@ -311,6 +362,9 @@ struct MessageBubbleView: View {
         // belong to the message, and outside they made the bubble's
         // footprint ragged.
         VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
+            if let quote = message.replyTo {
+                quoteBlock(quote)
+            }
             Text(
                 isEmojiOnly
                     ? AttributedString(message.body)

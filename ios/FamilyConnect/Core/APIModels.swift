@@ -187,6 +187,22 @@ nonisolated struct ReactionDTO: Codable, Equatable, Sendable {
     }
 }
 
+/// The quoted message on a reply — as much of it as a bubble needs to draw
+/// the quote without holding the original. The server recomputes this on
+/// every read, so it follows the quoted message rather than freezing at
+/// send time (docs/protocol.md, "Replies").
+nonisolated struct ReplyToDTO: Codable, Equatable, Sendable {
+    let messageID: Int64
+    let senderID: Int64
+    let excerpt: String
+
+    enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
+        case senderID = "sender_id"
+        case excerpt
+    }
+}
+
 nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     let id: Int64
     let chatID: Int64
@@ -200,6 +216,11 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     /// and must never wipe locally-held reaction state.
     let reactions: [ReactionDTO]?
     let reactionSeq: Int64?
+    /// Present when (and only when) this message is a reply. Optional, so
+    /// the synthesized decoder treats a missing key as "not a reply"
+    /// rather than throwing — which is also what makes a server that
+    /// predates replies decode.
+    let replyTo: ReplyToDTO?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -210,6 +231,7 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         case createdAt = "created_at"
         case reactions
         case reactionSeq = "reaction_seq"
+        case replyTo = "reply_to"
     }
 
     /// Explicit memberwise init so the reaction fields default to absent
@@ -222,7 +244,8 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         body: String,
         createdAt: Date,
         reactions: [ReactionDTO]? = nil,
-        reactionSeq: Int64? = nil
+        reactionSeq: Int64? = nil,
+        replyTo: ReplyToDTO? = nil
     ) {
         self.id = id
         self.chatID = chatID
@@ -232,6 +255,7 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.reactions = reactions
         self.reactionSeq = reactionSeq
+        self.replyTo = replyTo
     }
 }
 

@@ -101,8 +101,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Share
@@ -135,6 +137,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -144,6 +147,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
@@ -167,6 +172,9 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -186,12 +194,14 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.LinkPreviewState
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
+import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
 import me.nettrash.familyconnect.ui.components.EmptyState
@@ -237,6 +247,14 @@ fun ChatScreen(
     var pickerTarget by remember { mutableStateOf<ReactionPickerTarget?>(null) }
     var fullPickerTarget by remember { mutableStateOf<ChatListItem.MessageItem?>(null) }
     val listState = rememberLazyListState()
+    // Set by tapping a quote; cleared once the target is found (or given
+    // up on). Held here rather than in the ViewModel because it is purely
+    // a scroll intent — nothing about it survives leaving the screen.
+    var pendingJumpId by remember { mutableStateOf<Long?>(null) }
+    var highlightedMessageId by remember { mutableStateOf<Long?>(null) }
+    var jumpPagesTried by remember { mutableIntStateOf(0) }
+    val focusRequester = remember { FocusRequester() }
+    val replyDraft by viewModel.replyDraft.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     // Copy and share from the message context menu.
     val clipboard = LocalClipboard.current
@@ -259,6 +277,38 @@ fun ChatScreen(
     }
 
     // Pagination: nearing the visually-top (oldest) end triggers one
+    // Jump to a quoted message. Best-effort by design: the thread holds a
+    // bounded window, so this pages older a few times looking for the
+    // target and then gives up — the excerpt is already on screen, which
+    // is most of what the tap was asking for. Pages OLDER only: a quote
+    // always points backwards.
+    LaunchedEffect(pendingJumpId, items) {
+        val target = pendingJumpId ?: return@LaunchedEffect
+        val index = items.indexOfFirst {
+            it is ChatListItem.MessageItem && it.entity.serverId == target
+        }
+        if (index >= 0) {
+            pendingJumpId = null
+            jumpPagesTried = 0
+            listState.animateScrollToItem(index)
+            highlightedMessageId = target
+            delay(1_600)
+            if (highlightedMessageId == target) highlightedMessageId = null
+        } else if (loadingOlder) {
+            // A page is already in flight; this effect re-runs when it lands.
+        } else if (items.isNotEmpty() && jumpPagesTried < MAX_JUMP_PAGES) {
+            // Bounded: without a cap this re-fires on every later change to
+            // `items` (a new message arriving is enough) and would keep
+            // paging a history that does not contain the target — which is
+            // the normal case once a chat is old enough.
+            jumpPagesTried++
+            viewModel.loadOlder()
+        } else {
+            pendingJumpId = null
+            jumpPagesTried = 0
+        }
+    }
+
     // guarded loadOlder. derivedStateOf collapses scroll churn into a
     // boolean edge; the effect only runs on the flip to true. The
     // items.isNotEmpty() guard lives INSIDE the derivation (items is
@@ -412,11 +462,27 @@ fun ChatScreen(
                         }
                     }
                     items(items, key = { it.key }) { item ->
+                        // A jumped-to bubble is briefly tinted, so the eye
+                        // lands on the right one in a wall of text.
+                        val jumped = item is ChatListItem.MessageItem &&
+                            item.entity.serverId != null &&
+                            item.entity.serverId == highlightedMessageId
+                        val highlight by animateColorAsState(
+                            targetValue = if (jumped) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                            } else {
+                                Color.Transparent
+                            },
+                            animationSpec = tween(250),
+                            label = "jumpHighlight",
+                        )
                         Box(
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(200),
-                                placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                            ),
+                            modifier = Modifier
+                                .animateItem(
+                                    fadeInSpec = tween(200),
+                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                )
+                                .background(highlight, RoundedCornerShape(12.dp)),
                         ) {
                             when (item) {
                                 is ChatListItem.DateSeparator -> DateSeparatorPill(item.label)
@@ -432,6 +498,7 @@ fun ChatScreen(
                                     onRequestPreview = viewModel::requestLinkPreview,
                                     onFailedTap = { failedActionTarget = it },
                                     onToggleReaction = applyToggle,
+                                    onTapQuote = { pendingJumpId = it },
                                     onLongPress = { pressed, bounds ->
                                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                         pickerTarget = ReactionPickerTarget(pressed, bounds)
@@ -516,6 +583,12 @@ fun ChatScreen(
             InputBar(
                 state = viewModel.inputState,
                 onSend = viewModel::send,
+                replyDraft = replyDraft,
+                replyAuthorName = replyDraft?.senderId?.let { sender ->
+                    if (sender == myUserId) "You" else memberNames[sender] ?: "Someone"
+                } ?: "",
+                onCancelReply = viewModel::cancelReply,
+                focusRequester = focusRequester,
             )
         }
     }
@@ -533,6 +606,23 @@ fun ChatScreen(
             onMore = {
                 pickerTarget = null
                 fullPickerTarget = target.item
+            },
+            onReply = {
+                val entity = target.item.entity
+                pickerTarget = null
+                entity.serverId?.let { serverId ->
+                    viewModel.beginReply(
+                        ReplyToDto(
+                            messageId = serverId,
+                            senderId = entity.senderId,
+                            // The local body, cut the way the server cuts
+                            // it; the server's own excerpt replaces this
+                            // as soon as the message comes back.
+                            excerpt = entity.body.take(120),
+                        ),
+                    )
+                    focusRequester.requestFocus()
+                }
             },
             onCopy = {
                 val body = target.item.entity.body
@@ -629,6 +719,7 @@ private fun ReactionPickerPopup(
     target: ReactionPickerTarget,
     onPick: (String) -> Unit,
     onMore: () -> Unit,
+    onReply: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onDismiss: () -> Unit,
@@ -750,9 +841,11 @@ private fun ReactionPickerPopup(
                 modifier = Modifier.offset { IntOffset(menuX, menuY) },
             ) {
                 MessageContextMenu(
+                    onReply = { exitThen(onReply) },
                     onCopy = { exitThen(onCopy) },
                     onShare = { exitThen(onShare) },
                     modifier = Modifier.onSizeChanged { menuSize = it },
+                    canReply = target.item.entity.serverId != null,
                 )
             }
         }
@@ -764,11 +857,66 @@ private fun ReactionPickerPopup(
  * Copy and share are both purely local — the message text is already in
  * hand — so neither waits on the network or on the popup's exit.
  */
+/**
+ * "Replying to X" above the input field, with the way out. Its appearance
+ * changes the input bar's height — which is fine here, unlike on iOS,
+ * because the thread is a reverseLayout list anchored at the newest
+ * message.
+ */
+@Composable
+private fun ReplyBanner(
+    authorName: String,
+    excerpt: String,
+    onCancel: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 4.dp, top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(32.dp)
+                .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.5.dp)),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Replying to $authorName",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = excerpt,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onCancel) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "Cancel reply",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @Composable
 private fun MessageContextMenu(
+    onReply: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Reply needs a server id to quote, so it is hidden — not disabled —
+     * on a message that has not been acked yet.
+     */
+    canReply: Boolean = true,
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -778,6 +926,13 @@ private fun MessageContextMenu(
         modifier = modifier.width(IntrinsicSize.Max),
     ) {
         Column(modifier = Modifier.padding(vertical = 4.dp)) {
+            if (canReply) {
+                MessageContextMenuItem(
+                    label = "Reply",
+                    icon = Icons.AutoMirrored.Outlined.Reply,
+                    onClick = onReply,
+                )
+            }
             MessageContextMenuItem(
                 label = "Copy",
                 icon = Icons.Outlined.ContentCopy,
@@ -1001,6 +1156,7 @@ private fun MessageBubble(
     onToggleReaction: (Long, String) -> Unit,
     onLongPress: (ChatListItem.MessageItem, Rect) -> Unit,
     onPositioned: (ChatListItem.MessageItem, Rect) -> Unit,
+    onTapQuote: (Long) -> Unit,
 ) {
     val entity = item.entity
     // 18dp corners, tightened to 4dp where a bubble meets a same-sender
@@ -1164,11 +1320,75 @@ private fun MessageBubble(
                         entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
                     },
                     onTextLongPress = { onLongPress(item, bubbleBounds) },
+                    onTapQuote = onTapQuote,
                 )
             }
         }
     }
 }
+
+/**
+ * The quoted message inside a reply's balloon: an accent bar, the author,
+ * and the server's excerpt.
+ *
+ * It draws the SNAPSHOT the server sent rather than looking up a live row —
+ * the quoted message may be pages back or not cached at all — so it renders
+ * identically whatever this device happens to hold. Jumping is the tap
+ * handler's job, and degrades to nothing when the target is not loaded.
+ */
+/** How many older pages a quote tap will fetch before giving up. */
+private const val MAX_JUMP_PAGES = 3
+
+@Composable
+private fun QuoteBlock(
+    authorName: String,
+    excerpt: String,
+    isMine: Boolean,
+    onClick: () -> Unit,
+) {
+    // On my own balloon the accent runs out of contrast against
+    // primaryContainer, so the bar and name take the balloon's content
+    // colour there and the theme accent on theirs — the same rule the
+    // link colour follows.
+    val accent = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
+    Row(
+        modifier = Modifier
+            .clip(RoundedRectangle6)
+            .background(LocalContentColor.current.copy(alpha = 0.08f))
+            .clickable(onClick = onClick)
+            .padding(end = 6.dp)
+            .semantics {
+                contentDescription = "Replying to $authorName: $excerpt"
+                role = Role.Button
+            },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(vertical = 4.dp)
+                .width(3.dp)
+                .height(30.dp)
+                .background(accent, RoundedCornerShape(1.5.dp)),
+        )
+        Spacer(Modifier.width(6.dp))
+        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+            Text(
+                text = authorName,
+                style = MaterialTheme.typography.labelSmall,
+                color = accent,
+            )
+            Text(
+                text = excerpt,
+                style = MaterialTheme.typography.bodySmall,
+                color = LocalContentColor.current.copy(alpha = 0.75f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+private val RoundedRectangle6 = RoundedCornerShape(6.dp)
 
 /**
  * The wrapping chip row plus the who-reacted DropdownMenu.
@@ -1445,6 +1665,8 @@ private fun BubbleContent(
     onDoubleTap: () -> Unit,
     /** Long-press over link text — opens the reaction capsule, same as the bubble's own gesture. */
     onTextLongPress: () -> Unit,
+    /** Tapping the quote asks to jump to the quoted message. */
+    onTapQuote: (Long) -> Unit,
 ) {
     // Aligned to the balloon's own side so the chip row (and a short
     // body under a wide row) hugs the same edge as the timestamp —
@@ -1454,6 +1676,23 @@ private fun BubbleContent(
         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
     ) {
+        // The quote sits inside the balloon, above the reply's own text —
+        // same placement as iOS.
+        val quotedId = entity.replyToMessageId
+        val quotedSender = entity.replySenderId
+        val quotedExcerpt = entity.replyExcerpt
+        if (quotedId != null && quotedSender != null && quotedExcerpt != null) {
+            QuoteBlock(
+                authorName = when (quotedSender) {
+                    myUserId -> "You"
+                    else -> memberNames[quotedSender] ?: "Someone"
+                },
+                excerpt = quotedExcerpt,
+                isMine = isMine,
+                onClick = { onTapQuote(quotedId) },
+            )
+            Spacer(Modifier.height(4.dp))
+        }
         // Emoji-only messages render on the EmojiOnly size ladder (one
         // emoji biggest through four smallest); everything else is body
         // text. Same ladder as iOS. lineHeight goes back to the font's
@@ -1730,10 +1969,21 @@ private fun StatusGlyph(
 private fun InputBar(
     state: TextFieldState,
     onSend: () -> Unit,
+    replyDraft: ReplyToDto?,
+    replyAuthorName: String,
+    onCancelReply: () -> Unit,
+    focusRequester: FocusRequester,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            if (replyDraft != null) {
+                ReplyBanner(
+                    authorName = replyAuthorName,
+                    excerpt = replyDraft.excerpt,
+                    onCancel = onCancelReply,
+                )
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1753,7 +2003,8 @@ private fun InputBar(
                     // only applies when the incoming min constraint is zero.
                     modifier = Modifier
                         .weight(1f)
-                        .heightIn(min = 44.dp),
+                        .heightIn(min = 44.dp)
+                        .focusRequester(focusRequester),
                     placeholder = { Text("Message") },
                     lineLimits = TextFieldLineLimits.MultiLine(
                         minHeightInLines = 1,

@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Chat, ChatListEntry, Message, Reaction};
+use crate::models::{Chat, ChatListEntry, Message, Reaction, ReplyTo};
 use crate::state::AppState;
 
 /// Upper bound on a reaction emoji, in UTF-8 bytes. Fixed by protocol.md's
@@ -39,6 +39,9 @@ pub struct DirectChatRequest {
 pub struct PostMessageRequest {
     pub client_msg_id: Uuid,
     pub body: String,
+    /// Optional: the message being answered. Must be in this same chat.
+    #[serde(default)]
+    pub reply_to_message_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +117,7 @@ pub async fn create_message(
     sender_id: i64,
     client_msg_id: Uuid,
     body: &str,
+    reply_to_message_id: Option<i64>,
 ) -> Result<(Message, bool), ApiError> {
     ensure_chat_access(state, chat_id, sender_id).await?;
 
@@ -132,9 +136,41 @@ pub async fn create_message(
         ));
     }
 
+    // The quote is resolved BEFORE the insert, both to reject a bad target
+    // without writing anything and because the row we read here is exactly
+    // the snippet the response carries — no second query, and no chance of
+    // the two disagreeing.
+    //
+    // Scoped to this chat on purpose: a real message in another chat must
+    // be indistinguishable from one that does not exist, or the endpoint
+    // would confirm ids the caller cannot otherwise see.
+    let reply_to = match reply_to_message_id {
+        None => None,
+        Some(target_id) => {
+            let parent = sqlx::query(
+                "SELECT id, sender_id, body FROM messages WHERE id = $1 AND chat_id = $2",
+            )
+            .bind(target_id)
+            .bind(chat_id)
+            .fetch_optional(&state.pool)
+            .await?;
+            let Some(parent) = parent else {
+                return Err(ApiError::not_found(
+                    codes::MESSAGE_NOT_FOUND,
+                    "no such message in this chat",
+                ));
+            };
+            Some(ReplyTo::new(
+                parent.get("id"),
+                parent.get("sender_id"),
+                parent.get::<String, _>("body").as_str(),
+            ))
+        }
+    };
+
     let inserted = sqlx::query(
-        "INSERT INTO messages (chat_id, sender_id, client_msg_id, body)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO messages (chat_id, sender_id, client_msg_id, body, reply_to_message_id)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (chat_id, sender_id, client_msg_id) DO NOTHING
          RETURNING id, chat_id, sender_id, client_msg_id, body, created_at",
     )
@@ -142,20 +178,27 @@ pub async fn create_message(
     .bind(sender_id)
     .bind(client_msg_id)
     .bind(body)
+    .bind(reply_to_message_id)
     .fetch_optional(&state.pool)
     .await?;
 
     if let Some(row) = inserted {
-        return Ok((Message::from_row(&row), true));
+        let mut message = Message::from_row(&row);
+        // RETURNING cannot join, so the snippet resolved above is attached
+        // here rather than re-read.
+        message.reply_to = reply_to;
+        return Ok((message, true));
     }
 
     // Dedup hit: a retry of a message that already landed. Return the
     // original — possibly with a different body if the client mutated the
     // retry, which is the client's bug; the first write wins.
     let row = sqlx::query(
-        "SELECT id, chat_id, sender_id, client_msg_id, body, created_at
-         FROM messages
-         WHERE chat_id = $1 AND sender_id = $2 AND client_msg_id = $3",
+        "SELECT m.id, m.chat_id, m.sender_id, m.client_msg_id, m.body, m.created_at,
+                m.reply_to_message_id, p.sender_id AS reply_sender_id, p.body AS reply_body
+         FROM messages m
+         LEFT JOIN messages p ON p.id = m.reply_to_message_id
+         WHERE m.chat_id = $1 AND m.sender_id = $2 AND m.client_msg_id = $3",
     )
     .bind(chat_id)
     .bind(sender_id)
@@ -391,6 +434,9 @@ pub async fn list_chats(
                 created_at: row.get("last_created_at"),
                 reactions: None,
                 reaction_seq: None,
+                // Previews carry neither reactions nor the quote: the chat
+                // list draws one line of text, not a bubble.
+                reply_to: None,
             });
             let last_reaction_seq: i64 = row.get("last_reaction_seq");
             ChatListEntry {
@@ -506,11 +552,18 @@ pub async fn get_messages(
         state.cfg.limits.max_page_size,
     );
 
-    const COLS: &str = "id, chat_id, sender_id, client_msg_id, body, created_at, reaction_seq";
+    // A self-join, so every reply carries its quote without the client
+    // having to hold the quoted message (which may be pages back, or not
+    // fetched at all). It is a primary-key lookup per row and never
+    // recurses: the parent's own quote is not expanded.
+    const COLS: &str = "m.id, m.chat_id, m.sender_id, m.client_msg_id, m.body, m.created_at, \
+                        m.reaction_seq, m.reply_to_message_id, \
+                        p.sender_id AS reply_sender_id, p.body AS reply_body";
+    const FROM: &str = "FROM messages m LEFT JOIN messages p ON p.id = m.reply_to_message_id";
     let rows = if let Some(before) = before_id {
         // History paging: strictly older, newest first.
         sqlx::query(&format!(
-            "SELECT {COLS} FROM messages WHERE chat_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3"
+            "SELECT {COLS} {FROM} WHERE m.chat_id = $1 AND m.id < $2 ORDER BY m.id DESC LIMIT $3"
         ))
         .bind(chat_id)
         .bind(before)
@@ -520,7 +573,7 @@ pub async fn get_messages(
     } else if let Some(after) = after_id {
         // Reconnect catch-up: strictly newer, oldest first.
         sqlx::query(&format!(
-            "SELECT {COLS} FROM messages WHERE chat_id = $1 AND id > $2 ORDER BY id ASC LIMIT $3"
+            "SELECT {COLS} {FROM} WHERE m.chat_id = $1 AND m.id > $2 ORDER BY m.id ASC LIMIT $3"
         ))
         .bind(chat_id)
         .bind(after)
@@ -529,7 +582,7 @@ pub async fn get_messages(
         .await?
     } else {
         sqlx::query(&format!(
-            "SELECT {COLS} FROM messages WHERE chat_id = $1 ORDER BY id DESC LIMIT $2"
+            "SELECT {COLS} {FROM} WHERE m.chat_id = $1 ORDER BY m.id DESC LIMIT $2"
         ))
         .bind(chat_id)
         .bind(limit)
@@ -587,8 +640,15 @@ pub async fn post_message(
     Path(chat_id): Path<i64>,
     AppJson(req): AppJson<PostMessageRequest>,
 ) -> Result<Response, ApiError> {
-    let (message, created) =
-        create_message(&state, chat_id, auth.user_id, req.client_msg_id, &req.body).await?;
+    let (message, created) = create_message(
+        &state,
+        chat_id,
+        auth.user_id,
+        req.client_msg_id,
+        &req.body,
+        req.reply_to_message_id,
+    )
+    .await?;
     if created {
         // REST has no originating WS connection: every connection of every
         // member — the sender's own devices included — receives `message`;

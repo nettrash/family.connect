@@ -101,6 +101,21 @@ struct ConversationView: View {
     /// Live height of the input bar; changes exactly when the draft wraps
     /// to more (or fewer) lines.
     @State private var inputBarHeight: CGFloat = 0
+    /// The message being answered, while the composer is primed. Held as
+    /// the wire snapshot so send() can hand it straight to the coordinator
+    /// and the pending bubble can draw its quote before the server answers.
+    @State private var replyDraft: ReplyToDTO?
+    /// Briefly tinted after a jump, so the eye lands on the right bubble.
+    @State private var highlightedMessageID: String?
+    /// True while a reply that was STARTED FROM HISTORY is being composed.
+    ///
+    /// Both pin rules below fire on the two things beginReply does — it
+    /// focuses the field (opening the keyboard) and adds the banner
+    /// (growing the bar) — so without this, tapping Reply on an old
+    /// message throws the reader to the newest one, away from the very
+    /// message they are answering. Suppressed only when they were not at
+    /// the bottom already; ends with the draft.
+    @State private var replyStartedFromHistory = false
     /// localID of the bubble the floating reaction picker is up over;
     /// nil = no picker. Set/cleared inside withAnimation so the capsule
     /// springs in and out.
@@ -243,7 +258,7 @@ struct ConversationView: View {
                 // own avoidance is best-effort — deterministically pin the
                 // newest message above it (twice: as the animation starts
                 // and after it lands; standard messenger behavior).
-                guard inputFocused else { return }
+                guard inputFocused, !replyStartedFromHistory else { return }
                 Task {
                     try? await Task.sleep(nanoseconds: 100_000_000)
                     pinToBottom(proxy, animated: true)
@@ -254,7 +269,7 @@ struct ConversationView: View {
             .onChange(of: inputBarHeight) {
                 // The draft wrapped to another line: the bar grew into the
                 // thread — keep the newest message above it while writing.
-                guard inputFocused else { return }
+                guard inputFocused, !replyStartedFromHistory else { return }
                 pinToBottom(proxy, animated: false)
             }
         }
@@ -348,6 +363,9 @@ struct ConversationView: View {
                                     names: memberNames,
                                     currentUserID: currentUserID),
                                 avatarVersions: avatarVersions,
+                                memberNames: memberNames,
+                                currentUserID: currentUserID,
+                                onTapQuote: { jumpToMessage($0, proxy: proxy) },
                                 onRetry: { coordinator.retry(localID: message.localID) },
                                 onDelete: { coordinator.deleteLocalMessage(localID: message.localID) },
                                 onToggleReaction: { emoji in
@@ -364,6 +382,15 @@ struct ConversationView: View {
                                 },
                                 publishesAnchor: reactionPickerID == message.localID)
                                 .id(message.localID)
+                                // A jumped-to bubble is briefly tinted, so
+                                // the eye lands on the right one in a wall
+                                // of text.
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color.accentColor.opacity(
+                                            highlightedMessageID == message.localID ? 0.14 : 0))
+                                        .padding(.horizontal, -4))
+                                .animation(.easeOut(duration: 0.25), value: highlightedMessageID)
                         }
                     }
     }
@@ -408,6 +435,9 @@ struct ConversationView: View {
 
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let replyDraft {
+                replyBanner(replyDraft)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Message", text: Bindable(model).draft, axis: .vertical)
                     .focused($inputFocused)
@@ -434,6 +464,103 @@ struct ConversationView: View {
         } action: { height in
             inputBarHeight = height
         }
+    }
+
+    /// "Replying to X" above the field, with the way out. Its appearance
+    /// changes the input bar's height, which the thread already watches
+    /// (onChange(of: inputBarHeight)) and re-pins for — the same path a
+    /// multi-line draft takes.
+    @ViewBuilder
+    private func replyBanner(_ quote: ReplyToDTO) -> some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(Color.accentColor)
+                .frame(width: 3, height: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Replying to \(quoteAuthorName(quote.senderID))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tint)
+                Text(quote.excerpt)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Button {
+                replyDraft = nil
+                replyStartedFromHistory = false
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Cancel reply")
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private func quoteAuthorName(_ senderID: Int64) -> String {
+        if senderID == currentUserID { return String(localized: "You") }
+        return displayName(for: senderID) ?? String(localized: "Someone")
+    }
+
+    /// Scroll to a quoted message when this device actually holds it.
+    ///
+    /// Best-effort by design: the thread renders a bounded window and the
+    /// quoted message may be thousands of rows back, so rather than paging
+    /// the whole history to chase it, this widens the window once to cover
+    /// what is cached and scrolls if the row is there. A quote that cannot
+    /// be reached simply does nothing — the excerpt is already on screen,
+    /// which is most of what the tap was asking for.
+    private func jumpToMessage(_ serverID: Int64, proxy: ScrollViewProxy) {
+        guard let target = messages.first(where: { $0.serverID == serverID }) else { return }
+        if !visibleMessages.contains(where: { $0.localID == target.localID }) {
+            // It is cached but outside the rendered window: grow the window
+            // to include it, then scroll on the next turn once the rows
+            // exist to scroll to.
+            if let index = messages.firstIndex(where: { $0.localID == target.localID }) {
+                visibleCount = max(visibleCount, messages.count - index + 1)
+            }
+            Task { @MainActor in
+                withAnimation { proxy.scrollTo(target.localID, anchor: .center) }
+                highlight(target.localID)
+            }
+            return
+        }
+        withAnimation { proxy.scrollTo(target.localID, anchor: .center) }
+        highlight(target.localID)
+    }
+
+    /// Tint the jumped-to bubble, then let it fade. The token guards the
+    /// clear so a second jump before the first fades does not wipe the
+    /// newer highlight.
+    private func highlight(_ localID: String) {
+        highlightedMessageID = localID
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.6))
+            if highlightedMessageID == localID { highlightedMessageID = nil }
+        }
+    }
+
+    /// Prime the composer to answer this message, and put the keyboard up:
+    /// the user chose Reply because they intend to type.
+    private func beginReply(serverID: Int64?, senderID: Int64, body: String) {
+        guard let serverID else { return }
+        // Decided BEFORE the keyboard opens: afterwards the thread has
+        // already moved and the answer would always be "pinned".
+        replyStartedFromHistory = !isPinnedToBottom
+        withAnimation(.spring(duration: 0.25)) {
+            replyDraft = ReplyToDTO(
+                messageID: serverID,
+                senderID: senderID,
+                // The local body, cut the same way the server would — the
+                // banner is replaced by the server's own excerpt as soon
+                // as the message comes back.
+                excerpt: String(body.prefix(120)))
+        }
+        inputFocused = true
     }
 
     private var typingLine: String? {
@@ -500,17 +627,26 @@ struct ConversationView: View {
                         // above it stays where the thumb already expects
                         // it — and under the capsule when that had to
                         // flip down too, so the two never overlap.
+                        let canReply = message.serverID != nil
+                        let menuSize = MessageContextMenu.size(canReply: canReply)
                         floatingMenu(
-                            size: MessageContextMenu.size,
+                            size: menuSize,
                             over: rect,
                             in: proxy,
                             atCenterY: menuCenterY(
-                                menu: MessageContextMenu.size,
+                                menu: menuSize,
                                 capsule: capsuleSize,
                                 over: rect,
                                 in: proxy)
                         ) {
                             MessageContextMenu(
+                                onReply: {
+                                    dismissReactionPicker()
+                                    beginReply(
+                                        serverID: message.serverID,
+                                        senderID: message.senderID,
+                                        body: message.body)
+                                },
                                 onCopy: {
                                     UIPasteboard.general.string = message.body
                                     dismissReactionPicker()
@@ -518,7 +654,8 @@ struct ConversationView: View {
                                 onShare: {
                                     dismissReactionPicker()
                                     shareText = ShareText(text: message.body)
-                                })
+                                },
+                                canReply: canReply)
                         }
                     }
                 }
@@ -618,7 +755,11 @@ struct ConversationView: View {
     private func send() {
         let body = model.draft
         guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        coordinator.send(body: body, in: chatID)
+        coordinator.send(body: body, in: chatID, replyTo: replyDraft)
+        replyDraft = nil
+        // Sending moves the thread to my own new message by the normal
+        // path, so the suppression ends here.
+        replyStartedFromHistory = false
         // Cleared on the NEXT main-actor turn, not synchronously in the
         // button action: clearing a focused multi-line field in the same
         // turn can leave the sent text sitting in the field — UIKit may

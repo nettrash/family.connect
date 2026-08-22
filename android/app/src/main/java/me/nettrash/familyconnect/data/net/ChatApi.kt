@@ -38,7 +38,12 @@ interface ChatApi {
         limit: Int = 50,
     ): ApiResult<MessagesResponse>
 
-    suspend fun postMessage(chatId: Long, clientMsgId: String, body: String): ApiResult<MessageResponse>
+    suspend fun postMessage(
+        chatId: Long,
+        clientMsgId: String,
+        body: String,
+        replyToMessageId: Long? = null,
+    ): ApiResult<MessageResponse>
     suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit>
 
     /** Sets/replaces MY reaction — an idempotent state-set, not a toggle. */
@@ -83,10 +88,14 @@ class DefaultChatApi @Inject constructor(
         chatId: Long,
         clientMsgId: String,
         body: String,
+        replyToMessageId: Long?,
     ): ApiResult<MessageResponse> =
         // 201 on first delivery, 200 when the same client_msg_id retries —
         // both are 2xx, both decode to the same message. Never a duplicate.
-        client.post("/chats/$chatId/messages", SendMessageRequest(clientMsgId, body))
+        client.post(
+            "/chats/$chatId/messages",
+            SendMessageRequest(clientMsgId, body, replyToMessageId),
+        )
 
     override suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit> =
         client.post("/chats/$chatId/read", ReadRequest(lastReadMessageId))

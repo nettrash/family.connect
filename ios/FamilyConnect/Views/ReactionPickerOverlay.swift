@@ -107,23 +107,34 @@ struct ShareSheet: UIViewControllerRepresentable {
 }
 
 /// The actions under the bubble, beside the reaction capsule above it.
-/// Copy and share are both purely local — the message text is already in
-/// hand — so neither waits on the network. The parent owns dismissal.
+/// All three are local — the message text is already in hand, and Reply
+/// only primes the composer — so none waits on the network. The parent
+/// owns dismissal.
 struct MessageContextMenu: View {
+    let onReply: () -> Void
     let onCopy: () -> Void
     let onShare: () -> Void
+    /// Reply needs a server id to quote, so it is hidden on a message that
+    /// has not been acked yet rather than shown and doing nothing. The
+    /// menu's height follows, since the overlay places it by size.
+    var canReply: Bool = true
 
     private static let rowHeight: CGFloat = 44
     private static let menuWidth: CGFloat = 220
 
-    /// Exact rendered size — two fixed-height rows and a hairline. The
+    /// Exact rendered size — fixed-height rows and their hairlines. The
     /// overlay needs the size up front to place the menu.
-    static var size: CGSize {
-        CGSize(width: menuWidth, height: rowHeight * 2 + 1)
+    static func size(canReply: Bool) -> CGSize {
+        let rows = canReply ? 3.0 : 2.0
+        return CGSize(width: menuWidth, height: rowHeight * rows + (rows - 1))
     }
 
     var body: some View {
         VStack(spacing: 0) {
+            if canReply {
+                row("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
+                Divider()
+            }
             row("Copy", systemImage: "doc.on.doc", action: onCopy)
             Divider()
             row("Share", systemImage: "square.and.arrow.up", action: onShare)

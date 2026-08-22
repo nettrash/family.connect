@@ -94,6 +94,30 @@ struct APIClientTests {
         #expect(me.user.avatarVersion == 0)
     }
 
+    /// The quote rides the ordinary Message shape and is ABSENT — not
+    /// null — on a message that is not a reply, which is what lets a
+    /// client predating replies decode a server that has them.
+    @Test("reply_to decodes when present and is nil when absent")
+    func replyToDecoding() throws {
+        let decoder = APICoding.decoder()
+
+        let plain = Data(#"""
+        {"id": 1338, "chat_id": 42, "sender_id": 7, "client_msg_id": null,
+         "body": "Dinner at 7?", "created_at": "2026-08-19T17:03:12Z"}
+        """#.utf8)
+        #expect(try decoder.decode(MessageDTO.self, from: plain).replyTo == nil)
+
+        let reply = Data(#"""
+        {"id": 1339, "chat_id": 42, "sender_id": 9, "client_msg_id": null,
+         "body": "Six works", "created_at": "2026-08-19T17:04:00Z",
+         "reply_to": {"message_id": 1338, "sender_id": 7, "excerpt": "Dinner at 7?"}}
+        """#.utf8)
+        let decoded = try decoder.decode(MessageDTO.self, from: reply)
+        #expect(decoded.replyTo?.messageID == 1338)
+        #expect(decoded.replyTo?.senderID == 7)
+        #expect(decoded.replyTo?.excerpt == "Dinner at 7?")
+    }
+
     /// The protocol's compatibility rule, pinned. Swift's synthesized
     /// Decodable does NOT fall back to a property's default for a missing
     /// key — it throws — so a defaulted `avatarVersion` alone would make

@@ -45,6 +45,9 @@ pub enum ClientFrame {
         chat_id: i64,
         client_msg_id: Uuid,
         body: String,
+        /// Optional: the message being answered (protocol.md, "Replies").
+        #[serde(default)]
+        reply_to_message_id: Option<i64>,
     },
     Read {
         chat_id: i64,
@@ -301,12 +304,20 @@ async fn handle_client_text(
                 chat_id,
                 client_msg_id,
                 body,
+                reply_to_message_id,
             } = frame
             else {
                 unreachable!("type tag was \"send\"");
             };
-            match handlers_chat::create_message(state, chat_id, auth.user_id, client_msg_id, &body)
-                .await
+            match handlers_chat::create_message(
+                state,
+                chat_id,
+                auth.user_id,
+                client_msg_id,
+                &body,
+                reply_to_message_id,
+            )
+            .await
             {
                 Ok((message, created)) => {
                     if created {
@@ -421,6 +432,7 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             reactions: None,
             reaction_seq: None,
+            reply_to: None,
         }
     }
 
@@ -442,7 +454,55 @@ mod tests {
                 client_msg_id: Uuid::parse_str("8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01")
                     .expect("valid uuid"),
                 body: "Dinner at 7?".to_string(),
+                reply_to_message_id: None,
             }
+        );
+    }
+
+    /// protocol.md's second `send` example. The field is optional, so a
+    /// client that predates replies keeps parsing (the test above) — and
+    /// one that sends it must reach the handler intact.
+    #[test]
+    fn client_send_frame_carries_a_reply_target() {
+        let json = r#"{"type": "send", "chat_id": 42, "client_msg_id": "1c4a9b02-0000-4000-8000-000000000001", "body": "Six works", "reply_to_message_id": 1337}"#;
+        let frame: ClientFrame = serde_json::from_str(json).expect("parses");
+        assert_eq!(
+            frame,
+            ClientFrame::Send {
+                chat_id: 42,
+                client_msg_id: Uuid::parse_str("1c4a9b02-0000-4000-8000-000000000001")
+                    .expect("valid uuid"),
+                body: "Six works".to_string(),
+                reply_to_message_id: Some(1337),
+            }
+        );
+    }
+
+    /// The quote rides the ordinary message frame — there is no separate
+    /// reply frame — and is absent, not null, on a message that is not one.
+    #[test]
+    fn message_frame_carries_the_reply_snippet() {
+        let mut message = sample_message();
+        message.reply_to = Some(crate::models::ReplyTo {
+            message_id: 41,
+            sender_id: 9,
+            excerpt: "See you at six".to_string(),
+        });
+        assert_serializes_to(
+            &ServerFrame::Message { message },
+            r#"{"type": "message", "message": {"id": 1338, "chat_id": 42, "sender_id": 7,
+                 "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
+                 "body": "Dinner at 7?", "created_at": "2026-08-19T17:03:12Z",
+                 "reply_to": {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}}}"#,
+        );
+
+        let plain = serde_json::to_value(ServerFrame::Message {
+            message: sample_message(),
+        })
+        .expect("serializes");
+        assert!(
+            plain["message"].get("reply_to").is_none(),
+            "a message that is not a reply must omit reply_to entirely"
         );
     }
 

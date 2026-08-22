@@ -287,6 +287,17 @@ final class ChatSyncCoordinator {
 
     // MARK: - Message upsert (the dedup matrix)
 
+    /// The server recomputes the quote on every read, so the newest copy
+    /// always wins — including when it is absent, which is the honest
+    /// answer for a message that is not a reply. (Unlike reactions, where
+    /// ABSENT means "no data" and must never wipe: a reply cannot stop
+    /// being one, so there is no state to protect here.)
+    private func applyReply(_ dto: MessageDTO, to entity: MessageEntity) {
+        entity.replyToMessageID = dto.replyTo?.messageID
+        entity.replySenderID = dto.replyTo?.senderID
+        entity.replyExcerpt = dto.replyTo?.excerpt
+    }
+
     /// Apply one server message. `bumpUnread` is true only for live
     /// `message` frames — resync trusts the server's unread_count from
     /// GET /chats instead of counting for itself.
@@ -303,6 +314,7 @@ final class ChatSyncCoordinator {
             existing.state = .sent
             entity = existing
             resolveAckWaiter(clientMsgID, delivered: true)
+            applyReply(dto, to: existing)
         } else if let existing = fetchMessage(localID: "s:\(dto.id)") {
             // Case 2b: idempotent re-delivery of a server-keyed row.
             existing.body = dto.body
@@ -310,6 +322,7 @@ final class ChatSyncCoordinator {
             existing.senderID = dto.senderID
             existing.state = .sent
             entity = existing
+            applyReply(dto, to: existing)
         } else {
             // Case 3: first sight — insert under the server key.
             entity = MessageEntity(
@@ -320,7 +333,10 @@ final class ChatSyncCoordinator {
                 senderID: dto.senderID,
                 body: dto.body,
                 createdAt: dto.createdAt,
-                status: .sent)
+                status: .sent,
+                replyToMessageID: dto.replyTo?.messageID,
+                replySenderID: dto.replyTo?.senderID,
+                replyExcerpt: dto.replyTo?.excerpt)
             modelContext.insert(entity)
         }
         // Embedded reaction state (history/resync pages): the same seq
@@ -433,15 +449,15 @@ final class ChatSyncCoordinator {
     /// Optimistic send: the pending bubble exists before this returns.
     /// Returns the new row's localID (nil for an empty body).
     @discardableResult
-    func send(body: String, in chatID: Int64) -> String? {
-        guard let localID = enqueue(body: body, in: chatID) else { return nil }
+    func send(body: String, in chatID: Int64, replyTo: ReplyToDTO? = nil) -> String? {
+        guard let localID = enqueue(body: body, in: chatID, replyTo: replyTo) else { return nil }
         Task { await self.deliver(localID: localID) }
         return localID
     }
 
     /// Insert the pending row only (split from `send` so tests can drive
     /// `deliver` deterministically).
-    func enqueue(body: String, in chatID: Int64) -> String? {
+    func enqueue(body: String, in chatID: Int64, replyTo: ReplyToDTO? = nil) -> String? {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let uuid = UUID().uuidString.lowercased()
@@ -454,7 +470,12 @@ final class ChatSyncCoordinator {
             senderID: currentUserID,
             body: trimmed,
             createdAt: now,
-            status: .pending)
+            status: .pending,
+            // Held on the pending row so the bubble shows its quote the
+            // instant it appears, not once the server answers.
+            replyToMessageID: replyTo?.messageID,
+            replySenderID: replyTo?.senderID,
+            replyExcerpt: replyTo?.excerpt)
         modelContext.insert(entity)
         if let chat = fetchChat(chatID) {
             chat.lastMessagePreview = trimmed
@@ -478,13 +499,18 @@ final class ChatSyncCoordinator {
               let clientMsgID = row.clientMsgID else { return }
         let chatID = row.chatID
         let body = row.body
+        let replyToMessageID = row.replyToMessageID
         row.state = .pending
         saveContext()
 
         // Leg 1: the socket, if it is up. A thrown notConnected skips the
         // ack race entirely and goes straight to REST.
         do {
-            try await socket.send(.send(chatID: chatID, clientMsgID: clientMsgID, body: body))
+            try await socket.send(.send(
+                chatID: chatID,
+                clientMsgID: clientMsgID,
+                body: body,
+                replyToMessageID: replyToMessageID))
             if await waitForAck(clientMsgID: clientMsgID, timeout: ackTimeout) { return }
         } catch {
             // fall through to REST
@@ -496,7 +522,11 @@ final class ChatSyncCoordinator {
         // Leg 2: REST with the SAME client_msg_id — the server dedups, so
         // this can never create a duplicate no matter what leg 1 did.
         do {
-            let dto = try await api.sendMessage(chatID: chatID, clientMsgID: clientMsgID, body: body)
+            let dto = try await api.sendMessage(
+                chatID: chatID,
+                clientMsgID: clientMsgID,
+                body: body,
+                replyToMessageID: replyToMessageID)
             _ = upsert(dto, bumpUnread: false)
         } catch APIError.unauthorized {
             session?.handleUnauthorized()

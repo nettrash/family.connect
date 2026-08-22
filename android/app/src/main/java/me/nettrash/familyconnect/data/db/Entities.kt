@@ -97,6 +97,15 @@ data class MessageEntity(
      * (see MessageDao.applyReactionState). 0 = no state ever applied.
      */
     @ColumnInfo(defaultValue = "0") val reactionSeq: Long = 0,
+    /**
+     * The quoted message, when this one is a reply. Three flat columns
+     * rather than a relation: the quote is a SNAPSHOT the server recomputes
+     * on every read (docs/protocol.md, "Replies"), and the quoted row may
+     * not be in this device's cache at all.
+     */
+    val replyToMessageId: Long? = null,
+    val replySenderId: Long? = null,
+    val replyExcerpt: String? = null,
 )
 
 @Entity(tableName = "members")

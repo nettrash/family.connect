@@ -255,18 +255,30 @@ actor APIClient {
     private struct SendMessageRequest: Encodable {
         let clientMsgID: String
         let body: String
+        /// Absent, never null, on an ordinary message — Encodable omits a
+        /// nil optional, which is exactly what the protocol writes.
+        let replyToMessageID: Int64?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
+            case replyToMessageID = "reply_to_message_id"
         }
     }
 
     /// Idempotent by `clientMsgID`: the server answers a retry with the
     /// original message (200 instead of 201) — never a duplicate.
-    func sendMessage(chatID: Int64, clientMsgID: String, body: String) async throws -> MessageDTO {
+    func sendMessage(
+        chatID: Int64,
+        clientMsgID: String,
+        body: String,
+        replyToMessageID: Int64? = nil
+    ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
             "POST", "/chats/\(chatID)/messages",
-            body: SendMessageRequest(clientMsgID: clientMsgID, body: body))
+            body: SendMessageRequest(
+                clientMsgID: clientMsgID,
+                body: body,
+                replyToMessageID: replyToMessageID))
         return response.message
     }
 

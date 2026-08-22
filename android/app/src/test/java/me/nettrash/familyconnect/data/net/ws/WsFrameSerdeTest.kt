@@ -148,6 +148,25 @@ class WsFrameSerdeTest {
         )
     }
 
+    /**
+     * protocol.md's second `send` example. The field is optional, so a
+     * client that predates replies keeps working — and, because the house
+     * Json sets encodeDefaults=false, an ordinary send frame stays
+     * byte-identical to what it was before replies existed.
+     */
+    @Test
+    fun sendFrameCarriesAReplyTarget() {
+        assertEncodesTo(
+            ClientFrame.Send(
+                chatId = 42,
+                clientMsgId = "1c4a9b02",
+                body = "Six works",
+                replyToMessageId = 1337,
+            ),
+            """{"type": "send", "chat_id": 42, "client_msg_id": "1c4a9b02", "body": "Six works", "reply_to_message_id": 1337}""",
+        )
+    }
+
     @Test
     fun memberJoinedFrameRoundTrips() {
         assertRoundTrips(

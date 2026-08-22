@@ -41,6 +41,7 @@ import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCatchUpResponse
+import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.data.net.dto.RotateInviteCodeResponse
 import me.nettrash.familyconnect.data.net.dto.UserDto
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
@@ -275,12 +276,17 @@ class FakeChatApi : ChatApi {
         return messagesHandler(chatId, beforeId, afterId, limit)
     }
 
+    /** Every reply target a REST send carried, in order. */
+    val postedReplyTargets = mutableListOf<Long?>()
+
     override suspend fun postMessage(
         chatId: Long,
         clientMsgId: String,
         body: String,
+        replyToMessageId: Long?,
     ): ApiResult<MessageResponse> {
         postedMessages += Triple(chatId, clientMsgId, body)
+        postedReplyTargets += replyToMessageId
         return postMessageHandler(chatId, clientMsgId, body)
     }
 
@@ -392,6 +398,7 @@ fun messageDto(
     createdAt: String = "2026-08-19T17:03:12Z",
     reactions: List<ReactionDto>? = null,
     reactionSeq: Long? = null,
+    replyTo: ReplyToDto? = null,
 ) = MessageDto(
     id = id,
     chatId = chatId,
@@ -401,6 +408,7 @@ fun messageDto(
     createdAt = createdAt,
     reactions = reactions,
     reactionSeq = reactionSeq,
+    replyTo = replyTo,
 )
 
 fun reactionState(

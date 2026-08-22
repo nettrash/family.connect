@@ -73,6 +73,26 @@ final class MessageEntity {
     /// Highest reaction_seq applied to this row (0 = none). The
     /// per-message guard: a state only lands when its seq is greater.
     var reactionSeq: Int64 = 0
+    /// The quoted message, when this one is a reply. Held as three flat
+    /// properties rather than a relationship: the quote is a SNAPSHOT the
+    /// server recomputes on every read (docs/protocol.md, "Replies"), and
+    /// the quoted row may not be in this device's cache at all. All three
+    /// default to nil, so this is a lightweight SwiftData migration for
+    /// anyone upgrading over an existing store.
+    var replyToMessageID: Int64?
+    var replySenderID: Int64?
+    var replyExcerpt: String?
+
+    /// The quote as the views want it, or nil when this is not a reply.
+    /// All three columns move together — a half-set row would be a bug
+    /// upstream, and is treated as "not a reply" rather than drawn.
+    var replySnapshot: ReplyToSnapshot? {
+        guard let replyToMessageID, let replySenderID, let replyExcerpt else { return nil }
+        return ReplyToSnapshot(
+            messageID: replyToMessageID,
+            senderID: replySenderID,
+            excerpt: replyExcerpt)
+    }
 
     /// Typed view over the raw `status` int (SwiftData persists the int;
     /// the enum keeps call sites honest).
@@ -106,7 +126,10 @@ final class MessageEntity {
         createdAt: Date,
         status: MessageStatus,
         reactionsJSON: String? = nil,
-        reactionSeq: Int64 = 0
+        reactionSeq: Int64 = 0,
+        replyToMessageID: Int64? = nil,
+        replySenderID: Int64? = nil,
+        replyExcerpt: String? = nil
     ) {
         self.localID = localID
         self.serverID = serverID
@@ -118,5 +141,8 @@ final class MessageEntity {
         self.status = status.rawValue
         self.reactionsJSON = reactionsJSON
         self.reactionSeq = reactionSeq
+        self.replyToMessageID = replyToMessageID
+        self.replySenderID = replySenderID
+        self.replyExcerpt = replyExcerpt
     }
 }

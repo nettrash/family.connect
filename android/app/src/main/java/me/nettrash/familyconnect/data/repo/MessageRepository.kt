@@ -39,6 +39,7 @@ import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
+import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
@@ -87,7 +88,7 @@ class MessageRepository @Inject constructor(
 
     // -- Outbound -----------------------------------------------------------------
 
-    suspend fun send(chatId: Long, body: String) {
+    suspend fun send(chatId: Long, body: String, replyTo: ReplyToDto? = null) {
         val trimmed = body.trim()
         if (trimmed.isEmpty()) return
         val me = settings.state.first().myUserId ?: return
@@ -102,10 +103,16 @@ class MessageRepository @Inject constructor(
                 body = trimmed,
                 createdAt = now,
                 status = MessageStatus.SENDING,
+                // Held on the optimistic row so the bubble draws its quote
+                // the instant it appears — and so a retry after a process
+                // death still quotes the right message.
+                replyToMessageId = replyTo?.messageId,
+                replySenderId = replyTo?.senderId,
+                replyExcerpt = replyTo?.excerpt,
             ),
         )
         chatDao.updateLastMessage(chatId, trimmed, now, me)
-        dispatch(clientMsgId, chatId, trimmed)
+        dispatch(clientMsgId, chatId, trimmed, replyTo?.messageId)
     }
 
     /** Re-enter the pipeline with the SAME UUID — the server dedups. */
@@ -113,7 +120,7 @@ class MessageRepository @Inject constructor(
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // already landed
         messageDao.setStatus(clientMsgId, MessageStatus.SENDING)
-        dispatch(clientMsgId, row.chatId, row.body)
+        dispatch(clientMsgId, row.chatId, row.body, row.replyToMessageId)
     }
 
     /** Discard a FAILED draft the user gave up on. */
@@ -128,31 +135,41 @@ class MessageRepository @Inject constructor(
     suspend fun flushPending() {
         messageDao.pendingSending().forEach { row ->
             if (!pendingAcks.containsKey(row.clientMsgId)) {
-                dispatch(row.clientMsgId, row.chatId, row.body)
+                dispatch(row.clientMsgId, row.chatId, row.body, row.replyToMessageId)
             }
         }
     }
 
-    private fun dispatch(clientMsgId: String, chatId: Long, body: String) {
+    private fun dispatch(
+        clientMsgId: String,
+        chatId: Long,
+        body: String,
+        replyToMessageId: Long?,
+    ) {
         val overSocket = socket.state.value == SocketState.Open &&
-            socket.trySend(ClientFrame.Send(chatId, clientMsgId, body))
+            socket.trySend(ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId))
         if (overSocket) {
             pendingAcks[clientMsgId] = scope.launch {
                 delay(ACK_TIMEOUT_MS)
                 pendingAcks.remove(clientMsgId)
                 // No ack in time — the frame may or may not have landed.
                 // REST with the same client_msg_id is safe either way.
-                restFallback(clientMsgId, chatId, body)
+                restFallback(clientMsgId, chatId, body, replyToMessageId)
             }
         } else {
-            scope.launch { restFallback(clientMsgId, chatId, body) }
+            scope.launch { restFallback(clientMsgId, chatId, body, replyToMessageId) }
         }
     }
 
-    private suspend fun restFallback(clientMsgId: String, chatId: Long, body: String) {
+    private suspend fun restFallback(
+        clientMsgId: String,
+        chatId: Long,
+        body: String,
+        replyToMessageId: Long?,
+    ) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // ack won the race
-        when (val result = chatApi.postMessage(chatId, clientMsgId, body)) {
+        when (val result = chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId)) {
             is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message)
             else -> messageDao.setStatus(clientMsgId, MessageStatus.FAILED)
         }
@@ -210,6 +227,9 @@ class MessageRepository @Inject constructor(
                     status = MessageStatus.SENT,
                     reactionsJson = message.reactions?.let(ReactionsCodec::encode),
                     reactionSeq = message.reactionSeq ?: 0L,
+                    replyToMessageId = message.replyTo?.messageId,
+                    replySenderId = message.replyTo?.senderId,
+                    replyExcerpt = message.replyTo?.excerpt,
                 ),
             ),
         )

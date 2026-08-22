@@ -36,6 +36,7 @@ import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
+import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.settings.SettingsState
@@ -446,6 +447,128 @@ class MessageRepositoryTest {
         advanceTimeBy(20_000)
         advanceUntilIdle()
         assertThat(chatApi.postedMessages).isEmpty()
+    }
+
+    // -- Replies ------------------------------------------------------------------------------------
+
+    /// The optimistic row has to carry the quote itself, so the bubble draws
+    /// it the instant it appears rather than when the server answers — and
+    /// so a retry after a process death still quotes the right message.
+    @Test
+    fun sendWithAQuoteStoresItOnTheOptimisticRowAndSendsTheTarget() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        repository.send(
+            CHAT,
+            "Six works",
+            ReplyToDto(messageId = 1337, senderId = 9, excerpt = "See you at six"),
+        )
+        advanceUntilIdle()
+
+        val frame = socket.sent.filterIsInstance<ClientFrame.Send>().single()
+        assertThat(frame.replyToMessageId).isEqualTo(1337)
+
+        val row = messageDao.findByClientMsgId(frame.clientMsgId)!!
+        assertThat(row.replyToMessageId).isEqualTo(1337)
+        assertThat(row.replySenderId).isEqualTo(9)
+        assertThat(row.replyExcerpt).isEqualTo("See you at six")
+    }
+
+    @Test
+    fun anOrdinaryMessageCarriesNoReplyTarget() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        repository.send(CHAT, "Just talking")
+        advanceUntilIdle()
+
+        assertThat(socket.sent.filterIsInstance<ClientFrame.Send>().single().replyToMessageId)
+            .isNull()
+        val row = messageDao.findByClientMsgId(sentClientMsgId())!!
+        assertThat(row.replyToMessageId).isNull()
+    }
+
+    /// The REST leg must carry the same target as the socket leg, or a
+    /// message that falls back stops being a reply — silently.
+    @Test
+    fun theRestFallbackCarriesTheQuoteToo() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+
+        repository.send(
+            CHAT,
+            "Six works",
+            ReplyToDto(messageId = 1337, senderId = 9, excerpt = "See you at six"),
+        )
+        advanceUntilIdle()
+
+        assertThat(chatApi.postedMessages).hasSize(1)
+        assertThat(chatApi.postedReplyTargets).containsExactly(1337L)
+    }
+
+    /// A retry re-reads the target off the stored row: the caller that had
+    /// it in hand is long gone by then.
+    @Test
+    fun aRetryStillQuotesTheSameMessage() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ ->
+            ApiResult.NetworkError(IllegalStateException("offline"))
+        }
+
+        repository.send(
+            CHAT,
+            "Six works",
+            ReplyToDto(messageId = 1337, senderId = 9, excerpt = "See you at six"),
+        )
+        advanceUntilIdle()
+        val clientMsgId = chatApi.postedMessages.single().second
+        assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
+            .isEqualTo(MessageStatus.FAILED)
+
+        socket.setOpen(true)
+        repository.retry(clientMsgId)
+        advanceUntilIdle()
+
+        assertThat(socket.sent.filterIsInstance<ClientFrame.Send>().single().replyToMessageId)
+            .isEqualTo(1337)
+    }
+
+    /// An inbound reply from someone else keeps its quote in the cache, so
+    /// the bubble renders identically after a relaunch.
+    @Test
+    fun anInboundReplyStoresTheServersQuote() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        socket.emit(
+            ServerFrame.Message(
+                message = messageDto(
+                    id = 4242,
+                    chatId = CHAT,
+                    senderId = 9,
+                    clientMsgId = "someone-elses-uuid",
+                    body = "Six works",
+                    replyTo = ReplyToDto(
+                        messageId = 1337,
+                        senderId = 7,
+                        excerpt = "See you at six",
+                    ),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(4242)!!
+        assertThat(row.replyToMessageId).isEqualTo(1337)
+        assertThat(row.replySenderId).isEqualTo(7)
+        assertThat(row.replyExcerpt).isEqualTo("See you at six")
     }
 
     // -- History paging + flush ---------------------------------------------------------------------

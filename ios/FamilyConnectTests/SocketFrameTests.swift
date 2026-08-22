@@ -26,12 +26,32 @@ struct SocketFrameTests {
 
     @Test("send frame encodes per protocol.md")
     func encodeSend() throws {
-        let json = try fields(of: .send(chatID: 42, clientMsgID: "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01", body: "Dinner at 7?"))
+        let json = try fields(of: .send(
+            chatID: 42,
+            clientMsgID: "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
+            body: "Dinner at 7?",
+            replyToMessageID: nil))
         #expect(json["type"] as? String == "send")
         #expect(json["chat_id"] as? Int == 42)
         #expect(json["client_msg_id"] as? String == "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01")
         #expect(json["body"] as? String == "Dinner at 7?")
+        // Four keys, not five: an ordinary message must not carry
+        // "reply_to_message_id": null — the protocol writes it as absent,
+        // and the server's frame test asserts the same on its side.
         #expect(json.count == 4)
+    }
+
+    @Test("a reply's send frame carries the quoted message id")
+    func encodeSendReply() throws {
+        let json = try fields(of: .send(
+            chatID: 42,
+            clientMsgID: "1c4a9b02-0000-4000-8000-000000000001",
+            body: "Six works",
+            replyToMessageID: 1337))
+        #expect(json["type"] as? String == "send")
+        #expect(json["reply_to_message_id"] as? Int == 1337)
+        #expect(json["body"] as? String == "Six works")
+        #expect(json.count == 5)
     }
 
     @Test("read frame encodes per protocol.md")

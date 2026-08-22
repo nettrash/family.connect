@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatEntity
+import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.LinkPreviewRepository
@@ -143,6 +144,22 @@ class ChatViewModel @Inject constructor(
      */
     val inputState = TextFieldState()
 
+    /**
+     * The message being answered, while the composer is primed. Lives here
+     * rather than in the screen so it survives a configuration change with
+     * the draft text it belongs to.
+     */
+    private val _replyDraft = MutableStateFlow<ReplyToDto?>(null)
+    val replyDraft: StateFlow<ReplyToDto?> = _replyDraft
+
+    fun beginReply(quote: ReplyToDto) {
+        _replyDraft.value = quote
+    }
+
+    fun cancelReply() {
+        _replyDraft.value = null
+    }
+
     private val _typingUser = MutableStateFlow<String?>(null)
 
     /** Display name of the member typing right now (5 s expiry). */
@@ -227,7 +244,11 @@ class ChatViewModel @Inject constructor(
         val body = inputState.text.toString()
         if (body.isBlank()) return
         inputState.clearText()
-        viewModelScope.launch { messageRepository.send(chatId, body) }
+        // Read and clear together: the draft belongs to the message being
+        // sent, and leaving it primed would silently quote the next one too.
+        val quote = _replyDraft.value
+        _replyDraft.value = null
+        viewModelScope.launch { messageRepository.send(chatId, body, quote) }
     }
 
     fun retry(clientMsgId: String) {

@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 3.
+ * Room database, version 4.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -39,7 +39,7 @@ fun interface LocalDataWiper {
         MessageEntity::class,
         MemberEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -73,6 +73,20 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_2_3: Migration = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE members ADD COLUMN avatarVersion INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v4: replies. All three columns are nullable with no default —
+         * "not a reply" is the absence of a quote, not a zero — so they
+         * match the entity, where they default to null in Kotlin rather
+         * than through @ColumnInfo.
+         */
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN replyToMessageId INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN replySenderId INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN replyExcerpt TEXT")
             }
         }
     }

@@ -42,6 +42,13 @@ sealed interface ClientFrame {
         @SerialName("chat_id") val chatId: Long,
         @SerialName("client_msg_id") val clientMsgId: String,
         val body: String,
+        /**
+         * Optional: the message being answered (protocol.md, "Replies").
+         * Omitted rather than serialized as null — the house Json sets
+         * encodeDefaults=false, which is what keeps an ordinary send frame
+         * byte-identical to what it was before replies existed.
+         */
+        @SerialName("reply_to_message_id") val replyToMessageId: Long? = null,
     ) : ClientFrame
 
     @Serializable

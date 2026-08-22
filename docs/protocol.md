@@ -65,6 +65,8 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
           — plus "reactions": [Reaction] and "reaction_seq": 123 when (and only when) the
             message has ever been reacted to. After the last reaction is removed the fields
             stay present with "reactions": [] — clients distinguish "cleared" from "no data".
+          — plus "reply_to": {ReplyTo} when (and only when) the message is a reply.
+ReplyTo   {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
 Reaction  {"user_id": 9, "emoji": "❤️"}
 ```
 
@@ -78,6 +80,31 @@ picture.** Deleting a picture reports `avatar_version: 0`, but the underlying co
 back — the next upload after a delete reports `2`, not `1` again. Without this a client that had
 cached the first picture under version `1` would keep showing it after the owner deleted it and
 uploaded a different one.
+
+### Replies
+
+A reply is decided once, at send time, and never changes afterwards. The request names the message
+being answered with `reply_to_message_id`; it must be a message in the SAME chat, and anything else
+— including a real message in a chat the caller cannot see — is `message_not_found`, so the
+endpoint never confirms that an id exists elsewhere.
+
+What comes back is not that id but a `reply_to` snippet, which the server RECOMPUTES on every read
+rather than storing:
+
+```json
+"reply_to": {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
+```
+
+Recomputed, because a quoted message can be edited later — a snippet frozen at send time would go
+on showing text its author has since changed. `excerpt` is the parent's body cut to at most 120
+characters (counted in Unicode scalar values, never cut mid-scalar) and exists only so a client can
+draw the quote without having the original in its cache; a client that wants the whole message
+reads it from its own history or pages back to it, keyed by `message_id`. The snippet is never
+nested: a reply to a reply carries its parent's excerpt, not its grandparent's.
+
+Replies are ordinary messages in every other respect — they take part in `after_id` catch-up,
+reactions and unread counts exactly as any other message does, and nothing about them mutates, so
+they need no sequence cursor of their own.
 
 Every mutation of a message's reactions (set, replace, remove) takes the next value of one
 server-wide sequence and stamps it on the message as `reaction_seq`; each chat exposes the
@@ -132,7 +159,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to; `last_message` previews never carry `reactions`. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self`, `not_same_family`, `user_not_found`. |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body}` → `201 {message: Message}`. Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. Errors: `message_empty`, `message_too_long`, `not_chat_member`. |
+| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?}` → `201 {message: Message}`. Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). Errors: `message_empty`, `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat). |
 | `POST /chats/{id}/read` | `{last_read_message_id}` → `204`. Monotonic — the server keeps the max ever reported. |
 | `PUT /chats/{id}/messages/{mid}/reaction` | `{emoji}` → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Sets or replaces the caller's reaction on the message — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or remove). One reaction per user per message. Emoji: trimmed, non-empty, ≤ 32 bytes UTF-8. Re-PUT of the current emoji is a no-op: no seq bump, no fan-out. Errors: `invalid_emoji`, `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/reaction` | → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Removes the caller's reaction; idempotent (deleting nothing returns the current state unchanged). Same errors minus `invalid_emoji`. |
@@ -162,6 +189,8 @@ Frames are JSON text messages tagged by `"type"`.
 
 ```json
 {"type": "send",   "chat_id": 42, "client_msg_id": "8f14e45f-…", "body": "Dinner at 7?"}
+{"type": "send",   "chat_id": 42, "client_msg_id": "1c4a9b02-…", "body": "Six works",
+                   "reply_to_message_id": 1337}
 {"type": "read",   "chat_id": 42, "last_read_message_id": 1337}
 {"type": "typing", "chat_id": 42}
 {"type": "ping"}
