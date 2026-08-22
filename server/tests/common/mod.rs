@@ -223,6 +223,39 @@ impl TestServer {
             .expect("request sends")
     }
 
+    /// Raw-body PUT — the avatar upload is the one endpoint that takes
+    /// bytes rather than JSON.
+    pub async fn put_bytes(
+        &self,
+        token: &str,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> reqwest::Response {
+        self.client
+            .put(self.url(path))
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .send()
+            .await
+            .expect("request sends")
+    }
+
+    /// GET with extra headers, for conditional requests.
+    pub async fn get_with(
+        &self,
+        token: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> reqwest::Response {
+        let mut request = self.client.get(self.url(path)).bearer_auth(token);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        request.send().await.expect("request sends")
+    }
+
     pub async fn patch(&self, token: &str, path: &str, body: Value) -> reqwest::Response {
         self.client
             .patch(self.url(path))

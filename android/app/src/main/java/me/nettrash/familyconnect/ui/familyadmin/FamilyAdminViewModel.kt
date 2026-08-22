@@ -18,6 +18,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -26,13 +27,14 @@ import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.dto.JoinRequestDto
 import me.nettrash.familyconnect.data.repo.FamilyRepository
+import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import javax.inject.Inject
 
 @HiltViewModel
 class FamilyAdminViewModel @Inject constructor(
     private val familyRepository: FamilyRepository,
-    settings: SettingsRepository,
+    private val settings: SettingsRepository,
 ) : ViewModel() {
 
     data class UiState(
@@ -53,6 +55,16 @@ class FamilyAdminViewModel @Inject constructor(
     val myUserId: StateFlow<Long?> = settings.state.map { it.myUserId }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /**
+     * Owners get the whole screen; everyone else gets the roster only.
+     * The member list itself is not owner-gated on the server — only the
+     * invite code, the join policy, the requests and removal are — so a
+     * plain member can see who is in the family.
+     */
+    val isOwner: StateFlow<Boolean> = settings.state
+        .map { it.familyStatus == FamilyStatus.OWNER }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     init {
         load()
     }
@@ -67,7 +79,12 @@ class FamilyAdminViewModel @Inject constructor(
                     )
                 }
             }
-            loadRequests()
+            // Join requests are an owner-only endpoint: asking as a plain
+            // member is a guaranteed 403, which would paint an error over
+            // a screen that is otherwise perfectly useful to them.
+            if (settings.state.first().familyStatus == FamilyStatus.OWNER) {
+                loadRequests()
+            }
         }
     }
 

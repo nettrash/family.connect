@@ -9,18 +9,35 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post, put};
 
 use crate::state::AppState;
-use crate::{handlers_auth, handlers_chat, handlers_device, handlers_family, ws};
+use crate::{handlers_auth, handlers_avatar, handlers_chat, handlers_device, handlers_family, ws};
 
 /// Build the full application router for the given state. Used identically
 /// by the binary and by the integration tests.
 pub fn build_router(state: AppState) -> Router {
     let body_limit = state.cfg.limits.max_body_bytes;
+    // A little headroom over the payload limit the handler enforces, so
+    // an oversized upload is answered with `avatar_too_large` from our
+    // own error shape rather than axum's bare 413.
+    let avatar_limit = state.cfg.limits.max_avatar_bytes + 4096;
     Router::new()
         // Auth
         .route("/api/v1/auth/register", post(handlers_auth::register))
         .route("/api/v1/auth/login", post(handlers_auth::login))
         .route("/api/v1/auth/logout", post(handlers_auth::logout))
         .route("/api/v1/me", get(handlers_auth::me))
+        // Profile pictures. The avatar PUT is the one route that may
+        // exceed max_body_bytes, so it carries its own limit — raising
+        // the global one would weaken every JSON route with it.
+        .route(
+            "/api/v1/me/avatar",
+            put(handlers_avatar::put_avatar)
+                .delete(handlers_avatar::delete_avatar)
+                .layer(DefaultBodyLimit::max(avatar_limit)),
+        )
+        .route(
+            "/api/v1/users/{id}/avatar",
+            get(handlers_avatar::get_avatar),
+        )
         // Families
         .route("/api/v1/families", post(handlers_family::create_family))
         .route("/api/v1/families/join", post(handlers_family::join_family))

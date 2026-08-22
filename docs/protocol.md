@@ -43,13 +43,16 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `join_request_pending`, `join_request_not_pending`, `user_already_in_family`,
 `owner_cannot_leave`, `cannot_remove_owner`, `cannot_dm_self`, `not_same_family`,
 `user_not_found`, `chat_not_found`, `not_chat_member`, `message_empty`, `message_too_long`,
-`message_not_found`, `invalid_emoji`, `invalid_pagination`, `device_not_found`, `internal`.
+`message_not_found`, `invalid_emoji`, `invalid_pagination`, `device_not_found`,
+`avatar_too_large`, `invalid_image`, `internal`.
 
 ## Objects
 
 ```json
-User      {"id": 7, "username": "anna", "display_name": "Anna", "created_at": "…"}
-Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|member"}
+User      {"id": 7, "username": "anna", "display_name": "Anna", "created_at": "…",
+           "avatar_version": 3}
+Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|member",
+           "avatar_version": 3}
 Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval", "created_at": "…"}
           — plus "invite_code": "ABCD2345" when (and only when) the caller is the owner
 JoinRequest {"id": 12, "user": {User}, "created_at": "…"}
@@ -64,6 +67,11 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
             stay present with "reactions": [] — clients distinguish "cleared" from "no data".
 Reaction  {"user_id": 9, "emoji": "❤️"}
 ```
+
+`avatar_version` counts how many times that user has set a profile picture: `0` means they have
+none and clients draw initials. It is a cache key, not a URL — the bytes come from
+`GET /users/{id}/avatar`, and because the version changes on every upload, clients may cache a
+fetched picture forever under `(user_id, avatar_version)` and never revalidate.
 
 Every mutation of a message's reactions (set, replace, remove) takes the next value of one
 server-wide sequence and stamps it on the message as `reaction_seq`; each chat exposes the
@@ -80,6 +88,21 @@ clients a monotonic cursor for reaction catch-up, exactly as message ids drive `
 | `POST /auth/login` | `{username, password}` → `200 {token, user: User}`. Error: `invalid_credentials` (401). |
 | `POST /auth/logout` | (auth) → `204`. Revokes the calling session and closes its sockets. |
 | `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. |
+
+### Profile pictures
+
+Bytes, not JSON — the only binary surface in the protocol. Clients downscale and re-encode
+before upload (a square JPEG, longest edge ≤ 512 px, is what both apps send); the server stores
+what it is given after validating the type and size, and never transcodes.
+
+| Method & path | Body → Response |
+|---|---|
+| `PUT /me/avatar` | Raw image bytes with `Content-Type: image/jpeg` or `image/png` → `200 {user: User}` with the incremented `avatar_version`. Replaces any previous picture. Errors: `avatar_too_large` (413, over the limit below), `invalid_image` (415 for any other content type, 400 when the bytes are not a readable JPEG/PNG). |
+| `DELETE /me/avatar` | → `204`. Drops the picture and sets `avatar_version` back to `0`. Idempotent. |
+| `GET /users/{id}/avatar` | → `200` with the stored bytes and that user's `Content-Type`. Visible to the caller themselves and to members of the same family; anyone else — and a user with no picture — gets `404 user_not_found` (the same answer, so the endpoint never reveals who exists). Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Takes an optional `v` query parameter, ignored by the server: it exists so a client can cache-bust by `avatar_version` in the URL. |
+
+The picture is never pushed and never travels in a WebSocket frame — a frame carries at most the
+`avatar_version` that tells a client to re-fetch.
 
 ### Families
 
@@ -145,7 +168,7 @@ Frames are JSON text messages tagged by `"type"`.
 {"type": "message", "message": {Message}}
 {"type": "read",    "chat_id": 42, "user_id": 9, "last_read_message_id": 1338}
 {"type": "typing",  "chat_id": 42, "user_id": 9}
-{"type": "member_joined", "family_id": 3, "user": {"id": 11, "username": "junior", "display_name": "Junior"}}
+{"type": "member_joined", "family_id": 3, "user": {"id": 11, "username": "junior", "display_name": "Junior", "avatar_version": 0}}
 {"type": "member_left",   "family_id": 3, "user_id": 11}
 {"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
                      "reactions": [{"user_id": 9, "emoji": "❤️"}]}
@@ -239,6 +262,7 @@ Tapping a notification opens the chat named by `chat_id` (or the join-requests s
 | Message body | 4000 chars |
 | Reaction emoji | 32 bytes UTF-8 (fixed) |
 | Page size | 50 default / 200 max |
-| HTTP body | 16 KiB |
+| HTTP body | 16 KiB (except `PUT /me/avatar`) |
+| Profile picture | 256 KiB |
 | Per-socket outbound queue | 64 frames |
 | Session TTL | 180 days, sliding |

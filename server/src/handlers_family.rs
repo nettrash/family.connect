@@ -147,14 +147,16 @@ async fn grant_membership(
 }
 
 async fn user_brief(state: &AppState, user_id: i64) -> Result<UserBrief, ApiError> {
-    let row = sqlx::query("SELECT id, username, display_name FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_one(&state.pool)
-        .await?;
+    let row =
+        sqlx::query("SELECT id, username, display_name, avatar_version FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&state.pool)
+            .await?;
     Ok(UserBrief {
         id: row.get("id"),
         username: row.get("username"),
         display_name: row.get("display_name"),
+        avatar_version: row.get("avatar_version"),
     })
 }
 
@@ -333,7 +335,8 @@ pub async fn my_family(
     };
     let family = fetch_family(&state, family_id).await?;
     let rows = sqlx::query(
-        "SELECT id, username, display_name FROM users WHERE family_id = $1 ORDER BY id",
+        "SELECT id, username, display_name, avatar_version
+         FROM users WHERE family_id = $1 ORDER BY id",
     )
     .bind(family_id)
     .fetch_all(&state.pool)
@@ -347,6 +350,7 @@ pub async fn my_family(
                 username: row.get("username"),
                 display_name: row.get("display_name"),
                 role: member_role(id, family.owner_user_id).to_string(),
+                avatar_version: row.get("avatar_version"),
             }
         })
         .collect();
@@ -422,7 +426,7 @@ pub async fn list_join_requests(
     let family = require_owner(&state, &auth).await?;
     let rows = sqlx::query(
         "SELECT jr.id, jr.created_at,
-                u.id AS user_id, u.username, u.display_name,
+                u.id AS user_id, u.username, u.display_name, u.avatar_version,
                 u.created_at AS user_created_at
          FROM join_requests jr
          JOIN users u ON u.id = jr.user_id
@@ -441,6 +445,7 @@ pub async fn list_join_requests(
                 username: row.get("username"),
                 display_name: row.get("display_name"),
                 created_at: row.get("user_created_at"),
+                avatar_version: row.get("avatar_version"),
             },
             created_at: row.get("created_at"),
         })
@@ -520,6 +525,7 @@ pub async fn approve_join_request(
         username: joined.username.clone(),
         display_name: joined.display_name.clone(),
         role: "member".to_string(),
+        avatar_version: joined.avatar_version,
     };
     events::log_fanout_error(
         "member_joined",

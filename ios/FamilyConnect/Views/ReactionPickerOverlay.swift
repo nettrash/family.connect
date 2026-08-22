@@ -93,6 +93,58 @@ struct ReactionCapsule: View {
     }
 }
 
+/// UIActivityViewController in SwiftUI clothing. ShareLink would do for
+/// a link, but this shares plain message text from a `.sheet(item:)`
+/// rather than from a button the user taps directly.
+struct ShareSheet: UIViewControllerRepresentable {
+    let text: String
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [text], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+/// The actions under the bubble, beside the reaction capsule above it.
+/// Copy and share are both purely local — the message text is already in
+/// hand — so neither waits on the network. The parent owns dismissal.
+struct MessageContextMenu: View {
+    let onCopy: () -> Void
+    let onShare: () -> Void
+
+    private static let rowHeight: CGFloat = 44
+    private static let menuWidth: CGFloat = 220
+
+    /// Exact rendered size — two fixed-height rows and a hairline. The
+    /// overlay needs the size up front to place the menu.
+    static var size: CGSize {
+        CGSize(width: menuWidth, height: rowHeight * 2 + 1)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            row("Copy", systemImage: "doc.on.doc", action: onCopy)
+            Divider()
+            row("Share", systemImage: "square.and.arrow.up", action: onShare)
+        }
+        .frame(width: Self.menuWidth)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+    }
+
+    private func row(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .frame(height: Self.rowHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// The floating menu for a failed bubble: Retry / Delete (the actions a
 /// message without a server id can offer). The parent owns dismissal.
 struct FailedMessageMenu: View {

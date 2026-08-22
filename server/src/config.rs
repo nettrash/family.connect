@@ -101,6 +101,12 @@ pub struct LimitsConfig {
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
 
+    /// Maximum accepted profile picture in bytes. Applies to
+    /// `PUT /me/avatar` ONLY, which overrides `max_body_bytes` — that
+    /// limit stays small for every JSON route.
+    #[serde(default = "default_max_avatar_bytes")]
+    pub max_avatar_bytes: usize,
+
     /// Outbound frames buffered per WebSocket before the connection is
     /// declared too slow and dropped.
     #[serde(default = "default_ws_send_queue")]
@@ -318,6 +324,7 @@ impl Default for LimitsConfig {
             default_page_size: default_default_page_size(),
             max_page_size: default_max_page_size(),
             max_body_bytes: default_max_body_bytes(),
+            max_avatar_bytes: default_max_avatar_bytes(),
             ws_send_queue: default_ws_send_queue(),
             ws_ping_interval_secs: default_ws_ping_interval_secs(),
             ws_idle_timeout_secs: default_ws_idle_timeout_secs(),
@@ -490,6 +497,12 @@ fn default_max_page_size() -> i64 {
 
 fn default_max_body_bytes() -> usize {
     16384
+}
+
+/// 256 KiB — comfortably above the ~512px square JPEG both clients
+/// upload, and far below anything worth storing in a family database.
+fn default_max_avatar_bytes() -> usize {
+    262_144
 }
 
 fn default_ws_send_queue() -> usize {

@@ -43,6 +43,8 @@ pub mod codes {
     pub const INVALID_EMOJI: &str = "invalid_emoji";
     pub const INVALID_PAGINATION: &str = "invalid_pagination";
     pub const DEVICE_NOT_FOUND: &str = "device_not_found";
+    pub const AVATAR_TOO_LARGE: &str = "avatar_too_large";
+    pub const INVALID_IMAGE: &str = "invalid_image";
     pub const INTERNAL: &str = "internal";
 }
 
@@ -61,6 +63,10 @@ pub enum ApiError {
     NotFound { code: &'static str, message: String },
     /// 409 — the request conflicts with current state.
     Conflict { code: &'static str, message: String },
+    /// 413 — the body is larger than the route accepts (profile pictures).
+    PayloadTooLarge { code: &'static str, message: String },
+    /// 415 — the body's content type is not one this route stores.
+    UnsupportedMediaType { code: &'static str, message: String },
     /// 500 — anything unexpected. Logged in full, reported generically.
     Internal(anyhow::Error),
 }
@@ -113,6 +119,20 @@ impl ApiError {
         }
     }
 
+    pub fn payload_too_large(code: &'static str, message: impl Into<String>) -> Self {
+        Self::PayloadTooLarge {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn unsupported_media_type(code: &'static str, message: impl Into<String>) -> Self {
+        Self::UnsupportedMediaType {
+            code,
+            message: message.into(),
+        }
+    }
+
     /// The HTTP status this error maps to.
     pub fn status(&self) -> StatusCode {
         match self {
@@ -121,6 +141,8 @@ impl ApiError {
             Self::Forbidden { .. } => StatusCode::FORBIDDEN,
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
             Self::Conflict { .. } => StatusCode::CONFLICT,
+            Self::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::UnsupportedMediaType { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -141,7 +163,9 @@ impl ApiError {
             | Self::Unauthorized { code, message }
             | Self::Forbidden { code, message }
             | Self::NotFound { code, message }
-            | Self::Conflict { code, message } => (code.to_string(), message),
+            | Self::Conflict { code, message }
+            | Self::PayloadTooLarge { code, message }
+            | Self::UnsupportedMediaType { code, message } => (code.to_string(), message),
         }
     }
 }
@@ -159,7 +183,9 @@ impl IntoResponse for ApiError {
             | Self::Unauthorized { code, message }
             | Self::Forbidden { code, message }
             | Self::NotFound { code, message }
-            | Self::Conflict { code, message } => (code, message),
+            | Self::Conflict { code, message }
+            | Self::PayloadTooLarge { code, message }
+            | Self::UnsupportedMediaType { code, message } => (code, message),
         };
         let body = json!({"error": {"code": code, "message": message}});
         (status, Json(body)).into_response()

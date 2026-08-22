@@ -73,6 +73,13 @@ struct ConversationView: View {
         var id: String { localID }
     }
 
+    /// One message's text on its way to the share sheet — a wrapper
+    /// because `.sheet(item:)` wants something Identifiable.
+    private struct ShareText: Identifiable {
+        let text: String
+        var id: String { text }
+    }
+
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(LinkPreviewLoader.self) private var previewLoader
     @Query private var messages: [MessageEntity]
@@ -100,6 +107,8 @@ struct ConversationView: View {
     @State private var reactionPickerID: String?
     /// The bubble the "+" full emoji picker sheet is up for.
     @State private var fullPickerTarget: ReactionTarget?
+    /// Text handed to the share sheet, nil while it is closed.
+    @State private var shareText: ShareText?
 
     init(chatID: Int64) {
         self.chatID = chatID
@@ -259,6 +268,9 @@ struct ConversationView: View {
         // closes — that's just the scrim fading).
         .sensoryFeedback(.selection, trigger: reactionPickerID) { _, newValue in
             newValue != nil
+        }
+        .sheet(item: $shareText) { share in
+            ShareSheet(text: share.text)
         }
         .sheet(item: $fullPickerTarget) { target in
             EmojiPickerView { emoji in
@@ -467,7 +479,8 @@ struct ConversationView: View {
                         // Reacting needs a server message id to PUT against.
                         let mine = message.reactionList.first { $0.userID == currentUserID }?.emoji
                         let emojis = capsuleEmojis(mine: mine)
-                        floatingMenu(size: ReactionCapsule.size(emojiCount: emojis.count), over: rect, in: proxy) {
+                        let capsuleSize = ReactionCapsule.size(emojiCount: emojis.count)
+                        floatingMenu(size: capsuleSize, over: rect, in: proxy) {
                             ReactionCapsule(
                                 emojis: emojis,
                                 selected: mine,
@@ -480,6 +493,30 @@ struct ConversationView: View {
                                     fullPickerTarget = ReactionTarget(localID: localID)
                                 })
                         }
+                        // The actions go UNDER the bubble, so the capsule
+                        // above it stays where the thumb already expects
+                        // it — and under the capsule when that had to
+                        // flip down too, so the two never overlap.
+                        floatingMenu(
+                            size: MessageContextMenu.size,
+                            over: rect,
+                            in: proxy,
+                            atCenterY: menuCenterY(
+                                menu: MessageContextMenu.size,
+                                capsule: capsuleSize,
+                                over: rect,
+                                in: proxy)
+                        ) {
+                            MessageContextMenu(
+                                onCopy: {
+                                    UIPasteboard.general.string = message.body
+                                    dismissReactionPicker()
+                                },
+                                onShare: {
+                                    dismissReactionPicker()
+                                    shareText = ShareText(text: message.body)
+                                })
+                        }
                     }
                 }
             }
@@ -490,18 +527,21 @@ struct ConversationView: View {
     /// bubble's rect: above it (below when the bubble hugs the top
     /// edge), centered on it but clamped inside the horizontal bounds,
     /// and springing out of the nearest point of the bubble.
+    /// `atCenterY` overrides the default placement for a panel that has
+    /// to be positioned relative to another one (see menuCenterY).
     private func floatingMenu<Content: View>(
         size: CGSize,
         over rect: CGRect,
         in proxy: GeometryProxy,
+        atCenterY explicitY: CGFloat? = nil,
         @ViewBuilder content: () -> Content
     ) -> some View {
         let margin: CGFloat = 8
-        let placeBelow = rect.minY - size.height - margin < proxy.safeAreaInsets.top + margin
+        let placeBelow = explicitY != nil
+            ? explicitY! > rect.midY
+            : rect.minY - size.height - margin < proxy.safeAreaInsets.top + margin
         let x = min(max(rect.midX, size.width / 2 + margin), proxy.size.width - size.width / 2 - margin)
-        let y = placeBelow
-            ? rect.maxY + margin + size.height / 2
-            : rect.minY - margin - size.height / 2
+        let y = explicitY ?? panelCenterY(size: size, over: rect, in: proxy)
         // The unit point of the menu nearest the bubble: the scale grows
         // from there, so the menu sprouts out of the bubble even after
         // the horizontal clamp shifted it.
@@ -511,6 +551,46 @@ struct ConversationView: View {
                 .scale(scale: 0.1, anchor: UnitPoint(x: anchorX, y: placeBelow ? 0 : 1))
                     .combined(with: .opacity))
             .position(x: x, y: y)
+    }
+
+    /// Vertical centre of a panel placed against the bubble: above it,
+    /// below it when the bubble hugs the top edge, and never past the
+    /// bottom of the viewport.
+    private func panelCenterY(size: CGSize, over rect: CGRect, in proxy: GeometryProxy) -> CGFloat {
+        let margin: CGFloat = 8
+        let placeBelow = rect.minY - size.height - margin < proxy.safeAreaInsets.top + margin
+        return placeBelow
+            ? min(rect.maxY + margin + size.height / 2, proxy.size.height - size.height / 2 - margin)
+            : rect.minY - margin - size.height / 2
+    }
+
+    /// Vertical centre of the action menu: under the bubble, but never
+    /// overlapping the capsule. A bubble taller than the viewport pins
+    /// BOTH panels against the same edge — the menu is drawn second, so
+    /// without this it would simply cover the capsule and take the
+    /// reactions with it. Stack under the capsule when there is room,
+    /// otherwise above it.
+    private func menuCenterY(
+        menu: CGSize,
+        capsule: CGSize,
+        over rect: CGRect,
+        in proxy: GeometryProxy
+    ) -> CGFloat {
+        let margin: CGFloat = 8
+        let gap: CGFloat = 8
+        let capsuleCenter = panelCenterY(size: capsule, over: rect, in: proxy)
+        let capsuleTop = capsuleCenter - capsule.height / 2
+        let capsuleBottom = capsuleCenter + capsule.height / 2
+        let preferred = min(
+            rect.maxY + margin + menu.height / 2,
+            proxy.size.height - menu.height / 2 - margin)
+        let overlaps = preferred - menu.height / 2 < capsuleBottom + gap
+            && preferred + menu.height / 2 > capsuleTop - gap
+        guard overlaps else { return preferred }
+        if capsuleBottom + gap + menu.height <= proxy.size.height - margin {
+            return capsuleBottom + gap + menu.height / 2
+        }
+        return max(margin + menu.height / 2, capsuleTop - gap - menu.height / 2)
     }
 
     /// The capsule's items: the quick set, plus the user's current

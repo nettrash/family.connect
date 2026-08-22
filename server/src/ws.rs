@@ -525,12 +525,14 @@ mod tests {
                 id: 11,
                 username: "junior".to_string(),
                 display_name: "Junior".to_string(),
+                avatar_version: 0,
             },
         };
         assert_serializes_to(
             &frame,
             r#"{"type": "member_joined", "family_id": 3,
-                "user": {"id": 11, "username": "junior", "display_name": "Junior"}}"#,
+                "user": {"id": 11, "username": "junior", "display_name": "Junior",
+                         "avatar_version": 0}}"#,
         );
     }
 
@@ -630,6 +632,7 @@ mod tests {
                     id: 11,
                     username: "junior".to_string(),
                     display_name: "Junior".to_string(),
+                    avatar_version: 0,
                 },
             },
             ServerFrame::Pong,

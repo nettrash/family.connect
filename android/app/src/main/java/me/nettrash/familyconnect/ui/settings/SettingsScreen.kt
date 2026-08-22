@@ -231,10 +231,23 @@ fun SettingsScreen(
                         modifier = Modifier.clickable(onClick = shareCode),
                     )
                 }
-                if (state.isOwner) {
+                // Everyone gets in: the roster is not owner-gated on the
+                // server, only the invite code, policy, requests and
+                // removal are — and the screen hides those for members.
+                run {
                     ListItem(
-                        headlineContent = { Text("Manage family") },
-                        supportingContent = { Text("Join requests, members, invite code") },
+                        headlineContent = {
+                            Text(if (state.isOwner) "Manage family" else "Family members")
+                        },
+                        supportingContent = {
+                            Text(
+                                if (state.isOwner) {
+                                    "Join requests, members, invite code"
+                                } else {
+                                    "See who is in the family"
+                                },
+                            )
+                        },
                         leadingContent = {
                             Icon(
                                 Icons.Outlined.ManageAccounts,

@@ -132,12 +132,15 @@ struct SettingsView: View {
                         Label("Share Invite", systemImage: "square.and.arrow.up")
                     }
                 }
-                if session.isOwner {
-                    NavigationLink {
-                        FamilyManageView(settingsModel: model)
-                    } label: {
-                        Label("Manage Family", systemImage: "person.2.badge.gearshape")
-                    }
+                // Everyone gets in: the roster is not owner-gated on the
+                // server, only the invite code, policy, requests and
+                // removal are — and the screen hides those for members.
+                NavigationLink {
+                    FamilyManageView(settingsModel: model)
+                } label: {
+                    Label(
+                        session.isOwner ? "Manage Family" : "Family Members",
+                        systemImage: "person.2.badge.gearshape")
                 }
             }
             Button("Leave Family", role: .destructive) {

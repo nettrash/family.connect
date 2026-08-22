@@ -93,6 +93,7 @@ fun FamilyAdminScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val members by viewModel.members.collectAsStateWithLifecycle()
+    val isOwner by viewModel.isOwner.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
@@ -119,7 +120,7 @@ fun FamilyAdminScreen(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
-                title = { Text("Manage family") },
+                title = { Text(if (isOwner) "Manage family" else "Family members") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -140,184 +141,189 @@ fun FamilyAdminScreen(
                 ErrorCard(message = it, modifier = Modifier.padding(16.dp))
             }
 
-            // -- Pending requests ---------------------------------------------
-            Text(
-                text = "Join requests",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
-            )
-            if (state.requests.isEmpty()) {
-                EmptyState(
-                    icon = Icons.Outlined.Inbox,
-                    title = "No pending requests",
-                    subtitle = "Share the invite code below to add someone.",
-                    modifier = Modifier.fillMaxWidth(),
+            // Owner-only: join requests, the invite code and the join
+            // policy are all owner endpoints on the server. A plain
+            // member opens this screen for the roster below.
+            if (isOwner) {
+                // -- Pending requests ---------------------------------------------
+                Text(
+                    text = "Join requests",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
                 )
-            } else {
-                state.requests.forEach { request ->
-                    key(request.id) {
-                        AnimatedVisibility(
-                            visible = request.id !in departingRequests,
-                            enter = expandVertically(tween(200)) + fadeIn(tween(200)),
-                            exit = shrinkVertically(tween(200)) + fadeOut(tween(200)),
-                        ) {
-                            ListItem(
-                                headlineContent = { Text(request.user.displayName) },
-                                supportingContent = { Text("@${request.user.username}") },
-                                leadingContent = {
-                                    Avatar(name = request.user.displayName, userId = request.user.id)
-                                },
-                                trailingContent = {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        FilledTonalIconButton(
-                                            onClick = {
-                                                departingRequests += request.id
-                                                viewModel.approve(request.id) {
-                                                    scope.launch {
-                                                        snackbarHostState.showSnackbar(
-                                                            "Approved ${request.user.displayName}",
-                                                        )
-                                                    }
-                                                }
-                                            },
-                                            enabled = !state.busy,
-                                            modifier = Modifier.size(40.dp),
-                                            colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            ),
+                if (state.requests.isEmpty()) {
+                    EmptyState(
+                        icon = Icons.Outlined.Inbox,
+                        title = "No pending requests",
+                        subtitle = "Share the invite code below to add someone.",
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    state.requests.forEach { request ->
+                        key(request.id) {
+                            AnimatedVisibility(
+                                visible = request.id !in departingRequests,
+                                enter = expandVertically(tween(200)) + fadeIn(tween(200)),
+                                exit = shrinkVertically(tween(200)) + fadeOut(tween(200)),
+                            ) {
+                                ListItem(
+                                    headlineContent = { Text(request.user.displayName) },
+                                    supportingContent = { Text("@${request.user.username}") },
+                                    leadingContent = {
+                                        Avatar(name = request.user.displayName, userId = request.user.id)
+                                    },
+                                    trailingContent = {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                                         ) {
-                                            Icon(
-                                                Icons.Filled.Check,
-                                                contentDescription = "Approve ${request.user.displayName}",
-                                            )
-                                        }
-                                        IconButton(
-                                            onClick = {
-                                                departingRequests += request.id
-                                                viewModel.reject(request.id) {
-                                                    scope.launch {
-                                                        snackbarHostState.showSnackbar(
-                                                            "Rejected ${request.user.displayName}",
-                                                        )
+                                            FilledTonalIconButton(
+                                                onClick = {
+                                                    departingRequests += request.id
+                                                    viewModel.approve(request.id) {
+                                                        scope.launch {
+                                                            snackbarHostState.showSnackbar(
+                                                                "Approved ${request.user.displayName}",
+                                                            )
+                                                        }
                                                     }
-                                                }
-                                            },
-                                            enabled = !state.busy,
-                                            modifier = Modifier.size(40.dp),
-                                        ) {
-                                            Icon(
-                                                Icons.Filled.Close,
-                                                contentDescription = "Reject ${request.user.displayName}",
-                                                tint = MaterialTheme.colorScheme.error,
-                                            )
+                                                },
+                                                enabled = !state.busy,
+                                                modifier = Modifier.size(40.dp),
+                                                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                ),
+                                            ) {
+                                                Icon(
+                                                    Icons.Filled.Check,
+                                                    contentDescription = "Approve ${request.user.displayName}",
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    departingRequests += request.id
+                                                    viewModel.reject(request.id) {
+                                                        scope.launch {
+                                                            snackbarHostState.showSnackbar(
+                                                                "Rejected ${request.user.displayName}",
+                                                            )
+                                                        }
+                                                    }
+                                                },
+                                                enabled = !state.busy,
+                                                modifier = Modifier.size(40.dp),
+                                            ) {
+                                                Icon(
+                                                    Icons.Filled.Close,
+                                                    contentDescription = "Reject ${request.user.displayName}",
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                )
+                                            }
                                         }
-                                    }
-                                },
-                            )
+                                    },
+                                )
+                            }
                         }
                     }
                 }
-            }
-            SectionDivider()
+                SectionDivider()
 
-            // -- Invite code -----------------------------------------------------
-            Text(
-                text = "Invite code",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
-            )
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-            ) {
-                Row(
-                    modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                // -- Invite code -----------------------------------------------------
+                Text(
+                    text = "Invite code",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+                )
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
                 ) {
-                    Text(
-                        text = state.inviteCode ?: "…",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontFamily = FontFamily.Monospace,
-                            letterSpacing = 2.sp,
-                        ),
-                        modifier = Modifier.weight(1f),
-                    )
-                    IconButton(
-                        onClick = {
-                            val code = state.inviteCode ?: return@IconButton
-                            scope.launch {
-                                clipboard.setClipEntry(
-                                    ClipData.newPlainText("Invite code", code).toClipEntry(),
-                                )
-                                snackbarHostState.showSnackbar("Copied")
-                            }
-                        },
-                        enabled = state.inviteCode != null,
+                    Row(
+                        modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Filled.ContentCopy, contentDescription = "Copy invite code")
-                    }
-                    IconButton(onClick = { confirmRotate = true }, enabled = !state.busy) {
-                        Icon(Icons.Filled.Autorenew, contentDescription = "Rotate invite code")
+                        Text(
+                            text = state.inviteCode ?: "…",
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontFamily = FontFamily.Monospace,
+                                letterSpacing = 2.sp,
+                            ),
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(
+                            onClick = {
+                                val code = state.inviteCode ?: return@IconButton
+                                scope.launch {
+                                    clipboard.setClipEntry(
+                                        ClipData.newPlainText("Invite code", code).toClipEntry(),
+                                    )
+                                    snackbarHostState.showSnackbar("Copied")
+                                }
+                            },
+                            enabled = state.inviteCode != null,
+                        ) {
+                            Icon(Icons.Filled.ContentCopy, contentDescription = "Copy invite code")
+                        }
+                        IconButton(onClick = { confirmRotate = true }, enabled = !state.busy) {
+                            Icon(Icons.Filled.Autorenew, contentDescription = "Rotate invite code")
+                        }
                     }
                 }
-            }
-            Text(
-                text = "Rotating invalidates the current code immediately",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-            SectionDivider()
+                Text(
+                    text = "Rotating invalidates the current code immediately",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+                SectionDivider()
 
-            // -- Join policy ------------------------------------------------------
-            Text(
-                text = "Join policy",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
-            )
-            SingleChoiceSegmentedButtonRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-            ) {
-                SegmentedButton(
-                    selected = state.joinPolicy == "open",
-                    onClick = { viewModel.setJoinPolicy("open") },
-                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                    enabled = !state.busy,
+                // -- Join policy ------------------------------------------------------
+                Text(
+                    text = "Join policy",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
+                )
+                SingleChoiceSegmentedButtonRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
                 ) {
-                    Text("Open")
+                    SegmentedButton(
+                        selected = state.joinPolicy == "open",
+                        onClick = { viewModel.setJoinPolicy("open") },
+                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                        enabled = !state.busy,
+                    ) {
+                        Text("Open")
+                    }
+                    SegmentedButton(
+                        selected = state.joinPolicy == "approval",
+                        onClick = { viewModel.setJoinPolicy("approval") },
+                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                        enabled = !state.busy,
+                    ) {
+                        Text("Approval")
+                    }
                 }
-                SegmentedButton(
-                    selected = state.joinPolicy == "approval",
-                    onClick = { viewModel.setJoinPolicy("approval") },
-                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                    enabled = !state.busy,
-                ) {
-                    Text("Approval")
-                }
+                Text(
+                    text = if (state.joinPolicy == "open") {
+                        "Anyone with the invite code joins instantly."
+                    } else {
+                        "Joins with the code wait for your approval."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+                SectionDivider()
             }
-            Text(
-                text = if (state.joinPolicy == "open") {
-                    "Anyone with the invite code joins instantly."
-                } else {
-                    "Joins with the code wait for your approval."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-            SectionDivider()
 
             // -- Members ------------------------------------------------------------
             Text(
@@ -342,9 +348,10 @@ fun FamilyAdminScreen(
                                 Avatar(name = member.displayName, userId = member.userId)
                             },
                             trailingContent = {
-                                // The owner can't be removed (protocol:
+                                // Removing is an owner action. The owner
+                                // can't be removed (protocol:
                                 // cannot_remove_owner) — and that's also me here.
-                                if (member.role != "owner" && member.userId != myUserId) {
+                                if (isOwner && member.role != "owner" && member.userId != myUserId) {
                                     IconButton(
                                         onClick = { confirmRemove = member },
                                         enabled = !state.busy,

@@ -36,12 +36,17 @@ struct FamilyManageView: View {
 
     var body: some View {
         List {
-            requestsSection
-            inviteSection
-            policySection
+            // Owner-only: join requests, the invite code and the join
+            // policy are all owner endpoints on the server. A plain
+            // member opens this screen for the roster below.
+            if session.isOwner {
+                requestsSection
+                inviteSection
+                policySection
+            }
             membersSection
         }
-        .navigationTitle("Manage Family")
+        .navigationTitle(session.isOwner ? "Manage Family" : "Family Members")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await reload()
@@ -170,8 +175,9 @@ struct FamilyManageView: View {
                     }
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    // The owner row is protected: no remove offered.
-                    if member.role != "owner" {
+                    // Removing is an owner action, and the owner row is
+                    // protected: no remove offered.
+                    if session.isOwner, member.role != "owner" {
                         Button(role: .destructive) {
                             remove(member)
                         } label: {
@@ -189,7 +195,9 @@ struct FamilyManageView: View {
         model.isLoading = true
         defer { model.isLoading = false }
         model.errorText = nil
-        async let requests = try? coordinator.api.joinRequests()
+        // Join requests are an owner-only endpoint: asking as a plain
+        // member is a guaranteed 403, and the section is hidden anyway.
+        async let requests = session.isOwner ? try? coordinator.api.joinRequests() : nil
         await settingsModel.load(api: coordinator.api)
         model.requests = (await requests) ?? []
     }

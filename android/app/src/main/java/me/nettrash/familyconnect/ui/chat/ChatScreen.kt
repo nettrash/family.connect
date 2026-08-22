@@ -31,6 +31,10 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import android.content.ClipData
+import android.content.Intent
+import android.os.Build
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -61,6 +65,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -98,7 +103,9 @@ import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -143,6 +150,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -151,9 +159,12 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
@@ -226,6 +237,9 @@ fun ChatScreen(
     var fullPickerTarget by remember { mutableStateOf<ChatListItem.MessageItem?>(null) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    // Copy and share from the message context menu.
+    val clipboard = LocalClipboard.current
+    val context = LocalContext.current
 
     val haptics = LocalHapticFeedback.current
     // Every path that actually applies a toggle (chip tap, capsule pick,
@@ -518,6 +532,32 @@ fun ChatScreen(
                 pickerTarget = null
                 fullPickerTarget = target.item
             },
+            onCopy = {
+                val body = target.item.entity.body
+                pickerTarget = null
+                // setClipEntry is suspend, hence the scope.
+                scope.launch {
+                    clipboard.setClipEntry(
+                        ClipData.newPlainText("Message", body).toClipEntry(),
+                    )
+                    // Android 13+ shows its own copy confirmation; ours
+                    // on top of it would be a second one. A toast rather
+                    // than a snackbar because this screen's bottom edge
+                    // is the input bar, which a snackbar would cover.
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                        Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onShare = {
+                val body = target.item.entity.body
+                pickerTarget = null
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, body)
+                }
+                context.startActivity(Intent.createChooser(send, null))
+            },
             onDismiss = { pickerTarget = null },
         )
     }
@@ -587,6 +627,8 @@ private fun ReactionPickerPopup(
     target: ReactionPickerTarget,
     onPick: (String) -> Unit,
     onMore: () -> Unit,
+    onCopy: () -> Unit,
+    onShare: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val atWindowOrigin = remember {
@@ -623,6 +665,7 @@ private fun ReactionPickerPopup(
     ) {
         var containerSize by remember { mutableStateOf(IntSize.Zero) }
         var capsuleSize by remember { mutableStateOf(IntSize.Zero) }
+        var menuSize by remember { mutableStateOf(IntSize.Zero) }
         val density = LocalDensity.current
         val margin = with(density) { 12.dp.roundToPx() }
         val gap = with(density) { 8.dp.roundToPx() }
@@ -636,6 +679,24 @@ private fun ReactionPickerPopup(
                 .coerceAtMost(maxOf(margin, containerSize.height - capsuleSize.height - margin))
         } else {
             anchor.top.roundToInt() - gap - capsuleSize.height
+        }
+        // The menu goes under the bubble, but never on top of the
+        // capsule: a bubble taller than the window pins BOTH against the
+        // same edge, and the menu is drawn second, so without this it
+        // would simply cover the capsule and take the reactions with it.
+        // Stack under the capsule when there is room, otherwise above.
+        val menuX = (anchor.center.x - menuSize.width / 2f).roundToInt()
+            .coerceIn(margin, maxOf(margin, containerSize.width - menuSize.width - margin))
+        val preferredMenuY = (anchor.bottom.roundToInt() + gap)
+            .coerceIn(margin, maxOf(margin, containerSize.height - menuSize.height - margin))
+        val capsuleBottom = y + capsuleSize.height
+        val overlapsCapsule = preferredMenuY < capsuleBottom + gap &&
+            preferredMenuY + menuSize.height > y - gap
+        val menuY = when {
+            !overlapsCapsule -> preferredMenuY
+            capsuleBottom + gap + menuSize.height <= containerSize.height - margin ->
+                capsuleBottom + gap
+            else -> maxOf(margin, y - gap - menuSize.height)
         }
 
         Box(
@@ -677,7 +738,74 @@ private fun ReactionPickerPopup(
                     modifier = Modifier.onSizeChanged { capsuleSize = it },
                 )
             }
+            AnimatedVisibility(
+                visibleState = entrance,
+                enter = fadeIn() + scaleIn(
+                    initialScale = 0.8f,
+                    transformOrigin = TransformOrigin(0.5f, 0f),
+                ),
+                exit = fadeOut() + scaleOut(),
+                modifier = Modifier.offset { IntOffset(menuX, menuY) },
+            ) {
+                MessageContextMenu(
+                    onCopy = { exitThen(onCopy) },
+                    onShare = { exitThen(onShare) },
+                    modifier = Modifier.onSizeChanged { menuSize = it },
+                )
+            }
         }
+    }
+}
+
+/**
+ * The actions under the bubble, beside the reaction capsule above it.
+ * Copy and share are both purely local — the message text is already in
+ * hand — so neither waits on the network or on the popup's exit.
+ */
+@Composable
+private fun MessageContextMenu(
+    onCopy: () -> Unit,
+    onShare: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 3.dp,
+        shadowElevation = 6.dp,
+        modifier = modifier.width(IntrinsicSize.Max),
+    ) {
+        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+            MessageContextMenuItem(
+                label = "Copy",
+                icon = Icons.Outlined.ContentCopy,
+                onClick = onCopy,
+            )
+            MessageContextMenuItem(
+                label = "Share",
+                icon = Icons.Outlined.Share,
+                onClick = onShare,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageContextMenuItem(
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+        Text(text = label, style = MaterialTheme.typography.bodyLarge)
     }
 }
 

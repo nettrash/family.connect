@@ -50,7 +50,7 @@ pub async fn register(
     let inserted = sqlx::query(
         "INSERT INTO users (username, display_name, password_hash)
          VALUES ($1, $2, $3)
-         RETURNING id, username, display_name, created_at",
+         RETURNING id, username, display_name, created_at, avatar_version",
     )
     .bind(&req.username)
     .bind(&display_name)
@@ -86,7 +86,7 @@ pub async fn login(
     AppJson(req): AppJson<LoginRequest>,
 ) -> Result<Response, ApiError> {
     let row = sqlx::query(
-        "SELECT id, username, display_name, password_hash, created_at
+        "SELECT id, username, display_name, password_hash, created_at, avatar_version
          FROM users WHERE lower(username) = lower($1)",
     )
     .bind(&req.username)
@@ -119,7 +119,7 @@ pub async fn logout(auth: AuthUser, State(state): State<AppState>) -> Result<Res
 /// `GET /me`
 pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Response, ApiError> {
     let row = sqlx::query(
-        "SELECT u.id, u.username, u.display_name, u.created_at,
+        "SELECT u.id, u.username, u.display_name, u.created_at, u.avatar_version,
                 f.id AS family_id, f.name AS family_name, f.join_policy,
                 f.created_at AS family_created_at, f.owner_user_id, f.invite_code
          FROM users u

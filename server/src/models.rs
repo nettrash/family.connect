@@ -22,16 +22,21 @@ pub struct User {
     pub display_name: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Bumped on every profile-picture upload, `0` when there is none —
+    /// the clients' cache key for `GET /users/{id}/avatar`.
+    pub avatar_version: i64,
 }
 
 impl User {
-    /// Map a row exposing `id, username, display_name, created_at`.
+    /// Map a row exposing `id, username, display_name, created_at,
+    /// avatar_version`.
     pub fn from_row(row: &PgRow) -> Self {
         Self {
             id: row.get("id"),
             username: row.get("username"),
             display_name: row.get("display_name"),
             created_at: row.get("created_at"),
+            avatar_version: row.get("avatar_version"),
         }
     }
 }
@@ -44,6 +49,7 @@ pub struct UserBrief {
     pub id: i64,
     pub username: String,
     pub display_name: String,
+    pub avatar_version: i64,
 }
 
 /// `Member` object: a user in the context of their family, with role.
@@ -54,6 +60,7 @@ pub struct Member {
     pub display_name: String,
     /// `"owner"` or `"member"`.
     pub role: String,
+    pub avatar_version: i64,
 }
 
 /// `Family` object. `invite_code` is present when (and only when) the caller
@@ -199,6 +206,7 @@ mod tests {
             username: "anna".to_string(),
             display_name: "Anna".to_string(),
             created_at: datetime!(2026-08-19 17:03:12 UTC),
+            avatar_version: 0,
         };
         let json = serde_json::to_value(&user).expect("serialize");
         assert_eq!(json["created_at"], "2026-08-19T17:03:12Z");
