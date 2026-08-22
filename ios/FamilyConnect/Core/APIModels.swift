@@ -48,12 +48,37 @@ nonisolated struct UserDTO: Codable, Equatable, Sendable {
     let username: String
     let displayName: String
     let createdAt: Date?
+    /// `0` = no profile picture. Absent on a server older than the
+    /// avatars release, hence the default rather than an Optional.
+    var avatarVersion: Int64 = 0
 
     enum CodingKeys: String, CodingKey {
         case id
         case username
         case displayName = "display_name"
         case createdAt = "created_at"
+        case avatarVersion = "avatar_version"
+    }
+
+    init(id: Int64, username: String, displayName: String, createdAt: Date?, avatarVersion: Int64 = 0) {
+        self.id = id
+        self.username = username
+        self.displayName = displayName
+        self.createdAt = createdAt
+        self.avatarVersion = avatarVersion
+    }
+
+    /// Hand-written because a property default is NOT what Swift's
+    /// synthesized decoder falls back to — a missing key throws. The
+    /// field is absent on any server older than the avatars release, and
+    /// the protocol's compatibility rule says that must still decode.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int64.self, forKey: .id)
+        username = try container.decode(String.self, forKey: .username)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+        avatarVersion = try container.decodeIfPresent(Int64.self, forKey: .avatarVersion) ?? 0
     }
 }
 
@@ -63,12 +88,35 @@ nonisolated struct MemberDTO: Codable, Equatable, Sendable {
     let displayName: String
     /// "owner" | "member"
     let role: String
+    /// `0` = no profile picture. Absent on a server older than the
+    /// avatars release, hence the default rather than an Optional.
+    var avatarVersion: Int64 = 0
 
     enum CodingKeys: String, CodingKey {
         case id
         case username
         case displayName = "display_name"
         case role
+        case avatarVersion = "avatar_version"
+    }
+
+    init(id: Int64, username: String, displayName: String, role: String, avatarVersion: Int64 = 0) {
+        self.id = id
+        self.username = username
+        self.displayName = displayName
+        self.role = role
+        self.avatarVersion = avatarVersion
+    }
+
+    /// See UserDTO.init(from:) — a defaulted property is not a decoding
+    /// fallback, and this field is absent on older servers.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int64.self, forKey: .id)
+        username = try container.decode(String.self, forKey: .username)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        role = try container.decode(String.self, forKey: .role)
+        avatarVersion = try container.decodeIfPresent(Int64.self, forKey: .avatarVersion) ?? 0
     }
 }
 
@@ -191,6 +239,11 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
 
 nonisolated struct AuthResponse: Codable, Equatable, Sendable {
     let token: String
+    let user: UserDTO
+}
+
+/// `PUT /me/avatar` reply — the caller with their new `avatar_version`.
+nonisolated struct AvatarResponse: Codable, Equatable, Sendable {
     let user: UserDTO
 }
 

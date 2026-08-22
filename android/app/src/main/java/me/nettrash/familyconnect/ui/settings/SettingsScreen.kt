@@ -2,10 +2,16 @@
  * SettingsScreen.kt
  * Family Connect (Android)
  *
- * Profile block, family block (invite code + share sheet + manage entry
- * for owners), leave family (confirmed), logout (confirmed). The share
- * action goes through a plain ACTION_SEND chooser — the invite code is
- * short text, every messenger can carry it.
+ * Profile block (picture + name), family block (invite code + share sheet
+ * + manage entry for owners), leave family (confirmed), logout
+ * (confirmed). The share action goes through a plain ACTION_SEND chooser
+ * — the invite code is short text, every messenger can carry it.
+ *
+ * The photo picker is PickVisualMedia: the system picker, so the app
+ * never asks for a storage permission and only ever sees the one image
+ * the user chose. Everything after the pick — read, downscale, crop,
+ * upload — belongs to the ViewModel (see AvatarSource for why the read
+ * must not stay here).
  *
  * iOS counterpart: ios/FamilyConnect/UI/Settings/SettingsView.swift
  */
@@ -14,6 +20,9 @@ package me.nettrash.familyconnect.ui.settings
 
 import android.content.ClipData
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -34,8 +43,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ExitToApp
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.AddAPhoto
 import androidx.compose.material.icons.outlined.ManageAccounts
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
@@ -43,6 +54,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -93,9 +105,24 @@ fun SettingsScreen(
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     var confirmLeave by remember { mutableStateOf(false) }
     var confirmLogout by remember { mutableStateOf(false) }
+    // The Uri goes straight to the ViewModel: reading a cloud-backed
+    // photo can take seconds, and a read owned by this composable would
+    // die — with its busy flag stuck on — the moment the user backs out.
+    val pickPhoto = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> uri?.let(viewModel::setAvatar) }
 
     LaunchedEffect(state.loggedOut) {
         if (state.loggedOut) onLoggedOut()
+    }
+
+    // A failed photo is transient and self-explanatory — a snackbar, not
+    // the persistent ErrorCard the family actions use.
+    LaunchedEffect(state.avatarError) {
+        state.avatarError?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.dismissAvatarError()
+        }
     }
 
     Scaffold(
@@ -146,11 +173,59 @@ fun SettingsScreen(
                     )
                 },
                 leadingContent = {
-                    // Keyed to the session user id so the avatar hue matches
-                    // this user's color everywhere else in the app.
-                    Avatar(name = state.displayName ?: "?", userId = state.userId ?: 0L)
+                    // Keyed to the session user id so the avatar hue (and
+                    // now the picture) matches this user everywhere else.
+                    Avatar(
+                        name = state.displayName ?: "?",
+                        userId = state.userId ?: 0L,
+                        size = 56,
+                        avatarVersion = state.avatarVersion,
+                    )
+                },
+                trailingContent = {
+                    if (state.uploadingAvatar) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    }
                 },
             )
+            ListItem(
+                headlineContent = {
+                    Text(if (state.avatarVersion > 0) "Change photo" else "Add photo")
+                },
+                leadingContent = {
+                    Icon(
+                        Icons.Outlined.AddAPhoto,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                    )
+                },
+                modifier = Modifier.clickable(enabled = !state.uploadingAvatar) {
+                    pickPhoto.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                    )
+                },
+            )
+            if (state.avatarVersion > 0) {
+                ListItem(
+                    headlineContent = {
+                        Text("Remove photo", color = MaterialTheme.colorScheme.error)
+                    },
+                    leadingContent = {
+                        Icon(
+                            Icons.Outlined.Delete,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    },
+                    modifier = Modifier.clickable(enabled = !state.uploadingAvatar) {
+                        viewModel.removeAvatar()
+                    },
+                )
+            }
             HorizontalDivider(
                 modifier = Modifier.padding(start = 16.dp),
                 color = MaterialTheme.colorScheme.outlineVariant,

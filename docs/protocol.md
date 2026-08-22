@@ -73,6 +73,12 @@ none and clients draw initials. It is a cache key, not a URL — the bytes come 
 `GET /users/{id}/avatar`, and because the version changes on every upload, clients may cache a
 fetched picture forever under `(user_id, avatar_version)` and never revalidate.
 
+That licence rests on one server guarantee: **a version is never reused for a different
+picture.** Deleting a picture reports `avatar_version: 0`, but the underlying counter does not go
+back — the next upload after a delete reports `2`, not `1` again. Without this a client that had
+cached the first picture under version `1` would keep showing it after the owner deleted it and
+uploaded a different one.
+
 Every mutation of a message's reactions (set, replace, remove) takes the next value of one
 server-wide sequence and stamps it on the message as `reaction_seq`; each chat exposes the
 maximum such value over its messages as `max_reaction_seq` in `GET /chats`. Together they give

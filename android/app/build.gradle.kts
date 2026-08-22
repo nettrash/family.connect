@@ -242,6 +242,7 @@ dependencies {
 
     // DataStore — server URL, family status, and profile snapshot.
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.exifinterface)
 
     // Firebase Cloud Messaging — push notifications (docs/protocol.md,
     // "Push notifications"). Messaging is the ONLY Firebase artifact: no

@@ -335,6 +335,8 @@ struct ConversationView: View {
                                     isFamilyChat: isFamilyChat,
                                     currentUserID: currentUserID),
                                 senderName: displayName(for: message.senderID),
+                                senderID: message.senderID,
+                                senderAvatarVersion: avatarVersion(for: message.senderID),
                                 isRead: MessagePresentation.isRead(
                                     message,
                                     othersReadUpTo: chat?.othersReadUpTo ?? 0),
@@ -345,6 +347,7 @@ struct ConversationView: View {
                                     message.reactions,
                                     names: memberNames,
                                     currentUserID: currentUserID),
+                                avatarVersions: avatarVersions,
                                 onRetry: { coordinator.retry(localID: message.localID) },
                                 onDelete: { coordinator.deleteLocalMessage(localID: message.localID) },
                                 onToggleReaction: { emoji in
@@ -688,6 +691,18 @@ struct ConversationView: View {
 
     private func displayName(for userID: Int64) -> String? {
         members.first(where: { $0.userID == userID })?.displayName
+    }
+
+    /// 0 when the sender has no picture — or has left the family, so the
+    /// roster no longer holds them.
+    private func avatarVersion(for userID: Int64) -> Int64 {
+        members.first(where: { $0.userID == userID })?.avatarVersion ?? 0
+    }
+
+    /// userID → picture version for every known member, feeding the
+    /// faces in the "who reacted" rows.
+    private var avatarVersions: [Int64: Int64] {
+        Dictionary(members.map { ($0.userID, $0.avatarVersion) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// userID → display name for every known member, feeding the "who

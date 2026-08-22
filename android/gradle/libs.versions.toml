@@ -7,8 +7,13 @@
 # Dependency posture is deliberately minimal: AndroidX + Hilt + Room +
 # OkHttp + kotlinx-serialization and nothing else. No Retrofit/Ktor (OkHttp
 # alone covers REST + WebSocket — author-sanctioned house convention), no
-# Coil (there are no remote images in v1), no Paging3 (a chat needs one
-# cursor query, not a paging framework).
+# Coil (profile pictures are the only remote images, one small square each,
+# fetched and cached by AvatarRepository in a few dozen lines), no Paging3
+# (a chat needs one cursor query, not a paging framework).
+#
+# exifinterface is the one concession: minSdk 26 predates ImageDecoder, and
+# BitmapFactory ignores EXIF orientation, so without it a photo taken in
+# portrait uploads sideways on Android 8.
 
 [versions]
 agp = "9.3.1"
@@ -25,6 +30,7 @@ navigationCompose = "2.9.7"
 kotlinxSerialization = "1.11.0"
 okhttp = "5.3.2"
 datastore = "1.2.1"
+exifinterface = "1.4.1"
 firebaseBom = "34.18.0"
 googleServices = "4.5.0"
 junit = "4.13.2"
@@ -68,6 +74,9 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 
 # DataStore — small preference state (server URL, family status, profile).
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+
+# EXIF orientation for uploaded profile pictures — see the header note.
+androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
 
 # Firebase — messaging ONLY. Push is the sole Google service this app
 # uses; no analytics, no crashlytics, no firebase-core: the privacy

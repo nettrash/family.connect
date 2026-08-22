@@ -131,6 +131,37 @@ actor APIClient {
         try await request("GET", "/me")
     }
 
+    // MARK: - Profile picture
+
+    /// `PUT /me/avatar` — the one endpoint that carries bytes rather than
+    /// JSON. Returns the user with the incremented `avatar_version`.
+    func uploadAvatar(jpeg: Data) async throws -> UserDTO {
+        let (data, _) = try await perform(
+            "PUT", "/me/avatar", query: [], bodyData: jpeg, contentType: "image/jpeg")
+        let response: AvatarResponse = try decodeResponse(data)
+        return response.user
+    }
+
+    func deleteAvatar() async throws {
+        try await requestVoid("DELETE", "/me/avatar")
+    }
+
+    /// Raw bytes of a user's picture, or nil when they have none / are not
+    /// visible to us — the server answers both with the same 404.
+    func avatar(userID: Int64, version: Int64) async throws -> Data? {
+        do {
+            // `v` is ignored by the server; it is here so each version is
+            // a distinct URL for anything caching along the way.
+            let (data, _) = try await perform(
+                "GET", "/users/\(userID)/avatar",
+                query: [URLQueryItem(name: "v", value: String(version))],
+                bodyData: nil)
+            return data
+        } catch APIError.notFound(_) {
+            return nil
+        }
+    }
+
     // MARK: - Families
 
     private struct CreateFamilyRequest: Encodable { let name: String }
@@ -357,7 +388,8 @@ actor APIClient {
         _ method: String,
         _ path: String,
         query: [URLQueryItem],
-        bodyData: Data?
+        bodyData: Data?,
+        contentType: String = "application/json"
     ) async throws -> (Data, HTTPURLResponse) {
         guard let serverURL else { throw APIError.notConfigured }
         guard let url = Self.endpointURL(base: serverURL, path: path, query: query) else {
@@ -371,7 +403,7 @@ actor APIClient {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         if let bodyData {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
             request.httpBody = bodyData
         }
 

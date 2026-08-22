@@ -15,6 +15,7 @@
 //
 
 import Observation
+import PhotosUI
 import SwiftUI
 
 @MainActor @Observable
@@ -48,6 +49,9 @@ struct SettingsView: View {
     /// Mirrors AppSettings.linkPreviewsEnabled — defaults are not
     /// observable, so the toggle owns the state and writes through.
     @State private var linkPreviewsEnabled = AppSettings.linkPreviewsEnabled
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var uploadingAvatar = false
+    @State private var avatarError: String?
 
     var body: some View {
         NavigationStack {
@@ -102,14 +106,101 @@ struct SettingsView: View {
         Section("Profile") {
             if let user = session.currentUser {
                 HStack(spacing: 12) {
-                    InitialsAvatar(title: user.displayName)
+                    InitialsAvatar(
+                        title: user.displayName,
+                        userID: user.id,
+                        avatarVersion: user.avatarVersion,
+                        size: 56)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(user.displayName)
                         Text("@\(user.username)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    if uploadingAvatar {
+                        ProgressView()
+                    }
                 }
+                // The picker hands back an item, not bytes; the transfer
+                // and the downscale happen in setAvatar.
+                PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+                    Label(
+                        user.avatarVersion > 0 ? "Change Photo" : "Add Photo",
+                        systemImage: "person.crop.circle.badge.plus")
+                }
+                .disabled(uploadingAvatar)
+                if user.avatarVersion > 0 {
+                    Button("Remove Photo", role: .destructive) { removeAvatar() }
+                        .disabled(uploadingAvatar)
+                }
+                if let avatarError {
+                    Label(avatarError, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .onChange(of: pickedPhoto) { _, item in
+            guard let item else { return }
+            setAvatar(item)
+        }
+    }
+
+    /// Load the picked image, square-crop and downscale it, and upload
+    /// the JPEG. The server stores what it is given and never transcodes,
+    /// so producing something small and square is this side's job.
+    private func setAvatar(_ item: PhotosPickerItem) {
+        uploadingAvatar = true
+        avatarError = nil
+        Task {
+            defer {
+                uploadingAvatar = false
+                pickedPhoto = nil
+            }
+            guard let data = try? await item.loadTransferable(type: Data.self),
+                  let jpeg = AvatarImage.squareJPEG(from: data) else {
+                avatarError = "That image couldn't be read."
+                return
+            }
+            do {
+                let user = try await coordinator.api.uploadAvatar(jpeg: jpeg)
+                session.applyProfile(user)
+            } catch APIError.unauthorized {
+                session.handleUnauthorized()
+            } catch APIError.conflict(let code, _) {
+                // The protocol's two picture-specific refusals; anything
+                // else is not worth spelling out.
+                avatarError = switch code {
+                case "avatar_too_large": "That photo is too large."
+                case "invalid_image": "That file isn't a photo we can use."
+                default: "Couldn't upload the photo."
+                }
+            } catch {
+                avatarError = "Couldn't upload the photo."
+            }
+        }
+    }
+
+    private func removeAvatar() {
+        uploadingAvatar = true
+        avatarError = nil
+        Task {
+            defer { uploadingAvatar = false }
+            do {
+                try await coordinator.api.deleteAvatar()
+                if let user = session.currentUser {
+                    session.applyProfile(UserDTO(
+                        id: user.id,
+                        username: user.username,
+                        displayName: user.displayName,
+                        createdAt: user.createdAt,
+                        avatarVersion: 0))
+                }
+            } catch APIError.unauthorized {
+                session.handleUnauthorized()
+            } catch {
+                avatarError = "Couldn't remove the photo."
             }
         }
     }

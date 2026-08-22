@@ -97,6 +97,13 @@ final class AppSession {
 
     private(set) var phase: Phase = .booting
     private(set) var currentUser: UserDTO?
+
+    /// Replace the cached profile after the user changes it themselves —
+    /// today only the avatar. Everything else about `currentUser` still
+    /// arrives from /me, so this is a narrow door rather than a setter.
+    func applyProfile(_ user: UserDTO) {
+        currentUser = user
+    }
     private(set) var family: FamilyDTO?
     /// "owner" | "member" | nil — from the last /me or family call.
     private(set) var role: String?
@@ -126,6 +133,11 @@ final class AppSession {
     // Store side effects, injected at wiring time (see file header).
     var hasCachedChats: () -> Bool = { false }
     var clearChatStore: () -> Void = {}
+
+    /// Drops cached profile pictures. Wired alongside `clearChatStore`
+    /// so a logout does not leave the previous account's faces in memory
+    /// for the next one.
+    var clearAvatarCache: () -> Void = {}
     /// Best-effort push deregistration (PushRegistrar.deregister), also
     /// injected at wiring time so the phase machine stays UIKit-free.
     /// logout() awaits it BEFORE /auth/logout, because DELETE /devices
@@ -374,6 +386,7 @@ final class AppSession {
         }
         if scope.wipesChatData {
             clearChatStore()
+            clearAvatarCache()
         }
         if scope.wipesDefaults {
             AppSettings.wipe(keepServerURL: !scope.wipesServerURL)

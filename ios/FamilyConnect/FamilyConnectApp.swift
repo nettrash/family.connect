@@ -47,6 +47,12 @@ struct FamilyConnectApp: App {
     /// reads it).
     @State private var previewLoader = LinkPreviewLoader()
 
+    /// App-wide profile-picture cache, sharing the coordinator's API
+    /// client so it inherits the same server URL and session token. A
+    /// stored property, not @State: rebuilding it per render would throw
+    /// the cache away every time anything above it changed.
+    private let avatars: AvatarStore?
+
     init() {
         // UI-test hook: launch with a clean slate so the smoke test can
         // assert the server-setup screen deterministically.
@@ -98,10 +104,18 @@ struct FamilyConnectApp: App {
             self.session = session
             self.coordinator = coordinator
             self.pushRegistrar = registrar
+            let avatars = AvatarStore(api: coordinator.api)
+            // Logout wipes the store; faces must go with it, or the next
+            // account inherits this one's.
+            session.clearAvatarCache = { avatars.clear() }
+            // A 401 on a picture is as final as a 401 on a message.
+            avatars.onUnauthorized = { [weak session] in session?.handleUnauthorized() }
+            self.avatars = avatars
         } else {
             self.session = nil
             self.coordinator = nil
             self.pushRegistrar = nil
+            self.avatars = nil
         }
     }
 
@@ -117,6 +131,7 @@ struct FamilyConnectApp: App {
                         // One preview cache for the app: a link posted in
                         // a busy chat is fetched once, not once per bubble.
                         .environment(previewLoader)
+                        .environment(avatars ?? AvatarStore(api: coordinator.api))
                 }
             case .failure(let error):
                 StoreErrorView(error: error)

@@ -20,7 +20,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.AvatarApi
+import android.net.Uri
+import me.nettrash.familyconnect.data.repo.AvatarImage
+import me.nettrash.familyconnect.data.repo.AvatarSource
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.SessionRepository
@@ -32,6 +38,8 @@ class SettingsViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val familyRepository: FamilyRepository,
     private val settings: SettingsRepository,
+    private val avatarApi: AvatarApi,
+    private val avatarSource: AvatarSource,
 ) : ViewModel() {
 
     data class UiState(
@@ -47,6 +55,10 @@ class SettingsViewModel @Inject constructor(
         val loggedOut: Boolean = false,
         /** Whether this device may fetch link previews. */
         val linkPreviewsEnabled: Boolean = true,
+        /** My profile-picture version; 0 = none, and the button says "Add". */
+        val avatarVersion: Long = 0,
+        val uploadingAvatar: Boolean = false,
+        val avatarError: String? = null,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -58,7 +70,12 @@ class SettingsViewModel @Inject constructor(
         // than holding its own copy.
         viewModelScope.launch {
             settings.state.collect { stored ->
-                _state.update { it.copy(linkPreviewsEnabled = stored.linkPreviewsEnabled) }
+                _state.update {
+                    it.copy(
+                        linkPreviewsEnabled = stored.linkPreviewsEnabled,
+                        avatarVersion = stored.myAvatarVersion,
+                    )
+                }
             }
         }
     }
@@ -93,6 +110,83 @@ class SettingsViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Read, downscale and upload the picked image. The server stores what
+     * it is given and never transcodes (docs/protocol.md), so producing
+     * something small and square is this side's job — and neither the
+     * read nor the decode runs on the main thread, because the source is
+     * a full-size phone photo that may still be in the cloud.
+     *
+     * The whole pipeline lives on viewModelScope, including the read: a
+     * Uri from a cloud photo library can take seconds to materialize, and
+     * the busy flag has to outlive a composable that the user scrolls or
+     * navigates away from while it does.
+     */
+    fun setAvatar(uri: Uri) {
+        if (_state.value.uploadingAvatar) return
+        viewModelScope.launch {
+            _state.update { it.copy(uploadingAvatar = true, avatarError = null) }
+            val source = avatarSource.read(uri)
+            if (source == null) {
+                _state.update {
+                    it.copy(uploadingAvatar = false, avatarError = "That image couldn't be read.")
+                }
+                return@launch
+            }
+            val jpeg = withContext(Dispatchers.Default) { AvatarImage.squareJpeg(source) }
+            if (jpeg == null) {
+                _state.update {
+                    it.copy(uploadingAvatar = false, avatarError = "That image couldn't be read.")
+                }
+                return@launch
+            }
+            when (val result = avatarApi.upload(jpeg)) {
+                is ApiResult.Ok -> {
+                    settings.setMyAvatarVersion(result.value.user.avatarVersion)
+                    // The roster carries my own row too — refresh so the
+                    // member lists show the new picture without waiting
+                    // for the next resync.
+                    familyRepository.refreshMine()
+                    _state.update { it.copy(uploadingAvatar = false) }
+                }
+                is ApiResult.HttpError -> _state.update {
+                    it.copy(
+                        uploadingAvatar = false,
+                        avatarError = when (result.code) {
+                            "avatar_too_large" -> "That photo is too large."
+                            "invalid_image" -> "That file isn't a photo we can use."
+                            else -> result.message ?: "Couldn't upload the photo."
+                        },
+                    )
+                }
+                is ApiResult.NetworkError -> _state.update {
+                    it.copy(uploadingAvatar = false, avatarError = "Can't reach the server")
+                }
+            }
+        }
+    }
+
+    fun removeAvatar() {
+        if (_state.value.uploadingAvatar) return
+        viewModelScope.launch {
+            _state.update { it.copy(uploadingAvatar = true, avatarError = null) }
+            when (avatarApi.delete()) {
+                is ApiResult.Ok -> {
+                    settings.setMyAvatarVersion(0)
+                    familyRepository.refreshMine()
+                    _state.update { it.copy(uploadingAvatar = false) }
+                }
+                else -> _state.update {
+                    it.copy(uploadingAvatar = false, avatarError = "Couldn't remove the photo.")
+                }
+            }
+        }
+    }
+
+    fun dismissAvatarError() {
+        _state.update { it.copy(avatarError = null) }
     }
 
     fun leaveFamily() {

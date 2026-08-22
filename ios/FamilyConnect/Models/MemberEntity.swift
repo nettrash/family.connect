@@ -31,13 +31,18 @@ final class MemberEntity {
     /// on old bubbles; hidden from pickers and the roster UI.
     var hasLeft: Bool = false
 
+    /// `0` = no profile picture. Defaulted, so this is a lightweight
+    /// SwiftData migration for anyone upgrading over an existing store.
+    var avatarVersion: Int64 = 0
+
     init(
         userID: Int64,
         username: String,
         displayName: String,
         role: String,
         isCurrentUser: Bool,
-        hasLeft: Bool = false
+        hasLeft: Bool = false,
+        avatarVersion: Int64 = 0
     ) {
         self.userID = userID
         self.username = username
@@ -45,5 +50,6 @@ final class MemberEntity {
         self.role = role
         self.isCurrentUser = isCurrentUser
         self.hasLeft = hasLeft
+        self.avatarVersion = avatarVersion
     }
 }

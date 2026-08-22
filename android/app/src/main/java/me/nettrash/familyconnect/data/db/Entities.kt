@@ -106,4 +106,11 @@ data class MemberEntity(
     val displayName: String,
     /** "owner" | "member". */
     val role: String,
+    /**
+     * Profile-picture version from the roster; 0 = no picture. Cached
+     * here so a chat row can name its avatar's cache key without waiting
+     * on the network. defaultValue matches MIGRATION_2_3 so a migrated
+     * and a fresh schema validate identically.
+     */
+    @ColumnInfo(defaultValue = "0") val avatarVersion: Long = 0,
 )

@@ -69,6 +69,7 @@ nonisolated struct MemberSnapshot: Equatable, Sendable, Identifiable {
     let role: String
     let isCurrentUser: Bool
     let hasLeft: Bool
+    var avatarVersion: Int64 = 0
 }
 
 // MARK: - Entity → snapshot bridges (MainActor: entities live there)
@@ -109,7 +110,8 @@ extension MemberSnapshot {
             displayName: entity.displayName,
             role: entity.role,
             isCurrentUser: entity.isCurrentUser,
-            hasLeft: entity.hasLeft
+            hasLeft: entity.hasLeft,
+            avatarVersion: entity.avatarVersion
         )
     }
 }
@@ -142,6 +144,18 @@ nonisolated struct ReactionDetail: Equatable, Sendable, Identifiable {
     var id: String { emoji }
     let emoji: String
     let names: [String]
+    /// The first reactor listed, so the row can lead with their face.
+    /// Nil only when the row somehow has no reactors. Android carries the
+    /// same thing as its `reactorIds` map.
+    let leadUserID: Int64?
+
+    /// Explicit so the ~dozen construction sites that predate the avatar
+    /// (tests included) stay valid.
+    init(emoji: String, names: [String], leadUserID: Int64? = nil) {
+        self.emoji = emoji
+        self.names = names
+        self.leadUserID = leadUserID
+    }
 }
 
 nonisolated enum MessagePresentation {
@@ -238,6 +252,7 @@ nonisolated enum MessagePresentation {
     ) -> [ReactionDetail] {
         var order: [String] = []
         var others: [String: [String]] = [:]
+        var otherIDs: [String: [Int64]] = [:]
         var mine: Set<String> = []
         for reaction in reactions {
             if others[reaction.emoji] == nil {
@@ -249,12 +264,17 @@ nonisolated enum MessagePresentation {
             } else {
                 others[reaction.emoji, default: []].append(
                     names[reaction.userID] ?? String(localized: "Someone"))
+                otherIDs[reaction.emoji, default: []].append(reaction.userID)
             }
         }
         return order.map { emoji in
             let rest = others[emoji] ?? []
-            let all = mine.contains(emoji) ? [String(localized: "You")] + rest : rest
-            return ReactionDetail(emoji: emoji, names: all)
+            let isMine = mine.contains(emoji)
+            let all = isMine ? [String(localized: "You")] + rest : rest
+            // Same rule as the names: "You" leads its emoji, so my own id
+            // leads it too.
+            let lead = isMine ? currentUserID : otherIDs[emoji]?.first
+            return ReactionDetail(emoji: emoji, names: all, leadUserID: lead)
         }
     }
 }

@@ -10,6 +10,7 @@
 
 package me.nettrash.familyconnect.testutil
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -19,11 +20,13 @@ import kotlinx.coroutines.flow.StateFlow
 import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
+import me.nettrash.familyconnect.data.net.AvatarApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.dto.ApproveResponse
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
+import me.nettrash.familyconnect.data.net.dto.AvatarResponse
 import me.nettrash.familyconnect.data.net.dto.ChatResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.DeviceResponse
@@ -78,12 +81,22 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(familyStatus = status)
     }
 
-    override suspend fun setProfile(userId: Long, username: String, displayName: String) {
+    override suspend fun setProfile(
+        userId: Long,
+        username: String,
+        displayName: String,
+        avatarVersion: Long,
+    ) {
         _state.value = _state.value.copy(
             myUserId = userId,
             myUsername = username,
             myDisplayName = displayName,
+            myAvatarVersion = avatarVersion,
         )
+    }
+
+    override suspend fun setMyAvatarVersion(version: Long) {
+        _state.value = _state.value.copy(myAvatarVersion = version)
     }
 
     override suspend fun setFamilyName(name: String?) {
@@ -323,6 +336,42 @@ class FakeFamilyApi : FamilyApi {
     override suspend fun reject(requestId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
     override suspend fun leave(): ApiResult<Unit> = ApiResult.Ok(Unit)
     override suspend fun removeMember(userId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
+}
+
+class FakeAvatarApi : AvatarApi {
+    /** Every (userId, version) asked for, in order — the dedup assertions read this. */
+    val fetches = mutableListOf<Pair<Long, Long>>()
+    val uploads = mutableListOf<ByteArray>()
+    var deletes = 0
+
+    var uploadResult: ApiResult<AvatarResponse> = ApiResult.Ok(AvatarResponse(userDto(1).copy(avatarVersion = 1)))
+    var deleteResult: ApiResult<Unit> = ApiResult.Ok(Unit)
+
+    /** Scripted per call so a test can 404 one user and serve another. */
+    var onFetch: (Long, Long) -> ApiResult<ByteArray> = { _, _ -> ApiResult.Ok(ByteArray(8)) }
+
+    /**
+     * Set to hold every fetch open until the test completes it — the way
+     * to have a request still in flight when something else happens
+     * (the caller is cancelled, the session ends).
+     */
+    var gate: CompletableDeferred<Unit>? = null
+
+    override suspend fun upload(jpeg: ByteArray): ApiResult<AvatarResponse> {
+        uploads += jpeg
+        return uploadResult
+    }
+
+    override suspend fun delete(): ApiResult<Unit> {
+        deletes++
+        return deleteResult
+    }
+
+    override suspend fun fetch(userId: Long, version: Long): ApiResult<ByteArray> {
+        fetches += userId to version
+        gate?.await()
+        return onFetch(userId, version)
+    }
 }
 
 // -- DTO builders ----------------------------------------------------------

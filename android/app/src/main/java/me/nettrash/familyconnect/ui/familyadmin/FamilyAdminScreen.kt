@@ -171,7 +171,16 @@ fun FamilyAdminScreen(
                                     headlineContent = { Text(request.user.displayName) },
                                     supportingContent = { Text("@${request.user.username}") },
                                     leadingContent = {
-                                        Avatar(name = request.user.displayName, userId = request.user.id)
+                                        // Initials on purpose: a pending
+                                        // requester is not in the family
+                                        // yet, so the server answers 404
+                                        // for their picture — asking
+                                        // would only cache them as
+                                        // pictureless past approval.
+                                        Avatar(
+                                            name = request.user.displayName,
+                                            userId = request.user.id,
+                                        )
                                     },
                                     trailingContent = {
                                         Row(
@@ -345,7 +354,11 @@ fun FamilyAdminScreen(
                                 Text("@${member.username}" + if (member.role == "owner") " · owner" else "")
                             },
                             leadingContent = {
-                                Avatar(name = member.displayName, userId = member.userId)
+                                Avatar(
+                                    name = member.displayName,
+                                    userId = member.userId,
+                                    avatarVersion = member.avatarVersion,
+                                )
                             },
                             trailingContent = {
                                 // Removing is an owner action. The owner

@@ -89,6 +89,36 @@ struct APIClientTests {
 
         let expectedDate = ISO8601DateFormatter().date(from: "2026-08-19T17:03:12Z")
         #expect(me.user.createdAt == expectedDate)
+        // The fixture predates profile pictures, exactly like a server
+        // that has not been updated yet.
+        #expect(me.user.avatarVersion == 0)
+    }
+
+    /// The protocol's compatibility rule, pinned. Swift's synthesized
+    /// Decodable does NOT fall back to a property's default for a missing
+    /// key — it throws — so a defaulted `avatarVersion` alone would make
+    /// every response from a pre-avatars server undecodable. UserDTO and
+    /// MemberDTO hand-write init(from:) for exactly this reason; this
+    /// test is what catches it if someone deletes them.
+    @Test("A missing avatar_version decodes as no picture")
+    func avatarVersionIsOptionalOnTheWire() throws {
+        let decoder = APICoding.decoder()
+
+        let withoutField = Data(#"{"id": 7, "username": "anna", "display_name": "Anna"}"#.utf8)
+        let user = try decoder.decode(UserDTO.self, from: withoutField)
+        #expect(user.avatarVersion == 0)
+
+        let withField = Data(
+            #"{"id": 7, "username": "anna", "display_name": "Anna", "avatar_version": 5}"#.utf8)
+        #expect(try decoder.decode(UserDTO.self, from: withField).avatarVersion == 5)
+
+        let memberWithout = Data(
+            #"{"id": 8, "username": "ben", "display_name": "Ben", "role": "member"}"#.utf8)
+        #expect(try decoder.decode(MemberDTO.self, from: memberWithout).avatarVersion == 0)
+
+        let memberWith = Data(
+            #"{"id": 8, "username": "ben", "display_name": "Ben", "role": "member", "avatar_version": 3}"#.utf8)
+        #expect(try decoder.decode(MemberDTO.self, from: memberWith).avatarVersion == 3)
     }
 
     @Test("401 maps to .unauthorized")

@@ -222,6 +222,7 @@ fun ChatScreen(
     val typingUser by viewModel.typingUser.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
+    val memberAvatars by viewModel.memberAvatars.collectAsStateWithLifecycle()
     val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
     val socketState by viewModel.socketState.collectAsStateWithLifecycle()
     val loadingOlder by viewModel.loadingOlder.collectAsStateWithLifecycle()
@@ -425,6 +426,7 @@ fun ChatScreen(
                                     isMine = item.entity.senderId == myUserId,
                                     myUserId = myUserId,
                                     memberNames = memberNames,
+                                    memberAvatars = memberAvatars,
                                     linkPreviews = linkPreviews,
                                     previewsEnabled = linkPreviewsEnabled,
                                     onRequestPreview = viewModel::requestLinkPreview,
@@ -991,6 +993,7 @@ private fun MessageBubble(
     isMine: Boolean,
     myUserId: Long?,
     memberNames: Map<Long, String>,
+    memberAvatars: Map<Long, Long>,
     linkPreviews: Map<String, LinkPreviewState>,
     previewsEnabled: Boolean,
     onRequestPreview: (String) -> Unit,
@@ -1094,12 +1097,28 @@ private fun MessageBubble(
             horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
         ) {
             if (item.showSenderName) {
-                Text(
-                    text = item.senderName ?: "Member ${entity.senderId}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(start = 12.dp, bottom = 2.dp),
-                )
+                // The sender's face rides the name line at the head of a
+                // run rather than in a gutter beside every bubble: the
+                // thread's layout — and the run-corner geometry above —
+                // stays exactly as it was. Same choice as iOS.
+                val senderName = item.senderName ?: "Member ${entity.senderId}"
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                ) {
+                    Avatar(
+                        name = senderName,
+                        userId = entity.senderId,
+                        size = 20,
+                        avatarVersion = memberAvatars[entity.senderId] ?: 0L,
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = senderName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
             // Emoji-only messages render bare: no balloon, just the
             // glyphs (padding, long-press target and capsule anchoring
@@ -1131,6 +1150,7 @@ private fun MessageBubble(
                     emojiFontSize = emojiFontSize,
                     linkSpans = linkSpans,
                     memberNames = memberNames,
+                    memberAvatars = memberAvatars,
                     myUserId = myUserId,
                     linkPreviews = linkPreviews,
                     previewsEnabled = previewsEnabled,
@@ -1171,6 +1191,7 @@ private fun MessageBubble(
 private fun ReactionChipsRow(
     item: ChatListItem.MessageItem,
     memberNames: Map<Long, String>,
+    memberAvatars: Map<Long, Long>,
     myUserId: Long?,
     isMine: Boolean,
     onToggle: (String) -> Unit,
@@ -1303,14 +1324,16 @@ private fun ReactionChipsRow(
                     // the first (my "You" entry resolves to my real name so
                     // the initials stay mine).
                     val leadName = detail.names.firstOrNull() ?: "?"
+                    val leadId = reactorIds[leadName] ?: 0L
                     Avatar(
                         name = if (leadName == "You") {
                             myUserId?.let { memberNames[it] } ?: leadName
                         } else {
                             leadName
                         },
-                        userId = reactorIds[leadName] ?: 0L,
+                        userId = leadId,
                         size = 24,
+                        avatarVersion = memberAvatars[leadId] ?: 0L,
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(detail.emoji, style = MaterialTheme.typography.titleMedium)
@@ -1407,6 +1430,7 @@ private fun BubbleContent(
     /** Links detected in the body (empty for emoji-only). Resolved by the caller. */
     linkSpans: List<LinkSpan>,
     memberNames: Map<Long, String>,
+    memberAvatars: Map<Long, Long>,
     myUserId: Long?,
     /** Preview state for every link the app has looked at, keyed by URL. */
     linkPreviews: Map<String, LinkPreviewState>,
@@ -1522,6 +1546,7 @@ private fun BubbleContent(
             ReactionChipsRow(
                 item = item,
                 memberNames = memberNames,
+                memberAvatars = memberAvatars,
                 myUserId = myUserId,
                 isMine = isMine,
                 onToggle = onToggleReaction,

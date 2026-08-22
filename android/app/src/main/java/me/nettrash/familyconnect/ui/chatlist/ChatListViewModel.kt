@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatEntity
@@ -49,6 +50,15 @@ class ChatListViewModel @Inject constructor(
     // "No chats yet" empty state on cold entry.
     val chats: StateFlow<List<ChatEntity>?> = chatRepository.observeChats()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * userId → profile-picture version, so a direct-chat row can name its
+     * peer's picture. One flow for the whole list rather than a lookup
+     * per row.
+     */
+    val avatarVersions: StateFlow<Map<Long, Long>> = familyRepository.observeMembers()
+        .map { members -> members.associate { it.userId to it.avatarVersion } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     /** Picker candidates: everyone but me. */
     val pickableMembers: StateFlow<List<MemberEntity>> =

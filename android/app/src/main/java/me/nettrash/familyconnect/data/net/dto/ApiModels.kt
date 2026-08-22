@@ -27,6 +27,13 @@ data class UserDto(
     @SerialName("display_name") val displayName: String,
     // Absent on the embedded user of `member_joined` frames.
     @SerialName("created_at") val createdAt: String? = null,
+    /**
+     * Bumps on every profile-picture change; 0 = no picture. The default
+     * is what lets a client talk to a server older than the avatars
+     * release — and it doubles as the cache key, so a changed picture can
+     * never be served from a stale entry.
+     */
+    @SerialName("avatar_version") val avatarVersion: Long = 0,
 )
 
 @Serializable
@@ -35,6 +42,8 @@ data class MemberDto(
     val username: String,
     @SerialName("display_name") val displayName: String,
     val role: String,
+    /** See UserDto.avatarVersion. */
+    @SerialName("avatar_version") val avatarVersion: Long = 0,
 )
 
 @Serializable
@@ -172,6 +181,10 @@ data class MeResponse(
 
 @Serializable
 data class JoinResponse(val status: String)
+
+/** PUT /me/avatar — the caller's user with its bumped avatar_version. */
+@Serializable
+data class AvatarResponse(val user: UserDto)
 
 @Serializable
 data class FamilyResponse(val family: FamilyDto)

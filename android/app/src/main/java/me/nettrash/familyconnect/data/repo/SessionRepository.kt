@@ -93,6 +93,8 @@ data class SessionSnapshot(
     val myUsername: String?,
     val myDisplayName: String?,
     val familyName: String?,
+    /** My profile-picture version; 0 = none. */
+    val myAvatarVersion: Long = 0,
 ) {
     /** The socket may connect: authenticated member of a family. */
     val canChat: Boolean
@@ -175,6 +177,7 @@ class SessionRepository @Inject constructor(
             myUsername = state.myUsername,
             myDisplayName = state.myDisplayName,
             familyName = state.familyName,
+            myAvatarVersion = state.myAvatarVersion,
         )
     }
 
@@ -196,7 +199,7 @@ class SessionRepository @Inject constructor(
                 tokenStore.save(result.value.token)
                 tokenVersion.update { it + 1 }
                 val user = result.value.user
-                settings.setProfile(user.id, user.username, user.displayName)
+                settings.setProfile(user.id, user.username, user.displayName, user.avatarVersion)
                 refreshMe()
                 // Best-effort: a failed device registration must not block
                 // login — PushTokenRepository retries on the next resync.
@@ -233,7 +236,7 @@ class SessionRepository @Inject constructor(
         return when (val result = authApi.me()) {
             is ApiResult.Ok -> {
                 val me = result.value
-                settings.setProfile(me.user.id, me.user.username, me.user.displayName)
+                settings.setProfile(me.user.id, me.user.username, me.user.displayName, me.user.avatarVersion)
                 val next = when {
                     me.family != null ->
                         if (me.role == "owner") FamilyStatus.OWNER else FamilyStatus.MEMBER

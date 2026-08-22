@@ -35,6 +35,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -45,13 +46,24 @@ import dagger.hilt.android.AndroidEntryPoint
 import me.nettrash.familyconnect.data.push.PushNotifications
 import me.nettrash.familyconnect.data.push.PushRouteParser
 import me.nettrash.familyconnect.navigation.AppNavHost
+import me.nettrash.familyconnect.data.repo.AvatarRepository
 import me.nettrash.familyconnect.navigation.startDestinationFor
+import me.nettrash.familyconnect.ui.components.LocalAvatars
 import me.nettrash.familyconnect.ui.theme.FamilyConnectTheme
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
+
+    /**
+     * App-scoped so profile pictures survive navigation; handed to the
+     * whole tree through LocalAvatars rather than threaded through every
+     * screen's ViewModel.
+     */
+    @Inject
+    lateinit var avatars: AvatarRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,46 +75,48 @@ class MainActivity : ComponentActivity() {
             handlePushIntent(intent)
         }
         setContent {
-            val boot by viewModel.bootState.collectAsStateWithLifecycle()
-            val pendingRoute by viewModel.pendingRoute.collectAsStateWithLifecycle()
-            val snapshot = boot
-            if (snapshot == null) {
-                // Themed boot chrome: without FamilyConnectTheme the first
-                // frame renders Compose's baseline purple on the raw window
-                // background before the real UI appears.
-                FamilyConnectTheme {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.background,
-                    ) {
-                        Column(
+            CompositionLocalProvider(LocalAvatars provides avatars) {
+                val boot by viewModel.bootState.collectAsStateWithLifecycle()
+                val pendingRoute by viewModel.pendingRoute.collectAsStateWithLifecycle()
+                val snapshot = boot
+                if (snapshot == null) {
+                    // Themed boot chrome: without FamilyConnectTheme the first
+                    // frame renders Compose's baseline purple on the raw window
+                    // background before the real UI appears.
+                    FamilyConnectTheme {
+                        Surface(
                             modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally,
+                            color = MaterialTheme.colorScheme.background,
                         ) {
-                            CircularProgressIndicator()
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "Connecting…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.Center,
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                CircularProgressIndicator()
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = "Connecting…",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
-                }
-            } else {
-                FamilyConnectTheme {
-                    // remember → the NavHost keeps its original start
-                    // destination even if recomposition delivers a newer
-                    // snapshot; reroutes go through session events.
-                    val start = remember { startDestinationFor(snapshot.status) }
-                    AppNavHost(
-                        startDestination = start,
-                        sessionEvents = viewModel.sessionEvents,
-                        pendingRoute = pendingRoute,
-                        onPendingRouteConsumed = viewModel::consumePendingRoute,
-                        isOwner = snapshot.isOwner,
-                    )
+                } else {
+                    FamilyConnectTheme {
+                        // remember → the NavHost keeps its original start
+                        // destination even if recomposition delivers a newer
+                        // snapshot; reroutes go through session events.
+                        val start = remember { startDestinationFor(snapshot.status) }
+                        AppNavHost(
+                            startDestination = start,
+                            sessionEvents = viewModel.sessionEvents,
+                            pendingRoute = pendingRoute,
+                            onPendingRouteConsumed = viewModel::consumePendingRoute,
+                            isOwner = snapshot.isOwner,
+                        )
+                    }
                 }
             }
         }

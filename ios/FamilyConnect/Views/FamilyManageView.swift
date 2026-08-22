@@ -77,7 +77,13 @@ struct FamilyManageView: View {
             } else {
                 ForEach(model.requests) { request in
                     HStack(spacing: 12) {
-                        InitialsAvatar(title: request.user.displayName)
+                        // Initials on purpose: a pending requester is not
+                        // in the family yet, so the server answers 404 for
+                        // their picture — asking would only cache them as
+                        // pictureless past approval.
+                        InitialsAvatar(
+                            title: request.user.displayName,
+                            userID: request.user.id)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(request.user.displayName)
                             Text("@\(request.user.username)")
@@ -160,7 +166,10 @@ struct FamilyManageView: View {
         Section("Members") {
             ForEach(settingsModel.members, id: \.id) { member in
                 HStack(spacing: 12) {
-                    InitialsAvatar(title: member.displayName)
+                    InitialsAvatar(
+                        title: member.displayName,
+                        userID: member.id,
+                        avatarVersion: member.avatarVersion)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(member.displayName)
                         Text("@\(member.username)")

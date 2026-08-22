@@ -43,6 +43,8 @@ data class SettingsState(
     val myUsername: String? = null,
     val myDisplayName: String? = null,
     val familyName: String? = null,
+    /** My own profile-picture version; 0 = no picture. */
+    val myAvatarVersion: Long = 0,
     /** Last FCM registration token seen — device-scoped, survives logout. */
     val pushToken: String? = null,
     /** `device_id` from POST /devices — account-scoped, cleared on logout. */
@@ -61,7 +63,14 @@ interface SettingsRepository {
 
     suspend fun setServerUrl(url: String)
     suspend fun setFamilyStatus(status: FamilyStatus)
-    suspend fun setProfile(userId: Long, username: String, displayName: String)
+    suspend fun setProfile(userId: Long, username: String, displayName: String, avatarVersion: Long)
+
+    /**
+     * Separate from setProfile because the avatar endpoints answer with
+     * the new version alone — rewriting the name fields from a stale
+     * cached copy would be the only way to lose a rename.
+     */
+    suspend fun setMyAvatarVersion(version: Long)
     suspend fun setFamilyName(name: String?)
     suspend fun setPushToken(token: String?)
     suspend fun setPushDeviceId(deviceId: Long?)
@@ -89,6 +98,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val MY_USER_ID = longPreferencesKey("my_user_id")
         val MY_USERNAME = stringPreferencesKey("my_username")
         val MY_DISPLAY_NAME = stringPreferencesKey("my_display_name")
+        val MY_AVATAR_VERSION = longPreferencesKey("my_avatar_version")
         val FAMILY_NAME = stringPreferencesKey("family_name")
         val PUSH_TOKEN = stringPreferencesKey("push_token")
         val PUSH_DEVICE_ID = longPreferencesKey("push_device_id")
@@ -106,6 +116,7 @@ class DataStoreSettingsRepository @Inject constructor(
             myUsername = prefs[Keys.MY_USERNAME],
             myDisplayName = prefs[Keys.MY_DISPLAY_NAME],
             familyName = prefs[Keys.FAMILY_NAME],
+            myAvatarVersion = prefs[Keys.MY_AVATAR_VERSION] ?: 0,
             pushToken = prefs[Keys.PUSH_TOKEN],
             pushDeviceId = prefs[Keys.PUSH_DEVICE_ID],
             linkPreviewsEnabled = prefs[Keys.LINK_PREVIEWS_DISABLED] != true,
@@ -120,12 +131,22 @@ class DataStoreSettingsRepository @Inject constructor(
         dataStore.edit { it[Keys.FAMILY_STATUS] = status.name }
     }
 
-    override suspend fun setProfile(userId: Long, username: String, displayName: String) {
+    override suspend fun setProfile(
+        userId: Long,
+        username: String,
+        displayName: String,
+        avatarVersion: Long,
+    ) {
         dataStore.edit {
             it[Keys.MY_USER_ID] = userId
             it[Keys.MY_USERNAME] = username
             it[Keys.MY_DISPLAY_NAME] = displayName
+            it[Keys.MY_AVATAR_VERSION] = avatarVersion
         }
+    }
+
+    override suspend fun setMyAvatarVersion(version: Long) {
+        dataStore.edit { it[Keys.MY_AVATAR_VERSION] = version }
     }
 
     override suspend fun setFamilyName(name: String?) {

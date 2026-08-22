@@ -239,7 +239,8 @@ final class ChatSyncCoordinator {
                 userID: payload.user.id,
                 username: payload.user.username,
                 displayName: payload.user.displayName,
-                role: "member")
+                role: "member",
+                avatarVersion: payload.user.avatarVersion)
 
         case .reaction(let payload):
             // Full-state apply under the per-message seq guard; the chat
@@ -804,7 +805,8 @@ final class ChatSyncCoordinator {
                 userID: member.id,
                 username: member.username,
                 displayName: member.displayName,
-                role: member.role)
+                role: member.role,
+                avatarVersion: member.avatarVersion)
         }
         // Anyone we know locally but the roster omits has left; keep the
         // row (name resolution on old bubbles) but flag it.
@@ -816,20 +818,28 @@ final class ChatSyncCoordinator {
         saveContext()
     }
 
-    private func upsertMember(userID: Int64, username: String, displayName: String, role: String) {
+    private func upsertMember(
+        userID: Int64,
+        username: String,
+        displayName: String,
+        role: String,
+        avatarVersion: Int64
+    ) {
         if let existing = fetchMember(userID) {
             existing.username = username
             existing.displayName = displayName
             existing.role = role
             existing.isCurrentUser = userID == currentUserID
             existing.hasLeft = false
+            existing.avatarVersion = avatarVersion
         } else {
             modelContext.insert(MemberEntity(
                 userID: userID,
                 username: username,
                 displayName: displayName,
                 role: role,
-                isCurrentUser: userID == currentUserID))
+                isCurrentUser: userID == currentUserID,
+                avatarVersion: avatarVersion))
         }
         saveContext()
     }

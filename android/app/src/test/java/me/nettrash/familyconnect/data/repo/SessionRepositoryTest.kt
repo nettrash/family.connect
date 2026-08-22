@@ -185,7 +185,7 @@ class SessionRepositoryTest {
     fun clearSessionWipesEverythingButKeepsTheServerUrl() = runTest(dispatcher) {
         val repository = newRepository()
         settings.setServerUrl("https://chat.example.com")
-        settings.setProfile(7, "anna", "Anna")
+        settings.setProfile(7, "anna", "Anna", 0)
         settings.setFamilyStatus(FamilyStatus.OWNER)
         settings.setFamilyName("The Smiths")
         tokenStore.save("tok")

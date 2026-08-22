@@ -102,6 +102,7 @@ fun ChatListScreen(
     // so cold entry never flashes "No chats yet".
     val chats by viewModel.chats.collectAsStateWithLifecycle()
     val members by viewModel.pickableMembers.collectAsStateWithLifecycle()
+    val avatarVersions by viewModel.avatarVersions.collectAsStateWithLifecycle()
     val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
     val socketState by viewModel.socketState.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
@@ -207,6 +208,8 @@ fun ChatListScreen(
                             ChatRow(
                                 chat = chat,
                                 onClick = { onOpenChat(chat.id) },
+                                peerAvatarVersion = chat.peerUserId
+                                    ?.let { avatarVersions[it] } ?: 0L,
                                 modifier = Modifier.animateItem(
                                     fadeInSpec = tween(200),
                                     placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
@@ -242,7 +245,12 @@ fun ChatListScreen(
                         headlineContent = { Text(member.displayName) },
                         supportingContent = { Text("@${member.username}") },
                         leadingContent = {
-                            Avatar(name = member.displayName, userId = member.userId, size = 48)
+                            Avatar(
+                                name = member.displayName,
+                                userId = member.userId,
+                                size = 48,
+                                avatarVersion = member.avatarVersion,
+                            )
                         },
                         modifier = Modifier.clickable { viewModel.openDirectChat(member.userId) },
                     )
@@ -258,6 +266,8 @@ private fun ChatRow(
     chat: ChatEntity,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /** The peer's profile-picture version; 0 for the family chat. */
+    peerAvatarVersion: Long = 0,
 ) {
     val hasUnread = chat.unreadCount > 0
     Row(
@@ -277,6 +287,7 @@ private fun ChatRow(
                 name = chat.title,
                 userId = chat.peerUserId ?: chat.id,
                 size = 48,
+                avatarVersion = peerAvatarVersion,
             )
         }
         Spacer(Modifier.width(12.dp))

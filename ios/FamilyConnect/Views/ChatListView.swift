@@ -25,6 +25,10 @@ struct ChatListView: View {
     @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Query private var chats: [ChatEntity]
+    /// The roster, purely to resolve a direct chat's peer to their
+    /// profile-picture version — one query for the list rather than one
+    /// per row.
+    @Query private var members: [MemberEntity]
 
     @State private var path: [Int64] = []
     @State private var showsNewChat = false
@@ -42,6 +46,10 @@ struct ChatListView: View {
         }
     }
 
+    private var avatarVersions: [Int64: Int64] {
+        Dictionary(members.map { ($0.userID, $0.avatarVersion) }, uniquingKeysWith: { first, _ in first })
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
             Group {
@@ -53,7 +61,10 @@ struct ChatListView: View {
                 } else {
                     List(sortedChats) { chat in
                         NavigationLink(value: chat.chatID) {
-                            ChatRowView(chat: chat)
+                            ChatRowView(
+                                chat: chat,
+                                peerAvatarVersion: chat.peerUserID
+                                    .flatMap { avatarVersions[$0] } ?? 0)
                         }
                     }
                     .listStyle(.plain)
@@ -158,10 +169,17 @@ private struct JoinRequestsSheet: View {
 /// badge. Stock components + semantic colors throughout.
 struct ChatRowView: View {
     let chat: ChatEntity
+    /// Profile-picture version of the direct chat's peer; 0 for the
+    /// family chat and for anyone without a picture.
+    var peerAvatarVersion: Int64 = 0
 
     var body: some View {
         HStack(spacing: 12) {
-            InitialsAvatar(title: chat.title, isFamily: chat.kind == "family")
+            InitialsAvatar(
+                title: chat.title,
+                isFamily: chat.kind == "family",
+                userID: chat.peerUserID,
+                avatarVersion: peerAvatarVersion)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(chat.title)
@@ -199,6 +217,15 @@ struct ChatRowView: View {
 struct InitialsAvatar: View {
     let title: String
     var isFamily = false
+    /// Who this circle stands for. Given both, the profile picture
+    /// replaces the initials once it has been fetched; without them (or
+    /// before it lands) the initials are what shows, so a row never
+    /// waits on the network to render.
+    var userID: Int64?
+    var avatarVersion: Int64 = 0
+    var size: CGFloat = 44
+
+    @Environment(AvatarStore.self) private var avatars
 
     private var initials: String {
         let words = title.split(separator: " ").prefix(2)
@@ -206,20 +233,30 @@ struct InitialsAvatar: View {
         return letters.isEmpty ? "?" : letters.joined().uppercased()
     }
 
+    private var picture: Image? {
+        guard let userID, avatarVersion > 0 else { return nil }
+        return avatars.image(userID: userID, version: avatarVersion)
+    }
+
     var body: some View {
         ZStack {
             Circle()
                 .fill(.tint.opacity(0.2))
-            if isFamily {
+            if let picture {
+                picture
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else if isFamily {
                 Image(systemName: "house.fill")
-                    .font(.system(size: 18))
+                    .font(.system(size: size * 0.41))
                     .foregroundStyle(.tint)
             } else {
                 Text(initials)
-                    .font(.headline)
+                    .font(.system(size: size * 0.36, weight: .semibold))
                     .foregroundStyle(.tint)
             }
         }
-        .frame(width: 44, height: 44)
+        .frame(width: size, height: size)
+        .clipShape(Circle())
     }
 }

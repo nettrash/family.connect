@@ -38,7 +38,10 @@ struct NewChatView: View {
                             open(member)
                         } label: {
                             HStack(spacing: 12) {
-                                InitialsAvatar(title: member.displayName)
+                                InitialsAvatar(
+                                    title: member.displayName,
+                                    userID: member.userID,
+                                    avatarVersion: member.avatarVersion)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(member.displayName)
                                         .foregroundStyle(.primary)

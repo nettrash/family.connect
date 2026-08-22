@@ -70,10 +70,25 @@ nonisolated struct MemberJoinedPayload: Decodable, Equatable, Sendable {
         let id: Int64
         let username: String
         let displayName: String
+        /// `0` = no profile picture. Defaulted so a server older than the
+        /// avatars release still decodes.
+        var avatarVersion: Int64 = 0
         enum CodingKeys: String, CodingKey {
             case id
             case username
             case displayName = "display_name"
+            case avatarVersion = "avatar_version"
+        }
+
+        /// Hand-written for the same reason as UserDTO's: a property
+        /// default is not a decoding fallback, and older servers do not
+        /// send this field.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(Int64.self, forKey: .id)
+            username = try container.decode(String.self, forKey: .username)
+            displayName = try container.decode(String.self, forKey: .displayName)
+            avatarVersion = try container.decodeIfPresent(Int64.self, forKey: .avatarVersion) ?? 0
         }
     }
     let familyID: Int64

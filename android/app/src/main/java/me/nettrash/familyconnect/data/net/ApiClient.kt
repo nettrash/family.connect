@@ -41,7 +41,9 @@ import me.nettrash.familyconnect.data.settings.TokenStore
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -140,7 +142,52 @@ class ApiClient @Inject constructor(
         jsonBody: String?,
         auth: Boolean = true,
         overrideBase: String? = null,
-    ): ApiResult<String> = withContext(Dispatchers.IO) {
+    ): ApiResult<String> {
+        val body = when {
+            jsonBody != null -> jsonBody.toRequestBody(JSON_MEDIA_TYPE)
+            method == "GET" || method == "DELETE" -> null
+            // OkHttp requires a body for POST/PATCH even when the
+            // endpoint takes none.
+            else -> ByteArray(0).toRequestBody(null)
+        }
+        return send(method, path, body, auth, overrideBase) { it.body.string() }
+    }
+
+    /**
+     * Send raw bytes — the profile-picture upload, the protocol's only
+     * non-JSON request body. The response still is JSON, so it comes back
+     * as text for `decode`.
+     */
+    suspend fun rawUpload(
+        method: String,
+        path: String,
+        bytes: ByteArray,
+        contentType: String,
+    ): ApiResult<String> =
+        send(method, path, bytes.toRequestBody(contentType.toMediaType()), auth = true, overrideBase = null) {
+            it.body.string()
+        }
+
+    /** Fetch a binary response body (profile pictures). */
+    suspend fun rawDownload(path: String): ApiResult<ByteArray> =
+        send("GET", path, null, auth = true, overrideBase = null) { it.body.bytes() }
+
+    /**
+     * The one place a request is actually executed: shared so the 401
+     * broadcast and the protocol error-body parsing can never diverge
+     * between the JSON and the binary paths.
+     *
+     * `onSuccess` runs while the response is still open — it must
+     * materialize the body (string/bytes), not hand back a stream.
+     */
+    private suspend fun <T> send(
+        method: String,
+        path: String,
+        body: RequestBody?,
+        auth: Boolean,
+        overrideBase: String?,
+        onSuccess: (Response) -> T,
+    ): ApiResult<T> = withContext(Dispatchers.IO) {
         val base = overrideBase ?: apiBase()
             ?: return@withContext ApiResult.NetworkError(
                 IllegalStateException("No server URL configured"),
@@ -150,23 +197,15 @@ class ApiClient @Inject constructor(
         if (auth) {
             tokenStore.load()?.let { builder.header("Authorization", "Bearer $it") }
         }
-        val requestBody = when {
-            jsonBody != null -> jsonBody.toRequestBody(JSON_MEDIA_TYPE)
-            method == "GET" || method == "DELETE" -> null
-            // OkHttp requires a body for POST/PATCH even when the
-            // endpoint takes none.
-            else -> ByteArray(0).toRequestBody(null)
-        }
-        builder.method(method, requestBody)
+        builder.method(method, body)
 
         try {
             client.newCall(builder.build()).execute().use { response ->
-                val bodyText = response.body.string()
                 if (response.isSuccessful) {
-                    ApiResult.Ok(bodyText)
+                    ApiResult.Ok(onSuccess(response))
                 } else {
                     val parsed = try {
-                        json.decodeFromString<ErrorBody>(bodyText).error
+                        json.decodeFromString<ErrorBody>(response.body.string()).error
                     } catch (_: Exception) {
                         null
                     }

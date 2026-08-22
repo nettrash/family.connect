@@ -56,6 +56,7 @@ class FamilyRepository @Inject constructor(
                                 // Joiners are always plain members; the
                                 // owner existed before the frame could.
                                 role = "member",
+                                avatarVersion = frame.user.avatarVersion,
                             ),
                         ),
                     )
@@ -86,6 +87,7 @@ class FamilyRepository @Inject constructor(
                         username = it.username,
                         displayName = it.displayName,
                         role = it.role,
+                        avatarVersion = it.avatarVersion,
                     )
                 },
             )
@@ -137,6 +139,7 @@ class FamilyRepository @Inject constructor(
                             username = result.value.member.username,
                             displayName = result.value.member.displayName,
                             role = result.value.member.role,
+                            avatarVersion = result.value.member.avatarVersion,
                         ),
                     ),
                 )

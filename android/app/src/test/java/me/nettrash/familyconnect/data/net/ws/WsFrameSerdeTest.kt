@@ -163,6 +163,28 @@ class WsFrameSerdeTest {
         )
     }
 
+    /**
+     * The frame is the one place a picture change reaches a client
+     * without a roster refresh (protocol: a frame carries at most the
+     * avatar_version, never the bytes), so the field has to survive the
+     * frame decoder — and stay absent-tolerant for older servers.
+     */
+    @Test
+    fun memberJoinedFrameCarriesTheAvatarVersion() {
+        assertRoundTrips(
+            """{"type": "member_joined", "family_id": 3, "user": {"id": 11, "username": "junior", "display_name": "Junior", "avatar_version": 7}}""",
+            ServerFrame.MemberJoined(
+                familyId = 3,
+                user = me.nettrash.familyconnect.data.net.dto.UserDto(
+                    id = 11,
+                    username = "junior",
+                    displayName = "Junior",
+                    avatarVersion = 7,
+                ),
+            ),
+        )
+    }
+
     @Test
     fun memberLeftFrameRoundTrips() {
         assertRoundTrips(

@@ -90,10 +90,13 @@ pub async fn put_avatar(
     .bind(body.as_ref())
     .execute(&mut *tx)
     .await?;
-    // Never reused, so a stale cached picture can never win: the version
-    // a client already holds can only be lower than the one it will read.
+    // The version comes off `avatar_seq`, which only ever goes up —
+    // including across a delete, which resets the *version* to 0 but
+    // leaves the counter alone. That is what makes it safe for clients to
+    // cache a picture forever under (user_id, avatar_version): a number
+    // they already hold can never come back meaning a different picture.
     let row = sqlx::query(
-        "UPDATE users SET avatar_version = avatar_version + 1
+        "UPDATE users SET avatar_seq = avatar_seq + 1, avatar_version = avatar_seq + 1
          WHERE id = $1
          RETURNING id, username, display_name, created_at, avatar_version",
     )
@@ -118,6 +121,8 @@ pub async fn delete_avatar(
         .await?;
     // Back to 0 — "no picture" — rather than another increment: 0 is the
     // sentinel every client checks before it bothers fetching.
+    // `avatar_seq` is deliberately NOT reset, so the next upload lands
+    // above every version anyone has already cached.
     sqlx::query("UPDATE users SET avatar_version = 0 WHERE id = $1")
         .bind(auth.user_id)
         .execute(&mut *tx)

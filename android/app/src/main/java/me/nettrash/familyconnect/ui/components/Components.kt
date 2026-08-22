@@ -7,9 +7,10 @@
  *   OfflineBanner         — "No connection" / "Connecting…" strip under the
  *                           app bar; animates in/out and renders nothing
  *                           when the socket is open.
- *   Avatar                — initials in a circle; hue derived from the user
- *                           id hash so a person keeps their color everywhere
- *                           without storing anything.
+ *   Avatar                — the user's profile picture, or initials in a
+ *                           circle when they have none; hue derived from the
+ *                           user id hash so a person keeps their color
+ *                           everywhere without storing anything.
  *   EmptyState            — icon + title + supporting line, centered.
  *   ErrorCard             — inline error surface with optional action.
  *   BusyButtonContent     — button label that cross-fades to a spinner
@@ -32,6 +33,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -62,7 +64,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -135,6 +140,8 @@ fun Avatar(
     size: Int = 40,
     containerColor: Color? = null,
     contentColor: Color? = null,
+    /** 0 = no profile picture; anything else names one in the cache. */
+    avatarVersion: Long = 0,
 ) {
     // Stable per-user hue from the id hash; lightness is split by theme
     // (0.40 light / 0.35 dark) so white SemiBold initials stay >= 4.5:1
@@ -150,18 +157,37 @@ fun Avatar(
         .map { it.first().uppercaseChar() }
         .joinToString("")
         .ifEmpty { "?" }
+    // Null until the picture lands — so a row draws its initials
+    // immediately and never waits on the network.
+    val picture = rememberAvatar(userId, avatarVersion)
     Box(
         modifier = modifier
             .size(size.dp)
+            .clip(CircleShape)
             .background(background, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = initials,
-            color = foreground,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = (size * 0.4).sp,
-        )
+        if (picture != null) {
+            Image(
+                bitmap = picture,
+                // The name is already read out by the row this sits in;
+                // announcing it twice is noise.
+                contentDescription = null,
+                modifier = Modifier.size(size.dp),
+                contentScale = ContentScale.Crop,
+                // The cached bitmap is 256 px and the largest avatar is
+                // 56 dp, so this is always a downscale; Low (the default)
+                // shimmers on the small ones.
+                filterQuality = FilterQuality.Medium,
+            )
+        } else {
+            Text(
+                text = initials,
+                color = foreground,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = (size * 0.4).sp,
+            )
+        }
     }
 }
 

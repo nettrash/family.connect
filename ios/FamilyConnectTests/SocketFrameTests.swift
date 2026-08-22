@@ -125,6 +125,24 @@ struct SocketFrameTests {
         #expect(payload.user.id == 11)
         #expect(payload.user.username == "junior")
         #expect(payload.user.displayName == "Junior")
+        // Absent on a server older than profile pictures.
+        #expect(payload.user.avatarVersion == 0)
+    }
+
+    /// The frame is the one place a picture change reaches a client
+    /// without a roster refresh (protocol: a frame carries at most the
+    /// avatar_version, never the bytes).
+    @Test("member_joined carries the avatar version")
+    func decodeMemberJoinedWithAvatar() throws {
+        let frame = try decode("""
+        {"type": "member_joined", "family_id": 3,
+         "user": {"id": 11, "username": "junior", "display_name": "Junior", "avatar_version": 7}}
+        """)
+        guard case .memberJoined(let payload) = frame else {
+            Issue.record("expected .memberJoined, got \(frame)")
+            return
+        }
+        #expect(payload.user.avatarVersion == 7)
     }
 
     @Test("member_left decodes")

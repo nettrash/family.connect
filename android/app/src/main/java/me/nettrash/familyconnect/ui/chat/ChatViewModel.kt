@@ -104,6 +104,11 @@ class ChatViewModel @Inject constructor(
         .map { members -> members.associate { it.userId to it.displayName } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
+    /** userId → profile-picture version, for the avatars beside reactors. */
+    val memberAvatars: StateFlow<Map<Long, Long>> = memberDao.observeMembers()
+        .map { members -> members.associate { it.userId to it.avatarVersion } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
     // UI-only: flips on the first items emission, so the empty state can
     // tell an actually-empty chat from "the DB flow hasn't answered yet".
     private val _initialLoadSettled = MutableStateFlow(false)

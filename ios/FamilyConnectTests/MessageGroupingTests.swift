@@ -172,8 +172,8 @@ struct MessageGroupingTests {
         let names: [Int64: String] = [9: "Anna", 11: "Ben", 12: "Kim"]
         let details = MessagePresentation.reactionDetails(reactions, names: names, currentUserID: 7)
         #expect(details == [
-            ReactionDetail(emoji: "❤️", names: ["Anna", "Kim"]),
-            ReactionDetail(emoji: "👍", names: ["Ben"]),
+            ReactionDetail(emoji: "❤️", names: ["Anna", "Kim"], leadUserID: 9),
+            ReactionDetail(emoji: "👍", names: ["Ben"], leadUserID: 11),
         ])
     }
 
@@ -199,7 +199,10 @@ struct MessageGroupingTests {
         reactions.insert(ReactionSnapshot(userID: 7, emoji: "❤️"), at: position)
         let details = MessagePresentation.reactionDetails(
             reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7)
-        #expect(details == [ReactionDetail(emoji: "❤️", names: ["You", "Anna", "Ben"])])
+        // "You" leads the names, so my own id leads the row.
+        #expect(details == [
+            ReactionDetail(emoji: "❤️", names: ["You", "Anna", "Ben"], leadUserID: 7),
+        ])
     }
 
     @Test("You substitutes only in the emoji I chose, others keep their names")
@@ -212,8 +215,8 @@ struct MessageGroupingTests {
         let details = MessagePresentation.reactionDetails(
             reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7)
         #expect(details == [
-            ReactionDetail(emoji: "👍", names: ["Anna"]),
-            ReactionDetail(emoji: "😂", names: ["You", "Ben"]),
+            ReactionDetail(emoji: "👍", names: ["Anna"], leadUserID: 9),
+            ReactionDetail(emoji: "😂", names: ["You", "Ben"], leadUserID: 7),
         ])
     }
 
@@ -221,7 +224,7 @@ struct MessageGroupingTests {
     func reactionDetailsUnknownReactor() {
         let reactions = [ReactionSnapshot(userID: 99, emoji: "👍")]
         let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 7)
-        #expect(details == [ReactionDetail(emoji: "👍", names: ["Someone"])])
+        #expect(details == [ReactionDetail(emoji: "👍", names: ["Someone"], leadUserID: 99)])
     }
 
     @Test("no reactions yield no details")

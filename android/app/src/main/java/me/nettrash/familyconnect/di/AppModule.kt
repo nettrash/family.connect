@@ -23,6 +23,7 @@
 
 package me.nettrash.familyconnect.di
 
+import android.content.ContentResolver
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
@@ -49,14 +50,18 @@ import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.net.AndroidConnectivityObserver
 import me.nettrash.familyconnect.data.net.ApiClient
 import me.nettrash.familyconnect.data.net.AuthApi
+import me.nettrash.familyconnect.data.net.AvatarApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.DefaultAuthApi
+import me.nettrash.familyconnect.data.net.DefaultAvatarApi
 import me.nettrash.familyconnect.data.net.DefaultChatApi
 import me.nettrash.familyconnect.data.net.DefaultFamilyApi
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.OkHttpChatSocket
+import me.nettrash.familyconnect.data.repo.AvatarSource
+import me.nettrash.familyconnect.data.repo.ContentResolverAvatarSource
 import me.nettrash.familyconnect.data.push.FirebasePushTokenProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
 import me.nettrash.familyconnect.data.settings.DataStoreSettingsRepository
@@ -89,6 +94,12 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindAuthApi(impl: DefaultAuthApi): AuthApi
+
+    @Binds
+    abstract fun bindAvatarApi(impl: DefaultAvatarApi): AvatarApi
+
+    @Binds
+    abstract fun bindAvatarSource(impl: ContentResolverAvatarSource): AvatarSource
 
     @Binds
     abstract fun bindFamilyApi(impl: DefaultFamilyApi): FamilyApi
@@ -146,8 +157,13 @@ abstract class AppModule {
             Room.databaseBuilder(context, AppDatabase::class.java, "familyconnect.db")
                 // Deliberately NO fallbackToDestructiveMigration — this
                 // is the family's message history. See AppDatabase.
-                .addMigrations(AppDatabase.MIGRATION_1_2)
+                .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
                 .build()
+
+        @Provides
+        @Singleton
+        fun provideContentResolver(@ApplicationContext context: Context): ContentResolver =
+            context.contentResolver
 
         @Provides
         fun provideChatDao(db: AppDatabase): ChatDao = db.chatDao()

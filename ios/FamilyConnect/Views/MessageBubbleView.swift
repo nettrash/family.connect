@@ -47,9 +47,16 @@ struct MessageBubbleView: View {
     let isMine: Bool
     let showsSenderName: Bool
     let senderName: String?
+    /// Who sent it, for the run-head avatar. Only consulted when
+    /// showsSenderName is true, so direct chats never carry one.
+    var senderID: Int64 = 0
+    var senderAvatarVersion: Int64 = 0
     let isRead: Bool
     var reactionChips: [ReactionChip] = []
     var reactionDetails: [ReactionDetail] = []
+    /// userID → profile-picture version, for the faces in the
+    /// who-reacted list. Empty is fine; it just means initials.
+    var avatarVersions: [Int64: Int64] = [:]
     var onRetry: () -> Void = {}
     var onDelete: () -> Void = {}
     var onToggleReaction: (String) -> Void = { _ in }
@@ -109,10 +116,22 @@ struct MessageBubbleView: View {
 
             VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
                 if showsSenderName, let senderName {
-                    Text(senderName)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.tint)
-                        .padding(.horizontal, 4)
+                    // The sender's face rides the name line at the head of
+                    // a run rather than in a gutter beside every bubble:
+                    // the thread's layout (and its scroll-anchoring
+                    // arithmetic) stays exactly as it was.
+                    HStack(spacing: 5) {
+                        InitialsAvatar(
+                            title: senderName,
+                            userID: senderID,
+                            avatarVersion: senderAvatarVersion,
+                            size: 20)
+                        Text(senderName)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.tint)
+                    }
+                    .padding(.horizontal, 4)
+                    .accessibilityElement(children: .combine)
                 }
 
                 bubble
@@ -248,7 +267,16 @@ struct MessageBubbleView: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(reactionDetails) { detail in
                 let isMineReaction = reactionChips.first { $0.emoji == detail.emoji }?.includesMe == true
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(spacing: 8) {
+                    // The row aggregates one emoji's reactors, so it
+                    // leads with the first one's face — matching Android.
+                    if let leadUserID = detail.leadUserID {
+                        InitialsAvatar(
+                            title: detail.names.first ?? "?",
+                            userID: leadUserID,
+                            avatarVersion: avatarVersions[leadUserID] ?? 0,
+                            size: 24)
+                    }
                     Text(detail.emoji)
                     Text(detail.names.formatted(.list(type: .and)))
                         .font(.footnote)
