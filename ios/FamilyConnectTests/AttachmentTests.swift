@@ -377,6 +377,87 @@ struct AttachmentTests {
         #expect(stream.headers["Authorization"] == "Bearer sekret")
     }
 
+    // MARK: - The sender's own copy
+
+    /// The sender made these bytes a moment ago; drawing their own bubble
+    /// must not cost a round trip back to the server for them.
+    @Test("Seeded bytes are readable with no fetch at all")
+    func seededBytesNeedNoFetch() async throws {
+        let host = "attach-seed.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        StubURLProtocol.register(host: host) { _ in
+            .json(404, #"{"error": {"code": "attachment_not_found", "message": "no"}}"#)
+        }
+        let store = AttachmentStore(
+            api: APIClient(
+                serverURL: URL(string: "https://\(host)")!,
+                session: StubURLProtocol.makeSession()))
+        defer { store.clear() }
+
+        let id: Int64 = 9001
+        let before = store.generation
+        store.seed(Self.solidImage(width: 40, height: 30), id: id, preview: true)
+
+        #expect(store.image(id: id, preview: true) != nil)
+        // The bubble redraws off `generation`; seeding has to bump it or
+        // the view that asked has no reason to look again.
+        #expect(store.generation > before)
+        #expect(StubURLProtocol.requests(host: host).isEmpty)
+    }
+
+    @Test("Sending a photo seeds this device's cache from what it just made")
+    func sendMediaSeedsTheCache() async throws {
+        let host = "attach-seeded-send.test"
+        let harness = try makeHarness(host: host) { request in
+            switch (request.method, request.url.path()) {
+            case ("POST", "/api/v1/attachments"):
+                return .json(201, """
+                    {"attachment": {"id": 9002, "kind": "photo", "mime": "image/jpeg",
+                     "size": 4096, "width": 1600, "height": 1200, "has_preview": false}}
+                    """)
+            case ("PUT", "/api/v1/attachments/9002/preview"):
+                return .empty(204)
+            default:
+                let clientID = request.bodyJSON()?["client_msg_id"] as? String ?? ""
+                return .json(201, """
+                    {"message": {"id": 950, "chat_id": 42, "sender_id": 7, "body": "",
+                     "created_at": "2026-08-22T09:00:00Z", "client_msg_id": "\(clientID)",
+                     "attachment": {"id": 9002, "kind": "photo", "mime": "image/jpeg",
+                       "size": 4096, "width": 1600, "height": 1200, "has_preview": true}}}
+                    """)
+            }
+        }
+        defer { harness.tearDown() }
+
+        let store = AttachmentStore(api: harness.coordinator.api)
+        defer { store.clear() }
+        harness.coordinator.bind(attachmentStore: store)
+
+        // A real JPEG on both halves, so the store can decode what it is given.
+        let full = Self.solidImage(width: 120, height: 90)
+        let url = MediaPrep.temporaryURL(extension: "jpg")
+        try full.write(to: url)
+        let prepared = MediaPrep.Prepared(
+            fileURL: url,
+            mime: "image/jpeg",
+            kind: "photo",
+            width: 1600,
+            height: 1200,
+            durationMS: nil,
+            previewJPEG: Self.solidImage(width: 40, height: 30))
+
+        #expect(await harness.coordinator.sendMedia(prepared, caption: "", in: 42))
+        await harness.settle()
+
+        // Both halves are drawable straight away, and no GET was needed for
+        // either — the sender never re-downloads their own photo.
+        #expect(store.image(id: 9002, preview: true) != nil)
+        #expect(store.image(id: 9002, preview: false) != nil)
+        let gets = StubURLProtocol.requests(host: host)
+            .filter { $0.method == "GET" && $0.url.path().hasPrefix("/api/v1/attachments") }
+        #expect(gets.isEmpty)
+    }
+
     // MARK: - Files
 
     @Test("A file's name rides in the query string")

@@ -78,6 +78,7 @@ final class ChatSyncCoordinator {
     private let socket: ChatSocket
     private let modelContext: ModelContext
     private(set) weak var session: AppSession?
+    private weak var attachmentStore: AttachmentStore?
 
     // MARK: - Internals
 
@@ -134,6 +135,13 @@ final class ChatSyncCoordinator {
 
     func bind(session: AppSession) {
         self.session = session
+    }
+
+    /// The attachment cache, so a sent photo can be drawn from the bytes
+    /// this device already made rather than fetched back. Weak: the store
+    /// is built from `api`, which this object owns.
+    func bind(attachmentStore: AttachmentStore) {
+        self.attachmentStore = attachmentStore
     }
 
     // MARK: - Lifecycle
@@ -707,8 +715,21 @@ final class ChatSyncCoordinator {
             session?.handleUnauthorized()
             return false
         } catch {
-            AppLog.sync.info("Attachment upload failed: \(String(describing: error))")
+            // .error, not .info: an upload that failed is the one thing
+            // the sender will come asking about, and info-level os_log
+            // does not reach Xcode's console.
+            AppLog.sync.error("Attachment upload failed: \(String(describing: error), privacy: .public)")
             return false
+        }
+
+        // Seed the cache with what we already hold, so this device draws
+        // its own bubble immediately instead of fetching back bytes it
+        // just produced.
+        if let preview = prepared.previewJPEG {
+            attachmentStore?.seed(preview, id: attachment.id, preview: true)
+        }
+        if prepared.kind == "photo", let full = try? Data(contentsOf: prepared.fileURL) {
+            attachmentStore?.seed(full, id: attachment.id, preview: false)
         }
 
         var hasPreview = false
@@ -722,7 +743,7 @@ final class ChatSyncCoordinator {
                 try await api.uploadPreview(attachmentID: attachment.id, jpeg: preview)
                 hasPreview = true
             } catch {
-                AppLog.sync.info("Preview upload failed: \(String(describing: error))")
+                AppLog.sync.error("Preview upload failed: \(String(describing: error), privacy: .public)")
             }
         }
 

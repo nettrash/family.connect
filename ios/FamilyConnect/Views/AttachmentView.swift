@@ -39,7 +39,17 @@ struct AttachmentView: View {
 
     /// The preview when there is one; the full photo otherwise, so a
     /// message sent before its preview landed still shows something.
+    ///
+    /// READING `store.generation` HERE IS LOAD-BEARING. The store's caches
+    /// are @ObservationIgnored (a dictionary that changes on every scroll
+    /// frame would invalidate every reader), so `generation` is the only
+    /// observable thing it has — and without touching it this view
+    /// registers no dependency at all and never redraws when the fetch
+    /// lands. The bubble then sits on its spinner until something else
+    /// happens to rebuild it, which is why leaving the chat and coming
+    /// back "fixed" it. Same reason AttachmentViewer reads it.
     private var image: Image? {
+        _ = store.generation
         if attachment.hasPreview {
             return store.image(id: attachment.id, preview: true)
         }

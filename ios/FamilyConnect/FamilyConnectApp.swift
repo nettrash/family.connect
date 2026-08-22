@@ -108,6 +108,7 @@ struct FamilyConnectApp: App {
             self.pushRegistrar = registrar
             let avatars = AvatarStore(api: coordinator.api)
             let attachments = AttachmentStore(api: coordinator.api)
+            coordinator.bind(attachmentStore: attachments)
             // Logout wipes the store; faces must go with it, or the next
             // account inherits this one's.
             session.clearAvatarCache = {

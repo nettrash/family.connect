@@ -410,6 +410,115 @@ async fn unclaimed_uploads_are_swept() {
     );
 }
 
+/// A message and its attachment claim are one transaction.
+///
+/// Without that, the row is already committed when the claim fails — and
+/// since a message with an attachment is allowed an empty body, what the
+/// family is left with is a permanent, blank, undeletable bubble that is
+/// also the chat's newest message.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_refused_claim_leaves_no_message_behind() {
+    let server = spawn_server().await;
+    let (owner, member, chat_id) = family_of_two(&server).await;
+
+    async fn count(server: &TestServer, token: &str, chat_id: i64) -> usize {
+        let page: Value = server
+            .get(token, &format!("/chats/{chat_id}/messages"))
+            .await
+            .json()
+            .await
+            .expect("JSON");
+        page["messages"].as_array().expect("array").len()
+    }
+
+    let before = count(&server, &owner, chat_id).await;
+
+    // An id that never existed — what a client retrying past the sweeper's
+    // 24 h grace period sends.
+    assert_error(
+        server
+            .post(
+                &owner,
+                &format!("/chats/{chat_id}/messages"),
+                json!({
+                    "client_msg_id": Uuid::new_v4().to_string(),
+                    "body": "",
+                    "attachment_id": 999_999,
+                }),
+            )
+            .await,
+        404,
+        "attachment_not_found",
+    )
+    .await;
+    assert_eq!(count(&server, &owner, chat_id).await, before);
+
+    // Somebody else's attachment: refused, and again nothing is left.
+    let body: Value = upload(&server, &owner, "?kind=photo", "image/jpeg", jpeg_bytes(64))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let attachment_id = body["attachment"]["id"].as_i64().expect("id");
+    assert_error(
+        server
+            .post(
+                &member,
+                &format!("/chats/{chat_id}/messages"),
+                json!({
+                    "client_msg_id": Uuid::new_v4().to_string(),
+                    "body": "",
+                    "attachment_id": attachment_id,
+                }),
+            )
+            .await,
+        404,
+        "attachment_not_found",
+    )
+    .await;
+    assert_eq!(count(&server, &member, chat_id).await, before);
+
+    // And the double-claim path, which is what the claim-once test drives.
+    let send = |token: String| {
+        let server = &server;
+        async move {
+            server
+                .post(
+                    &token,
+                    &format!("/chats/{chat_id}/messages"),
+                    json!({
+                        "client_msg_id": Uuid::new_v4().to_string(),
+                        "body": "",
+                        "attachment_id": attachment_id,
+                    }),
+                )
+                .await
+        }
+    };
+    assert_eq!(send(owner.clone()).await.status(), 201);
+    let after_first = count(&server, &owner, chat_id).await;
+    assert_error(send(owner.clone()).await, 409, "attachment_already_used").await;
+    // The second attempt added nothing.
+    assert_eq!(count(&server, &owner, chat_id).await, after_first);
+
+    // Nothing blank anywhere: every message either has text or an attachment.
+    let page: Value = server
+        .get(&owner, &format!("/chats/{chat_id}/messages"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    for message in page["messages"].as_array().expect("array") {
+        let empty = message["body"].as_str().unwrap_or("").is_empty();
+        let has_attachment = message.get("attachment").is_some();
+        assert!(
+            !empty || has_attachment,
+            "a blank message with no attachment survived: {message}"
+        );
+    }
+}
+
 /// Files are the kind that accepts anything — the point of the feature.
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]

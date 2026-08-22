@@ -260,6 +260,16 @@ pub async fn create_message(
         }
     };
 
+    // The insert and the attachment claim are ONE transaction, and that is
+    // load-bearing rather than tidy. The claim can fail for reasons the
+    // sender cannot control — the sweeper removed an upload the client
+    // retried past its 24 h grace, or the id was already used — and with
+    // two autocommitted statements the message would already be in the
+    // chat by then. Since a message carrying an attachment is allowed an
+    // empty body, what everyone would be left with is a permanent, blank,
+    // undeletable bubble that is also the chat's newest message.
+    let mut tx = state.pool.begin().await?;
+
     let inserted = sqlx::query(
         "INSERT INTO messages (chat_id, sender_id, client_msg_id, body, reply_to_message_id)
          VALUES ($1, $2, $3, $4, $5)
@@ -271,7 +281,7 @@ pub async fn create_message(
     .bind(client_msg_id)
     .bind(body)
     .bind(reply_to_message_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
 
     if let Some(row) = inserted {
@@ -280,11 +290,16 @@ pub async fn create_message(
         // here rather than re-read.
         message.reply_to = reply_to;
         if let Some(attachment_id) = attachment_id {
+            // `?` here rolls the transaction back on drop: no message, and
+            // the sender gets the real reason.
             message.attachment =
-                Some(claim_attachment(state, attachment_id, sender_id, message.id).await?);
+                Some(claim_attachment(&mut tx, attachment_id, sender_id, message.id).await?);
         }
+        tx.commit().await?;
         return Ok((message, true));
     }
+    // Dedup: nothing was written, so there is nothing to commit.
+    drop(tx);
 
     // Dedup hit: a retry of a message that already landed. Return the
     // original — possibly with a different body if the client mutated the
@@ -406,8 +421,10 @@ pub async fn fetch_message(
 /// Claimable once, by its uploader only. The unique index on `message_id`
 /// is the real guarantee; this check exists to answer with the protocol's
 /// error rather than a constraint violation.
+/// Runs inside the caller's transaction so that a refusal takes the
+/// message with it — see the note at the insert.
 async fn claim_attachment(
-    state: &AppState,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     attachment_id: i64,
     uploader_id: i64,
     message_id: i64,
@@ -420,7 +437,7 @@ async fn claim_attachment(
     .bind(attachment_id)
     .bind(uploader_id)
     .bind(message_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut **tx)
     .await?;
     if let Some(row) = row {
         return Ok(Attachment::from_row(&row));
@@ -432,7 +449,7 @@ async fn claim_attachment(
         sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = $1 AND uploader_id = $2")
             .bind(attachment_id)
             .bind(uploader_id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&mut **tx)
             .await?
             .flatten();
     if exists.is_some() {

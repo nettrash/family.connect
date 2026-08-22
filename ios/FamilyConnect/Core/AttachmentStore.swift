@@ -96,6 +96,21 @@ final class AttachmentStore {
         }
     }
 
+    /// Put bytes we already hold into the cache.
+    ///
+    /// The sender just made this preview; making their own device fetch it
+    /// back from the server to draw its own bubble is a round trip for
+    /// something already in hand, and it is what left the sender staring
+    /// at a spinner while everyone else saw the picture.
+    func seed(_ data: Data, id: Int64, preview: Bool) {
+        let key = key(id, preview: preview)
+        guard let ui = UIImage(data: data) else { return }
+        try? data.write(to: fileURL(key), options: .atomic)
+        missing.remove(key)
+        remember(key, Image(uiImage: ui))
+        generation &+= 1
+    }
+
     private func remember(_ key: String, _ image: Image) {
         hot[key] = image
         hotOrder.append(key)
