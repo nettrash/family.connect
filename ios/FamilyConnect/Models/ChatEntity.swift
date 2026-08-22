@@ -69,6 +69,8 @@ final class ChatEntity {
     /// Never derived from held messages; compared against the server's
     /// max_reaction_seq from GET /chats to decide whether to catch up.
     var maxReactionSeq: Int64 = 0
+    /// The edit resync cursor — the edit twin of `maxReactionSeq`.
+    var maxEditSeq: Int64 = 0
 
     init(
         chatID: Int64,
@@ -85,7 +87,8 @@ final class ChatEntity {
         hasFullHistory: Bool = false,
         myLastReadID: Int64 = 0,
         othersReadUpTo: Int64 = 0,
-        maxReactionSeq: Int64 = 0
+        maxReactionSeq: Int64 = 0,
+        maxEditSeq: Int64 = 0
     ) {
         self.chatID = chatID
         self.kind = kind
@@ -102,5 +105,6 @@ final class ChatEntity {
         self.myLastReadID = myLastReadID
         self.othersReadUpTo = othersReadUpTo
         self.maxReactionSeq = maxReactionSeq
+        self.maxEditSeq = maxEditSeq
     }
 }

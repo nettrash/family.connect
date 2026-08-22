@@ -65,6 +65,8 @@ data class ChatEntity(
      * byte-identical under Room's validation.
      */
     @ColumnInfo(defaultValue = "0") val maxReactionSeq: Long = 0,
+    /** The edit resync cursor — the edit twin of [maxReactionSeq]. */
+    @ColumnInfo(defaultValue = "0") val maxEditSeq: Long = 0,
 )
 
 @Entity(
@@ -106,6 +108,14 @@ data class MessageEntity(
     val replyToMessageId: Long? = null,
     val replySenderId: Long? = null,
     val replyExcerpt: String? = null,
+    /**
+     * Set once the body has been edited. [editSeq] is the apply guard: a
+     * stored body is overwritten only by a body at least as new, or a
+     * history page fetched before an edit would restore the old text
+     * (docs/protocol.md, "Editing"). 0 = never edited.
+     */
+    @ColumnInfo(defaultValue = "0") val editSeq: Long = 0,
+    val editedAt: Long? = null,
 )
 
 @Entity(tableName = "members")

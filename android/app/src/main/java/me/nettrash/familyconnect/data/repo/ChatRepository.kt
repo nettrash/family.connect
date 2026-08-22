@@ -35,6 +35,9 @@ import me.nettrash.familyconnect.util.TimeFormat
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** What the server reports a chat has, against which the local cursors are compared. */
+data class ServerCursors(val reactions: Long, val edits: Long)
+
 @Singleton
 class ChatRepository @Inject constructor(
     private val chatApi: ChatApi,
@@ -56,13 +59,13 @@ class ChatRepository @Inject constructor(
     fun observeChat(chatId: Long): Flow<ChatEntity?> = chatDao.observeById(chatId)
 
     /**
-     * On success, returns the server's `max_reaction_seq` per chat id
-     * (0 where the server omitted it) — SyncEngine compares it against
-     * the locally stored cursor to decide whether reaction catch-up is
-     * needed. The stored cursor itself is local-only and survives the
-     * merge exactly like the read markers.
+     * On success, returns the server's `max_reaction_seq` and
+     * `max_edit_seq` per chat id (0 where the server omitted either) —
+     * SyncEngine compares each against the locally stored cursor to
+     * decide whether that catch-up is needed. The stored cursors are
+     * local-only and survive the merge exactly like the read markers.
      */
-    suspend fun refreshChats(): ApiResult<Map<Long, Long>> =
+    suspend fun refreshChats(): ApiResult<Map<Long, ServerCursors>> =
         when (val result = chatApi.chats()) {
             is ApiResult.Ok -> {
                 val merged = result.value.chats.map { item ->
@@ -83,14 +86,20 @@ class ChatRepository @Inject constructor(
                             ?: existing?.lastMessageAt,
                         lastMessageSenderId = item.lastMessage?.senderId
                             ?: existing?.lastMessageSenderId,
-                        // Local-only reaction cursor — NEVER the server's
-                        // value: only applied states may advance it.
+                        // Local-only cursors — NEVER the server's values:
+                        // only applied states may advance them.
                         maxReactionSeq = existing?.maxReactionSeq ?: 0L,
+                        maxEditSeq = existing?.maxEditSeq ?: 0L,
                     )
                 }
                 chatDao.upsertAll(merged)
                 ApiResult.Ok(
-                    result.value.chats.associate { it.chat.id to (it.maxReactionSeq ?: 0L) },
+                    result.value.chats.associate {
+                        it.chat.id to ServerCursors(
+                            reactions = it.maxReactionSeq ?: 0L,
+                            edits = it.maxEditSeq ?: 0L,
+                        )
+                    },
                 )
             }
             is ApiResult.HttpError -> result

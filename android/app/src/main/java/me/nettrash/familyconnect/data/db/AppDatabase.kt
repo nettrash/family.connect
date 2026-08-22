@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 4.
+ * Room database, version 5.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -39,7 +39,7 @@ fun interface LocalDataWiper {
         MessageEntity::class,
         MemberEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -87,6 +87,20 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE messages ADD COLUMN replyToMessageId INTEGER")
                 db.execSQL("ALTER TABLE messages ADD COLUMN replySenderId INTEGER")
                 db.execSQL("ALTER TABLE messages ADD COLUMN replyExcerpt TEXT")
+            }
+        }
+
+        /**
+         * v5: editing. `editSeq` carries a DEFAULT because it is NOT NULL
+         * ("never edited" is 0, so every existing row already has an
+         * answer); `editedAt` does not, because "never edited" there is
+         * the absence of a timestamp. Both match their @ColumnInfo.
+         */
+        val MIGRATION_4_5: Migration = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN editSeq INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN editedAt INTEGER")
+                db.execSQL("ALTER TABLE chats ADD COLUMN maxEditSeq INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

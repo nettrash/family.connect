@@ -26,6 +26,7 @@ package me.nettrash.familyconnect.ui.chat
 
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -160,6 +161,29 @@ class ChatViewModel @Inject constructor(
         _replyDraft.value = null
     }
 
+    /**
+     * The message being rewritten, while the composer is in edit mode,
+     * with the draft it displaced. Mutually exclusive with [replyDraft]:
+     * you are either answering a message or rewriting one.
+     */
+    private val _editTarget = MutableStateFlow<EditTarget?>(null)
+    val editTarget: StateFlow<EditTarget?> = _editTarget
+
+    data class EditTarget(val messageId: Long, val displacedDraft: String)
+
+    fun beginEdit(messageId: Long, body: String) {
+        _replyDraft.value = null
+        _editTarget.value = EditTarget(messageId, inputState.text.toString())
+        inputState.setTextAndPlaceCursorAtEnd(body)
+    }
+
+    /// Give the composer back exactly as it was borrowed.
+    fun cancelEdit() {
+        val displaced = _editTarget.value?.displacedDraft.orEmpty()
+        _editTarget.value = null
+        inputState.setTextAndPlaceCursorAtEnd(displaced)
+    }
+
     private val _typingUser = MutableStateFlow<String?>(null)
 
     /** Display name of the member typing right now (5 s expiry). */
@@ -243,6 +267,20 @@ class ChatViewModel @Inject constructor(
     fun send() {
         val body = inputState.text.toString()
         if (body.isBlank()) return
+        // Edit mode: the composer was borrowed to rewrite an existing
+        // message. The field is cleared only once the server takes it —
+        // a refused edit leaves the text there to fix, rather than
+        // dropping what the user typed.
+        val editing = _editTarget.value
+        if (editing != null) {
+            viewModelScope.launch {
+                if (messageRepository.edit(chatId, editing.messageId, body)) {
+                    _editTarget.value = null
+                    inputState.setTextAndPlaceCursorAtEnd(editing.displacedDraft)
+                }
+            }
+            return
+        }
         inputState.clearText()
         // Read and clear together: the draft belongs to the message being
         // sent, and leaving it primed would silently quote the next one too.

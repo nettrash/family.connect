@@ -112,20 +112,23 @@ struct ShareSheet: UIViewControllerRepresentable {
 /// owns dismissal.
 struct MessageContextMenu: View {
     let onReply: () -> Void
+    let onEdit: () -> Void
     let onCopy: () -> Void
     let onShare: () -> Void
     /// Reply needs a server id to quote, so it is hidden on a message that
     /// has not been acked yet rather than shown and doing nothing. The
     /// menu's height follows, since the overlay places it by size.
     var canReply: Bool = true
+    /// Only the author may edit, and only once the message has an id.
+    var canEdit: Bool = false
 
     private static let rowHeight: CGFloat = 44
     private static let menuWidth: CGFloat = 220
 
     /// Exact rendered size — fixed-height rows and their hairlines. The
     /// overlay needs the size up front to place the menu.
-    static func size(canReply: Bool) -> CGSize {
-        let rows = canReply ? 3.0 : 2.0
+    static func size(canReply: Bool, canEdit: Bool = false) -> CGSize {
+        let rows = 2.0 + (canReply ? 1.0 : 0.0) + (canEdit ? 1.0 : 0.0)
         return CGSize(width: menuWidth, height: rowHeight * rows + (rows - 1))
     }
 
@@ -133,6 +136,10 @@ struct MessageContextMenu: View {
         VStack(spacing: 0) {
             if canReply {
                 row("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
+                Divider()
+            }
+            if canEdit {
+                row("Edit", systemImage: "pencil", action: onEdit)
                 Divider()
             }
             row("Copy", systemImage: "doc.on.doc", action: onCopy)

@@ -58,6 +58,24 @@ class ReplyMigrationTest {
             )
             """.trimIndent(),
         )
+        // The v3 shape of `chats`; MIGRATION_4_5 alters this table too.
+        db.execSQL(
+            """
+            CREATE TABLE chats (
+                id INTEGER NOT NULL PRIMARY KEY,
+                kind TEXT NOT NULL,
+                peerUserId INTEGER,
+                title TEXT NOT NULL,
+                unreadCount INTEGER NOT NULL,
+                myLastReadId INTEGER,
+                peerLastReadId INTEGER,
+                lastMessageBody TEXT,
+                lastMessageAt INTEGER,
+                lastMessageSenderId INTEGER,
+                maxReactionSeq INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent(),
+        )
     }
 
     @After
@@ -158,5 +176,53 @@ class ReplyMigrationTest {
             }
         }
         return columns
+    }
+
+    /**
+     * v5 on top of v4. `editSeq` is NOT NULL with a DEFAULT ("never
+     * edited" is 0, so every existing row already has an answer);
+     * `editedAt` is nullable with none (there, "never edited" is the
+     * absence of a timestamp). Room refuses to open a migrated database
+     * whose columns differ from what it would have created, so both are
+     * compared against the real thing.
+     */
+    @Test
+    fun `the edit columns match what Room creates from the entity`() {
+        AppDatabase.MIGRATION_3_4.migrate(db)
+        AppDatabase.MIGRATION_4_5.migrate(db)
+        val migrated = columnsOf(db, "messages")
+
+        val fresh = androidx.room.Room.inMemoryDatabaseBuilder(
+            RuntimeEnvironment.getApplication(),
+            AppDatabase::class.java,
+        ).build()
+        val expected = try {
+            columnsOf(fresh.openHelper.writableDatabase, "messages")
+        } finally {
+            fresh.close()
+        }
+
+        for (name in listOf("editSeq", "editedAt")) {
+            assertThat(migrated[name]).isNotNull()
+            assertThat(migrated[name]).isEqualTo(expected[name])
+        }
+    }
+
+    @Test
+    fun `history survives the edits migration unedited`() {
+        db.execSQL(
+            "INSERT INTO messages (clientMsgId, serverId, chatId, senderId, body, createdAt, status) " +
+                "VALUES ('a', 1, 42, 7, 'Dinner at 7?', 1000, 'SENT')",
+        )
+        AppDatabase.MIGRATION_3_4.migrate(db)
+        AppDatabase.MIGRATION_4_5.migrate(db)
+
+        db.query("SELECT body, editSeq, editedAt FROM messages WHERE clientMsgId = 'a'").use { cursor ->
+            cursor.moveToFirst()
+            assertThat(cursor.getString(0)).isEqualTo("Dinner at 7?")
+            // "Never edited" is 0 for the seq and NULL for the stamp.
+            assertThat(cursor.getLong(1)).isEqualTo(0)
+            assertThat(cursor.isNull(2)).isTrue()
+        }
     }
 }

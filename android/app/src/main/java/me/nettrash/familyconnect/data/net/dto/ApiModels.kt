@@ -134,6 +134,10 @@ data class MessageDto(
     @SerialName("reaction_seq") val reactionSeq: Long? = null,
     // Present when (and only when) this message is a reply.
     @SerialName("reply_to") val replyTo: ReplyToDto? = null,
+    // Both present when (and only when) the body has been edited. The seq
+    // is the apply guard — see MessageRepository.applyBody.
+    @SerialName("edited_at") val editedAt: String? = null,
+    @SerialName("edit_seq") val editSeq: Long? = null,
 )
 
 /**
@@ -188,6 +192,9 @@ data class SendMessageRequest(
     // protocol writes for an ordinary message.
     @SerialName("reply_to_message_id") val replyToMessageId: Long? = null,
 )
+
+@Serializable
+data class EditMessageRequest(val body: String)
 
 @Serializable
 data class ReadRequest(@SerialName("last_read_message_id") val lastReadMessageId: Long)
@@ -253,6 +260,8 @@ data class ChatListItemDto(
     @SerialName("unread_count") val unreadCount: Int,
     // Absent while no message in the chat has ever been reacted to.
     @SerialName("max_reaction_seq") val maxReactionSeq: Long? = null,
+    // Absent while nothing in the chat has been edited.
+    @SerialName("max_edit_seq") val maxEditSeq: Long? = null,
 )
 
 @Serializable

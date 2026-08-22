@@ -119,6 +119,15 @@ sealed interface ServerFrame {
     ) : ServerFrame
 
     /**
+     * An edit of an existing message. A SEPARATE frame from [Message]
+     * because that one bumps unread counts and raises notifications, and
+     * an edit must do neither (protocol.md, "Editing").
+     */
+    @Serializable
+    @SerialName("message_edited")
+    data class MessageEdited(val message: MessageDto) : ServerFrame
+
+    /**
      * A message's FULL current reaction state (protocol: never a delta) —
      * idempotent; applied only when reactionSeq beats the stored one.
      */

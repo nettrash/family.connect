@@ -47,7 +47,7 @@ class SyncEngine @Inject constructor(
 
         // 2. Chat list + authoritative unread counts (and the server's
         // per-chat max_reaction_seq, driving step 3b below).
-        val serverReactionSeqs = chatRepository.refreshChats().okOrNull() ?: emptyMap()
+        val serverCursors = chatRepository.refreshChats().okOrNull() ?: emptyMap()
 
         // 3. Catch-up per chat, looped while pages come back full.
         for (chatId in chatDao.allChatIds()) {
@@ -59,8 +59,16 @@ class SyncEngine @Inject constructor(
             // 3b. Reactions missed while offline: the server's cursor
             // beats ours → page /reactions from the stored cursor.
             val localSeq = chatDao.maxReactionSeq(chatId) ?: 0L
-            if ((serverReactionSeqs[chatId] ?: 0L) > localSeq) {
+            if ((serverCursors[chatId]?.reactions ?: 0L) > localSeq) {
                 messageRepository.catchUpReactions(chatId, localSeq)
+            }
+            // 3c. Edits missed while offline. `after_id` is WHERE id >
+            // cursor and can never see a change to an OLDER row, so this
+            // is the only way a message we already hold is learned to
+            // have been rewritten.
+            val localEditSeq = chatDao.maxEditSeq(chatId) ?: 0L
+            if ((serverCursors[chatId]?.edits ?: 0L) > localEditSeq) {
+                messageRepository.catchUpEdits(chatId, localEditSeq)
             }
         }
 

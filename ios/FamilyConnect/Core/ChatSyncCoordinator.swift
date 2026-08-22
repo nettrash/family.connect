@@ -219,6 +219,24 @@ final class ChatSyncCoordinator {
         case .message(let message):
             _ = upsert(message, bumpUnread: true)
 
+        case .messageEdited(let message):
+            // bumpUnread: false — an edit is not new mail. The body write
+            // itself is guarded by edit_seq inside upsert, and the chat's
+            // cursor advances so a later catch-up does not replay it.
+            let entity = upsert(message, bumpUnread: false)
+            if let seq = message.editSeq,
+               let chat = fetchChat(message.chatID),
+               seq > chat.maxEditSeq {
+                chat.maxEditSeq = seq
+            }
+            // The preview follows only when this IS the newest message —
+            // editing an old one must not reorder or relabel the chat list.
+            if let chat = fetchChat(message.chatID),
+               chat.lastMessageDate == entity.createdAt {
+                chat.lastMessagePreview = message.body
+            }
+            saveContext()
+
         case .read(let chatID, let userID, let lastReadMessageID):
             guard let chat = fetchChat(chatID) else { return }
             if userID == currentUserID {
@@ -287,6 +305,43 @@ final class ChatSyncCoordinator {
 
     // MARK: - Message upsert (the dedup matrix)
 
+    /// Write the body ONLY when the incoming copy is at least as new as
+    /// the stored one.
+    ///
+    /// This is the guard the protocol calls load-bearing. Message
+    /// deliveries are not ordered: a history page fetched BEFORE an edit
+    /// can arrive after the `message_edited` frame that carries it, and an
+    /// unguarded write would quietly restore the old text — on one device
+    /// and not another, so the family disagrees about what was said.
+    /// Absent seq counts as 0, which is exactly right: a message that was
+    /// never edited carries no seq and can never lose to one that was.
+    private func applyBody(_ dto: MessageDTO, to entity: MessageEntity) {
+        let incoming = dto.editSeq ?? 0
+        guard incoming >= entity.editSeq else { return }
+        let bodyChanged = entity.body != dto.body
+        entity.body = dto.body
+        entity.editSeq = incoming
+        entity.editedAt = dto.editedAt
+        // A quote is a snapshot of the body, so every local reply pointing
+        // at this message is now stale. The server recomputes it on its
+        // next read; until then this keeps the two consistent on-screen.
+        if bodyChanged, let serverID = entity.serverID {
+            refreshQuotes(of: serverID, body: dto.body)
+        }
+    }
+
+    /// Re-cut the excerpt on every locally-held reply that quotes this
+    /// message, the same way the server would.
+    private func refreshQuotes(of quotedID: Int64, body: String) {
+        let descriptor = FetchDescriptor<MessageEntity>(
+            predicate: #Predicate { $0.replyToMessageID == quotedID })
+        guard let quoting = try? modelContext.fetch(descriptor), !quoting.isEmpty else { return }
+        let excerpt = ReplyToSnapshot.excerpt(of: body)
+        for row in quoting {
+            row.replyExcerpt = excerpt
+        }
+    }
+
     /// The server recomputes the quote on every read, so the newest copy
     /// always wins — including when it is absent, which is the honest
     /// answer for a message that is not a reply. (Unlike reactions, where
@@ -309,7 +364,7 @@ final class ChatSyncCoordinator {
             // Case 1/2a: reconcile in place (ours pending, or re-delivery).
             existing.serverID = dto.id
             existing.createdAt = dto.createdAt
-            existing.body = dto.body
+            applyBody(dto, to: existing)
             existing.senderID = dto.senderID
             existing.state = .sent
             entity = existing
@@ -317,7 +372,7 @@ final class ChatSyncCoordinator {
             applyReply(dto, to: existing)
         } else if let existing = fetchMessage(localID: "s:\(dto.id)") {
             // Case 2b: idempotent re-delivery of a server-keyed row.
-            existing.body = dto.body
+            applyBody(dto, to: existing)
             existing.createdAt = dto.createdAt
             existing.senderID = dto.senderID
             existing.state = .sent
@@ -336,7 +391,9 @@ final class ChatSyncCoordinator {
                 status: .sent,
                 replyToMessageID: dto.replyTo?.messageID,
                 replySenderID: dto.replyTo?.senderID,
-                replyExcerpt: dto.replyTo?.excerpt)
+                replyExcerpt: dto.replyTo?.excerpt,
+                editSeq: dto.editSeq ?? 0,
+                editedAt: dto.editedAt)
             modelContext.insert(entity)
         }
         // Embedded reaction state (history/resync pages): the same seq
@@ -453,6 +510,34 @@ final class ChatSyncCoordinator {
         guard let localID = enqueue(body: body, in: chatID, replyTo: replyTo) else { return nil }
         Task { await self.deliver(localID: localID) }
         return localID
+    }
+
+    /// Edit a message's body. Author-only server-side; the UI hides the
+    /// action for anyone else, and this is the ack path for the author's
+    /// own device — the other members hear it as `message_edited`.
+    ///
+    /// Deliberately NOT optimistic: an edit that the server refuses (too
+    /// long, not the author, message gone) would otherwise leave the
+    /// wrong text on screen with nothing to reconcile it, and unlike a
+    /// send there is no pending row to mark failed.
+    func edit(messageServerID: Int64, in chatID: Int64, body: String) async -> Bool {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        do {
+            let dto = try await api.editMessage(chatID: chatID, messageID: messageServerID, body: trimmed)
+            _ = upsert(dto, bumpUnread: false)
+            if let seq = dto.editSeq, let chat = fetchChat(chatID), seq > chat.maxEditSeq {
+                chat.maxEditSeq = seq
+            }
+            saveContext()
+            return true
+        } catch APIError.unauthorized {
+            session?.handleUnauthorized()
+            return false
+        } catch {
+            AppLog.sync.info("Edit failed for \(messageServerID, privacy: .public): \(String(describing: error))")
+            return false
+        }
     }
 
     /// Insert the pending row only (split from `send` so tests can drive
@@ -609,7 +694,8 @@ final class ChatSyncCoordinator {
             SyncPlan.ChatCursor(
                 chatID: $0.chat.id,
                 serverLatestMessageID: $0.lastMessage?.id,
-                serverMaxReactionSeq: $0.maxReactionSeq ?? 0)
+                serverMaxReactionSeq: $0.maxReactionSeq ?? 0,
+                serverMaxEditSeq: $0.maxEditSeq ?? 0)
         }
         for step in SyncPlan.make(chats: cursors, localCursors: localCursors()) {
             await runCatchUp(step)
@@ -621,6 +707,14 @@ final class ChatSyncCoordinator {
         // cursor.
         for step in SyncPlan.makeReactionSteps(chats: cursors, localCursors: localReactionCursors()) {
             await runReactionCatchUp(step)
+        }
+
+        // 6. Edit catch-up, on its own cursor. `after_id` is WHERE id >
+        // cursor and can never see a change to an OLDER row, so this is
+        // the only way a client that was away learns a message it already
+        // holds was rewritten.
+        for step in SyncPlan.makeEditSteps(chats: cursors, localCursors: localEditCursors()) {
+            await runEditCatchUp(step)
         }
 
         // 6. Outbox sweep: anything still pending after 30 s gets re-sent
@@ -653,6 +747,25 @@ final class ChatSyncCoordinator {
     /// referenced messages we don't hold (those states are dropped —
     /// history paging re-delivers them embedded on the Message objects);
     /// the cursor is what we've processed, never what we've kept.
+    /// One edit catch-up loop: after_seq pages until a short page, each
+    /// message applied through the ordinary upsert — so the edit_seq guard
+    /// and the quote refresh come for free. The cursor advances to every
+    /// page's max seq, whether or not we held the messages it named.
+    private func runEditCatchUp(_ step: SyncPlan.ReactionFetchStep) async {
+        let limit = 100
+        var afterSeq = step.afterSeq
+        while true {
+            guard let page = try? await api.edits(chatID: step.chatID, afterSeq: afterSeq, limit: limit) else { return }
+            for dto in page { _ = upsert(dto, bumpUnread: false) }
+            if let last = page.last, let seq = last.editSeq { afterSeq = max(afterSeq, seq) }
+            if let chat = fetchChat(step.chatID), afterSeq > chat.maxEditSeq {
+                chat.maxEditSeq = afterSeq
+            }
+            saveContext()
+            if page.count < limit { return }
+        }
+    }
+
     private func runReactionCatchUp(_ step: SyncPlan.ReactionFetchStep) async {
         let limit = 100
         var afterSeq = step.afterSeq
@@ -928,6 +1041,12 @@ final class ChatSyncCoordinator {
     private func localReactionCursors() -> [Int64: Int64] {
         guard let chats = try? modelContext.fetch(FetchDescriptor<ChatEntity>()) else { return [:] }
         return Dictionary(uniqueKeysWithValues: chats.map { ($0.chatID, $0.maxReactionSeq) })
+    }
+
+    /// chatID → stored maxEditSeq, for planning the edit catch-up.
+    private func localEditCursors() -> [Int64: Int64] {
+        let chats = (try? modelContext.fetch(FetchDescriptor<ChatEntity>())) ?? []
+        return Dictionary(uniqueKeysWithValues: chats.map { ($0.chatID, $0.maxEditSeq) })
     }
 
     private func saveContext() {

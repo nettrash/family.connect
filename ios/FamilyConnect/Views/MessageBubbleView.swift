@@ -146,6 +146,14 @@ struct MessageBubbleView: View {
                     Text(message.createdAt, format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    if message.isEdited {
+                        // Beside the timestamp, not inside the balloon: it
+                        // is metadata about the message, like the time and
+                        // the delivery tick, not part of what was said.
+                        Text("edited")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     if isMine {
                         statusGlyph
                     }

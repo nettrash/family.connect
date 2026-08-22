@@ -74,6 +74,7 @@ class MessageRepository @Inject constructor(
                 when (frame) {
                     is ServerFrame.Ack -> ackMessage(frame.clientMsgId, frame.message)
                     is ServerFrame.Message -> applyServerMessage(frame.message, live = true)
+                    is ServerFrame.MessageEdited -> applyEdit(frame.message)
                     is ServerFrame.Read -> onPeerRead(frame)
                     is ServerFrame.Reaction -> onReaction(frame)
                     is ServerFrame.Error -> onSendError(frame)
@@ -201,15 +202,35 @@ class MessageRepository @Inject constructor(
     }
 
     /**
+     * Apply an edited body under the seq guard, and advance the chat's
+     * edit cursor so a later catch-up does not replay it.
+     *
+     * Never bumps unread and never notifies: an edit is not new mail.
+     */
+    suspend fun applyEdit(message: MessageDto) {
+        val seq = message.editSeq ?: return
+        val editedAt = message.editedAt?.let(TimeFormat::parseTimestamp)
+        val updated = messageDao.applyEdit(message.id, message.body, seq, editedAt)
+        if (updated > 0) {
+            // A quote is a snapshot of the body, so every local reply
+            // pointing at this message is now stale.
+            messageDao.refreshQuotesOf(message.id, ReplyToDto.excerpt(message.body))
+        }
+        chatDao.advanceMaxEditSeq(message.chatId, seq)
+    }
+
+    /**
      * One server-authored message, from a live `message` frame
      * (live=true) or a resync/history page (live=false).
      */
     suspend fun applyServerMessage(message: MessageDto, live: Boolean) {
         if (messageDao.existsByServerId(message.id)) {
             // Already held — but a re-delivered message (history page,
-            // resync overlap) may carry NEWER embedded reactions. The
-            // seq guard makes the apply a no-op when it doesn't.
+            // resync overlap) may carry NEWER embedded reactions, or a
+            // newer BODY. Both applies are seq-guarded, so an older copy
+            // is a no-op rather than a revert.
             applyEmbeddedReactions(message)
+            if (message.editSeq != null) applyEdit(message)
             return
         }
         // My own message echoing back (WS ack lost, other path delivered,
@@ -238,6 +259,8 @@ class MessageRepository @Inject constructor(
                     replyToMessageId = message.replyTo?.messageId,
                     replySenderId = message.replyTo?.senderId,
                     replyExcerpt = message.replyTo?.excerpt,
+                    editSeq = message.editSeq ?: 0L,
+                    editedAt = message.editedAt?.let(TimeFormat::parseTimestamp),
                 ),
             ),
         )
@@ -372,6 +395,39 @@ class MessageRepository @Inject constructor(
         }
     }
 
+    /**
+     * One edit catch-up loop: after_seq pages until a short page, each
+     * message applied through the same seq-guarded path a live frame
+     * takes. The cursor advances to every page's max seq, whether or not
+     * we held the messages it named.
+     */
+    suspend fun catchUpEdits(chatId: Long, afterSeq: Long) {
+        var cursor = afterSeq
+        while (true) {
+            val page = chatApi.getEdits(chatId, cursor, EDIT_PAGE).okOrNull()?.messages ?: return
+            page.forEach { applyEdit(it) }
+            val pageMax = page.mapNotNull { it.editSeq }.maxOrNull()
+            if (pageMax != null) {
+                chatDao.advanceMaxEditSeq(chatId, pageMax)
+                cursor = pageMax
+            }
+            if (page.size < EDIT_PAGE) return
+        }
+    }
+
+    /** PATCH the body. Author-only server-side; returns false on refusal. */
+    suspend fun edit(chatId: Long, messageId: Long, body: String): Boolean {
+        val trimmed = body.trim()
+        if (trimmed.isEmpty()) return false
+        return when (val result = chatApi.editMessage(chatId, messageId, trimmed)) {
+            is ApiResult.Ok -> {
+                applyEdit(result.value.message)
+                true
+            }
+            else -> false
+        }
+    }
+
     // -- History paging ---------------------------------------------------------------
 
     /**
@@ -402,6 +458,7 @@ class MessageRepository @Inject constructor(
     private companion object {
         const val ACK_TIMEOUT_MS = 15_000L
         const val HISTORY_PAGE = 50
+        const val EDIT_PAGE = 200
         const val REACTION_PAGE = 200
     }
 }

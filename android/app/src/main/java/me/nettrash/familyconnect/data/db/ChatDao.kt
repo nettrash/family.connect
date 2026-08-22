@@ -88,6 +88,13 @@ interface ChatDao {
     @Query("SELECT maxReactionSeq FROM chats WHERE id = :chatId")
     suspend fun maxReactionSeq(chatId: Long): Long?
 
+    /** The edit cursor's twin of the two above. */
+    @Query("UPDATE chats SET maxEditSeq = MAX(maxEditSeq, :seq) WHERE id = :chatId")
+    suspend fun advanceMaxEditSeq(chatId: Long, seq: Long)
+
+    @Query("SELECT maxEditSeq FROM chats WHERE id = :chatId")
+    suspend fun maxEditSeq(chatId: Long): Long?
+
     @Query("DELETE FROM chats")
     suspend fun deleteAll()
 }

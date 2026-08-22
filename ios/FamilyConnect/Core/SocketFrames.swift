@@ -124,6 +124,10 @@ nonisolated struct ReactionPayload: Decodable, Equatable, Sendable {
 nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     case ack(clientMsgID: String, message: MessageDTO)
     case message(MessageDTO)
+    /// An edit of an existing message. A SEPARATE case from `.message`
+    /// because that one bumps unread counts and raises notifications, and
+    /// an edit must do neither (docs/protocol.md, "Editing").
+    case messageEdited(MessageDTO)
     case read(chatID: Int64, userID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64, userID: Int64)
     case memberJoined(MemberJoinedPayload)
@@ -160,6 +164,8 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
                 message: try container.decode(MessageDTO.self, forKey: .message))
         case "message":
             self = .message(try container.decode(MessageDTO.self, forKey: .message))
+        case "message_edited":
+            self = .messageEdited(try container.decode(MessageDTO.self, forKey: .message))
         case "read":
             self = .read(
                 chatID: try container.decode(Int64.self, forKey: .chatID),

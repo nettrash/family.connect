@@ -92,6 +92,24 @@ interface MessageDao {
         replyExcerpt: String?,
     )
 
+    /**
+     * Overwrite the body ONLY when the incoming copy is at least as new.
+     *
+     * The guard the protocol calls load-bearing. Deliveries are not
+     * ordered: a history page fetched BEFORE an edit can arrive after the
+     * frame carrying it, and an unguarded write would quietly restore the
+     * old text — on one device and not another. Expressed in SQL so the
+     * check and the write are one statement and cannot race each other.
+     */
+    @Query(
+        """
+        UPDATE messages
+        SET body = :body, editSeq = :editSeq, editedAt = :editedAt
+        WHERE serverId = :serverId AND :editSeq >= editSeq
+        """,
+    )
+    suspend fun applyEdit(serverId: Long, body: String, editSeq: Long, editedAt: Long?): Int
+
     /** Refresh the quote on every reply that points at this message. */
     @Query(
         """

@@ -221,6 +221,11 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     /// rather than throwing — which is also what makes a server that
     /// predates replies decode.
     let replyTo: ReplyToDTO?
+    /// Both present when (and only when) the body has been edited. The
+    /// seq is the guard: a body only overwrites a stored one when it is
+    /// at least as new (docs/protocol.md, "Editing").
+    let editedAt: Date?
+    let editSeq: Int64?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -232,6 +237,8 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         case reactions
         case reactionSeq = "reaction_seq"
         case replyTo = "reply_to"
+        case editedAt = "edited_at"
+        case editSeq = "edit_seq"
     }
 
     /// Explicit memberwise init so the reaction fields default to absent
@@ -245,7 +252,9 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         createdAt: Date,
         reactions: [ReactionDTO]? = nil,
         reactionSeq: Int64? = nil,
-        replyTo: ReplyToDTO? = nil
+        replyTo: ReplyToDTO? = nil,
+        editedAt: Date? = nil,
+        editSeq: Int64? = nil
     ) {
         self.id = id
         self.chatID = chatID
@@ -256,6 +265,8 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         self.reactions = reactions
         self.reactionSeq = reactionSeq
         self.replyTo = replyTo
+        self.editedAt = editedAt
+        self.editSeq = editSeq
     }
 }
 
@@ -323,21 +334,34 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
     /// Max reaction_seq over the chat's messages; omitted by the server
     /// while no message in the chat has ever been reacted to (treat as 0).
     let maxReactionSeq: Int64?
+    /// Max edit_seq over the chat's messages; omitted while nothing in the
+    /// chat has been edited (treat as 0). The twin of maxReactionSeq, and
+    /// the reason a client knows whether an edit catch-up is worth a
+    /// request at all.
+    let maxEditSeq: Int64?
 
     enum CodingKeys: String, CodingKey {
         case chat
         case lastMessage = "last_message"
         case unreadCount = "unread_count"
         case maxReactionSeq = "max_reaction_seq"
+        case maxEditSeq = "max_edit_seq"
     }
 
-    /// Explicit memberwise init so `maxReactionSeq` defaults to absent —
-    /// pre-reaction construction sites stay valid.
-    init(chat: ChatDTO, lastMessage: MessageDTO?, unreadCount: Int, maxReactionSeq: Int64? = nil) {
+    /// Explicit memberwise init so the seq fields default to absent —
+    /// construction sites that predate them stay valid.
+    init(
+        chat: ChatDTO,
+        lastMessage: MessageDTO?,
+        unreadCount: Int,
+        maxReactionSeq: Int64? = nil,
+        maxEditSeq: Int64? = nil
+    ) {
         self.chat = chat
         self.lastMessage = lastMessage
         self.unreadCount = unreadCount
         self.maxReactionSeq = maxReactionSeq
+        self.maxEditSeq = maxEditSeq
     }
 }
 

@@ -82,6 +82,12 @@ final class MessageEntity {
     var replyToMessageID: Int64?
     var replySenderID: Int64?
     var replyExcerpt: String?
+    /// Set once the body has been edited. `editSeq` is the apply guard:
+    /// a stored body is overwritten only by a body at least as new, or a
+    /// history page fetched before an edit would restore the old text
+    /// (docs/protocol.md, "Editing"). 0 = never edited.
+    var editSeq: Int64 = 0
+    var editedAt: Date?
 
     /// The quote as the views want it, or nil when this is not a reply.
     /// All three columns move together — a half-set row would be a bug
@@ -129,7 +135,9 @@ final class MessageEntity {
         reactionSeq: Int64 = 0,
         replyToMessageID: Int64? = nil,
         replySenderID: Int64? = nil,
-        replyExcerpt: String? = nil
+        replyExcerpt: String? = nil,
+        editSeq: Int64 = 0,
+        editedAt: Date? = nil
     ) {
         self.localID = localID
         self.serverID = serverID
@@ -144,5 +152,7 @@ final class MessageEntity {
         self.replyToMessageID = replyToMessageID
         self.replySenderID = replySenderID
         self.replyExcerpt = replyExcerpt
+        self.editSeq = editSeq
+        self.editedAt = editedAt
     }
 }

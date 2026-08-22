@@ -282,6 +282,30 @@ actor APIClient {
         return response.message
     }
 
+    private struct EditMessageRequest: Encodable {
+        let body: String
+    }
+
+    /// PATCH the body. Author only; the server answers with the whole
+    /// message, edit stamps included.
+    func editMessage(chatID: Int64, messageID: Int64, body: String) async throws -> MessageDTO {
+        let response: MessageResponse = try await request(
+            "PATCH", "/chats/\(chatID)/messages/\(messageID)",
+            body: EditMessageRequest(body: body))
+        return response.message
+    }
+
+    /// One page of the edit catch-up: whole messages, ordered by edit_seq.
+    func edits(chatID: Int64, afterSeq: Int64, limit: Int) async throws -> [MessageDTO] {
+        let response: MessagesResponse = try await request(
+            "GET", "/chats/\(chatID)/edits",
+            query: [
+                URLQueryItem(name: "after_seq", value: String(afterSeq)),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ])
+        return response.messages
+    }
+
     private struct ReadRequest: Encodable {
         let lastReadMessageID: Int64
         enum CodingKeys: String, CodingKey { case lastReadMessageID = "last_read_message_id" }

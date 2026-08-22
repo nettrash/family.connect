@@ -105,6 +105,10 @@ struct ConversationView: View {
     /// the wire snapshot so send() can hand it straight to the coordinator
     /// and the pending bubble can draw its quote before the server answers.
     @State private var replyDraft: ReplyToDTO?
+    /// The message being rewritten, while the composer is in edit mode.
+    /// Mutually exclusive with replyDraft: you are either answering a
+    /// message or rewriting one.
+    @State private var editTarget: (messageID: Int64, original: String)?
     /// Briefly tinted after a jump, so the eye lands on the right bubble.
     @State private var highlightedMessageID: String?
     /// True while a reply that was STARTED FROM HISTORY is being composed.
@@ -447,6 +451,9 @@ struct ConversationView: View {
             if let replyDraft {
                 replyBanner(replyDraft)
             }
+            if editTarget != nil {
+                editBanner()
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Message", text: Bindable(model).draft, axis: .vertical)
                     .focused($inputFocused)
@@ -512,6 +519,57 @@ struct ConversationView: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    /// "Editing message" above the field, with the way out. Cancelling
+    /// puts the draft back the way it was — the composer was borrowed for
+    /// the edit, and giving it back unchanged is the least surprising
+    /// thing it can do.
+    @ViewBuilder
+    private func editBanner() -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "pencil")
+                .font(.caption)
+                .foregroundStyle(.tint)
+            Text("Editing message")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tint)
+            Spacer(minLength: 0)
+            Button {
+                cancelEdit()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Cancel editing")
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    /// Borrow the composer to rewrite an existing message: prefill it with
+    /// what is there now, so an edit starts from the text rather than from
+    /// nothing.
+    private func beginEdit(serverID: Int64?, body: String) {
+        guard let serverID else { return }
+        replyStartedFromHistory = !isPinnedToBottom
+        withAnimation(.spring(duration: 0.25)) {
+            replyDraft = nil
+            editTarget = (messageID: serverID, original: model.draft)
+        }
+        model.draft = body
+        inputFocused = true
+    }
+
+    private func cancelEdit() {
+        let restored = editTarget?.original ?? ""
+        withAnimation(.spring(duration: 0.25)) {
+            editTarget = nil
+        }
+        model.draft = restored
+        replyStartedFromHistory = false
     }
 
     private func quoteAuthorName(_ senderID: Int64) -> String {
@@ -654,7 +712,8 @@ struct ConversationView: View {
                         // it — and under the capsule when that had to
                         // flip down too, so the two never overlap.
                         let canReply = message.serverID != nil
-                        let menuSize = MessageContextMenu.size(canReply: canReply)
+                        let canEdit = message.serverID != nil && message.senderID == currentUserID
+                        let menuSize = MessageContextMenu.size(canReply: canReply, canEdit: canEdit)
                         floatingMenu(
                             size: menuSize,
                             over: rect,
@@ -673,6 +732,10 @@ struct ConversationView: View {
                                         senderID: message.senderID,
                                         body: message.body)
                                 },
+                                onEdit: {
+                                    dismissReactionPicker()
+                                    beginEdit(serverID: message.serverID, body: message.body)
+                                },
                                 onCopy: {
                                     UIPasteboard.general.string = message.body
                                     dismissReactionPicker()
@@ -681,7 +744,8 @@ struct ConversationView: View {
                                     dismissReactionPicker()
                                     shareText = ShareText(text: message.body)
                                 },
-                                canReply: canReply)
+                                canReply: canReply,
+                                canEdit: canEdit)
                         }
                     }
                 }
@@ -770,6 +834,21 @@ struct ConversationView: View {
         return emojis
     }
 
+    /// Apply an edit. The field is cleared only once the server has taken
+    /// it: a refused edit (too long, no longer the author's, message gone)
+    /// leaves the text in the composer to fix rather than dropping it.
+    private func submitEdit(target: (messageID: Int64, original: String), body: String) {
+        Task { @MainActor in
+            let ok = await coordinator.edit(messageServerID: target.messageID, in: chatID, body: body)
+            guard ok else { return }
+            withAnimation(.spring(duration: 0.25)) {
+                editTarget = nil
+            }
+            model.draft = target.original
+            replyStartedFromHistory = false
+        }
+    }
+
     private func dismissReactionPicker() {
         withAnimation(.spring(duration: 0.3, bounce: 0.25)) {
             reactionPickerID = nil
@@ -781,6 +860,10 @@ struct ConversationView: View {
     private func send() {
         let body = model.draft
         guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if let target = editTarget {
+            submitEdit(target: target, body: body)
+            return
+        }
         coordinator.send(body: body, in: chatID, replyTo: replyDraft)
         withAnimation(.spring(duration: 0.25)) {
             replyDraft = nil

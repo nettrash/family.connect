@@ -613,6 +613,145 @@ class MessageRepositoryTest {
         assertThat(row.replyToMessageId).isEqualTo(1337)
     }
 
+    // -- Edits --------------------------------------------------------------------------------------
+
+    @Test
+    fun anEditReplacesTheBodyAndMarksTheMessage() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "Dinner at 7?")))
+        advanceUntilIdle()
+        socket.emit(
+            ServerFrame.MessageEdited(
+                messageDto(
+                    id = 100, chatId = CHAT, body = "Dinner at 8?",
+                    editSeq = 5, editedAt = "2026-08-22T10:00:00Z",
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100)!!
+        assertThat(row.body).isEqualTo("Dinner at 8?")
+        assertThat(row.editSeq).isEqualTo(5)
+        assertThat(row.editedAt).isNotNull()
+        // The cursor moved, so a later catch-up will not replay it.
+        assertThat(chatDao.maxEditSeq(CHAT)).isEqualTo(5)
+    }
+
+    /**
+     * The failure the guard exists for: a history page fetched BEFORE an
+     * edit, delivered after it, must not put the old text back.
+     */
+    @Test
+    fun aStaleBodyNeverOverwritesANewerOne() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "Dinner at 7?")))
+        advanceUntilIdle()
+        socket.emit(
+            ServerFrame.MessageEdited(
+                messageDto(id = 100, chatId = CHAT, body = "Dinner at 8?", editSeq = 5),
+            ),
+        )
+        advanceUntilIdle()
+
+        // A page that predates the edit: no seq at all.
+        repository.applyServerMessage(
+            messageDto(id = 100, chatId = CHAT, body = "Dinner at 7?"),
+            live = false,
+        )
+        advanceUntilIdle()
+        assertThat(messageDao.findByServerId(100)!!.body).isEqualTo("Dinner at 8?")
+
+        // …and an older edit arriving out of order.
+        repository.applyServerMessage(
+            messageDto(id = 100, chatId = CHAT, body = "Dinner at 7:30?", editSeq = 3),
+            live = false,
+        )
+        advanceUntilIdle()
+        val row = messageDao.findByServerId(100)!!
+        assertThat(row.body).isEqualTo("Dinner at 8?")
+        assertThat(row.editSeq).isEqualTo(5)
+    }
+
+    @Test
+    fun aNewerEditWinsAndReDeliveryIsHarmless() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+
+        repository.applyServerMessage(messageDto(id = 100, chatId = CHAT, body = "one", editSeq = 5), live = false)
+        repository.applyServerMessage(messageDto(id = 100, chatId = CHAT, body = "two", editSeq = 9), live = false)
+        advanceUntilIdle()
+        assertThat(messageDao.findByServerId(100)!!.body).isEqualTo("two")
+
+        // Same seq again (a re-delivered frame): idempotent, not a revert.
+        repository.applyServerMessage(messageDto(id = 100, chatId = CHAT, body = "two", editSeq = 9), live = false)
+        advanceUntilIdle()
+        assertThat(messageDao.findByServerId(100)!!.body).isEqualTo("two")
+    }
+
+    /** A quote is a snapshot of the body, so local replies go stale. */
+    @Test
+    fun editingAQuotedMessageRefreshesLocalReplies() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+
+        repository.applyServerMessage(messageDto(id = 100, chatId = CHAT, body = "Dinner at 7?"), live = false)
+        repository.applyServerMessage(
+            messageDto(
+                id = 101, chatId = CHAT, body = "Works for me",
+                replyTo = ReplyToDto(messageId = 100, senderId = 9, excerpt = "Dinner at 7?"),
+            ),
+            live = false,
+        )
+        advanceUntilIdle()
+
+        repository.applyEdit(
+            messageDto(id = 100, chatId = CHAT, body = "Dinner at 8?", editSeq = 5),
+        )
+        advanceUntilIdle()
+
+        assertThat(messageDao.findByServerId(101)!!.replyExcerpt).isEqualTo("Dinner at 8?")
+    }
+
+    /** An edit is not new mail. */
+    @Test
+    fun anEditDoesNotBumpUnread() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+
+        repository.applyServerMessage(messageDto(id = 100, chatId = CHAT, body = "Dinner at 7?"), live = false)
+        advanceUntilIdle()
+        val before = chatDao.getById(CHAT)!!.unreadCount
+
+        repository.applyEdit(messageDto(id = 100, chatId = CHAT, body = "Dinner at 8?", editSeq = 5))
+        advanceUntilIdle()
+
+        assertThat(chatDao.getById(CHAT)!!.unreadCount).isEqualTo(before)
+    }
+
+    @Test
+    fun theEditCatchUpPagesUntilShortAndAdvancesTheCursor() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        repository.applyServerMessage(messageDto(id = 100, chatId = CHAT, body = "old"), live = false)
+        advanceUntilIdle()
+
+        chatApi.editPages = mutableListOf(
+            listOf(messageDto(id = 100, chatId = CHAT, body = "new", editSeq = 7)),
+        )
+        repository.catchUpEdits(CHAT, afterSeq = 0)
+        advanceUntilIdle()
+
+        assertThat(messageDao.findByServerId(100)!!.body).isEqualTo("new")
+        assertThat(chatDao.maxEditSeq(CHAT)).isEqualTo(7)
+    }
+
     // -- History paging + flush ---------------------------------------------------------------------
 
     @Test

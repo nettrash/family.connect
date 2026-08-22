@@ -106,6 +106,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
@@ -262,6 +263,7 @@ fun ChatScreen(
     }
     val focusRequester = remember { FocusRequester() }
     val replyDraft by viewModel.replyDraft.collectAsStateWithLifecycle()
+    val editTarget by viewModel.editTarget.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     // Copy and share from the message context menu.
     val clipboard = LocalClipboard.current
@@ -621,6 +623,8 @@ fun ChatScreen(
                 } ?: "",
                 onCancelReply = viewModel::cancelReply,
                 focusRequester = focusRequester,
+                isEditing = editTarget != null,
+                onCancelEdit = viewModel::cancelEdit,
             )
         }
     }
@@ -632,12 +636,21 @@ fun ChatScreen(
         // onDismiss / onMore afterwards.
         ReactionPickerPopup(
             target = target,
+            myUserId = myUserId,
             onPick = { emoji ->
                 target.item.entity.serverId?.let { applyToggle(it, emoji) }
             },
             onMore = {
                 pickerTarget = null
                 fullPickerTarget = target.item
+            },
+            onEdit = {
+                val entity = target.item.entity
+                pickerTarget = null
+                entity.serverId?.let { serverId ->
+                    viewModel.beginEdit(serverId, entity.body)
+                    focusRequester.requestFocus()
+                }
             },
             onReply = {
                 val entity = target.item.entity
@@ -748,9 +761,11 @@ fun ChatScreen(
 @Composable
 private fun ReactionPickerPopup(
     target: ReactionPickerTarget,
+    myUserId: Long?,
     onPick: (String) -> Unit,
     onMore: () -> Unit,
     onReply: () -> Unit,
+    onEdit: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onDismiss: () -> Unit,
@@ -873,10 +888,13 @@ private fun ReactionPickerPopup(
             ) {
                 MessageContextMenu(
                     onReply = { exitThen(onReply) },
+                    onEdit = { exitThen(onEdit) },
                     onCopy = { exitThen(onCopy) },
                     onShare = { exitThen(onShare) },
                     modifier = Modifier.onSizeChanged { menuSize = it },
                     canReply = target.item.entity.serverId != null,
+                    canEdit = target.item.entity.serverId != null &&
+                        target.item.entity.senderId == myUserId,
                 )
             }
         }
@@ -937,9 +955,46 @@ private fun ReplyBanner(
     }
 }
 
+/**
+ * "Editing message" above the input field, with the way out. Cancelling
+ * puts the displaced draft back — the composer was borrowed, and giving it
+ * back unchanged is the least surprising thing it can do.
+ */
+@Composable
+private fun EditBanner(onCancel: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 4.dp, top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Edit,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = "Editing message",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onCancel) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "Cancel editing",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @Composable
 private fun MessageContextMenu(
     onReply: () -> Unit,
+    onEdit: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
     modifier: Modifier = Modifier,
@@ -948,6 +1003,8 @@ private fun MessageContextMenu(
      * on a message that has not been acked yet.
      */
     canReply: Boolean = true,
+    /** Only the author may edit, and only once the message has an id. */
+    canEdit: Boolean = false,
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -962,6 +1019,13 @@ private fun MessageContextMenu(
                     label = "Reply",
                     icon = Icons.AutoMirrored.Outlined.Reply,
                     onClick = onReply,
+                )
+            }
+            if (canEdit) {
+                MessageContextMenuItem(
+                    label = "Edit",
+                    icon = Icons.Outlined.Edit,
+                    onClick = onEdit,
                 )
             }
             MessageContextMenuItem(
@@ -1855,6 +1919,18 @@ private fun BubbleContent(
                         color = LocalContentColor.current.copy(alpha = 0.72f),
                     )
                 }
+                if (entity.editSeq > 0) {
+                    // Beside the timestamp, not inside the balloon: it is
+                    // metadata about the message, like the time and the
+                    // delivery tick, not part of what was said. Same
+                    // placement as iOS.
+                    if (item.showTimestamp) Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "edited",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LocalContentColor.current.copy(alpha = 0.72f),
+                    )
+                }
                 if (isMine) {
                     Spacer(Modifier.width(4.dp))
                     StatusGlyph(entity = entity, chat = chat, onFailedTap = onFailedTap)
@@ -2020,6 +2096,8 @@ private fun InputBar(
     replyAuthorName: String,
     onCancelReply: () -> Unit,
     focusRequester: FocusRequester,
+    isEditing: Boolean,
+    onCancelEdit: () -> Unit,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
@@ -2030,6 +2108,9 @@ private fun InputBar(
                     excerpt = replyDraft.excerpt,
                     onCancel = onCancelReply,
                 )
+            }
+            if (isEditing) {
+                EditBanner(onCancel = onCancelEdit)
             }
             Row(
                 modifier = Modifier

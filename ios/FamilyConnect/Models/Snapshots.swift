@@ -61,6 +61,8 @@ nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     var reactions: [ReactionSnapshot] = []
     /// The quoted message when this one is a reply. nil otherwise.
     var replyTo: ReplyToSnapshot?
+    /// True once the body has been edited — the bubble says so.
+    var isEdited: Bool = false
 }
 
 /// The quote a reply draws above its own text.
@@ -113,7 +115,8 @@ extension MessageSnapshot {
             createdAt: entity.createdAt,
             state: entity.state,
             reactions: entity.reactionList,
-            replyTo: entity.replySnapshot
+            replyTo: entity.replySnapshot,
+            isEdited: entity.editSeq > 0
         )
     }
 }

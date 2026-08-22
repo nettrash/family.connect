@@ -29,11 +29,20 @@ nonisolated enum SyncPlan {
         /// max_reaction_seq from GET /chats; 0 when the server omitted it
         /// (no message in the chat was ever reacted to).
         let serverMaxReactionSeq: Int64
+        /// max_edit_seq from GET /chats; 0 when the server omitted it
+        /// (nothing in the chat has been edited).
+        let serverMaxEditSeq: Int64
 
-        init(chatID: Int64, serverLatestMessageID: Int64?, serverMaxReactionSeq: Int64 = 0) {
+        init(
+            chatID: Int64,
+            serverLatestMessageID: Int64?,
+            serverMaxReactionSeq: Int64 = 0,
+            serverMaxEditSeq: Int64 = 0
+        ) {
             self.chatID = chatID
             self.serverLatestMessageID = serverLatestMessageID
             self.serverMaxReactionSeq = serverMaxReactionSeq
+            self.serverMaxEditSeq = serverMaxEditSeq
         }
     }
 
@@ -74,6 +83,20 @@ nonisolated enum SyncPlan {
         init(chatID: Int64, afterSeq: Int64) {
             self.chatID = chatID
             self.afterSeq = afterSeq
+        }
+    }
+
+    /// Plan the edit catch-ups — the exact shape of the reaction plan,
+    /// against the second cursor. A chat nothing has been edited in costs
+    /// no request.
+    static func makeEditSteps(
+        chats: [ChatCursor],
+        localCursors: [Int64: Int64]
+    ) -> [ReactionFetchStep] {
+        chats.compactMap { chat in
+            let local = localCursors[chat.chatID] ?? 0
+            guard chat.serverMaxEditSeq > local else { return nil }
+            return ReactionFetchStep(chatID: chat.chatID, afterSeq: local)
         }
     }
 

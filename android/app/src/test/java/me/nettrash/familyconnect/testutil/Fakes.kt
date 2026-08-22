@@ -295,6 +295,31 @@ class FakeChatApi : ChatApi {
         return ApiResult.Ok(Unit)
     }
 
+    /** Every (messageId, body) an edit was attempted with, in order. */
+    val edits = mutableListOf<Pair<Long, String>>()
+    var editHandler: (Long, String) -> ApiResult<MessageResponse> = { id, body ->
+        ApiResult.Ok(MessageResponse(messageDto(id = id, body = body, editSeq = 1)))
+    }
+
+    override suspend fun editMessage(
+        chatId: Long,
+        messageId: Long,
+        body: String,
+    ): ApiResult<MessageResponse> {
+        edits += messageId to body
+        return editHandler(messageId, body)
+    }
+
+    /** Pages the edit catch-up will serve, oldest first. */
+    var editPages: MutableList<List<MessageDto>> = mutableListOf()
+
+    override suspend fun getEdits(
+        chatId: Long,
+        afterSeq: Long,
+        limit: Int,
+    ): ApiResult<MessagesResponse> =
+        ApiResult.Ok(MessagesResponse(if (editPages.isEmpty()) emptyList() else editPages.removeAt(0)))
+
     override suspend fun putReaction(
         chatId: Long,
         messageId: Long,
@@ -399,6 +424,8 @@ fun messageDto(
     reactions: List<ReactionDto>? = null,
     reactionSeq: Long? = null,
     replyTo: ReplyToDto? = null,
+    editSeq: Long? = null,
+    editedAt: String? = null,
 ) = MessageDto(
     id = id,
     chatId = chatId,
@@ -409,6 +436,8 @@ fun messageDto(
     reactions = reactions,
     reactionSeq = reactionSeq,
     replyTo = replyTo,
+    editSeq = editSeq,
+    editedAt = editedAt,
 )
 
 fun reactionState(

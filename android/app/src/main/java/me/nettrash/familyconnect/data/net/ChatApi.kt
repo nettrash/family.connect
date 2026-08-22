@@ -19,6 +19,7 @@ import me.nettrash.familyconnect.data.net.dto.ChatResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.CreateDirectChatRequest
 import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
+import me.nettrash.familyconnect.data.net.dto.EditMessageRequest
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.dto.ReactionRequest
@@ -45,6 +46,12 @@ interface ChatApi {
         replyToMessageId: Long? = null,
     ): ApiResult<MessageResponse>
     suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit>
+
+    /** PATCH a message's body. Author only (403 not_message_author otherwise). */
+    suspend fun editMessage(chatId: Long, messageId: Long, body: String): ApiResult<MessageResponse>
+
+    /** The edit catch-up: whole messages, ordered by edit_seq ascending. */
+    suspend fun getEdits(chatId: Long, afterSeq: Long, limit: Int): ApiResult<MessagesResponse>
 
     /** Sets/replaces MY reaction — an idempotent state-set, not a toggle. */
     suspend fun putReaction(chatId: Long, messageId: Long, emoji: String): ApiResult<MessageReactionStateDto>
@@ -99,6 +106,20 @@ class DefaultChatApi @Inject constructor(
 
     override suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit> =
         client.post("/chats/$chatId/read", ReadRequest(lastReadMessageId))
+
+    override suspend fun editMessage(
+        chatId: Long,
+        messageId: Long,
+        body: String,
+    ): ApiResult<MessageResponse> =
+        client.patch("/chats/$chatId/messages/$messageId", EditMessageRequest(body))
+
+    override suspend fun getEdits(
+        chatId: Long,
+        afterSeq: Long,
+        limit: Int,
+    ): ApiResult<MessagesResponse> =
+        client.get("/chats/$chatId/edits?after_seq=$afterSeq&limit=$limit")
 
     override suspend fun putReaction(
         chatId: Long,
