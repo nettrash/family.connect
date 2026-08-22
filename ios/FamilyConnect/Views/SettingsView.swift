@@ -15,6 +15,7 @@
 //
 
 import Observation
+import OSLog
 import PhotosUI
 import SwiftUI
 
@@ -158,8 +159,26 @@ struct SettingsView: View {
                 uploadingAvatar = false
                 pickedPhoto = nil
             }
-            guard let data = try? await item.loadTransferable(type: Data.self),
-                  let jpeg = AvatarImage.squareJPEG(from: data) else {
+            // The two failures below are NOT the same thing and must not
+            // share a message: one means the library never handed the
+            // bytes over (an iCloud photo that isn't downloaded, a
+            // revoked pick), the other means we got bytes that aren't a
+            // decodable image. Telling them apart is the difference
+            // between "try again on wifi" and "pick another photo".
+            let data: Data?
+            do {
+                data = try await item.loadTransferable(type: Data.self)
+            } catch {
+                AppLog.api.error("Avatar transfer failed: \(String(describing: error))")
+                avatarError = "Couldn't load that photo from your library."
+                return
+            }
+            guard let data else {
+                avatarError = "Couldn't load that photo from your library."
+                return
+            }
+            guard let jpeg = AvatarImage.squareJPEG(from: data) else {
+                AppLog.api.error("Avatar re-encode failed for \(data.count, privacy: .public) bytes")
                 avatarError = "That image couldn't be read."
                 return
             }
@@ -168,16 +187,9 @@ struct SettingsView: View {
                 session.applyProfile(user)
             } catch APIError.unauthorized {
                 session.handleUnauthorized()
-            } catch APIError.conflict(let code, _) {
-                // The protocol's two picture-specific refusals; anything
-                // else is not worth spelling out.
-                avatarError = switch code {
-                case "avatar_too_large": "That photo is too large."
-                case "invalid_image": "That file isn't a photo we can use."
-                default: "Couldn't upload the photo."
-                }
             } catch {
-                avatarError = "Couldn't upload the photo."
+                AppLog.api.error("Avatar upload failed: \(String(describing: error))")
+                avatarError = AvatarFailure.message(for: error, verb: "upload")
             }
         }
     }
@@ -200,7 +212,8 @@ struct SettingsView: View {
             } catch APIError.unauthorized {
                 session.handleUnauthorized()
             } catch {
-                avatarError = "Couldn't remove the photo."
+                AppLog.api.error("Avatar remove failed: \(String(describing: error))")
+                avatarError = AvatarFailure.message(for: error, verb: "remove")
             }
         }
     }

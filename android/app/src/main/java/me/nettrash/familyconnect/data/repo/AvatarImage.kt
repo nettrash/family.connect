@@ -44,8 +44,28 @@ object AvatarImage {
      */
     const val EDGE = 512
 
-    /** No visible artefacts at avatar size, a fraction of the bytes of 100. */
-    const val QUALITY = 80
+    /**
+     * Quality ladder. 80 is the usual sweet spot — no visible artefacts at
+     * avatar size — but a detailed photograph can still exceed the byte
+     * budget there, so encoding steps down until it fits.
+     */
+    val QUALITY_STEPS = intArrayOf(80, 65, 50, 40)
+
+    /**
+     * Byte budget for the upload. The server's own ceiling is 256 KiB, but
+     * a self-hosted family server sits behind nginx, whose stock
+     * `client_max_body_size` is small (this project's own config sets 64k
+     * globally, with a larger allowance only for the avatar route) — and a
+     * proxy rejects an oversize body with a bare 413 that carries none of
+     * the protocol's explanation. Staying well under that means a picture
+     * uploads whatever is in front of the server.
+     *
+     * It also removes a parity trap: the two platforms' JPEG encoders
+     * disagree by tens of kilobytes at the same nominal quality, so a fixed
+     * quality had the same photo landing under the limit on one platform
+     * and over it on the other. Same value as iOS.
+     */
+    const val MAX_BYTES = 56 * 1024
 
     /**
      * Square JPEG for upload, or null when the bytes are not a decodable
@@ -59,14 +79,13 @@ object AvatarImage {
         val square = centreCropSquare(oriented)
         val resized = scaleTo(square, edge)
         try {
-            ByteArrayOutputStream().use { out ->
-                // JPEG has no alpha: a transparent PNG would encode its
-                // transparent pixels black, so it is drawn onto white
-                // first.
-                val opaque = flattenOntoWhite(resized)
-                val ok = opaque.compress(Bitmap.CompressFormat.JPEG, QUALITY, out)
+            // JPEG has no alpha: a transparent PNG would encode its
+            // transparent pixels black, so it is drawn onto white first.
+            val opaque = flattenOntoWhite(resized)
+            try {
+                encode(opaque)
+            } finally {
                 if (opaque !== resized) opaque.recycle()
-                if (ok) out.toByteArray() else null
             }
         } finally {
             resized.recycle()
@@ -75,6 +94,27 @@ object AvatarImage {
         // OutOfMemoryError from a hostile image must fail the upload, not
         // the process — and must not leave the button spinning.
     }.getOrNull()
+
+    /**
+     * First quality whose output fits the budget; the last attempt when
+     * none do (better a large upload the server may still accept than
+     * refusing to set a picture at all).
+     */
+    private fun encode(bitmap: Bitmap): ByteArray? {
+        var smallest: ByteArray? = null
+        for (quality in QUALITY_STEPS) {
+            val bytes = ByteArrayOutputStream().use { out ->
+                if (bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)) {
+                    out.toByteArray()
+                } else {
+                    null
+                }
+            } ?: continue
+            if (bytes.size <= MAX_BYTES) return bytes
+            smallest = bytes
+        }
+        return smallest
+    }
 
     private fun flattenOntoWhite(bitmap: Bitmap): Bitmap {
         if (!bitmap.hasAlpha()) return bitmap

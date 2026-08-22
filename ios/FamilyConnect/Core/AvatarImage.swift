@@ -27,9 +27,24 @@ nonisolated enum AvatarImage {
     /// well under the server's limit.
     static let edge = 512
 
-    /// JPEG quality. 0.8 is the usual sweet spot: no visible artefacts at
-    /// avatar size, a fraction of the bytes of 1.0.
-    static let quality: CGFloat = 0.8
+    /// Quality ladder. 0.8 is the usual sweet spot — no visible artefacts
+    /// at avatar size — but a detailed photograph can still exceed the
+    /// byte budget there, so encoding steps down until it fits.
+    static let qualitySteps: [CGFloat] = [0.8, 0.65, 0.5, 0.4]
+
+    /// Byte budget for the upload. The server's own ceiling is 256 KiB,
+    /// but a self-hosted family server sits behind nginx, whose stock
+    /// `client_max_body_size` is small (this project's own config sets
+    /// 64k globally, with a larger allowance only for the avatar route) —
+    /// and a proxy rejects an oversize body with a bare 413 that carries
+    /// none of the protocol's explanation. Staying well under that means
+    /// a picture uploads whatever is in front of the server.
+    ///
+    /// It also removes a parity trap: the two platforms' JPEG encoders
+    /// disagree by tens of kilobytes at the same nominal quality, so a
+    /// fixed quality had the same photo landing under the limit on one
+    /// platform and over it on the other.
+    static let maxBytes = 56 * 1024
 
     /// Square JPEG for upload, or nil when the data is not a decodable
     /// image.
@@ -37,7 +52,20 @@ nonisolated enum AvatarImage {
         guard let downsampled = downsample(data, maxPixels: edge * 2) else { return nil }
         let squared = centreCropSquare(downsampled)
         let resized = resize(squared, edge: CGFloat(edge))
-        return resized.jpegData(compressionQuality: quality)
+        return encode(resized)
+    }
+
+    /// First quality whose output fits the budget; the last attempt when
+    /// none do (better a large upload the server may still accept than
+    /// refusing to set a picture at all).
+    private static func encode(_ image: UIImage) -> Data? {
+        var smallest: Data?
+        for quality in qualitySteps {
+            guard let data = image.jpegData(compressionQuality: quality) else { continue }
+            if data.count <= maxBytes { return data }
+            smallest = data
+        }
+        return smallest
     }
 
     /// Decode no larger than `maxPixels` on the longest edge.

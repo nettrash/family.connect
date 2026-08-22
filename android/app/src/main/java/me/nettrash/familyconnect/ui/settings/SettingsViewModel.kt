@@ -152,14 +152,7 @@ class SettingsViewModel @Inject constructor(
                     _state.update { it.copy(uploadingAvatar = false) }
                 }
                 is ApiResult.HttpError -> _state.update {
-                    it.copy(
-                        uploadingAvatar = false,
-                        avatarError = when (result.code) {
-                            "avatar_too_large" -> "That photo is too large."
-                            "invalid_image" -> "That file isn't a photo we can use."
-                            else -> result.message ?: "Couldn't upload the photo."
-                        },
-                    )
+                    it.copy(uploadingAvatar = false, avatarError = uploadFailure(result))
                 }
                 is ApiResult.NetworkError -> _state.update {
                     it.copy(uploadingAvatar = false, avatarError = "Can't reach the server")
@@ -172,17 +165,38 @@ class SettingsViewModel @Inject constructor(
         if (_state.value.uploadingAvatar) return
         viewModelScope.launch {
             _state.update { it.copy(uploadingAvatar = true, avatarError = null) }
-            when (avatarApi.delete()) {
+            when (val result = avatarApi.delete()) {
                 is ApiResult.Ok -> {
                     settings.setMyAvatarVersion(0)
                     familyRepository.refreshMine()
                     _state.update { it.copy(uploadingAvatar = false) }
                 }
-                else -> _state.update {
-                    it.copy(uploadingAvatar = false, avatarError = "Couldn't remove the photo.")
+                is ApiResult.HttpError -> _state.update {
+                    it.copy(uploadingAvatar = false, avatarError = uploadFailure(result))
+                }
+                is ApiResult.NetworkError -> _state.update {
+                    it.copy(uploadingAvatar = false, avatarError = "Can't reach the server")
                 }
             }
         }
+    }
+
+    /**
+     * One sentence per way this can actually fail. A single "Couldn't
+     * upload the photo." for all of them turns a five-second diagnosis
+     * ("your server predates profile pictures") into a guessing game.
+     * Same wording as iOS.
+     */
+    private fun uploadFailure(result: ApiResult.HttpError): String = when {
+        result.code == "avatar_too_large" -> "That photo is too large."
+        result.code == "invalid_image" -> "That file isn't a photo we can use."
+        // The endpoint itself is missing: a server built before profile
+        // pictures existed. The handler answers 404 only for GETs of
+        // someone else's picture, so on PUT/DELETE this is always the
+        // route being absent.
+        result.status == 404 -> "This server doesn't support profile pictures yet — it needs updating."
+        result.status >= 500 -> "The server had a problem (${result.status}). Try again."
+        else -> result.message ?: "Couldn't upload the photo."
     }
 
     fun dismissAvatarError() {

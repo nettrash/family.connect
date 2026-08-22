@@ -69,6 +69,29 @@ class AvatarImageTest {
         assertThat(AvatarImage.sampleSize(4000, 3000, -1)).isEqualTo(1)
     }
 
+    /**
+     * Mirrored constants: the two platforms must produce interchangeable
+     * uploads, so a change here is a change on iOS too. The budget exists
+     * because a proxy in front of a self-hosted server (this project's own
+     * nginx config: 64k globally) rejects an oversize body with a bare 413
+     * that carries none of the protocol's explanation — and because the
+     * two JPEG encoders disagree by tens of kilobytes at the same nominal
+     * quality, which had the same photo passing on one platform and
+     * failing on the other.
+     *
+     * iOS: AvatarImage.swift — edge, qualitySteps, maxBytes.
+     */
+    @Test
+    fun `the ladder and budget match the iOS constants`() {
+        assertThat(AvatarImage.EDGE).isEqualTo(512)
+        assertThat(AvatarImage.MAX_BYTES).isEqualTo(56 * 1024)
+        assertThat(AvatarImage.QUALITY_STEPS.toList())
+            .containsExactly(80, 65, 50, 40).inOrder()
+        // Monotonically decreasing, or the ladder would step the wrong way.
+        assertThat(AvatarImage.QUALITY_STEPS.toList())
+            .isInStrictOrder(compareByDescending<Int> { it })
+    }
+
     @Test
     fun `empty bytes decode to null rather than throwing`() {
         // Only the empty case is asserted: Robolectric's BitmapFactory

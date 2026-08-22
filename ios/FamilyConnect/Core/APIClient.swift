@@ -38,6 +38,11 @@ nonisolated enum APIError: Error, Equatable {
     case forbidden(code: String?)
     /// 404 with the server's machine code (e.g. "invalid_invite_code").
     case notFound(code: String?)
+    /// 413 — the body was refused as too large. Its own case because a
+    /// proxy in front of the server answers it with an HTML page, not the
+    /// protocol's error shape, so the code that would say WHY is absent
+    /// exactly when the user most needs to be told.
+    case payloadTooLarge
     /// Any other 4xx — validation and state conflicts (409 "username_taken",
     /// "owner_cannot_leave", 400 "validation", …). Carries the human
     /// message for inline display.
@@ -463,6 +468,7 @@ actor APIClient {
         case 401: return .unauthorized
         case 403: return .forbidden(code: code)
         case 404: return .notFound(code: code)
+        case 413: return .payloadTooLarge
         case 400..<500: return .conflict(code: code, message: message)
         default: return .server(status: status, message: message)
         }
