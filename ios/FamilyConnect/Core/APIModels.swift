@@ -82,7 +82,7 @@ nonisolated struct UserDTO: Codable, Equatable, Sendable {
     }
 }
 
-nonisolated struct MemberDTO: Codable, Equatable, Sendable {
+nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
     let id: Int64
     let username: String
     let displayName: String

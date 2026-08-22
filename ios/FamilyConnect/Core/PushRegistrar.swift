@@ -24,7 +24,11 @@
 
 import Foundation
 import os
+#if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 import UserNotifications
 
 // MARK: - Pure decision table
@@ -98,7 +102,14 @@ final class PushRegistrar {
         // Cheap and idempotent: iOS re-delivers the current token to the
         // app delegate even when it hasn't changed — which is exactly the
         // retry path for a POST that failed on an earlier pass.
+        // Both platforms register the same way through a differently
+        // spelled application object; everything after this — the token
+        // callback, the POST /devices — is shared.
+        #if os(iOS)
         UIApplication.shared.registerForRemoteNotifications()
+        #elseif os(macOS)
+        NSApplication.shared.registerForRemoteNotifications()
+        #endif
     }
 
     // MARK: - Token callbacks (forwarded by AppDelegate)

@@ -19,6 +19,9 @@
 //  Android counterpart: ui/board/BoardScreen.kt
 //
 
+// iOS only — the Mac has its own views (MacViews/).
+#if os(iOS)
+
 import SwiftData
 import SwiftUI
 
@@ -319,3 +322,5 @@ nonisolated enum NoteColor {
         }
     }
 }
+
+#endif

@@ -227,6 +227,15 @@ class FakeAuthApi : AuthApi {
         return loginResult
     }
 
+    /** Every password change this fake saw: (current, new). */
+    val passwordChanges = mutableListOf<Pair<String, String>>()
+    var changePasswordHandler: (String, String) -> ApiResult<Unit> = { _, _ -> ApiResult.Ok(Unit) }
+
+    override suspend fun changePassword(current: String, new: String): ApiResult<Unit> {
+        passwordChanges += current to new
+        return changePasswordHandler(current, new)
+    }
+
     override suspend fun logout(): ApiResult<Unit> {
         logoutCalls += 1
         return ApiResult.Ok(Unit)
@@ -386,6 +395,17 @@ class FakeFamilyApi : FamilyApi {
     override suspend fun reject(requestId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
     override suspend fun leave(): ApiResult<Unit> = ApiResult.Ok(Unit)
     override suspend fun removeMember(userId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
+
+    /** Every reset this fake saw: (userId, newPassword). */
+    val passwordResets = mutableListOf<Pair<Long, String>>()
+
+    override suspend fun resetMemberPassword(
+        userId: Long,
+        newPassword: String,
+    ): ApiResult<Unit> {
+        passwordResets += userId to newPassword
+        return ApiResult.Ok(Unit)
+    }
 }
 
 class FakeAvatarApi : AvatarApi {

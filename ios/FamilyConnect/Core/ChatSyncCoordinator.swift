@@ -109,7 +109,10 @@ final class ChatSyncCoordinator {
     /// Test seam: lets tests attribute "mine" without touching the app's
     /// real UserDefaults. The app never sets it.
     var currentUserIDOverride: Int64?
-    private var currentUserID: Int64 { currentUserIDOverride ?? AppSettings.currentUserID ?? -1 }
+    /// Who "mine" means. Internal rather than private: the Mac's message
+    /// row decides which side a balloon sits on, and asking the session
+    /// for it there would be a second source of the same truth.
+    var currentUserID: Int64 { currentUserIDOverride ?? AppSettings.currentUserID ?? -1 }
 
     /// The delivery started by the most recent `send`/`sendMedia`.
     ///
@@ -255,7 +258,8 @@ final class ChatSyncCoordinator {
             // editing an old one must not reorder or relabel the chat list.
             if let chat = fetchChat(message.chatID),
                chat.lastMessageDate == entity.createdAt {
-                chat.lastMessagePreview = message.body
+                chat.lastMessagePreview = Self.preview(
+                    body: message.body, attachment: message.attachment)
             }
             saveContext()
 
@@ -587,7 +591,7 @@ final class ChatSyncCoordinator {
             chat.oldestLoadedMessageID = dto.id
         }
         if chat.lastMessageDate == nil || dto.createdAt >= (chat.lastMessageDate ?? .distantPast) {
-            chat.lastMessagePreview = dto.body
+            chat.lastMessagePreview = Self.preview(body: dto.body, attachment: dto.attachment)
             chat.lastMessageDate = dto.createdAt
             chat.lastMessageSenderID = dto.senderID
         }
@@ -696,7 +700,12 @@ final class ChatSyncCoordinator {
     /// a bubble with no preview is a bubble that fetches the full image,
     /// which is worse but not broken — whereas delaying the message on a
     /// thumbnail would be silly.
-    func sendMedia(_ prepared: MediaPrep.Prepared, caption: String, in chatID: Int64) async -> Bool {
+    func sendMedia(
+        _ prepared: MediaPrep.Prepared,
+        caption: String,
+        replyTo: ReplyToDTO? = nil,
+        in chatID: Int64
+    ) async -> Bool {
         defer {
             // The prepared file is ours; the picker's original is not.
             try? FileManager.default.removeItem(at: prepared.fileURL)
@@ -747,7 +756,9 @@ final class ChatSyncCoordinator {
             }
         }
 
-        guard let localID = enqueue(body: caption, in: chatID, allowEmpty: true) else {
+        guard let localID = enqueue(
+            body: caption, in: chatID, replyTo: replyTo, allowEmpty: true)
+        else {
             return false
         }
         if let row = fetchMessage(localID: localID) {
@@ -836,6 +847,22 @@ final class ChatSyncCoordinator {
         // all of them, so "..\u{2009}/x" style names cannot leave one behind.
         let visible = String(cleaned.drop(while: { $0 == "." }))
         return visible.isEmpty ? "file" : String(visible.prefix(255))
+    }
+
+    /// What the chat list shows on its second line.
+    ///
+    /// A photo is normally sent with no caption, and an empty string is not
+    /// nil — so the row rendered blank rather than falling back to "No
+    /// messages yet". What arrived is the useful thing to say.
+    nonisolated static func preview(body: String, attachment: AttachmentDTO?) -> String {
+        if !body.isEmpty { return body }
+        guard let attachment else { return body }
+        if attachment.isVideo { return String(localized: "Video") }
+        if attachment.isFile {
+            return attachment.name.flatMap { $0.isEmpty ? nil : $0 }
+                ?? String(localized: "File")
+        }
+        return String(localized: "Photo")
     }
 
     /// Edit a message's body. Author-only server-side; the UI hides the
@@ -1257,7 +1284,7 @@ final class ChatSyncCoordinator {
         chat.title = dto.title
         chat.unreadCount = item.unreadCount // server-authoritative
         if let last = item.lastMessage {
-            chat.lastMessagePreview = last.body
+            chat.lastMessagePreview = Self.preview(body: last.body, attachment: last.attachment)
             chat.lastMessageDate = last.createdAt
             chat.lastMessageSenderID = last.senderID
         } else if resetWhenNoLastMessage {

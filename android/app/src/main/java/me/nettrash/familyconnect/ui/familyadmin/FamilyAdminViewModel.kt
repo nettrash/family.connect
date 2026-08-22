@@ -135,6 +135,13 @@ class FamilyAdminViewModel @Inject constructor(
     fun removeMember(userId: Long, onSuccess: () -> Unit = {}) =
         mutate(onSuccess) { familyRepository.removeMember(userId) }
 
+    /**
+     * Owner-only: set a member's password for them. Every session they have
+     * is revoked server-side, so their devices return to login.
+     */
+    fun resetMemberPassword(userId: Long, newPassword: String, onSuccess: () -> Unit = {}) =
+        mutate(onSuccess) { familyRepository.resetMemberPassword(userId, newPassword) }
+
     /** Runs [block]; [onSuccess] fires only when the server confirms. */
     private fun mutate(onSuccess: () -> Unit = {}, block: suspend () -> ApiResult<*>) {
         viewModelScope.launch {

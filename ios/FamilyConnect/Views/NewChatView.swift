@@ -8,6 +8,9 @@
 //  which pushes the conversation onto the navigation path.
 //
 
+// iOS only — the Mac has its own views (MacViews/).
+#if os(iOS)
+
 import SwiftData
 import SwiftUI
 
@@ -97,3 +100,5 @@ struct NewChatView: View {
         }
     }
 }
+
+#endif

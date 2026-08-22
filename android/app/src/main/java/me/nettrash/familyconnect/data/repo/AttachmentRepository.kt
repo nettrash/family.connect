@@ -75,6 +75,8 @@ class AttachmentRepository @Inject constructor(
     /** Ids the server has nothing for; not retried. */
     private val missing = HashSet<Key>()
     private val inFlight = HashMap<Key, Deferred<Unit>>()
+    /** Whole-file downloads in flight, keyed by attachment id. */
+    private val fileFetches = HashMap<Long, Deferred<File?>>()
     private val guard = Mutex()
 
     /** Bumped on every account change — see AvatarRepository's generation. */
@@ -97,7 +99,12 @@ class AttachmentRepository @Inject constructor(
         }
         scope.launch {
             connectivity.onAvailable.collect {
-                withContext(Dispatchers.Main.immediate) { retryToken++ }
+                withContext(Dispatchers.Main.immediate) {
+                    // Forget what failed while there was no network, or the
+                    // bump below would re-run effects that short-circuit.
+                    guard.withLock { missing.clear() }
+                    retryToken++
+                }
             }
         }
     }
@@ -126,6 +133,7 @@ class AttachmentRepository @Inject constructor(
     private fun startFetch(key: Key, startedAt: Int): Deferred<Unit> = scope.async {
         try {
             val file = fileFor(key)
+            var transportFailed = false
             val bitmap = withContext(Dispatchers.IO) {
                 // On disk from a previous run: decode it and skip the
                 // network entirely. Bytes that no longer decode mean a
@@ -137,7 +145,14 @@ class AttachmentRepository @Inject constructor(
                 } ?: run {
                     when (attachmentApi.download(key.attachmentId, key.preview, file)) {
                         is ApiResult.Ok -> decode(file)
-                        else -> null
+                        // A server that ANSWERED said no: no preview yet,
+                        // or not ours to see. Final.
+                        is ApiResult.HttpError -> null
+                        // Nobody answered. NOT final — see below.
+                        is ApiResult.NetworkError -> {
+                            transportFailed = true
+                            null
+                        }
                     }
                 }
             }
@@ -150,11 +165,13 @@ class AttachmentRepository @Inject constructor(
                         hot[key] = bitmap
                         order.addLast(key)
                         evictIfNeeded()
-                    } else if (!file.isFile) {
-                        // No bytes and nothing cached: a 404 (no preview
-                        // yet, or not ours to see) or an undecodable body.
-                        // Both are final; a transport failure leaves the
-                        // key retryable through retryToken.
+                    } else if (!file.isFile && !transportFailed) {
+                        // Only a real answer marks a key dead. Marking a
+                        // TRANSPORT failure here is what blanked every
+                        // photo on screen the moment the phone left the
+                        // house: `load` short-circuits on `missing`, so the
+                        // key could never be retried and a @Singleton cache
+                        // meant not even leaving the screen recovered it.
                         missing += key
                     }
                 }
@@ -191,7 +208,21 @@ class AttachmentRepository @Inject constructor(
      *
      * Null when the bytes could not be fetched; the caller says so.
      */
-    suspend fun fileFor(attachment: AttachmentDto): File? = withContext(Dispatchers.IO) {
+    suspend fun fileFor(attachment: AttachmentDto): File? {
+        // One download per attachment however many times it is tapped: a
+        // big PDF takes seconds, tapping again is the natural reaction, and
+        // two writers on the same `.part` file is a corrupted download.
+        val running = guard.withLock {
+            fileFetches.getOrPut(attachment.id) { scope.async { downloadFile(attachment) } }
+        }
+        return try {
+            running.await()
+        } finally {
+            guard.withLock { fileFetches.remove(attachment.id) }
+        }
+    }
+
+    private suspend fun downloadFile(attachment: AttachmentDto): File? = withContext(Dispatchers.IO) {
         // Shadowing `directory` here would read as recursion; the folder
         // is per-attachment so two `Invoice.pdf`s stay apart.
         val folder = File(File(directory, FILES_DIR), attachment.id.toString())

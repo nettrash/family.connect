@@ -58,8 +58,25 @@ pub struct Notification {
 
 /// Compose the notification for a new message. Title rules per protocol.md:
 /// direct chat → the sender's display name; family chat →
-/// `"<Family> — <Sender>"`. Body: the message text, or `"New message"` when
-/// `[push] include_message_body = false`.
+/// `"<Family> — <Sender>"`. Body: the message text; the KIND of attachment
+/// when a message carries one with no caption (which is how photos are
+/// normally sent — an empty body would push a blank line); or
+/// `"New message"` when `[push] include_message_body = false`.
+/// What to say about a message that has no words: a file's name (which is
+/// its whole identity) or what kind of thing arrived.
+fn attachment_summary(message: &Message) -> Option<String> {
+    let attachment = message.attachment.as_ref()?;
+    Some(match attachment.kind.as_str() {
+        "photo" => "Photo".to_string(),
+        "video" => "Video".to_string(),
+        _ => attachment
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "File".to_string()),
+    })
+}
+
 pub fn message_notification(
     include_message_body: bool,
     chat_kind: &str,
@@ -74,7 +91,11 @@ pub fn message_notification(
         sender_name.to_string()
     };
     let body = if include_message_body {
-        message.body.clone()
+        if message.body.is_empty() {
+            attachment_summary(message).unwrap_or_else(|| "New message".to_string())
+        } else {
+            message.body.clone()
+        }
     } else {
         "New message".to_string()
     };
@@ -252,6 +273,78 @@ mod tests {
         let note =
             message_notification(true, "direct", "The Smiths", "Anna", &protocol_message(), 1);
         assert_eq!(note.title, "Anna");
+    }
+
+    /// A photo is normally sent with no caption at all, so this is the
+    /// ordinary case rather than an edge one — and an alert with the
+    /// sender's name and a blank line tells the reader nothing.
+    #[test]
+    fn an_uncaptioned_attachment_says_what_arrived() {
+        fn with_attachment(kind: &str, name: Option<&str>) -> Message {
+            Message {
+                body: String::new(),
+                attachment: Some(crate::models::Attachment {
+                    id: 34,
+                    kind: kind.to_string(),
+                    mime: "image/jpeg".to_string(),
+                    size: 4096,
+                    width: None,
+                    height: None,
+                    duration_ms: None,
+                    has_preview: false,
+                    name: name.map(str::to_string),
+                }),
+                ..protocol_message()
+            }
+        }
+
+        let photo = message_notification(
+            true,
+            "direct",
+            "The Smiths",
+            "Anna",
+            &with_attachment("photo", None),
+            1,
+        );
+        assert_eq!(photo.body, "Photo");
+        let video = message_notification(
+            true,
+            "direct",
+            "The Smiths",
+            "Anna",
+            &with_attachment("video", None),
+            1,
+        );
+        assert_eq!(video.body, "Video");
+        // A file's name IS the thing worth saying.
+        let file = message_notification(
+            true,
+            "family",
+            "The Smiths",
+            "Anna",
+            &with_attachment("file", Some("Rechnung.pdf")),
+            1,
+        );
+        assert_eq!(file.body, "Rechnung.pdf");
+
+        // A caption still wins over the summary.
+        let captioned = Message {
+            body: "at the lake".to_string(),
+            ..with_attachment("photo", None)
+        };
+        let note = message_notification(true, "direct", "S", "Anna", &captioned, 1);
+        assert_eq!(note.body, "at the lake");
+
+        // And the privacy switch still hides everything.
+        let hidden = message_notification(
+            false,
+            "direct",
+            "S",
+            "Anna",
+            &with_attachment("photo", None),
+            1,
+        );
+        assert_eq!(hidden.body, "New message");
     }
 
     #[test]

@@ -1,0 +1,72 @@
+//
+//  PlatformStyle.swift
+//  FamilyConnect
+//
+//  The handful of places where the same intent has two spellings.
+//
+//  Deliberately small. Anything genuinely different between the platforms
+//  — navigation shape, the composer, tap-and-hold menus — belongs in views
+//  written for that platform, not behind a shim. What is here is the
+//  vocabulary a shared screen needs: system colours that exist on both
+//  under different names, and one modifier that means something on iOS and
+//  nothing on the Mac.
+//
+
+import SwiftUI
+
+extension Color {
+    /// The window/page background. `systemBackground` on iOS,
+    /// `windowBackgroundColor` on the Mac — the same role, two names.
+    static var appBackground: Color {
+        #if os(iOS)
+        Color(.systemBackground)
+        #else
+        Color(nsColor: .windowBackgroundColor)
+        #endif
+    }
+
+    /// The recessed fill behind an input field or a chip.
+    static var appSecondaryFill: Color {
+        #if os(iOS)
+        Color(.secondarySystemFill)
+        #else
+        Color(nsColor: .quaternaryLabelColor)
+        #endif
+    }
+
+    /// The grouped-list backdrop a settings screen sits on.
+    static var appGroupedBackground: Color {
+        #if os(iOS)
+        Color(.systemGroupedBackground)
+        #else
+        Color(nsColor: .underPageBackgroundColor)
+        #endif
+    }
+}
+
+extension View {
+    /// Text entry that must not be "helped": usernames, invite codes,
+    /// server addresses. macOS has no autocapitalisation to switch off,
+    /// so there the modifier is just autocorrection.
+    @ViewBuilder
+    func literalTextEntry(uppercased: Bool = false) -> some View {
+        #if os(iOS)
+        self
+            .textInputAutocapitalization(uppercased ? .characters : .never)
+            .autocorrectionDisabled()
+        #else
+        autocorrectionDisabled()
+        #endif
+    }
+
+    /// `navigationBarTitleDisplayMode(.inline)`, which does not exist on
+    /// macOS — a Mac window title has no large/inline distinction.
+    @ViewBuilder
+    func inlineNavigationTitle() -> some View {
+        #if os(iOS)
+        navigationBarTitleDisplayMode(.inline)
+        #else
+        self
+        #endif
+    }
+}

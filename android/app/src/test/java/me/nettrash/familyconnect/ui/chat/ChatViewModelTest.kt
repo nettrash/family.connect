@@ -167,6 +167,9 @@ class ChatViewModelTest {
             ),
             attachmentApi = attachmentApi,
             gallerySaver = GallerySaver(),
+            // The repo scope stands in for the app scope: a media send
+            // must outlive the ViewModel, which is the whole point of it.
+            appScope = repoScope,
             attachments = AttachmentRepository(
                 context = RuntimeEnvironment.getApplication(),
                 attachmentApi = attachmentApi,

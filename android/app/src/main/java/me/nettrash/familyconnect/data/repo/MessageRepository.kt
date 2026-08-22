@@ -37,6 +37,7 @@ import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.ChatApi
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
@@ -178,7 +179,10 @@ class MessageRepository @Inject constructor(
                     attachmentName = attachment.name,
                 ),
             )
-            chatDao.updateLastMessage(chatId, body, now, me)
+            // What arrived, not an empty string: a caption-less photo left
+            // the chat-list row blank because "" is not null and the
+            // fallback never fired.
+            chatDao.updateLastMessage(chatId, previewText(body, attachment), now, me)
             dispatch(clientMsgId, chatId, body, null, attachment.id)
             return true
         } finally {
@@ -186,6 +190,16 @@ class MessageRepository @Inject constructor(
             prepared.file.delete()
         }
     }
+
+    /**
+     * What the chat list shows on its second line.
+     *
+     * A photo is normally sent with no caption, and an empty string is not
+     * null — so the row rendered blank rather than falling back. Mirrors
+     * iOS's ChatSyncCoordinator.preview.
+     */
+    fun previewText(body: String, attachment: AttachmentDto?): String =
+        Companion.previewText(body, attachment)
 
     /** Re-enter the pipeline with the SAME UUID — the server dedups. */
     suspend fun retry(clientMsgId: String) {
@@ -289,7 +303,12 @@ class MessageRepository @Inject constructor(
             message.attachment?.hasPreview ?: false,
             message.attachment?.name,
         )
-        chatDao.updateLastMessage(message.chatId, message.body, createdAt, message.senderId)
+        chatDao.updateLastMessage(
+            message.chatId,
+            previewText(message.body, message.attachment),
+            createdAt,
+            message.senderId,
+        )
     }
 
     /**
@@ -364,7 +383,12 @@ class MessageRepository @Inject constructor(
                 ),
             ),
         )
-        chatDao.updateLastMessage(message.chatId, message.body, createdAt, message.senderId)
+        chatDao.updateLastMessage(
+            message.chatId,
+            previewText(message.body, message.attachment),
+            createdAt,
+            message.senderId,
+        )
         if (live) {
             val me = settings.state.first().myUserId
             val openChat = chatRepository.openChatId.value
@@ -555,10 +579,27 @@ class MessageRepository @Inject constructor(
         return page.size < HISTORY_PAGE
     }
 
-    private companion object {
-        const val ACK_TIMEOUT_MS = 15_000L
-        const val HISTORY_PAGE = 50
-        const val EDIT_PAGE = 200
-        const val REACTION_PAGE = 200
+    companion object {
+        /**
+         * What the chat list shows on its second line.
+         *
+         * A photo is normally sent with no caption, and an empty string is
+         * not null — so the row rendered blank rather than falling back.
+         * Mirrors iOS's ChatSyncCoordinator.preview.
+         */
+        fun previewText(body: String, attachment: AttachmentDto?): String {
+            if (body.isNotEmpty()) return body
+            if (attachment == null) return body
+            return when {
+                attachment.isVideo -> "Video"
+                attachment.isFile -> attachment.name?.takeIf { it.isNotEmpty() } ?: "File"
+                else -> "Photo"
+            }
+        }
+
+        private const val ACK_TIMEOUT_MS = 15_000L
+        private const val HISTORY_PAGE = 50
+        private const val EDIT_PAGE = 200
+        private const val REACTION_PAGE = 200
     }
 }

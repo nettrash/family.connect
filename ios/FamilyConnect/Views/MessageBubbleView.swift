@@ -40,6 +40,9 @@
 //  the capsule.
 //
 
+// iOS only — the Mac has its own views (MacViews/).
+#if os(iOS)
+
 import SwiftUI
 
 struct MessageBubbleView: View {
@@ -116,6 +119,13 @@ struct MessageBubbleView: View {
         guard hasBeenVisible, let url = previewableLink,
               case .loaded(let preview) = previewLoader.state(for: url) else { return nil }
         return preview
+    }
+
+    /// True when some other block in the balloon — a link card, a photo —
+    /// has already set how wide it is, and the text should wrap against
+    /// that width rather than its own.
+    private var fillsBalloonWidth: Bool {
+        linkPreview != nil || message.attachment != nil
     }
 
     var body: some View {
@@ -397,7 +407,11 @@ struct MessageBubbleView: View {
                 quoteBlock(quote)
             }
             if let attachment = message.attachment {
-                AttachmentView(attachment: attachment, onOpen: { onOpenAttachment(attachment) })
+                AttachmentView(
+                    attachment: attachment,
+                    onOpen: { onOpenAttachment(attachment) },
+                    onLongPress: { onLongPress() },
+                    onDoubleTap: { toggleQuickHeart() })
                     .padding(.bottom, message.body.isEmpty ? 0 : 4)
             }
             // A photo needs no caption, and an empty Text would still take
@@ -409,6 +423,19 @@ struct MessageBubbleView: View {
                         : MessageLinks.attributedBody(message.body, isMine: isMine))
                     .font(bubbleFont)
                     .foregroundStyle(bubbleContentColor)
+                    // A sibling block — a link card or a photo — has already
+                    // decided how wide this balloon is. Text left to itself
+                    // reports the width it WANTS (SwiftUI balances the lines,
+                    // so two lines each come out around half width), and the
+                    // result is a narrow paragraph floating over a wide card.
+                    // Filling the width makes it wrap against the same edge.
+                    //
+                    // Gated on there BEING such a block: unconditionally,
+                    // this is the change that made every balloon full width
+                    // when the reply quote did it.
+                    .frame(
+                        maxWidth: fillsBalloonWidth ? .infinity : nil,
+                        alignment: .leading)
             }
 
             if let preview = linkPreview {
@@ -575,3 +602,5 @@ private struct DoubleCheckmark: View {
         .padding(.trailing, 4)
     }
 }
+
+#endif

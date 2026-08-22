@@ -22,7 +22,6 @@
 import AVFoundation
 import CoreTransferable
 import ImageIO
-import UIKit
 import UniformTypeIdentifiers
 
 nonisolated enum MediaPrep {
@@ -90,12 +89,16 @@ nonisolated enum MediaPrep {
 
     // MARK: - Photos
 
-    static func preparePhoto(from data: Data, limit: Int) throws -> Prepared {
+    /// `async` so it leaves the main actor. MediaPrep is nonisolated, so
+    /// an async call from the UI hops to the cooperative pool — where
+    /// decoding and re-encoding a 12-megapixel photo belongs. Called
+    /// synchronously it ran ON the main actor and froze the thread.
+    static func preparePhoto(from data: Data, limit: Int) async throws -> Prepared {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             throw PrepError.unreadable
         }
         guard let full = downsample(source: source, maxPixels: photoEdge),
-              let jpeg = opaqueJPEG(full, quality: photoQuality)
+              let jpeg = PlatformImage.jpegData(from: full, quality: photoQuality)
         else {
             throw PrepError.unreadable
         }
@@ -110,7 +113,7 @@ nonisolated enum MediaPrep {
         try jpeg.write(to: url, options: .atomic)
 
         let preview = downsample(source: source, maxPixels: previewEdge)
-            .flatMap { opaqueJPEG($0, quality: previewQuality) }
+            .flatMap { PlatformImage.jpegData(from: $0, quality: previewQuality) }
 
         return Prepared(
             fileURL: url,
@@ -120,32 +123,6 @@ nonisolated enum MediaPrep {
             height: full.height,
             durationMS: nil,
             previewJPEG: preview)
-    }
-
-    /// JPEG the image through an OPAQUE context.
-    ///
-    /// ImageIO's thumbnails come back 32-bit with an alpha channel even for
-    /// a photograph that has none, and encoding one of those to JPEG makes
-    /// ImageIO complain — rightly: JPEG cannot store alpha, so the channel
-    /// is dead weight that doubles the bitmap while it is being encoded.
-    /// On a phone re-encoding a 12-megapixel photo that is real memory.
-    ///
-    /// White, not black, behind anything actually transparent: a PNG with
-    /// a cut-out reads as a picture on paper rather than a hole. Same
-    /// choice AvatarImage makes on both platforms.
-    private static func opaqueJPEG(_ image: CGImage, quality: CGFloat) -> Data? {
-        let size = CGSize(width: image.width, height: image.height)
-        let format = UIGraphicsImageRendererFormat.preferred()
-        format.opaque = true
-        // Pixels, not points: the CGImage is already at its final size and
-        // the device scale would multiply it again.
-        format.scale = 1
-        let renderer = UIGraphicsImageRenderer(size: size, format: format)
-        return renderer.jpegData(withCompressionQuality: quality) { context in
-            UIColor.white.setFill()
-            context.fill(CGRect(origin: .zero, size: size))
-            UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: size))
-        }
     }
 
     /// Decode no larger than `maxPixels` on the longest edge, honouring
@@ -226,7 +203,7 @@ nonisolated enum MediaPrep {
         let times = [0.5, 0.0, 2.0].map { CMTime(seconds: $0, preferredTimescale: 600) }
         for time in times {
             if let image = try? await generator.image(at: time).image {
-                return UIImage(cgImage: image).jpegData(compressionQuality: previewQuality)
+                return PlatformImage.jpegData(from: image, quality: previewQuality)
             }
         }
         return nil
@@ -242,7 +219,10 @@ nonisolated enum MediaPrep {
     /// work in the simulator and fail on a device, or on iCloud Drive.
     /// Nothing is re-encoded and nothing is inspected; a file is whatever
     /// the sender picked (docs/protocol.md, "Files").
-    static func prepareFile(from sourceURL: URL, limit: Int) throws -> Prepared {
+    /// `async` for the same reason as `preparePhoto`: copying a file the
+    /// picker handed over can block for seconds when it is an iCloud Drive
+    /// item that has to be downloaded first.
+    static func prepareFile(from sourceURL: URL, limit: Int) async throws -> Prepared {
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
 
@@ -274,6 +254,29 @@ nonisolated enum MediaPrep {
     static func mimeType(for url: URL) -> String {
         UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
             ?? "application/octet-stream"
+    }
+
+    // MARK: - Anything at all
+
+    /// Prepare whatever is at `url`, deciding the kind from the file.
+    ///
+    /// The Mac has one picker rather than the phone's two, so the KIND is
+    /// read from the file's type rather than from which button was
+    /// pressed: an image goes through the photo path (downscaled, with a
+    /// preview), a movie through the video path (re-encoded only if it has
+    /// to be), and everything else is a file, sent as it is.
+    static func prepare(fileAt url: URL, limit: Int) async throws -> Prepared {
+        let type = UTType(filenameExtension: url.pathExtension)
+        if type?.conforms(to: .image) == true {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url) else { throw PrepError.unreadable }
+            return try await preparePhoto(from: data, limit: limit)
+        }
+        if type?.conforms(to: .movie) == true {
+            return try await prepareVideo(from: url, limit: limit)
+        }
+        return try await prepareFile(from: url, limit: limit)
     }
 
     // MARK: - Shared

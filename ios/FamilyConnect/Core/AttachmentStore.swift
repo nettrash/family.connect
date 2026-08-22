@@ -40,6 +40,11 @@ final class AttachmentStore {
 
     private static let hotLimit = 40
 
+    /// Longest edge kept decoded. A bubble draws 240pt and the viewer a
+    /// screen width, so the uploaded 2048 would be several times the
+    /// pixels anyone sees. Matches Android's DISPLAY_PIXELS.
+    static let displayPixels = 1440
+
     init(api: APIClient) {
         self.api = api
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -64,11 +69,13 @@ final class AttachmentStore {
 
         let url = fileURL(key)
         if FileManager.default.fileExists(atPath: url.path) {
-            guard let data = try? Data(contentsOf: url), let ui = UIImage(data: data) else {
+            guard let data = try? Data(contentsOf: url),
+                  let decoded = PlatformImage.decode(data, maxPixels: Self.displayPixels)
+            else {
                 try? FileManager.default.removeItem(at: url)
                 return nil
             }
-            remember(key, Image(uiImage: ui))
+            remember(key, PlatformImage.view(decoded))
             return hot[key]
         }
         guard !inFlight.contains(key) else { return nil }
@@ -82,7 +89,9 @@ final class AttachmentStore {
             guard let self else { return }
             let data = try? await api.attachmentData(id: id, preview: preview)
             inFlight.remove(key)
-            guard let data, let ui = UIImage(data: data) else {
+            guard let data,
+                  let decoded = PlatformImage.decode(data, maxPixels: Self.displayPixels)
+            else {
                 // A 404 is final (no preview, or not ours to see); a
                 // transport failure is not, but distinguishing them here
                 // would need the error, and a scroll away and back retries
@@ -91,7 +100,7 @@ final class AttachmentStore {
                 return
             }
             try? data.write(to: fileURL(key), options: .atomic)
-            remember(key, Image(uiImage: ui))
+            remember(key, PlatformImage.view(decoded))
             generation &+= 1
         }
     }
@@ -104,10 +113,12 @@ final class AttachmentStore {
     /// at a spinner while everyone else saw the picture.
     func seed(_ data: Data, id: Int64, preview: Bool) {
         let key = key(id, preview: preview)
-        guard let ui = UIImage(data: data) else { return }
+        guard let decoded = PlatformImage.decode(data, maxPixels: Self.displayPixels) else {
+            return
+        }
         try? data.write(to: fileURL(key), options: .atomic)
         missing.remove(key)
-        remember(key, Image(uiImage: ui))
+        remember(key, PlatformImage.view(decoded))
         generation &+= 1
     }
 

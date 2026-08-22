@@ -14,6 +14,9 @@
 //  error code.
 //
 
+// iOS only — the Mac has its own views (MacViews/).
+#if os(iOS)
+
 import Observation
 import OSLog
 import PhotosUI
@@ -52,6 +55,7 @@ struct SettingsView: View {
     @State private var linkPreviewsEnabled = AppSettings.linkPreviewsEnabled
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var uploadingAvatar = false
+    @State private var changingPassword = false
     @State private var avatarError: String?
 
     var body: some View {
@@ -69,6 +73,9 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .sheet(isPresented: $changingPassword) {
+                ChangePasswordView()
             }
             .task {
                 await model.load(api: coordinator.api)
@@ -102,6 +109,10 @@ struct SettingsView: View {
     }
 
     // MARK: - Sections
+
+    /// Presented as a sheet rather than pushed: it is a short, modal
+    /// errand with its own Cancel, and it must not be left half-done
+    /// behind a back swipe while a save is in flight.
 
     private var profileSection: some View {
         Section("Profile") {
@@ -139,6 +150,11 @@ struct SettingsView: View {
                     Label(avatarError, systemImage: "exclamationmark.circle")
                         .font(.caption)
                         .foregroundStyle(.red)
+                }
+                Button {
+                    changingPassword = true
+                } label: {
+                    Label("Change Password", systemImage: "key")
                 }
             }
         }
@@ -305,3 +321,5 @@ struct SettingsView: View {
         }
     }
 }
+
+#endif

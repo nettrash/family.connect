@@ -35,7 +35,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -95,16 +96,39 @@ fun rememberAttachmentImage(attachment: AttachmentDto, preview: Boolean): ImageB
  * be. Without that, every photo that finished loading would resize its
  * bubble and shove the whole thread.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AttachmentBlock(
     attachment: AttachmentDto,
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * The bubble's own gestures, forwarded.
+     *
+     * A caption-less photo IS the balloon, and a child `clickable`
+     * consumes the press — so long-pressing to react or double-tapping to
+     * heart only worked on the few dp of padding at the edge. Same trap as
+     * the link spans (see MessageLinks): on Compose the child wins.
+     */
+    onLongPress: () -> Unit = {},
+    onDoubleTap: () -> Unit = {},
 ) {
     if (attachment.isFile) {
-        FileRow(attachment = attachment, onOpen = onOpen, modifier = modifier)
+        FileRow(
+            attachment = attachment,
+            onOpen = onOpen,
+            onLongPress = onLongPress,
+            onDoubleTap = onDoubleTap,
+            modifier = modifier,
+        )
     } else {
-        MediaThumbnail(attachment = attachment, onOpen = onOpen, modifier = modifier)
+        MediaThumbnail(
+            attachment = attachment,
+            onOpen = onOpen,
+            onLongPress = onLongPress,
+            onDoubleTap = onDoubleTap,
+            modifier = modifier,
+        )
     }
 }
 
@@ -114,10 +138,13 @@ fun AttachmentBlock(
  * conversation, and a 240dp square of grey would be a lie about how much
  * there is to look at.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileRow(
     attachment: AttachmentDto,
     onOpen: () -> Unit,
+    onLongPress: () -> Unit,
+    onDoubleTap: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -126,7 +153,11 @@ private fun FileRow(
             .widthIn(max = MAX_WIDTH.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(Color.Black.copy(alpha = 0.06f))
-            .clickable(onClick = onOpen)
+            .combinedClickable(
+                onClick = onOpen,
+                onLongClick = onLongPress,
+                onDoubleClick = onDoubleTap,
+            )
             .padding(horizontal = 8.dp, vertical = 6.dp)
             .semantics {
                 contentDescription =
@@ -182,10 +213,13 @@ private val ARCHIVE_TYPES = setOf(
 fun formatSize(context: Context, bytes: Long): String =
     Formatter.formatShortFileSize(context, bytes)
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MediaThumbnail(
     attachment: AttachmentDto,
     onOpen: () -> Unit,
+    onLongPress: () -> Unit,
+    onDoubleTap: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val image = rememberAttachmentImage(attachment, preview = true)
@@ -197,7 +231,11 @@ private fun MediaThumbnail(
             .aspectRatio(attachment.aspectRatio.coerceIn(MIN_RATIO, MAX_RATIO))
             .clip(RoundedCornerShape(10.dp))
             .background(Color.Black.copy(alpha = 0.08f))
-            .clickable(onClick = onOpen)
+            .combinedClickable(
+                onClick = onOpen,
+                onLongClick = onLongPress,
+                onDoubleClick = onDoubleTap,
+            )
             .semantics {
                 contentDescription = if (attachment.isVideo) "Video" else "Photo"
             },

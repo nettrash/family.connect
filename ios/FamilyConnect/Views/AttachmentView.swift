@@ -13,11 +13,22 @@
 //  Android counterpart: the attachment block in ui/chat/ChatScreen.kt
 //
 
+// iOS only — the Mac has its own views (MacViews/).
+#if os(iOS)
+
 import SwiftUI
 
 struct AttachmentView: View {
     let attachment: AttachmentDTO
     let onOpen: () -> Void
+    /// The bubble's own gestures, forwarded.
+    ///
+    /// A caption-less photo IS the balloon — its own tap handler used to
+    /// consume the press, so long-pressing to react or double-tapping to
+    /// heart worked only on the few points of padding around the edge.
+    /// Same defect the reply quote had, and the same fix.
+    var onLongPress: () -> Void = {}
+    var onDoubleTap: () -> Void = {}
 
     @Environment(AttachmentStore.self) private var store
 
@@ -56,6 +67,14 @@ struct AttachmentView: View {
         return attachment.isVideo ? nil : store.image(id: attachment.id, preview: false)
     }
 
+    /// True while bytes we expect are still on their way. A video with no
+    /// preview is NOT waiting for anything — nobody uploaded a poster and
+    /// nobody will — so a spinner there promises an arrival that never
+    /// comes. It gets the play badge over a plain placeholder instead.
+    private var isAwaitingBytes: Bool {
+        image == nil && (attachment.hasPreview || !attachment.isVideo)
+    }
+
     var body: some View {
         if attachment.isFile {
             fileRow
@@ -92,6 +111,8 @@ struct AttachmentView: View {
         .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
         .contentShape(Rectangle())
         .onTapGesture { onOpen() }
+        .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap() })
+        .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(attachment.displayName), \(attachment.displaySize)")
         .accessibilityAddTraits(.isButton)
@@ -123,7 +144,7 @@ struct AttachmentView: View {
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-            } else {
+            } else if isAwaitingBytes {
                 ProgressView()
             }
             if attachment.isVideo {
@@ -134,6 +155,8 @@ struct AttachmentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .contentShape(Rectangle())
         .onTapGesture { onOpen() }
+        .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap() })
+        .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
         .accessibilityElement(children: .combine)
         .accessibilityLabel(attachment.isVideo ? "Video" : "Photo")
         .accessibilityAddTraits(.isButton)
@@ -172,3 +195,5 @@ struct AttachmentView: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
+
+#endif

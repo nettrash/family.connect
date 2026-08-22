@@ -18,7 +18,8 @@
 //
 
 import ImageIO
-import UIKit
+import CoreGraphics
+import Foundation
 
 nonisolated enum AvatarImage {
 
@@ -49,71 +50,27 @@ nonisolated enum AvatarImage {
     /// Square JPEG for upload, or nil when the data is not a decodable
     /// image.
     static func squareJPEG(from data: Data, edge: Int = AvatarImage.edge) -> Data? {
-        guard let downsampled = downsample(data, maxPixels: edge * 2) else { return nil }
-        let squared = centreCropSquare(downsampled)
-        let resized = resize(squared, edge: CGFloat(edge))
+        // Decode at ~2x the target so the downscale still has detail to
+        // work with, then crop, then resize.
+        guard let decoded = PlatformImage.decode(data, maxPixels: edge * 2),
+              let squared = PlatformImage.centreCroppedSquare(decoded),
+              let resized = PlatformImage.scaled(squared, maxEdge: edge)
+        else { return nil }
         return encode(resized)
     }
 
     /// First quality whose output fits the budget; the last attempt when
     /// none do (better a large upload the server may still accept than
     /// refusing to set a picture at all).
-    private static func encode(_ image: UIImage) -> Data? {
+    private static func encode(_ image: CGImage) -> Data? {
         var smallest: Data?
         for quality in qualitySteps {
-            guard let data = image.jpegData(compressionQuality: quality) else { continue }
+            guard let data = PlatformImage.jpegData(from: image, quality: quality) else {
+                continue
+            }
             if data.count <= maxBytes { return data }
             smallest = data
         }
         return smallest
-    }
-
-    /// Decode no larger than `maxPixels` on the longest edge.
-    private static func downsample(_ data: Data, maxPixels: Int) -> UIImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, [
-            kCGImageSourceShouldCache: false,
-        ] as CFDictionary) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            // Honours EXIF orientation, so a portrait photo does not
-            // arrive on its side.
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixels,
-        ]
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
-        }
-        return UIImage(cgImage: cgImage)
-    }
-
-    /// The largest centred square of an image — what a circular avatar
-    /// shows anyway, so cropping here means the bytes are not spent on
-    /// pixels nobody will see.
-    private static func centreCropSquare(_ image: UIImage) -> UIImage {
-        guard let cgImage = image.cgImage else { return image }
-        let width = CGFloat(cgImage.width)
-        let height = CGFloat(cgImage.height)
-        let side = min(width, height)
-        guard width != height else { return image }
-        let rect = CGRect(
-            x: ((width - side) / 2).rounded(.down),
-            y: ((height - side) / 2).rounded(.down),
-            width: side,
-            height: side)
-        guard let cropped = cgImage.cropping(to: rect) else { return image }
-        return UIImage(cgImage: cropped)
-    }
-
-    private static func resize(_ image: UIImage, edge: CGFloat) -> UIImage {
-        let size = CGSize(width: edge, height: edge)
-        guard image.size.width > edge || image.size.height > edge else { return image }
-        let format = UIGraphicsImageRendererFormat.default()
-        // Points, not screen pixels: the destination is a byte payload,
-        // not a view, so a 3x renderer would silently triple the upload.
-        format.scale = 1
-        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
-            image.draw(in: CGRect(origin: .zero, size: size))
-        }
     }
 }

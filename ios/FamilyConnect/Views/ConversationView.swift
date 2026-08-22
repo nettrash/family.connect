@@ -44,6 +44,9 @@
 //  while it is up — the ack landing, say — shows current truth.
 //
 
+// iOS only — the Mac has its own views (MacViews/).
+#if os(iOS)
+
 import PhotosUI
 import QuickLook
 import SwiftData
@@ -524,7 +527,12 @@ struct ConversationView: View {
                         .font(.system(size: 24))
                         .foregroundStyle(.tint)
                 }
-                .disabled(mediaState != .idle)
+                // Editing borrows the composer to rewrite an existing
+                // message, which has no second attachment to add — and
+                // attaching would have posted the edit as a new message
+                // while leaving the banner armed. Android already gated
+                // this; iOS did not.
+                .disabled(mediaState != .idle || editTarget != nil)
                 .accessibilityLabel("Attach a photo, video or file")
                 .photosPicker(
                     isPresented: $showPhotoPicker,
@@ -794,30 +802,60 @@ struct ConversationView: View {
         }
     }
 
+    /// What the composer was holding when a media send started.
+    ///
+    /// Read and CLEARED up front, exactly as a text send does. Reading the
+    /// draft after the upload instead meant anything typed while it ran was
+    /// wiped when the photo posted, and a primed reply was dropped on the
+    /// floor with its banner left armed — so the next ordinary message
+    /// silently became the reply.
+    private struct ComposerHandoff {
+        let caption: String
+        let replyTo: ReplyToDTO?
+    }
+
+    private func takeComposer() -> ComposerHandoff {
+        let handoff = ComposerHandoff(caption: model.draft, replyTo: replyDraft)
+        model.draft = ""
+        replyDraft = nil
+        replyStartedFromHistory = false
+        return handoff
+    }
+
+    /// Put it back when the send never happened, so nothing is lost.
+    private func restore(_ handoff: ComposerHandoff) {
+        if model.draft.isEmpty { model.draft = handoff.caption }
+        if replyDraft == nil { replyDraft = handoff.replyTo }
+    }
+
     /// Send a picked document. Nothing is re-encoded — a file goes as it is.
     private func sendPickedFile(_ url: URL) {
         mediaState = .preparing
+        let handoff = takeComposer()
         Task {
             let prepared: MediaPrep.Prepared
             do {
-                prepared = try MediaPrep.prepareFile(from: url, limit: MediaPrep.sizeLimit)
+                prepared = try await MediaPrep.prepareFile(from: url, limit: MediaPrep.sizeLimit)
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
                 // A document cannot be compressed the way a video can, so
                 // the advice is different: there is nothing to try.
                 mediaState = .failed("That file is over the 100 MB limit.")
+                restore(handoff)
                 return
             } catch {
                 mediaState = .failed("Couldn't read that file.")
+                restore(handoff)
                 return
             }
 
             mediaState = .uploading
-            let caption = model.draft
-            if await coordinator.sendMedia(prepared, caption: caption, in: chatID) {
-                model.draft = ""
+            if await coordinator.sendMedia(
+                prepared, caption: handoff.caption, replyTo: handoff.replyTo, in: chatID)
+            {
                 mediaState = .idle
             } else {
                 mediaState = .failed("Couldn't send that — try again.")
+                restore(handoff)
             }
         }
     }
@@ -840,6 +878,7 @@ struct ConversationView: View {
     /// seconds of work, and the thread has to keep scrolling while it runs.
     private func sendPickedMedia(_ item: PhotosPickerItem) {
         mediaState = .preparing
+        let handoff = takeComposer()
         Task {
             defer { pickedMedia = nil }
             let limit = MediaPrep.sizeLimit
@@ -854,6 +893,7 @@ struct ConversationView: View {
                 if isVideo {
                     guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
                         mediaState = .failed("Couldn't read that video.")
+                        restore(handoff)
                         return
                     }
                     prepared = try await MediaPrep.prepareVideo(from: movie.url, limit: limit)
@@ -863,29 +903,32 @@ struct ConversationView: View {
                         try? FileManager.default.removeItem(at: movie.url)
                     }
                 } else if let data = try await item.loadTransferable(type: Data.self) {
-                    prepared = try MediaPrep.preparePhoto(from: data, limit: limit)
+                    prepared = try await MediaPrep.preparePhoto(from: data, limit: limit)
                 } else {
                     mediaState = .failed("Couldn't read that item.")
+                    restore(handoff)
                     return
                 }
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
                 // The one case the user has to act on: compression was not
                 // enough, so say what would help rather than just refusing.
                 mediaState = .failed("Still too large after compressing — try a shorter clip.")
+                restore(handoff)
                 return
             } catch {
                 mediaState = .failed("Couldn't prepare that item.")
+                restore(handoff)
                 return
             }
 
             mediaState = .uploading
-            let caption = model.draft
-            let sent = await coordinator.sendMedia(prepared, caption: caption, in: chatID)
+            let sent = await coordinator.sendMedia(
+                prepared, caption: handoff.caption, replyTo: handoff.replyTo, in: chatID)
             if sent {
-                model.draft = ""
                 mediaState = .idle
             } else {
                 mediaState = .failed("Couldn't send that — try again.")
+                restore(handoff)
             }
         }
     }
@@ -1289,3 +1332,5 @@ private struct AttachmentSurfaces: ViewModifier {
             }
     }
 }
+
+#endif

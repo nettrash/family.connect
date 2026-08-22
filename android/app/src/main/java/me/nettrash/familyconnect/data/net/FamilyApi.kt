@@ -10,6 +10,7 @@
 
 package me.nettrash.familyconnect.data.net
 
+import me.nettrash.familyconnect.data.net.dto.ResetPasswordRequest
 import me.nettrash.familyconnect.data.net.dto.ApproveResponse
 import me.nettrash.familyconnect.data.net.dto.CreateFamilyRequest
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
@@ -33,6 +34,13 @@ interface FamilyApi {
     suspend fun reject(requestId: Long): ApiResult<Unit>
     suspend fun leave(): ApiResult<Unit>
     suspend fun removeMember(userId: Long): ApiResult<Unit>
+
+    /**
+     * Owner-only: set a member's password without knowing their old one.
+     * Every session that member has is revoked, so their devices return to
+     * login — which is what makes this a recovery rather than a courtesy.
+     */
+    suspend fun resetMemberPassword(userId: Long, newPassword: String): ApiResult<Unit>
 }
 
 @Singleton
@@ -69,4 +77,10 @@ class DefaultFamilyApi @Inject constructor(
 
     override suspend fun removeMember(userId: Long): ApiResult<Unit> =
         client.delete("/families/members/$userId")
+
+    override suspend fun resetMemberPassword(
+        userId: Long,
+        newPassword: String,
+    ): ApiResult<Unit> =
+        client.post("/families/members/$userId/password", ResetPasswordRequest(newPassword))
 }

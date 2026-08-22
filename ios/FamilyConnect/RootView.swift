@@ -35,7 +35,13 @@ struct RootView: View {
             case .pendingApproval:
                 PendingApprovalView()
             case .active:
+                // The one case that differs: iOS pushes a list, the Mac
+                // shows a sidebar and a thread side by side.
+                #if os(iOS)
                 ChatListView()
+                #else
+                MacChatView()
+                #endif
             }
         }
         .task {
@@ -97,7 +103,7 @@ private struct BootingView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
+        .background(Color.appBackground)
     }
 }
 

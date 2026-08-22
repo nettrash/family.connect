@@ -32,6 +32,30 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResetPasswordRequest {
+    pub new_password: String,
+}
+
+/// The one place the rule lives, so register, change and reset cannot
+/// drift apart on what counts as a password.
+pub fn validate_password(password: &str) -> Result<(), ApiError> {
+    if password.chars().count() < MIN_PASSWORD_CHARS {
+        return Err(ApiError::validation(format!(
+            "password must be at least {MIN_PASSWORD_CHARS} characters"
+        )));
+    }
+    Ok(())
+}
+
+pub const MIN_PASSWORD_CHARS: usize = 8;
+
 /// `POST /auth/register`
 pub async fn register(
     State(state): State<AppState>,
@@ -39,11 +63,7 @@ pub async fn register(
 ) -> Result<Response, ApiError> {
     validate_username(&req.username)?;
     let display_name = validate_display_name(&req.display_name)?;
-    if req.password.chars().count() < 8 {
-        return Err(ApiError::validation(
-            "password must be at least 8 characters",
-        ));
-    }
+    validate_password(&req.password)?;
 
     let password_hash = auth::hash_password(req.password).await?;
 
@@ -104,6 +124,54 @@ pub async fn login(
     let user = User::from_row(&row);
     let token = auth::create_session(&state.pool, &state.cfg, user.id).await?;
     Ok((StatusCode::OK, Json(json!({"token": token, "user": user}))).into_response())
+}
+
+/// `POST /me/password` — change your own password.
+///
+/// The current password is required even though the caller is holding a
+/// live session, and that is the point: the case this protects against is
+/// an unattended unlocked phone, where a session is exactly what the
+/// attacker already has.
+pub async fn change_password(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    AppJson(req): AppJson<ChangePasswordRequest>,
+) -> Result<Response, ApiError> {
+    validate_password(&req.new_password)?;
+
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+            .bind(auth.user_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    if !auth::verify_login_password(stored, req.current_password).await? {
+        return Err(ApiError::invalid_credentials());
+    }
+
+    let password_hash = auth::hash_password(req.new_password).await?;
+    // The new hash and the revocation go together: a change that stored the
+    // password but left the old sessions alive would look done and protect
+    // nothing.
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
+        .bind(auth.user_id)
+        .bind(&password_hash)
+        .execute(&mut *tx)
+        .await?;
+    let revoked: Vec<i64> =
+        sqlx::query_scalar("DELETE FROM sessions WHERE user_id = $1 AND id <> $2 RETURNING id")
+            .bind(auth.user_id)
+            .bind(auth.session_id)
+            .fetch_all(&mut *tx)
+            .await?;
+    tx.commit().await?;
+
+    // Sockets close only after the rows are gone, so a racing reconnect
+    // cannot re-authenticate on a session that is about to be deleted.
+    for session_id in revoked {
+        state.registry.close_session(session_id).await;
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// `POST /auth/logout` — revokes the calling session and closes its sockets.

@@ -13,6 +13,9 @@
 //  reflected immediately when the user swipes back.
 //
 
+// iOS only — the Mac has its own views (MacViews/).
+#if os(iOS)
+
 import Observation
 import SwiftUI
 
@@ -33,6 +36,8 @@ struct FamilyManageView: View {
     @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @State private var model = FamilyManageModel()
+    /// The member whose password the owner is resetting; nil while closed.
+    @State private var resettingPassword: MemberDTO?
 
     var body: some View {
         List {
@@ -47,6 +52,9 @@ struct FamilyManageView: View {
             membersSection
         }
         .navigationTitle(session.isOwner ? "Manage Family" : "Family Members")
+        .sheet(item: $resettingPassword) { member in
+            ResetPasswordView(member: member)
+        }
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await reload()
@@ -184,14 +192,21 @@ struct FamilyManageView: View {
                     }
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    // Removing is an owner action, and the owner row is
-                    // protected: no remove offered.
+                    // Both are owner actions, and the owner row is
+                    // protected from both: an owner changes their own
+                    // password from Settings, with the current one.
                     if session.isOwner, member.role != "owner" {
                         Button(role: .destructive) {
                             remove(member)
                         } label: {
                             Label("Remove", systemImage: "person.badge.minus")
                         }
+                        Button {
+                            resettingPassword = member
+                        } label: {
+                            Label("Password", systemImage: "key")
+                        }
+                        .tint(.orange)
                     }
                 }
             }
@@ -288,3 +303,5 @@ struct FamilyManageView: View {
         }
     }
 }
+
+#endif

@@ -29,7 +29,9 @@ struct CreateFamilyView: View {
         Form {
             Section {
                 TextField("The Smiths", text: Bindable(model).name)
+                    #if os(iOS)
                     .textInputAutocapitalization(.words)
+                    #endif
             } header: {
                 Text("Family name")
             } footer: {

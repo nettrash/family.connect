@@ -34,6 +34,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -66,6 +67,7 @@ import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.di.AppScope
 import me.nettrash.familyconnect.util.Clock
 import java.io.File
 import javax.inject.Inject
@@ -84,6 +86,7 @@ class ChatViewModel @Inject constructor(
     private val attachmentApi: AttachmentApi,
     private val attachments: AttachmentRepository,
     private val gallerySaver: GallerySaver,
+    @param:AppScope private val appScope: CoroutineScope,
     memberDao: MemberDao,
     connectivity: ConnectivityObserver,
 ) : ViewModel() {
@@ -332,7 +335,12 @@ class ChatViewModel @Inject constructor(
     fun sendMedia(uri: Uri, isVideo: Boolean) {
         if (_mediaState.value != MediaSendState.Idle) return
         _mediaState.value = MediaSendState.Preparing
-        viewModelScope.launch {
+        // APP scope, not viewModelScope: pressing Back or opening another
+        // chat clears the ViewModel, and with it went a 90 MB upload —
+        // no bubble, no FAILED row to retry, no error. A text message sent
+        // at the same moment survives the same navigation, and so must
+        // this. The state writes below are harmless once nobody is reading.
+        appScope.launch {
             val prepared = try {
                 if (isVideo) mediaPrep.prepareVideo(uri) else mediaPrep.preparePhoto(uri)
             } catch (_: MediaPrep.TooLargeAfterCompression) {
@@ -374,7 +382,8 @@ class ChatViewModel @Inject constructor(
     fun sendFile(uri: Uri) {
         if (_mediaState.value != MediaSendState.Idle) return
         _mediaState.value = MediaSendState.Preparing
-        viewModelScope.launch {
+        // App scope for the same reason as sendMedia.
+        appScope.launch {
             val prepared = try {
                 mediaPrep.prepareFile(uri)
             } catch (_: MediaPrep.TooLargeAfterCompression) {

@@ -458,6 +458,102 @@ struct AttachmentTests {
         #expect(gets.isEmpty)
     }
 
+    // MARK: - The composer's other state
+
+    /// Attaching while a reply was primed used to post the photo with no
+    /// quote AND leave the banner armed, so the NEXT ordinary message
+    /// silently became the reply.
+    @Test("A photo sent while replying carries the quote")
+    func mediaSendCarriesTheReply() async throws {
+        let host = "attach-reply.test"
+        let harness = try makeHarness(host: host) { request in
+            switch (request.method, request.url.path()) {
+            case ("POST", "/api/v1/attachments"):
+                return .json(201, Self.attachmentJSON())
+            case ("PUT", "/api/v1/attachments/34/preview"):
+                return .empty(204)
+            default:
+                let clientID = request.bodyJSON()?["client_msg_id"] as? String ?? ""
+                return .json(201, """
+                    {"message": {"id": 960, "chat_id": 42, "sender_id": 7, "body": "",
+                     "created_at": "2026-08-22T09:00:00Z", "client_msg_id": "\(clientID)",
+                     "reply_to": {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"},
+                     "attachment": {"id": 34, "kind": "photo", "mime": "image/jpeg",
+                       "size": 4096, "width": 1600, "height": 1200, "has_preview": true}}}
+                    """)
+            }
+        }
+        defer { harness.tearDown() }
+
+        let quote = ReplyToDTO(messageID: 41, senderID: 9, excerpt: "See you at six")
+        #expect(await harness.coordinator.sendMedia(
+            try preparedPhoto(), caption: "", replyTo: quote, in: 42))
+        await harness.settle()
+
+        let send = try #require(
+            StubURLProtocol.requests(host: host)
+                .first { $0.url.path() == "/api/v1/chats/42/messages" })
+        #expect(send.bodyJSON()?["reply_to_message_id"] as? Int == 41)
+
+        let row = try #require(harness.messages().first)
+        #expect(row.replyToMessageID == 41)
+        #expect(row.attachmentID == 34)
+    }
+
+    /// A caption-less photo wrote "" as the chat-list preview, and an
+    /// empty string is not nil — so the row rendered blank.
+    @Test("The chat-list preview says what arrived when there is no caption")
+    func previewFallsBackToTheAttachment() throws {
+        func attachment(kind: String, name: String? = nil) -> AttachmentDTO {
+            let json = """
+                {"id": 1, "kind": "\(kind)", "mime": "image/jpeg", "size": 1,
+                 "has_preview": false\(name.map { ", \"name\": \"\($0)\"" } ?? "")}
+                """
+            return try! JSONDecoder().decode(AttachmentDTO.self, from: Data(json.utf8))
+        }
+
+        #expect(ChatSyncCoordinator.preview(
+            body: "", attachment: attachment(kind: "photo")) == "Photo")
+        #expect(ChatSyncCoordinator.preview(
+            body: "", attachment: attachment(kind: "video")) == "Video")
+        #expect(ChatSyncCoordinator.preview(
+            body: "", attachment: attachment(kind: "file", name: "taxes.zip")) == "taxes.zip")
+        // A caption still wins, and a plain message is untouched.
+        #expect(ChatSyncCoordinator.preview(
+            body: "at the lake", attachment: attachment(kind: "photo")) == "at the lake")
+        #expect(ChatSyncCoordinator.preview(body: "hello", attachment: nil) == "hello")
+    }
+
+    /// URLComponents leaves '+' literal and the server reads a query as
+    /// form-urlencoded, where '+' MEANS a space.
+    @Test("A filename with a plus survives the upload")
+    func plusInAFilenameSurvives() async throws {
+        let host = "attach-plus.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        StubURLProtocol.register(host: host) { _ in
+            .json(201, """
+                {"attachment": {"id": 41, "kind": "file", "mime": "application/pdf",
+                 "size": 8, "has_preview": false, "name": "C++ notes.pdf"}}
+                """)
+        }
+        let api = APIClient(
+            serverURL: URL(string: "https://\(host)")!,
+            session: StubURLProtocol.makeSession())
+        let url = MediaPrep.temporaryURL(extension: "pdf")
+        try Data("%PDF-1.7".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        _ = try await api.uploadAttachment(
+            fileURL: url, mime: "application/pdf", kind: "file",
+            width: nil, height: nil, durationMS: nil, name: "C++ notes.pdf")
+
+        let request = try #require(StubURLProtocol.requests(host: host).first)
+        let raw = request.url.absoluteString
+        // Escaped, not literal — a literal + would arrive as a space.
+        #expect(raw.contains("%2B%2B"), "\(raw)")
+        #expect(!raw.contains("C++"), "\(raw)")
+    }
+
     // MARK: - Files
 
     @Test("A file's name rides in the query string")
@@ -493,13 +589,13 @@ struct AttachmentTests {
     }
 
     @Test("A picked document is copied, not re-encoded")
-    func fileIsCopiedVerbatim() throws {
+    func fileIsCopiedVerbatim() async throws {
         let source = MediaPrep.temporaryURL(extension: "pdf")
         let bytes = Data("%PDF-1.7 and then some".utf8)
         try bytes.write(to: source)
         defer { try? FileManager.default.removeItem(at: source) }
 
-        let prepared = try MediaPrep.prepareFile(from: source, limit: MediaPrep.sizeLimit)
+        let prepared = try await MediaPrep.prepareFile(from: source, limit: MediaPrep.sizeLimit)
         defer { try? FileManager.default.removeItem(at: prepared.fileURL) }
 
         #expect(prepared.kind == "file")
@@ -516,13 +612,13 @@ struct AttachmentTests {
     }
 
     @Test("A file over the ceiling is refused before any upload")
-    func oversizedFileIsRefused() throws {
+    func oversizedFileIsRefused() async throws {
         let source = MediaPrep.temporaryURL(extension: "bin")
         try Data(repeating: 0x41, count: 4096).write(to: source)
         defer { try? FileManager.default.removeItem(at: source) }
 
-        #expect(throws: MediaPrep.PrepError.self) {
-            _ = try MediaPrep.prepareFile(from: source, limit: 1024)
+        await #expect(throws: MediaPrep.PrepError.self) {
+            _ = try await MediaPrep.prepareFile(from: source, limit: 1024)
         }
     }
 
@@ -568,9 +664,9 @@ struct AttachmentTests {
     // MARK: - Preparation
 
     @Test("A photo is downscaled, re-encoded, and given a preview")
-    func photoIsDownscaled() throws {
+    func photoIsDownscaled() async throws {
         let original = Self.solidImage(width: 4032, height: 3024)
-        let prepared = try MediaPrep.preparePhoto(from: original, limit: MediaPrep.sizeLimit)
+        let prepared = try await MediaPrep.preparePhoto(from: original, limit: MediaPrep.sizeLimit)
         defer { try? FileManager.default.removeItem(at: prepared.fileURL) }
 
         #expect(prepared.kind == "photo")
@@ -590,8 +686,8 @@ struct AttachmentTests {
     }
 
     @Test("A portrait photo stays portrait")
-    func portraitPhotoKeepsItsShape() throws {
-        let prepared = try MediaPrep.preparePhoto(
+    func portraitPhotoKeepsItsShape() async throws {
+        let prepared = try await MediaPrep.preparePhoto(
             from: Self.solidImage(width: 1200, height: 1600),
             limit: MediaPrep.sizeLimit)
         defer { try? FileManager.default.removeItem(at: prepared.fileURL) }
@@ -601,17 +697,17 @@ struct AttachmentTests {
     }
 
     @Test("Bytes that are not an image are refused before any upload")
-    func unreadableBytesAreRefused() {
-        #expect(throws: MediaPrep.PrepError.self) {
-            _ = try MediaPrep.preparePhoto(from: Data("not an image".utf8), limit: MediaPrep.sizeLimit)
+    func unreadableBytesAreRefused() async {
+        await #expect(throws: MediaPrep.PrepError.self) {
+            _ = try await MediaPrep.preparePhoto(from: Data("not an image".utf8), limit: MediaPrep.sizeLimit)
         }
     }
 
     /// The one failure the composer turns into advice rather than a shrug.
     @Test("A photo that will not fit is refused with tooLargeAfterCompression")
-    func photoOverTheCeilingIsRefused() throws {
+    func photoOverTheCeilingIsRefused() async throws {
         do {
-            _ = try MediaPrep.preparePhoto(from: Self.solidImage(width: 2000, height: 2000), limit: 64)
+            _ = try await MediaPrep.preparePhoto(from: Self.solidImage(width: 2000, height: 2000), limit: 64)
             Issue.record("expected a refusal")
         } catch MediaPrep.PrepError.tooLargeAfterCompression(let bytes) {
             #expect(bytes > 64)

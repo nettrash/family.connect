@@ -163,6 +163,14 @@ class FamilyRepository @Inject constructor(
         return result
     }
 
+    /**
+     * Owner-only password reset. Nothing local changes: the member stays in
+     * the roster and keeps their history — only their sessions die, and
+     * that happens on the server.
+     */
+    suspend fun resetMemberPassword(userId: Long, newPassword: String): ApiResult<Unit> =
+        familyApi.resetMemberPassword(userId, newPassword)
+
     suspend fun removeMember(userId: Long): ApiResult<Unit> {
         val result = familyApi.removeMember(userId)
         if (result is ApiResult.Ok) memberDao.delete(userId)

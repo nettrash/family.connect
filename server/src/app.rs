@@ -34,6 +34,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(handlers_auth::login))
         .route("/api/v1/auth/logout", post(handlers_auth::logout))
         .route("/api/v1/me", get(handlers_auth::me))
+        .route("/api/v1/me/password", post(handlers_auth::change_password))
         // Profile pictures. The avatar PUT is the one route that may
         // exceed max_body_bytes, so it carries its own limit — raising
         // the global one would weaken every JSON route with it.
@@ -77,6 +78,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/families/members/{user_id}",
             delete(handlers_family::remove_member),
+        )
+        .route(
+            "/api/v1/families/members/{user_id}/password",
+            post(handlers_family::reset_member_password),
         )
         // Chats & messages
         .route("/api/v1/chats", get(handlers_chat::list_chats))

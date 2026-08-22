@@ -51,6 +51,21 @@ max_preview_bytes = 2097152
 # How long an UNCLAIMED upload survives before the sweeper deletes it — a
 # send the user abandoned must not leave 100 MB behind forever.
 attachment_grace_hours = 24
+# How long a message is kept before it is deleted, along with any photo,
+# video or file it owns. Runs at boot and hourly after, alongside the
+# unclaimed-upload sweep.
+#
+# SET 0 TO KEEP EVERYTHING. "Off" is a state rather than a very large
+# number, so nobody has to reason about what 36500 means.
+#
+# What this deletes: messages and their attachments. Reactions go with
+# their message; a newer reply survives and simply loses its quote. The
+# family BOARD is not touched — a sticker note is a live thing on a wall,
+# not history.
+#
+# Note that clients keep their own local copy of the history they have
+# already downloaded; this frees the SERVER's disk.
+retention_days = 100
 # GET /chats/{id}/messages page size: the default when the client sends no
 # limit, and the ceiling a client-supplied limit is clamped to.
 default_page_size = 50

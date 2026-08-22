@@ -55,7 +55,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material3.ListItem
+import me.nettrash.familyconnect.ui.familyadmin.SetPasswordDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -105,6 +107,11 @@ fun SettingsScreen(
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     var confirmLeave by remember { mutableStateOf(false) }
     var confirmLogout by remember { mutableStateOf(false) }
+    var changingPassword by remember { mutableStateOf(false) }
+    /// Held here rather than inside the dialog: the dialog is rebuilt on
+    /// every keystroke of the other fields, and the current password must
+    /// survive that.
+    var currentPassword by remember { mutableStateOf("") }
     // The Uri goes straight to the ViewModel: reading a cloud-backed
     // photo can take seconds, and a read owned by this composable would
     // die — with its busy flag stuck on — the moment the user backs out.
@@ -398,6 +405,18 @@ fun SettingsScreen(
             // -- Session ----------------------------------------------------
             Spacer(Modifier.height(8.dp))
             ListItem(
+                headlineContent = { Text("Change password") },
+                supportingContent = {
+                    Text("Your other devices will be signed out. This one stays signed in.")
+                },
+                leadingContent = { Icon(Icons.Filled.Key, contentDescription = null) },
+                modifier = Modifier.clickable { changingPassword = true },
+            )
+            HorizontalDivider(
+                modifier = Modifier.padding(start = 16.dp),
+                color = MaterialTheme.colorScheme.outlineVariant,
+            )
+            ListItem(
                 headlineContent = {
                     Text("Log out", color = MaterialTheme.colorScheme.error)
                 },
@@ -447,6 +466,28 @@ fun SettingsScreen(
                 TextButton(onClick = { confirmLeave = false }) {
                     Text("Cancel")
                 }
+            },
+        )
+    }
+
+    if (changingPassword) {
+        SetPasswordDialog(
+            title = "Change password",
+            explanation = "Your other devices will be signed out. This one stays signed in.",
+            confirmLabel = "Save",
+            busy = state.busy,
+            currentPassword = currentPassword,
+            onCurrentPasswordChange = { currentPassword = it },
+            onDismiss = {
+                changingPassword = false
+                currentPassword = ""
+            },
+            onConfirm = { password ->
+                viewModel.changePassword(currentPassword, password) {
+                    scope.launch { snackbarHostState.showSnackbar("Password changed") }
+                }
+                changingPassword = false
+                currentPassword = ""
             },
         )
     }

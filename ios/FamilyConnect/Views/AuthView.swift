@@ -66,8 +66,7 @@ struct AuthView: View {
                 Section {
                     TextField("Username", text: Bindable(model).username)
                         .textContentType(.username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .literalTextEntry()
                     if model.mode == .register {
                         TextField("Display name", text: Bindable(model).displayName)
                             .textContentType(.name)

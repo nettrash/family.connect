@@ -131,6 +131,20 @@ pub struct LimitsConfig {
     #[serde(default = "default_attachment_grace_hours")]
     pub attachment_grace_hours: i64,
 
+    /// How long a message is kept before the retention sweep deletes it,
+    /// along with any attachment it owns. 100 days by default.
+    ///
+    /// **0 disables the sweep entirely** — a family that wants to keep
+    /// everything sets 0 rather than a very large number, so "off" is a
+    /// state rather than an arithmetic accident.
+    ///
+    /// This deletes MESSAGES and their attachments. Board notes are not
+    /// touched: a sticker note is a live thing on a wall, not history, and
+    /// having one vanish because nobody moved it for a season is not what
+    /// anybody means by clearing old content.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: i64,
+
     /// Most notes one family board may hold at once (tombstones excluded).
     /// A runaway guard, not a budget: a wall nobody could read is not a
     /// feature anyone asked for.
@@ -373,6 +387,7 @@ impl Default for LimitsConfig {
             max_attachment_bytes: default_max_attachment_bytes(),
             max_preview_bytes: default_max_preview_bytes(),
             attachment_grace_hours: default_attachment_grace_hours(),
+            retention_days: default_retention_days(),
             default_page_size: default_default_page_size(),
             max_page_size: default_max_page_size(),
             max_body_bytes: default_max_body_bytes(),
@@ -549,6 +564,10 @@ fn default_max_preview_bytes() -> usize {
 
 fn default_attachment_grace_hours() -> i64 {
     24
+}
+
+fn default_retention_days() -> i64 {
+    100
 }
 
 fn default_max_board_notes() -> i64 {

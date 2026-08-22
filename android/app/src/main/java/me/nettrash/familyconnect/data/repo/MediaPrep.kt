@@ -145,7 +145,15 @@ class MediaPrep @Inject constructor(
 
     suspend fun prepareVideo(uri: Uri, limit: Long = SIZE_LIMIT): Prepared {
         val declared = declaredSize(uri)
-        val file = if (declared != null && declared > limit) {
+        // The protocol accepts exactly two video types, and the server
+        // verifies the bytes against the type declared. A .webm or .mkv is
+        // neither — so re-encoding it is not about SIZE, it is the only way
+        // it can be sent at all. Sending it as-is under the limit meant
+        // labelling it video/mp4 and being refused, forever, with a message
+        // that said "try again".
+        val sourceMime = contentResolver.getType(uri).orEmpty()
+        val mustTranscode = sourceMime !in SENDABLE_VIDEO_TYPES
+        val file = if (mustTranscode || (declared != null && declared > limit)) {
             compress(uri, limit)
         } else {
             // Unknown length is treated as "probably fits": copy first,
@@ -158,12 +166,15 @@ class MediaPrep @Inject constructor(
                 copy
             }
         }
+        // What was actually produced: the transcoder writes MP4; an
+        // untouched original keeps whichever accepted type it already was.
+        val mime = if (mustTranscode) "video/mp4" else sourceMime.ifEmpty { "video/mp4" }
 
         return withContext(Dispatchers.IO) {
             val meta = readVideoMetadata(file)
             Prepared(
                 file = file,
-                mime = "video/mp4",
+                mime = mime,
                 kind = AttachmentDto.KIND_VIDEO,
                 width = meta.width,
                 height = meta.height,
@@ -439,6 +450,12 @@ class MediaPrep @Inject constructor(
 
         const val PHOTO_QUALITY = 85
         const val PREVIEW_QUALITY = 70
+
+        /**
+         * The video types the protocol accepts (docs/protocol.md). Anything
+         * else has to go through the transcoder whatever its size.
+         */
+        val SENDABLE_VIDEO_TYPES = setOf("video/mp4", "video/quicktime")
 
         /** 1280x720-ish: small enough to fit, big enough to watch. */
         const val COMPRESSED_SHORT_SIDE = 720

@@ -18,6 +18,9 @@
 //  android/…/ui/chat/ChatScreen.kt.
 //
 
+// iOS only — the Mac has its own views (MacViews/).
+#if os(iOS)
+
 import SwiftUI
 
 struct LinkPreviewCard: View {
@@ -72,3 +75,5 @@ struct LinkPreviewCard: View {
         .accessibilityHint("Opens the link")
     }
 }
+
+#endif

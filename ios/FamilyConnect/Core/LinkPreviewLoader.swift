@@ -30,7 +30,6 @@
 import Foundation
 import ImageIO
 import SwiftUI
-import UIKit
 
 @MainActor @Observable
 final class LinkPreviewLoader {
@@ -187,14 +186,14 @@ final class LinkPreviewLoader {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             return nil
         }
-        return downsampled(data).map(Image.init(uiImage:))
+        return downsampled(data).map { PlatformImage.view($0) }
     }
 
     /// Decode at roughly card width rather than full resolution. The
     /// 4MB byte cap is not a pixel cap — a 6000×4000 JPEG is well under
     /// it and still costs ~96MB decoded, and up to `maxCacheEntries` of
     /// those would be held at once.
-    private nonisolated static func downsampled(_ data: Data) -> UIImage? {
+    private nonisolated static func downsampled(_ data: Data) -> CGImage? {
         let source = CGImageSourceCreateWithData(data as CFData, [
             kCGImageSourceShouldCache: false,
         ] as CFDictionary)
@@ -208,7 +207,7 @@ final class LinkPreviewLoader {
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
             return nil
         }
-        return UIImage(cgImage: thumbnail)
+        return thumbnail
     }
 
     /// A GET that stops reading at `cap` bytes instead of trusting the

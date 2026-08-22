@@ -230,6 +230,44 @@ actor APIClient {
         try await requestVoid("DELETE", "/families/members/\(userID)")
     }
 
+    /// Change my own password. The current one is required — a live
+    /// session is not proof of knowing it (protocol.md, "Auth").
+    ///
+    /// Succeeding revokes my OTHER sessions server-side; this one survives,
+    /// so there is nothing for the caller to do about its own token.
+    func changePassword(current: String, new: String) async throws {
+        try await requestVoid(
+            "POST", "/me/password",
+            body: ChangePasswordRequest(currentPassword: current, newPassword: new))
+    }
+
+    /// Owner-only: set a member's password without knowing their old one.
+    /// Every session that member has is revoked, so their devices return
+    /// to login — which is what makes this a recovery.
+    func resetMemberPassword(userID: Int64, newPassword: String) async throws {
+        try await requestVoid(
+            "POST", "/families/members/\(userID)/password",
+            body: ResetPasswordRequest(newPassword: newPassword))
+    }
+
+    private struct ChangePasswordRequest: Encodable {
+        let currentPassword: String
+        let newPassword: String
+
+        enum CodingKeys: String, CodingKey {
+            case currentPassword = "current_password"
+            case newPassword = "new_password"
+        }
+    }
+
+    private struct ResetPasswordRequest: Encodable {
+        let newPassword: String
+
+        enum CodingKeys: String, CodingKey {
+            case newPassword = "new_password"
+        }
+    }
+
     // MARK: - Chats & messages
 
     func chats() async throws -> ChatsResponse {
@@ -538,7 +576,15 @@ actor APIClient {
         var text = base.absoluteString
         if text.hasSuffix("/") { text.removeLast() }
         guard var components = URLComponents(string: text + "/api/v1" + path) else { return nil }
-        if !query.isEmpty { components.queryItems = query }
+        if !query.isEmpty {
+            components.queryItems = query
+            // URLComponents leaves '+' literal in a query value, and the
+            // other end reads a query string as form-urlencoded, where '+'
+            // MEANS a space. So "C++ notes.pdf" arrives as "C   notes.pdf"
+            // — silently, and only for the one character nobody tests.
+            components.percentEncodedQuery = components.percentEncodedQuery?
+                .replacingOccurrences(of: "+", with: "%2B")
+        }
         return components.url
     }
 

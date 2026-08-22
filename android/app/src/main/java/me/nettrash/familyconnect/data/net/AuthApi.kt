@@ -12,6 +12,7 @@
 package me.nettrash.familyconnect.data.net
 
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
+import me.nettrash.familyconnect.data.net.dto.ChangePasswordRequest
 import me.nettrash.familyconnect.data.net.dto.DeviceRequest
 import me.nettrash.familyconnect.data.net.dto.DeviceResponse
 import me.nettrash.familyconnect.data.net.dto.LoginRequest
@@ -25,6 +26,13 @@ interface AuthApi {
     suspend fun register(username: String, displayName: String, password: String): ApiResult<AuthResponse>
     suspend fun login(username: String, password: String): ApiResult<AuthResponse>
     suspend fun logout(): ApiResult<Unit>
+
+    /**
+     * Change my own password. The current one is required — a live session
+     * is not proof of knowing it (protocol.md, "Auth"). Succeeding revokes
+     * my OTHER sessions server-side; this one survives.
+     */
+    suspend fun changePassword(current: String, new: String): ApiResult<Unit>
     suspend fun me(): ApiResult<MeResponse>
 
     /**
@@ -61,6 +69,9 @@ class DefaultAuthApi @Inject constructor(
 
     override suspend fun login(username: String, password: String): ApiResult<AuthResponse> =
         client.post("/auth/login", LoginRequest(username, password), auth = false)
+
+    override suspend fun changePassword(current: String, new: String): ApiResult<Unit> =
+        client.post("/me/password", ChangePasswordRequest(current, new))
 
     override suspend fun logout(): ApiResult<Unit> =
         client.postEmpty("/auth/logout")

@@ -14,6 +14,9 @@
 //  Android counterpart: ui/chat/AttachmentViewerScreen.kt
 //
 
+// iOS only — the Mac has its own views (MacViews/).
+#if os(iOS)
+
 import AVKit
 import SwiftUI
 
@@ -206,3 +209,5 @@ private struct VideoAttachmentPlayer: View {
         }
     }
 }
+
+#endif

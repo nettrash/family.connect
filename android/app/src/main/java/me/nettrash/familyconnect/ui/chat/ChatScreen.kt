@@ -365,9 +365,16 @@ fun ChatScreen(
     // screen already reports trouble with an attachment.
     val openFile: (AttachmentDto) -> Unit = { attachment ->
         scope.launch {
+            // Say something immediately: a large PDF takes seconds, and a
+            // tap that looks like nothing invites a second tap.
+            viewModel.reportAttachmentBusy("Preparing…")
             val file = viewModel.localFile(attachment)
             val opened = file != null && openWithSystem(context, file, attachment.mime)
-            if (!opened) viewModel.reportAttachmentOpenFailed(file != null)
+            if (opened) {
+                viewModel.clearMediaState()
+            } else {
+                viewModel.reportAttachmentOpenFailed(file != null)
+            }
         }
     }
 
@@ -2025,21 +2032,41 @@ private fun BubbleContent(
                 )
             }
         }
+        // The width of whatever else is in this balloon — a photo, a link
+        // card. Text left to itself wraps to the width it WANTS (Compose
+        // balances the lines), which under a wide card reads as a narrow
+        // paragraph floating over it. Measuring the block and setting it as
+        // the text's MINIMUM makes the text wrap against the same edge
+        // without widening the balloon, which fillMaxWidth would do: the
+        // card wraps its content here, so the balloon is card-width, not
+        // the full constraint.
+        //
+        // Keyed to the message: LazyColumn reuses slots, and a stale width
+        // from the previous occupant would stretch an unrelated bubble.
+        var blockWidth by remember(entity.clientMsgId) { mutableIntStateOf(0) }
+        val measureBlock = Modifier.onSizeChanged { size ->
+            if (size.width > blockWidth) blockWidth = size.width
+        }
+
         // A photo or video sits above the caption, inside the balloon.
         entity.attachment?.let { attachment ->
             AttachmentBlock(
                 attachment = attachment,
                 onOpen = { onOpenAttachment(attachment) },
+                modifier = measureBlock,
+                onLongPress = onTextLongPress,
+                onDoubleTap = onDoubleTap,
             )
             if (entity.body.isNotEmpty()) Spacer(Modifier.height(6.dp))
         }
         // A photo needs no caption, and an empty Text would still take a
         // line's height inside the balloon.
         if (entity.body.isNotEmpty()) {
+            val minTextWidth = with(LocalDensity.current) { blockWidth.toDp() }
             Text(
                 text = body,
                 onTextLayout = { textLayout = it },
-                modifier = textModifier,
+                modifier = textModifier.widthIn(min = minTextWidth),
                 style = if (emojiFontSize != null) {
                     MaterialTheme.typography.bodyMedium.copy(
                         fontSize = emojiFontSize.sp,
@@ -2062,6 +2089,7 @@ private fun BubbleContent(
                     preview = state.preview,
                     image = state.image,
                     onOpen = onOpenLink,
+                    modifier = measureBlock,
                 )
             }
         }
@@ -2136,6 +2164,7 @@ private fun LinkPreviewCard(
     preview: LinkPreview,
     image: ImageBitmap?,
     onOpen: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(12.dp)
     Surface(
@@ -2143,7 +2172,7 @@ private fun LinkPreviewCard(
         color = MaterialTheme.colorScheme.surfaceContainerLowest,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier
+        modifier = modifier
             .padding(top = 6.dp)
             .clip(shape)
             .clickable(onClickLabel = "Open link") { onOpen(preview.url) },

@@ -29,7 +29,9 @@ import SwiftUI
 struct FamilyConnectApp: App {
     /// Surfaces the APNs token callbacks and owns the notification-center
     /// delegate; see AppDelegate.swift.
+    #if os(iOS)
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #endif
 
     /// Result of the SwiftData container construction, captured at init
     /// so the scene can choose between the app and a recoverable error
@@ -100,8 +102,10 @@ struct FamilyConnectApp: App {
             let registrar = PushRegistrar(api: coordinator.api)
             coordinator.ensurePushRegistration = { await registrar.ensureRegistered() }
             session.deregisterDevice = { await registrar.deregister() }
+            #if os(iOS)
             AppDelegate.registrar = registrar
             AppDelegate.session = session
+            #endif
 
             self.session = session
             self.coordinator = coordinator
@@ -147,8 +151,35 @@ struct FamilyConnectApp: App {
                 StoreErrorView(error: error)
             }
         }
+        #if os(macOS)
+        // A Mac window opens at a size somebody can actually read a
+        // conversation in, rather than the square SwiftUI would pick.
+        .defaultSize(width: 1000, height: 680)
+        .commands {
+            // The menu bar is not decoration on a Mac: it is where the
+            // keyboard shortcuts live and where people look for what an
+            // app can do. Replacing the New Item command stops the File
+            // menu offering a "New" that would do nothing.
+            CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .toolbar) {
+                Button("Refresh") {
+                    NotificationCenter.default.post(name: .macRequestResync, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+            }
+        }
+        #endif
     }
 }
+
+#if os(macOS)
+extension Notification.Name {
+    /// ⌘R. A notification rather than a binding because the command lives
+    /// in the scene and the thing that can act on it is several views
+    /// down; SwiftUI has no environment path from one to the other.
+    static let macRequestResync = Notification.Name("me.nettrash.FamilyConnect.requestResync")
+}
+#endif
 
 /// Shown when the SwiftData store can't be opened — recoverable messaging
 /// instead of a crash. Stock components + semantic colors so it renders
@@ -178,6 +209,6 @@ private struct StoreErrorView: View {
                 .padding(.horizontal, 32)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
+        .background(Color.appBackground)
     }
 }

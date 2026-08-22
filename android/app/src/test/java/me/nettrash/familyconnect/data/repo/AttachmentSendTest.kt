@@ -414,6 +414,42 @@ class AttachmentSendTest {
         assertThat(FakeAttachmentApi.attachment(kind = "video").displayName).isEqualTo("Video")
     }
 
+    /**
+     * A caption-less photo wrote "" as the chat-list preview, and an empty
+     * string is not null — so the row rendered blank instead of falling
+     * back. Mirrors iOS's previewFallsBackToTheAttachment.
+     */
+    @Test
+    fun `the chat-list preview says what arrived when there is no caption`() {
+        fun attachment(kind: String, name: String? = null) =
+            FakeAttachmentApi.attachment(kind = kind, name = name)
+
+        assertThat(MessageRepository.previewText("", attachment("photo"))).isEqualTo("Photo")
+        assertThat(MessageRepository.previewText("", attachment("video"))).isEqualTo("Video")
+        assertThat(MessageRepository.previewText("", attachment("file", "taxes.zip")))
+            .isEqualTo("taxes.zip")
+        // A caption still wins, and a plain message is untouched.
+        assertThat(MessageRepository.previewText("at the lake", attachment("photo")))
+            .isEqualTo("at the lake")
+        assertThat(MessageRepository.previewText("hello", null)).isEqualTo("hello")
+    }
+
+    /**
+     * The row the send writes must carry the same text, or the chat list
+     * is blank until the next resync repairs it.
+     */
+    @Test
+    fun `sending a caption-less photo writes a usable chat preview`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        ackWith(hasPreview = true)
+
+        assertThat(repository.sendMedia(prepared(), caption = "", chatId = CHAT)).isTrue()
+        advanceUntilIdle()
+
+        assertThat(chatDao.getById(CHAT)!!.lastMessageBody).isEqualTo("Photo")
+    }
+
     /** Unused here, but pins the response type the API decodes into. */
     @Test
     fun `the upload response decodes to an attachment`() {

@@ -659,6 +659,68 @@ pub async fn remove_member(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// `POST /families/members/{id}/password` — the owner resets a member's
+/// password.
+///
+/// No current password: the whole point is that the member has forgotten
+/// theirs. What makes that safe to expose is that it is owner-only and
+/// family-scoped — and what makes it a RECOVERY rather than a convenience
+/// is that every session the member has is revoked, so a device somebody
+/// else is holding stops working the moment the reset lands.
+pub async fn reset_member_password(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(target_user_id): Path<i64>,
+    AppJson(req): AppJson<crate::handlers_auth::ResetPasswordRequest>,
+) -> Result<Response, ApiError> {
+    let family = require_owner(&state, &auth).await?;
+    crate::handlers_auth::validate_password(&req.new_password)?;
+
+    // The owner changes their OWN password the ordinary way, with the
+    // current one — this endpoint would be a way around that check.
+    if target_user_id == auth.user_id {
+        return Err(ApiError::validation(
+            "use POST /me/password to change your own password",
+        ));
+    }
+
+    let target_family: Option<i64> =
+        sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
+            .bind(target_user_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .flatten();
+    if target_family != Some(family.id) {
+        // Same answer whether they are in another family or do not exist:
+        // the endpoint never confirms ids outside this family.
+        return Err(ApiError::forbidden(
+            codes::NOT_SAME_FAMILY,
+            "no such member in your family",
+        ));
+    }
+
+    let password_hash = crate::auth::hash_password(req.new_password).await?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
+        .bind(target_user_id)
+        .bind(&password_hash)
+        .execute(&mut *tx)
+        .await?;
+    // ALL of them, unlike a self-change: the member is not the one asking,
+    // and every device signed in as them must come back through login.
+    let revoked: Vec<i64> =
+        sqlx::query_scalar("DELETE FROM sessions WHERE user_id = $1 RETURNING id")
+            .bind(target_user_id)
+            .fetch_all(&mut *tx)
+            .await?;
+    tx.commit().await?;
+
+    for session_id in revoked {
+        state.registry.close_session(session_id).await;
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 /// Shared leave/remove write: detach the user and drop them from every chat
 /// of the family (family chat + their direct chats). Chat and message rows
 /// stay — history is retained and resurfaces on rejoin per protocol.md.

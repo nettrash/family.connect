@@ -771,6 +771,85 @@ fn urlencoding(value: &str) -> String {
         .collect()
 }
 
+/// An account with no family has nobody to send to — and on an open
+/// self-hosted server, anyone can register.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_stranger_with_no_family_cannot_upload() {
+    let server = spawn_server().await;
+    let (stranger, _) = server.register("stranger", "Sam").await;
+
+    assert_error(
+        upload(
+            &server,
+            &stranger,
+            "?kind=photo",
+            "image/jpeg",
+            jpeg_bytes(64),
+        )
+        .await,
+        403,
+        "not_in_family",
+    )
+    .await;
+    // Nothing was written on the way to refusing.
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments")
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("count");
+    assert_eq!(rows, 0);
+}
+
+/// The chat list draws one line per chat. A photo sent with no caption
+/// has an empty body, so without the attachment there is nothing to draw.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_chat_list_preview_carries_the_attachment() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+
+    let body: Value = upload(
+        &server,
+        &owner,
+        "?kind=file&name=Rechnung.pdf",
+        "application/pdf",
+        b"%PDF-1.7".to_vec(),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let attachment_id = body["attachment"]["id"].as_i64().expect("id");
+    server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_id": attachment_id,
+            }),
+        )
+        .await;
+
+    let page: Value = server
+        .get(&owner, "/chats")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let chat = page["chats"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|entry| entry["chat"]["id"].as_i64() == Some(chat_id))
+        .expect("the family chat");
+    let last = &chat["last_message"];
+    assert_eq!(last["body"], "");
+    assert_eq!(last["attachment"]["kind"], "file");
+    assert_eq!(last["attachment"]["name"], "Rechnung.pdf");
+}
+
 /// One copy per family: forwarding the same photo three times must not
 /// put three copies on the disk.
 #[tokio::test]

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  macOS only — iOS has no sandbox entitlements file, and none of this
+	  applies there.
+
+	  network.client is not optional: this app exists to talk to the
+	  family's own server, and a sandboxed Mac app without it cannot open
+	  a socket at all. (The same entitlement, missed, is what crashed
+	  md.macOS's WebContent process on launch.)
+
+	  user-selected.read-only covers the document picker — a file the user
+	  chose, and nothing else. There is deliberately no
+	  downloads-folder or documents-folder entitlement: everything this app
+	  writes goes to its own container, and anything leaving it goes
+	  through the share sheet, which needs no entitlement of its own.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+</dict>
+</plist>

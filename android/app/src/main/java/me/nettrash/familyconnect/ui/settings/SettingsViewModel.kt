@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.AvatarApi
 import android.net.Uri
 import me.nettrash.familyconnect.data.repo.AvatarImage
@@ -36,6 +37,7 @@ import javax.inject.Inject
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
+    private val authApi: AuthApi,
     private val familyRepository: FamilyRepository,
     private val settings: SettingsRepository,
     private val avatarApi: AvatarApi,
@@ -57,6 +59,8 @@ class SettingsViewModel @Inject constructor(
         val linkPreviewsEnabled: Boolean = true,
         /** My profile-picture version; 0 = none, and the button says "Add". */
         val avatarVersion: Long = 0,
+        /** True while a settings write is in flight. */
+        val busy: Boolean = false,
         val uploadingAvatar: Boolean = false,
         val avatarError: String? = null,
     )
@@ -222,6 +226,37 @@ class SettingsViewModel @Inject constructor(
                 is ApiResult.NetworkError ->
                     _state.update { it.copy(error = "Can't reach the server") }
             }
+        }
+    }
+
+    /**
+     * Change my own password. The current one is required — a live session
+     * is not proof of knowing it (protocol.md, "Auth"). Every OTHER device
+     * of mine is signed out server-side; this one keeps its session.
+     */
+    fun changePassword(current: String, new: String, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = authApi.changePassword(current, new)) {
+                is ApiResult.Ok -> onSuccess()
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            error = if (result.status == 401) {
+                                // A 401 here means the CURRENT password was
+                                // wrong, not that the session died —
+                                // treating it as a dead session would sign
+                                // the user out over a typo.
+                                "That current password is not right."
+                            } else {
+                                result.message ?: "Couldn't change your password."
+                            },
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(error = "Can't reach the server") }
+            }
+            _state.update { it.copy(busy = false) }
         }
     }
 

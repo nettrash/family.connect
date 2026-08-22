@@ -80,7 +80,12 @@ class ChatRepository @Inject constructor(
                         // Local-only markers survive the merge.
                         myLastReadId = existing?.myLastReadId,
                         peerLastReadId = existing?.peerLastReadId,
-                        lastMessageBody = item.lastMessage?.body ?: existing?.lastMessageBody,
+                        // What arrived rather than the raw body: a
+                        // caption-less photo has an EMPTY body, which is
+                        // not null, so the row rendered blank.
+                        lastMessageBody = item.lastMessage
+                            ?.let { MessageRepository.previewText(it.body, it.attachment) }
+                            ?: existing?.lastMessageBody,
                         lastMessageAt = item.lastMessage?.createdAt
                             ?.let(TimeFormat::parseTimestamp)
                             ?: existing?.lastMessageAt,

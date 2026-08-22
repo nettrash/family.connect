@@ -22,7 +22,6 @@
 
 import ImageIO
 import SwiftUI
-import UIKit
 
 @MainActor @Observable
 final class AvatarStore {
@@ -154,6 +153,6 @@ final class AvatarStore {
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
             return nil
         }
-        return Image(uiImage: UIImage(cgImage: thumbnail))
+        return PlatformImage.view(thumbnail)
     }
 }

@@ -113,7 +113,20 @@ pub async fn spawn_server_with_push(push_cfg: PushConfig) -> TestServer {
     spawn_server_inner(Some(push_cfg)).await
 }
 
+/// Boot a server with the config tweaked — for the settings a test needs
+/// to be different, like turning retention off.
+pub async fn spawn_server_with_config(tweak: impl FnOnce(&mut Config)) -> TestServer {
+    spawn_server_inner_with(None, tweak).await
+}
+
 async fn spawn_server_inner(push_cfg: Option<PushConfig>) -> TestServer {
+    spawn_server_inner_with(push_cfg, |_| {}).await
+}
+
+async fn spawn_server_inner_with(
+    push_cfg: Option<PushConfig>,
+    tweak: impl FnOnce(&mut Config),
+) -> TestServer {
     let admin = admin_config();
     let db_name = format!(
         "family_connect_test_{}_{}",
@@ -150,6 +163,7 @@ async fn spawn_server_inner(push_cfg: Option<PushConfig>) -> TestServer {
     if let Some(push_cfg) = push_cfg {
         cfg.push = push_cfg;
     }
+    tweak(&mut cfg);
     cfg.validate().expect("test config is valid");
 
     let pool = db::connect(&cfg.database)
@@ -332,6 +346,35 @@ impl TestServer {
             body["token"].as_str().expect("token present").to_string(),
             body["user"]["id"].as_i64().expect("user id present"),
         )
+    }
+
+    /// Log in as an existing user; returns the new session's token.
+    /// Panics on failure — use `login_raw` when the refusal is the point.
+    pub async fn login(&self, username: &str, password: &str) -> String {
+        let response = self.login_raw(username, password).await;
+        assert_eq!(response.status(), 200, "logging in {username}");
+        let body: Value = response.json().await.expect("login response is JSON");
+        body["token"].as_str().expect("token present").to_string()
+    }
+
+    /// Log in without asserting: for the tests where a 401 is the answer.
+    pub async fn login_raw(&self, username: &str, password: &str) -> reqwest::Response {
+        self.post_unauth(
+            "/auth/login",
+            json!({"username": username, "password": password}),
+        )
+        .await
+    }
+
+    /// The caller's own user id, straight from `GET /me`.
+    pub async fn user_id(&self, token: &str) -> i64 {
+        let body: Value = self
+            .get(token, "/me")
+            .await
+            .json()
+            .await
+            .expect("me response is JSON");
+        body["user"]["id"].as_i64().expect("user id present")
     }
 
     /// Create a family as `token`; returns `(family_id, invite_code)`.

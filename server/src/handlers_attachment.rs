@@ -130,6 +130,19 @@ pub async fn upload_attachment(
         .await?
         .flatten();
 
+    // An account with no family has nobody to send anything to, and every
+    // other write endpoint says so. Without this check a stranger who can
+    // register — which is the whole point of an open self-hosted server —
+    // can fill the disk 100 MB at a time, and the sweeper would not touch
+    // it for 24 hours. protocol.md has listed `not_in_family` here all
+    // along; only the code was missing it.
+    let Some(family_id) = family_id else {
+        return Err(ApiError::forbidden(
+            codes::NOT_IN_FAMILY,
+            "join a family before sending attachments",
+        ));
+    };
+
     // The row is created first so its id names the file — one identifier,
     // no second allocation scheme to keep in step.
     let storage_key = format!("{}-{}", auth.user_id, crate::tokens::gen_session_token());
@@ -207,7 +220,7 @@ pub async fn upload_attachment(
     // A concurrent pair of identical uploads can both miss here and keep
     // two copies. That is the acceptable outcome: a missed saving, never a
     // wrong or shared-too-far file.
-    let existing: Option<(String, bool)> = if let Some(family_id) = family_id {
+    let existing: Option<(String, bool)> = {
         sqlx::query_as(
             "SELECT storage_key, has_preview FROM attachments
              WHERE family_id = $1 AND content_hash = $2 AND size_bytes = $3 AND id <> $4
@@ -220,8 +233,6 @@ pub async fn upload_attachment(
         .bind(id)
         .fetch_optional(&state.pool)
         .await?
-    } else {
-        None
     };
 
     let (final_key, inherited_preview) = match existing {
@@ -592,7 +603,10 @@ fn parse_range(value: &str, len: u64) -> RangeSpec {
 /// deleted in the same instant. The failure mode of losing that race is a
 /// file with no rows (the sweeper's own problem, and a `du` away from being
 /// noticed) rather than a row with no file.
-async fn remove_if_unreferenced(state: &AppState, storage_key: &str) -> Result<(), ApiError> {
+pub(crate) async fn remove_if_unreferenced(
+    state: &AppState,
+    storage_key: &str,
+) -> Result<(), ApiError> {
     let still_used: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE storage_key = $1)")
             .bind(storage_key)

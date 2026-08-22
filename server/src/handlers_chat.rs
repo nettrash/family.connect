@@ -139,6 +139,54 @@ const MESSAGE_FROM: &str = "FROM messages m LEFT JOIN messages p \
                             ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id \
                             LEFT JOIN attachments att ON att.message_id = m.id";
 
+/// Delete messages past the retention age, and the attachment files they
+/// leave behind.
+///
+/// What goes: the message row, and by cascade its reactions and its
+/// attachment ROW. What survives: a newer reply that quoted it (the FK is
+/// ON DELETE SET NULL — migration 0012 — so the reply keeps existing and
+/// simply loses its quote), and the family board, which is a wall rather
+/// than history.
+///
+/// The FILE is the careful part. Since 0011 a family's identical uploads
+/// share one blob, so a file may only be removed once no row names it any
+/// more — the keys are collected BEFORE the delete, and each is checked
+/// afterwards, when the cascade has already taken the rows that were
+/// going.
+///
+/// Returns how many messages were deleted. `retention_days = 0` disables
+/// the sweep, which is why it is a state rather than a very large number.
+pub async fn sweep_expired_messages(state: &AppState) -> Result<u64, ApiError> {
+    let days = state.cfg.limits.retention_days;
+    if days <= 0 {
+        return Ok(0);
+    }
+
+    // Collected first: after the delete these rows are gone, and with them
+    // any way to know which files to consider.
+    let keys: Vec<String> = sqlx::query_scalar(
+        "SELECT a.storage_key
+         FROM attachments a
+         JOIN messages m ON m.id = a.message_id
+         WHERE m.created_at < now() - make_interval(days => $1)",
+    )
+    .bind(days as i32)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let deleted =
+        sqlx::query("DELETE FROM messages WHERE created_at < now() - make_interval(days => $1)")
+            .bind(days as i32)
+            .execute(&state.pool)
+            .await?
+            .rows_affected();
+
+    for key in &keys {
+        crate::handlers_attachment::remove_if_unreferenced(state, key).await?;
+    }
+    Ok(deleted)
+}
+
 /// Fill in reaction state for messages whose `reaction_seq` says they have
 /// any. `Some(vec![])` (not `None`) when the seq is set but every reaction
 /// was removed — clients must see "cleared", not "no data".
@@ -644,6 +692,8 @@ pub async fn list_chats(
                 lm.id AS last_id, lm.sender_id AS last_sender_id,
                 lm.client_msg_id AS last_client_msg_id, lm.body AS last_body,
                 lm.created_at AS last_created_at,
+                lm.att_id, lm.att_kind, lm.att_mime, lm.att_size,
+                lm.att_has_preview, lm.att_name,
                 uc.unread AS unread_count,
                 c.last_reaction_seq,
                 c.last_edit_seq
@@ -655,8 +705,16 @@ pub async fn list_chats(
                AND pu.id = CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END
          LEFT JOIN chat_reads cr ON cr.chat_id = c.id AND cr.user_id = $1
          LEFT JOIN LATERAL (
-             SELECT id, sender_id, client_msg_id, body, created_at
-             FROM messages WHERE chat_id = c.id ORDER BY id DESC LIMIT 1
+             -- The attachment comes with it: a photo sent without a
+             -- caption has an EMPTY body, and a preview line with nothing
+             -- in it is a chat row that looks like nothing happened.
+             SELECT m2.id, m2.sender_id, m2.client_msg_id, m2.body, m2.created_at,
+                    att.id AS att_id, att.kind AS att_kind, att.mime AS att_mime,
+                    att.size_bytes AS att_size, att.has_preview AS att_has_preview,
+                    att.name AS att_name
+             FROM messages m2
+             LEFT JOIN attachments att ON att.message_id = m2.id
+             WHERE m2.chat_id = c.id ORDER BY m2.id DESC LIMIT 1
          ) lm ON TRUE
          LEFT JOIN LATERAL (
              SELECT count(*) AS unread
@@ -699,7 +757,19 @@ pub async fn list_chats(
                 // and whether it was edited is a bubble's business.
                 edited_at: None,
                 edit_seq: None,
-                attachment: None,
+                // The attachment DOES come along: without it a client has
+                // nothing to write on the row for a caption-less photo.
+                attachment: row.get::<Option<i64>, _>("att_id").map(|id| Attachment {
+                    id,
+                    kind: row.get("att_kind"),
+                    mime: row.get("att_mime"),
+                    size: row.get("att_size"),
+                    width: None,
+                    height: None,
+                    duration_ms: None,
+                    has_preview: row.get("att_has_preview"),
+                    name: row.get("att_name"),
+                }),
             });
             let last_reaction_seq: i64 = row.get("last_reaction_seq");
             let last_edit_seq: i64 = row.get("last_edit_seq");

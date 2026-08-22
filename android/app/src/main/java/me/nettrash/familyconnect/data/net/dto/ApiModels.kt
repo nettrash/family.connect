@@ -284,6 +284,17 @@ data class SendMessageRequest(
 @Serializable
 data class EditMessageRequest(val body: String)
 
+@Serializable
+data class ChangePasswordRequest(
+    @SerialName("current_password") val currentPassword: String,
+    @SerialName("new_password") val newPassword: String,
+)
+
+@Serializable
+data class ResetPasswordRequest(
+    @SerialName("new_password") val newPassword: String,
+)
+
 /**
  * One sticker note on the family board.
  *

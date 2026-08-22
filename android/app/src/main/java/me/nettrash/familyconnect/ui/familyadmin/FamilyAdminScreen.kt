@@ -37,6 +37,11 @@ import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material3.AlertDialog
@@ -101,6 +106,8 @@ fun FamilyAdminScreen(
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     var confirmRotate by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf<MemberEntity?>(null) }
+    /// The member whose password the owner is resetting; null while closed.
+    var resetTarget by remember { mutableStateOf<MemberEntity?>(null) }
 
     // Rows hide-and-shrink the moment an approve/reject/remove is fired,
     // so the departure animates instead of snapping when the server's
@@ -365,15 +372,31 @@ fun FamilyAdminScreen(
                                 // can't be removed (protocol:
                                 // cannot_remove_owner) — and that's also me here.
                                 if (isOwner && member.role != "owner" && member.userId != myUserId) {
-                                    IconButton(
-                                        onClick = { confirmRemove = member },
-                                        enabled = !state.busy,
-                                    ) {
-                                        Icon(
-                                            Icons.Filled.PersonRemove,
-                                            contentDescription = "Remove ${member.displayName}",
-                                            tint = MaterialTheme.colorScheme.error,
-                                        )
+                                    Row {
+                                        // The owner changes their own
+                                        // password in Settings, with the
+                                        // current one — hence the same
+                                        // gate as Remove.
+                                        IconButton(
+                                            onClick = { resetTarget = member },
+                                            enabled = !state.busy,
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Key,
+                                                contentDescription =
+                                                    "Reset ${member.displayName}'s password",
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { confirmRemove = member },
+                                            enabled = !state.busy,
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.PersonRemove,
+                                                contentDescription = "Remove ${member.displayName}",
+                                                tint = MaterialTheme.colorScheme.error,
+                                            )
+                                        }
                                     }
                                 }
                             },
@@ -434,7 +457,118 @@ fun FamilyAdminScreen(
             },
         )
     }
+
+    resetTarget?.let { member ->
+        SetPasswordDialog(
+            title = "Reset password",
+            // Said plainly, because it is not obvious and not undoable.
+            explanation = "${member.displayName} will be signed out on every device and will " +
+                "need this password to sign back in. Tell it to them somewhere safe — the " +
+                "server has no way to email it.",
+            confirmLabel = "Reset",
+            busy = state.busy,
+            onDismiss = { resetTarget = null },
+            onConfirm = { password ->
+                viewModel.resetMemberPassword(member.userId, password) {
+                    scope.launch {
+                        snackbarHostState.showSnackbar("Reset ${member.displayName}'s password")
+                    }
+                }
+                resetTarget = null
+            },
+        )
+    }
 }
+
+/**
+ * Two matching entries, a length rule, one action.
+ *
+ * The confirmation field is not ceremony: the server cannot tell a typo
+ * from an intention, and on a self-hosted server with no reset email the
+ * cost of a typo is being locked out.
+ *
+ * iOS counterpart: PasswordView.swift.
+ */
+@Composable
+fun SetPasswordDialog(
+    title: String,
+    explanation: String,
+    confirmLabel: String,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+    /** Shown above the new-password fields when a current one is needed. */
+    currentPassword: String? = null,
+    onCurrentPasswordChange: ((String) -> Unit)? = null,
+) {
+    var password by remember { mutableStateOf("") }
+    var confirmation by remember { mutableStateOf("") }
+    var problem by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(explanation, style = MaterialTheme.typography.bodyMedium)
+                if (onCurrentPasswordChange != null) {
+                    OutlinedTextField(
+                        value = currentPassword.orEmpty(),
+                        onValueChange = onCurrentPasswordChange,
+                        label = { Text("Current password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    )
+                }
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it; problem = null },
+                    label = { Text("New password") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                OutlinedTextField(
+                    value = confirmation,
+                    onValueChange = { confirmation = it; problem = null },
+                    label = { Text("Confirm new password") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                problem?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy && password.isNotEmpty(),
+                onClick = {
+                    problem = when {
+                        // The rule the server enforces, checked here so the
+                        // dialog can say so without a round trip.
+                        password.length < MIN_PASSWORD_LENGTH ->
+                            "Use at least $MIN_PASSWORD_LENGTH characters."
+                        password != confirmation -> "Those two do not match."
+                        else -> null
+                    }
+                    if (problem == null) onConfirm(password)
+                },
+            ) { Text(confirmLabel) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+        },
+    )
+}
+
+const val MIN_PASSWORD_LENGTH = 8
 
 @Composable
 private fun SectionDivider() {

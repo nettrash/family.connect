@@ -20,6 +20,9 @@
 //  first layout — a measured size would land a frame late and jump.
 //
 
+// iOS only — the Mac has its own views (MacViews/).
+#if os(iOS)
+
 import SwiftUI
 
 /// localID → bubble bounds, merged across all visible bubbles. Only the
@@ -228,3 +231,5 @@ struct FailedMessageMenu: View {
         .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
     }
 }
+
+#endif

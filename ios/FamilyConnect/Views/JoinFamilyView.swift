@@ -32,8 +32,7 @@ struct JoinFamilyView: View {
         Form {
             Section {
                 TextField("ABCD2345", text: Bindable(model).code)
-                    .textInputAutocapitalization(.characters)
-                    .autocorrectionDisabled()
+                    .literalTextEntry(uppercased: true)
                     .font(.body.monospaced())
                     .onChange(of: model.code) { _, newValue in
                         let upper = newValue.uppercased()

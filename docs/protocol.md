@@ -28,6 +28,10 @@ disagree, this document wins; fix the code.
 - Every other endpoint (and the WebSocket upgrade) requires `Authorization: Bearer <token>`.
 - Sessions have a sliding expiry (default 180 days, refreshed by use). A `401` means the session
   is gone — the client wipes local state (keeping the server URL) and returns to login.
+- A password change revokes sessions, which is what makes it useful for recovery rather than just
+  hygiene: changing your own password ends every OTHER session you have, and an owner resetting a
+  member's password ends ALL of theirs. Those devices find out the ordinary way — their next call
+  answers `401` and they return to login.
 
 ## Error shape
 
@@ -264,6 +268,22 @@ server is that a stored file may be referenced by several rows, so it is
 removed only when the last row referencing it is gone. Attachments uploaded
 before this was introduced have no hash and keep a file each.
 
+### Retention
+
+The server deletes messages older than `limits.retention_days` (**100 days** by default), together
+with any photo, video or file they own; the sweep runs at boot and hourly after. Setting it to `0`
+keeps everything — "off" is a state rather than a very large number.
+
+What goes with a message: its reactions, and its attachment (whose FILE is removed only once no
+other message shares those bytes — see "One copy per family"). What survives: a newer **reply** that
+quoted it, which keeps existing and simply loses its quote, because a reply is a message in its own
+right and deleting today's conversation to enforce a policy about last spring's would be wrong. The
+family **board** is not touched at all — a note is a live thing on a wall, not history.
+
+This is a SERVER-side policy. Clients keep whatever history they have already downloaded, and
+nothing in the protocol tells them to forget it: `after_id` catch-up only ever adds. A device that
+has been offline past the cutoff simply never receives what was swept.
+
 Bytes are stored on the server's filesystem, not in PostgreSQL — at this size a database row means
 buffering 100 MB in memory on every read and write, and a `pg_dump` that grows without bound.
 **This means a database dump is no longer a complete backup**; the attachments directory has to be
@@ -278,6 +298,8 @@ backed up alongside it.
 | `POST /auth/register` | `{username, display_name, password}` → `201 {token, user: User}`. Username: 3–32 chars `[a-zA-Z0-9_.]`, case-insensitively unique. Password ≥ 8 chars. Display name 1–64 chars. Errors: `username_taken`, `validation`. |
 | `POST /auth/login` | `{username, password}` → `200 {token, user: User}`. Error: `invalid_credentials` (401). |
 | `POST /auth/logout` | (auth) → `204`. Revokes the calling session and closes its sockets. |
+| `POST /me/password` | (auth) `{current_password, new_password}` → `204`. Changing your own password requires proving you know the current one — a live session is not proof, because an unattended unlocked phone is exactly what this protects against. Every OTHER session of yours is revoked and its sockets closed; the calling session survives, so the device making the change stays signed in. Errors: `invalid_credentials` (401, wrong current password), `validation` (new password under 8 characters). |
+| `POST /families/members/{id}/password` | (owner) `{new_password}` → `204`. The owner resets a member's password WITHOUT knowing the current one — the whole point is that the member has forgotten it. ALL of that member's sessions are revoked and their sockets closed, so every device they are signed in on returns to login; that is what makes a reset a recovery rather than a convenience. The owner cannot target themselves here (`POST /me/password` is for that), and a user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
 | `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. |
 
 ### Profile pictures
@@ -333,7 +355,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, and `max_edit_seq` likewise while nothing in it has been edited; `last_message` previews never carry `reactions`. |
+| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, and `max_edit_seq` likewise while nothing in it has been edited; `last_message` previews never carry `reactions` or the quote, but DO carry `attachment` — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self`, `not_same_family`, `user_not_found`. |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?}` → `201 {message: Message}`. Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_id` claims an attachment this caller uploaded; a message carrying one may have an empty body. Errors: `message_empty` (no body AND no attachment), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`. |
@@ -455,6 +477,10 @@ unregistered (APNs `410`/`BadDeviceToken`, FCM `UNREGISTERED`) deletes the devic
 
 Titles: direct chat → sender's display name; family chat → `"<Family> — <Sender>"`. Body: the
 message text, or `"New message"` when the server's `[push] include_message_body = false`.
+
+A message carrying an attachment MAY have an empty body — which is how a photo is normally sent —
+and an alert showing a name above a blank line says nothing arrived. Such a message pushes what
+arrived instead: `"Photo"`, `"Video"`, or the file's name. A caption, when there is one, still wins.
 
 APNs (token-based auth, HTTP/2): headers `apns-topic` = bundle id, `apns-push-type: alert`,
 `apns-priority: 10`; payload:
