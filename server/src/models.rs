@@ -140,6 +140,9 @@ pub struct Message {
     pub edited_at: Option<OffsetDateTime>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edit_seq: Option<i64>,
+    /// Present when the message carries a photo or video.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub attachment: Option<Attachment>,
 }
 
 /// RFC3339 for an OPTIONAL timestamp. `time::serde::rfc3339::option` exists
@@ -245,6 +248,20 @@ impl Message {
         let edited_at = row
             .try_get::<Option<OffsetDateTime>, _>("edited_at")
             .unwrap_or_default();
+        // Joined attachment columns, absent on the narrow SELECTs.
+        let attachment = match row.try_get::<Option<i64>, _>("att_id") {
+            Ok(Some(id)) => Some(Attachment {
+                id,
+                kind: row.try_get("att_kind").unwrap_or_default(),
+                mime: row.try_get("att_mime").unwrap_or_default(),
+                size: row.try_get("att_size").unwrap_or_default(),
+                width: row.try_get("att_width").unwrap_or_default(),
+                height: row.try_get("att_height").unwrap_or_default(),
+                duration_ms: row.try_get("att_duration_ms").unwrap_or_default(),
+                has_preview: row.try_get("att_has_preview").unwrap_or_default(),
+            }),
+            _ => None,
+        };
         Self {
             id: row.get("id"),
             chat_id: row.get("chat_id"),
@@ -257,6 +274,7 @@ impl Message {
             reply_to,
             edited_at,
             edit_seq,
+            attachment,
         }
     }
 }
@@ -274,6 +292,64 @@ pub struct ChatListEntry {
     /// Omitted while nothing in the chat has ever been edited.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_edit_seq: Option<i64>,
+}
+
+/// A photo or video carried by a message.
+///
+/// The bytes are NOT here and never travel through this struct — they live
+/// on the filesystem and are fetched from `GET /attachments/{id}`. This is
+/// what a bubble needs to lay itself out before a single byte arrives:
+/// what it is, how big, what shape, and whether a preview exists yet.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Attachment {
+    pub id: i64,
+    /// "photo" | "video".
+    pub kind: String,
+    pub mime: String,
+    pub size: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<i32>,
+    /// Videos only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i32>,
+    /// False until the client has uploaded the downscaled photo or poster
+    /// frame — a message may be sent before its preview arrives.
+    pub has_preview: bool,
+}
+
+impl Attachment {
+    /// The media types accepted, paired with the kind they belong to.
+    /// HEIC/HEIF are here because that is what an iPhone actually produces.
+    pub const ACCEPTED: [(&'static str, &'static str); 6] = [
+        ("image/jpeg", "photo"),
+        ("image/png", "photo"),
+        ("image/heic", "photo"),
+        ("image/heif", "photo"),
+        ("video/mp4", "video"),
+        ("video/quicktime", "video"),
+    ];
+
+    pub fn kind_for(mime: &str) -> Option<&'static str> {
+        Self::ACCEPTED
+            .iter()
+            .find(|(accepted, _)| *accepted == mime)
+            .map(|(_, kind)| *kind)
+    }
+
+    pub fn from_row(row: &PgRow) -> Self {
+        Self {
+            id: row.get("id"),
+            kind: row.get("kind"),
+            mime: row.get("mime"),
+            size: row.get("size_bytes"),
+            width: row.get("width"),
+            height: row.get("height"),
+            duration_ms: row.get("duration_ms"),
+            has_preview: row.get("has_preview"),
+        }
+    }
 }
 
 /// One sticker note on the family board.

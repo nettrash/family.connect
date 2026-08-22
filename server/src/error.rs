@@ -41,6 +41,10 @@ pub mod codes {
     pub const MESSAGE_TOO_LONG: &str = "message_too_long";
     pub const MESSAGE_NOT_FOUND: &str = "message_not_found";
     pub const NOT_MESSAGE_AUTHOR: &str = "not_message_author";
+    pub const ATTACHMENT_TOO_LARGE: &str = "attachment_too_large";
+    pub const INVALID_ATTACHMENT: &str = "invalid_attachment";
+    pub const ATTACHMENT_NOT_FOUND: &str = "attachment_not_found";
+    pub const ATTACHMENT_ALREADY_USED: &str = "attachment_already_used";
     pub const NOTE_NOT_FOUND: &str = "note_not_found";
     pub const NOT_NOTE_AUTHOR: &str = "not_note_author";
     pub const INVALID_NOTE_COLOR: &str = "invalid_note_color";

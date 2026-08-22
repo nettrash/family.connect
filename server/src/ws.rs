@@ -48,6 +48,10 @@ pub enum ClientFrame {
         /// Optional: the message being answered (protocol.md, "Replies").
         #[serde(default)]
         reply_to_message_id: Option<i64>,
+        /// Optional: an attachment this caller uploaded (protocol.md,
+        /// "Photos and videos"). The bytes never travel in a frame.
+        #[serde(default)]
+        attachment_id: Option<i64>,
     },
     Read {
         chat_id: i64,
@@ -311,6 +315,7 @@ async fn handle_client_text(
                 client_msg_id,
                 body,
                 reply_to_message_id,
+                attachment_id,
             } = frame
             else {
                 unreachable!("type tag was \"send\"");
@@ -322,6 +327,7 @@ async fn handle_client_text(
                 client_msg_id,
                 &body,
                 reply_to_message_id,
+                attachment_id,
             )
             .await
             {
@@ -441,6 +447,7 @@ mod tests {
             reply_to: None,
             edited_at: None,
             edit_seq: None,
+            attachment: None,
         }
     }
 
@@ -463,6 +470,7 @@ mod tests {
                     .expect("valid uuid"),
                 body: "Dinner at 7?".to_string(),
                 reply_to_message_id: None,
+                attachment_id: None,
             }
         );
     }
@@ -482,6 +490,7 @@ mod tests {
                     .expect("valid uuid"),
                 body: "Six works".to_string(),
                 reply_to_message_id: Some(1337),
+                attachment_id: None,
             }
         );
     }

@@ -10,8 +10,8 @@ use axum::routing::{delete, get, patch, post, put};
 
 use crate::state::AppState;
 use crate::{
-    handlers_auth, handlers_avatar, handlers_board, handlers_chat, handlers_device,
-    handlers_family, ws,
+    handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_chat,
+    handlers_device, handlers_family, ws,
 };
 
 /// Build the full application router for the given state. Used identically
@@ -22,6 +22,12 @@ pub fn build_router(state: AppState) -> Router {
     // an oversized upload is answered with `avatar_too_large` from our
     // own error shape rather than axum's bare 413.
     let avatar_limit = state.cfg.limits.max_avatar_bytes + 4096;
+    // Slack above the ceiling on purpose, exactly as the avatar route does:
+    // the layer's own refusal is a bare 413 with no protocol error body, so
+    // the handler counts the bytes itself and produces the refusal a client
+    // can explain. The layer is the backstop against an endless body.
+    let attachment_limit = state.cfg.limits.max_attachment_bytes + 65_536;
+    let preview_limit = state.cfg.limits.max_preview_bytes + 4096;
     Router::new()
         // Auth
         .route("/api/v1/auth/register", post(handlers_auth::register))
@@ -93,6 +99,22 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers_chat::get_reactions),
         )
         .route("/api/v1/chats/{id}/edits", get(handlers_chat::get_edits))
+        // Attachments
+        .route(
+            "/api/v1/attachments",
+            post(handlers_attachment::upload_attachment)
+                .layer(DefaultBodyLimit::max(attachment_limit)),
+        )
+        .route(
+            "/api/v1/attachments/{id}",
+            get(handlers_attachment::get_attachment),
+        )
+        .route(
+            "/api/v1/attachments/{id}/preview",
+            axum::routing::put(handlers_attachment::upload_preview)
+                .layer(DefaultBodyLimit::max(preview_limit))
+                .get(handlers_attachment::get_preview),
+        )
         // Board
         .route(
             "/api/v1/families/mine/board",

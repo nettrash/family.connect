@@ -63,6 +63,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "board",
         sql: include_str!("../migrations/0008_board.sql"),
     },
+    Migration {
+        version: 9,
+        name: "attachments",
+        sql: include_str!("../migrations/0009_attachments.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

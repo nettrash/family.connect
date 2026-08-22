@@ -40,6 +40,17 @@ session_touch_interval_mins = 15
 # Maximum message body length in characters (Unicode scalar values, not
 # bytes) — protocol.md fixes the default at 4000.
 max_message_chars = 4000
+# Largest photo or video accepted, in bytes (100 MB). The clients re-encode
+# a video past this rather than refusing outright, so raising it mostly
+# changes how much of the family's disk a single message can take. Keep the
+# nginx `location = /api/v1/attachments` block in step with it.
+max_attachment_bytes = 104857600
+# Largest preview (the downscaled photo or a video's poster frame). Small on
+# purpose: it is drawn in a chat bubble.
+max_preview_bytes = 2097152
+# How long an UNCLAIMED upload survives before the sweeper deletes it — a
+# send the user abandoned must not leave 100 MB behind forever.
+attachment_grace_hours = 24
 # GET /chats/{id}/messages page size: the default when the client sends no
 # limit, and the ceiling a client-supplied limit is clamped to.
 default_page_size = 50
@@ -93,3 +104,14 @@ include_message_body = true
 # # Service accounts → "Generate new private key" downloads this JSON.
 # credentials_file = "/etc/family-connect/firebase-service-account.json"
 # # endpoint = "https://fcm.googleapis.com"           # override for tests only
+
+[storage]
+# Where photo and video bytes live. On disk, not in PostgreSQL: at 100 MB a
+# database row means buffering the whole file in memory on every read and
+# write, and a pg_dump that grows without bound.
+#
+# NOTE FOR BACKUPS: because of that, a database dump is no longer a complete
+# backup — this directory has to be backed up alongside it.
+#
+# The default matches the systemd unit's StateDirectory=family-connect.
+attachments_dir = "/var/lib/family-connect/attachments"

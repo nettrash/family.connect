@@ -534,6 +534,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "bytes",
  "clap",
  "futures-util",
  "hex",

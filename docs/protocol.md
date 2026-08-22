@@ -45,7 +45,8 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `user_not_found`, `chat_not_found`, `not_chat_member`, `message_empty`, `message_too_long`,
 `message_not_found`, `not_message_author`, `invalid_emoji`, `note_not_found`,
 `not_note_author`, `invalid_note_color`, `board_full`, `invalid_pagination`, `device_not_found`,
-`avatar_too_large`, `invalid_image`, `internal`.
+`avatar_too_large`, `invalid_image`, `attachment_too_large`, `invalid_attachment`,
+`attachment_not_found`, `attachment_already_used`, `internal`.
 
 ## Objects
 
@@ -69,8 +70,13 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
           — plus "reply_to": {ReplyTo} when (and only when) the message is a reply.
           — plus "edited_at": "…" and "edit_seq": 88 when (and only when) the body has been
             edited. Both absent on a message still in its original form.
+          — plus "attachment": {Attachment} when the message carries a photo or video.
 ReplyTo   {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
 Reaction  {"user_id": 9, "emoji": "❤️"}
+Attachment {"id": 34, "kind": "photo|video", "mime": "image/jpeg", "size": 182734,
+            "width": 1600, "height": 1200, "duration_ms": 8400, "has_preview": true}
+           — "duration_ms" on videos only; "width"/"height" absent when the uploader
+             could not determine them
 Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow",
            "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88}
           — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
@@ -175,6 +181,53 @@ the change feed as `{"id": 12, "deleted": true, "board_seq": 91}` with no conten
 client who was offline when a note was removed would go on showing it forever — there is no other
 signal that it is gone. The full-board read never returns tombstones; only the change feed does.
 
+### Photos and videos
+
+A message may carry one photo or one video. One, not many: sending three photos makes three
+messages, which is what a thread shows anyway, and it keeps both the wire shape and the bubble
+layout honest.
+
+**Uploading is a separate step from sending.** The bytes go up first, on their own request, and the
+message that follows names the attachment by id. A 100 MB video and a 30-byte message have nothing
+in common — coupling them would put the whole upload inside the send retry, and there would be
+nowhere to show progress.
+
+```
+POST /attachments?kind=video&width=1920&height=1080&duration_ms=8400   (raw bytes)
+  → 201 {attachment: {id: 34, …}}
+PUT  /attachments/34/preview                                          (raw JPEG bytes)
+  → 204
+POST /chats/42/messages  {client_msg_id, body: "", attachment_id: 34}
+  → 201 {message: {…, attachment: {…}}}
+```
+
+Metadata rides in the QUERY STRING and the bytes are the whole body: no multipart, so the server
+can stream straight to disk without parsing anything.
+
+**The server never decodes an image or a video.** It checks the declared type against the file's
+magic number and stores what it is given, exactly as it does for avatars. That means the PREVIEW —
+the downscaled photo, or the poster frame of a video — is produced and uploaded by the client. A
+message may be sent before its preview arrives; `has_preview` says whether one is there yet.
+
+An attachment belongs to whoever uploaded it until a message claims it, and to that message's chat
+afterwards. Before it is claimed only the uploader may read it; after, every member of the chat
+may. An attachment can be claimed once: a second message naming it is `attachment_already_used`.
+**Unclaimed attachments are deleted after 24 hours** — a send the user abandoned must not leave
+100 MB on the server forever.
+
+A message carrying an attachment MAY have an empty body: a photo needs no caption. `message_empty`
+applies only to a message with neither.
+
+Size ceiling: **100 MB** by default (`limits.max_attachment_bytes`), and the preview has its own
+much smaller ceiling. Over either is `attachment_too_large` (413). Accepted types are `image/jpeg`,
+`image/png`, `image/heic`, `image/heif`, `video/mp4` and `video/quicktime`; anything else, or bytes
+that do not match the type declared, is `invalid_attachment`.
+
+Bytes are stored on the server's filesystem, not in PostgreSQL — at this size a database row means
+buffering 100 MB in memory on every read and write, and a `pg_dump` that grows without bound.
+**This means a database dump is no longer a complete backup**; the attachments directory has to be
+backed up alongside it.
+
 ## REST endpoints
 
 ### Auth
@@ -216,6 +269,15 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/leave` | → `204`. The owner may leave only as the sole member (the family is then deleted); otherwise `409 owner_cannot_leave`. Leaving removes the caller from the family chat and their direct chats; history is retained and resurfaces on rejoin. |
 | `DELETE /families/members/{user_id}` | (owner) → `204`. Error: `cannot_remove_owner`. |
 
+### Attachments
+
+| Method & path | Body → Response |
+|---|---|
+| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`), `width`, `height`, `duration_ms` (all optional; `duration_ms` for video). → `201 {attachment: Attachment}`. Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a type not accepted, 400 when the bytes do not match the declared type), `not_in_family`. |
+| `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only. Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
+| `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. Readable by the uploader always, and by every member of the chat once a message claims it; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Supports `Range`. |
+| `GET /attachments/{id}/preview` | → `200` with the preview JPEG, same access rules. `404` when there is no preview yet. |
+
 ### Board
 
 | Method & path | Body → Response |
@@ -233,7 +295,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, and `max_edit_seq` likewise while nothing in it has been edited; `last_message` previews never carry `reactions`. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self`, `not_same_family`, `user_not_found`. |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?}` → `201 {message: Message}`. Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). Errors: `message_empty`, `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat). |
+| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?}` → `201 {message: Message}`. Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_id` claims an attachment this caller uploaded; a message carrying one may have an empty body. Errors: `message_empty` (no body AND no attachment), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`. |
 | `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/edits` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {messages: [Message]}` ordered by `edit_seq` ascending — the edit catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `POST /chats/{id}/read` | `{last_read_message_id}` → `204`. Monotonic — the server keeps the max ever reported. |
@@ -267,6 +329,8 @@ Frames are JSON text messages tagged by `"type"`.
 {"type": "send",   "chat_id": 42, "client_msg_id": "8f14e45f-…", "body": "Dinner at 7?"}
 {"type": "send",   "chat_id": 42, "client_msg_id": "1c4a9b02-…", "body": "Six works",
                    "reply_to_message_id": 1337}
+{"type": "send",   "chat_id": 42, "client_msg_id": "9d3f1e77-…", "body": "",
+                   "attachment_id": 34}
 {"type": "read",   "chat_id": 42, "last_read_message_id": 1337}
 {"type": "typing", "chat_id": 42}
 {"type": "ping"}

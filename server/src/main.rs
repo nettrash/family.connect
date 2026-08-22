@@ -17,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 
 use family_connect::config::Config;
 use family_connect::state::AppState;
-use family_connect::{app, db, migrate, push};
+use family_connect::{app, db, handlers_attachment, migrate, push};
 
 #[derive(Parser, Debug)]
 #[command(name = "family-connect", about = "Self-hosted family chat server")]
@@ -65,9 +65,38 @@ async fn main() -> Result<()> {
 
     let push_sender = push::build(&cfg.push).context("building the push transports")?;
     let state = AppState::new(pool.clone(), Arc::new(cfg), push_sender);
+    // Fail at BOOT if the attachments directory is unusable, rather than
+    // on the family's first photo.
+    state
+        .storage
+        .ensure_root()
+        .await
+        .context("preparing the attachments directory")?;
+
     // The registry owns the shutdown token because the WS connection tasks
     // (spawned by axum, out of our reach) must be able to observe it.
     let shutdown = state.registry.shutdown_token();
+
+    // Unclaimed uploads — a send the user abandoned — are swept at boot and
+    // hourly after. Nothing else in the system would ever remove them, and
+    // each one can be 100 MB.
+    {
+        let sweeper_state = state.clone();
+        let sweeper_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                match handlers_attachment::sweep_unclaimed(&sweeper_state).await {
+                    Ok(0) => {}
+                    Ok(count) => info!(count, "swept unclaimed attachments"),
+                    Err(err) => warn!(error = ?err, "sweeping unclaimed attachments failed"),
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}
+                    _ = sweeper_shutdown.cancelled() => break,
+                }
+            }
+        });
+    }
 
     let listener = tokio::net::TcpListener::bind(&state.cfg.server.bind)
         .await

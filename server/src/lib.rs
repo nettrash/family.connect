@@ -15,6 +15,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod events;
+pub mod handlers_attachment;
 pub mod handlers_auth;
 pub mod handlers_avatar;
 pub mod handlers_board;
@@ -27,6 +28,7 @@ pub mod push;
 pub mod push_payload;
 pub mod registry;
 pub mod state;
+pub mod storage;
 #[cfg(test)]
 pub(crate) mod test_keys;
 pub mod tokens;

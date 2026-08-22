@@ -98,6 +98,12 @@ jsonwebtoken = "9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+# Streaming attachment bodies to and from disk. Both are already in the tree
+# under axum; naming them here is what lets the storage layer consume a
+# request body chunk by chunk instead of buffering 100 MB in memory.
+bytes = "1"
+futures-util = "0.3"
+
 # CLI
 clap = { version = "4", features = ["derive"] }
 
@@ -117,9 +123,6 @@ rsa = "0.9"
 # Kept on the same minor as axum's own ws dependency so the tree carries one
 # tungstenite, not two.
 tokio-tungstenite = "0.29"
-
-# SinkExt/StreamExt for driving the tungstenite client stream in tests.
-futures-util = "0.3"
 
 # Scoped temp files for Config::load unit tests; cleaned up on drop.
 tempfile = "3"

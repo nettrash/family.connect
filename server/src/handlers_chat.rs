@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Chat, ChatListEntry, Message, Reaction, ReplyTo};
+use crate::models::{Attachment, Chat, ChatListEntry, Message, Reaction, ReplyTo};
 use crate::state::AppState;
 
 /// Upper bound on a reaction emoji, in UTF-8 bytes. Fixed by protocol.md's
@@ -47,6 +47,10 @@ pub struct PostMessageRequest {
     /// Optional: the message being answered. Must be in this same chat.
     #[serde(default)]
     pub reply_to_message_id: Option<i64>,
+    /// Optional: an attachment this caller uploaded, claimed by this
+    /// message. A message carrying one may have an empty body.
+    #[serde(default)]
+    pub attachment_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,9 +130,14 @@ pub async fn ensure_chat_access(
 /// the reader cannot see.
 const MESSAGE_COLS: &str = "m.id, m.chat_id, m.sender_id, m.client_msg_id, m.body, m.created_at, \
                             m.reaction_seq, m.edit_seq, m.edited_at, m.reply_to_message_id, \
-                            p.sender_id AS reply_sender_id, p.body AS reply_body";
+                            p.sender_id AS reply_sender_id, p.body AS reply_body, \
+                            att.id AS att_id, att.kind AS att_kind, att.mime AS att_mime, \
+                            att.size_bytes AS att_size, att.width AS att_width, \
+                            att.height AS att_height, att.duration_ms AS att_duration_ms, \
+                            att.has_preview AS att_has_preview";
 const MESSAGE_FROM: &str = "FROM messages m LEFT JOIN messages p \
-                            ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id";
+                            ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id \
+                            LEFT JOIN attachments att ON att.message_id = m.id";
 
 /// Fill in reaction state for messages whose `reaction_seq` says they have
 /// any. `Some(vec![])` (not `None`) when the seq is set but every reaction
@@ -206,10 +215,17 @@ pub async fn create_message(
     client_msg_id: Uuid,
     body: &str,
     reply_to_message_id: Option<i64>,
+    attachment_id: Option<i64>,
 ) -> Result<(Message, bool), ApiError> {
     ensure_chat_access(state, chat_id, sender_id).await?;
 
-    let body = validate_body(state, body)?;
+    // A photo needs no caption: an empty body is allowed when — and only
+    // when — the message carries an attachment.
+    let body = if attachment_id.is_some() && body.trim().is_empty() {
+        String::new()
+    } else {
+        validate_body(state, body)?
+    };
     let body = body.as_str();
 
     // The quote is resolved BEFORE the insert, both to reject a bad target
@@ -263,19 +279,20 @@ pub async fn create_message(
         // RETURNING cannot join, so the snippet resolved above is attached
         // here rather than re-read.
         message.reply_to = reply_to;
+        if let Some(attachment_id) = attachment_id {
+            message.attachment =
+                Some(claim_attachment(state, attachment_id, sender_id, message.id).await?);
+        }
         return Ok((message, true));
     }
 
     // Dedup hit: a retry of a message that already landed. Return the
     // original — possibly with a different body if the client mutated the
     // retry, which is the client's bug; the first write wins.
-    let row = sqlx::query(
-        "SELECT m.id, m.chat_id, m.sender_id, m.client_msg_id, m.body, m.created_at,
-                m.reply_to_message_id, p.sender_id AS reply_sender_id, p.body AS reply_body
-         FROM messages m
-         LEFT JOIN messages p ON p.id = m.reply_to_message_id
-         WHERE m.chat_id = $1 AND m.sender_id = $2 AND m.client_msg_id = $3",
-    )
+    let row = sqlx::query(&format!(
+        "SELECT {MESSAGE_COLS} {MESSAGE_FROM}
+         WHERE m.chat_id = $1 AND m.sender_id = $2 AND m.client_msg_id = $3"
+    ))
     .bind(chat_id)
     .bind(sender_id)
     .bind(client_msg_id)
@@ -382,6 +399,53 @@ pub async fn fetch_message(
     let mut message = Message::from_row(&row);
     attach_reactions(state, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
+}
+
+/// Bind an uploaded attachment to the message that just claimed it.
+///
+/// Claimable once, by its uploader only. The unique index on `message_id`
+/// is the real guarantee; this check exists to answer with the protocol's
+/// error rather than a constraint violation.
+async fn claim_attachment(
+    state: &AppState,
+    attachment_id: i64,
+    uploader_id: i64,
+    message_id: i64,
+) -> Result<Attachment, ApiError> {
+    let row = sqlx::query(
+        "UPDATE attachments SET message_id = $3
+         WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL
+         RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview",
+    )
+    .bind(attachment_id)
+    .bind(uploader_id)
+    .bind(message_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if let Some(row) = row {
+        return Ok(Attachment::from_row(&row));
+    }
+
+    // Tell "already claimed" apart from "not yours / no such thing" — the
+    // first is worth retrying differently, the second is not.
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = $1 AND uploader_id = $2")
+            .bind(attachment_id)
+            .bind(uploader_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .flatten();
+    if exists.is_some() {
+        Err(ApiError::conflict(
+            codes::ATTACHMENT_ALREADY_USED,
+            "that attachment is already on another message",
+        ))
+    } else {
+        Err(ApiError::not_found(
+            codes::ATTACHMENT_NOT_FOUND,
+            "no such attachment",
+        ))
+    }
 }
 
 /// Advance a read marker, monotonically (the max ever reported wins).
@@ -618,6 +682,7 @@ pub async fn list_chats(
                 // and whether it was edited is a bubble's business.
                 edited_at: None,
                 edit_seq: None,
+                attachment: None,
             });
             let last_reaction_seq: i64 = row.get("last_reaction_seq");
             let last_edit_seq: i64 = row.get("last_edit_seq");
@@ -785,6 +850,7 @@ pub async fn post_message(
         req.client_msg_id,
         &req.body,
         req.reply_to_message_id,
+        req.attachment_id,
     )
     .await?;
     if created {

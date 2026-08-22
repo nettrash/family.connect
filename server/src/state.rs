@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use crate::config::Config;
 use crate::push::PushSender;
 use crate::registry::Registry;
+use crate::storage::Storage;
 
 /// Everything a request handler needs. All fields are shared handles, so
 /// `Clone` is a few `Arc` bumps.
@@ -21,6 +22,9 @@ pub struct AppState {
     pub registry: Arc<Registry>,
     pub push: Arc<dyn PushSender>,
     pub cfg: Arc<Config>,
+    /// Where attachment bytes live. On disk, not in PostgreSQL — see
+    /// migration 0009.
+    pub storage: Storage,
 }
 
 impl AppState {
@@ -28,11 +32,13 @@ impl AppState {
     /// from `[limits] ws_send_queue`.
     pub fn new(pool: PgPool, cfg: Arc<Config>, push: Arc<dyn PushSender>) -> Self {
         let registry = Arc::new(Registry::new(cfg.limits.ws_send_queue));
+        let storage = Storage::new(cfg.storage.attachments_dir.clone());
         Self {
             pool,
             registry,
             push,
             cfg,
+            storage,
         }
     }
 }

@@ -207,6 +207,7 @@ mod tests {
             reply_to: None,
             edited_at: None,
             edit_seq: None,
+            attachment: None,
             reaction_seq: None,
         }
     }

@@ -74,6 +74,7 @@ pub struct TestServer {
     pub push: Arc<RecordingPushSender>,
     db_name: String,
     admin: DatabaseConfig,
+    attachments_dir: PathBuf,
     server_task: tokio::task::JoinHandle<()>,
 }
 
@@ -137,6 +138,15 @@ async fn spawn_server_inner(push_cfg: Option<PushConfig>) -> TestServer {
         ..Config::default()
     };
     cfg.server.bind = "127.0.0.1:0".to_string();
+    // Attachments land in a scratch directory beside the scratch database,
+    // and both go away together on teardown.
+    let attachments_dir = std::env::temp_dir().join(format!("fc-test-{db_name}"));
+    cfg.storage.attachments_dir = attachments_dir.clone();
+    // A far lower ceiling than production's 100 MB: the oversize test has
+    // to push past it, and pushing 100 MB through a test would be absurd.
+    // What the tests check is the REFUSAL, not the number.
+    cfg.limits.max_attachment_bytes = 64 * 1024;
+    cfg.limits.max_preview_bytes = 16 * 1024;
     if let Some(push_cfg) = push_cfg {
         cfg.push = push_cfg;
     }
@@ -154,6 +164,11 @@ async fn spawn_server_inner(push_cfg: Option<PushConfig>) -> TestServer {
         push.clone()
     };
     let state = AppState::new(pool, Arc::new(cfg), push_sender);
+    state
+        .storage
+        .ensure_root()
+        .await
+        .expect("creating the scratch attachments directory");
     let router = build_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -174,6 +189,7 @@ async fn spawn_server_inner(push_cfg: Option<PushConfig>) -> TestServer {
         push,
         db_name,
         admin,
+        attachments_dir,
         server_task,
     }
 }
@@ -225,6 +241,29 @@ impl TestServer {
 
     /// Raw-body PUT — the avatar upload is the one endpoint that takes
     /// bytes rather than JSON.
+    /// Raw-bytes upload with a chosen METHOD — the attachment endpoints
+    /// POST bytes where avatars PUT them.
+    pub async fn put_bytes_method(
+        &self,
+        method: &str,
+        token: &str,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> reqwest::Response {
+        let request = match method {
+            "POST" => self.client.post(self.url(path)),
+            _ => self.client.put(self.url(path)),
+        };
+        request
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .send()
+            .await
+            .expect("request sends")
+    }
+
     pub async fn put_bytes(
         &self,
         token: &str,
@@ -417,6 +456,8 @@ pub async fn assert_error(response: reqwest::Response, status: u16, code: &str) 
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.server_task.abort();
+        // The scratch attachments directory goes with the scratch database.
+        let _ = std::fs::remove_dir_all(&self.attachments_dir);
         // Async teardown from a sync Drop: run it on a throwaway thread with
         // its own runtime. DROP DATABASE ... WITH (FORCE) (PostgreSQL 13+)
         // kicks any straggling connections our aborted server left behind.

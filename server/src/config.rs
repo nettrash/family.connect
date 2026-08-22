@@ -31,6 +31,32 @@ pub struct Config {
 
     #[serde(default)]
     pub push: PushConfig,
+
+    #[serde(default)]
+    pub storage: StorageConfig,
+}
+
+/// `[storage]` — where attachment bytes live.
+///
+/// On disk, not in PostgreSQL: see migration 0009. The default matches the
+/// systemd unit's `StateDirectory=family-connect`, which has been reserved
+/// for exactly this since the first release.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StorageConfig {
+    #[serde(default = "default_attachments_dir")]
+    pub attachments_dir: PathBuf,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            attachments_dir: default_attachments_dir(),
+        }
+    }
+}
+
+fn default_attachments_dir() -> PathBuf {
+    PathBuf::from("/var/lib/family-connect/attachments")
 }
 
 /// `[server]` — the HTTP + WebSocket listener.
@@ -88,6 +114,22 @@ pub struct LimitsConfig {
     /// Maximum message body length in characters (not bytes).
     #[serde(default = "default_max_message_chars")]
     pub max_message_chars: usize,
+
+    /// Largest photo or video accepted, in bytes. 100 MB by default: a
+    /// minute of phone video, and the clients re-encode past that rather
+    /// than refusing outright.
+    #[serde(default = "default_max_attachment_bytes")]
+    pub max_attachment_bytes: usize,
+
+    /// Largest PREVIEW accepted (the downscaled photo or poster frame).
+    /// Small on purpose — it is drawn in a chat bubble.
+    #[serde(default = "default_max_preview_bytes")]
+    pub max_preview_bytes: usize,
+
+    /// How long an UNCLAIMED upload survives before the sweeper deletes
+    /// it. A send the user abandoned must not leave 100 MB behind.
+    #[serde(default = "default_attachment_grace_hours")]
+    pub attachment_grace_hours: i64,
 
     /// Most notes one family board may hold at once (tombstones excluded).
     /// A runaway guard, not a budget: a wall nobody could read is not a
@@ -328,6 +370,9 @@ impl Default for LimitsConfig {
         Self {
             max_message_chars: default_max_message_chars(),
             max_board_notes: default_max_board_notes(),
+            max_attachment_bytes: default_max_attachment_bytes(),
+            max_preview_bytes: default_max_preview_bytes(),
+            attachment_grace_hours: default_attachment_grace_hours(),
             default_page_size: default_default_page_size(),
             max_page_size: default_max_page_size(),
             max_body_bytes: default_max_body_bytes(),
@@ -492,6 +537,18 @@ fn default_session_touch_interval_mins() -> i64 {
 
 fn default_max_message_chars() -> usize {
     4000
+}
+
+fn default_max_attachment_bytes() -> usize {
+    100 * 1024 * 1024
+}
+
+fn default_max_preview_bytes() -> usize {
+    2 * 1024 * 1024
+}
+
+fn default_attachment_grace_hours() -> i64 {
+    24
 }
 
 fn default_max_board_notes() -> i64 {
