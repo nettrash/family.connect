@@ -423,6 +423,7 @@
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library \U2014 the picker hands over only what you choose.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -460,6 +461,7 @@
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library \U2014 the picker hands over only what you choose.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -643,6 +645,7 @@
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library \U2014 the picker hands over only what you choose.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

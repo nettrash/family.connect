@@ -173,6 +173,27 @@ data class AttachmentDto(
     val isVideo: Boolean get() = kind == KIND_VIDEO
     val isFile: Boolean get() = kind == KIND_FILE
 
+    /**
+     * A filename for something that carries no name of its own.
+     *
+     * The EXTENSION is the part that matters: it is what the gallery, the
+     * share target and the receiving app all read to decide what they have
+     * been handed. Mirrors iOS's ChatSyncCoordinator.fallbackName.
+     */
+    val fallbackFileName: String
+        get() {
+            val ext = when (mime) {
+                "image/jpeg" -> "jpg"
+                "image/png" -> "png"
+                "image/heic" -> "heic"
+                "image/heif" -> "heif"
+                "video/mp4" -> "mp4"
+                "video/quicktime" -> "mov"
+                else -> if (isVideo) "mp4" else "jpg"
+            }
+            return "${if (isVideo) "video" else "photo"}-$id.$ext"
+        }
+
     /** What a bubble calls it: the name for a file, a word for the rest. */
     val displayName: String
         get() = name?.takeIf { it.isNotEmpty() }

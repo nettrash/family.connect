@@ -783,7 +783,7 @@ final class ChatSyncCoordinator {
         let directory = caches
             .appendingPathComponent("files", isDirectory: true)
             .appendingPathComponent(String(attachment.id), isDirectory: true)
-        let name = Self.safeFileName(attachment.name ?? "file")
+        let name = Self.safeFileName(attachment.name ?? Self.fallbackName(for: attachment))
         let destination = directory.appendingPathComponent(name)
 
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -804,6 +804,24 @@ final class ChatSyncCoordinator {
             return nil
         }
         return destination
+    }
+
+    /// What to call a photo or video, which carry no name of their own.
+    ///
+    /// The EXTENSION is the part that matters: Photos refuses a video
+    /// whose file does not look like one, and a share sheet decides what
+    /// it can offer from it.
+    nonisolated static func fallbackName(for attachment: AttachmentDTO) -> String {
+        let ext = switch attachment.mime {
+        case "image/jpeg": "jpg"
+        case "image/png": "png"
+        case "image/heic": "heic"
+        case "image/heif": "heif"
+        case "video/mp4": "mp4"
+        case "video/quicktime": "mov"
+        default: attachment.isVideo ? "mp4" : "jpg"
+        }
+        return "\(attachment.isVideo ? "video" : "photo")-\(attachment.id).\(ext)"
     }
 
     /// A filename safe to create on this device. The server sanitises what

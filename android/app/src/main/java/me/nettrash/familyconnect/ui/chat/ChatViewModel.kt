@@ -60,7 +60,9 @@ import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.net.ws.SocketState
 import me.nettrash.familyconnect.data.repo.ChatRepository
+import android.content.Context
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
+import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
@@ -81,6 +83,7 @@ class ChatViewModel @Inject constructor(
     private val mediaPrep: MediaPrep,
     private val attachmentApi: AttachmentApi,
     private val attachments: AttachmentRepository,
+    private val gallerySaver: GallerySaver,
     memberDao: MemberDao,
     connectivity: ConnectivityObserver,
 ) : ViewModel() {
@@ -272,6 +275,13 @@ class ChatViewModel @Inject constructor(
         data object Idle : MediaSendState
         data object Preparing : MediaSendState
         data object Uploading : MediaSendState
+
+        /**
+         * A download the user asked for (share, open), with its own
+         * wording — the same strip reports it, since it is the one place
+         * this screen already says what it is busy with.
+         */
+        data class Working(val label: String) : MediaSendState
         data class Failed(val reason: String) : MediaSendState
     }
 
@@ -406,6 +416,49 @@ class ChatViewModel @Inject constructor(
                 "Couldn't download that file."
             },
         )
+    }
+
+    /**
+     * Download if needed, then copy into the phone's gallery.
+     *
+     * Android's chooser has no save-to-gallery action of its own (iOS's
+     * share sheet does), so this is the only route to it.
+     */
+    suspend fun saveToGallery(context: Context, attachment: AttachmentDto): GallerySaver.Result {
+        _mediaState.value = MediaSendState.Working("Saving…")
+        val file = attachments.fileFor(attachment)
+        if (file == null) {
+            _mediaState.value = MediaSendState.Failed("Couldn't download that to save.")
+            return GallerySaver.Result.FAILED
+        }
+        val result = gallerySaver.save(
+            context = context,
+            file = file,
+            mime = attachment.mime,
+            displayName = attachment.name ?: attachment.fallbackFileName,
+            isVideo = attachment.isVideo,
+        )
+        _mediaState.value = when (result) {
+            GallerySaver.Result.SAVED -> MediaSendState.Idle
+            GallerySaver.Result.NEEDS_PERMISSION -> MediaSendState.Idle
+            GallerySaver.Result.FAILED -> MediaSendState.Failed("Couldn't save that.")
+        }
+        return result
+    }
+
+    /** The user declined (or the system refused) the storage permission. */
+    fun reportSaveNeedsPermission() {
+        _mediaState.value = MediaSendState.Failed(
+            "Family needs permission to save to your gallery.",
+        )
+    }
+
+    /** True when this device needs the legacy storage permission to save. */
+    val savingNeedsPermission: Boolean get() = gallerySaver.needsLegacyPermission
+
+    /** Show what the screen is busy fetching, in the composer's strip. */
+    fun reportAttachmentBusy(label: String) {
+        _mediaState.value = MediaSendState.Working(label)
     }
 
     /** Dismiss a media failure notice. */

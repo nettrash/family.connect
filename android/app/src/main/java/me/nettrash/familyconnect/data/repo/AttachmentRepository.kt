@@ -195,7 +195,7 @@ class AttachmentRepository @Inject constructor(
         // Shadowing `directory` here would read as recursion; the folder
         // is per-attachment so two `Invoice.pdf`s stay apart.
         val folder = File(File(directory, FILES_DIR), attachment.id.toString())
-        val destination = File(folder, safeFileName(attachment.name ?: "file"))
+        val destination = File(folder, safeFileName(attachment.name ?: attachment.fallbackFileName))
         if (destination.isFile) return@withContext destination
         folder.mkdirs()
         when (attachmentApi.download(attachment.id, preview = false, destination = destination)) {

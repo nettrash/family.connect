@@ -113,6 +113,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Share
@@ -212,6 +213,7 @@ import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.LinkPreviewState
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import androidx.core.content.FileProvider
 import java.io.File
@@ -304,6 +306,59 @@ fun ChatScreen(
     val pickFile = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> if (uri != null) viewModel.sendFile(uri) }
+
+    // Saving to the gallery. On 26–28 the write needs a permission first;
+    // `pendingSave` holds what the user asked for across that prompt so the
+    // grant continues the action instead of dropping it.
+    var pendingSave by remember { mutableStateOf<AttachmentDto?>(null) }
+    val runSave: (AttachmentDto) -> Unit = { attachment ->
+        scope.launch {
+            when (viewModel.saveToGallery(context, attachment)) {
+                GallerySaver.Result.SAVED ->
+                    Toast.makeText(context, "Saved to gallery", Toast.LENGTH_SHORT).show()
+                GallerySaver.Result.NEEDS_PERMISSION ->
+                    viewModel.reportSaveNeedsPermission()
+                GallerySaver.Result.FAILED -> Unit // the strip already says so
+            }
+        }
+    }
+    val requestStorage = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val attachment = pendingSave
+        pendingSave = null
+        when {
+            attachment == null -> Unit
+            granted -> runSave(attachment)
+            else -> viewModel.reportSaveNeedsPermission()
+        }
+    }
+    val saveAttachment: (AttachmentDto) -> Unit = { attachment ->
+        if (viewModel.savingNeedsPermission) {
+            pendingSave = attachment
+            requestStorage.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            runSave(attachment)
+        }
+    }
+
+    // Sharing an attachment: fetch the bytes if this device does not have
+    // them, then hand the file to the chooser. A content:// Uri from
+    // FileProvider, never file:// — and never the raw bitmap, which would
+    // re-encode what the sender sent.
+    val shareAttachment: (AttachmentDto, String) -> Unit = { attachment, caption ->
+        scope.launch {
+            viewModel.reportAttachmentBusy("Preparing…")
+            val file = viewModel.localFile(attachment)
+            if (file == null) {
+                viewModel.reportAttachmentOpenFailed(downloaded = false)
+            } else {
+                viewModel.clearMediaState()
+                val shared = shareWithSystem(context, file, attachment.mime, caption)
+                if (!shared) viewModel.reportAttachmentOpenFailed(downloaded = true)
+            }
+        }
+    }
 
     // Downloading a file and handing it to whatever app can read it.
     // Failures land in the composer's strip, which is the one place this
@@ -672,6 +727,14 @@ fun ChatScreen(
                 AttachmentViewer(
                     attachment = attachment,
                     streamUrl = viewModel::attachmentStreamUrl,
+                    onShare = {
+                        viewingAttachment = null
+                        shareAttachment(attachment, "")
+                    },
+                    onSave = {
+                        viewingAttachment = null
+                        saveAttachment(attachment)
+                    },
                     onDismiss = { viewingAttachment = null },
                 )
             }
@@ -754,14 +817,25 @@ fun ChatScreen(
                     }
                 }
             },
-            onShare = {
-                val body = target.item.entity.body
+            onSave = {
+                val attachment = target.item.entity.attachment
                 pickerTarget = null
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, body)
+                if (attachment != null) saveAttachment(attachment)
+            },
+            onShare = {
+                val entity = target.item.entity
+                val body = entity.body
+                val attachment = entity.attachment
+                pickerTarget = null
+                if (attachment != null) {
+                    shareAttachment(attachment, body)
+                } else {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, body)
+                    }
+                    context.startActivity(Intent.createChooser(send, null))
                 }
-                context.startActivity(Intent.createChooser(send, null))
             },
             onDismiss = { pickerTarget = null },
         )
@@ -837,6 +911,7 @@ private fun ReactionPickerPopup(
     onEdit: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
+    onSave: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val atWindowOrigin = remember {
@@ -960,10 +1035,13 @@ private fun ReactionPickerPopup(
                     onEdit = { exitThen(onEdit) },
                     onCopy = { exitThen(onCopy) },
                     onShare = { exitThen(onShare) },
+                    onSave = { exitThen(onSave) },
                     modifier = Modifier.onSizeChanged { menuSize = it },
+                    canSave = target.item.entity.attachment?.isFile == false,
                     canReply = target.item.entity.serverId != null,
                     canEdit = target.item.entity.serverId != null &&
                         target.item.entity.senderId == myUserId,
+                    canCopy = target.item.entity.body.isNotEmpty(),
                 )
             }
         }
@@ -1066,6 +1144,7 @@ private fun MessageContextMenu(
     onEdit: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
+    onSave: () -> Unit,
     modifier: Modifier = Modifier,
     /**
      * Reply needs a server id to quote, so it is hidden — not disabled —
@@ -1074,6 +1153,10 @@ private fun MessageContextMenu(
     canReply: Boolean = true,
     /** Only the author may edit, and only once the message has an id. */
     canEdit: Boolean = false,
+    /** A photo sent without a caption has nothing to copy. */
+    canCopy: Boolean = true,
+    /** Photos and videos only — what the gallery will take. */
+    canSave: Boolean = false,
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -1097,11 +1180,22 @@ private fun MessageContextMenu(
                     onClick = onEdit,
                 )
             }
-            MessageContextMenuItem(
-                label = "Copy",
-                icon = Icons.Outlined.ContentCopy,
-                onClick = onCopy,
-            )
+            if (canCopy) {
+                MessageContextMenuItem(
+                    label = "Copy",
+                    icon = Icons.Outlined.ContentCopy,
+                    onClick = onCopy,
+                )
+            }
+            if (canSave) {
+                // Android's chooser cannot do this on its own, unlike
+                // iOS's share sheet — hence a row of its own here.
+                MessageContextMenuItem(
+                    label = "Save to gallery",
+                    icon = Icons.Outlined.Download,
+                    onClick = onSave,
+                )
+            }
             MessageContextMenuItem(
                 label = "Share",
                 icon = Icons.Outlined.Share,
@@ -2201,6 +2295,14 @@ private fun MediaStrip(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            is ChatViewModel.MediaSendState.Working -> {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text(
+                    text = state.label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             is ChatViewModel.MediaSendState.Failed -> {
                 Icon(
                     imageVector = Icons.Filled.ErrorOutline,
@@ -2398,4 +2500,37 @@ private fun openWithSystem(context: Context, file: File, mime: String): Boolean 
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     return runCatching { context.startActivity(intent); true }.getOrDefault(false)
+}
+
+/**
+ * Hand an attachment to the system chooser.
+ *
+ * ACTION_SEND with a FileProvider Uri: `file://` has thrown since Android
+ * 7, and the read grant rides on this one Intent. The caption goes along
+ * as EXTRA_TEXT so a photo shared with its words keeps them — apps that
+ * only want the stream ignore it.
+ *
+ * Returns false when nothing on the device can take it, so the caller can
+ * say so rather than leaving the tap looking broken.
+ */
+private fun shareWithSystem(
+    context: Context,
+    file: File,
+    mime: String,
+    caption: String,
+): Boolean {
+    val uri = runCatching {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }.getOrNull() ?: return false
+
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = mime.ifEmpty { "*/*" }
+        putExtra(Intent.EXTRA_STREAM, uri)
+        if (caption.isNotEmpty()) putExtra(Intent.EXTRA_TEXT, caption)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    return runCatching {
+        context.startActivity(Intent.createChooser(send, null))
+        true
+    }.getOrDefault(false)
 }

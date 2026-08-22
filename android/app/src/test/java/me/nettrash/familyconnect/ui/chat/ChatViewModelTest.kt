@@ -39,6 +39,7 @@ import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
+import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
@@ -165,6 +166,7 @@ class ChatViewModelTest {
                 contentResolver = RuntimeEnvironment.getApplication().contentResolver,
             ),
             attachmentApi = attachmentApi,
+            gallerySaver = GallerySaver(),
             attachments = AttachmentRepository(
                 context = RuntimeEnvironment.getApplication(),
                 attachmentApi = attachmentApi,

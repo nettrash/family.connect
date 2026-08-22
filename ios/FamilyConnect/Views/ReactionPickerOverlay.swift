@@ -97,10 +97,21 @@ struct ReactionCapsule: View {
 /// a link, but this shares plain message text from a `.sheet(item:)`
 /// rather than from a button the user taps directly.
 struct ShareSheet: UIViewControllerRepresentable {
-    let text: String
+    let items: [Any]
+
+    init(text: String) {
+        items = [text]
+    }
+
+    /// A file (and optionally its caption). A URL is what lets the sheet
+    /// offer "Save to Files", AirDrop and every document app — sharing an
+    /// attachment as a UIImage would strip it back to pixels.
+    init(items: [Any]) {
+        self.items = items
+    }
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [text], applicationActivities: nil)
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
@@ -121,14 +132,19 @@ struct MessageContextMenu: View {
     var canReply: Bool = true
     /// Only the author may edit, and only once the message has an id.
     var canEdit: Bool = false
+    /// A photo sent without a caption has nothing to copy.
+    var canCopy: Bool = true
 
     private static let rowHeight: CGFloat = 44
     private static let menuWidth: CGFloat = 220
 
     /// Exact rendered size — fixed-height rows and their hairlines. The
     /// overlay needs the size up front to place the menu.
-    static func size(canReply: Bool, canEdit: Bool = false) -> CGSize {
-        let rows = 2.0 + (canReply ? 1.0 : 0.0) + (canEdit ? 1.0 : 0.0)
+    static func size(canReply: Bool, canEdit: Bool = false, canCopy: Bool = true) -> CGSize {
+        let rows = 1.0
+            + (canReply ? 1.0 : 0.0)
+            + (canEdit ? 1.0 : 0.0)
+            + (canCopy ? 1.0 : 0.0)
         return CGSize(width: menuWidth, height: rowHeight * rows + (rows - 1))
     }
 
@@ -142,8 +158,13 @@ struct MessageContextMenu: View {
                 row("Edit", systemImage: "pencil", action: onEdit)
                 Divider()
             }
-            row("Copy", systemImage: "doc.on.doc", action: onCopy)
-            Divider()
+            if canCopy {
+                row("Copy", systemImage: "doc.on.doc", action: onCopy)
+                Divider()
+            }
+            // Share covers saving too: the sheet's own "Save Image" /
+            // "Save Video" put it in the library, and "Save to Files" puts
+            // it anywhere else. A second row would be the same action.
             row("Share", systemImage: "square.and.arrow.up", action: onShare)
         }
         .frame(width: Self.menuWidth)

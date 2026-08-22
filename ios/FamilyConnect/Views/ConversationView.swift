@@ -141,7 +141,17 @@ struct ConversationView: View {
         case idle
         case preparing
         case uploading
+        /// A download/save the user asked for, with its own wording — the
+        /// same strip reports it, since it is the one place this screen
+        /// already says what it is busy with.
+        case working(String)
         case failed(String)
+    }
+
+    /// Files on their way to the share sheet.
+    private struct SharePayload: Identifiable {
+        let id = UUID()
+        let items: [Any]
     }
     /// localID of the bubble the floating reaction picker is up over;
     /// nil = no picker. Set/cleared inside withAnimation so the capsule
@@ -151,6 +161,8 @@ struct ConversationView: View {
     @State private var fullPickerTarget: ReactionTarget?
     /// Text handed to the share sheet, nil while it is closed.
     @State private var shareText: ShareText?
+    /// An attachment (and any caption) handed to the share sheet.
+    @State private var sharePayload: SharePayload?
 
     init(chatID: Int64) {
         self.chatID = chatID
@@ -325,6 +337,9 @@ struct ConversationView: View {
         .modifier(attachmentSurfaces)
         .sheet(item: $shareText) { share in
             ShareSheet(text: share.text)
+        }
+        .sheet(item: $sharePayload) { payload in
+            ShareSheet(items: payload.items)
         }
         .sheet(item: $fullPickerTarget) { target in
             EmojiPickerView { emoji in
@@ -719,6 +734,12 @@ struct ConversationView: View {
                 Text(mediaState == .preparing ? "Preparing…" : "Sending…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            case .working(let label):
+                ProgressView()
+                    .controlSize(.small)
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             case .failed(let reason):
                 Image(systemName: "exclamationmark.circle")
                     .foregroundStyle(.red)
@@ -749,7 +770,28 @@ struct ConversationView: View {
             viewingAttachment: $viewingAttachment,
             onPickedMedia: sendPickedMedia,
             onPickedFile: sendPickedFile,
-            onImportFailed: { mediaState = .failed("Couldn't read that file.") })
+            onImportFailed: { mediaState = .failed("Couldn't read that file.") },
+            onShareAttachment: { shareAttachment($0, caption: "") })
+    }
+
+    /// Share an attachment as a FILE, downloading it first if this device
+    /// does not have the bytes yet.
+    ///
+    /// A URL rather than a UIImage: it is what lets the sheet offer Save
+    /// to Files, AirDrop and every document app, and it keeps the original
+    /// bytes rather than re-encoding them on the way out.
+    func shareAttachment(_ attachment: AttachmentDTO, caption: String) {
+        Task {
+            mediaState = .working("Preparing…")
+            guard let url = await coordinator.localFileURL(for: attachment) else {
+                mediaState = .failed("Couldn't download that to share.")
+                return
+            }
+            mediaState = .idle
+            var items: [Any] = [url]
+            if !caption.isEmpty { items.append(caption) }
+            sharePayload = SharePayload(items: items)
+        }
     }
 
     /// Send a picked document. Nothing is re-encoded — a file goes as it is.
@@ -914,7 +956,13 @@ struct ConversationView: View {
                         // flip down too, so the two never overlap.
                         let canReply = message.serverID != nil
                         let canEdit = message.serverID != nil && message.senderID == currentUserID
-                        let menuSize = MessageContextMenu.size(canReply: canReply, canEdit: canEdit)
+                        let attachment = message.attachmentSnapshot
+                        // A photo sent without a caption has nothing to copy.
+                        let canCopy = !message.body.isEmpty
+                        let menuSize = MessageContextMenu.size(
+                            canReply: canReply,
+                            canEdit: canEdit,
+                            canCopy: canCopy)
                         floatingMenu(
                             size: menuSize,
                             over: rect,
@@ -943,10 +991,18 @@ struct ConversationView: View {
                                 },
                                 onShare: {
                                     dismissReactionPicker()
-                                    shareText = ShareText(text: message.body)
+                                    if let attachment {
+                                        // The file, plus the caption when
+                                        // there is one — sharing a photo's
+                                        // empty body would share nothing.
+                                        shareAttachment(attachment, caption: message.body)
+                                    } else {
+                                        shareText = ShareText(text: message.body)
+                                    }
                                 },
                                 canReply: canReply,
-                                canEdit: canEdit)
+                                canEdit: canEdit,
+                                canCopy: canCopy)
                         }
                     }
                 }
@@ -1202,6 +1258,7 @@ private struct AttachmentSurfaces: ViewModifier {
     let onPickedMedia: (PhotosPickerItem) -> Void
     let onPickedFile: (URL) -> Void
     let onImportFailed: () -> Void
+    let onShareAttachment: (AttachmentDTO) -> Void
 
     func body(content: Content) -> some View {
         content
@@ -1226,7 +1283,9 @@ private struct AttachmentSurfaces: ViewModifier {
             }
             .quickLookPreview($previewedFile)
             .fullScreenCover(item: $viewingAttachment) { attachment in
-                AttachmentViewer(attachment: attachment)
+                AttachmentViewer(
+                    attachment: attachment,
+                    onShare: { onShareAttachment(attachment) })
             }
     }
 }

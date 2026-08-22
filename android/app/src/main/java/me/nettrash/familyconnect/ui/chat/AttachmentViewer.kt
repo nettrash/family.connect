@@ -27,11 +27,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +43,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -65,6 +70,8 @@ import me.nettrash.familyconnect.ui.components.rememberAttachmentImage
 fun AttachmentViewer(
     attachment: AttachmentDto,
     streamUrl: suspend (Long) -> Pair<String, Map<String, String>>?,
+    onShare: () -> Unit,
+    onSave: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     Dialog(
@@ -96,6 +103,34 @@ fun AttachmentViewer(
             ) {
                 Icon(imageVector = Icons.Filled.Close, contentDescription = "Close")
             }
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                IconButton(
+                    onClick = onSave,
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = Color.Black.copy(alpha = 0.45f),
+                        contentColor = Color.White,
+                    ),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Download,
+                        contentDescription = "Save to gallery",
+                    )
+                }
+                IconButton(
+                    onClick = onShare,
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = Color.Black.copy(alpha = 0.45f),
+                        contentColor = Color.White,
+                    ),
+                ) {
+                    Icon(imageVector = Icons.Filled.Share, contentDescription = "Share")
+                }
+            }
         }
     }
 }
@@ -107,9 +142,10 @@ private fun ZoomablePhoto(attachment: AttachmentDto) {
     val preview = rememberAttachmentImage(attachment, preview = true)
     val image = full ?: preview
 
-    var zoom by remember { mutableStateOf(1f) }
-    var offsetX by remember { mutableStateOf(0f) }
-    var offsetY by remember { mutableStateOf(0f) }
+    // Float state, not boxed: these change on every frame of a pinch.
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
 
     fun reset() {
         zoom = 1f

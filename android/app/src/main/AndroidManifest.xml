@@ -10,6 +10,13 @@
          the first time the chat list is shown — see ChatListScreen). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Saving a photo or video to the gallery. API 29+ writes through
+         MediaStore with no permission at all; only 26–28 need this, hence
+         the cap — it must never be requested on a modern device. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
     <!-- Package visibility (Android 11+): without this, resolving "who can
          open a PDF" returns nothing and every downloaded file looks
          unopenable. Scoped to VIEW intents, not a blanket QUERY_ALL. -->

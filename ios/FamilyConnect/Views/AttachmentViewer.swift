@@ -19,6 +19,9 @@ import SwiftUI
 
 struct AttachmentViewer: View {
     let attachment: AttachmentDTO
+    /// Fetches the bytes and opens the share sheet. Owned by the thread,
+    /// which already has the coordinator and the sheet state.
+    var onShare: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
 
@@ -46,6 +49,22 @@ struct AttachmentViewer: View {
             }
             .padding(16)
             .accessibilityLabel("Close")
+        }
+        .overlay(alignment: .topTrailing) {
+            // Share is also how this gets saved: the sheet's own "Save
+            // Image" / "Save Video" put it in the library.
+            Button {
+                dismiss()
+                onShare()
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(10)
+                    .background(.black.opacity(0.45), in: Circle())
+            }
+            .padding(16)
+            .accessibilityLabel("Share")
         }
         .statusBarHidden()
     }
