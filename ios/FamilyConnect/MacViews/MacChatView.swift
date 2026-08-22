@@ -32,6 +32,8 @@ struct MacChatView: View {
 
     @State private var selectedChatID: Int64?
     @State private var showingSettings = false
+    @State private var showingFamily = false
+    @State private var showingBoard = false
 
     var body: some View {
         NavigationSplitView {
@@ -63,6 +65,22 @@ struct MacChatView: View {
         .toolbar {
             ToolbarItem {
                 Button {
+                    showingBoard = true
+                } label: {
+                    Label("Board", systemImage: "doc.text")
+                }
+                .help("The family board")
+            }
+            ToolbarItem {
+                Button {
+                    showingFamily = true
+                } label: {
+                    Label("Family", systemImage: "person.2")
+                }
+                .help("Members, invites and direct chats")
+            }
+            ToolbarItem {
+                Button {
                     showingSettings = true
                 } label: {
                     Label("Settings", systemImage: "gearshape")
@@ -71,6 +89,12 @@ struct MacChatView: View {
         }
         .sheet(isPresented: $showingSettings) {
             MacSettingsView()
+        }
+        .sheet(isPresented: $showingBoard) {
+            MacBoardView()
+        }
+        .sheet(isPresented: $showingFamily) {
+            MacFamilyView(onOpenChat: { selectedChatID = $0 })
         }
         // ⌘R from the menu bar.
         .onReceive(NotificationCenter.default.publisher(for: .macRequestResync)) { _ in

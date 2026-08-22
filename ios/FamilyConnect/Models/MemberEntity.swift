@@ -35,6 +35,19 @@ final class MemberEntity {
     /// SwiftData migration for anyone upgrading over an existing store.
     var avatarVersion: Int64 = 0
 
+
+    /// The wire shape, for the screens that take a DTO (the password
+    /// reset sheet, which is shared with iOS). A roster row IS a member —
+    /// this is a spelling difference, not a fetch.
+    var dto: MemberDTO {
+        MemberDTO(
+            id: userID,
+            username: username,
+            displayName: displayName,
+            role: role,
+            avatarVersion: avatarVersion)
+    }
+
     init(
         userID: Int64,
         username: String,
