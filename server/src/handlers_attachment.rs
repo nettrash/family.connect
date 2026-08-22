@@ -121,13 +121,23 @@ pub async fn upload_attachment(
         (kind, mime, None)
     };
 
+    // Which family the bytes are being uploaded INTO — the dedup scope.
+    // Read now rather than derived later: the uploader can leave or move
+    // family, and the file belongs to the family that received it.
+    let family_id: Option<i64> = sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
+        .bind(auth.user_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .flatten();
+
     // The row is created first so its id names the file — one identifier,
     // no second allocation scheme to keep in step.
     let storage_key = format!("{}-{}", auth.user_id, crate::tokens::gen_session_token());
     let row = sqlx::query(&format!(
         "INSERT INTO attachments
-            (uploader_id, kind, mime, size_bytes, width, height, duration_ms, storage_key, name)
-         VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8)
+            (uploader_id, kind, mime, size_bytes, width, height, duration_ms, storage_key, name,
+             family_id)
+         VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9)
          RETURNING {ATTACHMENT_COLS}"
     ))
     .bind(auth.user_id)
@@ -138,6 +148,7 @@ pub async fn upload_attachment(
     .bind(params.duration_ms)
     .bind(&storage_key)
     .bind(name.as_deref())
+    .bind(family_id)
     .fetch_one(&state.pool)
     .await?;
     let id: i64 = row.get("id");
@@ -177,6 +188,9 @@ pub async fn upload_attachment(
             .bind(id)
             .execute(&state.pool)
             .await;
+        // Safe to remove unconditionally: this key was minted for this
+        // upload moments ago and dedup has not run, so nothing else can
+        // reference it.
         state.storage.remove(&storage_key).await;
         return Err(ApiError::bad_request(
             codes::INVALID_ATTACHMENT,
@@ -184,11 +198,54 @@ pub async fn upload_attachment(
         ));
     }
 
+    // Does this family already hold these exact bytes? If so, point this
+    // row at the file that is already there and drop the copy just
+    // written. Scoped to the family and matched on size as well as digest
+    // — belt and braces against a hash collision costing somebody the
+    // wrong photo.
+    //
+    // A concurrent pair of identical uploads can both miss here and keep
+    // two copies. That is the acceptable outcome: a missed saving, never a
+    // wrong or shared-too-far file.
+    let existing: Option<(String, bool)> = if let Some(family_id) = family_id {
+        sqlx::query_as(
+            "SELECT storage_key, has_preview FROM attachments
+             WHERE family_id = $1 AND content_hash = $2 AND size_bytes = $3 AND id <> $4
+             ORDER BY id
+             LIMIT 1",
+        )
+        .bind(family_id)
+        .bind(&written.sha256)
+        .bind(written.bytes as i64)
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+    } else {
+        None
+    };
+
+    let (final_key, inherited_preview) = match existing {
+        Some((key, has_preview)) => {
+            state.storage.discard(&path).await;
+            // The preview belongs to bytes that are identical, so it is
+            // this attachment's preview too — the sender's client will
+            // upload its own anyway, but the bubble can draw before it.
+            (key, has_preview)
+        }
+        None => (storage_key.clone(), false),
+    };
+
     let row = sqlx::query(&format!(
-        "UPDATE attachments SET size_bytes = $2 WHERE id = $1 RETURNING {ATTACHMENT_COLS}"
+        "UPDATE attachments
+         SET size_bytes = $2, content_hash = $3, storage_key = $4, has_preview = $5
+         WHERE id = $1
+         RETURNING {ATTACHMENT_COLS}"
     ))
     .bind(id)
-    .bind(written as i64)
+    .bind(written.bytes as i64)
+    .bind(&written.sha256)
+    .bind(&final_key)
+    .bind(inherited_preview)
     .fetch_one(&state.pool)
     .await?;
 
@@ -527,6 +584,26 @@ fn parse_range(value: &str, len: u64) -> RangeSpec {
     }
 }
 
+/// Remove a file only once no attachment row names it any more.
+///
+/// The check and the delete are not atomic, and deliberately so: taking a
+/// lock across a filesystem operation for every swept row would be a lot of
+/// machinery for a race that needs an upload to dedup against a row being
+/// deleted in the same instant. The failure mode of losing that race is a
+/// file with no rows (the sweeper's own problem, and a `du` away from being
+/// noticed) rather than a row with no file.
+async fn remove_if_unreferenced(state: &AppState, storage_key: &str) -> Result<(), ApiError> {
+    let still_used: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE storage_key = $1)")
+            .bind(storage_key)
+            .fetch_one(&state.pool)
+            .await?;
+    if !still_used {
+        state.storage.remove(storage_key).await;
+    }
+    Ok(())
+}
+
 /// Delete unclaimed uploads past the grace period.
 ///
 /// A send the user abandoned — picked a video, changed their mind — leaves
@@ -544,9 +621,14 @@ pub async fn sweep_unclaimed(state: &AppState) -> Result<u64, ApiError> {
     .fetch_all(&state.pool)
     .await?;
 
+    // REFCOUNTED, and this is the part that must never regress: since
+    // 0011 a family's identical uploads share one file, so removing it
+    // with the first row that goes would break every other message
+    // pointing at it — silently, and with the database still looking
+    // perfectly consistent.
     for row in &rows {
         let key: String = row.get("storage_key");
-        state.storage.remove(&key).await;
+        remove_if_unreferenced(state, &key).await?;
     }
     Ok(rows.len() as u64)
 }

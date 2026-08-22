@@ -248,6 +248,22 @@ the kind, or bytes that do not match the type declared, is `invalid_attachment`.
 any type is accepted and none is verified — an absent or unparseable one is stored as
 `application/octet-stream`.
 
+**One copy per family.** An upload whose bytes a family already holds is
+stored once: the server hashes what it writes (SHA-256, computed as the bytes
+stream past) and points the new attachment at the file that is already there.
+Forwarding the same photo into the family chat and two direct chats therefore
+costs one file, not three. It is a storage detail with no wire effect — each
+upload still gets its own attachment id, its own metadata and its own access
+check, and two attachments sharing bytes never share visibility.
+
+Deduplication is scoped to a FAMILY, not global: sharing bytes between
+families would save a little more disk and cost the property that one
+family's attachments are a self-contained set of files, which is what keeps
+backing up, exporting or deleting a family simple. The consequence for the
+server is that a stored file may be referenced by several rows, so it is
+removed only when the last row referencing it is gone. Attachments uploaded
+before this was introduced have no hash and keep a file each.
+
 Bytes are stored on the server's filesystem, not in PostgreSQL — at this size a database row means
 buffering 100 MB in memory on every read and write, and a `pg_dump` that grows without bound.
 **This means a database dump is no longer a complete backup**; the attachments directory has to be

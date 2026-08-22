@@ -771,6 +771,193 @@ fn urlencoding(value: &str) -> String {
         .collect()
 }
 
+/// One copy per family: forwarding the same photo three times must not
+/// put three copies on the disk.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn identical_uploads_in_one_family_share_one_file() {
+    let server = spawn_server().await;
+    let (owner, member, chat_id) = family_of_two(&server).await;
+    let bytes = jpeg_bytes(4096);
+
+    let mut ids = Vec::new();
+    for token in [&owner, &owner, &member] {
+        let body: Value = upload(&server, token, "?kind=photo", "image/jpeg", bytes.clone())
+            .await
+            .json()
+            .await
+            .expect("JSON");
+        ids.push(body["attachment"]["id"].as_i64().expect("id"));
+    }
+
+    let keys: Vec<String> = sqlx::query_scalar("SELECT storage_key FROM attachments ORDER BY id")
+        .fetch_all(&server.state.pool)
+        .await
+        .expect("keys");
+    let distinct: std::collections::HashSet<&String> = keys.iter().collect();
+    assert_eq!(distinct.len(), 1, "three identical uploads kept {keys:?}");
+    // Including across MEMBERS of the family, not just one uploader.
+    assert_eq!(keys.len(), 3);
+
+    // Every row still serves its own bytes, to its own uploader.
+    for (id, token) in ids.iter().zip([&owner, &owner, &member]) {
+        let fetched = server.get(token, &format!("/attachments/{id}")).await;
+        assert_eq!(fetched.status(), 200);
+        assert_eq!(fetched.bytes().await.unwrap().as_ref(), bytes.as_slice());
+    }
+
+    // SHARING BYTES MUST NOT SHARE ACCESS. The member's upload is
+    // unclaimed, so it is theirs alone — even though the file on disk is
+    // the very one the owner may read through their own row.
+    assert_error(
+        server
+            .get(&owner, &format!("/attachments/{}", ids[2]))
+            .await,
+        404,
+        "attachment_not_found",
+    )
+    .await;
+
+    // Different bytes are still a different file.
+    let other: Value = upload(
+        &server,
+        &owner,
+        "?kind=photo",
+        "image/jpeg",
+        jpeg_bytes(8192),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let other_id = other["attachment"]["id"].as_i64().expect("id");
+    let other_key: String = sqlx::query_scalar("SELECT storage_key FROM attachments WHERE id = $1")
+        .bind(other_id)
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("key");
+    assert!(!distinct.contains(&other_key));
+
+    let _ = chat_id;
+}
+
+/// Two families holding the same bytes keep their own copies — a family's
+/// attachments stay a self-contained set of files.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn two_families_do_not_share_a_file() {
+    let server = spawn_server().await;
+    let (owner, _) = server.register("owner", "Olive").await;
+    server.create_family(&owner, "The Smiths").await;
+    let (other, _) = server.register("stranger", "Sam").await;
+    server.create_family(&other, "The Joneses").await;
+
+    let bytes = jpeg_bytes(2048);
+    for token in [&owner, &other] {
+        assert_eq!(
+            upload(&server, token, "?kind=photo", "image/jpeg", bytes.clone())
+                .await
+                .status(),
+            201
+        );
+    }
+
+    let keys: Vec<String> = sqlx::query_scalar("SELECT storage_key FROM attachments ORDER BY id")
+        .fetch_all(&server.state.pool)
+        .await
+        .expect("keys");
+    assert_eq!(keys.len(), 2);
+    assert_ne!(keys[0], keys[1], "two families shared a file");
+}
+
+/// THE DANGEROUS CASE. Sweeping one abandoned upload must not delete bytes
+/// another message is still pointing at — the database would look fine and
+/// the photo would be gone.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn sweeping_a_shared_upload_leaves_the_other_intact() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+    let bytes = jpeg_bytes(1024);
+
+    async fn upload_id(server: &TestServer, token: &str, bytes: Vec<u8>) -> i64 {
+        let body: Value = upload(server, token, "?kind=photo", "image/jpeg", bytes)
+            .await
+            .json()
+            .await
+            .expect("JSON");
+        body["attachment"]["id"].as_i64().expect("id")
+    }
+
+    let kept = upload_id(&server, &owner, bytes.clone()).await;
+    let abandoned = upload_id(&server, &owner, bytes.clone()).await;
+
+    // One of them is claimed by a message; the other is the send the user
+    // gave up on.
+    server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_id": kept,
+            }),
+        )
+        .await;
+
+    sqlx::query("UPDATE attachments SET created_at = now() - interval '48 hours' WHERE id = $1")
+        .bind(abandoned)
+        .execute(&server.state.pool)
+        .await
+        .expect("age the orphan");
+
+    let swept = family_connect::handlers_attachment::sweep_unclaimed(&server.state)
+        .await
+        .expect("sweep");
+    assert_eq!(swept, 1);
+
+    // The surviving message's bytes are still there and still correct.
+    let fetched = server.get(&owner, &format!("/attachments/{kept}")).await;
+    assert_eq!(fetched.status(), 200);
+    assert_eq!(fetched.bytes().await.unwrap().as_ref(), bytes.as_slice());
+}
+
+/// And when the LAST row goes, the file goes with it — dedup must not turn
+/// the sweeper into a no-op that leaks disk forever.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_last_reference_takes_the_file_with_it() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+    let bytes = jpeg_bytes(1024);
+
+    for _ in 0..2 {
+        assert_eq!(
+            upload(&server, &owner, "?kind=photo", "image/jpeg", bytes.clone())
+                .await
+                .status(),
+            201
+        );
+    }
+    let key: String = sqlx::query_scalar("SELECT storage_key FROM attachments ORDER BY id LIMIT 1")
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("key");
+    let path = server.state.storage.blob_path(&key);
+    assert!(path.exists());
+
+    sqlx::query("UPDATE attachments SET created_at = now() - interval '48 hours'")
+        .execute(&server.state.pool)
+        .await
+        .expect("age both");
+    let swept = family_connect::handlers_attachment::sweep_unclaimed(&server.state)
+        .await
+        .expect("sweep");
+    assert_eq!(swept, 2);
+    assert!(!path.exists(), "the shared file outlived its last row");
+}
+
 /// A player seeks by asking for byte ranges; the endpoint advertises
 /// `Accept-Ranges: bytes`, so it has to mean it.
 #[tokio::test]

@@ -19,6 +19,14 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::ApiError;
 
+/// What a completed write produced.
+#[derive(Debug, Clone)]
+pub struct Written {
+    pub bytes: u64,
+    /// Hex SHA-256 of the stored bytes — the dedup key.
+    pub sha256: String,
+}
+
 /// Where one attachment's bytes and its preview live.
 #[derive(Debug, Clone)]
 pub struct Storage {
@@ -55,21 +63,29 @@ impl Storage {
 
     /// Write a stream to `path`, refusing past `max_bytes`.
     ///
-    /// Returns the byte count. The caller's route also carries a
-    /// DefaultBodyLimit, but that one rejects with a bare 413 carrying no
-    /// protocol error body — the count here is what produces a refusal a
-    /// client can explain to its user.
+    /// Returns the byte count and the SHA-256 of what was written. The
+    /// digest is computed as the bytes go past — they are in hand anyway,
+    /// and re-reading a 100 MB file to hash it afterwards would double the
+    /// I/O of every upload. It is what lets a family store one copy of a
+    /// photo it sends itself three times (migration 0011).
+    ///
+    /// The caller's route also carries a DefaultBodyLimit, but that one
+    /// rejects with a bare 413 carrying no protocol error body — the count
+    /// here is what produces a refusal a client can explain to its user.
     pub async fn write_stream<S, E>(
         &self,
         path: &Path,
         mut stream: S,
         max_bytes: usize,
-    ) -> Result<u64, ApiError>
+    ) -> Result<Written, ApiError>
     where
         S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
         E: std::fmt::Display,
     {
         use futures_util::StreamExt;
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -92,6 +108,7 @@ impl Storage {
                 }
             };
             written += chunk.len() as u64;
+            hasher.update(&chunk);
             if written > max_bytes as u64 {
                 let _ = fs::remove_file(&temp).await;
                 return Err(ApiError::payload_too_large(
@@ -115,11 +132,30 @@ impl Storage {
         fs::rename(&temp, path)
             .await
             .map_err(|err| ApiError::Internal(anyhow::anyhow!("renaming into {path:?}: {err}")))?;
-        Ok(written)
+        Ok(Written {
+            bytes: written,
+            sha256: hex::encode(hasher.finalize()),
+        })
+    }
+
+    /// Remove one file, without touching its preview. Used when an upload
+    /// turns out to duplicate bytes the family already holds: the row keeps
+    /// the EXISTING key, and the copy that was just written is dropped.
+    pub async fn discard(&self, path: &Path) {
+        if let Err(err) = fs::remove_file(path).await
+            && err.kind() != ErrorKind::NotFound
+        {
+            tracing::warn!(?path, %err, "discarding a duplicate upload failed");
+        }
     }
 
     /// Remove an attachment's bytes and preview. Missing files are not an
     /// error: the row is the record, the file is only its content.
+    ///
+    /// CALLERS MUST CHECK FIRST that no other attachment row still names
+    /// this key — since 0011 a file can be shared within a family, and
+    /// removing it out from under another row would break a message that
+    /// looks perfectly fine in the database.
     pub async fn remove(&self, key: &str) {
         for path in [self.blob_path(key), self.preview_path(key)] {
             if let Err(err) = fs::remove_file(&path).await
