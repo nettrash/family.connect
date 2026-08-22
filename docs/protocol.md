@@ -370,7 +370,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /devices` | `{platform: "ios"\|"android", push_token: string\|null}` → `201 {device_id}`. Upserts by token when non-null. |
+| `POST /devices` | `{platform: "ios"\|"macos"\|"android", push_token: string\|null}` → `201 {device_id}`. Upserts by token when non-null. `macos` is delivered over APNs alongside `ios` — the macOS build shares the iOS bundle id, so it shares the APNs topic and the payload is identical; it is a distinct platform in the DATA because a Mac claiming to be an iPhone makes every future question about delivery harder to answer. |
 | `DELETE /devices/{id}` | → `204`. Error: `device_not_found`. |
 
 ### Ops

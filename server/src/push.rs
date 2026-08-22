@@ -85,11 +85,17 @@ pub struct Dispatcher {
 #[async_trait]
 impl PushSender for Dispatcher {
     async fn notify(&self, devices: &[DevicePush], note: &Notification) -> Vec<i64> {
-        // The devices table CHECK-constrains platform to these two values,
-        // so the filters partition the slice.
+        // The devices table CHECK-constrains platform to these three
+        // values, so the filters partition the slice.
+        //
+        // A Mac goes out over APNs with the iPhones: the macOS build shares
+        // the iOS bundle id, so it shares the APNs topic, and nothing about
+        // the payload differs. It is a separate platform in the DATA
+        // because knowing which devices are Macs is worth having; it is not
+        // a separate transport.
         let ios: Vec<DevicePush> = devices
             .iter()
-            .filter(|d| d.platform == "ios")
+            .filter(|d| d.platform == "ios" || d.platform == "macos")
             .cloned()
             .collect();
         let android: Vec<DevicePush> = devices

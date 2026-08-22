@@ -24,7 +24,10 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Json;
 use axum::routing::post;
-use common::{TestServer, spawn_server_with_push, write_test_apns_key, write_test_service_account};
+use common::{
+    TestServer, assert_error, spawn_server, spawn_server_with_push, write_test_apns_key,
+    write_test_service_account,
+};
 use family_connect::config::{ApnsConfig, FcmConfig, PushConfig};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -586,4 +589,47 @@ async fn next_frame_of_type(ws: &mut WsClient, wanted: &str) -> Value {
             }
         }
     }
+}
+
+/// A Mac is a third platform in the data and an iPhone on the wire: same
+/// bundle id, same APNs topic, same connection. What must NOT happen is
+/// the server dropping it because the routing filter only knew two names.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_macos_device_is_pushed_over_apns() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, member, _member_id) = family_of_two(&ts).await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    register_device(&ts, &member, "macos", "macos-token-1").await;
+
+    let message_id = post_message_id(&ts, &owner, chat_id, "Dinner at 7?").await;
+    let _ = message_id;
+
+    let requests = mock
+        .wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    assert_eq!(requests[0].path, "/3/device/macos-token-1");
+}
+
+/// And a platform nobody implements is still refused.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_unknown_platform_is_refused() {
+    let ts = spawn_server().await;
+    let (token, _) = ts.register("olive", "Olive").await;
+    assert_error(
+        ts.post(
+            &token,
+            "/devices",
+            serde_json::json!({"platform": "toaster", "push_token": "t"}),
+        )
+        .await,
+        400,
+        "validation",
+    )
+    .await;
 }

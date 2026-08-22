@@ -54,6 +54,16 @@ nonisolated enum PushRegistrationLogic {
 @MainActor
 final class PushRegistrar {
 
+    /// What this build calls itself to the server (protocol.md, POST
+    /// /devices).
+    static var platform: String {
+        #if os(macOS)
+        "macos"
+        #else
+        "ios"
+        #endif
+    }
+
     private let api: APIClient
 
     /// Serializes POSTs so a token callback racing a resync-triggered
@@ -135,7 +145,13 @@ final class PushRegistrar {
         registrationInFlight = true
         defer { registrationInFlight = false }
         do {
-            let deviceID = try await api.registerDevice(platform: "ios", pushToken: tokenHex)
+            // A Mac says so, even though its token goes out over the same
+            // APNs connection as an iPhone's: the server routes on this
+            // field, and a Mac claiming to be an iPhone is the kind of
+            // small untruth that costs an hour the first time somebody
+            // debugs "why did only one device get it".
+            let deviceID = try await api.registerDevice(
+                platform: Self.platform, pushToken: tokenHex)
             saveStored(tokenHex, deviceID)
             AppLog.push.info("Registered device \(deviceID, privacy: .public) for push")
         } catch {

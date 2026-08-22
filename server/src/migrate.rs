@@ -83,6 +83,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "retention",
         sql: include_str!("../migrations/0012_retention.sql"),
     },
+    Migration {
+        version: 13,
+        name: "macos_devices",
+        sql: include_str!("../migrations/0013_macos_devices.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

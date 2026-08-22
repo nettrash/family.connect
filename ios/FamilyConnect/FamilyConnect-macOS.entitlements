@@ -17,6 +17,13 @@
 	  writes goes to its own container, and anything leaving it goes
 	  through the share sheet, which needs no entitlement of its own.
 	-->
+	<!--
+	  Push. Same note as the iOS entitlements: "development" is what
+	  source carries, and Xcode rewrites it to "production" when an
+	  archive is exported.
+	-->
+	<key>aps-environment</key>
+	<string>development</string>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
 	<key>com.apple.security.network.client</key>

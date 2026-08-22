@@ -29,9 +29,9 @@ pub async fn register_device(
     State(state): State<AppState>,
     AppJson(req): AppJson<RegisterDeviceRequest>,
 ) -> Result<Response, ApiError> {
-    if req.platform != "ios" && req.platform != "android" {
+    if !matches!(req.platform.as_str(), "ios" | "android" | "macos") {
         return Err(ApiError::validation(
-            "platform must be \"ios\" or \"android\"",
+            "platform must be \"ios\", \"macos\" or \"android\"",
         ));
     }
     // An empty token is a client that has none yet; store NULL, not "".

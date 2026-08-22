@@ -31,6 +31,8 @@ struct FamilyConnectApp: App {
     /// delegate; see AppDelegate.swift.
     #if os(iOS)
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #elseif os(macOS)
+    @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     #endif
 
     /// Result of the SwiftData container construction, captured at init
@@ -105,6 +107,9 @@ struct FamilyConnectApp: App {
             #if os(iOS)
             AppDelegate.registrar = registrar
             AppDelegate.session = session
+            #elseif os(macOS)
+            MacAppDelegate.registrar = registrar
+            MacAppDelegate.session = session
             #endif
 
             self.session = session
