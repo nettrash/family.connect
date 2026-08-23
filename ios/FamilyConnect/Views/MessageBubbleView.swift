@@ -48,6 +48,10 @@ import SwiftUI
 struct MessageBubbleView: View {
     let message: MessageSnapshot
     let isMine: Bool
+    /// The assistant is still writing this one, so the bubble shows a
+    /// cursor. Purely cosmetic: the row's body is already whatever has
+    /// arrived, and the authoritative text lands as an edit either way.
+    var isStreaming: Bool = false
     let showsSenderName: Bool
     let senderName: String?
     /// Who sent it, for the run-head avatar. Only consulted when
@@ -439,6 +443,16 @@ struct MessageBubbleView: View {
                     isMine: isMine)
                     .padding(.bottom, message.body.isEmpty ? 0 : 4)
             }
+            // An assistant reply that has not started arriving yet: the row
+            // exists (so the bubble is in place and the thread has already
+            // scrolled) but there is nothing in it. A cursor says "working"
+            // where an empty balloon would look broken.
+            if isStreaming && message.body.isEmpty {
+                Text(verbatim: "▍")
+                    .font(bubbleFont)
+                    .foregroundStyle(bubbleContentColor.opacity(0.6))
+                    .symbolEffect(.pulse)
+            }
             // A photo needs no caption, and an empty Text would still take
             // a line's height inside the balloon.
             if !message.body.isEmpty {
@@ -448,6 +462,16 @@ struct MessageBubbleView: View {
                         : MessageLinks.attributedBody(message.body, isMine: isMine))
                     .font(bubbleFont)
                     .foregroundStyle(bubbleContentColor)
+                    // While the assistant is writing, the text ends in a
+                    // cursor rather than just stopping mid-word.
+                    .overlay(alignment: .bottomTrailing) {
+                        if isStreaming {
+                            Text(verbatim: "▍")
+                                .font(bubbleFont)
+                                .foregroundStyle(bubbleContentColor.opacity(0.6))
+                                .offset(x: 8)
+                        }
+                    }
                     // A sibling block — a link card or a photo — has already
                     // decided how wide this balloon is. Text left to itself
                     // reports the width it WANTS (SwiftUI balances the lines,

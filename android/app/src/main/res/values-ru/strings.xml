@@ -144,4 +144,12 @@
     <string name="s_record_video">Записать видео</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Добавь подпись или отправь так.</string>
     <string name="s_remove_attachment">Убрать вложение</string>
+    <string name="s_record_audio">Записать аудио</string>
+    <string name="s_stop">Стоп</string>
+    <string name="s_audio">Аудио</string>
+    <string name="s_play">Воспроизвести</string>
+    <string name="s_pause">Пауза</string>
+    <string name="e_record_failed">Не удалось начать запись.</string>
+    <string name="e_recording_too_short">Запись слишком короткая.</string>
+    <string name="e_microphone_permission">Family нужно разрешение на использование микрофона.</string>
 </resources>

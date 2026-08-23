@@ -62,8 +62,9 @@ Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|m
 Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval", "created_at": "…"}
           — plus "invite_code": "ABCD2345" when (and only when) the caller is the owner
 JoinRequest {"id": 12, "user": {User}, "created_at": "…"}
-Chat      {"id": 42, "kind": "family|direct", "title": "The Smiths", "peer_user_id": 9|null}
-          — "title" is the family name for the family chat, the peer's display name for direct;
+Chat      {"id": 42, "kind": "family|direct|ai", "title": "The Smiths", "peer_user_id": 9|null}
+          — "title" is the family name for the family chat, the peer's display name for direct,
+            and the assistant's name for "ai";
             "peer_user_id" is set for direct chats only
 Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
            "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
@@ -215,11 +216,58 @@ the change feed as `{"id": 12, "deleted": true, "board_seq": 91}` with no conten
 client who was offline when a note was removed would go on showing it forever — there is no other
 signal that it is gone. The full-board read never returns tombstones; only the change feed does.
 
-### Photos, videos and files
+### The assistant
 
-A message may carry one attachment: a photo, a video, or any other file. One, not many: sending
-three photos makes three messages, which is what a thread shows anyway, and it keeps both the wire
-shape and the bubble layout honest.
+Each member may have one private chat with an assistant, and **private is the whole point**: it
+belongs to that member alone, no other member can read it, and it is never part of the family chat.
+`kind` is `"ai"`, `user_a_id` is its owner, and `GET /chats` returns it only to them.
+
+**The assistant is only ever shown that member's own AI thread.** Not the family chat, not another
+member's AI chat, not anything anyone else wrote. This is the invariant that lets a self-hosted
+family server talk to a hosted model at all: a member asking a question sends their own words, and
+nothing anybody else said ever leaves the server. A future setting to widen this would be a change
+to what leaves the building, not a preference, and would need saying so here first.
+
+Talking to it is an ordinary send — `POST /chats/{id}/messages` — and what comes back is ordinary
+too. The server:
+
+1. stores the member's message and fans it out, exactly like any other message;
+2. immediately stores an EMPTY assistant message and fans that out, so every one of the member's
+   devices has a row to fill;
+3. streams the text as it is generated, as `ai_delta` frames naming that message id;
+4. writes the finished text to the row, which takes an `edit_seq` and fans out `message_edited`.
+
+**The deltas are cosmetic and the row is the truth.** A client that was not listening — asleep, on
+another screen, connected halfway through — gets the whole reply from the edits feed it already
+speaks (see "Editing"), with no special path. That is why the assistant's reply is a normal message
+rather than a bespoke object: reactions, replies, retention, catch-up and search all work on it
+without a line of new code.
+
+```json
+{"type": "ai_delta", "chat_id": 42, "message_id": 1339, "text": "Sure — the "}
+```
+
+A reply that fails midway leaves the row with whatever text arrived and an `ai_error` frame; the
+member sees a partial answer and can ask again, which is better than a bubble that never resolves.
+
+The assistant sends under a **reserved account** that belongs to no family, so `sender_id` stays a
+real user id and every foreign key, join and index over messages keeps working untouched. It is not
+in any roster (`GET /families/mine` selects by family, and the assistant has none), the username is
+refused at registration so nobody can impersonate it, and it can never be messaged directly.
+
+Clients need no special id: an `ai` chat has exactly two participants, so a message in one that is
+not yours is the assistant's. Draw it with the chat's own name and icon rather than looking the
+sender up in the roster, where it will not be found.
+
+The feature is OFF unless the server is configured for it (`[ai] enabled`, an endpoint, a deployment
+and a key). A server without it simply never creates the chat, and `POST` to one that does not exist
+is the usual `chat_not_found`.
+
+### Photos, videos, audio and files
+
+A message may carry one attachment: a photo, a video, a piece of audio, or any other file. One, not
+many: sending three photos makes three messages, which is what a thread shows anyway, and it keeps
+both the wire shape and the bubble layout honest.
 
 **Uploading is a separate step from sending.** The bytes go up first, on their own request, and the
 message that follows names the attachment by id. A 100 MB video and a 30-byte message have nothing
@@ -243,9 +291,27 @@ magic number and stores what it is given, exactly as it does for avatars. That m
 the downscaled photo, or the poster frame of a video — is produced and uploaded by the client. A
 message may be sent before its preview arrives; `has_preview` says whether one is there yet.
 
+#### Audio
+
+`kind=audio` covers both halves of the same thing: a sound file picked from disk, and a voice note
+recorded on the spot. They are one kind because a bubble plays them identically and the server
+cannot tell them apart anyway — what a member cares about is that it is something to listen to.
+
+It carries `duration_ms` like a video, and **no preview**: `has_preview` is always false and
+`PUT /attachments/{id}/preview` on one is `invalid_attachment`. There is nothing to look at. A
+client draws a play control, the duration, and a scrubber — deliberately not a waveform, which
+would be a second artefact to generate, upload and version for something the ear does not need.
+
+The magic-number check applies, as it does to photos and video: the declared type must match what
+the bytes are. A recording that a client cannot encode into a checkable container should be sent as
+`kind=file` instead, where nothing is verified.
+
+`name` is optional for audio, unlike a file: a voice note has no name worth showing (its duration
+is its identity), but a track picked from disk does, and a client that has one may send it.
+
 #### Files
 
-`kind=file` is the third kind, and it is the one that accepts ANYTHING: a family sending each other
+`kind=file` is the fourth kind, and it is the one that accepts ANYTHING: a family sending each other
 documents should never be told their file is not allowed, and a fixed list would refuse the very
 things a particular family lives on. A file therefore skips the magic-number check entirely — its
 declared type is metadata, not a claim the server verifies — and carries a `name`, which for a
@@ -440,6 +506,8 @@ Frames are JSON text messages tagged by `"type"`.
                      "reactions": [{"user_id": 9, "emoji": "❤️"}]}
 {"type": "message_edited", "message": {Message}}
 {"type": "board_note", "note": {Note}}
+{"type": "ai_delta", "chat_id": 42, "message_id": 1339, "text": "…"}   — assistant, mid-reply
+{"type": "ai_error", "chat_id": 42, "message_id": 1339}                — it stopped early
 {"type": "pong"}
 {"type": "error",   "code": "not_chat_member", "message": "…", "client_msg_id": "8f14e45f-…"}
 ```
@@ -514,7 +582,8 @@ board.
 
 A message carrying an attachment MAY have an empty body — which is how a photo is normally sent —
 and an alert showing a name above a blank line says nothing arrived. Such a message pushes what
-arrived instead: `"Photo"`, `"Video"`, or the file's name. A caption, when there is one, still wins.
+arrived instead: `"Photo"`, `"Video"`, `"Audio"`, or the file's name. A caption, when there is one,
+still wins.
 
 APNs (token-based auth, HTTP/2): headers `apns-topic` = bundle id, `apns-push-type: alert`,
 `apns-priority: 10`; payload:

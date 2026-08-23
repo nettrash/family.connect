@@ -277,17 +277,21 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
 
     var isVideo: Bool { kind == Kind.video }
     var isFile: Bool { kind == Kind.file }
+    var isAudio: Bool { kind == Kind.audio }
 
     enum Kind {
         static let photo = "photo"
         static let video = "video"
+        static let audio = "audio"
         static let file = "file"
     }
 
     /// What the bubble calls it: the name for a file, a word for the rest.
     var displayName: String {
         if let name, !name.isEmpty { return name }
-        return isVideo ? "Video" : (isFile ? "File" : "Photo")
+        if isVideo { return "Video" }
+        if isAudio { return "Audio" }
+        return isFile ? "File" : "Photo"
     }
 
     /// "1.2 MB" — the other half of what a file row shows.

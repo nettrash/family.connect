@@ -263,8 +263,21 @@ fn validate_username(username: &str) -> Result<(), ApiError> {
             "username may only contain letters, digits, '_' and '.'",
         ));
     }
+    // The assistant sends under a reserved account (migration 0015). The
+    // unique index would refuse this anyway, but as `username_taken` — and
+    // a member being told a name is "taken" when nobody has it is a worse
+    // answer than being told it is reserved.
+    if RESERVED_USERNAMES
+        .iter()
+        .any(|reserved| username.eq_ignore_ascii_case(reserved))
+    {
+        return Err(ApiError::validation("that username is reserved"));
+    }
     Ok(())
 }
+
+/// Names the server itself uses and nobody may register.
+const RESERVED_USERNAMES: [&str; 1] = ["assistant"];
 
 /// Display name: trimmed, 1–64 chars. Returns the trimmed value, which is
 /// what gets stored.
@@ -288,6 +301,9 @@ mod tests {
         assert!(validate_username("ab").is_err(), "too short");
         assert!(validate_username(&"a".repeat(33)).is_err(), "too long");
         assert!(validate_username("anna smith").is_err(), "space");
+        // The assistant's own account, in any casing.
+        assert!(validate_username("assistant").is_err(), "reserved");
+        assert!(validate_username("Assistant").is_err(), "reserved, cased");
         assert!(validate_username("anna@home").is_err(), "symbol");
     }
 

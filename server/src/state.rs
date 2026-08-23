@@ -25,6 +25,10 @@ pub struct AppState {
     /// Where attachment bytes live. On disk, not in PostgreSQL — see
     /// migration 0009.
     pub storage: Storage,
+    /// Shared client for outbound calls (today: the assistant). One rather
+    /// than one-per-request, so the connection pool and the TLS session
+    /// cache are actually reused.
+    pub http: reqwest::Client,
 }
 
 impl AppState {
@@ -33,11 +37,18 @@ impl AppState {
     pub fn new(pool: PgPool, cfg: Arc<Config>, push: Arc<dyn PushSender>) -> Self {
         let registry = Arc::new(Registry::new(cfg.limits.ws_send_queue));
         let storage = Storage::new(cfg.storage.attachments_dir.clone());
+        // A generous timeout: a large model streaming a long answer is slow
+        // by nature, and cutting it off mid-sentence is worse than waiting.
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180))
+            .build()
+            .unwrap_or_default();
         Self {
             pool,
             registry,
             push,
             cfg,
+            http,
             storage,
         }
     }

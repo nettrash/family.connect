@@ -140,6 +140,7 @@ struct ConversationView: View {
     @State private var pickedMedia: PhotosPickerItem?
     @State private var showPhotoPicker = false
     @State private var showCamera = false
+    @State private var recorder = AudioRecorder()
     @State private var showFilePicker = false
     @State private var mediaState: MediaSendState = .idle
     /// The attachment being viewed full-screen.
@@ -217,6 +218,11 @@ struct ConversationView: View {
 
     private var chat: ChatEntity? { chats.first }
     private var isFamilyChat: Bool { chat?.kind == "family" }
+
+    /// The assistant's own chat. Its replies come from a reserved account
+    /// that is deliberately not in the roster, so the sender is named from
+    /// the chat rather than looked up (docs/protocol.md, "The assistant").
+    private var isAssistantChat: Bool { chat?.kind == "ai" }
     private var currentUserID: Int64 { AppSettings.currentUserID ?? -1 }
 
     /// How many of the locally cached messages are RENDERED. The thread
@@ -439,6 +445,9 @@ struct ConversationView: View {
                             MessageBubbleView(
                                 message: message,
                                 isMine: message.senderID == currentUserID,
+                                isStreaming: message.serverID.map {
+                                    coordinator.streamingMessageIDs.contains($0)
+                                } ?? false,
                                 showsSenderName: MessagePresentation.showsSenderName(
                                     at: index,
                                     in: section.messages,
@@ -546,6 +555,9 @@ struct ConversationView: View {
             if mediaState != .idle {
                 mediaStrip
             }
+            if recorder.isRecording {
+                recordingStrip
+            }
             if let staged {
                 stagedChip(staged)
             }
@@ -572,6 +584,11 @@ struct ConversationView: View {
                         } label: {
                             Label("Camera", systemImage: "camera")
                         }
+                    }
+                    Button {
+                        Task { await recorder.start() }
+                    } label: {
+                        Label("Record Audio", systemImage: "mic")
                     }
                 } label: {
                     Image(systemName: "paperclip")
@@ -788,6 +805,46 @@ struct ConversationView: View {
 
     /// What the composer shows while a photo or video is on its way.
     @ViewBuilder
+    /// While a voice note is being recorded: a counter, and the two ways
+    /// out. Stop STAGES it rather than sending — so a caption can be added,
+    /// and so a recording made by accident can still be discarded.
+    private var recordingStrip: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "waveform")
+                .foregroundStyle(.red)
+                .symbolEffect(.variableColor.iterative, isActive: true)
+            Text(verbatim: AudioRecorder.timeLabel(recorder.elapsed))
+                .font(.callout.monospacedDigit())
+            Spacer(minLength: 0)
+            Button("Cancel") { recorder.cancel() }
+                .font(.callout)
+            Button("Stop") { finishRecording() }
+                .font(.callout.weight(.semibold))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private func finishRecording() {
+        guard let url = recorder.stop() else {
+            mediaState = .failed("That recording was too short.")
+            return
+        }
+        mediaState = .preparing
+        Task {
+            do {
+                stage(try await MediaPrep.prepareAudio(from: url, limit: MediaPrep.sizeLimit))
+            } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                mediaState = .failed("That file is over the 100 MB limit.")
+                try? FileManager.default.removeItem(at: url)
+            } catch {
+                mediaState = .failed("Couldn't prepare that item.")
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
     /// Whether Send has anything to do: words, or something staged, or both.
     private var canSend: Bool {
         if staged != nil { return true }
@@ -1425,7 +1482,13 @@ struct ConversationView: View {
     }
 
     private func displayName(for userID: Int64) -> String? {
-        members.first(where: { $0.userID == userID })?.displayName
+        // The assistant's account is not in the roster on purpose, so a
+        // lookup would come back "Someone". In its own chat there are
+        // exactly two participants, and anyone who is not me is it.
+        if isAssistantChat, userID != coordinator.currentUserID {
+            return chat?.title
+        }
+        return members.first(where: { $0.userID == userID })?.displayName
     }
 
     /// 0 when the sender has no picture — or has left the family, so the

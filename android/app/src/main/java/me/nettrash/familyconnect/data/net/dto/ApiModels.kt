@@ -192,6 +192,7 @@ data class AttachmentDto(
 ) {
     val isVideo: Boolean get() = kind == KIND_VIDEO
     val isFile: Boolean get() = kind == KIND_FILE
+    val isAudio: Boolean get() = kind == KIND_AUDIO
 
     /**
      * A filename for something that carries no name of its own.
@@ -238,6 +239,7 @@ data class AttachmentDto(
     companion object {
         const val KIND_PHOTO = "photo"
         const val KIND_VIDEO = "video"
+        const val KIND_AUDIO = "audio"
         const val KIND_FILE = "file"
         const val DEFAULT_ASPECT = 4f / 3f
     }

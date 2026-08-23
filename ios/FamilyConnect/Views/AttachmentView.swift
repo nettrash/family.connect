@@ -83,7 +83,13 @@ struct AttachmentView: View {
     }
 
     var body: some View {
-        if attachment.isFile {
+        if attachment.isAudio {
+            // Audio has nothing to look at, so it gets a player rather than
+            // a tile or a document row (docs/protocol.md, "Audio").
+            AudioPlayerView(attachment: attachment, isMine: isMine)
+                .onTapGesture(count: 2) { onDoubleTap() }
+                .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
+        } else if attachment.isFile {
             fileRow
         } else {
             mediaThumbnail

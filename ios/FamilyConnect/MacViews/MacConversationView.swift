@@ -46,6 +46,7 @@ struct MacConversationView: View {
     @State private var editTarget: (messageID: Int64, original: String)?
     @Environment(\.openWindow) private var openWindow
     @FocusState private var composerFocused: Bool
+    @State private var recorder = AudioRecorder()
 
     /// Side of the attach and send buttons — one box for both, so they sit
     /// level. Matches the composer's one-line height.
@@ -161,6 +162,9 @@ struct MacConversationView: View {
                                 senderName: memberNames[row.message.senderID],
                                 nameFor: quoteAuthorName,
                                 avatarVersionFor: { avatarVersions[$0] ?? 0 },
+                                isStreaming: row.message.serverID.map {
+                                    coordinator.streamingMessageIDs.contains($0)
+                                } ?? false,
                                 isMine: row.isMine,
                                 showsSenderName: row.showsSenderName,
                                 showsTimestamp: row.isRunEnd,
@@ -209,6 +213,18 @@ struct MacConversationView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if recorder.isRecording {
+                HStack(spacing: 10) {
+                    Image(systemName: "waveform")
+                        .foregroundStyle(.red)
+                    Text(verbatim: AudioRecorder.timeLabel(recorder.elapsed))
+                        .font(.callout.monospacedDigit())
+                    Spacer(minLength: 0)
+                    Button("Cancel") { recorder.cancel() }
+                    Button("Stop") { finishRecording() }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
             if let mediaNotice {
                 Text(mediaNotice)
                     .font(.callout)
@@ -227,8 +243,17 @@ struct MacConversationView: View {
                     onCancel: { cancelEdit() })
             }
             HStack(alignment: .bottom, spacing: 8) {
-                Button {
-                    pickAttachment()
+                Menu {
+                    Button {
+                        pickAttachment()
+                    } label: {
+                        Label("Attach a File…", systemImage: "doc")
+                    }
+                    Button {
+                        Task { await recorder.start() }
+                    } label: {
+                        Label("Record Audio", systemImage: "mic")
+                    }
                 } label: {
                     Image(systemName: "paperclip")
                         .font(.system(size: 16))
@@ -239,7 +264,9 @@ struct MacConversationView: View {
                         .frame(width: composerControl, height: composerControl)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .help("Attach a photo, video or file")
                 // Editing borrows the composer to rewrite an existing
                 // message; there is no second attachment to add, and
@@ -284,6 +311,9 @@ struct MacConversationView: View {
     /// Who a quoted sender is, matching the phone's wording.
     private func quoteAuthorName(_ userID: Int64) -> String {
         if userID == coordinator.currentUserID { return String(localized: "You") }
+        // The assistant's account is deliberately not in the roster, so in
+        // its own chat anyone who is not me is it.
+        if chat?.kind == "ai" { return chat?.title ?? String(localized: "Someone") }
         return memberNames[userID] ?? String(localized: "Someone")
     }
 
@@ -402,6 +432,38 @@ struct MacConversationView: View {
                 restoreComposer(caption: caption, quote: quote)
             } catch {
                 mediaNotice = "Couldn't read that file."
+                restoreComposer(caption: caption, quote: quote)
+            }
+        }
+    }
+
+    /// Stop recording and send it. The Mac composer has no staging step
+    /// yet, so a voice note goes as its own message with whatever is typed
+    /// — the same shape `pickAttachment` uses.
+    private func finishRecording() {
+        guard let url = recorder.stop() else {
+            mediaNotice = "That recording was too short."
+            return
+        }
+        mediaNotice = "Sending…"
+        let caption = draft
+        let quote = replyDraft
+        draft = ""
+        replyDraft = nil
+        Task {
+            defer { mediaNotice = nil }
+            do {
+                let prepared = try await MediaPrep.prepareAudio(
+                    from: url, limit: MediaPrep.sizeLimit)
+                if await coordinator.sendMedia(
+                    prepared, caption: caption, replyTo: quote, in: chatID) == false
+                {
+                    mediaNotice = "Couldn't send that."
+                    restoreComposer(caption: caption, quote: quote)
+                }
+            } catch {
+                mediaNotice = "Couldn't prepare that item."
+                try? FileManager.default.removeItem(at: url)
                 restoreComposer(caption: caption, quote: quote)
             }
         }

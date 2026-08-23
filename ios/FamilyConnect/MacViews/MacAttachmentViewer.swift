@@ -124,6 +124,44 @@ struct MacAttachmentViewer: View {
     }
 }
 
+/// AVKit's own player view, wrapped for SwiftUI.
+///
+/// NOT SwiftUI's `VideoPlayer`, and that is a crash fix rather than a
+/// preference: on macOS `VideoPlayer` is itself an `NSViewRepresentable`
+/// living in `_AVKit_SwiftUI`, and building it aborted the app in the Swift
+/// runtime — `getSuperclassMetadata` fatal-errored while instantiating its
+/// generic metadata, before a single frame was decoded. The crash report
+/// is unambiguous: `NSViewRepresentable._makeView` →
+/// `PlatformViewRepresentableFeature.modifyViewOutputs` →
+/// `swift_getAssociatedTypeWitness` → `_AVKit_SwiftUI` → `abort()`.
+///
+/// `AVPlayerView` is what a Mac video player is anyway: real transport
+/// controls, Picture in Picture and full-screen, none of which SwiftUI's
+/// wrapper exposes on this platform.
+private struct MacPlayerSurface: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.player = player
+        view.controlsStyle = .inline
+        view.showsFullScreenToggleButton = true
+        view.videoGravity = .resizeAspect
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        if view.player !== player { view.player = player }
+    }
+
+    /// Drop the player when the view goes, or the stream keeps running
+    /// behind a closed window.
+    static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
+        view.player?.pause()
+        view.player = nil
+    }
+}
+
 /// Streams with the session token attached, like the iOS player.
 private struct MacVideoPlayer: View {
     let attachment: AttachmentDTO
@@ -134,7 +172,7 @@ private struct MacVideoPlayer: View {
     var body: some View {
         Group {
             if let player {
-                VideoPlayer(player: player)
+                MacPlayerSurface(player: player)
             } else {
                 ProgressView()
             }

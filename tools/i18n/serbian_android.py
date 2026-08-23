@@ -7,6 +7,14 @@ sentence differently.
 """
 
 ANDROID_ONLY = {
+"s_record_audio": "Сними аудио",
+"s_stop": "Заустави",
+"s_audio": "Аудио",
+"s_play": "Пусти",
+"s_pause": "Пауза",
+"e_record_failed": "Снимање није могло да почне.",
+"e_recording_too_short": "Снимак је прекратак.",
+"e_microphone_permission": "Family треба дозволу за коришћење микрофона.",
 "s_take_photo": "Сликај",
 "s_record_video": "Сними видео",
 "s_add_a_message_or_send_it_on_its_own": "Додај поруку или пошаљи овако.",

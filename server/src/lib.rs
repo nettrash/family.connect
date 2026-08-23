@@ -9,12 +9,14 @@
 //! The authoritative wire contract is `docs/protocol.md` at the repo root;
 //! when this code and that document disagree, the document wins.
 
+pub mod ai;
 pub mod app;
 pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod events;
+pub mod handlers_ai;
 pub mod handlers_attachment;
 pub mod handlers_auth;
 pub mod handlers_avatar;

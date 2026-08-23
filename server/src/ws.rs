@@ -100,6 +100,23 @@ pub enum ServerFrame {
     BoardNote {
         note: Note,
     },
+    /// One fragment of the assistant's reply, as it is generated
+    /// (docs/protocol.md, "The assistant").
+    ///
+    /// Cosmetic: the row named by `message_id` is the truth, and its final
+    /// body arrives as `message_edited` whether or not any of these were
+    /// seen. A client that was asleep needs no special path.
+    AiDelta {
+        chat_id: i64,
+        message_id: i64,
+        text: String,
+    },
+    /// The reply stopped early. Whatever text arrived is already on the
+    /// row; the member can ask again.
+    AiError {
+        chat_id: i64,
+        message_id: i64,
+    },
     Reaction {
         chat_id: i64,
         message_id: i64,
@@ -561,6 +578,27 @@ mod tests {
         assert!(
             one_level["message"]["reply_to"].get("parent").is_none(),
             "a quote with nothing behind it must omit parent entirely"
+        );
+    }
+
+    /// The assistant's fragments, exactly as protocol.md prints them.
+    #[test]
+    fn the_assistant_frames_match_the_protocol() {
+        assert_serializes_to(
+            &ServerFrame::AiDelta {
+                chat_id: 42,
+                message_id: 1339,
+                text: "Sure — the ".to_string(),
+            },
+            r#"{"type": "ai_delta", "chat_id": 42, "message_id": 1339,
+                 "text": "Sure — the "}"#,
+        );
+        assert_serializes_to(
+            &ServerFrame::AiError {
+                chat_id: 42,
+                message_id: 1339,
+            },
+            r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339}"#,
         );
     }
 

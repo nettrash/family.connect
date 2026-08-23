@@ -67,6 +67,8 @@ import me.nettrash.familyconnect.data.repo.ChatRepository
 import android.content.Context
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.GallerySaver
+import me.nettrash.familyconnect.data.repo.VoiceRecorder
+import kotlinx.coroutines.Job
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
@@ -99,6 +101,7 @@ class ChatViewModel @Inject constructor(
     private val clock: Clock,
     private val linkPreviewRepository: LinkPreviewRepository,
     private val mediaPrep: MediaPrep,
+    private val voiceRecorder: VoiceRecorder,
     private val attachmentApi: AttachmentApi,
     private val attachments: AttachmentRepository,
     private val gallerySaver: GallerySaver,
@@ -482,6 +485,67 @@ class ChatViewModel @Inject constructor(
      * Prepare and send a picked document. Nothing is re-encoded — a file
      * goes as it is (protocol.md, "Files").
      */
+    /**
+     * Recording state for the composer's strip. Elapsed is polled rather
+     * than pushed: MediaRecorder has no progress callback, and a 200 ms
+     * tick is cheaper than the alternative of not showing one at all.
+     */
+    private val _recordingMs = MutableStateFlow<Long?>(null)
+    val recordingMs: StateFlow<Long?> = _recordingMs
+
+    @Suppress("unused")
+    private var recordingTicker: Job? = null
+
+    /** Begin a voice note. The caller has already secured the permission. */
+    fun startRecording() {
+        if (voiceRecorder.isRecording) return
+        if (!voiceRecorder.start()) {
+            _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_record_failed))
+            return
+        }
+        _recordingMs.value = 0
+        recordingTicker = viewModelScope.launch {
+            while (voiceRecorder.isRecording) {
+                _recordingMs.value = voiceRecorder.elapsedMs
+                delay(200)
+            }
+            _recordingMs.value = null
+        }
+    }
+
+    /** Stop and STAGE it, so a caption can be added before sending. */
+    fun stopRecording() {
+        recordingTicker?.cancel()
+        recordingTicker = null
+        _recordingMs.value = null
+        val file = voiceRecorder.stop()
+        if (file == null) {
+            _mediaState.value =
+                MediaSendState.Failed(appContext.getString(R.string.e_recording_too_short))
+            return
+        }
+        _mediaState.value = MediaSendState.Preparing
+        appScope.launch {
+            val prepared = try {
+                mediaPrep.prepareAudio(Uri.fromFile(file))
+            } catch (_: Exception) {
+                file.delete()
+                _mediaState.value =
+                    MediaSendState.Failed(appContext.getString(R.string.e_prepare_failed))
+                return@launch
+            }
+            file.delete()
+            stage(prepared)
+        }
+    }
+
+    fun cancelRecording() {
+        recordingTicker?.cancel()
+        recordingTicker = null
+        _recordingMs.value = null
+        voiceRecorder.cancel()
+    }
+
     fun stageFile(uri: Uri) {
         if (_mediaState.value == MediaSendState.Preparing ||
             _mediaState.value == MediaSendState.Uploading
@@ -491,8 +555,16 @@ class ChatViewModel @Inject constructor(
         _mediaState.value = MediaSendState.Preparing
         // App scope for the same reason as sendMedia.
         appScope.launch {
+            val declared = appContext.contentResolver.getType(uri).orEmpty()
             val prepared = try {
-                mediaPrep.prepareFile(uri)
+                // Audio the server's magic check knows gets a player rather
+                // than a document row; anything else it would refuse falls
+                // through to the file path, where nothing is verified.
+                if (declared in MediaPrep.SENDABLE_AUDIO_TYPES) {
+                    mediaPrep.prepareAudio(uri)
+                } else {
+                    mediaPrep.prepareFile(uri)
+                }
             } catch (_: MediaPrep.TooLargeAfterCompression) {
                 // A document cannot be compressed the way a video can, so
                 // the advice is different: there is nothing to try.

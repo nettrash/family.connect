@@ -144,4 +144,12 @@
     <string name="s_record_video">ビデオを撮影</string>
     <string name="s_add_a_message_or_send_it_on_its_own">メッセージを添えても、そのまま送ってもかまいません。</string>
     <string name="s_remove_attachment">添付を削除</string>
+    <string name="s_record_audio">音声を録音</string>
+    <string name="s_stop">停止</string>
+    <string name="s_audio">オーディオ</string>
+    <string name="s_play">再生</string>
+    <string name="s_pause">一時停止</string>
+    <string name="e_record_failed">録音を開始できませんでした。</string>
+    <string name="e_recording_too_short">録音が短すぎます。</string>
+    <string name="e_microphone_permission">Family がマイクを使う許可が必要です。</string>
 </resources>

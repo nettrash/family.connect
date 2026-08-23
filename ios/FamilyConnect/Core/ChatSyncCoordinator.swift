@@ -269,7 +269,19 @@ final class ChatSyncCoordinator {
             applyNote(note)
             saveContext()
 
+        case .aiDelta(_, let messageID, let text):
+            appendAssistantDelta(messageID: messageID, text: text)
+
+        case .aiError(_, let messageID):
+            // Whatever arrived is already on the row and stays there — a
+            // partial answer is worth more than a bubble that never
+            // resolves. Just stop showing it as still being written.
+            streamingMessageIDs.remove(messageID)
+
         case .messageEdited(let message):
+            // The authoritative body: whatever was accumulated from deltas
+            // is replaced, and the row stops being "still being written".
+            streamingMessageIDs.remove(message.id)
             // bumpUnread: false — an edit is not new mail. The body write
             // itself is guarded by edit_seq inside upsert, and the chat's
             // cursor advances so a later catch-up does not replay it.
@@ -357,6 +369,27 @@ final class ChatSyncCoordinator {
     // MARK: - Message upsert (the dedup matrix)
 
     // MARK: - Board
+
+    /// Assistant replies still being written, by server id.
+    ///
+    /// Read by the bubble to show a cursor while text is arriving. Cleared
+    /// when the final `message_edited` lands (or an `ai_error` does), so a
+    /// row that was mid-stream when the app was killed is not stuck looking
+    /// live forever — nothing here survives a launch.
+    private(set) var streamingMessageIDs: Set<Int64> = []
+
+    /// Append one fragment to the assistant's row.
+    ///
+    /// Deltas carry no `edit_seq`, so this never fights the edit guard: the
+    /// final body arrives as an edit with a real seq and overwrites
+    /// whatever was accumulated, which is also how a client that missed
+    /// every delta ends up correct.
+    private func appendAssistantDelta(messageID: Int64, text: String) {
+        guard let row = fetchMessage(serverID: messageID) else { return }
+        row.body += text
+        streamingMessageIDs.insert(messageID)
+        saveContext()
+    }
 
     /// The board catch-up cursor, persisted so a relaunch resumes rather
     /// than re-reading the whole wall.

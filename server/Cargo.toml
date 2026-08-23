@@ -88,6 +88,9 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
     "http2",
+    # The assistant's reply arrives as a token stream, so the response body
+    # is consumed as chunks rather than awaited whole.
+    "stream",
 ] }
 
 # JWT signing for both push transports: ES256 for the APNs provider token,

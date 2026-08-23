@@ -46,6 +46,7 @@ import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.MediaPrep
+import me.nettrash.familyconnect.data.repo.VoiceRecorder
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAttachmentApi
@@ -171,6 +172,8 @@ class ChatViewModelTest {
                 context = RuntimeEnvironment.getApplication(),
                 contentResolver = RuntimeEnvironment.getApplication().contentResolver,
             ),
+            // Real recorder, never started: these tests do not record.
+            voiceRecorder = VoiceRecorder(RuntimeEnvironment.getApplication()),
             attachmentApi = attachmentApi,
             gallerySaver = GallerySaver(),
             // The repo scope stands in for the app scope: a media send

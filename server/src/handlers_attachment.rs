@@ -56,9 +56,17 @@ fn matches_magic(mime: &str, head: &[u8]) -> bool {
         "image/png" => head.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
         // HEIC/HEIF and MP4/MOV are all ISO base media: "ftyp" at offset 4,
         // with the brand that follows telling them apart.
-        "image/heic" | "image/heif" | "video/mp4" | "video/quicktime" => {
-            head.len() >= 12 && &head[4..8] == b"ftyp"
+        // HEIC/HEIF, MP4/MOV and m4a/aac are all ISO base media: "ftyp" at
+        // offset 4, with the brand that follows telling them apart.
+        "image/heic" | "image/heif" | "video/mp4" | "video/quicktime" | "audio/mp4"
+        | "audio/m4a" => head.len() >= 12 && &head[4..8] == b"ftyp",
+        // An MP3 is either an ID3 tag or a raw frame sync (11 set bits).
+        "audio/mpeg" => {
+            head.starts_with(b"ID3")
+                || (head.len() >= 2 && head[0] == 0xFF && (head[1] & 0xE0) == 0xE0)
         }
+        "audio/wav" => head.len() >= 12 && head.starts_with(b"RIFF") && &head[8..12] == b"WAVE",
+        "audio/ogg" => head.starts_with(b"OggS"),
         _ => false,
     }
 }
@@ -316,12 +324,15 @@ pub async fn upload_preview(
             "no such attachment",
         ));
     };
-    if row.get::<String, _>("kind") == Attachment::KIND_FILE {
-        // Nothing draws a file as a picture, so a preview on one is a
-        // client bug worth reporting rather than silently storing.
+    let kind: String = row.get("kind");
+    if kind == Attachment::KIND_FILE || kind == Attachment::KIND_AUDIO {
+        // Nothing draws a file or a piece of audio as a picture, so a
+        // preview on one is a client bug worth reporting rather than
+        // silently storing. Audio gets a play control and a duration; a
+        // waveform is deliberately not part of the wire (protocol.md).
         return Err(ApiError::bad_request(
             codes::INVALID_ATTACHMENT,
-            "a file has no preview",
+            format!("a {kind} has no preview"),
         ));
     }
     let storage_key: String = row.get("storage_key");

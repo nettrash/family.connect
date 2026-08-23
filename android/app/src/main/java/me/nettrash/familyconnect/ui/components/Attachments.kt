@@ -35,6 +35,24 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Spacer
+import android.media.MediaPlayer
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Slider
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.core.net.toUri
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -107,6 +125,13 @@ fun AttachmentBlock(
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
     /**
+     * Where audio streams from, with the auth header it needs. Threaded
+     * explicitly like the gesture callbacks rather than reached for through
+     * a CompositionLocal — this file already takes what it needs as
+     * parameters, and a hidden dependency here would be harder to follow.
+     */
+    streamUrl: suspend (Long) -> Pair<String, Map<String, String>>? = { null },
+    /**
      * The bubble's own gestures, forwarded.
      *
      * A caption-less photo IS the balloon, and a child `clickable`
@@ -117,7 +142,17 @@ fun AttachmentBlock(
     onLongPress: () -> Unit = {},
     onDoubleTap: () -> Unit = {},
 ) {
-    if (attachment.isFile) {
+    if (attachment.isAudio) {
+        // Audio has nothing to look at, so it gets a player rather than a
+        // tile or a document row (protocol.md, "Audio").
+        AudioPlayerRow(
+            attachment = attachment,
+            streamUrl = streamUrl,
+            onLongPress = onLongPress,
+            onDoubleTap = onDoubleTap,
+            modifier = modifier,
+        )
+    } else if (attachment.isFile) {
         FileRow(
             attachment = attachment,
             onOpen = onOpen,
@@ -329,3 +364,159 @@ private const val MAX_WIDTH = 240
  */
 private const val MIN_RATIO = 0.6f
 private const val MAX_RATIO = 1.9f
+
+/**
+ * A piece of audio inside a bubble: play, elapsed/total, and a scrubber.
+ *
+ * Deliberately NOT a waveform — that is a second artefact the sender would
+ * have to generate, upload and version, for something the ear does not need
+ * and the protocol therefore does not carry (protocol.md, "Audio").
+ *
+ * MediaPlayer rather than ExoPlayer, for the same reason VideoView plays the
+ * videos: `setDataSource(context, uri, headers)` carries the Authorization
+ * header the stream needs, and adding a player library for one row would be
+ * a large dependency for a small feature.
+ *
+ * iOS/macOS counterpart: ios/FamilyConnect/Views/AudioPlayerView.swift
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AudioPlayerRow(
+    attachment: AttachmentDto,
+    streamUrl: suspend (Long) -> Pair<String, Map<String, String>>?,
+    onLongPress: () -> Unit,
+    onDoubleTap: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val ink = LocalContentColor.current
+
+    val totalMs = (attachment.durationMs ?: 0).coerceAtLeast(1)
+    var player by remember(attachment.id) { mutableStateOf<MediaPlayer?>(null) }
+    var isPlaying by remember(attachment.id) { mutableStateOf(false) }
+    var positionMs by remember(attachment.id) { mutableIntStateOf(0) }
+    var scrubbing by remember(attachment.id) { mutableStateOf(false) }
+
+    // Release with the composable, or a scrolled-away bubble keeps the
+    // decoder and the socket open.
+    DisposableEffect(attachment.id) {
+        onDispose {
+            player?.runCatching { release() }
+            player = null
+        }
+    }
+
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            if (!scrubbing) positionMs = player?.currentPosition ?: positionMs
+            delay(200)
+        }
+    }
+
+    Row(
+        modifier = modifier
+            .widthIn(max = MAX_WIDTH.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(ink.copy(alpha = 0.10f))
+            .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onLongPress,
+                onDoubleClick = onDoubleTap,
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        IconButton(
+            onClick = {
+                val active = player
+                if (isPlaying && active != null) {
+                    active.pause()
+                    isPlaying = false
+                    return@IconButton
+                }
+                scope.launch {
+                    val ready = active ?: createPlayer(context, attachment, streamUrl) {
+                        isPlaying = false
+                        positionMs = totalMs
+                    }
+                    if (ready == null) return@launch
+                    player = ready
+                    // Replaying after it ran to the end: without this the
+                    // button does nothing, the item being already at its end.
+                    if (positionMs >= totalMs - 200) {
+                        ready.seekTo(0)
+                        positionMs = 0
+                    }
+                    ready.start()
+                    isPlaying = true
+                }
+            },
+        ) {
+            Icon(
+                imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                contentDescription = stringResource(
+                    if (isPlaying) R.string.s_pause else R.string.s_play,
+                ),
+                tint = ink,
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Slider(
+                value = positionMs.coerceIn(0, totalMs).toFloat(),
+                onValueChange = {
+                    scrubbing = true
+                    positionMs = it.toInt()
+                },
+                onValueChangeFinished = {
+                    scrubbing = false
+                    player?.seekTo(positionMs)
+                },
+                valueRange = 0f..totalMs.toFloat(),
+            )
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = formatMillis(positionMs.toLong()),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ink.copy(alpha = 0.75f),
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = formatMillis(totalMs.toLong()),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ink.copy(alpha = 0.75f),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A MediaPlayer pointed at the stream, with the auth header attached.
+ * Returns null when it cannot be prepared — a bubble that will not play is
+ * better than a crash.
+ */
+private suspend fun createPlayer(
+    context: android.content.Context,
+    attachment: AttachmentDto,
+    streamUrl: suspend (Long) -> Pair<String, Map<String, String>>?,
+    onCompleted: () -> Unit,
+): MediaPlayer? {
+    val entry = streamUrl(attachment.id) ?: return null
+    return withContext(Dispatchers.IO) {
+        runCatching {
+            MediaPlayer().apply {
+                setDataSource(context, entry.first.toUri(), entry.second)
+                setOnCompletionListener { onCompleted() }
+                prepare()
+            }
+        }.getOrNull()
+    }
+}
+
+private fun formatMillis(ms: Long): String {
+    val whole = (ms / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(whole / 60, whole % 60)
+}

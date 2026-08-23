@@ -86,6 +86,13 @@ fn attachment_summary(message: &Message) -> Option<String> {
     Some(match attachment.kind.as_str() {
         "photo" => "Photo".to_string(),
         "video" => "Video".to_string(),
+        // A voice note has no name worth showing, so the kind is the
+        // summary; a track picked off a disk may carry one, and that wins.
+        "audio" => attachment
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Audio".to_string()),
         _ => attachment
             .name
             .clone()

@@ -34,6 +34,144 @@ pub struct Config {
 
     #[serde(default)]
     pub storage: StorageConfig,
+
+    #[serde(default)]
+    pub ai: AiConfig,
+}
+
+/// `[ai]` — the assistant each member can have a private chat with
+/// (docs/protocol.md, "The assistant").
+///
+/// OFF unless configured. A server with no endpoint, deployment or key
+/// simply never creates the chat, so the feature costs nothing to leave
+/// alone — which is the right default for something that sends text to a
+/// third party.
+///
+/// The key belongs HERE, in the server's own config file, and never on a
+/// client: a key shipped to devices is a key that has left your control.
+/// The config file is read verbatim — there is no `${VAR}` expansion — so
+/// the file itself is the secret: keep it out of version control and
+/// readable only by the service user.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AiConfig {
+    /// Master switch. False (the default) means the assistant does not
+    /// exist: no chat is created and nothing is ever sent anywhere.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Azure OpenAI resource endpoint, e.g.
+    /// `https://my-resource.openai.azure.com`. No trailing slash needed.
+    #[serde(default)]
+    pub endpoint: String,
+
+    /// The DEPLOYMENT name, which is what the URL is built from — not the
+    /// model name. Azure lets these differ and usually they do.
+    #[serde(default)]
+    pub deployment: String,
+
+    /// The model behind the deployment, e.g. `gpt-oss-120b`. Sent in the
+    /// request body and recorded with usage, so statistics can say what
+    /// answered.
+    #[serde(default)]
+    pub model: String,
+
+    /// `api-key` header. Never logged, never sent to a client.
+    #[serde(default)]
+    pub api_key: String,
+
+    /// Azure's dated API version. Pinned rather than "latest": a silently
+    /// changing contract is not something a family server should discover
+    /// in production.
+    #[serde(default = "default_ai_api_version")]
+    pub api_version: String,
+
+    /// What the assistant is told it is, before the member's own words.
+    #[serde(default = "default_ai_system_prompt")]
+    pub system_prompt: String,
+
+    /// Longest reply, in tokens. A cap the server owns rather than the
+    /// model, so one long answer cannot run up a bill.
+    #[serde(default = "default_ai_max_tokens")]
+    pub max_tokens: u32,
+
+    /// How many earlier messages of that member's OWN assistant chat go
+    /// with a question. Nothing else is ever included — not the family
+    /// chat, not another member's thread (protocol.md).
+    #[serde(default = "default_ai_history_messages")]
+    pub history_messages: i64,
+
+    /// What the chat is called in the list.
+    #[serde(default = "default_ai_title")]
+    pub title: String,
+}
+
+/// Hand-written rather than derived, so `AiConfig::default()` agrees with
+/// what serde fills in for a half-written section.
+///
+/// A derived `Default` gives `max_tokens: 0`, an empty `api_version` and an
+/// empty prompt — values the serde attributes above would never produce.
+/// Nothing reads them today (an absent section is `enabled: false`, and
+/// `is_usable()` gates every use), but a struct whose two default paths
+/// disagree is a trap waiting for the first caller who writes
+/// `..Default::default()` and gets a URL with no api-version in it.
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+            deployment: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+            api_version: default_ai_api_version(),
+            system_prompt: default_ai_system_prompt(),
+            max_tokens: default_ai_max_tokens(),
+            history_messages: default_ai_history_messages(),
+            title: default_ai_title(),
+        }
+    }
+}
+
+fn default_ai_api_version() -> String {
+    "2024-10-21".to_string()
+}
+
+fn default_ai_system_prompt() -> String {
+    "You are a helpful assistant in a family's private chat app. Answer briefly \
+     and plainly. You can only see this one conversation."
+        .to_string()
+}
+
+fn default_ai_max_tokens() -> u32 {
+    1024
+}
+
+fn default_ai_history_messages() -> i64 {
+    20
+}
+
+fn default_ai_title() -> String {
+    "Assistant".to_string()
+}
+
+impl AiConfig {
+    /// Configured well enough to actually call. `enabled` alone is not
+    /// enough — a half-filled section should behave like "off" rather than
+    /// failing every question at runtime.
+    pub fn is_usable(&self) -> bool {
+        self.enabled
+            && !self.endpoint.trim().is_empty()
+            && !self.deployment.trim().is_empty()
+            && !self.api_key.trim().is_empty()
+    }
+
+    /// The chat-completions URL for the configured deployment.
+    pub fn completions_url(&self) -> String {
+        let base = self.endpoint.trim_end_matches('/');
+        format!(
+            "{base}/openai/deployments/{}/chat/completions?api-version={}",
+            self.deployment, self.api_version
+        )
+    }
 }
 
 /// `[storage]` — where attachment bytes live.
@@ -638,6 +776,61 @@ mod tests {
             cfg.push.apns.is_none() && cfg.push.fcm.is_none(),
             "the example must ship with real transports commented out"
         );
+        assert!(
+            !cfg.ai.enabled,
+            "the example must ship with the assistant off"
+        );
+    }
+
+    /// The example's commented-out `[ai]` block, uncommented.
+    ///
+    /// The test above only proves the file parses WITH that block commented
+    /// out — which is exactly the state in which a stale example survives
+    /// unnoticed. This one does what a reader would do, and holds the
+    /// documented keys to the real deserializer, so renaming a field without
+    /// touching the example fails here rather than in somebody's server.
+    #[test]
+    fn the_examples_assistant_section_is_valid_when_uncommented() {
+        let example = include_str!("../config.example.toml");
+        let mut out = String::new();
+        let mut in_ai = false;
+        for line in example.lines() {
+            if line.trim() == "# [ai]" {
+                in_ai = true;
+                out.push_str("[ai]\n");
+                continue;
+            }
+            if in_ai {
+                if let Some(rest) = line.strip_prefix("# ") {
+                    out.push_str(rest);
+                    out.push('\n');
+                    continue;
+                }
+                if line.trim() == "#" {
+                    out.push('\n');
+                    continue;
+                }
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        assert!(in_ai, "the example must document an [ai] section");
+
+        let cfg = Config::from_toml_str(&out)
+            .expect("the example's [ai] section must parse once uncommented");
+        assert!(cfg.ai.enabled);
+        assert!(
+            cfg.ai.is_usable(),
+            "the documented keys must be enough to actually call"
+        );
+        // The URL is built from the DEPLOYMENT, which is the mistake the
+        // example exists to prevent.
+        assert!(
+            cfg.ai.completions_url().contains("YOUR-DEPLOYMENT-NAME"),
+            "the deployment, not the model, names the endpoint"
+        );
+        assert!(!cfg.ai.system_prompt.trim().is_empty());
+        assert_eq!(cfg.ai.max_tokens, Config::default().ai.max_tokens);
     }
 
     #[test]

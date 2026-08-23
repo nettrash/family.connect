@@ -711,6 +711,13 @@ pub async fn list_chats(
     auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
+    // Created on demand rather than at registration, so turning the
+    // assistant on later needs nobody to re-register and leaving it off
+    // costs an empty chat in nobody's list. A no-op when it already exists,
+    // or when the server is not configured for it.
+    if let Err(error) = crate::handlers_ai::ensure_ai_chat(&state, auth.user_id).await {
+        tracing::warn!(%error, "could not ensure the assistant chat");
+    }
     let rows = sqlx::query(
         "SELECT c.id AS chat_id, c.kind,
                 f.name AS family_name,
@@ -764,10 +771,13 @@ pub async fn list_chats(
         .map(|row| {
             let kind: String = row.get("kind");
             let peer_user_id: Option<i64> = row.get("peer_user_id");
-            let title: String = if kind == "family" {
-                row.get("family_name")
-            } else {
-                row.get("peer_display_name")
+            let title: String = match kind.as_str() {
+                "family" => row.get("family_name"),
+                // The assistant has no peer to name it after — and its
+                // reserved account is not in the roster, so a lookup would
+                // find nothing anyway.
+                "ai" => state.cfg.ai.title.clone(),
+                _ => row.get("peer_display_name"),
             };
             let chat_id: i64 = row.get("chat_id");
             let last_message = row.get::<Option<i64>, _>("last_id").map(|last_id| Message {
@@ -977,6 +987,18 @@ pub async fn post_message(
             "new_message",
             events::deliver_new_message(&state, &message, None).await,
         );
+
+        // An assistant chat answers back. Spawned, so the member's send
+        // returns at once: a reply takes seconds, and holding the POST open
+        // for it would make asking a question feel like a failure.
+        let is_ai = sqlx::query_scalar::<_, String>("SELECT kind FROM chats WHERE id = $1")
+            .bind(chat_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .is_some_and(|kind| kind == "ai");
+        if is_ai && state.cfg.ai.is_usable() {
+            crate::handlers_ai::spawn_reply(state.clone(), chat_id, auth.user_id);
+        }
     }
     let status = if created {
         StatusCode::CREATED

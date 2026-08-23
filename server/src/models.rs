@@ -379,22 +379,30 @@ pub struct Attachment {
 }
 
 impl Attachment {
-    /// The media types accepted FOR A PHOTO OR VIDEO, paired with the kind
-    /// they belong to. HEIC/HEIF are here because that is what an iPhone
-    /// actually produces.
+    /// The media types accepted for a photo, video or piece of audio,
+    /// paired with the kind they belong to. HEIC/HEIF are here because that
+    /// is what an iPhone actually produces.
     ///
     /// A file is not on this list and never will be: `kind=file` accepts any
     /// type and verifies none (protocol.md, "Files").
-    pub const ACCEPTED: [(&'static str, &'static str); 6] = [
+    pub const ACCEPTED: [(&'static str, &'static str); 11] = [
         ("image/jpeg", "photo"),
         ("image/png", "photo"),
         ("image/heic", "photo"),
         ("image/heif", "photo"),
         ("video/mp4", "video"),
         ("video/quicktime", "video"),
+        // Audio. m4a/aac is what both phones record into, and mp3/wav/ogg
+        // are what a track picked off a disk usually is.
+        ("audio/mp4", "audio"),
+        ("audio/m4a", "audio"),
+        ("audio/mpeg", "audio"),
+        ("audio/wav", "audio"),
+        ("audio/ogg", "audio"),
     ];
 
     pub const KIND_FILE: &'static str = "file";
+    pub const KIND_AUDIO: &'static str = "audio";
     /// What a file's bytes are called when the client declared nothing
     /// usable. Deliberately the least interesting type there is.
     pub const DEFAULT_FILE_MIME: &'static str = "application/octet-stream";

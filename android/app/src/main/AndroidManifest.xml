@@ -2,6 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- REST + WebSocket to the family's self-hosted server. -->
+    <!--
+         Recording a voice note. Unlike CAMERA — which must NOT be declared,
+         because MediaStore's capture intents throw when an app declares it
+         without holding it — this one is genuinely required: the app opens
+         the microphone itself rather than handing off to another app.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- ConnectivityObserver — short-circuits the reconnect backoff the
          moment a network comes back instead of waiting out the delay. -->

@@ -177,6 +177,17 @@ interface MessageDao {
     )
     suspend fun refreshParentQuotesOf(quotedMessageId: Long, excerpt: String)
 
+    /**
+     * Append one streamed fragment to a message's body.
+     *
+     * Done in SQL rather than read-modify-write in Kotlin: fragments arrive
+     * faster than a round trip through the flow, and two of them racing
+     * would lose text. Returns 0 when this device does not have the row,
+     * which is not an error — the final body arrives as an edit regardless.
+     */
+    @Query("UPDATE messages SET body = body || :fragment WHERE serverId = :serverId")
+    suspend fun appendToBody(serverId: Long, fragment: String): Int
+
     @Query("UPDATE messages SET status = :status WHERE clientMsgId = :clientMsgId")
     suspend fun setStatus(clientMsgId: String, status: MessageStatus)
 

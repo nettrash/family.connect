@@ -130,3 +130,69 @@ include_message_body = true
 #
 # The default matches the systemd unit's StateDirectory=family-connect.
 attachments_dir = "/var/lib/family-connect/attachments"
+
+# ---------------------------------------------------------------------------
+# The assistant
+# ---------------------------------------------------------------------------
+# Each member gets one PRIVATE chat with an assistant. Private is the whole
+# point: it belongs to that member alone, no other member can read it, and it
+# is never part of the family chat.
+#
+# What leaves this server is deliberately narrow. A question carries the
+# system prompt below plus the last `history_messages` turns of THAT MEMBER'S
+# OWN assistant thread — never the family chat, never anyone else's thread.
+# Nothing anybody else wrote is ever sent anywhere.
+#
+# The whole section is OFF unless `enabled` is true AND `endpoint`,
+# `deployment` and `api_key` are all set. A half-filled section behaves as
+# "off" rather than failing every question at runtime, so it is safe to fill
+# in gradually. With it off, the assistant chat is simply never created.
+
+# [ai]
+# enabled = true
+#
+# # The Azure OpenAI resource endpoint. No trailing slash needed.
+# endpoint = "https://YOUR-RESOURCE.openai.azure.com"
+#
+# # The DEPLOYMENT name — this is what the request URL is built from, and it
+# # is NOT necessarily the model name. Azure lets the two differ and they
+# # usually do. Getting this wrong gives a 404 from Azure, not a clear error.
+# deployment = "YOUR-DEPLOYMENT-NAME"
+#
+# # The model behind that deployment. Sent in the request body and recorded
+# # with usage, so Family Statistics can say what answered.
+# model = "gpt-oss-120b"
+#
+# # The `api-key` header. It belongs HERE, in the server's own config, and
+# # never on a client: a key shipped to devices is a key you no longer
+# # control.
+# #
+# # This file is read VERBATIM — there is no ${VAR} expansion — so the file
+# # itself is the secret. Keep it out of version control, and readable only
+# # by the user the service runs as:
+# #     sudo chown family-connect:family-connect /etc/family-connect/config.toml
+# #     sudo chmod 600 /etc/family-connect/config.toml
+# api_key = "paste-the-azure-key-here"
+#
+# # Azure's dated API version. PINNED rather than "latest" on purpose: a
+# # silently changing contract is not something a family server should
+# # discover in production.
+# api_version = "2024-10-21"
+#
+# # What the assistant is told it is, before the member's own words.
+# system_prompt = """
+# You are a helpful assistant in a family's private chat app. Answer briefly
+# and plainly. You can only see this one conversation.
+# """
+#
+# # Longest reply, in tokens. A cap the SERVER owns rather than the model, so
+# # one long answer cannot run up a bill.
+# max_tokens = 1024
+#
+# # How many earlier turns of that member's own thread go with a question.
+# # Larger means better continuity and a bigger request; nothing outside that
+# # one thread is ever included whatever this is set to.
+# history_messages = 20
+#
+# # What the chat is called in the list.
+# title = "Assistant"

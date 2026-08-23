@@ -249,6 +249,69 @@ nonisolated enum MediaPrep {
             name: name.isEmpty ? "file" : name)
     }
 
+    /// Prepare a piece of audio — a recording, or a track off a disk.
+    ///
+    /// Nothing is re-encoded. A voice note is already recorded straight
+    /// into the container the server checks (AAC in MP4), and re-encoding
+    /// someone's music to save a few megabytes would be a worse trade than
+    /// refusing it. There is no preview: audio has nothing to look at, so a
+    /// bubble draws a play control, the duration and a scrubber
+    /// (docs/protocol.md, "Audio").
+    static func prepareAudio(from sourceURL: URL, limit: Int) async throws -> Prepared {
+        let scoped = sourceURL.startAccessingSecurityScopedResource()
+        defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
+
+        let destination = temporaryURL(extension: sourceURL.pathExtension)
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: destination)
+        } catch {
+            throw PrepError.unreadable
+        }
+
+        let size = fileSize(of: destination)
+        if size > limit {
+            try? FileManager.default.removeItem(at: destination)
+            throw PrepError.tooLargeAfterCompression(bytes: size)
+        }
+
+        let asset = AVURLAsset(url: destination)
+        let duration = (try? await asset.load(.duration)).map {
+            Int(CMTimeGetSeconds($0) * 1000)
+        }
+
+        // A name only when there is one worth showing: a recording's
+        // identity is its length, a track's is its title. The server takes
+        // `name` as optional for audio, unlike a file.
+        let name = sourceURL.lastPathComponent
+        return Prepared(
+            fileURL: destination,
+            mime: audioMIME(for: destination),
+            kind: "audio",
+            durationMS: duration,
+            name: name.isEmpty ? nil : name)
+    }
+
+    /// The type the SERVER will accept, which is narrower than what the
+    /// system might name. Anything unrecognised is left to the file path,
+    /// where nothing is verified.
+    static func audioMIME(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "m4a", "mp4", "aac": "audio/mp4"
+        case "mp3": "audio/mpeg"
+        case "wav", "wave": "audio/wav"
+        case "ogg", "oga": "audio/ogg"
+        default: mimeType(for: url)
+        }
+    }
+
+    /// Whether the server will take this as audio at all. When it will not,
+    /// the caller sends it as a file — where the type is metadata and no
+    /// magic number is checked — rather than getting a 400.
+    static func isSupportedAudio(_ url: URL) -> Bool {
+        ["m4a", "mp4", "aac", "mp3", "wav", "wave", "ogg", "oga"]
+            .contains(url.pathExtension.lowercased())
+    }
+
     /// The system's type for this extension, or the generic one. The server
     /// stores it without checking — it is metadata, not a claim.
     static func mimeType(for url: URL) -> String {
@@ -275,6 +338,13 @@ nonisolated enum MediaPrep {
         }
         if type?.conforms(to: .movie) == true {
             return try await prepareVideo(from: url, limit: limit)
+        }
+        // Audio the server will actually accept goes as audio, so it gets a
+        // player instead of a document row. Anything else claiming to be
+        // audio (a codec the magic-number check does not know) falls
+        // through to the file path rather than earning a 400.
+        if type?.conforms(to: .audio) == true, isSupportedAudio(url) {
+            return try await prepareAudio(from: url, limit: limit)
         }
         return try await prepareFile(from: url, limit: limit)
     }

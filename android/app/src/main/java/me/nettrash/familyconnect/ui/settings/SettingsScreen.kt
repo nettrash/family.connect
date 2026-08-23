@@ -435,7 +435,10 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(24.dp))
             Text(
-                text = "Family Connect ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                // The app's own display name, not a second copy of it —
+                // the launcher says "Family" and this said "Family Connect".
+                text = "${stringResource(R.string.app_name)} " +
+                    "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp),

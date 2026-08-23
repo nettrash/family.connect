@@ -62,6 +62,14 @@
     <string name="s_video">Video</string>
     <string name="s_photo">Fotografija</string>
     <string name="s_take_photo">Slikaj</string>
+    <string name="s_record_audio">Snimi audio</string>
+    <string name="s_stop">Zaustavi</string>
+    <string name="s_audio">Audio</string>
+    <string name="s_play">Pusti</string>
+    <string name="s_pause">Pauza</string>
+    <string name="e_record_failed">Snimanje nije moglo da počne.</string>
+    <string name="e_recording_too_short">Snimak je prekratak.</string>
+    <string name="e_microphone_permission">Family treba dozvolu za korišćenje mikrofona.</string>
     <string name="s_record_video">Snimi video</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Dodaj poruku ili pošalji ovako.</string>
     <string name="s_remove_attachment">Ukloni prilog</string>

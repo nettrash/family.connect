@@ -316,6 +316,80 @@ class MediaPrep @Inject constructor(
      * a process death or a retry happens. Nothing is re-encoded and nothing
      * is inspected; a file is whatever the sender picked (protocol.md).
      */
+    /**
+     * Prepare a piece of audio — a recording, or a track off a disk.
+     *
+     * Nothing is re-encoded. A voice note is already recorded straight into
+     * the container the server checks (AAC in MP4), and re-encoding
+     * someone's music to save a few megabytes would be a worse trade than
+     * refusing it. No preview: audio has nothing to look at, so a bubble
+     * draws a play control, the duration and a scrubber (protocol.md,
+     * "Audio").
+     */
+    suspend fun prepareAudio(uri: Uri, limit: Long = SIZE_LIMIT): Prepared =
+        withContext(Dispatchers.IO) {
+            val name = displayName(uri)
+            val destination = cacheFile(name.substringAfterLast('.', "m4a"))
+            val copied = runCatching {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    destination.outputStream().use { output -> input.copyTo(output) }
+                }
+            }.getOrNull()
+            if (copied == null) {
+                destination.delete()
+                throw UnreadableMedia()
+            }
+
+            val size = destination.length()
+            if (size > limit) {
+                destination.delete()
+                throw TooLargeAfterCompression(size)
+            }
+
+            // NOT `use {}`: MediaMetadataRetriever only became AutoCloseable
+            // in API 29 and minSdk here is 26, so the implicit cast would
+            // crash on older devices. Lint catches this; the explicit
+            // release is the fix, not a baseline entry.
+            val retriever = MediaMetadataRetriever()
+            val durationMs = try {
+                runCatching {
+                    retriever.setDataSource(destination.absolutePath)
+                    retriever
+                        .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        ?.toIntOrNull()
+                }.getOrNull()
+            } finally {
+                runCatching { retriever.release() }
+            }
+
+            Prepared(
+                file = destination,
+                mime = audioMime(uri, destination),
+                kind = AttachmentDto.KIND_AUDIO,
+                width = null,
+                height = null,
+                durationMs = durationMs,
+                previewJpeg = null,
+                // A name only when there is one worth showing: a recording's
+                // identity is its length, a track's is its title.
+                name = name.takeIf { it.isNotBlank() },
+            )
+        }
+
+    /**
+     * The type the SERVER will accept, which is narrower than what the
+     * provider might name. Anything unrecognised is left to the file path,
+     * where nothing is verified.
+     */
+    private fun audioMime(uri: Uri, file: File): String =
+        when (file.extension.lowercase()) {
+            "m4a", "mp4", "aac" -> "audio/mp4"
+            "mp3" -> "audio/mpeg"
+            "wav", "wave" -> "audio/wav"
+            "ogg", "oga" -> "audio/ogg"
+            else -> contentResolver.getType(uri) ?: DEFAULT_FILE_MIME
+        }
+
     suspend fun prepareFile(uri: Uri, limit: Long = SIZE_LIMIT): Prepared =
         withContext(Dispatchers.IO) {
             val name = displayName(uri)
@@ -456,6 +530,18 @@ class MediaPrep @Inject constructor(
          * else has to go through the transcoder whatever its size.
          */
         val SENDABLE_VIDEO_TYPES = setOf("video/mp4", "video/quicktime")
+
+        /**
+         * Audio types the server's magic-number check knows. Anything else
+         * claiming to be audio goes as a FILE — where the type is metadata
+         * and nothing is verified — rather than earning a 400.
+         */
+        val SENDABLE_AUDIO_TYPES = setOf(
+            "audio/mp4", "audio/m4a", "audio/aac",
+            "audio/mpeg", "audio/mp3",
+            "audio/wav", "audio/x-wav", "audio/vnd.wave",
+            "audio/ogg",
+        )
 
         /** 1280x720-ish: small enough to fit, big enough to watch. */
         const val COMPRESSED_SHORT_SIDE = 720

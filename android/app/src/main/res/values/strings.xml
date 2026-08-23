@@ -75,6 +75,14 @@
     <string name="s_video">Video</string>
     <string name="s_photo">Photo</string>
     <string name="s_take_photo">Take photo</string>
+    <string name="s_record_audio">Record audio</string>
+    <string name="s_stop">Stop</string>
+    <string name="s_audio">Audio</string>
+    <string name="s_play">Play</string>
+    <string name="s_pause">Pause</string>
+    <string name="e_record_failed">Couldn\'t start recording.</string>
+    <string name="e_recording_too_short">That recording was too short.</string>
+    <string name="e_microphone_permission">Family needs permission to use the microphone.</string>
     <string name="s_record_video">Record video</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Add a message, or send it on its own.</string>
     <string name="s_remove_attachment">Remove attachment</string>

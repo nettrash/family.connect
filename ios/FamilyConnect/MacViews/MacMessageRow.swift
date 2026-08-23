@@ -25,6 +25,8 @@ struct MacMessageRow: View {
     /// Profile-picture version per user, so the who-reacted rows lead with
     /// a face like the phone's do.
     var avatarVersionFor: (Int64) -> Int64 = { _ in 0 }
+    /// The assistant is still writing this one — a cursor, nothing more.
+    var isStreaming: Bool = false
     let isMine: Bool
     /// Family chat, run head, not mine — the phone's rule, shared.
     var showsSenderName: Bool = false
@@ -68,6 +70,13 @@ struct MacMessageRow: View {
                         .padding(.leading, 2)
                 }
                 balloon
+                    // Double-click is ❤️, as on the phone
+                    // (MessagePresentation.doubleTapReaction). On the
+                    // BALLOON, not the row: the row spans the full width
+                    // including the 80pt spacer, and double-clicking empty
+                    // space beside a message must not leave a reaction on
+                    // it. Acked only — there is no id to react to before.
+                    .onTapGesture(count: 2) { quickHeart() }
                 if message.state == .failed {
                     // A send that failed is the one thing here the user has
                     // to act on, so it says so in place rather than only
@@ -175,13 +184,29 @@ struct MacMessageRow: View {
         .frame(minWidth: 220, alignment: .leading)
     }
 
-    /// Reply / React / Edit / Copy.
+    private func quickHeart() {
+        guard message.serverID != nil else { return }
+        Task {
+            await coordinator.toggleReaction(
+                localID: message.localID,
+                emoji: MessagePresentation.doubleTapReaction)
+        }
+    }
+
+    /// Reply / React / Edit / Copy, over the WHOLE row.
     ///
-    /// Attached BOTH to the row and to the body text, because
-    /// `.textSelection(.enabled)` turns the text into an AppKit text view
-    /// that installs the system's own menu (Look Up, Translate, Services…)
-    /// and wins over the row's — so right-clicking the words themselves
-    /// showed macOS's menu and none of ours.
+    /// The body text deliberately does NOT use `.textSelection(.enabled)`.
+    /// That turns the Text into an AppKit text view which installs the
+    /// system's own menu (Look Up, Translate, Services…) — and that menu
+    /// wins: right-clicking the words showed macOS's menu and none of ours,
+    /// so React was unreachable over most of a balloon. Attaching this menu
+    /// to the Text as well does NOT beat it (measured — it still lost), so
+    /// the selection has to go.
+    ///
+    /// Copying a whole message is the "Copy" item below; what is given up
+    /// is dragging to select PART of one. If that is wanted back, the way
+    /// to have both is a hover-revealed button on the balloon (the Slack
+    /// pattern), not text selection.
     @ViewBuilder
     private var rowMenu: some View {
         // React needs a SERVER id — the endpoint is
@@ -235,14 +260,35 @@ struct MacMessageRow: View {
                 MacQuoteBlock(quote: quote, isMine: isMine, nameFor: nameFor)
             }
             if let attachment = message.attachment {
-                MacAttachmentBlock(attachment: attachment, isMine: isMine)
-                    .onTapGesture { onOpenAttachment(attachment) }
+                if attachment.isAudio {
+                    // The player IS the interaction; a click belongs to its
+                    // own controls, so no open/heart pair here.
+                    MacAttachmentBlock(attachment: attachment, isMine: isMine)
+                } else {
+                    MacAttachmentBlock(attachment: attachment, isMine: isMine)
+                        // Count 2 BEFORE count 1, and both as onTapGesture:
+                        // that is what makes them exclusive. A bare
+                        // single-click handler on a CHILD masks the
+                        // balloon's double-click outright, and
+                        // double-clicking a photo would open it AND heart
+                        // it — the same bug the phone had.
+                        .onTapGesture(count: 2) { quickHeart() }
+                        .onTapGesture(count: 1) { onOpenAttachment(attachment) }
+                }
+            }
+            if isStreaming && message.body.isEmpty {
+                // The row exists but nothing has arrived yet; an empty
+                // balloon would look broken.
+                Text(verbatim: "▍").opacity(0.6)
             }
             if !message.body.isEmpty {
                 Text(message.body)
-                    .textSelection(.enabled)
-                    .contextMenu { rowMenu }
                     .fixedSize(horizontal: false, vertical: true)
+                    .overlay(alignment: .bottomTrailing) {
+                        if isStreaming {
+                            Text(verbatim: "▍").opacity(0.6).offset(x: 8)
+                        }
+                    }
             }
             let chips = MessagePresentation.reactionChips(
                 message.reactions, currentUserID: coordinator.currentUserID)
@@ -367,7 +413,10 @@ private struct MacAttachmentBlock: View {
         // lands — the store's caches are ObservationIgnored. Same rule as
         // the iOS bubble, and the same bug if it is left out.
         let _ = store.generation
-        if attachment.isFile {
+        if attachment.isAudio {
+            // Nothing to look at — a player, not a tile or a row.
+            AudioPlayerView(attachment: attachment, isMine: isMine)
+        } else if attachment.isFile {
             HStack(spacing: 9) {
                 Image(systemName: "doc")
                     .font(.system(size: 20))

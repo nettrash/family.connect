@@ -144,4 +144,12 @@
     <string name="s_record_video">录像</string>
     <string name="s_add_a_message_or_send_it_on_its_own">可以加一句话，也可以直接发送。</string>
     <string name="s_remove_attachment">移除附件</string>
+    <string name="s_record_audio">录制音频</string>
+    <string name="s_stop">停止</string>
+    <string name="s_audio">音频</string>
+    <string name="s_play">播放</string>
+    <string name="s_pause">暂停</string>
+    <string name="e_record_failed">无法开始录音。</string>
+    <string name="e_recording_too_short">这段录音太短了。</string>
+    <string name="e_microphone_permission">Family 需要使用麦克风的权限。</string>
 </resources>

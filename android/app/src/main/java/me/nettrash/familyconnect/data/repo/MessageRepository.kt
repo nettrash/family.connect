@@ -25,6 +25,9 @@
 package me.nettrash.familyconnect.data.repo
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -77,7 +80,19 @@ class MessageRepository @Inject constructor(
                 when (frame) {
                     is ServerFrame.Ack -> ackMessage(frame.clientMsgId, frame.message)
                     is ServerFrame.Message -> applyServerMessage(frame.message, live = true)
-                    is ServerFrame.MessageEdited -> applyEdit(frame.message)
+                    is ServerFrame.MessageEdited -> {
+                        // The authoritative body: whatever was accumulated
+                        // from deltas is replaced, and the row stops being
+                        // "still being written".
+                        _streamingMessageIds.update { it - frame.message.id }
+                        applyEdit(frame.message)
+                    }
+                    is ServerFrame.AiDelta -> appendAssistantDelta(frame)
+                    is ServerFrame.AiError ->
+                        // Whatever arrived is already on the row and stays
+                        // there — a partial answer beats a bubble that never
+                        // resolves.
+                        _streamingMessageIds.update { it - frame.messageId }
                     is ServerFrame.Read -> onPeerRead(frame)
                     is ServerFrame.Reaction -> onReaction(frame)
                     is ServerFrame.Error -> onSendError(frame)
@@ -211,6 +226,30 @@ class MessageRepository @Inject constructor(
      */
     fun previewText(body: String, attachment: AttachmentDto?): String =
         Companion.previewText(body, attachment)
+
+    /**
+     * Assistant replies still being written, by server id. Drives the
+     * bubble's cursor and nothing else; it is deliberately in memory only,
+     * so a row that was mid-stream when the app was killed is not stuck
+     * looking live after a relaunch.
+     */
+    private val _streamingMessageIds = MutableStateFlow<Set<Long>>(emptySet())
+    val streamingMessageIds: StateFlow<Set<Long>> = _streamingMessageIds
+
+    /**
+     * Append one fragment to the assistant's row.
+     *
+     * Deltas carry no `editSeq`, so this never fights the edit guard: the
+     * final body arrives as an edit with a real seq and overwrites whatever
+     * was accumulated — which is also how a client that missed every
+     * fragment ends up correct.
+     */
+    private suspend fun appendAssistantDelta(frame: ServerFrame.AiDelta) {
+        val appended = messageDao.appendToBody(frame.messageId, frame.text)
+        if (appended > 0) {
+            _streamingMessageIds.update { it + frame.messageId }
+        }
+    }
 
     /** Re-enter the pipeline with the SAME UUID — the server dedups. */
     suspend fun retry(clientMsgId: String) {

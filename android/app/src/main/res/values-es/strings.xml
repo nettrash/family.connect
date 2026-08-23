@@ -144,4 +144,12 @@
     <string name="s_record_video">Grabar vídeo</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Añade un mensaje, o envíalo tal cual.</string>
     <string name="s_remove_attachment">Quitar adjunto</string>
+    <string name="s_record_audio">Grabar audio</string>
+    <string name="s_stop">Detener</string>
+    <string name="s_audio">Audio</string>
+    <string name="s_play">Reproducir</string>
+    <string name="s_pause">Pausar</string>
+    <string name="e_record_failed">No se pudo empezar a grabar.</string>
+    <string name="e_recording_too_short">Esa grabación es demasiado corta.</string>
+    <string name="e_microphone_permission">Family necesita permiso para usar el micrófono.</string>
 </resources>

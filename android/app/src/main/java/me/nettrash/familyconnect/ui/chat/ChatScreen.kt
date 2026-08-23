@@ -218,6 +218,10 @@ import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import android.net.Uri
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import androidx.compose.material.icons.filled.Mic
 import android.graphics.BitmapFactory
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Videocam
@@ -267,6 +271,7 @@ fun ChatScreen(
 
     val mediaState by viewModel.mediaState.collectAsStateWithLifecycle()
     val staged by viewModel.staged.collectAsStateWithLifecycle()
+    val recordingMs by viewModel.recordingMs.collectAsStateWithLifecycle()
 
     var failedActionTarget by remember { mutableStateOf<String?>(null) }
 
@@ -351,6 +356,26 @@ fun ChatScreen(
             pendingCaptureIsVideo = isVideo
             if (isVideo) captureVideo.launch(uri) else takePicture.launch(uri)
         }
+    }
+
+    // Recording a voice note. RECORD_AUDIO really is required here (unlike
+    // CAMERA, which must not even be declared), so it is asked for at the
+    // moment of use and the grant continues the action.
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            viewModel.startRecording()
+        } else {
+            Toast.makeText(context, R.string.e_microphone_permission, Toast.LENGTH_LONG).show()
+        }
+    }
+    val startRecording: () -> Unit = {
+        val held = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (held) viewModel.startRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     // Saving to the gallery. On 26–28 the write needs a permission first;
@@ -685,6 +710,7 @@ fun ChatScreen(
                                     linkPreviews = linkPreviews,
                                     previewsEnabled = linkPreviewsEnabled,
                                     onRequestPreview = viewModel::requestLinkPreview,
+                                    streamUrl = viewModel::attachmentStreamUrl,
                                     onFailedTap = { failedActionTarget = it },
                                     onToggleReaction = applyToggle,
                                     onTapQuote = { pendingJumpId = it },
@@ -812,6 +838,10 @@ fun ChatScreen(
                 staged = staged,
                 onTakePhoto = { startCapture(false) },
                 onTakeVideo = { startCapture(true) },
+                onRecordAudio = startRecording,
+                recordingMs = recordingMs,
+                onStopRecording = viewModel::stopRecording,
+                onCancelRecording = viewModel::cancelRecording,
                 onDiscardStaged = viewModel::discardStaged,
                 onDismissMediaError = viewModel::clearMediaState,
             )
@@ -1467,6 +1497,7 @@ private fun MessageBubble(
     linkPreviews: Map<String, LinkPreviewState>,
     previewsEnabled: Boolean,
     onRequestPreview: (String) -> Unit,
+    streamUrl: suspend (Long) -> Pair<String, Map<String, String>>?,
     onFailedTap: (String) -> Unit,
     onToggleReaction: (Long, String) -> Unit,
     onLongPress: (ChatListItem.MessageItem, Rect) -> Unit,
@@ -1627,6 +1658,7 @@ private fun MessageBubble(
                     linkPreviews = linkPreviews,
                     previewsEnabled = previewsEnabled,
                     onRequestPreview = onRequestPreview,
+                    streamUrl = streamUrl,
                     onOpenLink = { runCatching { uriHandler.openUri(it) } },
                     onFailedTap = onFailedTap,
                     onToggleReaction = { emoji ->
@@ -2007,6 +2039,8 @@ private fun BubbleContent(
     /** False = this device never requests a linked page (Settings). */
     previewsEnabled: Boolean,
     onRequestPreview: (String) -> Unit,
+    /** Where audio streams from, with the auth header it needs. */
+    streamUrl: suspend (Long) -> Pair<String, Map<String, String>>?,
     onOpenLink: (String) -> Unit,
     onFailedTap: (String) -> Unit,
     /** Toggle one emoji for me on this message (no-op until the message is acked). */
@@ -2138,6 +2172,7 @@ private fun BubbleContent(
                 attachment = attachment,
                 onOpen = { onOpenAttachment(attachment) },
                 modifier = measureBlock,
+                streamUrl = streamUrl,
                 onLongPress = onTextLongPress,
                 onDoubleTap = onDoubleTap,
             )
@@ -2461,6 +2496,43 @@ private fun MediaStrip(
  * here is literally what goes out. A file has none — a document is a row,
  * not a tile — and gets its icon instead.
  */
+/** While a voice note is being recorded: a counter and the two ways out. */
+@Composable
+private fun RecordingStrip(
+    elapsedMs: Long,
+    onStop: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            Icons.Filled.Mic,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.error,
+        )
+        Text(
+            text = formatDuration(elapsedMs),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = onCancel) { Text(stringResource(R.string.s_cancel)) }
+        // Stop STAGES rather than sends, so a caption can be added and a
+        // recording made by accident can still be discarded.
+        TextButton(onClick = onStop) { Text(stringResource(R.string.s_stop)) }
+    }
+}
+
+/** `0:07` — what a counter counts up in, and what a bubble shows. */
+private fun formatDuration(ms: Long): String {
+    val whole = (ms / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(whole / 60, whole % 60)
+}
+
 @Composable
 private fun StagedAttachmentChip(
     staged: MediaPrep.Prepared,
@@ -2555,6 +2627,10 @@ private fun InputBar(
     onPickFile: () -> Unit,
     onTakePhoto: () -> Unit,
     onTakeVideo: () -> Unit,
+    onRecordAudio: () -> Unit,
+    recordingMs: Long?,
+    onStopRecording: () -> Unit,
+    onCancelRecording: () -> Unit,
     onDiscardStaged: () -> Unit,
     onDismissMediaError: () -> Unit,
 ) {
@@ -2573,6 +2649,13 @@ private fun InputBar(
             }
             if (mediaState != ChatViewModel.MediaSendState.Idle) {
                 MediaStrip(state = mediaState, onDismiss = onDismissMediaError)
+            }
+            if (recordingMs != null) {
+                RecordingStrip(
+                    elapsedMs = recordingMs,
+                    onStop = onStopRecording,
+                    onCancel = onCancelRecording,
+                )
             }
             if (staged != null) {
                 StagedAttachmentChip(staged = staged, onDiscard = onDiscardStaged)
@@ -2636,6 +2719,14 @@ private fun InputBar(
                             onClick = {
                                 attachMenuOpen = false
                                 onTakePhoto()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.s_record_audio)) },
+                            leadingIcon = { Icon(Icons.Filled.Mic, contentDescription = null) },
+                            onClick = {
+                                attachMenuOpen = false
+                                onRecordAudio()
                             },
                         )
                         DropdownMenuItem(

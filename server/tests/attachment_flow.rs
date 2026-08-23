@@ -25,6 +25,22 @@ fn mp4_bytes(len: usize) -> Vec<u8> {
     bytes
 }
 
+/// An MP3 whose first bytes are a raw frame sync (11 set bits).
+fn mp3_bytes(len: usize) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xFB, 0x90, 0x00];
+    bytes.resize(len.max(4), 0x00);
+    bytes
+}
+
+/// RIFF….WAVE — the other shape audio arrives in.
+fn wav_bytes(len: usize) -> Vec<u8> {
+    let mut bytes = Vec::from(*b"RIFF");
+    bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+    bytes.extend_from_slice(b"WAVE");
+    bytes.resize(len.max(12), 0x00);
+    bytes
+}
+
 async fn family_of_two(ts: &TestServer) -> (String, String, i64) {
     let (owner, _) = ts.register("owner", "Olive").await;
     let (member, _) = ts.register("junior", "Junior").await;
@@ -1123,4 +1139,117 @@ async fn an_empty_message_with_no_attachment_is_still_refused() {
         "message_empty",
     )
     .await;
+}
+
+/// A voice note, and a track picked off a disk, are the same kind: both
+/// carry a duration, neither carries a preview (protocol.md, "Audio").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn audio_uploads_with_a_duration_and_no_preview() {
+    let server = spawn_server().await;
+    let (owner, member, chat_id) = family_of_two(&server).await;
+
+    // Recorded: m4a, no name — its duration is its identity.
+    let response = upload(
+        &server,
+        &owner,
+        "?kind=audio&duration_ms=4200",
+        "audio/mp4",
+        mp4_bytes(2048),
+    )
+    .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("JSON");
+    let attachment = &body["attachment"];
+    assert_eq!(attachment["kind"], "audio");
+    assert_eq!(attachment["duration_ms"].as_i64(), Some(4200));
+    assert_eq!(attachment["has_preview"].as_bool(), Some(false));
+    assert!(
+        attachment.get("width").is_none_or(|v| v.is_null()),
+        "audio has no dimensions"
+    );
+    let audio_id = attachment["id"].as_i64().expect("id");
+
+    // A preview on one is a client bug, and says so.
+    let preview = server
+        .put_bytes(
+            &owner,
+            &format!("/attachments/{audio_id}/preview"),
+            "image/jpeg",
+            jpeg_bytes(64),
+        )
+        .await;
+    assert_eq!(preview.status(), 400);
+
+    // It reaches the family like any other attachment.
+    let sent = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({"client_msg_id": Uuid::new_v4().to_string(), "body": "",
+                   "attachment_id": audio_id}),
+        )
+        .await;
+    assert_eq!(sent.status(), 201);
+    let fetched = server
+        .get(&member, &format!("/attachments/{audio_id}"))
+        .await;
+    assert_eq!(fetched.status(), 200);
+}
+
+/// Picked off a disk: an mp3 or a wav, and a name worth showing.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn audio_accepts_the_types_a_disk_actually_holds() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    for (mime, bytes) in [
+        ("audio/mpeg", mp3_bytes(1024)),
+        ("audio/wav", wav_bytes(1024)),
+    ] {
+        let response = upload(&server, &owner, "?kind=audio&duration_ms=1000", mime, bytes).await;
+        assert_eq!(response.status(), 201, "{mime} should be accepted");
+        let body: Value = response.json().await.expect("JSON");
+        assert_eq!(body["attachment"]["kind"], "audio", "{mime}");
+    }
+}
+
+/// The magic-number rule applies to audio exactly as it does to a photo:
+/// the declared type must match the bytes. (A recording that cannot be put
+/// in a checkable container goes as `kind=file`, where nothing is verified.)
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn audio_that_is_not_audio_is_refused() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let response = upload(
+        &server,
+        &owner,
+        "?kind=audio&duration_ms=1000",
+        "audio/mpeg",
+        jpeg_bytes(1024),
+    )
+    .await;
+    assert_eq!(response.status(), 400);
+}
+
+/// Declaring the wrong KIND for a real audio type is caught too — the
+/// server answers with what it actually is.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn audio_declared_as_a_photo_is_refused() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let response = upload(
+        &server,
+        &owner,
+        "?kind=photo",
+        "audio/mpeg",
+        mp3_bytes(1024),
+    )
+    .await;
+    assert_eq!(response.status(), 400);
 }

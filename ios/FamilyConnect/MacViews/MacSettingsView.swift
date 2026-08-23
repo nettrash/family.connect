@@ -72,6 +72,12 @@ struct MacSettingsView: View {
                 }
                 Section {
                     Button("Log Out", role: .destructive) { confirmLogout = true }
+                } footer: {
+                    Text(verbatim: AppVersion.settingsLine)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 8)
                 }
             }
             .formStyle(.grouped)

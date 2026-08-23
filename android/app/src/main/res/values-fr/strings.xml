@@ -144,4 +144,12 @@
     <string name="s_record_video">Filmer une vidéo</string>
     <string name="s_add_a_message_or_send_it_on_its_own">Ajoute un message, ou envoie-le tel quel.</string>
     <string name="s_remove_attachment">Retirer la pièce jointe</string>
+    <string name="s_record_audio">Enregistrer un audio</string>
+    <string name="s_stop">Arrêter</string>
+    <string name="s_audio">Audio</string>
+    <string name="s_play">Lire</string>
+    <string name="s_pause">Suspendre</string>
+    <string name="e_record_failed">Impossible de démarrer l’enregistrement.</string>
+    <string name="e_recording_too_short">Cet enregistrement est trop court.</string>
+    <string name="e_microphone_permission">Family a besoin de l’autorisation d’utiliser le micro.</string>
 </resources>

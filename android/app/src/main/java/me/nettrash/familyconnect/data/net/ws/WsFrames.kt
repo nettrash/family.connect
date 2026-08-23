@@ -134,6 +134,30 @@ sealed interface ServerFrame {
     data class BoardNote(val note: NoteDto) : ServerFrame
 
     /**
+     * One fragment of the assistant's reply, as it is generated.
+     *
+     * COSMETIC: the row named by [messageId] is the truth, and its final
+     * body arrives as [MessageEdited] whether or not any of these were seen
+     * (protocol.md, "The assistant"). Missing them costs a live-typing
+     * effect, never the answer.
+     */
+    @Serializable
+    @SerialName("ai_delta")
+    data class AiDelta(
+        @SerialName("chat_id") val chatId: Long,
+        @SerialName("message_id") val messageId: Long,
+        val text: String,
+    ) : ServerFrame
+
+    /** The reply stopped early; whatever arrived is already on the row. */
+    @Serializable
+    @SerialName("ai_error")
+    data class AiError(
+        @SerialName("chat_id") val chatId: Long,
+        @SerialName("message_id") val messageId: Long,
+    ) : ServerFrame
+
+    /**
      * An edit of an existing message. A SEPARATE frame from [Message]
      * because that one bumps unread counts and raises notifications, and
      * an edit must do neither (protocol.md, "Editing").

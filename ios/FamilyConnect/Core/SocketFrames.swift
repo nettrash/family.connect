@@ -133,6 +133,15 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     /// One board note in whatever state it now has — created, edited,
     /// moved, or a tombstone. Never notifies, never counts as unread.
     case boardNote(NoteDTO)
+    /// One fragment of the assistant's reply, as it is generated.
+    ///
+    /// COSMETIC: the row named by `messageID` is the truth, and its final
+    /// body arrives as `.messageEdited` whether or not any of these were
+    /// seen (docs/protocol.md, "The assistant"). Missing them costs a
+    /// live-typing effect, never the answer.
+    case aiDelta(chatID: Int64, messageID: Int64, text: String)
+    /// The reply stopped early. Whatever arrived is already on the row.
+    case aiError(chatID: Int64, messageID: Int64)
     case read(chatID: Int64, userID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64, userID: Int64)
     case memberJoined(MemberJoinedPayload)
@@ -158,6 +167,7 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case reactionSeq = "reaction_seq"
         case reactions
         case note
+        case text
     }
 
     init(from decoder: Decoder) throws {
@@ -174,6 +184,15 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
             self = .messageEdited(try container.decode(MessageDTO.self, forKey: .message))
         case "board_note":
             self = .boardNote(try container.decode(NoteDTO.self, forKey: .note))
+        case "ai_delta":
+            self = .aiDelta(
+                chatID: try container.decode(Int64.self, forKey: .chatID),
+                messageID: try container.decode(Int64.self, forKey: .messageID),
+                text: try container.decode(String.self, forKey: .text))
+        case "ai_error":
+            self = .aiError(
+                chatID: try container.decode(Int64.self, forKey: .chatID),
+                messageID: try container.decode(Int64.self, forKey: .messageID))
         case "read":
             self = .read(
                 chatID: try container.decode(Int64.self, forKey: .chatID),

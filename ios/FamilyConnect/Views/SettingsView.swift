@@ -302,6 +302,15 @@ struct SettingsView: View {
             Button("Log Out", role: .destructive) {
                 model.confirmLogout = true
             }
+        } footer: {
+            // verbatim: a product name and two numbers have nothing to
+            // translate, and going through the catalogue would make the
+            // build number a "string" needing 8 translations.
+            Text(verbatim: AppVersion.settingsLine)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 8)
         }
     }
 
