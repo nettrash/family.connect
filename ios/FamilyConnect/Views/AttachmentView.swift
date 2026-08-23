@@ -29,6 +29,13 @@ struct AttachmentView: View {
     /// Same defect the reply quote had, and the same fix.
     var onLongPress: () -> Void = {}
     var onDoubleTap: () -> Void = {}
+    /// Which balloon this is sitting in.
+    ///
+    /// Needed for CONTRAST, not decoration: an own balloon is filled with
+    /// the tint, and a file row that painted its icon `.tint` there was
+    /// drawing tint on tint — invisible. Everything inside a balloon has to
+    /// take its colour from whatever is directly behind it.
+    var isMine: Bool = false
 
     @Environment(AttachmentStore.self) private var store
 
@@ -92,8 +99,11 @@ struct AttachmentView: View {
         HStack(spacing: 10) {
             Image(systemName: Self.icon(for: attachment.mime))
                 .font(.system(size: 26))
-                .foregroundStyle(.tint)
-                .frame(width: 34)
+                .foregroundStyle(isMine ? AnyShapeStyle(.white) : AnyShapeStyle(.tint))
+                .frame(width: 36, height: 36)
+                .background(
+                    (isMine ? Color.white.opacity(0.18) : Color.accentColor.opacity(0.12)),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
                 Text(attachment.displayName)
                     .font(.subheadline.weight(.medium))
@@ -105,13 +115,26 @@ struct AttachmentView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
         .frame(maxWidth: Self.maxWidth)
-        .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+        // A wash that works on BOTH grounds: lightening over the tinted own
+        // balloon, darkening over the neutral one. A single black wash went
+        // muddy over the accent colour.
+        .background(
+            (isMine ? Color.white.opacity(0.14) : Color.black.opacity(0.05)),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.black.opacity(0.06)))
         .contentShape(Rectangle())
-        .onTapGesture { onOpen() }
-        .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap() })
+        // Count 2 BEFORE count 1, and both as onTapGesture: that is what
+        // makes them exclusive. The double tap used to be a
+        // `.simultaneousGesture`, which means "recognise alongside" — so a
+        // double tap fired the heart AND opened the attachment, because the
+        // first tap-up had already run onOpen.
+        .onTapGesture(count: 2) { onDoubleTap() }
+        .onTapGesture(count: 1) { onOpen() }
         .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(attachment.displayName), \(attachment.displaySize)")
@@ -138,8 +161,15 @@ struct AttachmentView: View {
     @ViewBuilder
     private var mediaThumbnail: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(.black.opacity(0.08))
+            // A soft vertical ramp rather than flat grey: while the bytes
+            // are still coming this rectangle is all there is to look at,
+            // and a dead slab reads as a broken image.
+            LinearGradient(
+                colors: isMine
+                    ? [.white.opacity(0.22), .white.opacity(0.10)]
+                    : [.black.opacity(0.10), .black.opacity(0.04)],
+                startPoint: .top,
+                endPoint: .bottom)
             if let image {
                 image
                     .resizable()
@@ -152,10 +182,19 @@ struct AttachmentView: View {
             }
         }
         .frame(width: size.width, height: size.height)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        // A hairline so a pale photo does not melt into a pale balloon.
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.black.opacity(0.08)))
         .contentShape(Rectangle())
-        .onTapGesture { onOpen() }
-        .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap() })
+        // Count 2 BEFORE count 1, and both as onTapGesture: that is what
+        // makes them exclusive. The double tap used to be a
+        // `.simultaneousGesture`, which means "recognise alongside" — so a
+        // double tap fired the heart AND opened the attachment, because the
+        // first tap-up had already run onOpen.
+        .onTapGesture(count: 2) { onDoubleTap() }
+        .onTapGesture(count: 1) { onOpen() }
         .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
         .accessibilityElement(children: .combine)
         .accessibilityLabel(attachment.isVideo ? "Video" : "Photo")

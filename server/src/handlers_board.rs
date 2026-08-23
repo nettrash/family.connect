@@ -199,9 +199,10 @@ pub async fn create_note(
     tx.commit().await?;
 
     let note = Note::from_row(&row);
+    // Creation is the one board event that notifies (protocol.md, "Board").
     events::log_fanout_error(
         "board_note",
-        events::deliver_board_note(&state, family_id, &note).await,
+        events::deliver_new_board_note(&state, family_id, &note).await,
     );
     Ok((StatusCode::CREATED, Json(json!({"note": note}))).into_response())
 }

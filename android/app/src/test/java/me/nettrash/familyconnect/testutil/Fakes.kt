@@ -130,6 +130,13 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(boardCursor = seq)
     }
 
+    override suspend fun setBoardSeenNoteId(noteId: Long) {
+        // Never backwards, matching the real store.
+        if (noteId > _state.value.boardSeenNoteId) {
+            _state.value = _state.value.copy(boardSeenNoteId = noteId)
+        }
+    }
+
     override suspend fun resetKeepingServerUrl() {
         // Mirrors production: server URL AND the device-scoped FCM token
         // survive; the account-scoped device id does not.

@@ -11,4 +11,12 @@
     <cache-path
         name="attachment_files"
         path="attachments/files/" />
+    <!--
+      Where the camera writes. Its own directory, not shared with the one
+      above: the capture intent needs WRITE access to the Uri it is handed,
+      and downloaded attachments must stay read-only to other apps.
+    -->
+    <cache-path
+        name="captures"
+        path="captures/" />
 </paths>

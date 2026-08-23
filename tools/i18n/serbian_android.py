@@ -7,6 +7,10 @@ sentence differently.
 """
 
 ANDROID_ONLY = {
+"s_take_photo": "Сликај",
+"s_record_video": "Сними видео",
+"s_add_a_message_or_send_it_on_its_own": "Додај поруку или пошаљи овако.",
+"s_remove_attachment": "Уклони прилог",
 "s_approval": "Одобрење",
 "s_back": "Назад",
 "s_chat_example_com_or_http_192_168_1_10_8080": "chat.example.com или http://192.168.1.10:8080",

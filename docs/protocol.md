@@ -110,15 +110,30 @@ What comes back is not that id but a `reply_to` snippet, which the server RECOMP
 rather than storing:
 
 ```json
-"reply_to": {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
+"reply_to": {"message_id": 41, "sender_id": 9, "excerpt": "See you at six",
+             "parent": {"message_id": 38, "sender_id": 4, "excerpt": "What time?"}}
 ```
 
 Recomputed, because a quoted message can be edited later — a snippet frozen at send time would go
 on showing text its author has since changed. `excerpt` is the parent's body cut to at most 120
 characters (counted in Unicode scalar values, never cut mid-scalar) and exists only so a client can
 draw the quote without having the original in its cache; a client that wants the whole message
-reads it from its own history or pages back to it, keyed by `message_id`. The snippet is never
-nested: a reply to a reply carries its parent's excerpt, not its grandparent's.
+reads it from its own history or pages back to it, keyed by `message_id`.
+
+**`parent` carries ONE more level, and exactly one.** When the quoted message is itself a reply, its
+own quote comes along, so answering an answer shows both halves of the exchange rather than a
+snippet with no idea what it was responding to. It is deliberately a DIFFERENT shape from `reply_to`
+— it has no `parent` of its own — so the depth cap is structural: there is no field to recurse into,
+and a message four deep still shows exactly two. Unbounded nesting would let one old thread drag its
+whole ancestry into every page.
+
+`parent` is absent whenever there is nothing to show: the quoted message was not itself a reply, or
+its own parent has since been swept by retention (the reply FK is `ON DELETE SET NULL`, migration
+0012). Clients degrade to a single quote silently — a missing second level is normal, not an error.
+It is cut to the same 120 scalar values, the same way, and is recomputed on every read exactly as
+`reply_to` is.
+
+`last_message` in `GET /chats` and push payloads still carry no quote at all — neither level.
 
 Replies are ordinary messages in every other respect — they take part in `after_id` catch-up,
 reactions and unread counts exactly as any other message does, and nothing about them mutates, so
@@ -159,8 +174,21 @@ excerpt when they apply the edit, cutting it the same way the server does.
 ### Board
 
 Each family has exactly one board: a wall of sticker notes anyone in the family can add to and
-rearrange. Notes are not messages — they carry no unread count, raise no notification, and never
-appear in a chat.
+rearrange. Notes are not messages — they carry no unread count and never appear in a chat.
+
+**A NEW note does notify.** This reverses the original "raise no notification": a board nobody is
+told about is a board nobody reads, and a note pinned to the family wall is exactly the kind of
+thing meant to be seen. Only CREATION notifies. Edits, moves and deletes do not — tidying the wall
+is the shared act (see below), and a push for every drag would make the board unusable. The author
+is never notified of their own note. Everything else about push applies unchanged: only members
+with no live socket are pushed, because an open socket already delivers the `board_note` frame.
+
+Counting what is new is the CLIENT's job, and it needs a marker of its own. `max_board_seq` is a
+SYNC cursor — it advances whenever a client applies a change, including a background resync — so
+using it to mean "seen" would clear the badge for a user who never opened the board. A client keeps
+a separate high-water mark of the note ids it has SHOWN the user, advanced only when the board is
+actually opened, and counts live notes above it. Note ids are server-assigned and monotonic, so
+"created since you last looked" needs nothing further from the server.
 
 Who may do what: **anyone in the family may MOVE a note; only its author may change its text or
 colour, or delete it.** Moving is the shared act (tidying the wall together), authorship is the
@@ -466,9 +494,10 @@ apply it under the same rule the board catch-up uses: a note is written only whe
 ## Push notifications
 
 The server pushes only to users with **no live socket** (an open WebSocket means the device is
-getting frames already). Three events push: a **new message** (to every offline chat member), a
-**join request created** (to the family owner), and a **join request approved** (to the
-requester). Typing, reads, reactions, and other frames never push.
+getting frames already). Four events push: a **new message** (to every offline chat member), a
+**new board note** (to every other offline family member), a **join request created** (to the family
+owner), and a **join request approved** (to the requester). Typing, reads, reactions, note moves and
+edits, and other frames never push.
 
 Device lifecycle: `POST /devices {platform, push_token}` upserts by token (re-login moves the
 token to the new account); the response `device_id` should be stored so `DELETE /devices/{id}`
@@ -477,6 +506,11 @@ unregistered (APNs `410`/`BadDeviceToken`, FCM `UNREGISTERED`) deletes the devic
 
 Titles: direct chat → sender's display name; family chat → `"<Family> — <Sender>"`. Body: the
 message text, or `"New message"` when the server's `[push] include_message_body = false`.
+
+A new board note pushes with `"kind": "board_note"` and `family_id` + `note_id` instead of chat and
+message ids. Title `"<Family> — <Author>"`, body the note's text (or `"New note"` when
+`include_message_body = false`, the same switch that governs message bodies). Tapping it opens the
+board.
 
 A message carrying an attachment MAY have an empty body — which is how a photo is normally sent —
 and an alert showing a name above a blank line says nothing arrived. Such a message pushes what
@@ -505,8 +539,8 @@ foregrounded app (socket live) is never pushed at all:
               "notification": {"channel_id": "messages", "tag": "chat-42"}}}}
 ```
 
-Tapping a notification opens the chat named by `chat_id` (or the join-requests screen for
-`join_request`, the chat list for `joined`).
+Tapping a notification opens the chat named by `chat_id` (or the board for `board_note`, the
+join-requests screen for `join_request`, the chat list for `joined`).
 
 ## Limits (server defaults, configurable)
 

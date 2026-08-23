@@ -208,6 +208,80 @@ class ReplyMigrationTest {
         }
     }
 
+    /**
+     * The SECOND quote level (v10). Same PRAGMA comparison as above: Room
+     * refuses to open a migrated database whose columns differ from what it
+     * would have created, and getting that wrong bricks every install that
+     * upgrades rather than reinstalls.
+     */
+    @Test
+    fun `the second quote level matches what Room creates from the entity`() {
+        migrateToLatest()
+        val migrated = columnsOf(db, "messages")
+
+        val fresh = androidx.room.Room.inMemoryDatabaseBuilder(
+            RuntimeEnvironment.getApplication(),
+            AppDatabase::class.java,
+        ).build()
+        val expected = try {
+            columnsOf(fresh.openHelper.writableDatabase, "messages")
+        } finally {
+            fresh.close()
+        }
+
+        for (name in listOf(
+            "replyParentMessageId",
+            "replyParentSenderId",
+            "replyParentExcerpt",
+        )) {
+            assertThat(migrated[name]).isNotNull()
+            assertThat(migrated[name]).isEqualTo(expected[name])
+        }
+    }
+
+    /**
+     * A reply that predates two-level quotes keeps its own quote and simply
+     * has nothing behind it — null is "there is no second level", which is
+     * the normal case rather than a half-set row.
+     */
+    @Test
+    fun `an existing reply survives with no second level`() {
+        db.execSQL(
+            "INSERT INTO messages (clientMsgId, serverId, chatId, senderId, body, createdAt, status) " +
+                "VALUES ('a', 1, 42, 7, 'Six works', 1000, 'SENT')",
+        )
+        AppDatabase.MIGRATION_3_4.migrate(db)
+        db.execSQL(
+            "UPDATE messages SET replyToMessageId = 41, replySenderId = 9, " +
+                "replyExcerpt = 'See you at six' WHERE clientMsgId = 'a'",
+        )
+        migrateFrom4ToLatest()
+
+        db.query(
+            "SELECT replyExcerpt, replyParentMessageId, replyParentExcerpt " +
+                "FROM messages WHERE clientMsgId = 'a'",
+        ).use { cursor ->
+            cursor.moveToFirst()
+            assertThat(cursor.getString(0)).isEqualTo("See you at six")
+            assertThat(cursor.isNull(1)).isTrue()
+            assertThat(cursor.isNull(2)).isTrue()
+        }
+    }
+
+    /** Every migration from the replies one up to the current schema. */
+    private fun migrateToLatest() {
+        AppDatabase.MIGRATION_3_4.migrate(db)
+        migrateFrom4ToLatest()
+    }
+
+    private fun migrateFrom4ToLatest() {
+        AppDatabase.MIGRATION_4_5.migrate(db)
+        AppDatabase.MIGRATION_5_6.migrate(db)
+        AppDatabase.MIGRATION_6_7.migrate(db)
+        AppDatabase.MIGRATION_7_8.migrate(db)
+        AppDatabase.MIGRATION_9_10.migrate(db)
+    }
+
     @Test
     fun `history survives the edits migration unedited`() {
         db.execSQL(

@@ -140,4 +140,8 @@
     <string name="s_plain_http_warning">Esta dirección usa http sin cifrar: los mensajes viajan sin protección por la red. Está bien en una red doméstica de confianza, arriesgado en cualquier otro sitio.</string>
     <string name="s_request_declined_explanation">El propietario rechazó tu solicitud. Puedes probar con otro código de invitación o crear tu propia familia.</string>
     <string name="s_waiting_explanation">No hay nada que cancelar desde aquí: el propietario te deja entrar o rechaza la solicitud.</string>
+    <string name="s_take_photo">Hacer foto</string>
+    <string name="s_record_video">Grabar vídeo</string>
+    <string name="s_add_a_message_or_send_it_on_its_own">Añade un mensaje, o envíalo tal cual.</string>
+    <string name="s_remove_attachment">Quitar adjunto</string>
 </resources>

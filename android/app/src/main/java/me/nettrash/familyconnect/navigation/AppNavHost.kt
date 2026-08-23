@@ -164,6 +164,7 @@ fun AppNavHost(
         if (startDestination == Routes.CHAT_LIST) {
             when (route) {
                 is PendingRoute.Chat -> navController.navigate(Routes.chat(route.chatId))
+                PendingRoute.Board -> navController.navigate(Routes.BOARD)
                 PendingRoute.JoinRequests ->
                     // join_request pushes go to the owner (protocol), but a
                     // stale/forged tap from a non-owner degrades to the list.

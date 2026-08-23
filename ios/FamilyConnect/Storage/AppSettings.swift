@@ -31,6 +31,7 @@ nonisolated enum AppSettings {
         /// the session — a different family's board must never be caught
         /// up from another's cursor.
         static let boardCursor = "v1.board.cursor"
+        static let boardSeenNoteID = "v1.board.seenNoteId"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
@@ -156,6 +157,19 @@ nonisolated enum AppSettings {
         set { defaults.set(Int(newValue), forKey: Key.boardCursor) }
     }
 
+    /// Highest note id the user has actually BEEN SHOWN, for the badge.
+    ///
+    /// Deliberately not `boardCursor`. That is a SYNC cursor and advances
+    /// whenever a change is applied — including a background resync — so
+    /// using it here would clear the badge for someone who never opened the
+    /// board. This one moves only when the board is on screen. Note ids are
+    /// server-assigned and monotonic, so "created since you last looked" is
+    /// just "id greater than this".
+    static var boardSeenNoteID: Int64 {
+        get { Int64(defaults.integer(forKey: Key.boardSeenNoteID)) }
+        set { defaults.set(Int(newValue), forKey: Key.boardSeenNoteID) }
+    }
+
     static func wipe(keepServerURL: Bool) {
         if !keepServerURL { defaults.removeObject(forKey: Key.serverURL) }
         defaults.removeObject(forKey: Key.currentUserID)
@@ -164,5 +178,6 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.pushDeviceID)
         defaults.removeObject(forKey: Key.legacyDeviceRegistered)
         defaults.removeObject(forKey: Key.boardCursor)
+        defaults.removeObject(forKey: Key.boardSeenNoteID)
     }
 }

@@ -81,7 +81,10 @@ interface MessageDao {
         UPDATE messages
         SET replyToMessageId = :replyToMessageId,
             replySenderId = :replySenderId,
-            replyExcerpt = :replyExcerpt
+            replyExcerpt = :replyExcerpt,
+            replyParentMessageId = :replyParentMessageId,
+            replyParentSenderId = :replyParentSenderId,
+            replyParentExcerpt = :replyParentExcerpt
         WHERE clientMsgId = :clientMsgId
         """,
     )
@@ -90,6 +93,9 @@ interface MessageDao {
         replyToMessageId: Long?,
         replySenderId: Long?,
         replyExcerpt: String?,
+        replyParentMessageId: Long?,
+        replyParentSenderId: Long?,
+        replyParentExcerpt: String?,
     )
 
     /**
@@ -155,6 +161,21 @@ interface MessageDao {
         """,
     )
     suspend fun refreshQuotesOf(quotedMessageId: Long, excerpt: String)
+
+    /**
+     * The same, one level down: an edited message may also be the SECOND
+     * level of somebody else's quote. Without this the outer excerpt goes
+     * stale and shows text its author has already changed — exactly what
+     * recomputing-on-read exists to prevent.
+     */
+    @Query(
+        """
+        UPDATE messages
+        SET replyParentExcerpt = :excerpt
+        WHERE replyParentMessageId = :quotedMessageId
+        """,
+    )
+    suspend fun refreshParentQuotesOf(quotedMessageId: Long, excerpt: String)
 
     @Query("UPDATE messages SET status = :status WHERE clientMsgId = :clientMsgId")
     suspend fun setStatus(clientMsgId: String, status: MessageStatus)

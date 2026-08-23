@@ -34,6 +34,8 @@ import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.SocketState
+import me.nettrash.familyconnect.data.db.NoteDao
+import kotlinx.coroutines.flow.first
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
@@ -56,6 +58,11 @@ class ChatListViewModel @Inject constructor(
     @param:ApplicationContext private val appContext: Context,
     private val chatRepository: ChatRepository,
     familyRepository: FamilyRepository,
+    // The DAO rather than BoardRepository: the badge needs one flow of
+    // notes, not the board's whole sync machinery, and the narrower
+    // dependency keeps this screen's tests free of board plumbing.
+    private val noteDao: NoteDao,
+    private val settingsRepository: SettingsRepository,
     settings: SettingsRepository,
     connectivity: ConnectivityObserver,
     socket: ChatSocket,
@@ -89,6 +96,26 @@ class ChatListViewModel @Inject constructor(
         combine(familyRepository.observeActiveMembers(), settings.state) { members, s ->
             members.filter { it.userId != s.myUserId }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * Notes pinned since this device last showed the board.
+     *
+     * Counted from the note IDS, against a high-water mark that only moves
+     * when the board is opened — never from `boardCursor`, which a
+     * background resync advances and would silently clear the badge.
+     */
+    val newNoteCount: StateFlow<Int> =
+        combine(noteDao.observeNotes(), settings.state) { notes, s ->
+            notes.count { it.id > s.boardSeenNoteId }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    /** The board is on screen, so everything pinned to it has been seen. */
+    fun markBoardSeen() {
+        viewModelScope.launch {
+            val highest = noteDao.observeNotes().first().maxOfOrNull { it.id } ?: 0L
+            settingsRepository.setBoardSeenNoteId(highest)
+        }
+    }
 
     val isOnline: StateFlow<Boolean> = connectivity.isOnline
     val socketState: StateFlow<SocketState> = socket.state

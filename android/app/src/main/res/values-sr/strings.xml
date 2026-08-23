@@ -61,6 +61,10 @@
     <string name="s_password">Лозинка</string>
     <string name="s_video">Видео</string>
     <string name="s_photo">Фотографија</string>
+    <string name="s_take_photo">Сликај</string>
+    <string name="s_record_video">Сними видео</string>
+    <string name="s_add_a_message_or_send_it_on_its_own">Додај поруку или пошаљи овако.</string>
+    <string name="s_remove_attachment">Уклони прилог</string>
     <string name="s_photo_or_video">Фотографија или видео</string>
     <string name="s_privacy">Приватност</string>
     <string name="s_react">Реагуј</string>

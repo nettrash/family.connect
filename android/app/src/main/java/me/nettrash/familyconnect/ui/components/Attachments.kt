@@ -35,6 +35,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
@@ -150,17 +152,24 @@ private fun FileRow(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    // Everything here takes its colour from LocalContentColor — the balloon's
+    // own content colour — rather than from a fixed black wash or the primary
+    // role. That is what makes it read correctly on BOTH grounds: it lightens
+    // over the tinted own balloon and darkens over the neutral one, and the
+    // icon can never end up primary-on-primaryContainer.
+    val ink = LocalContentColor.current
     Row(
         modifier = modifier
             .widthIn(max = MAX_WIDTH.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color.Black.copy(alpha = 0.06f))
+            .clip(RoundedCornerShape(12.dp))
+            .background(ink.copy(alpha = 0.10f))
+            .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
             .combinedClickable(
                 onClick = onOpen,
                 onLongClick = onLongPress,
                 onDoubleClick = onDoubleTap,
             )
-            .padding(horizontal = 8.dp, vertical = 6.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
             .semantics {
                 contentDescription =
                     "${attachment.displayName}, ${formatSize(context, attachment.size)}"
@@ -168,12 +177,20 @@ private fun FileRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Icon(
-            imageVector = iconFor(attachment.mime),
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(30.dp),
-        )
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(ink.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = iconFor(attachment.mime),
+                contentDescription = null,
+                tint = ink,
+                modifier = Modifier.size(22.dp),
+            )
+        }
         Column(modifier = Modifier.weight(1f, fill = false)) {
             Text(
                 text = attachment.displayName,
@@ -234,8 +251,19 @@ private fun MediaThumbnail(
         modifier = modifier
             .widthIn(max = MAX_WIDTH.dp)
             .aspectRatio(attachment.aspectRatio.coerceIn(MIN_RATIO, MAX_RATIO))
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color.Black.copy(alpha = 0.08f))
+            .clip(RoundedCornerShape(14.dp))
+            // A soft ramp rather than a flat slab: while the bytes are still
+            // coming this rectangle is all there is to look at. Derived from
+            // the balloon's content colour so it works on either ground.
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        LocalContentColor.current.copy(alpha = 0.14f),
+                        LocalContentColor.current.copy(alpha = 0.06f),
+                    ),
+                ),
+            )
+            .border(1.dp, LocalContentColor.current.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
             .combinedClickable(
                 onClick = onOpen,
                 onLongClick = onLongPress,

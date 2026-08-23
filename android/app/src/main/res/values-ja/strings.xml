@@ -140,4 +140,8 @@
     <string name="s_plain_http_warning">このアドレスは平文の http です。メッセージは暗号化されずにネットワークを流れます。信頼できる家庭内 LAN なら問題ありませんが、それ以外では危険です。</string>
     <string name="s_request_declined_explanation">ファミリーのオーナーがリクエストを拒否しました。別の招待コードを試すか、自分のファミリーを作成できます。</string>
     <string name="s_waiting_explanation">ここでキャンセルできることはありません。オーナーが承認するか拒否します。</string>
+    <string name="s_take_photo">写真を撮る</string>
+    <string name="s_record_video">ビデオを撮影</string>
+    <string name="s_add_a_message_or_send_it_on_its_own">メッセージを添えても、そのまま送ってもかまいません。</string>
+    <string name="s_remove_attachment">添付を削除</string>
 </resources>

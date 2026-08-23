@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -145,6 +145,22 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "ALTER TABLE messages ADD COLUMN attachmentHasPreview INTEGER NOT NULL DEFAULT 0",
                 )
+            }
+        }
+
+        /**
+         * v10: the second level of a quote.
+         *
+         * Three nullable columns with NO default, exactly like the first
+         * level's: null IS "there is nothing behind this quote", which is
+         * the normal case — the quoted message was not itself a reply, or
+         * its own parent has since been swept by retention.
+         */
+        val MIGRATION_9_10: Migration = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN replyParentMessageId INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN replyParentSenderId INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN replyParentExcerpt TEXT")
             }
         }
 

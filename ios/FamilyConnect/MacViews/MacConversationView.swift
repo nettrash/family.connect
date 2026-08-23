@@ -47,6 +47,11 @@ struct MacConversationView: View {
     @Environment(\.openWindow) private var openWindow
     @FocusState private var composerFocused: Bool
 
+    /// Side of the attach and send buttons — one box for both, so they sit
+    /// level. Matches the composer's one-line height.
+    private let composerControl: CGFloat = 24
+
+
     init(chatID: Int64) {
         self.chatID = chatID
         _messages = Query(
@@ -150,6 +155,7 @@ struct MacConversationView: View {
                             MacMessageRow(
                                 message: row.message,
                                 senderName: memberNames[row.message.senderID],
+                                nameFor: quoteAuthorName,
                                 isMine: row.isMine,
                                 showsSenderName: row.showsSenderName,
                                 showsTimestamp: row.isRunEnd,
@@ -220,10 +226,21 @@ struct MacConversationView: View {
                     pickAttachment()
                 } label: {
                     Image(systemName: "paperclip")
-                        .font(.system(size: 15))
+                        .font(.system(size: 16))
+                        // Same box as the send button, so the two are
+                        // optically level with each other and with the last
+                        // line of text — bottom-aligning glyphs of different
+                        // sizes lines up their edges, not their centres.
+                        .frame(width: composerControl, height: composerControl)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
                 .help("Attach a photo, video or file")
+                // Editing borrows the composer to rewrite an existing
+                // message; there is no second attachment to add, and
+                // attaching would post it as a new message while leaving the
+                // edit banner armed. iOS and Android already gated this.
+                .disabled(editTarget != nil)
 
                 TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -236,6 +253,8 @@ struct MacConversationView: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 22))
                         .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                        .frame(width: composerControl, height: composerControl)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.return, modifiers: [])
@@ -255,6 +274,12 @@ struct MacConversationView: View {
 
     private var canSend: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
+    }
+
+    /// Who a quoted sender is, matching the phone's wording.
+    private func quoteAuthorName(_ userID: Int64) -> String {
+        if userID == coordinator.currentUserID { return String(localized: "You") }
+        return memberNames[userID] ?? String(localized: "Someone")
     }
 
     private var typingLine: String? {
@@ -346,23 +371,42 @@ struct MacConversationView: View {
     private func pickAttachment() {
         guard let url = MacFilePicker.pickOne() else { return }
         mediaNotice = "Preparing…"
+        // Taken NOW, before the await, and put back only if the send never
+        // happens — the phone's rule (ConversationView.takeComposer), and it
+        // fixes two Mac-only bugs at once. Reading `draft` AFTER prepare
+        // swallowed anything typed while it ran into the caption, and the
+        // primed reply was dropped entirely while its banner stayed armed,
+        // so the NEXT ordinary message silently became that reply.
+        let caption = draft
+        let quote = replyDraft
+        draft = ""
+        replyDraft = nil
         Task {
             defer { mediaNotice = nil }
             do {
                 let prepared = try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit)
                 mediaNotice = "Sending…"
-                let caption = draft
-                draft = ""
-                if await coordinator.sendMedia(prepared, caption: caption, in: chatID) == false {
+                if await coordinator.sendMedia(
+                    prepared, caption: caption, replyTo: quote, in: chatID) == false
+                {
                     mediaNotice = "Couldn't send that."
-                    draft = caption
+                    restoreComposer(caption: caption, quote: quote)
                 }
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
                 mediaNotice = "That file is over the 100 MB limit."
+                restoreComposer(caption: caption, quote: quote)
             } catch {
                 mediaNotice = "Couldn't read that file."
+                restoreComposer(caption: caption, quote: quote)
             }
         }
+    }
+
+    /// Put the composer back when the send never happened — but never over
+    /// something typed in the meantime.
+    private func restoreComposer(caption: String, quote: ReplyToDTO?) {
+        if draft.isEmpty { draft = caption }
+        if replyDraft == nil { replyDraft = quote }
     }
 }
 

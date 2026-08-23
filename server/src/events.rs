@@ -60,12 +60,88 @@ pub async fn deliver_board_note(
     family_id: i64,
     note: &Note,
 ) -> Result<(), ApiError> {
+    deliver_board_note_inner(state, family_id, note, false).await
+}
+
+/// The same fan-out, but this note is NEW and therefore notifies.
+///
+/// Creation only: a push for every drag would make the board unusable, and
+/// tidying the wall is the shared act (protocol.md, "Board"). Deletes carry
+/// no content to announce and edits are the author's own correction.
+pub async fn deliver_new_board_note(
+    state: &AppState,
+    family_id: i64,
+    note: &Note,
+) -> Result<(), ApiError> {
+    deliver_board_note_inner(state, family_id, note, true).await
+}
+
+async fn deliver_board_note_inner(
+    state: &AppState,
+    family_id: i64,
+    note: &Note,
+    notify: bool,
+) -> Result<(), ApiError> {
     let members: Vec<i64> = sqlx::query_scalar("SELECT id FROM users WHERE family_id = $1")
         .bind(family_id)
         .fetch_all(&state.pool)
         .await?;
     let frame = ServerFrame::BoardNote { note: note.clone() };
-    state.registry.fan_out(&members, &frame, None).await;
+    let offline = state.registry.fan_out(&members, &frame, None).await;
+    if !notify {
+        return Ok(());
+    }
+
+    // Same rule as messages: only members with no live socket, and never
+    // the author of the note.
+    let author_id = note.author_id;
+    let push_targets: Vec<i64> = offline
+        .into_iter()
+        .filter(|user_id| Some(*user_id) != author_id)
+        .collect();
+    if push_targets.is_empty() {
+        return Ok(());
+    }
+    let devices = devices_for_users(&state.pool, &push_targets).await?;
+    if devices.is_empty() {
+        return Ok(());
+    }
+
+    let row = sqlx::query(
+        "SELECT f.name AS family_name, u.display_name AS author_name
+         FROM families f JOIN users u ON u.id = $2
+         WHERE f.id = $1",
+    )
+    .bind(family_id)
+    .bind(author_id)
+    .fetch_one(&state.pool)
+    .await?;
+    let family_name: String = row.get("family_name");
+    let author_name: String = row.get("author_name");
+    let text = note.text.clone().unwrap_or_default();
+
+    let mut by_user: BTreeMap<i64, Vec<DevicePush>> = BTreeMap::new();
+    for device in devices {
+        by_user.entry(device.user_id).or_default().push(device);
+    }
+    let mut batch = Vec::with_capacity(by_user.len());
+    for (user_id, user_devices) in by_user {
+        // The badge stays the user's UNREAD MESSAGE count: a note is not a
+        // message and must not inflate it (protocol.md keeps notes out of
+        // unread entirely). The board's own count is drawn by the client.
+        let badge = unread_badge(&state.pool, user_id).await?;
+        let notification = push_payload::board_note_notification(
+            state.cfg.push.include_message_body,
+            &family_name,
+            &author_name,
+            family_id,
+            note.id,
+            &text,
+            badge,
+        );
+        batch.push((user_devices, notification));
+    }
+    spawn_notify(state, batch);
     Ok(())
 }
 

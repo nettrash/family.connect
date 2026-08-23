@@ -140,4 +140,8 @@
     <string name="s_plain_http_warning">Diese Adresse nutzt einfaches http – die Nachrichten gehen unverschlüsselt durchs Netz. Im vertrauten Heimnetz in Ordnung, überall sonst riskant.</string>
     <string name="s_request_declined_explanation">Der Eigentümer hat deine Anfrage abgelehnt. Du kannst einen anderen Einladungscode versuchen oder eine eigene Familie gründen.</string>
     <string name="s_waiting_explanation">Von hier gibt es nichts abzubrechen – der Eigentümer lässt dich rein oder lehnt die Anfrage ab.</string>
+    <string name="s_take_photo">Foto aufnehmen</string>
+    <string name="s_record_video">Video aufnehmen</string>
+    <string name="s_add_a_message_or_send_it_on_its_own">Schreib etwas dazu — oder schick es einfach so.</string>
+    <string name="s_remove_attachment">Anhang entfernen</string>
 </resources>

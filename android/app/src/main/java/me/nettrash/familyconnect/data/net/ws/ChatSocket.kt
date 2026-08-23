@@ -124,9 +124,23 @@ class OkHttpChatSocket @Inject constructor(
 
     // -- Listener -------------------------------------------------------------
 
+    /**
+     * Is this callback about the socket we are actually using?
+     *
+     * OkHttp hands the [WebSocket] to every callback, and a socket that has
+     * been replaced can still deliver a late [onFailure] or [onClosed]. Acting
+     * on those clobbered a NEWER, live connection: the state went
+     * `Disconnected` while frames kept arriving on the new socket — which is
+     * both the "Connecting… but everything works" banner AND, because
+     * [trySend] gates on the state, a silent fallback of every send onto REST.
+     */
+    private fun isCurrent(candidate: WebSocket): Boolean =
+        synchronized(this@OkHttpChatSocket) { candidate === webSocket }
+
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             synchronized(this@OkHttpChatSocket) {
+                if (webSocket !== this@OkHttpChatSocket.webSocket) return
                 outstandingPings = 0
                 _state.value = SocketState.Open
                 startPinging()
@@ -134,13 +148,20 @@ class OkHttpChatSocket @Inject constructor(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (!isCurrent(webSocket)) return
             val frame = parseServerFrame(json, text)
             if (frame == null) {
                 // Unknown type — a future protocol addition. Drop, don't die.
                 Log.d(TAG, "Dropping unparseable frame: ${text.take(120)}")
                 return
             }
-            if (frame is ServerFrame.Pong) outstandingPings = 0
+            // ANY inbound frame proves the wire is alive, so this is what
+            // makes a state that got stuck at Connecting heal itself — and
+            // any frame answers a ping, not just a Pong.
+            outstandingPings = 0
+            synchronized(this@OkHttpChatSocket) {
+                if (_state.value == SocketState.Connecting) _state.value = SocketState.Open
+            }
             _frames.tryEmit(frame)
         }
 
@@ -149,11 +170,13 @@ class OkHttpChatSocket @Inject constructor(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (!isCurrent(webSocket)) return
             markDisconnected()
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             Log.d(TAG, "Socket failure: ${t.message}")
+            if (!isCurrent(webSocket)) return
             markDisconnected()
         }
     }

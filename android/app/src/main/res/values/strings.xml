@@ -74,6 +74,10 @@
     <string name="s_password">Password</string>
     <string name="s_video">Video</string>
     <string name="s_photo">Photo</string>
+    <string name="s_take_photo">Take photo</string>
+    <string name="s_record_video">Record video</string>
+    <string name="s_add_a_message_or_send_it_on_its_own">Add a message, or send it on its own.</string>
+    <string name="s_remove_attachment">Remove attachment</string>
     <string name="s_photo_or_video">Photo or video</string>
     <string name="s_privacy">Privacy</string>
     <string name="s_react">React</string>

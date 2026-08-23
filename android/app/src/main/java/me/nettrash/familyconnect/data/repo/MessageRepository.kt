@@ -135,7 +135,12 @@ class MessageRepository @Inject constructor(
      * Returns false when the bytes did not make it — the caller keeps the
      * picked media and says so.
      */
-    suspend fun sendMedia(prepared: MediaPrep.Prepared, caption: String, chatId: Long): Boolean {
+    suspend fun sendMedia(
+        prepared: MediaPrep.Prepared,
+        caption: String,
+        chatId: Long,
+        replyTo: ReplyToDto? = null,
+    ): Boolean {
         try {
             val me = settings.state.first().myUserId ?: return false
             val uploaded = attachmentApi.upload(
@@ -177,13 +182,19 @@ class MessageRepository @Inject constructor(
                     attachmentDurationMs = attachment.durationMs,
                     attachmentHasPreview = hasPreview,
                     attachmentName = attachment.name,
+                    // A photo can answer a message like any other reply;
+                    // this used to be dropped on the floor, so the quote
+                    // vanished and its banner stayed armed.
+                    replyToMessageId = replyTo?.messageId,
+                    replySenderId = replyTo?.senderId,
+                    replyExcerpt = replyTo?.excerpt,
                 ),
             )
             // What arrived, not an empty string: a caption-less photo left
             // the chat-list row blank because "" is not null and the
             // fallback never fired.
             chatDao.updateLastMessage(chatId, previewText(body, attachment), now, me)
-            dispatch(clientMsgId, chatId, body, null, attachment.id)
+            dispatch(clientMsgId, chatId, body, replyTo?.messageId, attachment.id)
             return true
         } finally {
             // The prepared file is ours whatever happened to it.
@@ -287,6 +298,13 @@ class MessageRepository @Inject constructor(
             message.replyTo?.messageId,
             message.replyTo?.senderId,
             message.replyTo?.excerpt,
+            // Blanket-overwritten, INCLUDING to null: unlike the first
+            // level, the second legitimately becomes absent when retention
+            // sweeps a grandparent, and a stale copy would draw a quote of
+            // a message that no longer exists.
+            message.replyTo?.parent?.messageId,
+            message.replyTo?.parent?.senderId,
+            message.replyTo?.parent?.excerpt,
         )
         // An attachment is fixed at send time — except has_preview, which
         // flips once the preview upload lands. The server's copy is the
@@ -324,7 +342,9 @@ class MessageRepository @Inject constructor(
         if (updated > 0) {
             // A quote is a snapshot of the body, so every local reply
             // pointing at this message is now stale.
-            messageDao.refreshQuotesOf(message.id, ReplyToDto.excerpt(message.body))
+            val excerpt = ReplyToDto.excerpt(message.body)
+            messageDao.refreshQuotesOf(message.id, excerpt)
+            messageDao.refreshParentQuotesOf(message.id, excerpt)
         }
         chatDao.advanceMaxEditSeq(message.chatId, seq)
     }
@@ -369,6 +389,9 @@ class MessageRepository @Inject constructor(
                     replyToMessageId = message.replyTo?.messageId,
                     replySenderId = message.replyTo?.senderId,
                     replyExcerpt = message.replyTo?.excerpt,
+                    replyParentMessageId = message.replyTo?.parent?.messageId,
+                    replyParentSenderId = message.replyTo?.parent?.senderId,
+                    replyParentExcerpt = message.replyTo?.parent?.excerpt,
                     editSeq = message.editSeq ?: 0L,
                     editedAt = message.editedAt?.let(TimeFormat::parseTimestamp),
                     attachmentId = message.attachment?.id,

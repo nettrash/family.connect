@@ -95,6 +95,12 @@ data class ReplyToDto(
     @SerialName("message_id") val messageId: Long,
     @SerialName("sender_id") val senderId: Long,
     val excerpt: String,
+    /**
+     * What the quoted message was itself answering — one level, no more.
+     * Null is normal: the quoted message was not a reply, or its own parent
+     * has been swept by retention (protocol.md, "Replies").
+     */
+    val parent: QuotedParentDto? = null,
 ) {
     companion object {
         /**
@@ -119,6 +125,20 @@ data class ReplyToDto(
         }
     }
 }
+
+/**
+ * The second and LAST level of a quote (protocol.md, "Replies").
+ *
+ * Deliberately not the same type as [ReplyToDto]: with no `parent` of its
+ * own there is nothing for a third level to decode into, so the cap is
+ * structural rather than a rule to remember.
+ */
+@Serializable
+data class QuotedParentDto(
+    @SerialName("message_id") val messageId: Long,
+    @SerialName("sender_id") val senderId: Long,
+    val excerpt: String,
+)
 
 @Serializable
 data class MessageDto(

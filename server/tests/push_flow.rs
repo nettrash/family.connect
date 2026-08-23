@@ -495,6 +495,117 @@ async fn a_join_request_pushes_the_offline_family_owner() {
     );
 }
 
+/// A note pinned to the wall reaches the family, and the author is not told
+/// about their own note (protocol.md, "Board").
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_new_board_note_pushes_the_other_offline_members() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (family_id, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    register_device(&ts, &owner, "ios", "owner-ios-token").await;
+
+    let (member, _) = ts.register("junior", "Junior").await;
+    ts.join(&member, &invite_code, "joined").await;
+    // The author's own device must NOT be pushed, so register one.
+    register_device(&ts, &member, "ios", "author-ios-token").await;
+
+    let response = ts
+        .post(
+            &member,
+            "/families/mine/board/notes",
+            json!({"text": "Milk", "color": "yellow", "x": 0.5, "y": 0.5}),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    let note: Value = response.json().await.expect("JSON");
+    let note_id = note["note"]["id"].as_i64().expect("id");
+
+    let requests = mock
+        .wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    assert_eq!(
+        requests.len(),
+        1,
+        "only the other member is pushed, never the author: {:?}",
+        requests.iter().map(|r| r.path.clone()).collect::<Vec<_>>()
+    );
+    let request = &requests[0];
+    assert_eq!(request.path, "/3/device/owner-ios-token");
+    assert_eq!(
+        request.body,
+        json!({
+            "aps": {
+                "alert": {"title": "The Smiths — Junior", "body": "Milk"},
+                "sound": "default",
+                // A note is not a message and must not inflate the unread
+                // badge — the board draws its own count.
+                "badge": 0,
+                "thread-id": format!("board-{family_id}"),
+            },
+            "family_id": family_id,
+            "note_id": note_id,
+            "kind": "board_note",
+        })
+    );
+}
+
+/// Moving somebody else's note is the shared act of tidying the wall, and
+/// tidying must never notify.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn moving_a_note_never_pushes() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    ts.join(&member, &invite_code, "joined").await;
+    register_device(&ts, &owner, "ios", "owner-ios-token").await;
+
+    let note: Value = ts
+        .post(
+            &member,
+            "/families/mine/board/notes",
+            json!({"text": "Milk", "color": "yellow", "x": 0.5, "y": 0.5}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let note_id = note["note"]["id"].as_i64().expect("id");
+    // The creation push is the one we expect; wait for it so the move's
+    // silence is a real observation rather than a race.
+    mock.wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+
+    let moved = ts
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"x": 0.1, "y": 0.2}),
+        )
+        .await;
+    assert_eq!(moved.status(), 200);
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let pushes = mock
+        .requests()
+        .into_iter()
+        .filter(|r| r.path.starts_with("/3/device/"))
+        .count();
+    assert_eq!(pushes, 1, "the move must not have pushed anything");
+}
+
 #[tokio::test]
 #[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
 async fn an_approved_join_request_pushes_the_offline_requester() {

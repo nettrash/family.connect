@@ -102,7 +102,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AddCircleOutline
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -217,6 +217,13 @@ import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
+import android.net.Uri
+import android.graphics.BitmapFactory
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.ui.graphics.asImageBitmap
+import me.nettrash.familyconnect.data.repo.MediaPrep
 import androidx.core.content.FileProvider
 import java.io.File
 import me.nettrash.familyconnect.ui.components.AttachmentBlock
@@ -259,6 +266,7 @@ fun ChatScreen(
     val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
 
     val mediaState by viewModel.mediaState.collectAsStateWithLifecycle()
+    val staged by viewModel.staged.collectAsStateWithLifecycle()
 
     var failedActionTarget by remember { mutableStateOf<String?>(null) }
 
@@ -300,7 +308,7 @@ fun ChatScreen(
     ) { uri ->
         if (uri != null) {
             val type = context.contentResolver.getType(uri).orEmpty()
-            viewModel.sendMedia(uri, isVideo = type.startsWith("video/"))
+            viewModel.stageMedia(uri, isVideo = type.startsWith("video/"))
         }
     }
     // OpenDocument, not GetContent: it returns a Uri whose read permission
@@ -309,7 +317,41 @@ fun ChatScreen(
     // what they may send (protocol.md, "Files").
     val pickFile = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
-    ) { uri -> if (uri != null) viewModel.sendFile(uri) }
+    ) { uri -> if (uri != null) viewModel.stageFile(uri) }
+
+    // The camera. MediaStore's capture intents hand the picture back into a
+    // Uri WE provide, via the FileProvider the app already declares for
+    // opening downloaded files.
+    //
+    // Note what is deliberately absent: android.permission.CAMERA. The
+    // intents are documented to throw SecurityException when an app DECLARES
+    // that permission without holding it — so declaring it "to be safe" is
+    // what breaks this, and not declaring it keeps the app's posture (no
+    // camera access of its own, only what the user hands over).
+    var pendingCapture by remember { mutableStateOf<Uri?>(null) }
+    var pendingCaptureIsVideo by remember { mutableStateOf(false) }
+    val takePicture = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture(),
+    ) { ok ->
+        val uri = pendingCapture
+        pendingCapture = null
+        if (ok && uri != null) viewModel.stageMedia(uri, isVideo = false)
+    }
+    val captureVideo = rememberLauncherForActivityResult(
+        ActivityResultContracts.CaptureVideo(),
+    ) { ok ->
+        val uri = pendingCapture
+        pendingCapture = null
+        if (ok && uri != null) viewModel.stageMedia(uri, isVideo = true)
+    }
+    val startCapture: (Boolean) -> Unit = { isVideo ->
+        val uri = viewModel.newCaptureUri(context, isVideo)
+        if (uri != null) {
+            pendingCapture = uri
+            pendingCaptureIsVideo = isVideo
+            if (isVideo) captureVideo.launch(uri) else takePicture.launch(uri)
+        }
+    }
 
     // Saving to the gallery. On 26–28 the write needs a permission first;
     // `pendingSave` holds what the user asked for across that prompt so the
@@ -767,6 +809,10 @@ fun ChatScreen(
                     )
                 },
                 onPickFile = { pickFile.launch(arrayOf("*/*")) },
+                staged = staged,
+                onTakePhoto = { startCapture(false) },
+                onTakeVideo = { startCapture(true) },
+                onDiscardStaged = viewModel::discardStaged,
                 onDismissMediaError = viewModel::clearMediaState,
             )
         }
@@ -1618,6 +1664,8 @@ private fun QuoteBlock(
     authorName: String,
     excerpt: String,
     isMine: Boolean,
+    /** The second level, already resolved to "<name>: <excerpt>", or null. */
+    parentLine: String? = null,
     onClick: () -> Unit,
     onDoubleClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -1643,7 +1691,11 @@ private fun QuoteBlock(
             )
             .padding(end = 6.dp)
             .semantics {
-                contentDescription = "Replying to $authorName: $excerpt"
+                contentDescription = if (parentLine == null) {
+                    "Replying to $authorName: $excerpt"
+                } else {
+                    "Replying to $authorName: $excerpt, which replied to $parentLine"
+                }
                 role = Role.Button
             },
         verticalAlignment = Alignment.CenterVertically,
@@ -1657,6 +1709,19 @@ private fun QuoteBlock(
         )
         Spacer(Modifier.width(6.dp))
         Column(modifier = Modifier.padding(vertical = 4.dp)) {
+            // The second level first, and quieter: it is context for the
+            // quote below it, not the thing being answered. One line only —
+            // two levels at two lines each would be a wall of grey above
+            // every reply in a busy thread.
+            if (parentLine != null) {
+                Text(
+                    text = parentLine,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = LocalContentColor.current.copy(alpha = 0.5f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Text(
                 text = authorName,
                 style = MaterialTheme.typography.labelSmall,
@@ -1969,6 +2034,20 @@ private fun BubbleContent(
         val quotedSender = entity.replySenderId
         val quotedExcerpt = entity.replyExcerpt
         if (quotedId != null && quotedSender != null && quotedExcerpt != null) {
+            // The same all-three-or-nothing rule one level down. A missing
+            // second level is expected: the quoted message was not itself a
+            // reply, or its own parent has been swept by retention.
+            val parentSender = entity.replyParentSenderId
+            val parentExcerpt = entity.replyParentExcerpt
+            val parentLine = if (parentSender != null && parentExcerpt != null) {
+                val name = when (parentSender) {
+                    myUserId -> "You"
+                    else -> memberNames[parentSender] ?: "Someone"
+                }
+                "$name: $parentExcerpt"
+            } else {
+                null
+            }
             QuoteBlock(
                 authorName = when (quotedSender) {
                     myUserId -> "You"
@@ -1976,6 +2055,7 @@ private fun BubbleContent(
                 },
                 excerpt = quotedExcerpt,
                 isMine = isMine,
+                parentLine = parentLine,
                 onClick = { onTapQuote(quotedId) },
                 onDoubleClick = onDoubleTap,
                 onLongClick = onTextLongPress,
@@ -2356,6 +2436,91 @@ private fun MediaStrip(
     }
 }
 
+/**
+ * Media prepared and waiting for Send, sitting above the field.
+ *
+ * The thumbnail is the same JPEG the bubble will draw, so what is previewed
+ * here is literally what goes out. A file has none — a document is a row,
+ * not a tile — and gets its icon instead.
+ */
+@Composable
+private fun StagedAttachmentChip(
+    staged: MediaPrep.Prepared,
+    onDiscard: () -> Unit,
+) {
+    val bitmap = remember(staged) {
+        staged.previewJpeg?.let { bytes ->
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.matchParentSize(),
+                )
+            } else {
+                Icon(
+                    Icons.Filled.InsertDriveFile,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (staged.kind == AttachmentDto.KIND_VIDEO) {
+                Icon(
+                    Icons.Filled.PlayCircle,
+                    contentDescription = null,
+                    tint = Color.White,
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = staged.name?.takeIf { it.isNotBlank() }
+                    ?: stringResource(
+                        if (staged.kind == AttachmentDto.KIND_VIDEO) {
+                            R.string.s_video
+                        } else {
+                            R.string.s_photo
+                        },
+                    ),
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = stringResource(R.string.s_add_a_message_or_send_it_on_its_own),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onDiscard) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = stringResource(R.string.s_remove_attachment),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @Composable
 private fun InputBar(
     state: TextFieldState,
@@ -2367,8 +2532,12 @@ private fun InputBar(
     isEditing: Boolean,
     onCancelEdit: () -> Unit,
     mediaState: ChatViewModel.MediaSendState,
+    staged: MediaPrep.Prepared?,
     onPickMedia: () -> Unit,
     onPickFile: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onTakeVideo: () -> Unit,
+    onDiscardStaged: () -> Unit,
     onDismissMediaError: () -> Unit,
 ) {
     Surface(tonalElevation = 3.dp) {
@@ -2386,6 +2555,9 @@ private fun InputBar(
             }
             if (mediaState != ChatViewModel.MediaSendState.Idle) {
                 MediaStrip(state = mediaState, onDismiss = onDismissMediaError)
+            }
+            if (staged != null) {
+                StagedAttachmentChip(staged = staged, onDiscard = onDiscardStaged)
             }
             Row(
                 modifier = Modifier
@@ -2412,7 +2584,7 @@ private fun InputBar(
                         modifier = Modifier.size(44.dp),
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.AddCircleOutline,
+                            imageVector = Icons.Filled.AttachFile,
                             contentDescription = stringResource(R.string.s_attach_a_photo_video_or_file),
                         )
                     }
@@ -2438,6 +2610,26 @@ private fun InputBar(
                                 onPickFile()
                             },
                         )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.s_take_photo)) },
+                            leadingIcon = {
+                                Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                            },
+                            onClick = {
+                                attachMenuOpen = false
+                                onTakePhoto()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.s_record_video)) },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Videocam, contentDescription = null)
+                            },
+                            onClick = {
+                                attachMenuOpen = false
+                                onTakeVideo()
+                            },
+                        )
                     }
                 }
                 TextField(
@@ -2448,6 +2640,12 @@ private fun InputBar(
                         .weight(1f)
                         .heightIn(min = 44.dp)
                         .focusRequester(focusRequester),
+                    // M3's default content padding for an unlabelled field is
+                    // 16.dp top and bottom, which is taller than the 44.dp
+                    // buttons' own centring — so both icons sat visibly below
+                    // the last line of text. 10.dp puts the text's optical
+                    // centre level with them at one line and at five alike.
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                     placeholder = { Text(stringResource(R.string.s_message)) },
                     lineLimits = TextFieldLineLimits.MultiLine(
                         minHeightInLines = 1,
@@ -2461,7 +2659,9 @@ private fun InputBar(
                         unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     ),
                 )
-                val canSend = state.text.isNotBlank()
+                // An attachment can travel with no words at all, so Send is
+                // live as soon as there is either.
+                val canSend = state.text.isNotBlank() || staged != null
                 // The disabled slots get the same animated colors as the
                 // enabled ones — otherwise the tween would be invisible
                 // because the button snaps to its disabled palette.

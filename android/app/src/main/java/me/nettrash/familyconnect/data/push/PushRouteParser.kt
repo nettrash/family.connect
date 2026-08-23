@@ -6,6 +6,7 @@
  * notifications") to the screen a notification tap should open:
  *
  *   {"kind": "message", "chat_id": "42", ...} → Chat(42)
+ *   {"kind": "board_note", "family_id": …, "note_id": …} → Board
  *   {"kind": "join_request", "family_id": …}  → JoinRequests (owner-only push)
  *   {"kind": "joined", "family_id": …}        → ChatList
  *
@@ -27,6 +28,7 @@ package me.nettrash.familyconnect.data.push
 /** Where a notification tap should land, decoupled from nav-route strings. */
 sealed interface PendingRoute {
     data class Chat(val chatId: Long) : PendingRoute
+    data object Board : PendingRoute
     data object JoinRequests : PendingRoute
     data object ChatList : PendingRoute
 }
@@ -40,6 +42,7 @@ object PushRouteParser {
     fun parse(data: Map<String, String>): PendingRoute? = when (data[KEY_KIND]) {
         // FCM data values are always strings — chat_id arrives as "42".
         "message" -> data[KEY_CHAT_ID]?.toLongOrNull()?.let { PendingRoute.Chat(it) }
+        "board_note" -> PendingRoute.Board
         "join_request" -> PendingRoute.JoinRequests
         "joined" -> PendingRoute.ChatList
         else -> null

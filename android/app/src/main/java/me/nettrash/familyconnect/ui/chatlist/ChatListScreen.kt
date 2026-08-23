@@ -83,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.compose.material3.BadgedBox
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.ChatEntity
@@ -107,6 +108,7 @@ fun ChatListScreen(
     val chats by viewModel.chats.collectAsStateWithLifecycle()
     val members by viewModel.pickableMembers.collectAsStateWithLifecycle()
     val avatarVersions by viewModel.avatarVersions.collectAsStateWithLifecycle()
+    val newNoteCount by viewModel.newNoteCount.collectAsStateWithLifecycle()
     val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
     val socketState by viewModel.socketState.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
@@ -157,11 +159,25 @@ fun ChatListScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.s_chats)) },
                 actions = {
-                    IconButton(onClick = onOpenBoard) {
-                        Icon(
-                            Icons.Outlined.StickyNote2,
-                            contentDescription = stringResource(R.string.s_board),
-                        )
+                    IconButton(onClick = {
+                        viewModel.markBoardSeen()
+                        onOpenBoard()
+                    }) {
+                        // Notes pinned since this device last showed the
+                        // board — see SettingsRepository.boardSeenNoteId for
+                        // why it is not the sync cursor.
+                        BadgedBox(
+                            badge = {
+                                if (newNoteCount > 0) {
+                                    Badge { Text(newNoteCount.toString()) }
+                                }
+                            },
+                        ) {
+                            Icon(
+                                Icons.Outlined.StickyNote2,
+                                contentDescription = stringResource(R.string.s_board),
+                            )
+                        }
                     }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.s_settings))

@@ -140,4 +140,8 @@
     <string name="s_plain_http_warning">Этот адрес использует обычный http — сообщения идут по сети незашифрованными. В доверенной домашней сети это нормально, в любой другой — рискованно.</string>
     <string name="s_request_declined_explanation">Владелец семьи отклонил заявку. Можешь попробовать другой код приглашения или создать свою семью.</string>
     <string name="s_waiting_explanation">Отсюда отменять нечего — владелец либо впустит тебя, либо отклонит заявку.</string>
+    <string name="s_take_photo">Сделать фото</string>
+    <string name="s_record_video">Записать видео</string>
+    <string name="s_add_a_message_or_send_it_on_its_own">Добавь подпись или отправь так.</string>
+    <string name="s_remove_attachment">Убрать вложение</string>
 </resources>

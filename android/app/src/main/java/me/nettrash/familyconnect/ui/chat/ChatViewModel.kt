@@ -27,6 +27,7 @@ package me.nettrash.familyconnect.ui.chat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import me.nettrash.familyconnect.R
 import android.net.Uri
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
@@ -308,6 +309,10 @@ class ChatViewModel @Inject constructor(
     /** Drives the input bar's busy strip. */
     val mediaState: StateFlow<MediaSendState> = _mediaState
 
+    /** Media prepared and waiting for Send; null when there is none. */
+    private val _staged = MutableStateFlow<MediaPrep.Prepared?>(null)
+    val staged: StateFlow<MediaPrep.Prepared?> = _staged
+
     /** Screen calls this from a LifecycleResumeEffect. */
     fun setResumed(isResumed: Boolean) {
         resumed.value = isResumed
@@ -347,8 +352,12 @@ class ChatViewModel @Inject constructor(
      * MessageRepository.sendMedia). [mediaState] is what the input bar
      * draws while that runs.
      */
-    fun sendMedia(uri: Uri, isVideo: Boolean) {
-        if (_mediaState.value != MediaSendState.Idle) return
+    fun stageMedia(uri: Uri, isVideo: Boolean) {
+        if (_mediaState.value == MediaSendState.Preparing ||
+            _mediaState.value == MediaSendState.Uploading
+        ) {
+            return
+        }
         _mediaState.value = MediaSendState.Preparing
         // APP scope, not viewModelScope: pressing Back or opening another
         // chat clears the ViewModel, and with it went a 90 MB upload —
@@ -370,17 +379,49 @@ class ChatViewModel @Inject constructor(
                 return@launch
             }
 
-            _mediaState.value = MediaSendState.Uploading
-            // The caption is whatever is in the composer; it goes with
-            // the photo and the field is cleared only once it lands.
-            val caption = inputState.text.toString()
-            if (messageRepository.sendMedia(prepared, caption, chatId)) {
-                inputState.clearText()
-                _mediaState.value = MediaSendState.Idle
-            } else {
-                _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_send_failed))
-            }
+            stage(prepared)
         }
+    }
+
+    /**
+     * Hold prepared media in the composer until the user presses Send.
+     *
+     * Picking used to send immediately, so a caption had to be typed BEFORE
+     * choosing the photo and there was no way to back out once picked. One
+     * attachment per message, so a second pick replaces the first rather
+     * than queueing behind it.
+     */
+    private fun stage(prepared: MediaPrep.Prepared) {
+        discardStaged()
+        _staged.value = prepared
+        _mediaState.value = MediaSendState.Idle
+    }
+
+    /**
+     * A destination for the camera to write into, as a FileProvider Uri.
+     *
+     * The capture intents write into a Uri the CALLER provides — which is
+     * what keeps this app off `android.permission.CAMERA` entirely: it never
+     * touches the camera, it hands over a file and gets a result back.
+     *
+     * Returns null if the directory cannot be made, which is the only
+     * failure worth reporting here; the launcher simply does not start.
+     */
+    fun newCaptureUri(context: Context, isVideo: Boolean): Uri? {
+        return try {
+            val dir = File(context.cacheDir, "captures").apply { mkdirs() }
+            val suffix = if (isVideo) ".mp4" else ".jpg"
+            val file = File.createTempFile("capture-", suffix, dir)
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Throw away staged media and the temp file nothing else will clean up. */
+    fun discardStaged() {
+        _staged.value?.file?.delete()
+        _staged.value = null
     }
 
     /**
@@ -394,8 +435,12 @@ class ChatViewModel @Inject constructor(
      * Prepare and send a picked document. Nothing is re-encoded — a file
      * goes as it is (protocol.md, "Files").
      */
-    fun sendFile(uri: Uri) {
-        if (_mediaState.value != MediaSendState.Idle) return
+    fun stageFile(uri: Uri) {
+        if (_mediaState.value == MediaSendState.Preparing ||
+            _mediaState.value == MediaSendState.Uploading
+        ) {
+            return
+        }
         _mediaState.value = MediaSendState.Preparing
         // App scope for the same reason as sendMedia.
         appScope.launch {
@@ -411,14 +456,7 @@ class ChatViewModel @Inject constructor(
                 return@launch
             }
 
-            _mediaState.value = MediaSendState.Uploading
-            val caption = inputState.text.toString()
-            if (messageRepository.sendMedia(prepared, caption, chatId)) {
-                inputState.clearText()
-                _mediaState.value = MediaSendState.Idle
-            } else {
-                _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_send_failed))
-            }
+            stage(prepared)
         }
     }
 

@@ -109,6 +109,13 @@ final class ChatSyncCoordinator {
     /// Test seam: lets tests attribute "mine" without touching the app's
     /// real UserDefaults. The app never sets it.
     var currentUserIDOverride: Int64?
+
+    /// Test seam: `connectionState` is `private(set)` and every real path to
+    /// it runs through the socket, which unit tests do not start. The app
+    /// never calls this.
+    func overrideConnectionState(_ state: ConnectionState) {
+        connectionState = state
+    }
     /// Who "mine" means. Internal rather than private: the Mac's message
     /// row decides which side a balloon sits on, and asking the session
     /// for it there would be a second source of the same truth.
@@ -198,10 +205,22 @@ final class ChatSyncCoordinator {
     /// while suspended — REST is the source of truth).
     func resumeForeground() {
         guard socketTask != nil else { return }
-        connectionState = .connecting
         let socket = self.socket
         Task {
-            await socket.resume()
+            // Ask the socket what actually happened rather than assuming.
+            // This used to set `.connecting` unconditionally — but `resume()`
+            // is a no-op on a socket that was never suspended (coming back
+            // from a brief interruption that never tore it down), and nothing
+            // else re-emits `.connected`. The banner then read "Connecting…"
+            // indefinitely while every message went through perfectly.
+            switch await socket.resume() {
+            case .alreadyLive:
+                self.connectionState = .connected
+            case .reconnecting:
+                self.connectionState = .connecting
+            case .notStarted:
+                break
+            }
             await self.resync()
         }
     }
@@ -227,6 +246,12 @@ final class ChatSyncCoordinator {
             // deliberate suspension.
             if connectionState == .connected { connectionState = .connecting }
         case .frame(let frame):
+            // A frame in hand is proof the connection is live, so this is
+            // what makes a stuck banner self-heal whatever caused it.
+            // Deliberately NOT lifting `.offline`: that means the app
+            // suspended the socket on purpose, and a frame decoded before
+            // teardown can still be sitting in the (unbounded) stream buffer.
+            if connectionState == .connecting { connectionState = .connected }
             handle(frame: frame)
         }
     }
@@ -492,12 +517,20 @@ final class ChatSyncCoordinator {
     /// Re-cut the excerpt on every locally-held reply that quotes this
     /// message, the same way the server would.
     private func refreshQuotes(of quotedID: Int64, body: String) {
-        let descriptor = FetchDescriptor<MessageEntity>(
-            predicate: #Predicate { $0.replyToMessageID == quotedID })
-        guard let quoting = try? modelContext.fetch(descriptor), !quoting.isEmpty else { return }
         let excerpt = ReplyToSnapshot.excerpt(of: body)
-        for row in quoting {
+        let direct = FetchDescriptor<MessageEntity>(
+            predicate: #Predicate { $0.replyToMessageID == quotedID })
+        for row in (try? modelContext.fetch(direct)) ?? [] {
             row.replyExcerpt = excerpt
+        }
+        // The edited message may also be the SECOND level of somebody
+        // else's quote. Without this pass that excerpt silently goes stale
+        // — the quote block would show text its author had already changed,
+        // which is the exact failure recomputing-on-read exists to prevent.
+        let grand = FetchDescriptor<MessageEntity>(
+            predicate: #Predicate { $0.replyParentMessageID == quotedID })
+        for row in (try? modelContext.fetch(grand)) ?? [] {
+            row.replyParentExcerpt = excerpt
         }
     }
 
@@ -506,10 +539,18 @@ final class ChatSyncCoordinator {
     /// answer for a message that is not a reply. (Unlike reactions, where
     /// ABSENT means "no data" and must never wipe: a reply cannot stop
     /// being one, so there is no state to protect here.)
+    ///
+    /// The SECOND level is blanket-overwritten too, and unlike the first it
+    /// legitimately BECOMES absent: retention sweeping a grandparent leaves
+    /// the reply intact and its `parent` gone. Leaving a stale copy behind
+    /// would draw a quote of a message that no longer exists.
     private func applyReply(_ dto: MessageDTO, to entity: MessageEntity) {
         entity.replyToMessageID = dto.replyTo?.messageID
         entity.replySenderID = dto.replyTo?.senderID
         entity.replyExcerpt = dto.replyTo?.excerpt
+        entity.replyParentMessageID = dto.replyTo?.parent?.messageID
+        entity.replyParentSenderID = dto.replyTo?.parent?.senderID
+        entity.replyParentExcerpt = dto.replyTo?.parent?.excerpt
         applyAttachment(dto, to: entity)
     }
 

@@ -12,6 +12,10 @@ SR = {
 "%@ has been signed out everywhere.": "Све сесије за %@ су затворене.",
 "%@ will be signed out on every device and will need this password to sign back in. Tell it to them somewhere safe — the server has no way to email it.":
   "Све сесије за %@ биће затворене, а за поновну пријаву требаће ова лозинка. Пренеси је на сигуран начин — сервер не може да шаље мејлове.",
+"which replied to %@: %@": "које је одговарало %1$@: %2$@",
+"Camera": "Камера",
+"Add a message, or send it on its own.": "Додај поруку или пошаљи овако.",
+"Remove attachment": "Уклони прилог",
 "Activities": "Активности",
 "Add a note": "Додај белешку",
 "Add a note — everyone in the family sees it.": "Додај белешку — виде је сви у породици.",

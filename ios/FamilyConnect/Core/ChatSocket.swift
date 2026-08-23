@@ -110,12 +110,35 @@ actor ChatSocket {
         teardownConnection()
     }
 
+    /// What `resume()` found when the app came back to the foreground.
+    ///
+    /// The caller needs this to decide what to show. Claiming "Connecting…"
+    /// for a socket that was never suspended is the bug this exists to
+    /// prevent: `resume()` correctly does nothing in that case, so nothing
+    /// would ever have set the banner back to connected.
+    enum ResumeOutcome {
+        /// A connect loop is now running; the banner should say connecting.
+        case reconnecting
+        /// The socket never went down — it is live right now.
+        case alreadyLive
+        /// Never started, or already torn down for good.
+        case notStarted
+    }
+
     /// Foreground: restart the connect loop on the surviving stream.
-    func resume() {
-        guard suspended, continuation != nil, url != nil else { return }
+    @discardableResult
+    func resume() -> ResumeOutcome {
+        guard continuation != nil, url != nil else { return .notStarted }
+        guard suspended else {
+            // NOT an error, and the `guard` above must stay: resuming a live
+            // socket would fork a second runLoop onto the same stream and
+            // double-consume it. It just means there is nothing to do.
+            return isConnected ? .alreadyLive : .reconnecting
+        }
         suspended = false
         backoff.reset()
         runner = Task { await self.runLoop() }
+        return .reconnecting
     }
 
     /// Send one frame. Throws `SocketError.notConnected` when there is no

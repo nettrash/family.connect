@@ -117,6 +117,8 @@ class ChatListViewModelTest {
             appContext = RuntimeEnvironment.getApplication(),
             chatRepository = chatRepository,
             familyRepository = familyRepository,
+            noteDao = db.noteDao(),
+            settingsRepository = settings,
             settings = settings,
             connectivity = FakeConnectivityObserver(),
             socket = socket,

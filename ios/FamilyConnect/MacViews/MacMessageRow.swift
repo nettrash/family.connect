@@ -19,6 +19,9 @@ import SwiftUI
 struct MacMessageRow: View {
     let message: MessageSnapshot
     let senderName: String?
+    /// Resolves any sender id to a name — the quote block needs names for
+    /// people other than this row's sender.
+    var nameFor: (Int64) -> String = { _ in String(localized: "Someone") }
     let isMine: Bool
     /// Family chat, run head, not mine — the phone's rule, shared.
     var showsSenderName: Bool = false
@@ -129,10 +132,10 @@ struct MacMessageRow: View {
     private var balloon: some View {
         VStack(alignment: .leading, spacing: 5) {
             if let quote = message.replyTo {
-                MacQuoteBlock(quote: quote, isMine: isMine)
+                MacQuoteBlock(quote: quote, isMine: isMine, nameFor: nameFor)
             }
             if let attachment = message.attachment {
-                MacAttachmentBlock(attachment: attachment)
+                MacAttachmentBlock(attachment: attachment, isMine: isMine)
                     .onTapGesture { onOpenAttachment(attachment) }
             }
             if !message.body.isEmpty {
@@ -205,16 +208,30 @@ private struct MacReactionRow: View {
 private struct MacQuoteBlock: View {
     let quote: ReplyToSnapshot
     let isMine: Bool
+    /// Who a sender id belongs to. Needed now there are two levels: an
+    /// excerpt stacked on another excerpt with no names attached is
+    /// unreadable — you cannot tell who said which half.
+    let nameFor: (Int64) -> String
 
     var body: some View {
         HStack(spacing: 6) {
             RoundedRectangle(cornerRadius: 1.5)
                 .fill(isMine ? AnyShapeStyle(.white.opacity(0.8)) : AnyShapeStyle(Color.accentColor))
                 .frame(width: 3)
-            Text(quote.excerpt)
-                .font(.caption)
-                .lineLimit(2)
-                .opacity(0.85)
+            VStack(alignment: .leading, spacing: 1) {
+                // Context for the quote under it, so it is quieter and
+                // capped at one line.
+                if let parent = quote.parent {
+                    Text("\(nameFor(parent.senderID)): \(parent.excerpt)")
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .opacity(0.55)
+                }
+                Text("\(nameFor(quote.senderID)): \(quote.excerpt)")
+                    .font(.caption)
+                    .lineLimit(2)
+                    .opacity(0.85)
+            }
         }
         .frame(maxWidth: 420, alignment: .leading)
     }
@@ -223,6 +240,9 @@ private struct MacQuoteBlock: View {
 /// A photo, video or file inside a Mac balloon.
 private struct MacAttachmentBlock: View {
     let attachment: AttachmentDTO
+    /// For CONTRAST: an own balloon is filled with the tint, so anything
+    /// drawn in the accent colour there would be invisible.
+    let isMine: Bool
 
     @Environment(AttachmentStore.self) private var store
 
@@ -232,16 +252,39 @@ private struct MacAttachmentBlock: View {
         // the iOS bubble, and the same bug if it is left out.
         let _ = store.generation
         if attachment.isFile {
-            Label(attachment.displayName, systemImage: "doc")
-                .lineLimit(1)
-                .truncationMode(.middle)
+            HStack(spacing: 9) {
+                Image(systemName: "doc")
+                    .font(.system(size: 20))
+                    .foregroundStyle(isMine ? AnyShapeStyle(.white) : AnyShapeStyle(.tint))
+                    .frame(width: 30, height: 30)
+                    .background(
+                        (isMine ? Color.white.opacity(0.18) : Color.accentColor.opacity(0.12)),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(attachment.displayName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(attachment.displaySize)
+                        .font(.caption)
+                        .opacity(0.7)
+                }
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .background(
+                (isMine ? Color.white.opacity(0.14) : Color.black.opacity(0.05)),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.black.opacity(0.06)))
+            .hoverCursor(.pointingHand)
         } else if let image = store.image(id: attachment.id, preview: true)
             ?? store.image(id: attachment.id, preview: false) {
             image
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(maxWidth: 320, maxHeight: 320)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay {
                     if attachment.isVideo {
                         Image(systemName: "play.circle.fill")
@@ -250,11 +293,19 @@ private struct MacAttachmentBlock: View {
                             .shadow(radius: 3)
                     }
                 }
+                // A hairline so a pale photo does not melt into a pale balloon.
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.black.opacity(0.08)))
                 // Clickable, and on a Mac only the cursor says so.
                 .hoverCursor(.pointingHand)
         } else {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(.black.opacity(0.1))
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(LinearGradient(
+                    colors: isMine
+                        ? [.white.opacity(0.22), .white.opacity(0.10)]
+                        : [.black.opacity(0.10), .black.opacity(0.04)],
+                    startPoint: .top, endPoint: .bottom))
                 .frame(width: 240, height: 180)
                 .overlay {
                     if attachment.isVideo {

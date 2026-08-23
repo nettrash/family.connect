@@ -32,6 +32,7 @@ struct ChatListView: View {
     /// profile-picture version — one query for the list rather than one
     /// per row.
     @Query private var members: [MemberEntity]
+    @Query private var notes: [NoteEntity]
 
     @State private var path: [Int64] = []
     @State private var showsNewChat = false
@@ -99,6 +100,10 @@ struct ChatListView: View {
                     } label: {
                         Label("Board", systemImage: "square.grid.2x2")
                     }
+                    // A count of notes added since this device last showed
+                    // the board — see AppSettings.boardSeenNoteID for why
+                    // it is not the sync cursor.
+                    .badge(newNoteCount)
                 }
             }
             .safeAreaInset(edge: .top) {
@@ -121,12 +126,30 @@ struct ChatListView: View {
             .sheet(isPresented: $showsBoard) {
                 BoardView()
             }
+            // Fires on both transitions, which is exactly what is wanted:
+            // opening clears what is already pinned, closing catches
+            // anything that arrived while the board was up.
+            .onChange(of: showsBoard) { _, _ in markBoardSeen() }
         }
         .task {
             consumePendingRoute() // parked before this view existed (cold start)
         }
         .onChange(of: session.pendingPushRoute) { _, _ in
             consumePendingRoute() // arrived while the list is up (warm tap)
+        }
+    }
+
+    /// Notes pinned since this device last had the board on screen.
+    private var newNoteCount: Int {
+        let seen = AppSettings.boardSeenNoteID
+        return notes.filter { $0.noteID > seen }.count
+    }
+
+    /// The board is on screen, so everything on it has been shown.
+    private func markBoardSeen() {
+        let highest = notes.map(\.noteID).max() ?? 0
+        if highest > AppSettings.boardSeenNoteID {
+            AppSettings.boardSeenNoteID = highest
         }
     }
 
@@ -144,6 +167,12 @@ struct ChatListView: View {
             showsSettings = false
             showsJoinRequests = false
             path = [chatID]
+        case .board:
+            showsNewChat = false
+            showsSettings = false
+            showsJoinRequests = false
+            path = []
+            showsBoard = true
         case .joinRequests:
             // Owner-only screen; a member who somehow gets this push
             // falls back to the list itself.

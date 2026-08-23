@@ -110,6 +110,14 @@ data class MessageEntity(
     val replySenderId: Long? = null,
     val replyExcerpt: String? = null,
     /**
+     * The SECOND level: what the quoted message was itself answering.
+     * Null means there is nothing behind the quote, which is the normal
+     * case rather than a half-set row.
+     */
+    val replyParentMessageId: Long? = null,
+    val replyParentSenderId: Long? = null,
+    val replyParentExcerpt: String? = null,
+    /**
      * Set once the body has been edited. [editSeq] is the apply guard: a
      * stored body is overwritten only by a body at least as new, or a
      * history page fetched before an edit would restore the old text

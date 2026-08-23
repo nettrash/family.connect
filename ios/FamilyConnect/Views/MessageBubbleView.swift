@@ -351,6 +351,16 @@ struct MessageBubbleView: View {
                 .fill(isMine ? bubbleContentColor : Color.accentColor)
                 .frame(width: 3)
             VStack(alignment: .leading, spacing: 1) {
+                // The second level first, and quieter: it is context for
+                // the quote below it, not the thing being answered. One
+                // line only — two levels at two lines each would be a wall
+                // of grey above every reply in a busy thread.
+                if let parent = quote.parent {
+                    Text("\(quoteAuthorName(senderID: parent.senderID)): \(parent.excerpt)")
+                        .font(.caption2)
+                        .foregroundStyle(bubbleContentColor.opacity(0.5))
+                        .lineLimit(1)
+                }
                 Text(quoteAuthorName(quote))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(isMine ? bubbleContentColor : Color.accentColor)
@@ -374,7 +384,7 @@ struct MessageBubbleView: View {
         .simultaneousGesture(TapGesture(count: 2).onEnded { toggleQuickHeart() })
         .onTapGesture { onTapQuote(quote.messageID) }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Replying to \(quoteAuthorName(quote)): \(quote.excerpt)")
+        .accessibilityLabel(quoteAccessibilityLabel(quote))
         .accessibilityAddTraits(.isButton)
         // The trait alone is a LIE: a bare .onTapGesture publishes no
         // accessibility action, so VoiceOver announces "button" and
@@ -386,8 +396,22 @@ struct MessageBubbleView: View {
     }
 
     private func quoteAuthorName(_ quote: ReplyToSnapshot) -> String {
-        if quote.senderID == currentUserID { return String(localized: "You") }
-        return memberNames[quote.senderID] ?? String(localized: "Someone")
+        quoteAuthorName(senderID: quote.senderID)
+    }
+
+    /// VoiceOver hears the same two levels the eye sees, innermost last.
+    private func quoteAccessibilityLabel(_ quote: ReplyToSnapshot) -> String {
+        let head = String(
+            localized: "Replying to \(quoteAuthorName(quote)): \(quote.excerpt)")
+        guard let parent = quote.parent else { return head }
+        let tail = String(
+            localized: "which replied to \(quoteAuthorName(senderID: parent.senderID)): \(parent.excerpt)")
+        return "\(head), \(tail)"
+    }
+
+    private func quoteAuthorName(senderID: Int64) -> String {
+        if senderID == currentUserID { return String(localized: "You") }
+        return memberNames[senderID] ?? String(localized: "Someone")
     }
 
     private var bubble: some View {
@@ -411,7 +435,8 @@ struct MessageBubbleView: View {
                     attachment: attachment,
                     onOpen: { onOpenAttachment(attachment) },
                     onLongPress: { onLongPress() },
-                    onDoubleTap: { toggleQuickHeart() })
+                    onDoubleTap: { toggleQuickHeart() },
+                    isMine: isMine)
                     .padding(.bottom, message.body.isEmpty ? 0 : 4)
             }
             // A photo needs no caption, and an empty Text would still take

@@ -140,4 +140,8 @@
     <string name="s_plain_http_warning">Cette adresse utilise du http simple : les messages circulent sans chiffrement sur le réseau. Acceptable sur un réseau domestique de confiance, risqué ailleurs.</string>
     <string name="s_request_declined_explanation">Le propriétaire a refusé ta demande. Tu peux essayer un autre code d’invitation ou créer ta propre famille.</string>
     <string name="s_waiting_explanation">Il n’y a rien à annuler ici : le propriétaire t’accepte ou refuse la demande.</string>
+    <string name="s_take_photo">Prendre une photo</string>
+    <string name="s_record_video">Filmer une vidéo</string>
+    <string name="s_add_a_message_or_send_it_on_its_own">Ajoute un message, ou envoie-le tel quel.</string>
+    <string name="s_remove_attachment">Retirer la pièce jointe</string>
 </resources>

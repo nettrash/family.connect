@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Attachment, Chat, ChatListEntry, Message, Reaction, ReplyTo};
+use crate::models::{Attachment, Chat, ChatListEntry, Message, QuotedParent, Reaction, ReplyTo};
 use crate::state::AppState;
 
 /// Upper bound on a reaction emoji, in UTF-8 bytes. Fixed by protocol.md's
@@ -118,10 +118,14 @@ pub async fn ensure_chat_access(
 /// The columns every full message read returns, and the self-join that
 /// resolves a reply's quote.
 ///
-/// A self-join, so every reply carries its quote without the client having
-/// to hold the quoted message (which may be pages back, or not fetched at
-/// all). It is a primary-key lookup per row and never recurses: the
-/// parent's own quote is not expanded.
+/// Two self-joins, so every reply carries its quote AND what that quote was
+/// itself answering, without the client having to hold either message (they
+/// may be pages back, or never fetched at all). Each is a primary-key lookup
+/// per row.
+///
+/// It stops at two by construction — there is no third join, and
+/// `QuotedParent` has no `parent` field for a third level to land in
+/// (protocol.md, "Replies").
 ///
 /// The join is scoped to the same chat as a second line of defence. The
 /// write path already refuses a cross-chat target (protocol.md makes that a
@@ -131,12 +135,16 @@ pub async fn ensure_chat_access(
 const MESSAGE_COLS: &str = "m.id, m.chat_id, m.sender_id, m.client_msg_id, m.body, m.created_at, \
                             m.reaction_seq, m.edit_seq, m.edited_at, m.reply_to_message_id, \
                             p.sender_id AS reply_sender_id, p.body AS reply_body, \
+                            p.reply_to_message_id AS reply_parent_message_id, \
+                            g.sender_id AS reply_parent_sender_id, g.body AS reply_parent_body, \
                             att.id AS att_id, att.kind AS att_kind, att.mime AS att_mime, \
                             att.size_bytes AS att_size, att.width AS att_width, \
                             att.height AS att_height, att.duration_ms AS att_duration_ms, \
                             att.has_preview AS att_has_preview, att.name AS att_name";
 const MESSAGE_FROM: &str = "FROM messages m LEFT JOIN messages p \
                             ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id \
+                            LEFT JOIN messages g \
+                            ON g.id = p.reply_to_message_id AND g.chat_id = m.chat_id \
                             LEFT JOIN attachments att ON att.message_id = m.id";
 
 /// Delete messages past the retention age, and the attachment files they
@@ -287,8 +295,16 @@ pub async fn create_message(
     let reply_to = match reply_to_message_id {
         None => None,
         Some(target_id) => {
+            // ONE self-joined query, not two: the comment above promises
+            // that the row read here IS the snippet the response carries,
+            // and splitting the second level into its own query would give
+            // the two a chance to disagree.
             let parent = sqlx::query(
-                "SELECT id, sender_id, body FROM messages WHERE id = $1 AND chat_id = $2",
+                "SELECT p.id, p.sender_id, p.body, \
+                        g.id AS g_id, g.sender_id AS g_sender_id, g.body AS g_body \
+                 FROM messages p \
+                 LEFT JOIN messages g ON g.id = p.reply_to_message_id AND g.chat_id = p.chat_id \
+                 WHERE p.id = $1 AND p.chat_id = $2",
             )
             .bind(target_id)
             .bind(chat_id)
@@ -300,11 +316,24 @@ pub async fn create_message(
                     "no such message in this chat",
                 ));
             };
-            Some(ReplyTo::new(
-                parent.get("id"),
-                parent.get("sender_id"),
-                parent.get::<String, _>("body").as_str(),
-            ))
+            let grandparent = match (
+                parent.get::<Option<i64>, _>("g_id"),
+                parent.get::<Option<i64>, _>("g_sender_id"),
+                parent.get::<Option<String>, _>("g_body"),
+            ) {
+                (Some(id), Some(sender_id), Some(body)) => {
+                    Some(QuotedParent::new(id, sender_id, &body))
+                }
+                _ => None,
+            };
+            Some(
+                ReplyTo::new(
+                    parent.get("id"),
+                    parent.get("sender_id"),
+                    parent.get::<String, _>("body").as_str(),
+                )
+                .with_parent(grandparent),
+            )
         }
     };
 

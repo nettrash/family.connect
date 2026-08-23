@@ -182,13 +182,46 @@ pub mod opt_rfc3339 {
 /// Deliberately a snapshot computed AT READ TIME rather than columns stored
 /// beside the reply: a quoted message can be edited later, and a snippet
 /// frozen at send time would go on showing text its author has since
-/// changed. It is never nested — a reply to a reply carries its parent's
-/// excerpt, not its grandparent's.
+/// changed.
+///
+/// It carries ONE more level, through [`QuotedParent`] — answering an answer
+/// shows both halves of the exchange. The cap is structural rather than a
+/// rule someone has to remember: `QuotedParent` is a different type with no
+/// `parent` of its own, so there is nothing to recurse into and a message
+/// four deep still renders exactly two.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReplyTo {
     pub message_id: i64,
     pub sender_id: i64,
     pub excerpt: String,
+    /// What the quoted message was itself answering, when it was answering
+    /// anything. Absent is normal: the parent was not a reply, or its own
+    /// parent has been swept by retention (the FK is ON DELETE SET NULL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<QuotedParent>,
+}
+
+/// The second and LAST level of a quote (protocol.md, "Replies").
+///
+/// Same three fields as [`ReplyTo`] and cut the same way, but deliberately
+/// NOT the same type: giving it a `parent` would make unbounded nesting a
+/// one-line change, and one old thread would drag its whole ancestry into
+/// every page.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuotedParent {
+    pub message_id: i64,
+    pub sender_id: i64,
+    pub excerpt: String,
+}
+
+impl QuotedParent {
+    pub fn new(message_id: i64, sender_id: i64, body: &str) -> Self {
+        Self {
+            message_id,
+            sender_id,
+            excerpt: ReplyTo::excerpt(body),
+        }
+    }
 }
 
 impl ReplyTo {
@@ -201,7 +234,14 @@ impl ReplyTo {
             message_id,
             sender_id,
             excerpt: Self::excerpt(body),
+            parent: None,
         }
+    }
+
+    /// The same snippet, carrying what the quoted message was answering.
+    pub fn with_parent(mut self, parent: Option<QuotedParent>) -> Self {
+        self.parent = parent;
+        self
     }
 
     /// Cut to [`MAX_EXCERPT_CHARS`] scalar values — `chars()`, never bytes,
@@ -229,7 +269,20 @@ impl Message {
             row.try_get::<Option<String>, _>("reply_body"),
         ) {
             (Ok(Some(message_id)), Ok(Some(sender_id)), Ok(Some(body))) => {
-                Some(ReplyTo::new(message_id, sender_id, &body))
+                // The second level, under the same all-three-or-nothing
+                // rule. A narrow SELECT that does not join it simply has no
+                // such columns, and `try_get` reports that as absent.
+                let parent = match (
+                    row.try_get::<Option<i64>, _>("reply_parent_message_id"),
+                    row.try_get::<Option<i64>, _>("reply_parent_sender_id"),
+                    row.try_get::<Option<String>, _>("reply_parent_body"),
+                ) {
+                    (Ok(Some(pid)), Ok(Some(psender)), Ok(Some(pbody))) => {
+                        Some(QuotedParent::new(pid, psender, &pbody))
+                    }
+                    _ => None,
+                };
+                Some(ReplyTo::new(message_id, sender_id, &body).with_parent(parent))
             }
             _ => None,
         };

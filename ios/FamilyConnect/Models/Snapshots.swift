@@ -78,6 +78,8 @@ nonisolated struct ReplyToSnapshot: Equatable, Sendable {
     let messageID: Int64
     let senderID: Int64
     let excerpt: String
+    /// One more level, and no more (docs/protocol.md, "Replies").
+    var parent: QuotedParentSnapshot?
 
     /// Longest excerpt, in Unicode scalar values — matching
     /// `ReplyTo::MAX_EXCERPT_CHARS` on the server and `MAX_EXCERPT_CHARS`
@@ -91,6 +93,15 @@ nonisolated struct ReplyToSnapshot: Equatable, Sendable {
     static func excerpt(of body: String) -> String {
         String(String.UnicodeScalarView(body.unicodeScalars.prefix(maxExcerptScalars)))
     }
+}
+
+/// The second and LAST level of a quote. A distinct type from
+/// `ReplyToSnapshot` on purpose: with no `parent` of its own, there is
+/// nothing for a third level to live in.
+nonisolated struct QuotedParentSnapshot: Equatable, Sendable {
+    let messageID: Int64
+    let senderID: Int64
+    let excerpt: String
 }
 
 nonisolated struct MemberSnapshot: Equatable, Sendable, Identifiable {

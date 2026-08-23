@@ -61,6 +61,10 @@
     <string name="s_password">Lozinka</string>
     <string name="s_video">Video</string>
     <string name="s_photo">Fotografija</string>
+    <string name="s_take_photo">Slikaj</string>
+    <string name="s_record_video">Snimi video</string>
+    <string name="s_add_a_message_or_send_it_on_its_own">Dodaj poruku ili pošalji ovako.</string>
+    <string name="s_remove_attachment">Ukloni prilog</string>
     <string name="s_photo_or_video">Fotografija ili video</string>
     <string name="s_privacy">Privatnost</string>
     <string name="s_react">Reaguj</string>

@@ -82,6 +82,13 @@ final class MessageEntity {
     var replyToMessageID: Int64?
     var replySenderID: Int64?
     var replyExcerpt: String?
+    /// The SECOND level: what the quoted message was itself answering.
+    /// Three more nil-defaulted columns, so still a lightweight migration.
+    /// Absent is normal and not a half-set row — the quoted message simply
+    /// was not a reply, or its own parent has been swept.
+    var replyParentMessageID: Int64?
+    var replyParentSenderID: Int64?
+    var replyParentExcerpt: String?
     /// Set once the body has been edited. `editSeq` is the apply guard:
     /// a stored body is overwritten only by a body at least as new, or a
     /// history page fetched before an edit would restore the old text
@@ -122,10 +129,20 @@ final class MessageEntity {
     /// upstream, and is treated as "not a reply" rather than drawn.
     var replySnapshot: ReplyToSnapshot? {
         guard let replyToMessageID, let replySenderID, let replyExcerpt else { return nil }
+        // Same all-three-or-nothing rule one level down, and a missing
+        // second level is expected rather than a bug.
+        var parent: QuotedParentSnapshot?
+        if let replyParentMessageID, let replyParentSenderID, let replyParentExcerpt {
+            parent = QuotedParentSnapshot(
+                messageID: replyParentMessageID,
+                senderID: replyParentSenderID,
+                excerpt: replyParentExcerpt)
+        }
         return ReplyToSnapshot(
             messageID: replyToMessageID,
             senderID: replySenderID,
-            excerpt: replyExcerpt)
+            excerpt: replyExcerpt,
+            parent: parent)
     }
 
     /// Typed view over the raw `status` int (SwiftData persists the int;

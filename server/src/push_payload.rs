@@ -16,9 +16,22 @@ use crate::models::Message;
 /// (`joined`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PushEvent {
-    Message { chat_id: i64, message_id: i64 },
-    JoinRequest { family_id: i64 },
-    Joined { family_id: i64 },
+    Message {
+        chat_id: i64,
+        message_id: i64,
+    },
+    /// A note added to the family board. Creation only — moves and edits
+    /// never push (protocol.md, "Board").
+    BoardNote {
+        family_id: i64,
+        note_id: i64,
+    },
+    JoinRequest {
+        family_id: i64,
+    },
+    Joined {
+        family_id: i64,
+    },
 }
 
 impl PushEvent {
@@ -26,6 +39,7 @@ impl PushEvent {
     pub fn kind(&self) -> &'static str {
         match self {
             PushEvent::Message { .. } => "message",
+            PushEvent::BoardNote { .. } => "board_note",
             PushEvent::JoinRequest { .. } => "join_request",
             PushEvent::Joined { .. } => "joined",
         }
@@ -37,6 +51,9 @@ impl PushEvent {
     fn thread_key(&self) -> Option<String> {
         match self {
             PushEvent::Message { chat_id, .. } => Some(format!("chat-{chat_id}")),
+            // All board notes collapse into one entry: several notes pinned
+            // at once is one thing to look at, not five alerts.
+            PushEvent::BoardNote { family_id, .. } => Some(format!("board-{family_id}")),
             PushEvent::JoinRequest { .. } | PushEvent::Joined { .. } => None,
         }
     }
@@ -110,6 +127,32 @@ pub fn message_notification(
     }
 }
 
+/// Compose the notification for a new board note.
+///
+/// Title `"<Family> — <Author>"`, body the note's text — governed by the
+/// SAME `include_message_body` switch as a message, because a note is family
+/// content in exactly the way a message is.
+pub fn board_note_notification(
+    include_body: bool,
+    family_name: &str,
+    author_name: &str,
+    family_id: i64,
+    note_id: i64,
+    text: &str,
+    badge: i64,
+) -> Notification {
+    Notification {
+        title: format!("{family_name} — {author_name}"),
+        body: if include_body {
+            text.to_string()
+        } else {
+            "New note".to_string()
+        },
+        badge,
+        event: PushEvent::BoardNote { family_id, note_id },
+    }
+}
+
 /// Compose the notification the family owner gets when a join request is
 /// created: title = the family name, body = `"<Display Name> asked to
 /// join"`.
@@ -158,6 +201,10 @@ pub fn apns_payload(note: &Notification) -> Value {
             payload["chat_id"] = json!(chat_id);
             payload["message_id"] = json!(message_id);
         }
+        PushEvent::BoardNote { family_id, note_id } => {
+            payload["family_id"] = json!(family_id);
+            payload["note_id"] = json!(note_id);
+        }
         PushEvent::JoinRequest { family_id } | PushEvent::Joined { family_id } => {
             payload["family_id"] = json!(family_id);
         }
@@ -177,6 +224,10 @@ pub fn fcm_message(note: &Notification, push_token: &str) -> Value {
         } => {
             data["chat_id"] = json!(chat_id.to_string());
             data["message_id"] = json!(message_id.to_string());
+        }
+        PushEvent::BoardNote { family_id, note_id } => {
+            data["family_id"] = json!(family_id.to_string());
+            data["note_id"] = json!(note_id.to_string());
         }
         PushEvent::JoinRequest { family_id } | PushEvent::Joined { family_id } => {
             data["family_id"] = json!(family_id.to_string());

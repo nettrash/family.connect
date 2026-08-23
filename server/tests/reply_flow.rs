@@ -80,6 +80,105 @@ async fn a_reply_carries_the_quoted_author_and_excerpt() {
     assert_eq!(fetched["reply_to"]["excerpt"], "See you at six");
 }
 
+/// Answering an answer shows both halves of the exchange: the quote of the
+/// message being answered, and the quote THAT was answering.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_reply_to_a_reply_carries_two_levels() {
+    let server = spawn_server().await;
+    let (owner, owner_id, member, member_id, chat_id, quoted_id) =
+        family_with_a_message(&server).await;
+
+    // owner: "See you at six"  ->  member replies "Six works"
+    let first: Value = post_reply(&server, &member, chat_id, "Six works", quoted_id)
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let first_id = first["message"]["id"].as_i64().expect("id");
+
+    // ... -> owner replies to THAT.
+    let second: Value = post_reply(&server, &owner, chat_id, "See you then", first_id)
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let reply_to = &second["message"]["reply_to"];
+    assert_eq!(reply_to["message_id"].as_i64(), Some(first_id));
+    assert_eq!(reply_to["sender_id"].as_i64(), Some(member_id));
+    assert_eq!(reply_to["excerpt"], "Six works");
+
+    let parent = &reply_to["parent"];
+    assert_eq!(parent["message_id"].as_i64(), Some(quoted_id));
+    assert_eq!(parent["sender_id"].as_i64(), Some(owner_id));
+    assert_eq!(parent["excerpt"], "See you at six");
+
+    // The read path must agree with the write path.
+    let page: Value = server
+        .get(&member, &format!("/chats/{chat_id}/messages"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let fetched = page["messages"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|m| m["body"] == "See you then")
+        .expect("the reply is in the page")
+        .clone();
+    assert_eq!(
+        fetched["reply_to"]["parent"]["excerpt"], "See you at six",
+        "the second level must survive a read"
+    );
+}
+
+/// The cap is TWO, and it holds however deep the thread goes — a third
+/// level would let one old exchange drag its whole ancestry into every page.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_reply_three_deep_still_carries_exactly_two_levels() {
+    let server = spawn_server().await;
+    let (owner, _, member, _, chat_id, quoted_id) = family_with_a_message(&server).await;
+
+    let mut target = quoted_id;
+    for (index, text) in ["one", "two", "three"].iter().enumerate() {
+        let sender = if index % 2 == 0 { &member } else { &owner };
+        let body: Value = post_reply(&server, sender, chat_id, text, target)
+            .await
+            .json()
+            .await
+            .expect("JSON");
+        target = body["message"]["id"].as_i64().expect("id");
+
+        let reply_to = &body["message"]["reply_to"];
+        assert!(reply_to.get("parent").is_some() || index == 0);
+        assert!(
+            reply_to["parent"].get("parent").is_none(),
+            "there must never be a third level"
+        );
+    }
+}
+
+/// A quote whose own parent has been swept degrades to one level rather
+/// than failing — the reply FK is ON DELETE SET NULL (migration 0012).
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_second_level_is_absent_when_the_parent_was_not_a_reply() {
+    let server = spawn_server().await;
+    let (_, _, member, _, chat_id, quoted_id) = family_with_a_message(&server).await;
+
+    let body: Value = post_reply(&server, &member, chat_id, "Six works", quoted_id)
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert!(
+        body["message"]["reply_to"].get("parent").is_none(),
+        "the quoted message was not itself a reply, so there is nothing behind it"
+    );
+}
+
 /// The field is absent, never null: a client distinguishes "not a reply"
 /// by the key not being there at all.
 #[tokio::test]

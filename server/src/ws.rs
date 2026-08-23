@@ -504,6 +504,7 @@ mod tests {
             message_id: 41,
             sender_id: 9,
             excerpt: "See you at six".to_string(),
+            parent: None,
         });
         assert_serializes_to(
             &ServerFrame::Message { message },
@@ -520,6 +521,46 @@ mod tests {
         assert!(
             plain["message"].get("reply_to").is_none(),
             "a message that is not a reply must omit reply_to entirely"
+        );
+    }
+
+    /// The second level rides inside the first, and is ABSENT rather than
+    /// null when the quoted message was not itself a reply — the same
+    /// absent-not-null rule every optional field here follows.
+    #[test]
+    fn a_reply_to_a_reply_carries_two_levels() {
+        let mut message = sample_message();
+        message.reply_to = Some(crate::models::ReplyTo {
+            message_id: 41,
+            sender_id: 9,
+            excerpt: "See you at six".to_string(),
+            parent: Some(crate::models::QuotedParent {
+                message_id: 38,
+                sender_id: 4,
+                excerpt: "What time?".to_string(),
+            }),
+        });
+        assert_serializes_to(
+            &ServerFrame::Message { message },
+            r#"{"type": "message", "message": {"id": 1338, "chat_id": 42, "sender_id": 7,
+                 "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
+                 "body": "Dinner at 7?", "created_at": "2026-08-19T17:03:12Z",
+                 "reply_to": {"message_id": 41, "sender_id": 9, "excerpt": "See you at six",
+                              "parent": {"message_id": 38, "sender_id": 4,
+                                         "excerpt": "What time?"}}}}"#,
+        );
+
+        let one_level = serde_json::to_value(ServerFrame::Message {
+            message: {
+                let mut m = sample_message();
+                m.reply_to = Some(crate::models::ReplyTo::new(41, 9, "See you at six"));
+                m
+            },
+        })
+        .expect("serializes");
+        assert!(
+            one_level["message"]["reply_to"].get("parent").is_none(),
+            "a quote with nothing behind it must omit parent entirely"
         );
     }
 

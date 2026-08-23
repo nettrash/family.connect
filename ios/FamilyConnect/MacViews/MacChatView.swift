@@ -30,6 +30,7 @@ struct MacChatView: View {
     @Query(sort: [SortDescriptor(\ChatEntity.pinRank), SortDescriptor(\ChatEntity.lastMessageDate, order: .reverse)])
     private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
+    @Query private var notes: [NoteEntity]
 
     @Environment(\.openWindow) private var openWindow
     @State private var selectedChatID: Int64?
@@ -93,10 +94,14 @@ struct MacChatView: View {
             ToolbarItem {
                 Button {
                     openWindow(id: MacWindow.board)
+                    markBoardSeen()
                 } label: {
                     Label("Board", systemImage: "doc.text")
                 }
                 .help("The family board")
+                // Notes pinned since this Mac last showed the board. NOT
+                // the sync cursor — see AppSettings.boardSeenNoteID.
+                .badge(newNoteCount)
             }
             ToolbarItem {
                 Button {
@@ -132,6 +137,18 @@ struct MacChatView: View {
         .onChange(of: chats.map(\.chatID)) { _, ids in
             if let selectedChatID, ids.contains(selectedChatID) { return }
             selectedChatID = ids.first
+        }
+    }
+
+    private var newNoteCount: Int {
+        let seen = AppSettings.boardSeenNoteID
+        return notes.filter { $0.noteID > seen }.count
+    }
+
+    private func markBoardSeen() {
+        let highest = notes.map(\.noteID).max() ?? 0
+        if highest > AppSettings.boardSeenNoteID {
+            AppSettings.boardSeenNoteID = highest
         }
     }
 

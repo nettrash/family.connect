@@ -195,6 +195,45 @@ nonisolated struct ReplyToDTO: Codable, Equatable, Sendable {
     let messageID: Int64
     let senderID: Int64
     let excerpt: String
+    /// What the quoted message was itself answering — one level, and no
+    /// more. Absent is normal: the quoted message was not a reply, or its
+    /// own parent has been swept by retention.
+    var parent: QuotedParentDTO?
+
+    enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
+        case senderID = "sender_id"
+        case excerpt
+        case parent
+    }
+
+    init(messageID: Int64, senderID: Int64, excerpt: String, parent: QuotedParentDTO? = nil) {
+        self.messageID = messageID
+        self.senderID = senderID
+        self.excerpt = excerpt
+        self.parent = parent
+    }
+
+    /// Hand-written because a defaulted property is NOT a decoding fallback:
+    /// the synthesized initialiser THROWS on a missing key, so every message
+    /// from a server that predates two-level quotes would fail to decode.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        messageID = try container.decode(Int64.self, forKey: .messageID)
+        senderID = try container.decode(Int64.self, forKey: .senderID)
+        excerpt = try container.decode(String.self, forKey: .excerpt)
+        parent = try container.decodeIfPresent(QuotedParentDTO.self, forKey: .parent)
+    }
+}
+
+/// The second and LAST level of a quote (docs/protocol.md, "Replies").
+///
+/// Deliberately not the same type as `ReplyToDTO`: it has no `parent`, so
+/// there is nothing for a third level to decode into.
+nonisolated struct QuotedParentDTO: Codable, Equatable, Sendable {
+    let messageID: Int64
+    let senderID: Int64
+    let excerpt: String
 
     enum CodingKeys: String, CodingKey {
         case messageID = "message_id"

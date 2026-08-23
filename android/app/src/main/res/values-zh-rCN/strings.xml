@@ -140,4 +140,8 @@
     <string name="s_plain_http_warning">该地址使用普通 http——消息会以未加密的方式在网络上传输。在可信的家庭网络中没问题，在其他地方则有风险。</string>
     <string name="s_request_declined_explanation">家庭拥有者拒绝了你的申请。你可以试试其他邀请码，或者创建自己的家庭。</string>
     <string name="s_waiting_explanation">这里没有什么可取消的——拥有者会让你加入或拒绝申请。</string>
+    <string name="s_take_photo">拍照</string>
+    <string name="s_record_video">录像</string>
+    <string name="s_add_a_message_or_send_it_on_its_own">可以加一句话，也可以直接发送。</string>
+    <string name="s_remove_attachment">移除附件</string>
 </resources>

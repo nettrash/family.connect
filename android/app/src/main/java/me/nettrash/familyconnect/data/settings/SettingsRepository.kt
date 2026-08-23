@@ -58,6 +58,16 @@ data class SettingsState(
     val linkPreviewsEnabled: Boolean = true,
     /** Highest board_seq applied on this device; 0 = nothing yet. */
     val boardCursor: Long = 0,
+    /**
+     * Highest note id this device has actually SHOWN the user, for the
+     * board badge.
+     *
+     * Deliberately not [boardCursor]. That is a SYNC cursor and advances
+     * whenever a change is applied — including a background resync — so
+     * using it here would clear the badge for someone who never opened the
+     * board. This one moves only when the board is on screen.
+     */
+    val boardSeenNoteId: Long = 0,
 )
 
 interface SettingsRepository {
@@ -94,6 +104,8 @@ interface SettingsRepository {
      * waiting for Firebase to deliver the token again. The device *id* is
      * account-scoped and is dropped with everything else.
      */
+    suspend fun setBoardSeenNoteId(noteId: Long)
+
     suspend fun resetKeepingServerUrl()
 }
 
@@ -115,6 +127,7 @@ class DataStoreSettingsRepository @Inject constructor(
         // Stored inverted so a missing key reads as "on".
         val LINK_PREVIEWS_DISABLED = booleanPreferencesKey("link_previews_disabled")
         val BOARD_CURSOR = longPreferencesKey("board_cursor")
+        val BOARD_SEEN_NOTE_ID = longPreferencesKey("board_seen_note_id")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -132,6 +145,7 @@ class DataStoreSettingsRepository @Inject constructor(
             pushDeviceId = prefs[Keys.PUSH_DEVICE_ID],
             linkPreviewsEnabled = prefs[Keys.LINK_PREVIEWS_DISABLED] != true,
             boardCursor = prefs[Keys.BOARD_CURSOR] ?: 0L,
+            boardSeenNoteId = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L,
         )
     }
 
@@ -185,6 +199,15 @@ class DataStoreSettingsRepository @Inject constructor(
 
     override suspend fun setBoardCursor(seq: Long) {
         dataStore.edit { it[Keys.BOARD_CURSOR] = seq }
+    }
+
+    override suspend fun setBoardSeenNoteId(noteId: Long) {
+        dataStore.edit { prefs ->
+            // Never goes backwards: two screens marking it at once must not
+            // resurrect a badge that was already cleared.
+            val current = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L
+            if (noteId > current) prefs[Keys.BOARD_SEEN_NOTE_ID] = noteId
+        }
     }
 
     override suspend fun resetKeepingServerUrl() {

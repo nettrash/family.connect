@@ -20,6 +20,8 @@ import Foundation
 nonisolated enum PushRoute: Equatable, Sendable {
     /// kind "message" — open the chat the message landed in.
     case chat(Int64)
+    /// kind "board_note" — the family board.
+    case board
     /// kind "join_request" — the owner's pending-requests screen.
     case joinRequests
     /// kind "joined" and anything unrecognised — the chat list.
@@ -32,6 +34,8 @@ nonisolated enum PushRoute: Equatable, Sendable {
         case "message":
             guard let chatID = int64(userInfo["chat_id"]) else { return .chatList }
             return .chat(chatID)
+        case "board_note":
+            return .board
         case "join_request":
             return .joinRequests
         default:
