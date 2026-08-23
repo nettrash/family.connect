@@ -29,23 +29,50 @@ struct MacChatView: View {
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Query(sort: [SortDescriptor(\ChatEntity.pinRank), SortDescriptor(\ChatEntity.lastMessageDate, order: .reverse)])
     private var chats: [ChatEntity]
+    @Query private var members: [MemberEntity]
 
+    @Environment(\.openWindow) private var openWindow
     @State private var selectedChatID: Int64?
     @State private var showingSettings = false
     @State private var showingFamily = false
-    @State private var showingBoard = false
+
+    /// userID → profile-picture version, worked out once for the whole
+    /// sidebar rather than per row.
+    private var avatarVersions: [Int64: Int64] {
+        Dictionary(members.map { ($0.userID, $0.avatarVersion) }, uniquingKeysWith: { first, _ in first })
+    }
 
     var body: some View {
         NavigationSplitView {
             List(selection: $selectedChatID) {
-                ForEach(chats) { chat in
-                    MacChatRow(chat: chat)
-                        .tag(chat.chatID)
+                Section("Chats") {
+                    // NOTHING may sit between this row and the List's own
+                    // click handling — no tap gesture, no contentShape.
+                    //
+                    // A `.onTapGesture(count: 2)` here (to open the chat in
+                    // its own window) took the click wherever the gesture
+                    // was drawn: clicking the name did nothing, clicking the
+                    // space beside it selected. `.simultaneousGesture` did
+                    // NOT fix it, and adding `.contentShape(Rectangle())`
+                    // made it total by extending the gesture over the space
+                    // that still worked. Opening in a window is the context
+                    // menu's job; selection is the List's, uncontested.
+                    ForEach(chats) { chat in
+                        MacChatRow(
+                            chat: chat,
+                            peerAvatarVersion: chat.peerUserID.flatMap { avatarVersions[$0] } ?? 0)
+                            .contextMenu {
+                                Button("Open in New Window") { openInWindow(chat.chatID) }
+                            }
+                            .tag(chat.chatID)
+                    }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
             .safeAreaInset(edge: .bottom) {
                 ConnectionBanner()
+                    .padding(.bottom, 8)
             }
         } detail: {
             if let selectedChatID, chats.contains(where: { $0.chatID == selectedChatID }) {
@@ -65,7 +92,7 @@ struct MacChatView: View {
         .toolbar {
             ToolbarItem {
                 Button {
-                    showingBoard = true
+                    openWindow(id: MacWindow.board)
                 } label: {
                     Label("Board", systemImage: "doc.text")
                 }
@@ -90,9 +117,6 @@ struct MacChatView: View {
         .sheet(isPresented: $showingSettings) {
             MacSettingsView()
         }
-        .sheet(isPresented: $showingBoard) {
-            MacBoardView()
-        }
         .sheet(isPresented: $showingFamily) {
             MacFamilyView(onOpenChat: { selectedChatID = $0 })
         }
@@ -110,39 +134,62 @@ struct MacChatView: View {
             selectedChatID = ids.first
         }
     }
+
+    /// Open one conversation on its own. Keyed by chat id, so asking
+    /// twice raises the window that is already there rather than opening
+    /// a second copy of the same thread.
+    private func openInWindow(_ chatID: Int64) {
+        openWindow(id: MacWindow.conversation, value: chatID)
+    }
 }
 
-/// One sidebar row: title, the last thing said, and the unread count.
+/// One sidebar row: who, the last thing said, when, and what is unread.
 private struct MacChatRow: View {
     let chat: ChatEntity
+    let peerAvatarVersion: Int64
 
     var body: some View {
         HStack(spacing: 10) {
             InitialsAvatar(
                 title: chat.title,
-                userID: chat.peerUserID ?? 0,
-                avatarVersion: 0,
-                size: 32)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(chat.title)
-                    .font(.body)
-                    .lineLimit(1)
-                Text(chat.lastMessagePreview ?? "No messages yet")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 4)
-            if chat.unreadCount > 0 {
-                Text("\(chat.unreadCount)")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.accentColor, in: Capsule())
+                isFamily: chat.kind == "family",
+                userID: chat.peerUserID,
+                avatarVersion: peerAvatarVersion,
+                size: 34)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(chat.title)
+                        .font(.body.weight(chat.unreadCount > 0 ? .semibold : .regular))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if let date = chat.lastMessageDate {
+                        // Relative, and short: a sidebar column is narrow
+                        // and "yesterday" is what the eye is looking for,
+                        // not a timestamp.
+                        Text(date, format: .relative(presentation: .numeric, unitsStyle: .narrow))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                HStack(spacing: 6) {
+                    Text(chat.lastMessagePreview ?? "No messages yet")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if chat.unreadCount > 0 {
+                        Text("\(chat.unreadCount)")
+                            .font(.caption2.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor, in: Capsule())
+                    }
+                }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
     }
 }
 

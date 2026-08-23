@@ -193,4 +193,18 @@ data class MemberEntity(
      * and a fresh schema validate identically.
      */
     @ColumnInfo(defaultValue = "0") val avatarVersion: Long = 0,
+    /**
+     * A member who left (or was removed) is KEPT, flagged rather than
+     * deleted.
+     *
+     * Their old messages still need a display name and a face, and the
+     * protocol retains history across leave/rejoin — so dropping the row
+     * orphaned every message they ever sent, and their bubbles fell back
+     * to "Member 11" with initials. iOS has always done it this way; this
+     * is Android catching up.
+     *
+     * Left members are filtered out of the pickers and the admin list, not
+     * out of name resolution.
+     */
+    @ColumnInfo(defaultValue = "0") val hasLeft: Boolean = false,
 )

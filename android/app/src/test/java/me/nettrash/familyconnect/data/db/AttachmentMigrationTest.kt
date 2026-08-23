@@ -203,6 +203,52 @@ class AttachmentMigrationTest {
         }
     }
 
+    /**
+     * v9: departed members are kept and flagged. Room refuses to open a
+     * migrated database whose columns differ from what it would have
+     * created, so the column is compared against the real thing.
+     */
+    @Test
+    fun `the members hasLeft column matches what Room creates from the entity`() {
+        db.execSQL(
+            """
+            CREATE TABLE members (
+                userId INTEGER NOT NULL PRIMARY KEY,
+                username TEXT NOT NULL,
+                displayName TEXT NOT NULL,
+                role TEXT NOT NULL,
+                avatarVersion INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "INSERT INTO members (userId, username, displayName, role) " +
+                "VALUES (2, 'junior', 'Junior', 'member')",
+        )
+
+        AppDatabase.MIGRATION_8_9.migrate(db)
+
+        // An existing row is somebody the roster still lists, so the
+        // default has to mean "has not left".
+        db.query("SELECT displayName, hasLeft FROM members WHERE userId = 2").use { cursor ->
+            cursor.moveToFirst()
+            assertThat(cursor.getString(0)).isEqualTo("Junior")
+            assertThat(cursor.getInt(1)).isEqualTo(0)
+        }
+
+        val migrated = columnsOf(db, "members")
+        val fresh = androidx.room.Room.inMemoryDatabaseBuilder(
+            RuntimeEnvironment.getApplication(),
+            AppDatabase::class.java,
+        ).build()
+        val expected = try {
+            columnsOf(fresh.openHelper.writableDatabase, "members")
+        } finally {
+            fresh.close()
+        }
+        assertThat(migrated["hasLeft"]).isEqualTo(expected["hasLeft"])
+    }
+
     /** name → "type|notnull|default", straight out of SQLite. */
     private fun columnsOf(db: SupportSQLiteDatabase, table: String): Map<String, String> {
         val columns = mutableMapOf<String, String>()

@@ -137,24 +137,35 @@ struct FamilyConnectApp: App {
         }
     }
 
+    /// Everything a window needs, applied identically to every scene.
+    ///
+    /// Factored out when the Mac gained a second window kind: a
+    /// conversation window that did not carry the same model container and
+    /// the same stores would be a second app looking at the same server —
+    /// its own cache, its own sync, its own idea of what has been read.
+    @ViewBuilder
+    private func windowContents(@ViewBuilder _ content: () -> some View) -> some View {
+        switch containerResult {
+        case .success(let container):
+            if let session, let coordinator {
+                content()
+                    .modelContainer(container)
+                    .environment(session)
+                    .environment(coordinator)
+                    // One preview cache for the app: a link posted in
+                    // a busy chat is fetched once, not once per bubble.
+                    .environment(previewLoader)
+                    .environment(avatars ?? AvatarStore(api: coordinator.api))
+                    .environment(attachments ?? AttachmentStore(api: coordinator.api))
+            }
+        case .failure(let error):
+            StoreErrorView(error: error)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
-            switch containerResult {
-            case .success(let container):
-                if let session, let coordinator {
-                    RootView()
-                        .modelContainer(container)
-                        .environment(session)
-                        .environment(coordinator)
-                        // One preview cache for the app: a link posted in
-                        // a busy chat is fetched once, not once per bubble.
-                        .environment(previewLoader)
-                        .environment(avatars ?? AvatarStore(api: coordinator.api))
-                        .environment(attachments ?? AttachmentStore(api: coordinator.api))
-                }
-            case .failure(let error):
-                StoreErrorView(error: error)
-            }
+            windowContents { RootView() }
         }
         #if os(macOS)
         // A Mac window opens at a size somebody can actually read a
@@ -163,9 +174,7 @@ struct FamilyConnectApp: App {
         .commands {
             // The menu bar is not decoration on a Mac: it is where the
             // keyboard shortcuts live and where people look for what an
-            // app can do. Replacing the New Item command stops the File
-            // menu offering a "New" that would do nothing.
-            CommandGroup(replacing: .newItem) {}
+            // app can do.
             CommandGroup(after: .toolbar) {
                 Button("Refresh") {
                     NotificationCenter.default.post(name: .macRequestResync, object: nil)
@@ -174,8 +183,70 @@ struct FamilyConnectApp: App {
             }
         }
         #endif
+
+        #if os(macOS)
+        // One conversation in a window of its own — the thing a Mac can do
+        // that a phone cannot. Opened from the sidebar's context menu, and
+        // keyed BY CHAT ID, which is what makes asking for the same chat
+        // twice raise the existing window instead of opening a duplicate.
+        WindowGroup(id: MacWindow.conversation, for: Int64.self) { $chatID in
+            windowContents {
+                if let chatID {
+                    MacConversationView(chatID: chatID)
+                        .id(chatID)
+                } else {
+                    // A restored window whose chat has since gone (left the
+                    // family, or a fresh install) — say so rather than
+                    // showing an empty thread.
+                    ContentUnavailableView(
+                        "Conversation unavailable",
+                        systemImage: "bubble.left.and.bubble.right")
+                }
+            }
+        }
+        .defaultSize(width: 720, height: 640)
+        .windowResizability(.contentMinSize)
+
+        // The board and the photo viewer are WINDOWS, not sheets, and that
+        // is not a style choice: a macOS sheet cannot be resized by the
+        // person using it. A board sized once at 640x480 cuts off the notes
+        // that do not fit, and a photo gets a fixed rectangle to be cropped
+        // by, with no way to open it out.
+
+        // One board per family, so a Window rather than a WindowGroup —
+        // asking for it twice raises the one that is already open.
+        Window("Board", id: MacWindow.board) {
+            windowContents { MacBoardView() }
+        }
+        .defaultSize(width: 900, height: 620)
+        .windowResizability(.contentMinSize)
+
+        // Keyed BY ATTACHMENT, so two photos open as two windows and the
+        // same photo twice raises the first.
+        WindowGroup(id: MacWindow.attachment, for: AttachmentDTO.self) { $attachment in
+            windowContents {
+                if let attachment {
+                    MacAttachmentViewer(attachment: attachment)
+                } else {
+                    ContentUnavailableView("Attachment unavailable", systemImage: "photo")
+                }
+            }
+        }
+        .defaultSize(width: 900, height: 700)
+        .windowResizability(.contentMinSize)
+        #endif
     }
 }
+
+#if os(macOS)
+/// Window identifiers, in one place so the opener and the scene cannot
+/// drift apart on a string.
+enum MacWindow {
+    static let conversation = "conversation"
+    static let board = "board"
+    static let attachment = "attachment"
+}
+#endif
 
 #if os(macOS)
 extension Notification.Name {

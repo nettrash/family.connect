@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 8.
+ * Room database, version 9.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -145,6 +145,19 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "ALTER TABLE messages ADD COLUMN attachmentHasPreview INTEGER NOT NULL DEFAULT 0",
                 )
+            }
+        }
+
+        /**
+         * v9: departed members are kept, not deleted.
+         *
+         * NOT NULL with a DEFAULT because every existing row has an
+         * answer: anybody already in the table is somebody the roster
+         * still lists, so they have not left.
+         */
+        val MIGRATION_8_9: Migration = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE members ADD COLUMN hasLeft INTEGER NOT NULL DEFAULT 0")
             }
         }
 

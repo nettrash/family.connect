@@ -28,6 +28,10 @@ struct MacConversationView: View {
     let chatID: Int64
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    /// `.key` when this window is the frontmost one. With several
+    /// conversation windows open, this is what decides which chat counts
+    /// as the one being READ.
+    @Environment(\.controlActiveState) private var windowActivation
     @Query private var messages: [MessageEntity]
     @Query private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
@@ -40,8 +44,7 @@ struct MacConversationView: View {
     /// The message being rewritten; mutually exclusive with a reply, the
     /// same rule the phone has — you are answering or rewriting, not both.
     @State private var editTarget: (messageID: Int64, original: String)?
-    /// The attachment open at full size.
-    @State private var viewingAttachment: AttachmentDTO?
+    @Environment(\.openWindow) private var openWindow
     @FocusState private var composerFocused: Bool
 
     init(chatID: Int64) {
@@ -64,46 +67,124 @@ struct MacConversationView: View {
             Divider()
             composer
         }
+        // Narrower than this and a balloon has nowhere to go; the split
+        // view honours it too, so the sidebar cannot squeeze the thread.
+        .frame(minWidth: 420, minHeight: 320)
         .navigationTitle(chat?.title ?? "")
         .navigationSubtitle(typingLine ?? "")
         .task(id: chatID) {
-            coordinator.activeChatID = chatID
+            claimActive()
             // One page is enough to open with; the phone's paging sentinel
             // is a scroll-position mechanism this window does not need yet.
             if messages.isEmpty { _ = await coordinator.loadOlder(chatID: chatID) }
         }
-        .onDisappear { coordinator.activeChatID = nil }
-        .sheet(item: $viewingAttachment) { attachment in
-            MacAttachmentViewer(attachment: attachment)
+        // `activeChatID` is ONE value and a Mac can have several
+        // conversation windows, so ownership has to be explicit: the
+        // frontmost window claims it, and a window only ever releases a
+        // claim it still holds. Without that guard, closing one window
+        // clears the claim of another that is still on screen — and every
+        // message arriving in it starts bumping the unread badge of a chat
+        // the user is looking at.
+        .onChange(of: windowActivation) { _, state in
+            if state == .key {
+                claimActive()
+            } else {
+                releaseActive()
+            }
+        }
+        .onDisappear { releaseActive() }
+    }
+
+    /// Day sections and sender runs, through the SAME rules the phone
+    /// uses (MessagePresentation) — a Mac that grouped messages its own
+    /// way would show the same conversation with different breaks in it.
+    private var sections: [DaySection] {
+        MessagePresentation.daySections(messages.map(MessageSnapshot.init))
+    }
+
+    /// One row's worth of presentation, worked out ONCE.
+    ///
+    /// Inline in the ForEach this was four index expressions per row and
+    /// the type checker gave up on the whole body — "unable to type-check
+    /// in reasonable time", which is what SwiftUI says instead of pointing
+    /// at the arithmetic.
+    private struct Row: Identifiable {
+        let message: MessageSnapshot
+        let isMine: Bool
+        let showsSenderName: Bool
+        let isRunStart: Bool
+        let isRunEnd: Bool
+        var id: String { message.localID }
+    }
+
+    private func rows(in section: DaySection) -> [Row] {
+        let me = coordinator.currentUserID
+        let isFamily = chat?.kind == "family"
+        return section.messages.enumerated().map { index, message in
+            let previous = index > 0 ? section.messages[index - 1] : nil
+            let next = index < section.messages.count - 1 ? section.messages[index + 1] : nil
+            return Row(
+                message: message,
+                isMine: message.senderID == me,
+                showsSenderName: MessagePresentation.showsSenderName(
+                    at: index,
+                    in: section.messages,
+                    isFamilyChat: isFamily,
+                    currentUserID: me),
+                isRunStart: previous?.senderID != message.senderID,
+                // The last of a run carries the time, so a burst of four
+                // messages is stamped once rather than four times.
+                isRunEnd: next?.senderID != message.senderID)
         }
     }
 
     private var thread: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(messages) { message in
-                        MacMessageRow(
-                            message: message,
-                            senderName: memberNames[message.senderID],
-                            isMine: message.senderID == coordinator.currentUserID,
-                            onReply: { beginReply(message) },
-                            onEdit: { beginEdit(message) },
-                            onOpenAttachment: { attachment in
-                                if attachment.isFile {
-                                    openFile(attachment)
-                                } else {
-                                    viewingAttachment = attachment
-                                }
-                            })
-                            .id(message.localID)
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(sections) { section in
+                        MacDayPill(day: section.day)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                        ForEach(rows(in: section)) { row in
+                            MacMessageRow(
+                                message: row.message,
+                                senderName: memberNames[row.message.senderID],
+                                isMine: row.isMine,
+                                showsSenderName: row.showsSenderName,
+                                showsTimestamp: row.isRunEnd,
+                                isRunStart: row.isRunStart,
+                                isRunEnd: row.isRunEnd,
+                                onReply: { beginReply(row.message) },
+                                onEdit: { beginEdit(row.message) },
+                                onOpenAttachment: { attachment in
+                                    if attachment.isFile {
+                                        openFile(attachment)
+                                    } else {
+                                        // Its own window, which is what
+                                        // makes it resizable.
+                                        openWindow(
+                                            id: MacWindow.attachment,
+                                            value: attachment)
+                                    }
+                                })
+                                .id(row.message.localID)
+                        }
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 18)
                 .padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .defaultScrollAnchor(.bottom)
+            .overlay {
+                if messages.isEmpty {
+                    ContentUnavailableView(
+                        "No messages yet",
+                        systemImage: "bubble.left.and.bubble.right",
+                        description: Text("Say something to get started."))
+                }
+            }
             .onChange(of: messages.count) {
                 // A Mac window does not move under a keyboard, so following
                 // the newest message is the whole of what is needed here.
@@ -139,31 +220,41 @@ struct MacConversationView: View {
                     pickAttachment()
                 } label: {
                     Image(systemName: "paperclip")
+                        .font(.system(size: 15))
                 }
                 .buttonStyle(.borderless)
                 .help("Attach a photo, video or file")
 
                 TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
+                    .font(.body)
                     .lineLimit(1...8)
                     .focused($composerFocused)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.appSecondaryFill, in: RoundedRectangle(cornerRadius: 8))
-                    // Return sends, Shift-Return newlines — the Mac idiom,
-                    // and the reason the field is multi-line at all.
                     .onSubmit(send)
 
                 Button(action: send) {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 20))
+                        .font(.system(size: 22))
+                        .foregroundStyle(canSend ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.return, modifiers: [])
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+                .disabled(!canSend)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.appSecondaryFill.opacity(0.5)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(composerFocused ? Color.accentColor.opacity(0.6) : .clear))
         }
         .padding(12)
+    }
+
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
     }
 
     private var typingLine: String? {
@@ -171,6 +262,17 @@ struct MacConversationView: View {
         guard !ids.isEmpty else { return nil }
         let names = ids.map { memberNames[$0] ?? "Someone" }
         return names.count == 1 ? "\(names[0]) is typing…" : "\(names.joined(separator: ", ")) are typing…"
+    }
+
+    private func claimActive() {
+        coordinator.activeChatID = chatID
+    }
+
+    /// Only if it is still ours — another window may have claimed it since.
+    private func releaseActive() {
+        if coordinator.activeChatID == chatID {
+            coordinator.activeChatID = nil
+        }
     }
 
     private func send() {
@@ -200,7 +302,7 @@ struct MacConversationView: View {
         coordinator.send(body: body, in: chatID, replyTo: quote)
     }
 
-    private func beginReply(_ message: MessageEntity) {
+    private func beginReply(_ message: MessageSnapshot) {
         guard let serverID = message.serverID else { return }
         editTarget = nil
         replyDraft = ReplyToDTO(
@@ -212,7 +314,7 @@ struct MacConversationView: View {
         composerFocused = true
     }
 
-    private func beginEdit(_ message: MessageEntity) {
+    private func beginEdit(_ message: MessageSnapshot) {
         guard let serverID = message.serverID else { return }
         replyDraft = nil
         // The draft in progress is not thrown away: it comes back when the
@@ -286,6 +388,28 @@ private struct MacComposerBanner: View {
             }
             .buttonStyle(.borderless)
         }
+    }
+}
+
+/// "Today / Yesterday / Mon, Aug 17" between day sections — the same
+/// labels the phone uses.
+private struct MacDayPill: View {
+    let day: Date
+
+    var body: some View {
+        Text(label)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
+            .background(Color.appSecondaryFill.opacity(0.6), in: Capsule())
+    }
+
+    private var label: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(day) { return String(localized: "Today") }
+        if calendar.isDateInYesterday(day) { return String(localized: "Yesterday") }
+        return day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
     }
 }
 

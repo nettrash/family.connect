@@ -209,7 +209,8 @@ nonisolated struct ReplyToDTO: Codable, Equatable, Sendable {
 /// This is what a bubble needs to lay itself out BEFORE a single byte
 /// arrives: what it is, how big, what shape, and whether a preview exists
 /// yet (docs/protocol.md, "Photos, videos and files").
-nonisolated struct AttachmentDTO: Codable, Equatable, Identifiable, Sendable {
+// Hashable so a Mac window can be keyed by the attachment it shows.
+nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
     let id: Int64
     /// "photo" | "video" | "file".
     let kind: String

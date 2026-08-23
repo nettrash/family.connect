@@ -22,23 +22,48 @@ struct MacSettingsView: View {
     @State private var changingPassword = false
     @State private var confirmLogout = false
 
+    /// Who you are, at the top, with a face — the rows underneath are then
+    /// only the things you can DO, which is what a settings sheet is for.
+    private var identityHeader: some View {
+        HStack(spacing: 12) {
+            InitialsAvatar(
+                title: session.currentUser?.displayName ?? "?",
+                userID: session.currentUser?.id,
+                avatarVersion: session.currentUser?.avatarVersion ?? 0,
+                size: 56)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.currentUser?.displayName ?? "—")
+                    .font(.title3.weight(.semibold))
+                if let user = session.currentUser {
+                    Text("@\(user.username)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                if session.isOwner {
+                    Text("Owner")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tint)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(.tint.opacity(0.15), in: Capsule())
+                        .padding(.top, 2)
+                }
+            }
+            Spacer()
+        }
+        .padding(16)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            identityHeader
+            Divider()
             Form {
                 Section("Profile") {
-                    if let user = session.currentUser {
-                        LabeledContent("Name", value: user.displayName)
-                        LabeledContent("Username", value: "@\(user.username)")
-                    }
                     Button("Change Password…") { changingPassword = true }
                 }
                 Section("Family") {
                     LabeledContent("Family", value: session.family?.name ?? "—")
-                    if session.isOwner {
-                        Text("You are the owner.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
                 Section("Server") {
                     LabeledContent(
@@ -59,6 +84,7 @@ struct MacSettingsView: View {
             .padding(12)
         }
         .frame(width: 460, height: 420)
+        .background(Color.appGroupedBackground)
         .sheet(isPresented: $changingPassword) {
             ChangePasswordView()
                 .frame(width: 420)

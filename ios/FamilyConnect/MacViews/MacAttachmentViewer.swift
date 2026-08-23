@@ -22,30 +22,36 @@ struct MacAttachmentViewer: View {
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(AttachmentStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
 
+    /// 1 = the whole picture fits the window. Above that it is scrollable.
     @State private var zoom: CGFloat = 1
-    @State private var busy: String?
+    @State private var busy = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            content
-                .frame(minWidth: 480, minHeight: 360)
-            Divider()
-            HStack(spacing: 12) {
-                if let busy {
-                    ProgressView().controlSize(.small)
-                    Text(busy).font(.callout).foregroundStyle(.secondary)
+        content
+            .frame(minWidth: 480, minHeight: 360)
+            .navigationTitle(attachment.displayName)
+            .toolbar {
+                ToolbarItem {
+                    if busy { ProgressView().controlSize(.small) }
                 }
-                Spacer()
-                Button("Save…") { save() }
-                Button("Share…") { share() }
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
+                ToolbarItem {
+                    Button {
+                        save()
+                    } label: {
+                        Label("Save…", systemImage: "square.and.arrow.down")
+                    }
+                    .help("Save a copy")
+                }
+                ToolbarItem {
+                    Button {
+                        share()
+                    } label: {
+                        Label("Share…", systemImage: "square.and.arrow.up")
+                    }
+                    .help("Share")
+                }
             }
-            .padding(12)
-        }
-        .frame(minWidth: 520, minHeight: 440)
     }
 
     @ViewBuilder
@@ -55,16 +61,32 @@ struct MacAttachmentViewer: View {
             MacVideoPlayer(attachment: attachment)
         } else if let image = store.image(id: attachment.id, preview: false)
             ?? store.image(id: attachment.id, preview: true) {
-            ScrollView([.horizontal, .vertical]) {
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .scaleEffect(zoom)
-                    .gesture(
-                        MagnifyGesture()
-                            .onChanged { zoom = min(max($0.magnification, 1), 4) })
+            // The picture is sized to the WINDOW, times the zoom — which is
+            // what makes 1x show all of it. Left to its own ideal size
+            // inside a ScrollView (which is what `.aspectRatio(.fit)` plus
+            // an infinite frame amounts to), a 4000px photo lays itself out
+            // at 4000px and the window shows a corner of it.
+            GeometryReader { geometry in
+                ScrollView([.horizontal, .vertical]) {
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(
+                            width: geometry.size.width * zoom,
+                            height: geometry.size.height * zoom)
+                        .gesture(
+                            MagnifyGesture()
+                                .onChanged { zoom = min(max($0.magnification, 1), 6) })
+                        .onTapGesture(count: 2) {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                zoom = zoom > 1 ? 1 : 2
+                            }
+                        }
+                }
+                // Scrollable only when there is something to scroll to.
+                .scrollDisabled(zoom <= 1)
             }
-            .background(Color.black.opacity(0.06))
+            .background(Color.black.opacity(0.85))
         } else {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -75,12 +97,9 @@ struct MacAttachmentViewer: View {
     /// picks where, and the sandbox grants access to exactly that place.
     private func save() {
         Task {
-            busy = "Preparing…"
-            defer { busy = nil }
-            guard let source = await coordinator.localFileURL(for: attachment) else {
-                busy = nil
-                return
-            }
+            busy = true
+            defer { busy = false }
+            guard let source = await coordinator.localFileURL(for: attachment) else { return }
             let panel = NSSavePanel()
             panel.nameFieldStringValue = attachment.name
                 ?? ChatSyncCoordinator.fallbackName(for: attachment)
@@ -94,8 +113,8 @@ struct MacAttachmentViewer: View {
 
     private func share() {
         Task {
-            busy = "Preparing…"
-            defer { busy = nil }
+            busy = true
+            defer { busy = false }
             guard let url = await coordinator.localFileURL(for: attachment),
                   let view = NSApp.keyWindow?.contentView
             else { return }

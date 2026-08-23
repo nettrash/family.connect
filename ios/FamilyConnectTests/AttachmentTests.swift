@@ -17,7 +17,7 @@ import AVFoundation
 import Foundation
 import SwiftData
 import Testing
-import UIKit
+import CoreGraphics
 @testable import FamilyConnect
 
 @MainActor
@@ -396,7 +396,7 @@ struct AttachmentTests {
 
         let id: Int64 = 9001
         let before = store.generation
-        store.seed(Self.solidImage(width: 40, height: 30), id: id, preview: true)
+        store.seed(TestImages.solid(width: 40, height: 30), id: id, preview: true)
 
         #expect(store.image(id: id, preview: true) != nil)
         // The bubble redraws off `generation`; seeding has to bump it or
@@ -434,7 +434,7 @@ struct AttachmentTests {
         harness.coordinator.bind(attachmentStore: store)
 
         // A real JPEG on both halves, so the store can decode what it is given.
-        let full = Self.solidImage(width: 120, height: 90)
+        let full = TestImages.solid(width: 120, height: 90)
         let url = MediaPrep.temporaryURL(extension: "jpg")
         try full.write(to: url)
         let prepared = MediaPrep.Prepared(
@@ -444,7 +444,7 @@ struct AttachmentTests {
             width: 1600,
             height: 1200,
             durationMS: nil,
-            previewJPEG: Self.solidImage(width: 40, height: 30))
+            previewJPEG: TestImages.solid(width: 40, height: 30))
 
         #expect(await harness.coordinator.sendMedia(prepared, caption: "", in: 42))
         await harness.settle()
@@ -665,7 +665,7 @@ struct AttachmentTests {
 
     @Test("A photo is downscaled, re-encoded, and given a preview")
     func photoIsDownscaled() async throws {
-        let original = Self.solidImage(width: 4032, height: 3024)
+        let original = TestImages.solid(width: 4032, height: 3024)
         let prepared = try await MediaPrep.preparePhoto(from: original, limit: MediaPrep.sizeLimit)
         defer { try? FileManager.default.removeItem(at: prepared.fileURL) }
 
@@ -681,14 +681,14 @@ struct AttachmentTests {
 
         let preview = try #require(prepared.previewJPEG)
         #expect(preview.count < uploaded.count)
-        let previewImage = try #require(UIImage(data: preview))
-        #expect(max(previewImage.size.width, previewImage.size.height) <= CGFloat(MediaPrep.previewEdge))
+        let previewSize = try #require(TestImages.size(of: preview))
+        #expect(max(previewSize.width, previewSize.height) <= MediaPrep.previewEdge)
     }
 
     @Test("A portrait photo stays portrait")
     func portraitPhotoKeepsItsShape() async throws {
         let prepared = try await MediaPrep.preparePhoto(
-            from: Self.solidImage(width: 1200, height: 1600),
+            from: TestImages.solid(width: 1200, height: 1600),
             limit: MediaPrep.sizeLimit)
         defer { try? FileManager.default.removeItem(at: prepared.fileURL) }
         let width = try #require(prepared.width)
@@ -707,7 +707,7 @@ struct AttachmentTests {
     @Test("A photo that will not fit is refused with tooLargeAfterCompression")
     func photoOverTheCeilingIsRefused() async throws {
         do {
-            _ = try await MediaPrep.preparePhoto(from: Self.solidImage(width: 2000, height: 2000), limit: 64)
+            _ = try await MediaPrep.preparePhoto(from: TestImages.solid(width: 2000, height: 2000), limit: 64)
             Issue.record("expected a refusal")
         } catch MediaPrep.PrepError.tooLargeAfterCompression(let bytes) {
             #expect(bytes > 64)
@@ -719,22 +719,4 @@ struct AttachmentTests {
         #expect(MediaPrep.sizeLimit == 100 * 1024 * 1024)
     }
 
-    /// A JPEG of a flat colour, which compresses well enough that "the
-    /// downscaled file is smaller" is a real assertion rather than luck.
-    private static func solidImage(width: Int, height: Int) -> Data {
-        let size = CGSize(width: width, height: height)
-        let renderer = UIGraphicsImageRenderer(size: size, format: {
-            let format = UIGraphicsImageRendererFormat()
-            format.scale = 1
-            return format
-        }())
-        let image = renderer.image { context in
-            UIColor.systemTeal.setFill()
-            context.fill(CGRect(origin: .zero, size: size))
-            // A little structure, so JPEG cannot compress it to nothing.
-            UIColor.systemOrange.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: size.width / 3, height: size.height))
-        }
-        return image.jpegData(compressionQuality: 1.0)!
-    }
 }

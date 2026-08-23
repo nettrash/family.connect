@@ -13,46 +13,86 @@
 
 #if os(macOS)
 
+import AppKit
 import SwiftUI
 
 struct MacMessageRow: View {
-    let message: MessageEntity
+    let message: MessageSnapshot
     let senderName: String?
     let isMine: Bool
-    /// Prime the composer to answer this message.
+    /// Family chat, run head, not mine — the phone's rule, shared.
+    var showsSenderName: Bool = false
+    /// The last of a run carries the time; the rest do not.
+    var showsTimestamp: Bool = true
+    var isRunStart: Bool = true
+    var isRunEnd: Bool = true
     var onReply: () -> Void = {}
-    /// Borrow the composer to rewrite it (author only).
     var onEdit: () -> Void = {}
-    /// Open a photo or video at full size.
     var onOpenAttachment: (AttachmentDTO) -> Void = { _ in }
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
-    @Environment(AttachmentStore.self) private var attachments
+    @State private var hovering = false
+
+    /// Corners tighten where a balloon meets its run mates on the sender's
+    /// side — the same shape language the phone uses, which is what makes
+    /// a burst read as one turn in the conversation rather than four.
+    private var shape: UnevenRoundedRectangle {
+        let big: CGFloat = 14
+        let tight: CGFloat = 4
+        return UnevenRoundedRectangle(
+            topLeadingRadius: isMine ? big : (isRunStart ? big : tight),
+            bottomLeadingRadius: isMine ? big : (isRunEnd ? big : tight),
+            bottomTrailingRadius: isMine ? (isRunEnd ? big : tight) : big,
+            topTrailingRadius: isMine ? (isRunStart ? big : tight) : big,
+            style: .continuous)
+    }
 
     var body: some View {
-        HStack {
-            if isMine { Spacer(minLength: 60) }
+        HStack(alignment: .bottom, spacing: 6) {
+            if isMine { Spacer(minLength: 80) }
             VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
-                if !isMine, let senderName {
+                if showsSenderName, let senderName {
                     Text(senderName)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
+                        .padding(.leading, 2)
                 }
                 balloon
-                Text(
-                    message.createdAt,
-                    format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+                if message.state == .failed {
+                    // A send that failed is the one thing here the user has
+                    // to act on, so it says so in place rather than only
+                    // under a right-click.
+                    Button {
+                        coordinator.retry(localID: message.localID)
+                    } label: {
+                        Label("Try Again", systemImage: "exclamationmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 2)
+                } else if showsTimestamp {
+                    HStack(spacing: 4) {
+                        if message.isEdited {
+                            Text("edited")
+                        }
+                        Text(
+                            message.createdAt,
+                            format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+                    }
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 2)
+                }
             }
-            if !isMine { Spacer(minLength: 60) }
+            if !isMine { Spacer(minLength: 80) }
         }
+        // Runs breathe less than turns do: 1pt inside a run, 8 between.
+        .padding(.top, isRunStart ? 8 : 1)
+        .onHover { hovering = $0 }
         .contextMenu {
-            // What the phone's long-press menu offers, drawn by the system
-            // — which is the Mac idiom, and free.
             let acked = message.serverID != nil
             if acked {
-                // A reaction needs a server id, and so does a quote.
                 Menu("React") {
                     ForEach(MessagePresentation.quickReactions, id: \.self) { emoji in
                         Button(emoji) {
@@ -87,20 +127,21 @@ struct MacMessageRow: View {
 
     @ViewBuilder
     private var balloon: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let quote = message.replySnapshot {
+        VStack(alignment: .leading, spacing: 5) {
+            if let quote = message.replyTo {
                 MacQuoteBlock(quote: quote, isMine: isMine)
             }
-            if let attachment = message.attachmentSnapshot {
+            if let attachment = message.attachment {
                 MacAttachmentBlock(attachment: attachment)
                     .onTapGesture { onOpenAttachment(attachment) }
             }
             if !message.body.isEmpty {
                 Text(message.body)
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             let chips = MessagePresentation.reactionChips(
-                message.reactionList, currentUserID: coordinator.currentUserID)
+                message.reactions, currentUserID: coordinator.currentUserID)
             if !chips.isEmpty {
                 MacReactionRow(chips: chips) { emoji in
                     Task {
@@ -109,16 +150,20 @@ struct MacMessageRow: View {
                 }
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
         .background(
             isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.appSecondaryFill),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            in: shape)
         .foregroundStyle(isMine ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
         .frame(maxWidth: 460, alignment: isMine ? .trailing : .leading)
-        // Pending rows are dimmed until the server has them — the same
-        // signal the phone gives, without the status glyph.
-        .opacity(message.state == .pending ? 0.6 : 1)
+        // A pending row is dimmed until the server has it — the same
+        // signal the phone gives, without a status glyph.
+        .opacity(message.state == .pending ? 0.55 : 1)
+        // A hint of lift under the cursor: this row has a menu on it, and
+        // nothing else says so on a Mac.
+        .shadow(color: .black.opacity(hovering ? 0.12 : 0), radius: 3, y: 1)
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 
@@ -197,6 +242,16 @@ private struct MacAttachmentBlock: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(maxWidth: 320, maxHeight: 320)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    if attachment.isVideo {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.white, .black.opacity(0.35))
+                            .shadow(radius: 3)
+                    }
+                }
+                // Clickable, and on a Mac only the cursor says so.
+                .hoverCursor(.pointingHand)
         } else {
             RoundedRectangle(cornerRadius: 8)
                 .fill(.black.opacity(0.1))

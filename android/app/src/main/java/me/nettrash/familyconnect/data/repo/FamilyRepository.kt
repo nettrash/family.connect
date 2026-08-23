@@ -61,7 +61,7 @@ class FamilyRepository @Inject constructor(
                         ),
                     )
                     is ServerFrame.MemberLeft -> {
-                        memberDao.delete(frame.userId)
+                        memberDao.markLeft(frame.userId)
                         val myId = settings.state.first().myUserId
                         if (frame.userId == myId) sessionRepository.onRemovedFromFamily()
                     }
@@ -71,26 +71,38 @@ class FamilyRepository @Inject constructor(
         }
     }
 
+    /** Everyone ever seen — the name-resolution feed. */
     fun observeMembers(): Flow<List<MemberEntity>> = memberDao.observeMembers()
+
+    /** Only those still in the family — for pickers and the admin list. */
+    fun observeActiveMembers(): Flow<List<MemberEntity>> = memberDao.observeActiveMembers()
 
     /** GET /families/mine → roster upsert. invite_code present for owners only. */
     suspend fun refreshMine(): ApiResult<FamilyMineResponse> {
         val result = familyApi.mine()
         if (result is ApiResult.Ok) {
-            // Replace, don't merge — a member removed while we were
-            // offline must disappear from the roster.
-            memberDao.deleteAll()
-            memberDao.upsertAll(
-                result.value.members.map {
-                    MemberEntity(
-                        userId = it.id,
-                        username = it.username,
-                        displayName = it.displayName,
-                        role = it.role,
-                        avatarVersion = it.avatarVersion,
-                    )
-                },
-            )
+            // Upsert, then flag whoever the server no longer lists.
+            //
+            // NOT delete-then-insert: that dropped departed members
+            // entirely, and every message they had ever sent lost its
+            // name and face. The upsert also clears `hasLeft` for anyone
+            // who rejoined, since the row is replaced wholesale.
+            val roster = result.value.members.map {
+                MemberEntity(
+                    userId = it.id,
+                    username = it.username,
+                    displayName = it.displayName,
+                    role = it.role,
+                    avatarVersion = it.avatarVersion,
+                )
+            }
+            memberDao.upsertAll(roster)
+            if (roster.isNotEmpty()) {
+                // Guarded: `NOT IN ()` is a syntax error in SQLite, and an
+                // empty roster cannot happen anyway — the caller is in the
+                // family they just read.
+                memberDao.markLeftExcept(roster.map { it.userId })
+            }
             settings.setFamilyName(result.value.family.name)
         }
         return result
@@ -173,7 +185,7 @@ class FamilyRepository @Inject constructor(
 
     suspend fun removeMember(userId: Long): ApiResult<Unit> {
         val result = familyApi.removeMember(userId)
-        if (result is ApiResult.Ok) memberDao.delete(userId)
+        if (result is ApiResult.Ok) memberDao.markLeft(userId)
         return result
     }
 }

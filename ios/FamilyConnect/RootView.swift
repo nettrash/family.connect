@@ -24,16 +24,23 @@ struct RootView: View {
     var body: some View {
         Group {
             switch session.phase {
+            // Everything before the chat itself is the phone's screen, held
+            // to a readable column on the Mac (see setupColumn).
             case .booting:
                 BootingView()
+                    .setupColumn()
             case .needsServer:
                 ServerSetupView()
+                    .setupColumn()
             case .needsAuth:
                 AuthView()
+                    .setupColumn()
             case .needsFamily:
                 FamilyGateView()
+                    .setupColumn()
             case .pendingApproval:
                 PendingApprovalView()
+                    .setupColumn()
             case .active:
                 // The one case that differs: iOS pushes a list, the Mac
                 // shows a sidebar and a thread side by side.

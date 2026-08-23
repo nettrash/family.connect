@@ -76,9 +76,17 @@ class ChatListViewModel @Inject constructor(
         .map { members -> members.associate { it.userId to it.avatarVersion } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
-    /** Picker candidates: everyone but me. */
+    /**
+     * Picker candidates: everyone still in the family but me.
+     *
+     * ACTIVE members — you cannot start a chat with somebody who left, and
+     * offering them would be offering a request the server refuses.
+     * `avatarVersions` above deliberately reads the FULL roster instead:
+     * it is drawing faces on existing rows, including a direct chat with
+     * somebody who has since gone.
+     */
     val pickableMembers: StateFlow<List<MemberEntity>> =
-        combine(familyRepository.observeMembers(), settings.state) { members, s ->
+        combine(familyRepository.observeActiveMembers(), settings.state) { members, s ->
             members.filter { it.userId != s.myUserId }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 

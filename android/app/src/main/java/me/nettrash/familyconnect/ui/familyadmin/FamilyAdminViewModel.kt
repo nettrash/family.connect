@@ -65,7 +65,9 @@ class FamilyAdminViewModel @Inject constructor(
     val state: StateFlow<UiState> = _state
 
     /** Live roster straight from Room (WS frames keep it fresh). */
-    val members: StateFlow<List<MemberEntity>> = familyRepository.observeMembers()
+    // Active only: this list offers Remove and Reset Password, and
+    // neither means anything for somebody who already left.
+    val members: StateFlow<List<MemberEntity>> = familyRepository.observeActiveMembers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val myUserId: StateFlow<Long?> = settings.state.map { it.myUserId }

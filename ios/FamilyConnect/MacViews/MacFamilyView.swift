@@ -41,6 +41,8 @@ struct MacFamilyView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            header
+            Divider()
             List {
                 if session.isOwner {
                     inviteSection
@@ -49,10 +51,11 @@ struct MacFamilyView: View {
                 membersSection
             }
             if let errorText {
-                Text(errorText)
+                Label(errorText, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.red)
                     .padding(.horizontal, 12)
+                    .padding(.top, 8)
             }
             Divider()
             HStack {
@@ -69,6 +72,26 @@ struct MacFamilyView: View {
             ResetPasswordView(member: member)
                 .frame(width: 420)
         }
+    }
+
+    /// The family, named, with a count — a roster sheet that opens with
+    /// "Members" and nothing else could be anybody's.
+    private var header: some View {
+        HStack(spacing: 12) {
+            InitialsAvatar(
+                title: session.family?.name ?? "Family",
+                isFamily: true,
+                size: 44)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.family?.name ?? "Family")
+                    .font(.title3.weight(.semibold))
+                Text("\(members.count) members")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(16)
     }
 
     private var inviteSection: some View {
@@ -135,7 +158,12 @@ struct MacFamilyView: View {
                     }
                     Spacer()
                     if member.role == "owner" {
-                        Text("Owner").font(.caption).foregroundStyle(.secondary)
+                        Text("Owner")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tint)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(.tint.opacity(0.15), in: Capsule())
                     }
                     if !member.isCurrentUser {
                         Button("Message") { openDirect(member) }

@@ -89,7 +89,11 @@ struct PushRegistrarTests {
         #expect(requests[0].method == "POST")
         #expect(requests[0].url.path() == "/api/v1/devices")
         let body = requests[0].bodyJSON()
-        #expect(body?["platform"] as? String == "ios")
+        // Whatever this build calls itself — "ios" on a phone, "macos" on
+        // a Mac. Both are values the server routes to APNs; hard-coding
+        // one made this fail the moment the suite started running on the
+        // Mac, which is exactly what it should have done.
+        #expect(body?["platform"] as? String == PushRegistrar.platform)
         #expect(body?["push_token"] as? String == "0a1b2c")
         #expect(box.token == "0a1b2c")
         #expect(box.deviceID == 17)
