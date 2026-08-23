@@ -47,6 +47,7 @@ pub async fn ensure_ai_chat(state: &AppState, user_id: i64) -> Result<Option<i64
     }
     let Some(family_id) =
         sqlx::query_scalar::<_, Option<i64>>("SELECT family_id FROM users WHERE id = $1")
+            .bind(user_id)
             .fetch_optional(&state.pool)
             .await?
             .flatten()
@@ -300,6 +301,7 @@ async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&s
     // has already read must not fail because a counter did not save.
     let family_id =
         sqlx::query_scalar::<_, Option<i64>>("SELECT family_id FROM users WHERE id = $1")
+            .bind(user_id)
             .fetch_optional(&state.pool)
             .await?
             .flatten();
