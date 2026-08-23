@@ -22,6 +22,9 @@ struct MacMessageRow: View {
     /// Resolves any sender id to a name — the quote block needs names for
     /// people other than this row's sender.
     var nameFor: (Int64) -> String = { _ in String(localized: "Someone") }
+    /// Profile-picture version per user, so the who-reacted rows lead with
+    /// a face like the phone's do.
+    var avatarVersionFor: (Int64) -> Int64 = { _ in 0 }
     let isMine: Bool
     /// Family chat, run head, not mine — the phone's rule, shared.
     var showsSenderName: Bool = false
@@ -35,6 +38,10 @@ struct MacMessageRow: View {
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @State private var hovering = false
+    /// The full 771-entry catalogue, behind "More reactions…".
+    @State private var showsEmojiPicker = false
+    /// Who left what — the Mac's answer to long-pressing a chip.
+    @State private var showsReactors = false
 
     /// Corners tighten where a balloon meets its run mates on the sender's
     /// side — the same shape language the phone uses, which is what makes
@@ -93,37 +100,130 @@ struct MacMessageRow: View {
         // Runs breathe less than turns do: 1pt inside a run, 8 between.
         .padding(.top, isRunStart ? 8 : 1)
         .onHover { hovering = $0 }
-        .contextMenu {
-            let acked = message.serverID != nil
-            if acked {
-                Menu("React") {
-                    ForEach(MessagePresentation.quickReactions, id: \.self) { emoji in
-                        Button(emoji) {
-                            Task {
-                                await coordinator.toggleReaction(
-                                    localID: message.localID, emoji: emoji)
-                            }
+        .contextMenu { rowMenu }
+        .sheet(isPresented: $showsEmojiPicker) {
+            VStack(spacing: 0) {
+                EmojiPickerView { emoji in
+                    showsEmojiPicker = false
+                    Task {
+                        await coordinator.toggleReaction(
+                            localID: message.localID, emoji: emoji)
+                    }
+                }
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("Cancel") { showsEmojiPicker = false }
+                        .keyboardShortcut(.cancelAction)
+                }
+                .padding(12)
+            }
+            .frame(width: 420, height: 460)
+        }
+        .popover(isPresented: $showsReactors, arrowEdge: .bottom) {
+            reactorList
+        }
+    }
+
+    /// Who left what, one row per emoji in chip order.
+    ///
+    /// My own row is the remove control — the only way a reaction comes
+    /// off, so it can never happen by accident. Same rule the phone
+    /// settled on, and the same wording.
+    private var reactorList: some View {
+        let details = MessagePresentation.reactionDetails(
+            message.reactions,
+            names: Dictionary(
+                uniqueKeysWithValues: message.reactions.map { ($0.userID, nameFor($0.userID)) }),
+            currentUserID: coordinator.currentUserID)
+        let chips = MessagePresentation.reactionChips(
+            message.reactions, currentUserID: coordinator.currentUserID)
+        return VStack(alignment: .leading, spacing: 8) {
+            ForEach(details) { detail in
+                let isMineReaction = chips.first { $0.emoji == detail.emoji }?.includesMe == true
+                HStack(spacing: 8) {
+                    if let leadUserID = detail.leadUserID {
+                        InitialsAvatar(
+                            title: detail.names.first ?? "?",
+                            userID: leadUserID,
+                            avatarVersion: avatarVersionFor(leadUserID),
+                            size: 24)
+                    }
+                    Text(detail.emoji)
+                    Text(detail.names.formatted(.list(type: .and)))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if isMineReaction {
+                        Text("Click to remove")
+                            .font(.caption2)
+                            .foregroundStyle(.tint)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard isMineReaction else { return }
+                    showsReactors = false
+                    Task {
+                        await coordinator.toggleReaction(
+                            localID: message.localID, emoji: detail.emoji)
+                    }
+                }
+                .hoverCursor(isMineReaction ? .pointingHand : .arrow)
+            }
+        }
+        .padding(12)
+        .frame(minWidth: 220, alignment: .leading)
+    }
+
+    /// Reply / React / Edit / Copy.
+    ///
+    /// Attached BOTH to the row and to the body text, because
+    /// `.textSelection(.enabled)` turns the text into an AppKit text view
+    /// that installs the system's own menu (Look Up, Translate, Services…)
+    /// and wins over the row's — so right-clicking the words themselves
+    /// showed macOS's menu and none of ours.
+    @ViewBuilder
+    private var rowMenu: some View {
+        // React needs a SERVER id — the endpoint is
+        // `…/messages/{id}/reaction` — so there is nothing to react to
+        // until the message is acked. Hiding it is correct, not a gap.
+        let acked = message.serverID != nil
+        if acked {
+            Menu("React") {
+                ForEach(MessagePresentation.quickReactions, id: \.self) { emoji in
+                    Button(emoji) {
+                        Task {
+                            await coordinator.toggleReaction(
+                                localID: message.localID, emoji: emoji)
                         }
                     }
                 }
-                Button("Reply", action: onReply)
-                if isMine, !message.body.isEmpty {
-                    Button("Edit", action: onEdit)
-                }
                 Divider()
+                // The server takes any emoji ≤ 32 bytes and
+                // EmojiPickerView is already platform-free, so the Mac was
+                // missing only the way in.
+                Button("More reactions…") { showsEmojiPicker = true }
             }
-            if !message.body.isEmpty {
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(message.body, forType: .string)
-                }
+            if !message.reactions.isEmpty {
+                Button("See who reacted") { showsReactors = true }
             }
-            if message.state == .failed {
-                Divider()
-                Button("Try Again") { coordinator.retry(localID: message.localID) }
-                Button("Delete", role: .destructive) {
-                    coordinator.deleteLocalMessage(localID: message.localID)
-                }
+            Button("Reply", action: onReply)
+            if isMine, !message.body.isEmpty {
+                Button("Edit", action: onEdit)
+            }
+            Divider()
+        }
+        if !message.body.isEmpty {
+            Button("Copy") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(message.body, forType: .string)
+            }
+        }
+        if message.state == .failed {
+            Divider()
+            Button("Try Again") { coordinator.retry(localID: message.localID) }
+            Button("Delete", role: .destructive) {
+                coordinator.deleteLocalMessage(localID: message.localID)
             }
         }
     }
@@ -141,14 +241,25 @@ struct MacMessageRow: View {
             if !message.body.isEmpty {
                 Text(message.body)
                     .textSelection(.enabled)
+                    .contextMenu { rowMenu }
                     .fixedSize(horizontal: false, vertical: true)
             }
             let chips = MessagePresentation.reactionChips(
                 message.reactions, currentUserID: coordinator.currentUserID)
             if !chips.isEmpty {
-                MacReactionRow(chips: chips) { emoji in
-                    Task {
-                        await coordinator.toggleReaction(localID: message.localID, emoji: emoji)
+                MacReactionRow(chips: chips) { chip in
+                    // A click never takes a reaction away. On a chip I am
+                    // not part of, join it; on one I AM part of, show who
+                    // reacted — where my own row is the explicit remove.
+                    // Undoing something you never meant to do is a worse
+                    // failure than one extra click.
+                    if chip.includesMe {
+                        showsReactors = true
+                    } else {
+                        Task {
+                            await coordinator.toggleReaction(
+                                localID: message.localID, emoji: chip.emoji)
+                        }
                     }
                 }
             }
@@ -170,18 +281,23 @@ struct MacMessageRow: View {
     }
 }
 
-/// The emoji already on a message. Clicking one joins it — never removes,
-/// same rule as the phone: taking a reaction away is done deliberately,
-/// through the context menu.
+/// The emoji already on a message.
+///
+/// Clicking one JOINS it and never removes — the phone's rule, and it was
+/// only ever a comment here: the click went straight to `toggleReaction`,
+/// which takes a reaction off when it is already yours. Removing is
+/// deliberate, through "See who reacted".
 private struct MacReactionRow: View {
     let chips: [ReactionChip]
-    let onToggle: (String) -> Void
+    /// The whole chip, not just its emoji: the caller has to know whether
+    /// this is mine to decide between joining and showing who reacted.
+    let onPick: (ReactionChip) -> Void
 
     var body: some View {
         HStack(spacing: 4) {
             ForEach(chips, id: \.emoji) { chip in
                 Button {
-                    onToggle(chip.emoji)
+                    onPick(chip)
                 } label: {
                     HStack(spacing: 3) {
                         Text(chip.emoji)

@@ -62,6 +62,10 @@ struct MacConversationView: View {
 
     private var chat: ChatEntity? { chats.first }
 
+    private var avatarVersions: [Int64: Int64] {
+        Dictionary(members.map { ($0.userID, $0.avatarVersion) }, uniquingKeysWith: { first, _ in first })
+    }
+
     private var memberNames: [Int64: String] {
         Dictionary(uniqueKeysWithValues: members.map { ($0.userID, $0.displayName) })
     }
@@ -156,6 +160,7 @@ struct MacConversationView: View {
                                 message: row.message,
                                 senderName: memberNames[row.message.senderID],
                                 nameFor: quoteAuthorName,
+                                avatarVersionFor: { avatarVersions[$0] ?? 0 },
                                 isMine: row.isMine,
                                 showsSenderName: row.showsSenderName,
                                 showsTimestamp: row.isRunEnd,
