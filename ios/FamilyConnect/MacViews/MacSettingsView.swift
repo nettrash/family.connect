@@ -20,6 +20,7 @@ struct MacSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var changingPassword = false
+    @State private var showingStatistics = false
     @State private var confirmLogout = false
 
     /// Who you are, at the top, with a face — the rows underneath are then
@@ -65,6 +66,10 @@ struct MacSettingsView: View {
                 Section("Family") {
                     LabeledContent("Family", value: session.family?.name ?? "—")
                 }
+                Section {
+                    Button("Statistics…") { showingStatistics = true }
+                }
+
                 Section("Server") {
                     LabeledContent(
                         "Address",
@@ -94,6 +99,9 @@ struct MacSettingsView: View {
         .sheet(isPresented: $changingPassword) {
             ChangePasswordView()
                 .frame(width: 420)
+        }
+        .sheet(isPresented: $showingStatistics) {
+            StatisticsView()
         }
         .confirmationDialog(
             "Log out?",

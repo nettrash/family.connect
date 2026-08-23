@@ -35,6 +35,7 @@ import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.DeviceResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
+import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
 import me.nettrash.familyconnect.data.net.dto.JoinRequestsResponse
 import me.nettrash.familyconnect.data.net.dto.JoinResponse
 import me.nettrash.familyconnect.data.net.dto.MeResponse
@@ -391,6 +392,17 @@ class FakeFamilyApi : FamilyApi {
     override suspend fun create(name: String): ApiResult<FamilyResponse> = createResult
     override suspend fun join(inviteCode: String): ApiResult<JoinResponse> = joinResult
     override suspend fun mine(): ApiResult<FamilyMineResponse> = mineResult
+
+    var statsResult: ApiResult<FamilyStatsDto> =
+        ApiResult.NetworkError(IllegalStateException("unscripted"))
+
+    /** How many times the statistics were fetched — they are never cached. */
+    var statsCalls = 0
+
+    override suspend fun stats(): ApiResult<FamilyStatsDto> {
+        statsCalls += 1
+        return statsResult
+    }
     override suspend fun rotateInviteCode(): ApiResult<RotateInviteCodeResponse> =
         ApiResult.Ok(RotateInviteCodeResponse("NEWCODE1"))
 

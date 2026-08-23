@@ -152,4 +152,24 @@
     <string name="e_record_failed">No se pudo empezar a grabar.</string>
     <string name="e_recording_too_short">Esa grabación es demasiado corta.</string>
     <string name="e_microphone_permission">Family necesita permiso para usar el micrófono.</string>
+    <string name="s_statistics">Estadísticas</string>
+    <string name="s_messages">Mensajes</string>
+    <string name="s_the_family">La familia</string>
+    <string name="s_board_notes">Notas del tablón</string>
+    <string name="s_attachments">Adjuntos</string>
+    <string name="s_photos">Fotos</string>
+    <string name="s_videos">Vídeos</string>
+    <string name="s_files">Archivos</string>
+    <string name="s_sent">Enviado</string>
+    <string name="s_on_disk">En disco</string>
+    <string name="s_who_sends_what">Quién envía qué</string>
+    <string name="s_words_only">Solo texto</string>
+    <string name="s_questions">Preguntas</string>
+    <string name="s_tokens">Tokens</string>
+    <string name="s_assistant">Asistente</string>
+    <string name="s_couldnt_load_statistics">No se pudieron cargar las estadísticas</string>
+    <string name="s_check_connection_try_again">Comprueba tu conexión e inténtalo de nuevo.</string>
+    <string name="s_saved_by_one_copy">%1$s ahorrados al guardar una sola copia de los archivos idénticos.</string>
+    <string name="s_attachments_and_size">%1$d adjuntos, %2$s</string>
+    <string name="s_questions_to_assistant">%1$d preguntas al asistente</string>
 </resources>

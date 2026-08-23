@@ -19,6 +19,7 @@ import me.nettrash.familyconnect.data.net.dto.JoinFamilyRequest
 import me.nettrash.familyconnect.data.net.dto.JoinRequestsResponse
 import me.nettrash.familyconnect.data.net.dto.JoinResponse
 import me.nettrash.familyconnect.data.net.dto.PatchFamilyRequest
+import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
 import me.nettrash.familyconnect.data.net.dto.RotateInviteCodeResponse
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,6 +28,12 @@ interface FamilyApi {
     suspend fun create(name: String): ApiResult<FamilyResponse>
     suspend fun join(inviteCode: String): ApiResult<JoinResponse>
     suspend fun mine(): ApiResult<FamilyMineResponse>
+
+    /**
+     * What the family has sent. Visible to EVERY member, not just the owner
+     * (protocol.md, "Family statistics").
+     */
+    suspend fun stats(): ApiResult<FamilyStatsDto>
     suspend fun rotateInviteCode(): ApiResult<RotateInviteCodeResponse>
     suspend fun setJoinPolicy(policy: String): ApiResult<FamilyResponse>
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
@@ -56,6 +63,9 @@ class DefaultFamilyApi @Inject constructor(
 
     override suspend fun mine(): ApiResult<FamilyMineResponse> =
         client.get("/families/mine")
+
+    override suspend fun stats(): ApiResult<FamilyStatsDto> =
+        client.get("/families/mine/stats")
 
     override suspend fun rotateInviteCode(): ApiResult<RotateInviteCodeResponse> =
         client.postEmpty("/families/invite-code/rotate")

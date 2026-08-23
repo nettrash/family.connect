@@ -152,4 +152,24 @@
     <string name="e_record_failed">Не удалось начать запись.</string>
     <string name="e_recording_too_short">Запись слишком короткая.</string>
     <string name="e_microphone_permission">Family нужно разрешение на использование микрофона.</string>
+    <string name="s_statistics">Статистика</string>
+    <string name="s_messages">Сообщения</string>
+    <string name="s_the_family">Семья</string>
+    <string name="s_board_notes">Заметки на доске</string>
+    <string name="s_attachments">Вложения</string>
+    <string name="s_photos">Фотографии</string>
+    <string name="s_videos">Видео</string>
+    <string name="s_files">Файлы</string>
+    <string name="s_sent">Отправлено</string>
+    <string name="s_on_disk">На диске</string>
+    <string name="s_who_sends_what">Кто что отправляет</string>
+    <string name="s_words_only">Только текст</string>
+    <string name="s_questions">Вопросы</string>
+    <string name="s_tokens">Токены</string>
+    <string name="s_assistant">Ассистент</string>
+    <string name="s_couldnt_load_statistics">Не удалось загрузить статистику</string>
+    <string name="s_check_connection_try_again">Проверь соединение и попробуй снова.</string>
+    <string name="s_saved_by_one_copy">%1$s сэкономлено: одинаковые файлы хранятся в одном экземпляре.</string>
+    <string name="s_attachments_and_size">вложений: %1$d, %2$s</string>
+    <string name="s_questions_to_assistant">вопросов ассистенту: %1$d</string>
 </resources>

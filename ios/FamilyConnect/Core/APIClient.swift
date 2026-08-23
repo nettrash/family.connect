@@ -444,6 +444,12 @@ actor APIClient {
         try await request("GET", "/families/mine/board")
     }
 
+    /// What the family has sent. Visible to every member, not just the
+    /// owner (docs/protocol.md, "Family statistics").
+    func familyStats() async throws -> FamilyStatsDTO {
+        try await request("GET", "/families/mine/stats")
+    }
+
     func boardChanges(afterSeq: Int64, limit: Int) async throws -> [NoteDTO] {
         let response: BoardChangesResponse = try await request(
             "GET", "/families/mine/board/changes",

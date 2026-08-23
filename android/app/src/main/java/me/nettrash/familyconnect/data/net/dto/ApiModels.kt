@@ -487,3 +487,56 @@ data class ErrorBody(val error: ErrorPayload) {
         val message: String,
     )
 }
+
+// -- Family statistics --------------------------------------------------------
+
+/**
+ * What the family has actually sent (protocol.md, "Family statistics").
+ * Every member sees the same numbers.
+ */
+@Serializable
+data class FamilyStatsDto(
+    val totals: StatsTotalsDto,
+    val members: List<MemberStatsDto> = emptyList(),
+)
+
+@Serializable
+data class StatsTotalsDto(
+    val members: Int = 0,
+    val messages: Int = 0,
+    @SerialName("board_notes") val boardNotes: Int = 0,
+    val attachments: AttachmentStatsDto = AttachmentStatsDto(),
+    val ai: AiStatsDto = AiStatsDto(),
+)
+
+@Serializable
+data class MemberStatsDto(
+    @SerialName("user_id") val userId: Long,
+    @SerialName("display_name") val displayName: String,
+    val messages: Int = 0,
+    val attachments: AttachmentStatsDto = AttachmentStatsDto(),
+    val ai: AiStatsDto = AiStatsDto(),
+)
+
+@Serializable
+data class AttachmentStatsDto(
+    val count: Int = 0,
+    val bytes: Long = 0,
+    val photo: Int = 0,
+    val video: Int = 0,
+    val audio: Int = 0,
+    val file: Int = 0,
+    /**
+     * Each distinct file counted once. Family totals ONLY — a file two
+     * members both sent belongs to neither alone, so there is no per-member
+     * share of it, and the field is absent on a member row.
+     */
+    @SerialName("stored_bytes") val storedBytes: Long? = null,
+)
+
+@Serializable
+data class AiStatsDto(
+    val questions: Int = 0,
+    @SerialName("prompt_tokens") val promptTokens: Int = 0,
+    @SerialName("completion_tokens") val completionTokens: Int = 0,
+)

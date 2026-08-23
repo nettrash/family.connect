@@ -45,6 +45,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import me.nettrash.familyconnect.data.push.PendingRoute
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.SessionEvent
+import me.nettrash.familyconnect.ui.stats.StatisticsScreen
 import me.nettrash.familyconnect.ui.auth.AuthScreen
 import me.nettrash.familyconnect.ui.board.BoardScreen
 import me.nettrash.familyconnect.ui.chat.ChatScreen
@@ -65,6 +66,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val FAMILY_ADMIN = "family_admin"
     const val BOARD = "board"
+    const val STATISTICS = "statistics"
 
     fun chat(chatId: Long) = "chat/$chatId"
 }
@@ -273,10 +275,15 @@ fun AppNavHost(
             BoardScreen(onBack = { navController.popBackStack() })
         }
 
+        composable(Routes.STATISTICS) {
+            StatisticsScreen(onBack = { navController.popBackStack() })
+        }
+
         composable(Routes.SETTINGS) {
             SettingsScreen(
                 onBack = { navController.popBackStack() },
                 onManageFamily = { navController.navigate(Routes.FAMILY_ADMIN) },
+                onOpenStatistics = { navController.navigate(Routes.STATISTICS) },
                 onLoggedOut = {
                     navController.navigate(Routes.AUTH) {
                         popUpTo(0) { inclusive = true }

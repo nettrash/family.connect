@@ -602,3 +602,75 @@ nonisolated struct APIErrorBody: Codable, Equatable, Sendable {
     }
     let error: Payload
 }
+
+// MARK: - Family statistics
+
+/// What the family has actually sent (docs/protocol.md, "Family
+/// statistics"). Every member sees the same numbers.
+nonisolated struct FamilyStatsDTO: Codable, Equatable, Sendable {
+    let totals: StatsTotalsDTO
+    let members: [MemberStatsDTO]
+}
+
+nonisolated struct StatsTotalsDTO: Codable, Equatable, Sendable {
+    let members: Int
+    let messages: Int
+    let boardNotes: Int
+    let attachments: AttachmentStatsDTO
+    let ai: AiStatsDTO
+
+    enum CodingKeys: String, CodingKey {
+        case members
+        case messages
+        case boardNotes = "board_notes"
+        case attachments
+        case ai
+    }
+}
+
+nonisolated struct MemberStatsDTO: Codable, Equatable, Sendable, Identifiable {
+    var id: Int64 { userID }
+    let userID: Int64
+    let displayName: String
+    let messages: Int
+    let attachments: AttachmentStatsDTO
+    let ai: AiStatsDTO
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case displayName = "display_name"
+        case messages
+        case attachments
+        case ai
+    }
+}
+
+nonisolated struct AttachmentStatsDTO: Codable, Equatable, Sendable {
+    let count: Int
+    let bytes: Int64
+    let photo: Int
+    let video: Int
+    let audio: Int
+    let file: Int
+    /// Each distinct file counted once. Family totals only — a file two
+    /// members both sent belongs to neither alone, so there is no
+    /// per-member share of it.
+    var storedBytes: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case count, bytes, photo, video, audio, file
+        case storedBytes = "stored_bytes"
+    }
+}
+
+nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
+    let questions: Int
+    let promptTokens: Int
+    let completionTokens: Int
+
+    enum CodingKeys: String, CodingKey {
+        case questions
+        case promptTokens = "prompt_tokens"
+        case completionTokens = "completion_tokens"
+    }
+}

@@ -152,4 +152,24 @@
     <string name="e_record_failed">Impossible de démarrer l’enregistrement.</string>
     <string name="e_recording_too_short">Cet enregistrement est trop court.</string>
     <string name="e_microphone_permission">Family a besoin de l’autorisation d’utiliser le micro.</string>
+    <string name="s_statistics">Statistiques</string>
+    <string name="s_messages">Messages</string>
+    <string name="s_the_family">La famille</string>
+    <string name="s_board_notes">Notes du tableau</string>
+    <string name="s_attachments">Pièces jointes</string>
+    <string name="s_photos">Photos</string>
+    <string name="s_videos">Vidéos</string>
+    <string name="s_files">Fichiers</string>
+    <string name="s_sent">Envoyé</string>
+    <string name="s_on_disk">Sur le disque</string>
+    <string name="s_who_sends_what">Qui envoie quoi</string>
+    <string name="s_words_only">Que du texte</string>
+    <string name="s_questions">Questions</string>
+    <string name="s_tokens">Jetons</string>
+    <string name="s_assistant">Assistant</string>
+    <string name="s_couldnt_load_statistics">Impossible de charger les statistiques</string>
+    <string name="s_check_connection_try_again">Vérifie ta connexion et réessaie.</string>
+    <string name="s_saved_by_one_copy">%1$s économisés en ne gardant qu\'une copie des fichiers identiques.</string>
+    <string name="s_attachments_and_size">%1$d pièces jointes, %2$s</string>
+    <string name="s_questions_to_assistant">%1$d questions à l\'assistant</string>
 </resources>

@@ -42,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ExitToApp
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Groups
@@ -98,6 +99,7 @@ import me.nettrash.familyconnect.ui.components.ErrorCard
 fun SettingsScreen(
     onBack: () -> Unit,
     onManageFamily: () -> Unit,
+    onOpenStatistics: () -> Unit,
     onLoggedOut: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
@@ -353,6 +355,26 @@ fun SettingsScreen(
                         modifier = Modifier.clickable(onClick = onManageFamily),
                     )
                 }
+                // Every member, not just the owner (protocol.md, "Family
+                // statistics") — so it sits outside the owner-only block.
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.s_statistics)) },
+                    leadingContent = {
+                        Icon(
+                            Icons.Outlined.BarChart,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    trailingContent = {
+                        Icon(
+                            Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    modifier = Modifier.clickable(onClick = onOpenStatistics),
+                )
                 ListItem(
                     headlineContent = {
                         Text(stringResource(R.string.s_leave_family), color = MaterialTheme.colorScheme.error)

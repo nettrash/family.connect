@@ -7,6 +7,12 @@ sentence differently.
 """
 
 ANDROID_ONLY = {
+# The statistics strings whose English differs from iOS only in the format
+# specifiers (%1$d/%2$s rather than %lld/%@), so the English match cannot find
+# them. Same sentence, same wording as ios/FamilyConnect/Views/StatisticsView.
+"s_saved_by_one_copy": "%1$s уштеђено — исте датотеке се чувају у једном примерку.",
+"s_attachments_and_size": "прилога: %1$d, %2$s",
+"s_questions_to_assistant": "питања асистенту: %1$d",
 "s_record_audio": "Сними аудио",
 "s_stop": "Заустави",
 "s_audio": "Аудио",

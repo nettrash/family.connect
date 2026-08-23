@@ -29,6 +29,7 @@ final class SettingsModel {
     var isLoading = false
     var confirmLeave = false
     var confirmLogout = false
+    var showsStatistics = false
     var ownerBlockedAlert = false
     var errorText: String?
 
@@ -76,6 +77,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $changingPassword) {
                 ChangePasswordView()
+            }
+            .sheet(isPresented: Bindable(model).showsStatistics) {
+                NavigationStack { StatisticsView() }
             }
             .task {
                 await model.load(api: coordinator.api)
@@ -291,7 +295,13 @@ struct SettingsView: View {
         }
     }
 
+    // Two sections, so @ViewBuilder rather than a single expression.
+    @ViewBuilder
     private var serverSection: some View {
+        Section {
+            Button("Statistics") { model.showsStatistics = true }
+        }
+
         Section("Server") {
             LabeledContent("Address", value: AppSettings.serverURL?.absoluteString ?? "—")
         }

@@ -152,4 +152,24 @@
     <string name="e_record_failed">Aufnahme konnte nicht gestartet werden.</string>
     <string name="e_recording_too_short">Diese Aufnahme war zu kurz.</string>
     <string name="e_microphone_permission">Family braucht die Erlaubnis, das Mikrofon zu benutzen.</string>
+    <string name="s_statistics">Statistik</string>
+    <string name="s_messages">Nachrichten</string>
+    <string name="s_the_family">Die Familie</string>
+    <string name="s_board_notes">Notizen an der Pinnwand</string>
+    <string name="s_attachments">Anhänge</string>
+    <string name="s_photos">Fotos</string>
+    <string name="s_videos">Videos</string>
+    <string name="s_files">Dateien</string>
+    <string name="s_sent">Gesendet</string>
+    <string name="s_on_disk">Auf der Festplatte</string>
+    <string name="s_who_sends_what">Wer was schickt</string>
+    <string name="s_words_only">Nur Text</string>
+    <string name="s_questions">Fragen</string>
+    <string name="s_tokens">Tokens</string>
+    <string name="s_assistant">Assistent</string>
+    <string name="s_couldnt_load_statistics">Statistik konnte nicht geladen werden</string>
+    <string name="s_check_connection_try_again">Prüfe deine Verbindung und versuche es erneut.</string>
+    <string name="s_saved_by_one_copy">%1$s gespart, weil identische Dateien nur einmal gespeichert werden.</string>
+    <string name="s_attachments_and_size">%1$d Anhänge, %2$s</string>
+    <string name="s_questions_to_assistant">%1$d Fragen an den Assistenten</string>
 </resources>
