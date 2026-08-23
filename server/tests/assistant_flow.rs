@@ -11,7 +11,13 @@
 mod common;
 
 use common::{TestServer, spawn_server, spawn_server_with_config};
-use serde_json::Value;
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+use std::time::Duration;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 
 /// A server with the assistant configured. The endpoint is never called in
 /// these tests; what matters is that `is_usable()` is true, which is what
@@ -158,5 +164,101 @@ async fn the_assistant_username_is_reserved() {
             )
             .await;
         assert_eq!(response.status(), 400, "{name} must be refused");
+    }
+}
+
+/// Asking over the SOCKET must reach the assistant, not only over REST.
+///
+/// This is the bug that shipped: the trigger lived in `post_message`, and a
+/// client with a live socket sends over it — so asking in the app produced
+/// no answer at all while curl worked perfectly. The trigger now lives in
+/// `create_message`, which both transports go through.
+///
+/// The reply itself cannot land here (the endpoint is unreachable), but the
+/// PLACEHOLDER row is created before the provider is called, so its
+/// appearance proves the assistant was invoked.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn asking_over_the_socket_reaches_the_assistant() {
+    let ts = server_with_assistant().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+
+    let ai_chat = chats(&ts, &owner)
+        .await
+        .into_iter()
+        .find(|chat| chat["kind"] == "ai")
+        .and_then(|chat| chat["id"].as_i64())
+        .expect("the assistant chat exists");
+
+    // Over the socket, exactly as a connected client does.
+    let mut ws = connect_ws(&ts, &owner).await;
+    ws.send(Message::text(
+        json!({
+            "type": "send",
+            "chat_id": ai_chat,
+            "client_msg_id": uuid::Uuid::new_v4().to_string(),
+            "body": "are you there?",
+        })
+        .to_string(),
+    ))
+    .await
+    .expect("sending over the socket");
+
+    // The ack for our own message comes back first.
+    let _ack = next_frame_of_type(&mut ws, "ack").await;
+
+    // Then the assistant's empty placeholder, fanned out as an ordinary
+    // message. It is created BEFORE the provider is called, so this arrives
+    // even though the endpoint is unreachable.
+    let placeholder = next_frame_of_type(&mut ws, "message").await;
+    assert_eq!(placeholder["message"]["chat_id"].as_i64(), Some(ai_chat));
+    assert_eq!(
+        placeholder["message"]["body"], "",
+        "the placeholder starts empty and is filled by the stream"
+    );
+}
+
+// -- socket helpers (mirroring push_flow.rs) ---------------------------------
+
+type WsClient =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn connect_ws(ts: &TestServer, token: &str) -> WsClient {
+    let mut request = ts
+        .ws_url
+        .as_str()
+        .into_client_request()
+        .expect("building the ws request");
+    request.headers_mut().insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}")).expect("header value"),
+    );
+    let (mut ws, _response) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("websocket upgrade succeeds");
+    // A pong proves the connection task is registered — a later fan-out
+    // cannot race past a connection that has already answered a frame.
+    ws.send(Message::text(json!({"type": "ping"}).to_string()))
+        .await
+        .expect("ping");
+    let _pong = next_frame_of_type(&mut ws, "pong").await;
+    ws
+}
+
+async fn next_frame_of_type(ws: &mut WsClient, wanted: &str) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let message = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for a {wanted:?} frame"))
+            .expect("socket closed while waiting for a frame")
+            .expect("socket errored while waiting for a frame");
+        if let Message::Text(text) = message {
+            let value: Value = serde_json::from_str(text.as_str()).expect("frames are JSON");
+            if value["type"] == wanted {
+                return value;
+            }
+        }
     }
 }

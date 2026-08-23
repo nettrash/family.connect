@@ -264,6 +264,11 @@ fn validate_body(state: &AppState, body: &str) -> Result<String, ApiError> {
 /// Returns `(message, created)`: `created == false` means the
 /// `(chat, sender, client_msg_id)` triple already existed and the original
 /// message is returned — the caller must not fan out again.
+// Eight arguments, one over clippy's threshold. Grouping them into a struct
+// would be a parameter object nothing else ever constructs — the call sites
+// are two, both in this crate, and each argument is a distinct thing the
+// caller genuinely has.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_message(
     state: &AppState,
     chat_id: i64,
@@ -272,8 +277,20 @@ pub async fn create_message(
     body: &str,
     reply_to_message_id: Option<i64>,
     attachment_id: Option<i64>,
+    // Which language to answer an assistant question in, from the sending
+    // device (docs/protocol.md, "The assistant"). None outside an assistant
+    // chat, and harmless there too.
+    language: Option<&str>,
 ) -> Result<(Message, bool), ApiError> {
     ensure_chat_access(state, chat_id, sender_id).await?;
+
+    // Read once, up here: the assistant trigger at the end needs it, and
+    // `ensure_chat_access` has already proved the chat exists.
+    let chat_kind: String = sqlx::query_scalar("SELECT kind FROM chats WHERE id = $1")
+        .bind(chat_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .unwrap_or_default();
 
     // A photo needs no caption: an empty body is allowed when — and only
     // when — the message carries an attachment.
@@ -373,6 +390,24 @@ pub async fn create_message(
                 Some(claim_attachment(&mut tx, attachment_id, sender_id, message.id).await?);
         }
         tx.commit().await?;
+
+        // An assistant chat answers back, and this lives HERE rather than in
+        // the REST handler because both transports come through this
+        // function: a client with a live socket sends over it, and wiring
+        // the trigger into `post_message` alone meant asking a question in
+        // the app produced no reply at all while curl worked perfectly.
+        //
+        // Spawned, so the sender's send returns at once: a reply takes
+        // seconds, and holding the send open for it would make asking a
+        // question feel like a failure.
+        if state.cfg.ai.is_usable() && chat_kind == "ai" {
+            crate::handlers_ai::spawn_reply(
+                state.clone(),
+                chat_id,
+                sender_id,
+                language.map(str::to_string),
+            );
+        }
         return Ok((message, true));
     }
     // Dedup: nothing was written, so there is nothing to commit.
@@ -987,6 +1022,7 @@ pub async fn post_message(
         &req.body,
         req.reply_to_message_id,
         req.attachment_id,
+        language.as_deref(),
     )
     .await?;
     if created {
@@ -997,18 +1033,6 @@ pub async fn post_message(
             "new_message",
             events::deliver_new_message(&state, &message, None).await,
         );
-
-        // An assistant chat answers back. Spawned, so the member's send
-        // returns at once: a reply takes seconds, and holding the POST open
-        // for it would make asking a question feel like a failure.
-        let is_ai = sqlx::query_scalar::<_, String>("SELECT kind FROM chats WHERE id = $1")
-            .bind(chat_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .is_some_and(|kind| kind == "ai");
-        if is_ai && state.cfg.ai.is_usable() {
-            crate::handlers_ai::spawn_reply(state.clone(), chat_id, auth.user_id, language);
-        }
     }
     let status = if created {
         StatusCode::CREATED

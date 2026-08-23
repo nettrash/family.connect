@@ -149,8 +149,17 @@ impl ServerFrame {
 pub async fn ws_upgrade(
     auth: AuthUser,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
+    // Captured at UPGRADE and kept for the life of the connection: a socket
+    // frame carries no headers, and the assistant has to answer in the
+    // language of the device that asked (docs/protocol.md). Per-connection
+    // is the right grain anyway — it IS one device.
+    let language = headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     // Cache the session's expiry for the mid-connection check. Sliding
     // renewal can only push the real expiry further out, so the cached value
     // errs on the strict side — and a socket outliving a 180-day TTL is not
@@ -161,7 +170,7 @@ pub async fn ws_upgrade(
             .fetch_optional(&state.pool)
             .await?
             .ok_or_else(ApiError::unauthorized)?;
-    Ok(ws.on_upgrade(move |socket| run_connection(state, auth, expires_at, socket)))
+    Ok(ws.on_upgrade(move |socket| run_connection(state, auth, expires_at, language, socket)))
 }
 
 /// The per-connection task. Runs until the socket dies, the client idles
@@ -171,6 +180,7 @@ async fn run_connection(
     state: AppState,
     auth: AuthUser,
     expires_at: OffsetDateTime,
+    language: Option<String>,
     mut socket: WebSocket,
 ) {
     let registry = state.registry.clone();
@@ -202,6 +212,7 @@ async fn run_connection(
                                     &auth,
                                     registration.conn_id,
                                     &mut typing_last,
+                                    language.as_deref(),
                                     text.as_str(),
                                 )
                                 .await
@@ -297,6 +308,7 @@ async fn handle_client_text(
     auth: &AuthUser,
     conn_id: u64,
     typing_last: &mut HashMap<i64, Instant>,
+    language: Option<&str>,
     text: &str,
 ) -> Option<ServerFrame> {
     let value: serde_json::Value = match serde_json::from_str(text) {
@@ -345,6 +357,7 @@ async fn handle_client_text(
                 &body,
                 reply_to_message_id,
                 attachment_id,
+                language,
             )
             .await
             {
