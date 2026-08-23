@@ -87,15 +87,56 @@ pub async fn ensure_ai_chat(state: &AppState, user_id: i64) -> Result<Option<i64
 }
 
 /// Answer a member's question. Spawned; never blocks their send.
-pub fn spawn_reply(state: AppState, chat_id: i64, user_id: i64) {
+pub fn spawn_reply(state: AppState, chat_id: i64, user_id: i64, language: Option<String>) {
     tokio::spawn(async move {
-        if let Err(error) = reply(&state, chat_id, user_id).await {
+        if let Err(error) = reply(&state, chat_id, user_id, language.as_deref()).await {
             warn!(%chat_id, %error, "assistant reply failed");
         }
     });
 }
 
-async fn reply(state: &AppState, chat_id: i64, user_id: i64) -> Result<()> {
+/// Turn an `Accept-Language` value into something worth telling a model.
+///
+/// Only the FIRST tag matters and only its primary subtag: the header can
+/// be a whole weighted list (`ru-RU,ru;q=0.9,en;q=0.8`), and what is wanted
+/// is "the language this device is in", not a negotiation.
+///
+/// Named rather than tagged where the name is known — "Russian" is a
+/// clearer instruction to a model than "ru", and for anything unrecognised
+/// the tag itself is still a better hint than nothing. Returns None for a
+/// missing or unusable header, in which case nothing is added to the prompt
+/// at all and the model simply answers in the language it was asked in.
+pub fn language_instruction(header: Option<&str>) -> Option<String> {
+    let tag = header?
+        .split(',')
+        .next()?
+        .split(';')
+        .next()?
+        .trim()
+        .to_ascii_lowercase();
+    if tag.is_empty() || tag == "*" {
+        return None;
+    }
+    let primary = tag.split('-').next().unwrap_or(&tag);
+    let named = match primary {
+        "en" => "English",
+        "de" => "German",
+        "es" => "Spanish",
+        "fr" => "French",
+        "ja" => "Japanese",
+        "ru" => "Russian",
+        "zh" => "Chinese",
+        "sr" => "Serbian",
+        _ => {
+            return Some(format!(
+                "Answer in the language with IETF tag \"{primary}\"."
+            ));
+        }
+    };
+    Some(format!("Answer in {named}."))
+}
+
+async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&str>) -> Result<()> {
     let Some(assistant_id) = assistant_user_id(state).await? else {
         warn!("the assistant account is missing; run migrations");
         return Ok(());
@@ -160,7 +201,20 @@ async fn reply(state: &AppState, chat_id: i64, user_id: i64) -> Result<()> {
 
     let message_id = placeholder.id;
     let owner = [user_id];
-    let outcome = ai::stream_reply(&state.http, &state.cfg.ai, &turns, |delta| {
+    // The family writes ONE system prompt; the language is appended per
+    // question. That is deliberately not eight prompts to maintain: what
+    // the assistant is FOR is the same in every language, and only the
+    // language to answer in differs.
+    let mut cfg = state.cfg.ai.clone();
+    if let Some(instruction) = language_instruction(language) {
+        if cfg.system_prompt.trim().is_empty() {
+            cfg.system_prompt = instruction;
+        } else {
+            cfg.system_prompt = format!("{}\n\n{instruction}", cfg.system_prompt.trim_end());
+        }
+    }
+
+    let outcome = ai::stream_reply(&state.http, &cfg, &turns, |delta| {
         let state = state.clone();
         let text = delta.to_string();
         // Fan-out is async and the callback is not; spawning keeps the
@@ -271,4 +325,48 @@ async fn reply(state: &AppState, chat_id: i64, user_id: i64) -> Result<()> {
         events::deliver_message_edited(state, &updated, None).await,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::language_instruction;
+
+    #[test]
+    fn a_weighted_header_yields_only_the_first_language() {
+        // Browsers and OSes send a whole negotiation list; what is wanted
+        // is "the language this device is in", not the negotiation.
+        assert_eq!(
+            language_instruction(Some("ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")).as_deref(),
+            Some("Answer in Russian.")
+        );
+        assert_eq!(
+            language_instruction(Some("de-CH")).as_deref(),
+            Some("Answer in German.")
+        );
+        // Serbian in either script is still Serbian.
+        assert_eq!(
+            language_instruction(Some("sr-Latn-RS")).as_deref(),
+            Some("Answer in Serbian.")
+        );
+    }
+
+    #[test]
+    fn an_unknown_language_still_gets_its_tag() {
+        // A family speaking something the app is not translated into should
+        // still be answered in it — the tag is a better hint than nothing.
+        assert_eq!(
+            language_instruction(Some("pt-BR")).as_deref(),
+            Some("Answer in the language with IETF tag \"pt\".")
+        );
+    }
+
+    #[test]
+    fn nothing_usable_adds_nothing_to_the_prompt() {
+        // With no instruction the model simply answers in the language it
+        // was asked in, which is the right fallback.
+        assert_eq!(language_instruction(None), None);
+        assert_eq!(language_instruction(Some("")), None);
+        assert_eq!(language_instruction(Some("   ")), None);
+        assert_eq!(language_instruction(Some("*")), None);
+    }
 }

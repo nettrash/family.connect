@@ -259,6 +259,18 @@ Clients need no special id: an `ai` chat has exactly two participants, so a mess
 not yours is the assistant's. Draw it with the chat's own name and icon rather than looking the
 sender up in the roster, where it will not be found.
 
+**The assistant answers in the language the question was asked from.** A client sends
+`Accept-Language` with its send (Apple's URLSession does automatically; Android sets it from the
+app's own resolved locale), and the server appends one instruction to the configured system prompt
+naming that language. Only the first tag's primary subtag is used — the header may be a whole
+weighted list, and what is wanted is "the language this device is in", not a negotiation. A missing
+or unusable header adds nothing, and the model simply answers in the language it was written to.
+
+This is deliberately per-DEVICE rather than per-account: the same person may run the app in Russian
+on their phone and English on a work Mac, and each question should come back in the language it was
+asked from. It is also one system prompt rather than one per language — what the assistant is FOR
+does not change with the language, only what it answers in.
+
 The feature is OFF unless the server is configured for it (`[ai] enabled`, an endpoint, a deployment
 and a key). A server without it simply never creates the chat, and `POST` to one that does not exist
 is the usual `chat_not_found`.
@@ -361,6 +373,37 @@ backing up, exporting or deleting a family simple. The consequence for the
 server is that a stored file may be referenced by several rows, so it is
 removed only when the last row referencing it is gone. Attachments uploaded
 before this was introduced have no hash and keep a file each.
+
+### Family statistics
+
+`GET /families/mine/stats` — what the family has actually sent, for every member to see. Not
+owner-only: it is a shared curiosity, and the same numbers go to everyone.
+
+```json
+{"generated_at": "…",
+ "totals": {"members": 4, "messages": 1284, "board_notes": 7,
+            "attachments": {"count": 96, "photo": 61, "video": 12, "audio": 9, "file": 14,
+                            "bytes": 734003200, "stored_bytes": 612368384},
+            "ai": {"questions": 43, "prompt_tokens": 12040, "completion_tokens": 30512}},
+ "members": [{"user_id": 7, "display_name": "Anna", "messages": 512,
+              "attachments": {"count": 31, "photo": 22, "video": 4, "audio": 3, "file": 2,
+                              "bytes": 241172480},
+              "ai": {"questions": 12, "prompt_tokens": 3400, "completion_tokens": 9120}}]}
+```
+
+**`bytes` and `stored_bytes` are different numbers and the gap is the point.** `bytes` adds up what
+was sent; `stored_bytes` counts each distinct file once, because identical bytes are stored once per
+family (see "One copy per family"). The difference is what dedup saved. `stored_bytes` is a family
+total only — a file two members both sent belongs to neither of them alone, so a per-member share
+would be a made-up number.
+
+Counts are of what is **still here**. Retention sweeps messages past `retention_days` and takes their
+attachments with them, so this describes the family's current history rather than everything it has
+ever said. A member who has left keeps their rows and so keeps appearing, which is deliberate: their
+messages are still in the thread.
+
+Assistant usage is counted per completed reply, with the token counts the provider reported. A reply
+that failed midway records nothing.
 
 ### Retention
 

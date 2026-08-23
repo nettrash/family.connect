@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
@@ -967,8 +967,18 @@ pub async fn post_message(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(chat_id): Path<i64>,
+    headers: HeaderMap,
     AppJson(req): AppJson<PostMessageRequest>,
 ) -> Result<Response, ApiError> {
+    // Which language to answer a question in. Read here rather than stored
+    // on the account, because it is a property of the DEVICE asking: the
+    // same person may run the app in Russian on their phone and English on
+    // a work Mac, and each question should come back in the language it was
+    // asked from.
+    let language = headers
+        .get(header::ACCEPT_LANGUAGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let (message, created) = create_message(
         &state,
         chat_id,
@@ -997,7 +1007,7 @@ pub async fn post_message(
             .await?
             .is_some_and(|kind| kind == "ai");
         if is_ai && state.cfg.ai.is_usable() {
-            crate::handlers_ai::spawn_reply(state.clone(), chat_id, auth.user_id);
+            crate::handlers_ai::spawn_reply(state.clone(), chat_id, auth.user_id, language);
         }
     }
     let status = if created {

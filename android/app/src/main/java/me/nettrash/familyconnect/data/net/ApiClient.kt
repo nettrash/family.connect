@@ -28,6 +28,8 @@
 
 package me.nettrash.familyconnect.data.net
 
+import dagger.hilt.android.qualifiers.ApplicationContext
+import android.content.Context
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -67,6 +69,7 @@ sealed class ApiResult<out T> {
 
 @Singleton
 class ApiClient @Inject constructor(
+    @param:ApplicationContext private val context: Context,
     private val client: OkHttpClient,
     val json: Json,
     private val tokenStore: TokenStore,
@@ -263,6 +266,11 @@ class ApiClient @Inject constructor(
         if (auth) {
             tokenStore.load()?.let { builder.header("Authorization", "Bearer $it") }
         }
+        // OkHttp sends no Accept-Language of its own — unlike URLSession on
+        // the Apple clients, which is why only this side needs it. The
+        // server uses it to answer assistant questions in the language the
+        // device is actually being used in.
+        acceptLanguage()?.let { builder.header("Accept-Language", it) }
         builder.method(method, body)
 
         // An upload of up to 100 MB over a home connection outlives the
@@ -305,4 +313,18 @@ class ApiClient @Inject constructor(
         /** Long enough for a 100 MB video on a slow upstream link. */
         val UPLOAD_TIMEOUT: Duration = Duration.ofMinutes(10)
     }
+    /**
+     * The app's own resolved locale as an IETF tag, e.g. `ru-RU`.
+     *
+     * Taken from the CONFIGURATION rather than Locale.getDefault(): what
+     * matters is the language the app is actually being shown in, which is
+     * what the per-app language setting changes and what the member sees.
+     */
+    private fun acceptLanguage(): String? {
+        val locales = context.resources.configuration.locales
+        if (locales.isEmpty) return null
+        return locales.get(0)?.toLanguageTag()?.takeIf { it.isNotBlank() && it != "und" }
+    }
+
+
 }

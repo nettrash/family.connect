@@ -180,6 +180,12 @@ attachments_dir = "/var/lib/family-connect/attachments"
 # api_version = "2024-10-21"
 #
 # # What the assistant is told it is, before the member's own words.
+# #
+# # ONE prompt, not one per language: the server appends "Answer in
+# # <language>." per question, taken from the asking device's
+# # Accept-Language. So write this in whatever language you like — its job
+# # is to say what the assistant is FOR, and the answer still comes back in
+# # each member's own language.
 # system_prompt = """
 # You are a helpful assistant in a family's private chat app. Answer briefly
 # and plainly. You can only see this one conversation.

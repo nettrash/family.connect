@@ -11,7 +11,7 @@ use axum::routing::{delete, get, patch, post, put};
 use crate::state::AppState;
 use crate::{
     handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_chat,
-    handlers_device, handlers_family, ws,
+    handlers_device, handlers_family, handlers_stats, ws,
 };
 
 /// Build the full application router for the given state. Used identically
@@ -54,6 +54,12 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/families/mine",
             get(handlers_family::my_family).patch(handlers_family::patch_family),
+        )
+        // Every member sees the same numbers — a shared curiosity, not an
+        // owner's dashboard (protocol.md, "Family statistics").
+        .route(
+            "/api/v1/families/mine/stats",
+            get(handlers_stats::family_stats),
         )
         .route(
             "/api/v1/families/invite-code/rotate",
