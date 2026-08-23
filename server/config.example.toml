@@ -152,15 +152,36 @@ attachments_dir = "/var/lib/family-connect/attachments"
 # enabled = true
 #
 # # The Azure OpenAI resource endpoint. No trailing slash needed.
+# #
+# # Azure has more than one endpoint shape, and asking the wrong one answers
+# # a bare `404 Resource not found` that cannot tell you which part was
+# # wrong. If your portal shows a full "target URI" — AI Foundry and
+# # serverless deployments do, and their path is NOT
+# # /openai/deployments/... — paste the whole thing here instead:
+# #
+# #     endpoint = "https://YOUR-RESOURCE.services.ai.azure.com/models/chat/completions"
+# #
+# # An endpoint that already names /chat/completions is used verbatim, and
+# # `deployment` below is then ignored.
+# #
+# # An endpoint ending in /openai/v1 is Azure's newer OpenAI-COMPATIBLE
+# # surface. It is handled too, and differs in two ways worth knowing: the
+# # deployment goes in the request BODY rather than the path, and there is no
+# # api-version query at all.
+# #
+# #     endpoint = "https://YOUR-RESOURCE.openai.azure.com/openai/v1"
 # endpoint = "https://YOUR-RESOURCE.openai.azure.com"
 #
 # # The DEPLOYMENT name — this is what the request URL is built from, and it
 # # is NOT necessarily the model name. Azure lets the two differ and they
 # # usually do. Getting this wrong gives a 404 from Azure, not a clear error.
+# # Ignored when `endpoint` above is already a full completions URL.
 # deployment = "YOUR-DEPLOYMENT-NAME"
 #
-# # The model behind that deployment. Sent in the request body and recorded
-# # with usage, so Family Statistics can say what answered.
+# # The model behind that deployment, RECORDED WITH USAGE so Family
+# # Statistics can say what answered. It is not what routes the request —
+# # Azure routes on the deployment name, in the path or the body depending
+# # on the surface — so the two may differ without breaking anything.
 # model = "gpt-oss-120b"
 #
 # # The `api-key` header. It belongs HERE, in the server's own config, and

@@ -84,11 +84,15 @@ where
         // Ask for the token counts in the final chunk; without this Azure
         // sends none when streaming and statistics would have nothing.
         "stream_options": {"include_usage": true},
-        "model": cfg.model,
+        // The DEPLOYMENT name: Azure's v1 surface routes on it, and the
+        // classic one ignores the field. `cfg.model` is what gets recorded
+        // with usage, not what is asked for.
+        "model": cfg.request_model(),
     });
 
+    let url = cfg.completions_url();
     let response = client
-        .post(cfg.completions_url())
+        .post(&url)
         .header("api-key", cfg.api_key.trim())
         .json(&body)
         .send()
@@ -97,11 +101,14 @@ where
 
     let status = response.status();
     if !status.is_success() {
-        // The body may carry the provider's own explanation, which is worth
-        // having in the log — but never the key, which is only in a header.
+        // The URL goes in the message, and it is what makes a 404
+        // diagnosable: "Resource not found" alone cannot tell you whether
+        // the endpoint, the deployment or the api-version is wrong. None of
+        // it is secret — the key is only ever a header.
         let detail = response.text().await.unwrap_or_default();
         bail!(
-            "assistant returned {status}: {}",
+            "assistant returned {status} for {}: {}",
+            url,
             detail.chars().take(400).collect::<String>()
         );
     }
@@ -179,6 +186,90 @@ mod tests {
             cfg.completions_url(),
             "https://example.openai.azure.com/openai/deployments/my-deployment\
              /chat/completions?api-version=2024-10-21"
+        );
+    }
+
+    /// Azure has more than one endpoint shape, and a wrong guess is a bare
+    /// "404 Resource not found". A pasted target URI is used as given.
+    #[test]
+    fn an_endpoint_that_is_already_a_full_url_is_used_verbatim() {
+        let base = AiConfig {
+            enabled: true,
+            api_key: "secret".to_string(),
+            api_version: "2024-10-21".to_string(),
+            ..Default::default()
+        };
+
+        // AI Foundry / serverless shape, pasted whole. The deployment is
+        // NOT spliced in — the URL already says where to go.
+        let foundry = AiConfig {
+            endpoint: "https://my-resource.services.ai.azure.com/models/chat/completions"
+                .to_string(),
+            deployment: "ignored-here".to_string(),
+            ..base.clone()
+        };
+        assert_eq!(
+            foundry.completions_url(),
+            "https://my-resource.services.ai.azure.com/models/chat/completions\
+             ?api-version=2024-10-21"
+        );
+
+        // A pasted URL that already carries its own query keeps it, rather
+        // than getting a second `?`.
+        let with_query = AiConfig {
+            endpoint: "https://x.example/models/chat/completions?api-version=2025-01-01"
+                .to_string(),
+            ..base
+        };
+        assert_eq!(
+            with_query.completions_url(),
+            "https://x.example/models/chat/completions?api-version=2025-01-01"
+        );
+    }
+
+    /// Azure's v1 (OpenAI-compatible) surface, which is what an endpoint
+    /// ending in `/openai/v1` is.
+    ///
+    /// The deployment goes in the BODY, not the path, and there is no
+    /// `api-version` query. Splicing the classic `/openai/deployments/…`
+    /// onto one of these gives a doubled `/openai` and a bare
+    /// "404 Resource not found" — which is exactly what happened in
+    /// production.
+    #[test]
+    fn the_v1_surface_puts_the_deployment_in_the_body_not_the_path() {
+        let cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://nettrash-openai.openai.azure.com/openai/v1".to_string(),
+            deployment: "nettrash-gpt-oss-120b".to_string(),
+            model: "nettrash-gpt-oss-120b".to_string(),
+            api_key: "secret".to_string(),
+            api_version: "2024-10-21".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            cfg.completions_url(),
+            "https://nettrash-openai.openai.azure.com/openai/v1/chat/completions",
+            "no deployments path, and no api-version query"
+        );
+        assert_eq!(
+            cfg.request_model(),
+            "nettrash-gpt-oss-120b",
+            "the deployment is what routes the request"
+        );
+    }
+
+    /// A trailing slash must not change the shape.
+    #[test]
+    fn a_trailing_slash_on_a_v1_endpoint_is_ignored() {
+        let cfg = AiConfig {
+            endpoint: "https://x.openai.azure.com/openai/v1/".to_string(),
+            deployment: "d".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.completions_url(),
+            "https://x.openai.azure.com/openai/v1/chat/completions"
         );
     }
 

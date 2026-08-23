@@ -165,12 +165,61 @@ impl AiConfig {
     }
 
     /// The chat-completions URL for the configured deployment.
+    /// The chat-completions URL for the configured deployment.
+    ///
+    /// Azure has more than one shape. Classic Azure OpenAI is
+    /// `{endpoint}/openai/deployments/{deployment}/chat/completions`, which
+    /// is what this builds — but an AI Foundry / serverless deployment
+    /// answers on a different path entirely, and asking the wrong one gives
+    /// a bare `404 Resource not found` with nothing to say which part was
+    /// wrong.
+    ///
+    /// So an `endpoint` that ALREADY names a completions path is used
+    /// verbatim: paste the target URI the portal shows and nothing has to be
+    /// guessed. `api-version` is still appended when the pasted URL has no
+    /// query of its own.
     pub fn completions_url(&self) -> String {
         let base = self.endpoint.trim_end_matches('/');
+
+        // Already a completions URL: use it as given.
+        if base.contains("/chat/completions") {
+            if base.contains('?') || self.api_version.trim().is_empty() {
+                return base.to_string();
+            }
+            return format!("{base}?api-version={}", self.api_version);
+        }
+
+        // Azure's v1 (OpenAI-compatible) surface: the deployment does NOT
+        // go in the path — it goes in the body as `model` — and there is no
+        // `api-version` query. Splicing the classic
+        // `/openai/deployments/{name}/…` onto one of these produces a
+        // doubled `/openai` and a bare 404 that says only "Resource not
+        // found".
+        if base.ends_with("/openai/v1") {
+            return format!("{base}/chat/completions");
+        }
+
+        // Classic Azure OpenAI: deployment in the path, dated api-version.
         format!(
             "{base}/openai/deployments/{}/chat/completions?api-version={}",
             self.deployment, self.api_version
         )
+    }
+
+    /// What to put in the request body's `model` field.
+    ///
+    /// On Azure this is the DEPLOYMENT name, not the model name — the v1
+    /// surface routes on it, and the classic surface ignores the field
+    /// because the deployment is already in the path. `model` in the config
+    /// exists to record what answered, for statistics, and is only used
+    /// here when no deployment is configured at all (a pasted full URL that
+    /// needs no routing).
+    pub fn request_model(&self) -> &str {
+        if self.deployment.trim().is_empty() {
+            self.model.trim()
+        } else {
+            self.deployment.trim()
+        }
     }
 }
 
