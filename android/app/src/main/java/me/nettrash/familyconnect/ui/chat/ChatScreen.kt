@@ -2174,6 +2174,10 @@ private fun BubbleContent(
                     image = state.image,
                     onOpen = onOpenLink,
                     modifier = measureBlock,
+                    // Only once acked — there is no message id to react to
+                    // before that, same gate the text detector uses.
+                    onDoubleTap = if (acked) ({ currentDoubleTap() }) else null,
+                    onLongPress = { currentLongPress() },
                 )
             }
         }
@@ -2249,6 +2253,9 @@ private fun LinkPreviewCard(
     image: ImageBitmap?,
     onOpen: (String) -> Unit,
     modifier: Modifier = Modifier,
+    /** The bubble's own gestures, forwarded. */
+    onDoubleTap: (() -> Unit)? = null,
+    onLongPress: () -> Unit = {},
 ) {
     val shape = RoundedCornerShape(12.dp)
     Surface(
@@ -2259,7 +2266,18 @@ private fun LinkPreviewCard(
         modifier = modifier
             .padding(top = 6.dp)
             .clip(shape)
-            .clickable(onClickLabel = stringResource(R.string.s_open_link)) { onOpen(preview.url) },
+            // combinedClickable, not clickable: a plain click handler
+            // fired onOpen TWICE on a double tap — the link opened, then
+            // opened again — and it consumed the press, so the balloon's
+            // heart and reaction capsule never saw it over the card.
+            // Compose waits out the double-tap timeout when onDoubleClick
+            // is non-null, which is what makes them exclusive.
+            .combinedClickable(
+                onClickLabel = stringResource(R.string.s_open_link),
+                onClick = { onOpen(preview.url) },
+                onDoubleClick = onDoubleTap,
+                onLongClick = onLongPress,
+            ),
     ) {
         Column {
             if (image != null) {

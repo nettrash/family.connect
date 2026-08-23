@@ -28,6 +28,12 @@ struct LinkPreviewCard: View {
     /// Already-decoded card image, if it arrived.
     let image: Image?
     let onOpen: (URL) -> Void
+    /// The bubble's own gestures, forwarded — same reason AttachmentView
+    /// takes them: a bare `.onTapGesture` on a CHILD masks the parent's
+    /// count-2 gesture outright, so long-pressing to react or
+    /// double-tapping to heart worked only on the padding around the card.
+    var onLongPress: () -> Void = {}
+    var onDoubleTap: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -68,11 +74,22 @@ struct LinkPreviewCard: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .contentShape(Rectangle())
-        .onTapGesture { onOpen(preview.url) }
+        // Count 2 BEFORE count 1, and both as onTapGesture: that is what
+        // makes them exclusive. As a single bare tap this fired onOpen
+        // TWICE on a double tap — the link opened, then opened again — and
+        // the balloon's heart never got a look in.
+        .onTapGesture(count: 2) { onDoubleTap() }
+        .onTapGesture(count: 1) { onOpen(preview.url) }
+        .simultaneousGesture(LongPressGesture().onEnded { _ in onLongPress() })
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("\(preview.title), \(preview.siteName)")
         .accessibilityHint("Opens the link")
+        // The trait alone is a LIE: a bare gesture publishes no
+        // accessibility action, so VoiceOver announced "button" and
+        // double-tapping did nothing (measured — ZZAXProbeTests). Same
+        // lesson as the reply quote and the reaction chips.
+        .accessibilityAction { onOpen(preview.url) }
     }
 }
 

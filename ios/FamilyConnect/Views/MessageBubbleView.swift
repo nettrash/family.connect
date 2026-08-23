@@ -467,7 +467,9 @@ struct MessageBubbleView: View {
                 LinkPreviewCard(
                     preview: preview,
                     image: previewLoader.image(for: preview.url),
-                    onOpen: { systemOpenURL($0) })
+                    onOpen: { systemOpenURL($0) },
+                    onLongPress: { onLongPress() },
+                    onDoubleTap: { toggleQuickHeart() })
                     .padding(.top, 4)
             }
 

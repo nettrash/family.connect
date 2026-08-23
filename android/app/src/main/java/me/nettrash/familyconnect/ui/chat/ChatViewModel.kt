@@ -321,7 +321,15 @@ class ChatViewModel @Inject constructor(
 
     fun send() {
         val body = inputState.text.toString()
-        if (body.isBlank()) return
+        // An attachment can travel with no words at all — that is how a
+        // photo is normally sent — so a blank draft only stops the send
+        // when there is nothing staged either.
+        val attachment = _staged.value
+        if (body.isBlank() && attachment == null) return
+        if (attachment != null) {
+            sendStaged(attachment, body)
+            return
+        }
         // Edit mode: the composer was borrowed to rewrite an existing
         // message. The field is cleared only once the server takes it —
         // a refused edit leaves the text there to fix, rather than
@@ -384,6 +392,39 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * Commit staged media with whatever the composer holds.
+     *
+     * The composer is taken atomically FIRST — caption, quote and the file
+     * together — so nothing typed during the upload is swallowed into the
+     * caption and a primed reply cannot leak onto the next message. It all
+     * goes back if the send never lands, so it can be retried.
+     */
+    private fun sendStaged(prepared: MediaPrep.Prepared, caption: String) {
+        val quote = _replyDraft.value
+        inputState.clearText()
+        _replyDraft.value = null
+        _staged.value = null
+        _mediaState.value = MediaSendState.Uploading
+        // App scope, not viewModelScope: navigating away used to take a
+        // 90 MB upload with it — no bubble, no FAILED row, no error.
+        appScope.launch {
+            if (messageRepository.sendMedia(prepared, caption, chatId, quote)) {
+                _mediaState.value = MediaSendState.Idle
+            } else {
+                _mediaState.value =
+                    MediaSendState.Failed(appContext.getString(R.string.e_send_failed))
+                // sendMedia deletes the prepared file whatever happened, so
+                // only restore what can still be sent.
+                if (prepared.file.exists()) _staged.value = prepared
+                if (inputState.text.isEmpty()) {
+                    inputState.setTextAndPlaceCursorAtEnd(caption)
+                }
+                if (_replyDraft.value == null) _replyDraft.value = quote
+            }
+        }
+    }
+
+    /**
      * Hold prepared media in the composer until the user presses Send.
      *
      * Picking used to send immediately, so a caption had to be typed BEFORE
@@ -391,6 +432,12 @@ class ChatViewModel @Inject constructor(
      * attachment per message, so a second pick replaces the first rather
      * than queueing behind it.
      */
+    /**
+     * Test seam: staging normally follows a real pick + prepare, which a
+     * unit test cannot drive. The app never calls this.
+     */
+    fun stagePrepared(prepared: MediaPrep.Prepared) = stage(prepared)
+
     private fun stage(prepared: MediaPrep.Prepared) {
         discardStaged()
         _staged.value = prepared

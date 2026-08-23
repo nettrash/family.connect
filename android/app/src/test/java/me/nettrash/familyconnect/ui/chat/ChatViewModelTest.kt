@@ -26,6 +26,11 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import java.io.File
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.flow.first
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import kotlinx.coroutines.test.setMain
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.ChatEntity
@@ -425,6 +430,73 @@ class ChatViewModelTest {
     }
 
     // -- loadOlder guard ------------------------------------------------------------
+
+    /**
+     * The composer stages an attachment and Send commits it WITH whatever
+     * was typed.
+     *
+     * This shipped broken: staging worked and the chip appeared, but
+     * `send()` had no staged branch at all, so pressing Send posted the
+     * caption as an ordinary text message and silently dropped the
+     * attachment. Nothing caught it because nothing exercised the two
+     * together.
+     */
+    @Test
+    fun sendCommitsStagedMediaWithTheTypedCaption() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 1 }) }
+        viewModel.stagePrepared(
+            MediaPrep.Prepared(
+                file = file,
+                mime = "image/jpeg",
+                kind = AttachmentDto.KIND_PHOTO,
+                width = 100,
+                height = 80,
+                durationMs = null,
+                previewJpeg = null,
+            ),
+        )
+        runCurrent()
+        assertThat(viewModel.staged.value).isNotNull()
+
+        viewModel.inputState.setTextAndPlaceCursorAtEnd("look at this")
+        viewModel.send()
+        advanceUntilIdle()
+
+        assertThat(attachmentApi.calls).contains("upload")
+        val stored = db.messageDao().observeMessages(CHAT, 50).first()
+        val row = stored.firstOrNull { it.attachmentId != null }
+        assertThat(row).isNotNull()
+        assertThat(row!!.body).isEqualTo("look at this")
+        // Composer emptied, staging consumed.
+        assertThat(viewModel.staged.value).isNull()
+        assertThat(viewModel.inputState.text.toString()).isEmpty()
+    }
+
+    /** A photo needs no caption — Send must be live on the attachment alone. */
+    @Test
+    fun sendCommitsStagedMediaWithNoCaption() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 2 }) }
+        viewModel.stagePrepared(
+            MediaPrep.Prepared(
+                file = file,
+                mime = "image/jpeg",
+                kind = AttachmentDto.KIND_PHOTO,
+                width = 100,
+                height = 80,
+                durationMs = null,
+                previewJpeg = null,
+            ),
+        )
+        runCurrent()
+
+        viewModel.send()
+        advanceUntilIdle()
+
+        assertThat(attachmentApi.calls).contains("upload")
+        assertThat(viewModel.staged.value).isNull()
+    }
 
     @Test
     fun loadOlderRunsOneFetchAtATime() = runTest(dispatcher) {
