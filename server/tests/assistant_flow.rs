@@ -219,6 +219,264 @@ async fn asking_over_the_socket_reaches_the_assistant() {
     );
 }
 
+/// `GET /families/mine` is where a client learns the assistant's user id —
+/// without it a mention's reply is a nameless bubble in the family chat,
+/// because the account is deliberately in no roster.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_configured_server_names_the_assistant_on_the_family() {
+    let ts = server_with_assistant().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+
+    let body: Value = ts
+        .get(&owner, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let assistant = &body["assistant"];
+    assert!(
+        assistant["user_id"].as_i64().is_some_and(|id| id > 0),
+        "the assistant's user id must be given: {body}"
+    );
+    assert_eq!(assistant["display_name"], "Assistant");
+    assert_eq!(assistant["mention"], "@ai");
+
+    // And it is NOT a member: every screen that lists people would need a
+    // special case for something that cannot be removed or messaged.
+    let members = body["members"].as_array().expect("members");
+    assert!(
+        members
+            .iter()
+            .all(|member| member["id"] != assistant["user_id"]),
+        "the assistant must not be in the roster: {body}"
+    );
+}
+
+/// The absence of the field is the capability check: a client that offered
+/// `@ai` here would offer an affordance that does nothing.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_unconfigured_server_names_no_assistant() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+
+    let body: Value = ts
+        .get(&owner, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert!(
+        body.get("assistant").is_none(),
+        "no assistant configured, so nothing to name: {body}"
+    );
+}
+
+/// The feature: `@ai` in the family chat produces an answer for EVERYONE,
+/// quoting the message that asked. The provider is unreachable here, so what
+/// is asserted is the placeholder — which is created before the call and is
+/// the proof the assistant was invoked at all.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn mentioning_the_assistant_in_the_family_chat_answers_the_whole_family() {
+    let ts = server_with_assistant().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let (member, member_id) = ts.register("junior", "Junior").await;
+    ts.join(&member, &code, "joined").await;
+
+    let chat = ts.family_chat_id(&owner).await;
+    let asked = say(&ts, &member, chat, "@ai what is the capital of Serbia?").await;
+    let asked_id = asked["id"].as_i64().expect("the question has an id");
+
+    // The OWNER, who did not ask, must see it: the answer is public.
+    let reply = wait_for_assistant_message(&ts, &owner, chat, asked_id).await;
+    assert_eq!(
+        reply["body"], "",
+        "the placeholder starts empty and is filled by the stream"
+    );
+    assert_ne!(
+        reply["sender_id"].as_i64(),
+        Some(member_id),
+        "the assistant answers under its own account, not the asker's"
+    );
+    assert_eq!(
+        reply["reply_to"]["message_id"].as_i64(),
+        Some(asked_id),
+        "the answer quotes the question, or it belongs to nobody: {reply}"
+    );
+}
+
+/// The other half of the same rule, and the more important one: an ordinary
+/// family message must not reach the provider.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_ordinary_family_message_does_not_reach_the_assistant() {
+    let ts = server_with_assistant().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ts.family_chat_id(&owner).await;
+
+    // Deliberately full of near-misses: an email address, a name that
+    // starts with the token, and the bare word.
+    for body in [
+        "dinner at 7?",
+        "mail me at anna@ai.example",
+        "@aiden is coming too",
+        "ai is everywhere these days",
+    ] {
+        say(&ts, &owner, chat, body).await;
+    }
+
+    // Long enough that a spawned reply would have created its row.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let messages = messages_in(&ts, &owner, chat).await;
+    assert_eq!(
+        messages.len(),
+        4,
+        "nothing but the four messages sent: {messages:#?}"
+    );
+}
+
+/// A direct chat is two people who each already have a private assistant;
+/// a third party turning up in a one-to-one is not something either asked
+/// for (docs/protocol.md, "Mentioning the assistant in the family chat").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_mention_in_a_direct_chat_does_nothing() {
+    let ts = server_with_assistant().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let (member, member_id) = ts.register("junior", "Junior").await;
+    ts.join(&member, &code, "joined").await;
+
+    let response = ts
+        .post(&owner, "/chats/direct", json!({"user_id": member_id}))
+        .await;
+    let body: Value = response.json().await.expect("JSON");
+    let direct = body["chat"]["id"].as_i64().expect("a direct chat");
+
+    say(&ts, &owner, direct, "@ai are you there?").await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let messages = messages_in(&ts, &owner, direct).await;
+    assert_eq!(messages.len(), 1, "only what was typed: {messages:#?}");
+}
+
+/// Leaving a family deletes the member's row from `chat_members` for every
+/// chat of that family — the assistant chat included. Without restoring it
+/// on the way back in, a member who left and rejoined is locked out of a
+/// private thread nobody else can even see.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn rejoining_a_family_restores_the_assistant_chat() {
+    let ts = server_with_assistant().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    ts.join(&member, &code, "joined").await;
+
+    let before = chats(&ts, &member)
+        .await
+        .into_iter()
+        .find(|chat| chat["kind"] == "ai")
+        .and_then(|chat| chat["id"].as_i64())
+        .expect("the assistant chat exists");
+    say(&ts, &member, before, "remember this").await;
+
+    assert_eq!(
+        ts.post(&member, "/families/leave", json!({}))
+            .await
+            .status(),
+        204
+    );
+    ts.join(&member, &code, "joined").await;
+
+    let after = chats(&ts, &member)
+        .await
+        .into_iter()
+        .find(|chat| chat["kind"] == "ai")
+        .and_then(|chat| chat["id"].as_i64())
+        .expect("the assistant chat comes back rather than vanishing");
+    assert_eq!(after, before, "the same chat, not a fresh one");
+
+    // And it is READABLE again, which is the part membership decides.
+    // The count is deliberately not asserted: asking the assistant anything
+    // also creates its (empty) answer row.
+    let messages = messages_in(&ts, &member, after).await;
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["body"] == "remember this"),
+        "the history is still there: {messages:#?}"
+    );
+}
+
+/// The reserved account is seeded with a password hash nobody can present.
+/// It must answer like any other unknown login — a 500 for one username and
+/// a 401 for every other is an existence oracle.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn logging_in_as_the_assistant_is_refused_like_any_other() {
+    let ts = server_with_assistant().await;
+    let response = ts.login_raw("assistant", "anything at all").await;
+    assert_eq!(
+        response.status(),
+        401,
+        "the reserved account must look exactly like a wrong password"
+    );
+    let body: Value = response.json().await.expect("JSON");
+    assert_eq!(body["error"]["code"], "invalid_credentials");
+}
+
+/// Post a message and hand back the Message the server made of it.
+async fn say(ts: &TestServer, token: &str, chat_id: i64, body: &str) -> Value {
+    let response = ts
+        .post_message(token, chat_id, &uuid::Uuid::new_v4().to_string(), body)
+        .await;
+    assert_eq!(response.status(), 201, "sending {body:?}");
+    let sent: Value = response.json().await.expect("JSON");
+    sent["message"].clone()
+}
+
+async fn messages_in(ts: &TestServer, token: &str, chat_id: i64) -> Vec<Value> {
+    let body: Value = ts
+        .get(token, &format!("/chats/{chat_id}/messages"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    body["messages"].as_array().cloned().unwrap_or_default()
+}
+
+/// Poll for the assistant's row. The reply is spawned, so it does not exist
+/// the moment the send returns — and polling beats a fixed sleep, which is
+/// either flaky or slow.
+async fn wait_for_assistant_message(
+    ts: &TestServer,
+    token: &str,
+    chat_id: i64,
+    after_id: i64,
+) -> Value {
+    for _ in 0..50 {
+        let messages = messages_in(ts, token, chat_id).await;
+        if let Some(found) = messages
+            .into_iter()
+            .find(|message| message["id"].as_i64().is_some_and(|id| id > after_id))
+        {
+            return found;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the assistant never created its placeholder");
+}
+
 // -- socket helpers (mirroring push_flow.rs) ---------------------------------
 
 type WsClient =

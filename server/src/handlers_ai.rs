@@ -14,13 +14,18 @@
 //! the edits feed it already speaks — no special path, no resumable stream,
 //! no "what did I miss" question to answer.
 
+use std::time::Duration;
+
 use anyhow::Result;
 use sqlx::Row;
+use tokio::sync::mpsc;
+use tokio::time::sleep;
 use tracing::warn;
 use uuid::Uuid;
 
 use crate::ai::{self, ChatTurn};
 use crate::events;
+use crate::handlers_chat;
 use crate::models::Message;
 use crate::state::AppState;
 use crate::ws::ServerFrame;
@@ -64,6 +69,30 @@ pub async fn ensure_ai_chat(state: &AppState, user_id: i64) -> Result<Option<i64
             .fetch_optional(&mut *tx)
             .await?;
     if let Some(id) = existing {
+        // Existing is not the same as reachable. Leaving a family deletes
+        // the caller's row from `chat_members` for EVERY chat of that
+        // family, this one included (handlers_family::remove_membership) —
+        // so without restoring it here a member who left and came back is
+        // locked out of their own assistant thread forever, by a 403 on a
+        // chat nobody else can even see. protocol.md promises history
+        // "resurfaces on rejoin"; this is what makes that true here.
+        //
+        // The family_id is re-pointed for the same reason the direct-chat
+        // upsert re-points its own: the thread belongs to the member, not
+        // to the family they were in when they started it, and a stale
+        // family id would take it down with a family they have left.
+        sqlx::query("UPDATE chats SET family_id = $1 WHERE id = $2 AND family_id <> $1")
+            .bind(family_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO chat_members (chat_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         return Ok(Some(id));
     }
@@ -87,11 +116,31 @@ pub async fn ensure_ai_chat(state: &AppState, user_id: i64) -> Result<Option<i64
     Ok(Some(chat_id))
 }
 
-/// Answer a member's question. Spawned; never blocks their send.
+/// Answer a member's question in their own assistant thread. Spawned;
+/// never blocks their send.
 pub fn spawn_reply(state: AppState, chat_id: i64, user_id: i64, language: Option<String>) {
     tokio::spawn(async move {
         if let Err(error) = reply(&state, chat_id, user_id, language.as_deref()).await {
             warn!(%chat_id, %error, "assistant reply failed");
+        }
+    });
+}
+
+/// Answer an `@ai` mention in the family chat. Spawned, like the private
+/// one, and for the same reason: a reply takes seconds and the member's
+/// send must return at once.
+pub fn spawn_mention_reply(
+    state: AppState,
+    chat_id: i64,
+    user_id: i64,
+    message_id: i64,
+    language: Option<String>,
+) {
+    tokio::spawn(async move {
+        if let Err(error) =
+            mention_reply(&state, chat_id, user_id, message_id, language.as_deref()).await
+        {
+            warn!(%chat_id, %message_id, %error, "assistant mention reply failed");
         }
     });
 }
@@ -137,15 +186,74 @@ pub fn language_instruction(header: Option<&str>) -> Option<String> {
     Some(format!("Answer in {named}."))
 }
 
+/// What the assistant is told about being mentioned in a group chat.
+///
+/// Worth saying explicitly, because the honest description of what it can
+/// see is unusual enough that a model will otherwise assume it is missing
+/// context it ought to have and answer as if it had read the thread.
+/// Everything after "you cannot see" is what stops it inventing one.
+pub const MENTION_INSTRUCTION: &str = "You have been mentioned with @ai in a family group chat. \
+     You can see ONLY the message that mentioned you, and the message it quotes when there is one; \
+     you cannot see the rest of the conversation, who else is in it, or anything said earlier. \
+     If answering needs context you were not given, say so in one line and ask for it. \
+     Keep the answer short — this is a group chat, not a document.";
+
+/// One question, prepared: what goes to the model, who watches it arrive,
+/// and what the answer should quote.
+///
+/// Both entry points build one of these and hand it to `answer`, so the
+/// half that talks to the provider and writes the row exists once. The
+/// half that decides WHAT LEAVES THE SERVER is deliberately the half that
+/// differs — see `thread_prompt` and `mention_prompt`.
+struct Prompt {
+    turns: Vec<ChatTurn>,
+    /// Appended to the configured system prompt for this request only.
+    notes: Vec<String>,
+    /// The message the answer quotes, if any.
+    reply_to: Option<i64>,
+    /// Who receives the streaming fragments and any error frame.
+    audience: Vec<i64>,
+}
+
 async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&str>) -> Result<()> {
     let Some(assistant_id) = assistant_user_id(state).await? else {
         warn!("the assistant account is missing; run migrations");
         return Ok(());
     };
+    let Some(prompt) = thread_prompt(state, chat_id, user_id, assistant_id).await? else {
+        return Ok(());
+    };
+    answer(state, chat_id, user_id, assistant_id, prompt, language).await
+}
 
-    // ONLY this member's own assistant thread. Not the family chat, not
-    // another member's thread — this is the query that enforces what the
-    // protocol promises, and it is the only place a request is built from.
+async fn mention_reply(
+    state: &AppState,
+    chat_id: i64,
+    user_id: i64,
+    message_id: i64,
+    language: Option<&str>,
+) -> Result<()> {
+    let Some(assistant_id) = assistant_user_id(state).await? else {
+        warn!("the assistant account is missing; run migrations");
+        return Ok(());
+    };
+    let Some(prompt) = mention_prompt(state, chat_id, message_id).await? else {
+        return Ok(());
+    };
+    answer(state, chat_id, user_id, assistant_id, prompt, language).await
+}
+
+/// The private thread: the last N turns of THIS member's own assistant chat.
+///
+/// ONLY that. Not the family chat, not another member's thread — this is the
+/// query that enforces what the protocol promises for a `kind = 'ai'` chat,
+/// and it is the only place a thread request is built from.
+async fn thread_prompt(
+    state: &AppState,
+    chat_id: i64,
+    user_id: i64,
+    assistant_id: i64,
+) -> Result<Option<Prompt>> {
     let history = sqlx::query(
         "SELECT sender_id, body FROM messages
          WHERE chat_id = $1 AND body <> ''
@@ -170,73 +278,219 @@ async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&s
         })
         .collect();
     if turns.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     // The newest turn must be the member's question; if the last row is the
     // assistant's own (a resend, a race) there is nothing to answer.
     if turns.last().map(|turn| turn.role) != Some("user") {
-        return Ok(());
+        return Ok(None);
     }
     turns.truncate(state.cfg.ai.history_messages.max(1) as usize);
 
+    Ok(Some(Prompt {
+        turns,
+        notes: Vec::new(),
+        reply_to: None,
+        // A private thread is private in both directions: nobody else sees
+        // it arrive, so nobody else is streamed to.
+        audience: vec![user_id],
+    }))
+}
+
+/// A mention in the family chat: **one message**, and the message it quotes
+/// when the member deliberately replied to one.
+///
+/// This is the whole of what leaves the server, and it is a different query
+/// from `thread_prompt` on purpose rather than the same one with a different
+/// bind. Reusing that query here — the obvious edit — would ship the entire
+/// family chat to the provider on the first mention, silently, with nothing
+/// failing. Keeping them apart is what makes the scope reviewable at a
+/// glance (docs/protocol.md, "Mentioning the assistant in the family chat").
+///
+/// The quoted message is included because the member CHOSE it by replying:
+/// "@ai what does this mean?" is not answerable without it, and the choice
+/// is an explicit act by someone in the chat. Nothing else — not the
+/// surrounding messages, not the roster, not other members' names — goes.
+async fn mention_prompt(state: &AppState, chat_id: i64, message_id: i64) -> Result<Option<Prompt>> {
+    let row = sqlx::query(
+        "SELECT m.body,
+                p.body AS quoted_body,
+                qu.display_name AS quoted_author
+         FROM messages m
+         LEFT JOIN messages p ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id
+         LEFT JOIN users qu ON qu.id = p.sender_id
+         WHERE m.id = $1 AND m.chat_id = $2",
+    )
+    .bind(message_id)
+    .bind(chat_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(row) = row else {
+        // Swept by retention, or deleted between the send and this task.
+        return Ok(None);
+    };
+
+    let body: String = row.get("body");
+    if body.trim().is_empty() {
+        return Ok(None);
+    }
+    let quoted: Option<String> = row.get("quoted_body");
+    let quoted_author: Option<String> = row.get("quoted_author");
+
+    let content = match (quoted, quoted_author) {
+        (Some(quoted), Some(author)) if !quoted.trim().is_empty() => format!(
+            "[The member replied to this message from {author}]\n{quoted}\n[End of quoted message]\n\n{body}"
+        ),
+        _ => body,
+    };
+
+    let audience = events::chat_member_ids(&state.pool, chat_id)
+        .await
+        .unwrap_or_default();
+
+    Ok(Some(Prompt {
+        turns: vec![ChatTurn::user(content)],
+        notes: vec![MENTION_INSTRUCTION.to_string()],
+        // The answer quotes the question. In a chat where several
+        // conversations run at once, an unattached answer belongs to
+        // nobody — and the quote is how a member scrolling back sees what
+        // was asked.
+        reply_to: Some(message_id),
+        // Everyone in the family chat watches it arrive, because everyone
+        // can already read the answer once it lands.
+        audience,
+    }))
+}
+
+/// How often streaming fragments may leave the server, per reply.
+///
+/// The provider emits fragments far faster than this — a word at a time —
+/// and each one used to become its own frame to each recipient. In a
+/// private thread that was one member's own socket; in the family chat it
+/// is every connected member's, and a socket whose outbound queue fills is
+/// KICKED (registry.rs) rather than buffered. Coalescing whatever arrived
+/// during one tick into a single frame bounds that at ~8 frames a second
+/// per reply, which still reads as typing.
+const DELTA_INTERVAL: Duration = Duration::from_millis(120);
+
+/// The half that is the same for both kinds of question: create the row,
+/// stream into it, and finish it through the edit path.
+async fn answer(
+    state: &AppState,
+    chat_id: i64,
+    user_id: i64,
+    assistant_id: i64,
+    prompt: Prompt,
+    language: Option<&str>,
+) -> Result<()> {
     // The empty row the reply will fill. Created BEFORE the call, so the
-    // member sees the bubble appear immediately and every one of their
-    // devices has the same id to stream into.
-    let placeholder: Message = sqlx::query(
-        "INSERT INTO messages (chat_id, sender_id, client_msg_id, body)
-         VALUES ($1, $2, $3, '')
+    // bubble appears immediately and every device has the same id to stream
+    // into.
+    let inserted: Message = sqlx::query(
+        "INSERT INTO messages (chat_id, sender_id, client_msg_id, body, reply_to_message_id)
+         VALUES ($1, $2, $3, '', $4)
          RETURNING id, chat_id, sender_id, client_msg_id, body, created_at,
                    reaction_seq, edit_seq, edited_at, reply_to_message_id",
     )
     .bind(chat_id)
     .bind(assistant_id)
     .bind(Uuid::new_v4())
+    .bind(prompt.reply_to)
     .fetch_one(&state.pool)
     .await
     .map(|row| Message::from_row(&row))?;
 
+    let message_id = inserted.id;
+    // Re-read through the joined reader when the row quotes something: the
+    // RETURNING clause above cannot join, so the `reply_to` snippet would
+    // serialize as absent and no client would draw the quote.
+    let placeholder = match prompt.reply_to {
+        None => inserted,
+        Some(_) => handlers_chat::fetch_message(state, chat_id, message_id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(inserted),
+    };
+
+    // Delivered WITHOUT a notification. The row is empty — an alert saying
+    // the assistant sent a blank line is worse than no alert — and the
+    // finished text arrives as an edit, which never pushes. The alert is
+    // raised at the end instead, by `push_message_late`.
     events::log_fanout_error(
         "ai_placeholder",
-        events::deliver_new_message(state, &placeholder, None).await,
+        events::deliver_message_without_push(state, &placeholder, None).await,
     );
 
-    let message_id = placeholder.id;
-    let owner = [user_id];
-    // The family writes ONE system prompt; the language is appended per
-    // question. That is deliberately not eight prompts to maintain: what
-    // the assistant is FOR is the same in every language, and only the
-    // language to answer in differs.
+    // The family writes ONE system prompt; per-request notes are appended.
+    // That is deliberately not a prompt per situation to maintain: what the
+    // assistant is FOR is the same everywhere, and only what it should know
+    // about this particular question differs.
     let mut cfg = state.cfg.ai.clone();
+    let mut notes = prompt.notes;
     if let Some(instruction) = language_instruction(language) {
+        notes.push(instruction);
+    }
+    for note in notes {
         if cfg.system_prompt.trim().is_empty() {
-            cfg.system_prompt = instruction;
+            cfg.system_prompt = note;
         } else {
-            cfg.system_prompt = format!("{}\n\n{instruction}", cfg.system_prompt.trim_end());
+            cfg.system_prompt = format!("{}\n\n{note}", cfg.system_prompt.trim_end());
         }
     }
 
-    let outcome = ai::stream_reply(&state.http, &cfg, &turns, |delta| {
+    // One ordered pump, rather than a task per fragment.
+    //
+    // Two things were wrong with spawning per fragment, and the family chat
+    // makes both worse: nothing ordered the spawned tasks, so "Sure — the"
+    // could reach a device after " weather", and nothing bounded the frame
+    // rate. Draining one channel from one task fixes the order by
+    // construction, and coalescing whatever is queued fixes the rate.
+    let (deltas, mut queue) = mpsc::unbounded_channel::<String>();
+    let pump = {
         let state = state.clone();
-        let text = delta.to_string();
-        // Fan-out is async and the callback is not; spawning keeps the
-        // stream reading while frames go out, which is what stops a slow
-        // socket from throttling the whole reply.
+        let audience = prompt.audience.clone();
         tokio::spawn(async move {
-            state
-                .registry
-                .fan_out(
-                    &[user_id],
-                    &ServerFrame::AiDelta {
-                        chat_id,
-                        message_id,
-                        text,
-                    },
-                    None,
-                )
-                .await;
-        });
+            while let Some(first) = queue.recv().await {
+                let mut text = first;
+                while let Ok(more) = queue.try_recv() {
+                    text.push_str(&more);
+                }
+                if !text.is_empty() {
+                    state
+                        .registry
+                        .fan_out(
+                            &audience,
+                            &ServerFrame::AiDelta {
+                                chat_id,
+                                message_id,
+                                text,
+                            },
+                            None,
+                        )
+                        .await;
+                }
+                // Sleep AFTER sending, so the first fragment is not held
+                // back and everything that arrives meanwhile rides the
+                // next frame.
+                sleep(DELTA_INTERVAL).await;
+            }
+        })
+    };
+
+    let outcome = ai::stream_reply(&state.http, &cfg, &prompt.turns, |delta| {
+        // A closed channel means the pump is gone; the row is still the
+        // truth, so losing a cosmetic fragment is not worth an error.
+        let _ = deltas.send(delta.to_string());
     })
     .await;
+
+    // Drop the sender, then WAIT. Every fragment must be on its way before
+    // the finished body goes out: a delta arriving after `message_edited`
+    // would be appended to the complete text by clients that treat the row
+    // as an accumulator, duplicating a phrase in the answer.
+    drop(deltas);
+    let _ = pump.await;
 
     let (text, usage) = match outcome {
         Ok(result) => result,
@@ -245,7 +499,7 @@ async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&s
             state
                 .registry
                 .fan_out(
-                    &owner,
+                    &prompt.audience,
                     &ServerFrame::AiError {
                         chat_id,
                         message_id,
@@ -261,7 +515,7 @@ async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&s
         state
             .registry
             .fan_out(
-                &owner,
+                &prompt.audience,
                 &ServerFrame::AiError {
                     chat_id,
                     message_id,
@@ -277,25 +531,34 @@ async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&s
     let seq: i64 = sqlx::query_scalar("SELECT nextval('message_edit_seq')")
         .fetch_one(&state.pool)
         .await?;
-    let updated: Message = sqlx::query(
+    sqlx::query(
         "UPDATE messages
          SET body = $1, edit_seq = $2, edited_at = now()
-         WHERE id = $3
-         RETURNING id, chat_id, sender_id, client_msg_id, body, created_at,
-                   reaction_seq, edit_seq, edited_at, reply_to_message_id",
+         WHERE id = $3",
     )
     .bind(&text)
     .bind(seq)
     .bind(message_id)
-    .fetch_one(&state.pool)
-    .await
-    .map(|row| Message::from_row(&row))?;
+    .execute(&state.pool)
+    .await?;
 
     sqlx::query("UPDATE chats SET last_edit_seq = $1 WHERE id = $2")
         .bind(seq)
         .bind(chat_id)
         .execute(&state.pool)
         .await?;
+
+    // Read the finished row back through the joined reader, so the quote
+    // rides along with the edit exactly as it does on any other read.
+    let updated = match handlers_chat::fetch_message(state, chat_id, message_id).await {
+        Ok(Some(message)) => message,
+        _ => {
+            let mut fallback = placeholder;
+            fallback.body = text;
+            fallback.edit_seq = Some(seq);
+            fallback
+        }
+    };
 
     // What it cost, for Family Statistics. Best effort: a reply the member
     // has already read must not fail because a counter did not save.
@@ -325,6 +588,13 @@ async fn reply(state: &AppState, chat_id: i64, user_id: i64, language: Option<&s
     events::log_fanout_error(
         "ai_reply",
         events::deliver_message_edited(state, &updated, None).await,
+    );
+    // NOW the alert, with something in it to read. Suppressed on the
+    // placeholder and skipped by the edit frame, this is the only push the
+    // assistant ever raises — one per answer, never two.
+    events::log_fanout_error(
+        "ai_reply_push",
+        events::push_message_late(state, &updated).await,
     );
     Ok(())
 }

@@ -600,6 +600,9 @@ final class ChatSyncCoordinator {
         entity.attachmentDurationMS = dto.attachment?.durationMS
         entity.attachmentHasPreview = dto.attachment?.hasPreview ?? false
         entity.attachmentName = dto.attachment?.name
+        entity.attachmentLatitude = dto.attachment?.latitude
+        entity.attachmentLongitude = dto.attachment?.longitude
+        entity.attachmentAccuracyM = dto.attachment?.accuracyM
     }
 
     /// Apply one server message. `bumpUnread` is true only for live
@@ -774,6 +777,85 @@ final class ChatSyncCoordinator {
     /// a bubble with no preview is a bubble that fetches the full image,
     /// which is worse but not broken — whereas delaying the message on a
     /// thumbnail would be silly.
+    /// What went wrong, with nothing identifying in it.
+    ///
+    /// A `URLError`'s description embeds the failing URL, which for an
+    /// attachment upload is metadata in a query string. The code alone says
+    /// what happened without saying what it was about.
+    nonisolated static func reason(_ error: Error) -> String {
+        switch error {
+        case let APIError.transport(urlError):
+            return "transport(\(urlError.code.rawValue))"
+        case let apiError as APIError:
+            // The protocol's own error shapes carry a machine code and no
+            // payload, so these are safe as they are.
+            return String(describing: apiError)
+        default:
+            return String(describing: type(of: error))
+        }
+    }
+
+    /// Share a place.
+    ///
+    /// The same shape as `sendMedia` — upload first, enqueue the message
+    /// only once the attachment has an id — and for the same reason: a
+    /// bubble pointing at an upload that failed is worse than a composer
+    /// that is visibly busy. What differs is that there is nothing to
+    /// upload, no file to seed a cache with and none to delete afterwards
+    /// (docs/protocol.md, "Locations").
+    func sendLocation(
+        latitude: Double,
+        longitude: Double,
+        accuracyM: Int?,
+        label: String?,
+        caption: String = "",
+        replyTo: ReplyToDTO? = nil,
+        in chatID: Int64
+    ) async -> Bool {
+        let attachment: AttachmentDTO
+        do {
+            attachment = try await api.uploadLocation(
+                latitude: latitude,
+                longitude: longitude,
+                accuracyM: accuracyM,
+                name: label)
+        } catch APIError.unauthorized {
+            session?.handleUnauthorized()
+            return false
+        } catch {
+            // The ERROR only, never `String(describing:)`.
+            //
+            // A location's coordinates ride in the upload's query string,
+            // and a URLError carries the failing URL in its userInfo — so
+            // describing the error writes a family member's position, to
+            // seven decimal places, into the unified log where any
+            // profile-enabled Mac can read it. Every other upload here logs
+            // a describable error safely because its URL carries only an
+            // id; this one does not.
+            AppLog.sync.error("Location upload failed: \(Self.reason(error), privacy: .public)")
+            return false
+        }
+
+        guard let localID = enqueue(
+            body: caption, in: chatID, replyTo: replyTo, allowEmpty: true)
+        else {
+            return false
+        }
+        if let row = fetchMessage(localID: localID) {
+            row.attachmentID = attachment.id
+            row.attachmentKind = attachment.kind
+            row.attachmentMIME = attachment.mime
+            row.attachmentSize = attachment.size
+            row.attachmentName = attachment.name
+            row.attachmentLatitude = attachment.latitude
+            row.attachmentLongitude = attachment.longitude
+            row.attachmentAccuracyM = attachment.accuracyM
+            saveContext()
+        }
+        pendingDelivery = Task { await self.deliver(localID: localID) }
+        return true
+    }
+
     func sendMedia(
         _ prepared: MediaPrep.Prepared,
         caption: String,
@@ -847,6 +929,9 @@ final class ChatSyncCoordinator {
             row.attachmentDurationMS = attachment.durationMS
             row.attachmentHasPreview = hasPreview
             row.attachmentName = attachment.name
+            row.attachmentLatitude = attachment.latitude
+            row.attachmentLongitude = attachment.longitude
+            row.attachmentAccuracyM = attachment.accuracyM
             saveContext()
         }
         pendingDelivery = Task { await self.deliver(localID: localID) }
@@ -932,6 +1017,16 @@ final class ChatSyncCoordinator {
         if !body.isEmpty { return body }
         guard let attachment else { return body }
         if attachment.isVideo { return String(localized: "Video") }
+        if attachment.isAudio {
+            return attachment.name.flatMap { $0.isEmpty ? nil : $0 }
+                ?? String(localized: "Audio")
+        }
+        // A location's label, or the word — never its coordinates. A chat
+        // list is one line, and a row of digits says nothing about where.
+        if attachment.isLocation {
+            return attachment.name.flatMap { $0.isEmpty ? nil : $0 }
+                ?? String(localized: "Location")
+        }
         if attachment.isFile {
             return attachment.name.flatMap { $0.isEmpty ? nil : $0 }
                 ?? String(localized: "File")
@@ -1118,6 +1213,12 @@ final class ChatSyncCoordinator {
         // 2. Roster, for sender-name resolution and the member picker.
         if let mine = try? await api.myFamily() {
             upsertMembers(mine.members)
+            // The assistant is NOT a member and is not upserted as one —
+            // it belongs to no family, so it appears in no roster. It is
+            // kept aside purely so the family chat can put a name on its
+            // messages and the composer knows whether to offer `@ai`.
+            AppSettings.assistantUserID = mine.assistant?.userID
+            AppSettings.assistantName = mine.assistant?.displayName
         }
 
         // 3. Chat list: server unread wins; chats the server dropped go.
@@ -1499,5 +1600,20 @@ final class ChatSyncCoordinator {
         } catch {
             AppLog.sync.error("ModelContext save failed: \(String(describing: error))")
         }
+        refreshUnreadBadge()
     }
+
+    /// Push the total unread onto the app icon.
+    ///
+    /// Hung off `saveContext` rather than off each of the three places that
+    /// write `unreadCount` — the live +1, `markRead`'s reset, and the
+    /// server-authoritative overwrite on resync — because every one of them
+    /// has to persist, so this is the one seam none of them can skip. A
+    /// family has a handful of chats, so summing them is cheaper than
+    /// keeping a running total correct across those three paths.
+    private func refreshUnreadBadge() {
+        guard let chats = try? modelContext.fetch(FetchDescriptor<ChatEntity>()) else { return }
+        UnreadBadge.show(chats.reduce(0) { $0 + max(0, $1.unreadCount) })
+    }
+
 }

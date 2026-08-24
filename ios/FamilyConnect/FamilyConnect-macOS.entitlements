@@ -38,5 +38,11 @@
 	-->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!-- Sharing a location. Without this a sandboxed Mac app is refused by
+	     CoreLocation, and the refusal arrives as a plain denial with
+	     nothing to say why — the same shape as the missing audio-input
+	     entitlement, which reported success and then recorded silence. -->
+	<key>com.apple.security.personal-information.location</key>
+	<true/>
 </dict>
 </plist>

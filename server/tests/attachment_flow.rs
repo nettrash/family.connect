@@ -1253,3 +1253,200 @@ async fn audio_declared_as_a_photo_is_refused() {
     .await;
     assert_eq!(response.status(), 400);
 }
+
+// -- Locations (protocol.md, "Locations") ------------------------------------
+
+/// The happy path end to end: no bytes go up, the coordinates come back on
+/// the attachment, and they are still there when a DIFFERENT member reads
+/// the message — which is the whole point of putting them in the row rather
+/// than in a blob nobody would have fetched yet.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_location_is_sent_as_metadata_and_read_back_by_the_family() {
+    let server = spawn_server().await;
+    let (owner, member, chat_id) = family_of_two(&server).await;
+
+    let response = upload(
+        &server,
+        &owner,
+        "?kind=location&latitude=55.7558&longitude=37.6173&accuracy_m=12&name=Home",
+        "",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("JSON");
+    let attachment = &body["attachment"];
+    let attachment_id = attachment["id"].as_i64().expect("id");
+    assert_eq!(attachment["kind"], "location");
+    assert_eq!(attachment["latitude"], 55.7558);
+    assert_eq!(attachment["longitude"], 37.6173);
+    assert_eq!(attachment["accuracy_m"], 12);
+    assert_eq!(attachment["name"], "Home");
+    assert_eq!(attachment["size"], 0, "a location costs no storage");
+    assert_eq!(attachment["has_preview"], false);
+
+    // Claimed by a message with no caption, which is how a pin is normally
+    // sent.
+    let sent = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_id": attachment_id,
+            }),
+        )
+        .await;
+    assert_eq!(sent.status(), 201);
+
+    let read: Value = server
+        .get(&member, &format!("/chats/{chat_id}/messages"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let drawn = &read["messages"][0]["attachment"];
+    assert_eq!(drawn["kind"], "location");
+    assert_eq!(
+        drawn["latitude"], 55.7558,
+        "the other member draws the pin without fetching anything: {read}"
+    );
+    assert_eq!(drawn["longitude"], 37.6173);
+}
+
+/// A location IS its coordinates: without them the row would mean nothing.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_location_without_coordinates_is_refused() {
+    let server = spawn_server().await;
+    let (owner, _member, _chat) = family_of_two(&server).await;
+
+    for query in [
+        "?kind=location",
+        "?kind=location&latitude=55.7558",
+        "?kind=location&longitude=37.6173",
+    ] {
+        let response = upload(&server, &owner, query, "", Vec::new()).await;
+        assert_error(response, 400, "invalid_attachment").await;
+    }
+}
+
+/// A typo in a client must not store a point that is not on Earth. Both
+/// ends of the longitude range are the same real meridian, so both are
+/// accepted — the check is inclusive on purpose.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn coordinates_outside_the_world_are_refused_and_the_edges_are_not() {
+    let server = spawn_server().await;
+    let (owner, _member, _chat) = family_of_two(&server).await;
+
+    for query in [
+        "?kind=location&latitude=90.1&longitude=0",
+        "?kind=location&latitude=-90.1&longitude=0",
+        "?kind=location&latitude=0&longitude=180.5",
+        "?kind=location&latitude=0&longitude=-180.5",
+        "?kind=location&latitude=0&longitude=0&accuracy_m=-1",
+    ] {
+        let response = upload(&server, &owner, query, "", Vec::new()).await;
+        assert_error(response, 400, "invalid_attachment").await;
+    }
+
+    for query in [
+        "?kind=location&latitude=90&longitude=180",
+        "?kind=location&latitude=-90&longitude=-180",
+        "?kind=location&latitude=0&longitude=0",
+    ] {
+        let response = upload(&server, &owner, query, "", Vec::new()).await;
+        assert_eq!(response.status(), 201, "{query} is a real place");
+    }
+}
+
+/// There are no bytes, and asking for them must say so rather than produce
+/// a 500 from a file that was never written.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_location_has_no_bytes_and_no_preview() {
+    let server = spawn_server().await;
+    let (owner, _member, _chat) = family_of_two(&server).await;
+
+    let response = upload(
+        &server,
+        &owner,
+        "?kind=location&latitude=1&longitude=2",
+        "",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("JSON");
+    let id = body["attachment"]["id"].as_i64().expect("id");
+
+    assert_error(
+        server.get(&owner, &format!("/attachments/{id}")).await,
+        400,
+        "invalid_attachment",
+    )
+    .await;
+    assert_error(
+        server
+            .put_bytes(
+                &owner,
+                &format!("/attachments/{id}/preview"),
+                "image/jpeg",
+                jpeg_bytes(64),
+            )
+            .await,
+        400,
+        "invalid_attachment",
+    )
+    .await;
+}
+
+/// The body is ignored rather than refused: a client that sends one is
+/// wasting bandwidth, not doing something wrong, and refusing would make
+/// the endpoint depend on a header nothing else about a location does.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_location_ignores_whatever_body_it_is_sent() {
+    let server = spawn_server().await;
+    let (owner, _member, _chat) = family_of_two(&server).await;
+
+    let response = upload(
+        &server,
+        &owner,
+        "?kind=location&latitude=1&longitude=2",
+        "image/jpeg",
+        jpeg_bytes(4096),
+    )
+    .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("JSON");
+    assert_eq!(
+        body["attachment"]["size"], 0,
+        "nothing is stored whatever arrives: {body}"
+    );
+    assert_eq!(
+        body["attachment"]["mime"],
+        "application/vnd.family-connect.location"
+    );
+}
+
+/// The membership rule every other upload obeys.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_location_from_someone_with_no_family_is_refused() {
+    let server = spawn_server().await;
+    let (stranger, _) = server.register("stranger", "Stranger").await;
+
+    let response = upload(
+        &server,
+        &stranger,
+        "?kind=location&latitude=1&longitude=2",
+        "",
+        Vec::new(),
+    )
+    .await;
+    assert_error(response, 403, "not_in_family").await;
+}

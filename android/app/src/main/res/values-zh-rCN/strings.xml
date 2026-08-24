@@ -4,6 +4,7 @@
     <string name="s_add_a_note_everyone_in_the_family_sees_it">写一条便签——全家人都能看到。</string>
     <string name="s_add_note">添加便签</string>
     <string name="s_approval">批准</string>
+    <string name="s_ask_the_assistant">询问助手</string>
     <string name="s_attach_a_photo_video_or_file">附加照片、视频或文件</string>
     <string name="s_back">返回</string>
     <string name="s_board">留言板</string>
@@ -31,6 +32,10 @@
     <string name="s_failed_tap_to_retry">发送失败——轻点重试</string>
     <string name="s_family">家庭</string>
     <string name="s_family_name">家庭名称</string>
+    <string name="s_location">位置</string>
+    <string name="s_share_your_location">位置</string>
+    <string name="e_location_permission">Family 需要使用你的位置的权限。</string>
+    <string name="e_location_unavailable">无法获取你的位置。</string>
     <string name="s_file">文件</string>
     <string name="s_invite_code">邀请码</string>
     <string name="s_join">加入</string>

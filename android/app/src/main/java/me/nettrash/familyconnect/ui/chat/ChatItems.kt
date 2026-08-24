@@ -144,6 +144,13 @@ fun buildChatItems(
     memberNames: Map<Long, String>,
     nowMillis: Long,
     zone: ZoneId = ZoneId.systemDefault(),
+    /**
+     * The assistant, from `GET /families/mine`. Its reserved account is in
+     * no roster on purpose (it belongs to no family), so without this its
+     * answers in the family chat would draw a bubble with no name above it.
+     */
+    assistantUserId: Long? = null,
+    assistantName: String? = null,
 ): List<ChatListItem> {
     val items = ArrayList<ChatListItem>(messagesNewestFirst.size + 8)
     messagesNewestFirst.forEachIndexed { index, message ->
@@ -163,7 +170,11 @@ fun buildChatItems(
         items += ChatListItem.MessageItem(
             entity = message,
             showSenderName = isFamilyChat && message.senderId != myUserId && startsRun,
-            senderName = memberNames[message.senderId],
+            senderName = if (message.senderId == assistantUserId) {
+                assistantName
+            } else {
+                memberNames[message.senderId]
+            },
             showTimestamp = endsMinuteRun,
             reactionChips = buildReactionChips(
                 reactions = ReactionsCodec.decode(message.reactionsJson),

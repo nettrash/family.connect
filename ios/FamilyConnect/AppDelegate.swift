@@ -14,10 +14,14 @@
 //  owns both collaborators and the delegate only forwards.
 //
 
-// iOS only. macOS would need an NSApplicationDelegate with different
-// signatures for the same three callbacks; until the Mac app registers for
-// push, there is nothing for it to do — a Mac holds a live socket while it
-// is open, which is when its user is looking at it anyway.
+// iOS only, because the callbacks are NSApplicationDelegate's on the Mac
+// with different signatures — MacAppDelegate is the twin, and everything
+// downstream (PushRegistrar, PushRoute, AppSession.pendingPushRoute) is
+// shared. The Mac DOES register for push and has its own platform value
+// (`macos`, migration 0013); it simply receives few notifications, because
+// it holds a live socket while a window is open and the server pushes only
+// to users with none. Its unread count therefore comes from UnreadBadge,
+// not from a push payload.
 #if os(iOS)
 
 import UIKit

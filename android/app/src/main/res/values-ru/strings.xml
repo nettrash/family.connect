@@ -4,6 +4,7 @@
     <string name="s_add_a_note_everyone_in_the_family_sees_it">Добавь заметку — её увидит вся семья.</string>
     <string name="s_add_note">Добавить заметку</string>
     <string name="s_approval">Одобрение</string>
+    <string name="s_ask_the_assistant">Спросить ассистента</string>
     <string name="s_attach_a_photo_video_or_file">Прикрепить фото, видео или файл</string>
     <string name="s_back">Назад</string>
     <string name="s_board">Доска</string>
@@ -31,6 +32,10 @@
     <string name="s_failed_tap_to_retry">Не отправлено — нажми, чтобы повторить</string>
     <string name="s_family">Семья</string>
     <string name="s_family_name">Название семьи</string>
+    <string name="s_location">Местоположение</string>
+    <string name="s_share_your_location">Местоположение</string>
+    <string name="e_location_permission">Family нужно разрешение на доступ к твоему местоположению.</string>
+    <string name="e_location_unavailable">Не удалось определить местоположение.</string>
     <string name="s_file">Файл</string>
     <string name="s_invite_code">Код приглашения</string>
     <string name="s_join">Присоединиться</string>

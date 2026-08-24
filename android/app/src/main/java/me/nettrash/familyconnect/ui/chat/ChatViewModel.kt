@@ -69,6 +69,7 @@ import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
 import kotlinx.coroutines.Job
+import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
@@ -105,6 +106,7 @@ class ChatViewModel @Inject constructor(
     private val attachmentApi: AttachmentApi,
     private val attachments: AttachmentRepository,
     private val gallerySaver: GallerySaver,
+    private val locationProvider: LocationProvider,
     @param:AppScope private val appScope: CoroutineScope,
     memberDao: MemberDao,
     connectivity: ConnectivityObserver,
@@ -152,6 +154,29 @@ class ChatViewModel @Inject constructor(
     /** True once the first (possibly empty) items emission has landed. */
     val initialLoadSettled: StateFlow<Boolean> = _initialLoadSettled
 
+    /**
+     * Message ids the assistant is still writing into.
+     *
+     * Held in memory only, like iOS and macOS: a row that was mid-stream
+     * when the app was killed must not come back looking live. Exposed
+     * because the BUBBLE needs it — until now the repository published this
+     * and no UI read it, so an assistant placeholder rendered as a
+     * completely blank balloon for the whole latency of the call. In the
+     * family chat that blank balloon is visible to everyone, not just the
+     * person who asked.
+     */
+    val streamingMessageIds: StateFlow<Set<Long>> = messageRepository.streamingMessageIds
+
+    /**
+     * The assistant's reserved account id, or null when the server has none.
+     * Null is the capability check: a composer that offered `@ai` against a
+     * server without an assistant would offer an affordance that silently
+     * does nothing.
+     */
+    val assistantUserId: StateFlow<Long?> = settings.state
+        .map { it.assistantUserId }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     val items: StateFlow<List<ChatListItem>> = combine(
         visibleLimit.flatMapLatest { messageRepository.observeMessages(chatId, it) },
         chat,
@@ -164,6 +189,8 @@ class ChatViewModel @Inject constructor(
             myUserId = settingsState.myUserId ?: -1L,
             memberNames = members,
             nowMillis = clock.now(),
+            assistantUserId = settingsState.assistantUserId,
+            assistantName = settingsState.assistantName,
         )
     }
         .onEach { _initialLoadSettled.value = true }
@@ -402,6 +429,69 @@ class ChatViewModel @Inject constructor(
      * caption and a primed reply cannot leak onto the next message. It all
      * goes back if the send never lands, so it can be retried.
      */
+    /** Has the person already allowed location? Decides which of the two
+     *  the screen does: ask for permission, or ask for a fix. */
+    fun hasLocationPermission(): Boolean = locationProvider.hasPermission()
+
+    /**
+     * Share where this device is, once.
+     *
+     * Take-then-restore, like every other send here: whatever was typed
+     * travels with the pin, and comes back if the send never happened. App
+     * scope rather than viewModelScope, for the reason `sendStaged` gives —
+     * navigating away must not silently take the send with it.
+     */
+    fun shareLocation() {
+        if (_mediaState.value != MediaSendState.Idle) return
+        _mediaState.value = MediaSendState.Uploading
+        val caption = inputState.text.toString()
+        val quote = _replyDraft.value
+        inputState.clearText()
+        _replyDraft.value = null
+        appScope.launch {
+            when (val result = locationProvider.currentFix()) {
+                is LocationProvider.Result.Found -> {
+                    val sent = messageRepository.sendLocation(
+                        latitude = result.fix.latitude,
+                        longitude = result.fix.longitude,
+                        accuracyM = result.fix.accuracyM,
+                        label = null,
+                        caption = caption,
+                        chatId = chatId,
+                        replyTo = quote,
+                    )
+                    if (sent) {
+                        _mediaState.value = MediaSendState.Idle
+                    } else {
+                        restoreComposer(caption, quote)
+                        _mediaState.value =
+                            MediaSendState.Failed(appContext.getString(R.string.e_send_failed))
+                    }
+                }
+                LocationProvider.Result.Denied -> {
+                    restoreComposer(caption, quote)
+                    _mediaState.value = MediaSendState.Failed(
+                        appContext.getString(R.string.e_location_permission),
+                    )
+                }
+                LocationProvider.Result.Unavailable -> {
+                    restoreComposer(caption, quote)
+                    _mediaState.value = MediaSendState.Failed(
+                        appContext.getString(R.string.e_location_unavailable),
+                    )
+                }
+            }
+        }
+    }
+
+    /** Put back what a failed send took, without clobbering newer typing. */
+    private fun restoreComposer(caption: String, quote: ReplyToDto?) {
+        if (inputState.text.isEmpty() && caption.isNotEmpty()) {
+            inputState.setTextAndPlaceCursorAtEnd(caption)
+        }
+        if (_replyDraft.value == null) _replyDraft.value = quote
+    }
+
     private fun sendStaged(prepared: MediaPrep.Prepared, caption: String) {
         val quote = _replyDraft.value
         inputState.clearText()

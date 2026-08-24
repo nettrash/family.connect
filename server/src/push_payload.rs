@@ -93,6 +93,15 @@ fn attachment_summary(message: &Message) -> Option<String> {
             .clone()
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "Audio".to_string()),
+        // A location's label if it was given one, and the word otherwise.
+        // Never the coordinates: an alert on a lock screen is the one place
+        // a family member's position should not be readable without
+        // unlocking the phone.
+        "location" => attachment
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Location".to_string()),
         _ => attachment
             .name
             .clone()
@@ -351,10 +360,35 @@ mod tests {
                     duration_ms: None,
                     has_preview: false,
                     name: name.map(str::to_string),
+                    latitude: None,
+                    longitude: None,
+                    accuracy_m: None,
                 }),
                 ..protocol_message()
             }
         }
+
+        // A shared location alerts with its label, or the word — never the
+        // coordinates, which would put somebody's position on a locked
+        // screen.
+        let pin = message_notification(
+            true,
+            "direct",
+            "The Smiths",
+            "Anna",
+            &with_attachment("location", None),
+            1,
+        );
+        assert_eq!(pin.body, "Location");
+        let labelled = message_notification(
+            true,
+            "direct",
+            "The Smiths",
+            "Anna",
+            &with_attachment("location", Some("Home")),
+            1,
+        );
+        assert_eq!(labelled.body, "Home");
 
         let photo = message_notification(
             true,

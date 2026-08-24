@@ -115,7 +115,10 @@ struct MessageBubbleView: View {
     /// bodies have no links, and tel:/mailto: are not previewable.
     private var previewableLink: URL? {
         guard !isEmojiOnly else { return nil }
-        return MessageLinks.firstWebLink(in: message.body)
+        // The RENDERED text, matching what the balloon draws: markdown
+        // deletes characters, so detecting over the raw body previews links
+        // the reader cannot see and misses ones they can.
+        return MessageLinks.firstWebLinkAsDrawn(in: message.body)
     }
 
     /// The card to draw under this bubble, once its fetch has landed.
@@ -431,6 +434,22 @@ struct MessageBubbleView: View {
         // belong to the message, and outside they made the bubble's
         // footprint ragged.
         VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
+            // Everything that is CONTENT shares one left edge, whichever
+            // side the balloon is on.
+            //
+            // The outer stack is aligned to the message's own side so the
+            // chip row below hugs the same edge as the timestamp. Applied
+            // to the content too, that pushed whichever child was narrower
+            // against the right edge of an own-message balloon: a short
+            // reply under a long quote ended up right-aligned, and a short
+            // quote over a long reply floated its accent bar away from the
+            // first character it is pointing at. Text reads from the left;
+            // only the balloon has a side.
+            //
+            // Deliberately an ALIGNMENT and not a width. Making the quote
+            // (or the body) greedy is the change that once made every reply
+            // balloon full width — see `fillsBalloonWidth` below.
+            VStack(alignment: .leading, spacing: 2) {
             if let quote = message.replyTo {
                 quoteBlock(quote)
             }
@@ -495,6 +514,8 @@ struct MessageBubbleView: View {
                     onLongPress: { onLongPress() },
                     onDoubleTap: { toggleQuickHeart() })
                     .padding(.top, 4)
+            }
+
             }
 
             if !reactionChips.isEmpty {

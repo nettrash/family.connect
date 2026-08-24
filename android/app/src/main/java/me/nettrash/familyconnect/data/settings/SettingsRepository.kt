@@ -68,6 +68,18 @@ data class SettingsState(
      * board. This one moves only when the board is on screen.
      */
     val boardSeenNoteId: Long = 0,
+    /**
+     * The assistant's reserved account id, or null when the server has no
+     * assistant configured.
+     *
+     * Null means BOTH "there is nobody to name" and "do not offer the
+     * mention": a composer that offered `@ai` against a server without an
+     * assistant would offer an affordance that silently does nothing
+     * (docs/protocol.md, "Mentioning the assistant in the family chat").
+     */
+    val assistantUserId: Long? = null,
+    /** What to call it — server-configured, not compiled in here. */
+    val assistantName: String? = null,
 )
 
 interface SettingsRepository {
@@ -106,6 +118,13 @@ interface SettingsRepository {
      */
     suspend fun setBoardSeenNoteId(noteId: Long)
 
+    /**
+     * Record (or clear) the assistant the server just reported. Account-
+     * scoped, so it goes with the session on logout — a different server
+     * may have no assistant, or a differently named one.
+     */
+    suspend fun setAssistant(userId: Long?, displayName: String?)
+
     suspend fun resetKeepingServerUrl()
 }
 
@@ -128,6 +147,8 @@ class DataStoreSettingsRepository @Inject constructor(
         val LINK_PREVIEWS_DISABLED = booleanPreferencesKey("link_previews_disabled")
         val BOARD_CURSOR = longPreferencesKey("board_cursor")
         val BOARD_SEEN_NOTE_ID = longPreferencesKey("board_seen_note_id")
+        val ASSISTANT_USER_ID = longPreferencesKey("assistant_user_id")
+        val ASSISTANT_NAME = stringPreferencesKey("assistant_name")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -146,6 +167,8 @@ class DataStoreSettingsRepository @Inject constructor(
             linkPreviewsEnabled = prefs[Keys.LINK_PREVIEWS_DISABLED] != true,
             boardCursor = prefs[Keys.BOARD_CURSOR] ?: 0L,
             boardSeenNoteId = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L,
+            assistantUserId = prefs[Keys.ASSISTANT_USER_ID],
+            assistantName = prefs[Keys.ASSISTANT_NAME],
         )
     }
 
@@ -207,6 +230,20 @@ class DataStoreSettingsRepository @Inject constructor(
             // resurrect a badge that was already cleared.
             val current = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L
             if (noteId > current) prefs[Keys.BOARD_SEEN_NOTE_ID] = noteId
+        }
+    }
+
+    override suspend fun setAssistant(userId: Long?, displayName: String?) {
+        dataStore.edit { prefs ->
+            if (userId != null && displayName != null) {
+                prefs[Keys.ASSISTANT_USER_ID] = userId
+                prefs[Keys.ASSISTANT_NAME] = displayName
+            } else {
+                // Cleared rather than left stale: a server that turned the
+                // assistant off must stop offering `@ai` on the next resync.
+                prefs.remove(Keys.ASSISTANT_USER_ID)
+                prefs.remove(Keys.ASSISTANT_NAME)
+            }
         }
     }
 

@@ -106,8 +106,16 @@ final class MessageEntity {
     var attachmentHeight: Int?
     var attachmentDurationMS: Int?
     var attachmentHasPreview: Bool = false
-    /// Files only: their name is the whole thing a row shows.
+    /// Files only: their name is the whole thing a row shows. Optional on
+    /// audio and on a location, where it is a label.
     var attachmentName: String?
+    /// Locations only, and always both together (docs/protocol.md,
+    /// "Locations"). Stored on the row rather than fetched, because a
+    /// location has no bytes at all — these three columns ARE the
+    /// attachment, so a cached message draws its pin offline.
+    var attachmentLatitude: Double?
+    var attachmentLongitude: Double?
+    var attachmentAccuracyM: Int?
 
     /// The attachment as the views want it, or nil when there is none.
     var attachmentSnapshot: AttachmentDTO? {
@@ -121,7 +129,10 @@ final class MessageEntity {
             height: attachmentHeight,
             durationMS: attachmentDurationMS,
             hasPreview: attachmentHasPreview,
-            name: attachmentName)
+            name: attachmentName,
+            latitude: attachmentLatitude,
+            longitude: attachmentLongitude,
+            accuracyM: attachmentAccuracyM)
     }
 
     /// The quote as the views want it, or nil when this is not a reply.
@@ -157,15 +168,23 @@ final class MessageEntity {
     /// never-reacted row yields []; writing always stores full state.
     var reactionList: [ReactionSnapshot] {
         get {
-            guard let reactionsJSON else { return [] }
+            guard let reactionsJSON, !reactionsJSON.isEmpty else { return [] }
             let data = Data(reactionsJSON.utf8)
-            return (try? JSONDecoder().decode([ReactionSnapshot].self, from: data)) ?? []
+            return (try? Self.reactionDecoder.decode([ReactionSnapshot].self, from: data)) ?? []
         }
         set {
-            guard let data = try? JSONEncoder().encode(newValue) else { return }
+            guard let data = try? Self.reactionEncoder.encode(newValue) else { return }
             reactionsJSON = String(decoding: data, as: UTF8.self)
         }
     }
+
+    /// One decoder, not one per read. This is called once per message per
+    /// view-body pass — building a fresh `JSONDecoder` there made a cheap
+    /// property allocation-bound, which showed up as real cost on the Mac
+    /// where the whole thread used to be mapped on every pass. Both are
+    /// stateless and configured with nothing, so sharing them is safe.
+    private static let reactionDecoder = JSONDecoder()
+    private static let reactionEncoder = JSONEncoder()
 
     init(
         localID: String,

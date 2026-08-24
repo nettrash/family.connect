@@ -4,6 +4,7 @@
     <string name="s_add_a_note_everyone_in_the_family_sees_it">Schreib eine Notiz – die ganze Familie sieht sie.</string>
     <string name="s_add_note">Notiz hinzufügen</string>
     <string name="s_approval">Freigabe</string>
+    <string name="s_ask_the_assistant">Assistenten fragen</string>
     <string name="s_attach_a_photo_video_or_file">Foto, Video oder Datei anhängen</string>
     <string name="s_back">Zurück</string>
     <string name="s_board">Pinnwand</string>
@@ -31,6 +32,10 @@
     <string name="s_failed_tap_to_retry">Fehlgeschlagen – zum Wiederholen tippen</string>
     <string name="s_family">Familie</string>
     <string name="s_family_name">Familienname</string>
+    <string name="s_location">Standort</string>
+    <string name="s_share_your_location">Standort</string>
+    <string name="e_location_permission">Family braucht die Berechtigung für deinen Standort.</string>
+    <string name="e_location_unavailable">Dein Standort konnte nicht ermittelt werden.</string>
     <string name="s_file">Datei</string>
     <string name="s_invite_code">Einladungscode</string>
     <string name="s_join">Beitreten</string>

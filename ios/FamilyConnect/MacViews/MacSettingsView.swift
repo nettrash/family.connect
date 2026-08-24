@@ -22,6 +22,9 @@ struct MacSettingsView: View {
     @State private var changingPassword = false
     @State private var showingStatistics = false
     @State private var confirmLogout = false
+    /// Mirrors AppSettings — defaults are not observable, so the view
+    /// holds its own copy and writes through on change.
+    @State private var mapPreviewsEnabled = AppSettings.mapPreviewsEnabled
 
     /// Who you are, at the top, with a face — the rows underneath are then
     /// only the things you can DO, which is what a settings sheet is for.
@@ -68,6 +71,21 @@ struct MacSettingsView: View {
                 }
                 Section {
                     Button("Statistics…") { showingStatistics = true }
+                }
+                // The Mac's only setting that changes who the app talks
+                // to, so it says so plainly. Link previews are not drawn
+                // here at all, so there is nothing to switch for them; a
+                // map on a shared location IS drawn, and drawing one asks
+                // Apple for tiles.
+                Section {
+                    Toggle("Map Previews", isOn: $mapPreviewsEnabled)
+                        .onChange(of: mapPreviewsEnabled) { _, newValue in
+                            AppSettings.mapPreviewsEnabled = newValue
+                        }
+                } header: {
+                    Text("Privacy")
+                } footer: {
+                    Text("Shows a map on a shared location. Drawing one asks Apple for it, so Apple sees a request from this Mac. With it off, a location still shows its pin and opens in Maps when you click it.")
                 }
 
                 Section("Server") {

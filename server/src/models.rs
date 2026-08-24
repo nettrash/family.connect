@@ -313,6 +313,9 @@ impl Message {
                 duration_ms: row.try_get("att_duration_ms").unwrap_or_default(),
                 has_preview: row.try_get("att_has_preview").unwrap_or_default(),
                 name: row.try_get("att_name").unwrap_or_default(),
+                latitude: row.try_get("att_latitude").unwrap_or_default(),
+                longitude: row.try_get("att_longitude").unwrap_or_default(),
+                accuracy_m: row.try_get("att_accuracy_m").unwrap_or_default(),
             }),
             _ => None,
         };
@@ -348,16 +351,24 @@ pub struct ChatListEntry {
     pub max_edit_seq: Option<i64>,
 }
 
-/// A photo or video carried by a message.
+/// Something a message carries: a photo, a video, a piece of audio, a file,
+/// or a location.
 ///
 /// The bytes are NOT here and never travel through this struct — they live
 /// on the filesystem and are fetched from `GET /attachments/{id}`. This is
 /// what a bubble needs to lay itself out before a single byte arrives:
 /// what it is, how big, what shape, and whether a preview exists yet.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// A LOCATION is the exception that proves the rule: it has no bytes at all,
+/// so everything it is lives in these fields and the bubble draws it without
+/// fetching anything.
+///
+/// `Eq` is deliberately absent — the coordinates are floats. Equality on an
+/// attachment is `PartialEq`, which is what every comparison here wants.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Attachment {
     pub id: i64,
-    /// "photo" | "video" | "file".
+    /// "photo" | "video" | "audio" | "file" | "location".
     pub kind: String,
     pub mime: String,
     pub size: i64,
@@ -373,9 +384,21 @@ pub struct Attachment {
     /// false for a file, which has nothing to draw.
     pub has_preview: bool,
     /// Files only, and required there: a document's name is its whole
-    /// identity, where a photo renders itself.
+    /// identity, where a photo renders itself. Optional on audio and on a
+    /// location, where it is a label ("Home", "The restaurant").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Locations only, and always present on one: the pin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
+    /// Locations only, and only when the sending device reported one: the
+    /// radius in metres it believed the fix to be good to. Absent means
+    /// unknown, which a client draws as a plain pin rather than a circle —
+    /// not as "perfectly accurate".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accuracy_m: Option<i32>,
 }
 
 impl Attachment {
@@ -403,6 +426,12 @@ impl Attachment {
 
     pub const KIND_FILE: &'static str = "file";
     pub const KIND_AUDIO: &'static str = "audio";
+    pub const KIND_LOCATION: &'static str = "location";
+    /// A location's media type. Not `application/json` and not a real
+    /// geo type: nothing is served under it, and naming it after this
+    /// application says plainly that the bytes do not exist rather than
+    /// inviting a client to fetch them.
+    pub const LOCATION_MIME: &'static str = "application/vnd.family-connect.location";
     /// What a file's bytes are called when the client declared nothing
     /// usable. Deliberately the least interesting type there is.
     pub const DEFAULT_FILE_MIME: &'static str = "application/octet-stream";
@@ -454,6 +483,13 @@ impl Attachment {
             duration_ms: row.get("duration_ms"),
             has_preview: row.get("has_preview"),
             name: row.get("name"),
+            // `try_get` rather than `get`: these three arrived last and a
+            // narrow SELECT that forgets them must degrade to "not a
+            // location" rather than panic inside a handler, which surfaces
+            // as a dropped connection with no error body.
+            latitude: row.try_get("latitude").unwrap_or_default(),
+            longitude: row.try_get("longitude").unwrap_or_default(),
+            accuracy_m: row.try_get("accuracy_m").unwrap_or_default(),
         }
     }
 }

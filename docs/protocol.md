@@ -75,19 +75,37 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
           — plus "reply_to": {ReplyTo} when (and only when) the message is a reply.
           — plus "edited_at": "…" and "edit_seq": 88 when (and only when) the body has been
             edited. Both absent on a message still in its original form.
-          — plus "attachment": {Attachment} when the message carries a photo, video or file.
+          — plus "attachment": {Attachment} when the message carries a photo, video,
+            piece of audio, file or location.
 ReplyTo   {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
 Reaction  {"user_id": 9, "emoji": "❤️"}
-Attachment {"id": 34, "kind": "photo|video|file", "mime": "image/jpeg", "size": 182734,
-            "width": 1600, "height": 1200, "duration_ms": 8400, "has_preview": true,
-            "name": "receipts.pdf"}
-           — "duration_ms" on videos only; "width"/"height" absent when the uploader
-             could not determine them; "name" on files only (their whole identity),
-             and a file never has a preview or dimensions
+Attachment {"id": 34, "kind": "photo|video|audio|file|location", "mime": "image/jpeg",
+            "size": 182734, "width": 1600, "height": 1200, "duration_ms": 8400,
+            "has_preview": true, "name": "receipts.pdf",
+            "latitude": 55.7558, "longitude": 37.6173, "accuracy_m": 12}
+           — "duration_ms" on videos and audio; "width"/"height" absent when the
+             uploader could not determine them; "name" is REQUIRED on a file (its whole
+             identity) and optional on audio and a location, where it is a label;
+             a file, a piece of audio and a location never have a preview, and only a
+             photo or video has dimensions;
+             "latitude"/"longitude" on a location only, and always both — a location
+             IS its coordinates; "accuracy_m" additionally when the sending device
+             reported one
 Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow",
            "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88}
           — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
 ```
+
+**A body is plain text on the wire, and always has been.** No markup is parsed, transformed or
+validated by the server: `body` goes out exactly as it came in, the 4000-character limit counts the
+characters that were typed, `reply_to.excerpt` is a cut of that same raw text, and a push carries it
+verbatim. What a client does when DRAWING it is a client's business, and clients do render a small
+markdown subset in the bubble — emphasis, inline code, strikethrough and fenced code blocks — so a
+message written on one platform reads the same on another. That is a rendering convention rather
+than a wire format: a client that renders none of it shows the source, which is still exactly what
+was written, and nothing about a message means anything different because of it. Anything that
+needed the server to agree — a stored rich body, a sanitiser, a markup flag — would belong here
+instead, and does not exist.
 
 `avatar_version` counts how many times that user has set a profile picture: `0` means they have
 none and clients draw initials. It is a cache key, not a URL — the bytes come from
@@ -219,14 +237,22 @@ signal that it is gone. The full-board read never returns tombstones; only the c
 ### The assistant
 
 Each member may have one private chat with an assistant, and **private is the whole point**: it
-belongs to that member alone, no other member can read it, and it is never part of the family chat.
+belongs to that member alone, and no other member can read it. The assistant can also be spoken to
+in the family chat, but only by being asked for by name — see "Mentioning the assistant in the
+family chat" below, which is a separate surface with a separate and much narrower rule about what
+it is shown.
 `kind` is `"ai"`, `user_a_id` is its owner, and `GET /chats` returns it only to them.
 
-**The assistant is only ever shown that member's own AI thread.** Not the family chat, not another
-member's AI chat, not anything anyone else wrote. This is the invariant that lets a self-hosted
-family server talk to a hosted model at all: a member asking a question sends their own words, and
-nothing anybody else said ever leaves the server. A future setting to widen this would be a change
-to what leaves the building, not a preference, and would need saying so here first.
+**In an `ai` chat the assistant is only ever shown that member's own AI thread.** Not the family
+chat, not another member's AI chat, not anything anyone else wrote. This is the invariant that lets
+a self-hosted family server talk to a hosted model at all: a member asking a question sends their
+own words, and nothing anybody else said leaves the server unasked.
+
+The family chat is the one other place the assistant can be reached, and it is deliberately not a
+widening of that thread: a mention there sends **one message and nothing else**, the thread is never
+consulted, and the two never see each other's history. What leaves the server is enumerated in full
+below. Any further widening — the last N messages, the roster, a summary — would be a change to what
+leaves the building rather than a preference, and would need saying so here first.
 
 Talking to it is an ordinary send — `POST /chats/{id}/messages` — and what comes back is ordinary
 too. The server:
@@ -252,12 +278,27 @@ member sees a partial answer and can ask again, which is better than a bubble th
 
 The assistant sends under a **reserved account** that belongs to no family, so `sender_id` stays a
 real user id and every foreign key, join and index over messages keeps working untouched. It is not
-in any roster (`GET /families/mine` selects by family, and the assistant has none), the username is
-refused at registration so nobody can impersonate it, and it can never be messaged directly.
+in the `members` roster (`GET /families/mine` selects by family, and the assistant has none) and the
+username is refused at registration so nobody can impersonate it. It cannot be messaged directly:
+`POST /chats/direct` naming it answers `not_same_family`, because it is in no family. The only two
+ways to reach it are its own `ai` chat and a mention in the family chat.
 
-Clients need no special id: an `ai` chat has exactly two participants, so a message in one that is
-not yours is the assistant's. Draw it with the chat's own name and icon rather than looking the
-sender up in the roster, where it will not be found.
+In an `ai` chat clients need no special id: it has exactly two participants, so a message in one
+that is not yours is the assistant's. Draw it with the chat's own name and icon rather than looking
+the sender up in the roster, where it will not be found.
+
+The family chat has no such shortcut — it has many senders — so `GET /families/mine` names the
+assistant outright when the server has one:
+
+```json
+"assistant": {"user_id": 1, "display_name": "Assistant", "mention": "@ai"}
+```
+
+The field is **absent when the server is not configured for an assistant**, and that absence is the
+whole of the capability check: a client with no `assistant` must not offer `@ai` in the composer,
+because typing it would produce nothing. It is deliberately not part of `members` — the assistant is
+not a member, cannot be removed, made owner, given a password or messaged one-to-one, and every
+screen that lists people would need a special case for it.
 
 **The assistant answers in the language the question was asked from.** A client sends
 `Accept-Language` with its send (Apple's URLSession does automatically; Android sets it from the
@@ -275,7 +316,58 @@ The feature is OFF unless the server is configured for it (`[ai] enabled`, an en
 and a key). A server without it simply never creates the chat, and `POST` to one that does not exist
 is the usual `chat_not_found`.
 
-### Photos, videos, audio and files
+#### Mentioning the assistant in the family chat
+
+Writing **`@ai`** in the family chat asks the assistant a question in front of everyone. The answer
+arrives as an ordinary message in that chat, quoting the message that asked, and every member sees
+both — there is nothing private about this half.
+
+**What leaves the server is exactly this, and nothing else:**
+
+- the body of the message that contains the mention;
+- the body of the message it is a reply to, when the member deliberately replied to one, with that
+  author's display name so the assistant can tell the two apart.
+
+Not the messages before it. Not the messages after it. Not the roster, not the family name, not the
+board, not anyone's private assistant thread, and not the previous mention or its answer — **a
+mention has no memory**, so a follow-up must repeat what it is about. The quoted message is included
+only because the member chose it by replying, which is an explicit act by somebody in the chat; the
+assistant is told, in its prompt, that this is all it can see, so it asks rather than invents.
+
+The mention grammar is part of this contract, because the server decides from it whether anything is
+sent at all and each client draws the same token as a highlight — a client that highlighted
+something the server ignores is a family watching a question go unanswered with no way to tell why:
+
+- the token is `@ai`, matched case-insensitively over ASCII, so `@AI` and `@Ai` are mentions;
+- the `@` must start the body or follow a character that is not an ASCII letter, digit or `_` —
+  which is what stops `anna@ai.example` being one;
+- the `i` must end the body or be followed by a character that is not an ASCII letter, digit or `_`
+  — which is what stops `@aiden` being one.
+
+The boundary test is ASCII-only on purpose. A Unicode one would refuse `@ai` written against
+Japanese or Russian text with no space after it, and would make three implementations depend on
+three Unicode tables agreeing; the ambiguity it exists to resolve only arises in ASCII anyway.
+
+**Only the family chat.** A direct chat is two people who each already have a private assistant, and
+a third party appearing in a conversation that had two is not something either of them asked for. A
+mention in an `ai` chat is just text — that chat already answers everything.
+
+The sequence is the one above, with two differences: the reply carries `reply_to` naming the
+mentioning message, and the `ai_delta` frames go to **every member of the family chat**, not one
+person, so the whole family watches the answer arrive. Fragments are coalesced server-side to a few
+frames a second: a per-fragment frame to every connected member is how a slow socket's outbound
+queue fills, and a full queue closes that connection.
+
+Exactly one notification is raised per answer, and it carries the finished text. The empty
+placeholder is fanned out without a push — an alert saying the assistant sent a blank line is worse
+than no alert — and the completing edit does not push either, so the alert is raised explicitly once
+the body exists.
+
+A server with no assistant configured ignores `@ai` completely: it is three characters of ordinary
+text, stored and delivered like any other, and `GET /families/mine` carries no `assistant` field to
+suggest otherwise.
+
+### Photos, videos, audio, files and locations
 
 A message may carry one attachment: a photo, a video, a piece of audio, or any other file. One, not
 many: sending three photos makes three messages, which is what a thread shows anyway, and it keeps
@@ -340,6 +432,53 @@ anything non-ASCII goes in the RFC 5987 `filename*` form.
 A file has no preview, no dimensions and no duration; clients draw a row with its name and size.
 `PUT /attachments/{id}/preview` on one is `invalid_attachment`.
 
+#### Locations
+
+`kind=location` is the fifth kind and **the only one with no bytes**. A location is three numbers,
+and they ride in the query string like every other piece of attachment metadata:
+
+```
+POST /attachments?kind=location&latitude=55.7558&longitude=37.6173&accuracy_m=12&name=Home
+  (empty body — nothing is uploaded and the body is ignored)
+  → 201 {attachment: {id: 61, kind: "location", latitude: 55.7558, longitude: 37.6173,
+                      accuracy_m: 12, name: "Home", size: 0, has_preview: false, …}}
+POST /chats/42/messages  {client_msg_id, body: "", attachment_id: 61}
+```
+
+Metadata rather than an uploaded blob because **a bubble must be able to draw the pin the moment the
+message arrives**. Fetching forty bytes over HTTP first would make the one attachment that needs no
+download the slowest thing in the thread to appear, and it would put a family member's position
+behind a request that can fail.
+
+`latitude` and `longitude` are degrees in WGS 84, required together, and range-checked
+(`-90..=90` and `-180..=180`; both ends of the longitude range are the same real meridian and both
+are accepted). `accuracy_m` is the radius in metres the sending device believed its fix good to, and
+is **absent when it did not know** — which a client draws as a plain pin rather than as perfect
+precision. `name` is an optional label somebody typed ("Home", "The restaurant"), 1–255 characters.
+
+Consequences of having no bytes, all of them deliberate:
+
+- `GET /attachments/{id}` on a location is `invalid_attachment` (400). There is nothing to serve;
+  everything it is arrived with the message.
+- `PUT /attachments/{id}/preview` on one is `invalid_attachment`, and `has_preview` is always false.
+- `size` is `0`, so a location costs a family nothing in `stored_bytes` and adds nothing to what a
+  backup has to carry.
+- It still takes an attachment id, is still claimed exactly once by one message, is still swept
+  after 24 hours if no message claims it, and still goes when its message goes. Nothing about the
+  lifecycle is special.
+
+**The map is drawn by each viewing device, and the server neither draws nor stores one.** A stored
+snapshot would be one sender's idea of zoom, frozen, and it would also mean the sender contacting a
+map provider on everyone's behalf. Drawing it per device is the same trade the link previews make
+(see the Settings switch clients offer for those): the coordinate reaches whichever map framework
+the platform provides, for locations a family member deliberately sent, and a client that would
+rather not may draw the pin, the label and a hand-off to the system map app instead — that is a
+client's choice and changes nothing on the wire.
+
+Live location — a pin that keeps updating until it expires — is **not** part of this. A location is
+decided once, at send time, and never changes, exactly like a reply. Adding it later would need a
+mutation path and a sequence cursor of its own, and would be a new section here.
+
 An attachment belongs to whoever uploaded it until a message claims it, and to that message's chat
 afterwards. Before it is claimed only the uploader may read it; after, every member of the chat
 may. An attachment can be claimed once: a second message naming it is `attachment_already_used`.
@@ -383,11 +522,12 @@ owner-only: it is a shared curiosity, and the same numbers go to everyone.
 {"generated_at": "…",
  "totals": {"members": 4, "messages": 1284, "board_notes": 7,
             "attachments": {"count": 96, "photo": 61, "video": 12, "audio": 9, "file": 14,
+                            "location": 3,
                             "bytes": 734003200, "stored_bytes": 612368384},
             "ai": {"questions": 43, "prompt_tokens": 12040, "completion_tokens": 30512}},
  "members": [{"user_id": 7, "display_name": "Anna", "messages": 512,
               "attachments": {"count": 31, "photo": 22, "video": 4, "audio": 3, "file": 2,
-                              "bytes": 241172480},
+                              "location": 0, "bytes": 241172480},
               "ai": {"questions": 12, "prompt_tokens": 3400, "completion_tokens": 9120}}]}
 ```
 
@@ -460,7 +600,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 |---|---|
 | `POST /families` | `{name}` (1–64 chars) → `201 {family: Family}`. Caller becomes owner; the family chat is created automatically. Error: `already_in_family`. |
 | `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`. |
-| `GET /families/mine` | → `200 {family: Family, members: [Member], max_board_seq: 88}`. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `family.invite_code` present for the owner only. Error: `not_in_family`. |
+| `GET /families/mine` | → `200 {family: Family, members: [Member], max_board_seq: 88, assistant: {user_id, display_name, mention}}`. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. `family.invite_code` present for the owner only. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
 | `PATCH /families/mine` | (owner) `{join_policy: "open"\|"approval"}` → `200 {family: Family}`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
@@ -473,9 +613,9 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`file`), `width`, `height`, `duration_ms`, `name` (all optional except `name`, which is REQUIRED for `kind=file` and 1–255 characters). → `201 {attachment: Attachment}`. Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video, 400 when the bytes do not match the declared type or a file has no name), `not_in_family`. |
-| `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only, and never on a `file` (`invalid_attachment`). Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
-| `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. A `file` additionally gets `Content-Disposition: attachment; filename=…` (sanitised) and `X-Content-Type-Options: nosniff`, so an uploaded document can never render or execute from the server's own origin. Readable by the uploader always, and by every member of the chat once a message claims it; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Honours a single-byte-range `Range` request with `206` + `Content-Range` (`416` for a range past the end) — that is how a video player seeks, and without it scrubbing a 90 MB clip re-downloads it from the start. A multi-range or unrecognised `Range` is ignored and the whole body sent, per RFC 9110. |
+| `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`audio`\|`file`\|`location`), `width`, `height`, `duration_ms`, `name`, `latitude`, `longitude`, `accuracy_m`. `name` is REQUIRED for `kind=file` (1–255 characters) and optional on audio and a location; `latitude` and `longitude` are REQUIRED for `kind=location` and refused on anything else. A location sends **no body** — it is metadata only. → `201 {attachment: Attachment}`. Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video/audio, 400 when the bytes do not match the declared type, a file has no name, or a location has no or out-of-range coordinates), `not_in_family`. |
+| `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only, and never on a `file`, `audio` or `location` (`invalid_attachment`). Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
+| `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. A location has none and answers `invalid_attachment` (400). A `file` additionally gets `Content-Disposition: attachment; filename=…` (sanitised) and `X-Content-Type-Options: nosniff`, so an uploaded document can never render or execute from the server's own origin. Readable by the uploader always, and by every member of the chat once a message claims it; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Honours a single-byte-range `Range` request with `206` + `Content-Range` (`416` for a range past the end) — that is how a video player seeks, and without it scrubbing a 90 MB clip re-downloads it from the start. A multi-range or unrecognised `Range` is ignored and the whole body sent, per RFC 9110. |
 | `GET /attachments/{id}/preview` | → `200` with the preview JPEG, same access rules. `404` when there is no preview yet. |
 
 ### Board
@@ -495,7 +635,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, and `max_edit_seq` likewise while nothing in it has been edited; `last_message` previews never carry `reactions` or the quote, but DO carry `attachment` — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self`, `not_same_family`, `user_not_found`. |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?}` → `201 {message: Message}`. Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_id` claims an attachment this caller uploaded; a message carrying one may have an empty body. Errors: `message_empty` (no body AND no attachment), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`. |
+| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_id` claims an attachment this caller uploaded; a message carrying one may have an empty body. Errors: `message_empty` (no body AND no attachment), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`. |
 | `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/edits` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {messages: [Message]}` ordered by `edit_seq` ascending — the edit catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `POST /chats/{id}/read` | `{last_read_message_id}` → `204`. Monotonic — the server keeps the max ever reported. |
@@ -575,7 +715,12 @@ apply it under the same rule the board catch-up uses: a note is written only whe
 - **Dedup**: `(chat_id, sender, client_msg_id)` is unique server-side. A retried `send` re-emits
   the `ack` with the original message and does not re-fan-out.
 - **Read/typing**: relayed to the other members of the chat. `typing` is never persisted and is
-  throttled server-side to one per chat per 3 s per connection.
+  throttled server-side to one per chat per 3 s per connection. A `typing` frame naming a chat the
+  sender is not a member of is **dropped in silence** — no relay and no `error` frame. Silence in
+  both directions is the point: answering would spam a client whose membership lapsed mid-connection
+  with an error per keystroke, and answering only for chats that exist would turn the indicator into
+  a way to enumerate chat ids. The membership check runs AFTER the throttle, so a client sending a
+  chat id it has no business with cannot turn every keystroke into a database round trip.
 - **Reactions**: the `reaction` frame carries the message's **full current reaction state**
   (never a delta), so it is idempotent and ordering races resolve locally: a client applies it
   only when `reaction_seq` is greater than the last value it stored for that message. It goes
@@ -625,8 +770,10 @@ board.
 
 A message carrying an attachment MAY have an empty body — which is how a photo is normally sent —
 and an alert showing a name above a blank line says nothing arrived. Such a message pushes what
-arrived instead: `"Photo"`, `"Video"`, `"Audio"`, or the file's name. A caption, when there is one,
-still wins.
+arrived instead: `"Photo"`, `"Video"`, `"Audio"`, the file's name, or a location's label falling
+back to `"Location"`. A caption, when there is one, still wins. A location's COORDINATES are never
+in an alert — a lock screen is the one place a family member's position should not be readable
+without unlocking the phone.
 
 APNs (token-based auth, HTTP/2): headers `apns-topic` = bundle id, `apns-push-type: alert`,
 `apns-priority: 10`; payload:

@@ -368,6 +368,32 @@ pub async fn my_family(
     if last_board_seq > 0 {
         body["max_board_seq"] = json!(last_board_seq);
     }
+    // The assistant rides along too, and for two reasons at once.
+    //
+    // NAMING: it sends under a reserved account that is in no roster (it
+    // has no family), so a client meeting its `sender_id` in the family
+    // chat would draw a nameless bubble. Its own chat could name it from
+    // the chat title; the family chat has no such handle.
+    //
+    // DISCOVERY: `is_usable()` is a server-side switch nothing exposed
+    // before, and a composer that offers "@ai" on a server with no
+    // assistant configured is an affordance that silently does nothing.
+    // Absent means both "there is nobody to name" and "do not offer it".
+    //
+    // It is deliberately NOT added to `members`: it is not a member, it
+    // cannot be messaged, removed, made owner or given a password, and
+    // every screen that lists people would have to special-case it.
+    if state.cfg.ai.is_usable()
+        && let Some(assistant_id) = crate::handlers_ai::assistant_user_id(&state)
+            .await
+            .unwrap_or(None)
+    {
+        body["assistant"] = json!({
+            "user_id": assistant_id,
+            "display_name": state.cfg.ai.title,
+            "mention": crate::mentions::MENTION,
+        });
+    }
     Ok((StatusCode::OK, Json(body)).into_response())
 }
 

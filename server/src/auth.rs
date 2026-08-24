@@ -145,15 +145,29 @@ pub async fn verify_login_password(
     password: String,
 ) -> Result<bool, ApiError> {
     tokio::task::spawn_blocking(move || {
-        let user_exists = stored_hash.is_some();
-        let hash_string = stored_hash.unwrap_or_else(|| dummy_hash().to_string());
+        // A row whose hash is not a PHC string is a row nobody can log in
+        // as — the reserved `assistant` account is seeded with a literal
+        // `'!'` for exactly that reason (migration 0015). It is treated as
+        // "no such user", not as a server fault: raising a 500 here would
+        // answer differently for that one username than for every other,
+        // which is a per-account existence oracle, and it would skip the
+        // argon2 work that keeps the paths indistinguishable by timing.
+        let mut can_match = stored_hash.is_some();
+        let hash_string = match stored_hash {
+            Some(stored) if PasswordHash::new(&stored).is_ok() => stored,
+            Some(_) => {
+                can_match = false;
+                dummy_hash().to_string()
+            }
+            None => dummy_hash().to_string(),
+        };
         let parsed = PasswordHash::new(&hash_string).map_err(|err| {
-            anyhow::anyhow!("stored password hash is not a valid PHC string: {err}")
+            anyhow::anyhow!("the timing-equalization hash is not a valid PHC string: {err}")
         })?;
         let matches = Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
             .is_ok();
-        Ok(user_exists && matches)
+        Ok(can_match && matches)
     })
     .await
     .map_err(|err| ApiError::Internal(anyhow::anyhow!("verification task panicked: {err}")))?

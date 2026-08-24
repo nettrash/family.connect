@@ -142,6 +142,15 @@ data class MessageEntity(
     @ColumnInfo(defaultValue = "0") val attachmentHasPreview: Boolean = false,
     /** Files only: the name is the whole thing a row shows. */
     val attachmentName: String? = null,
+    /**
+     * Locations only, and always both together (docs/protocol.md,
+     * "Locations"). Stored on the row rather than fetched, because a
+     * location has no bytes at all — these three columns ARE the
+     * attachment, so a cached message draws its pin offline.
+     */
+    val attachmentLatitude: Double? = null,
+    val attachmentLongitude: Double? = null,
+    val attachmentAccuracyM: Int? = null,
 ) {
     /** The wire shape back out of the flat columns, or null for no media. */
     val attachment: AttachmentDto?
@@ -156,6 +165,9 @@ data class MessageEntity(
                 durationMs = attachmentDurationMs,
                 hasPreview = attachmentHasPreview,
                 name = attachmentName,
+                latitude = attachmentLatitude,
+                longitude = attachmentLongitude,
+                accuracyM = attachmentAccuracyM,
             )
         }
 }

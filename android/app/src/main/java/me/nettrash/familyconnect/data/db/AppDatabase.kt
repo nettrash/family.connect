@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -156,6 +156,22 @@ abstract class AppDatabase : RoomDatabase() {
          * the normal case — the quoted message was not itself a reply, or
          * its own parent has since been swept by retention.
          */
+        /**
+         * v11: the fifth attachment kind, and the first with no bytes.
+         *
+         * Three nullable columns with NO default, because null IS the
+         * normal case: every attachment that is not a location has no
+         * coordinates, and a `0` default would be a claim that every photo
+         * ever sent was taken off the coast of Africa.
+         */
+        val MIGRATION_10_11: Migration = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentLatitude REAL")
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentLongitude REAL")
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentAccuracyM INTEGER")
+            }
+        }
+
         val MIGRATION_9_10: Migration = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE messages ADD COLUMN replyParentMessageId INTEGER")

@@ -39,13 +39,20 @@ pub struct UploadParams {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub duration_ms: Option<i32>,
-    /// Required for `kind=file`, ignored otherwise: a document's name is
-    /// its whole identity (protocol.md, "Files").
+    /// Required for `kind=file`, ignored on a photo or video: a document's
+    /// name is its whole identity (protocol.md, "Files"). Optional on audio
+    /// and on a location, where it is a label somebody typed ("Home").
     pub name: Option<String>,
+    /// `kind=location` only, and both required there. Degrees, WGS 84.
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    /// `kind=location` only, optional: the radius in metres the sending
+    /// device believed its fix good to.
+    pub accuracy_m: Option<i32>,
 }
 
-const ATTACHMENT_COLS: &str =
-    "id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name";
+const ATTACHMENT_COLS: &str = "id, kind, mime, size_bytes, width, height, duration_ms, \
+                               has_preview, name, latitude, longitude, accuracy_m";
 
 /// The declared type must match the bytes. Same rule as avatars: a magic
 /// number is the whole check, because deciding otherwise would mean an
@@ -71,7 +78,110 @@ fn matches_magic(mime: &str, head: &[u8]) -> bool {
     }
 }
 
-/// `POST /attachments` — stream a photo or video to disk.
+/// Which family an upload belongs to — the dedup scope, and the membership
+/// check every write endpoint makes.
+///
+/// An account with no family has nobody to send anything to. Without this,
+/// a stranger who can register — which is the whole point of an open
+/// self-hosted server — can fill the disk 100 MB at a time, and the sweeper
+/// would not touch it for 24 hours. protocol.md has listed `not_in_family`
+/// here all along.
+async fn uploader_family(state: &AppState, user_id: i64) -> Result<i64, ApiError> {
+    let family_id: Option<i64> = sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .flatten();
+    family_id.ok_or_else(|| {
+        ApiError::forbidden(
+            codes::NOT_IN_FAMILY,
+            "join a family before sending attachments",
+        )
+    })
+}
+
+/// `POST /attachments?kind=location` — the one upload with nothing to upload.
+///
+/// A location is three numbers, and they arrive in the query string like
+/// every other piece of attachment metadata. The body is ignored: there are
+/// no bytes, no file is written, and `GET /attachments/{id}` on the result
+/// refuses rather than looking for one (migration 0016 carries the same
+/// rules as constraints, so a future write path cannot forget them).
+///
+/// It is a separate function rather than a third arm of the branch below
+/// because it shares almost nothing with the others — no media type, no
+/// magic number, no streaming, no hash, no dedup. Threading a no-bytes case
+/// through all of that would leave five `if is_location` guards in a
+/// pipeline whose whole subject is bytes.
+async fn upload_location(
+    state: &AppState,
+    user_id: i64,
+    params: &UploadParams,
+) -> Result<Response, ApiError> {
+    let (Some(latitude), Some(longitude)) = (params.latitude, params.longitude) else {
+        return Err(ApiError::bad_request(
+            codes::INVALID_ATTACHMENT,
+            "a location needs latitude and longitude",
+        ));
+    };
+    // Checked here as well as in the CHECK constraint, so the caller gets
+    // the protocol's error rather than a 500 from a violated constraint.
+    // NaN fails every comparison, which is what refuses it.
+    if !(-90.0..=90.0).contains(&latitude) || !(-180.0..=180.0).contains(&longitude) {
+        return Err(ApiError::bad_request(
+            codes::INVALID_ATTACHMENT,
+            "latitude must be -90..=90 and longitude -180..=180",
+        ));
+    }
+    if let Some(accuracy) = params.accuracy_m
+        && accuracy < 0
+    {
+        return Err(ApiError::bad_request(
+            codes::INVALID_ATTACHMENT,
+            "accuracy_m cannot be negative",
+        ));
+    }
+    let label = params
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && name.chars().count() <= Attachment::MAX_NAME_LEN);
+
+    let family_id = uploader_family(state, user_id).await?;
+
+    // A storage_key is still allocated, because the column is NOT NULL and
+    // every shared path reads it. Nothing is ever written there, and
+    // `Storage::remove` treats a missing file as normal — so the sweeper
+    // and the retention pass need no special case at all.
+    let storage_key = format!("{}-{}", user_id, crate::tokens::gen_session_token());
+    let row = sqlx::query(&format!(
+        "INSERT INTO attachments
+            (uploader_id, kind, mime, size_bytes, storage_key, name, family_id,
+             latitude, longitude, accuracy_m)
+         VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9)
+         RETURNING {ATTACHMENT_COLS}"
+    ))
+    .bind(user_id)
+    .bind(Attachment::KIND_LOCATION)
+    .bind(Attachment::LOCATION_MIME)
+    .bind(&storage_key)
+    .bind(label)
+    .bind(family_id)
+    .bind(latitude)
+    .bind(longitude)
+    .bind(params.accuracy_m)
+    .fetch_one(&state.pool)
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({"attachment": Attachment::from_row(&row)})),
+    )
+        .into_response())
+}
+
+/// `POST /attachments` — stream a photo, video, piece of audio or file to
+/// disk, or record a location, which has no bytes at all.
 pub async fn upload_attachment(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -79,6 +189,12 @@ pub async fn upload_attachment(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
+    // Taken before anything reads a header or a byte: a location declares
+    // itself in the query string and has neither.
+    if params.kind.as_deref() == Some(Attachment::KIND_LOCATION) {
+        return upload_location(&state, auth.user_id, &params).await;
+    }
+
     let mime = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -132,24 +248,7 @@ pub async fn upload_attachment(
     // Which family the bytes are being uploaded INTO — the dedup scope.
     // Read now rather than derived later: the uploader can leave or move
     // family, and the file belongs to the family that received it.
-    let family_id: Option<i64> = sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
-        .bind(auth.user_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .flatten();
-
-    // An account with no family has nobody to send anything to, and every
-    // other write endpoint says so. Without this check a stranger who can
-    // register — which is the whole point of an open self-hosted server —
-    // can fill the disk 100 MB at a time, and the sweeper would not touch
-    // it for 24 hours. protocol.md has listed `not_in_family` here all
-    // along; only the code was missing it.
-    let Some(family_id) = family_id else {
-        return Err(ApiError::forbidden(
-            codes::NOT_IN_FAMILY,
-            "join a family before sending attachments",
-        ));
-    };
+    let family_id = uploader_family(&state, auth.user_id).await?;
 
     // The row is created first so its id names the file — one identifier,
     // no second allocation scheme to keep in step.
@@ -325,11 +424,17 @@ pub async fn upload_preview(
         ));
     };
     let kind: String = row.get("kind");
-    if kind == Attachment::KIND_FILE || kind == Attachment::KIND_AUDIO {
-        // Nothing draws a file or a piece of audio as a picture, so a
-        // preview on one is a client bug worth reporting rather than
-        // silently storing. Audio gets a play control and a duration; a
-        // waveform is deliberately not part of the wire (protocol.md).
+    if kind == Attachment::KIND_FILE
+        || kind == Attachment::KIND_AUDIO
+        || kind == Attachment::KIND_LOCATION
+    {
+        // Nothing draws a file, a piece of audio or a location as a
+        // picture, so a preview on one is a client bug worth reporting
+        // rather than silently storing. Audio gets a play control and a
+        // duration; a waveform is deliberately not part of the wire. A
+        // location is drawn from its coordinates by each device, which is
+        // what makes a stored map image the wrong artefact — it would be
+        // one sender's idea of zoom, frozen (protocol.md).
         return Err(ApiError::bad_request(
             codes::INVALID_ATTACHMENT,
             format!("a {kind} has no preview"),
@@ -405,6 +510,17 @@ async fn serve(
     };
     let storage_key: String = row.get("storage_key");
     let mime: String = row.get("mime");
+    // A location has no file, and never had one — every field it has was
+    // already delivered with the message. Refused explicitly rather than
+    // left to fall through to the open() below, which would report a
+    // missing file as an internal error and put a 500 in the log for a
+    // client doing something merely pointless.
+    if row.get::<String, _>("kind") == Attachment::KIND_LOCATION {
+        return Err(ApiError::bad_request(
+            codes::INVALID_ATTACHMENT,
+            "a location has no bytes; it is carried on the attachment itself",
+        ));
+    }
     if preview && !row.get::<bool, _>("has_preview") {
         return Err(ApiError::not_found(
             codes::ATTACHMENT_NOT_FOUND,

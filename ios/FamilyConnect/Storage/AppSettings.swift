@@ -26,12 +26,23 @@ nonisolated enum AppSettings {
         static let pushDeviceID = "v1.push.deviceID"
         /// Stores the DISABLED flag, so a missing key reads as "on".
         static let linkPreviewsDisabled = "v1.linkPreviewsDisabled"
+        /// Stored INVERTED, exactly like the link-preview key above and for
+        /// the same reason: a missing key must read as "on", and a logout
+        /// (or any 401) must not silently turn third-party traffic back on
+        /// for somebody who opted out of it.
+        static let mapPreviewsDisabled = "v1.mapPreviewsDisabled"
         /// The board catch-up cursor: the highest board_seq this device
         /// has APPLIED. Local-only and account-scoped, so it is wiped with
         /// the session — a different family's board must never be caught
         /// up from another's cursor.
         static let boardCursor = "v1.board.cursor"
         static let boardSeenNoteID = "v1.board.seenNoteId"
+        /// The assistant, as `GET /families/mine` last reported it. Two
+        /// jobs at once: naming its messages in the family chat, where its
+        /// reserved account is deliberately absent from the roster, and
+        /// telling the composer whether to offer `@ai` at all.
+        static let assistantUserID = "v1.assistant.userId"
+        static let assistantName = "v1.assistant.name"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
@@ -92,6 +103,8 @@ nonisolated enum AppSettings {
                 defaults.set(NSNumber(value: newValue), forKey: Key.currentUserID)
             } else {
                 defaults.removeObject(forKey: Key.currentUserID)
+        defaults.removeObject(forKey: Key.assistantUserID)
+        defaults.removeObject(forKey: Key.assistantName)
             }
         }
     }
@@ -112,6 +125,18 @@ nonisolated enum AppSettings {
     static var linkPreviewsEnabled: Bool {
         get { !defaults.bool(forKey: Key.linkPreviewsDisabled) }
         set { defaults.set(!newValue, forKey: Key.linkPreviewsDisabled) }
+    }
+
+    /// Whether a shared location draws a map in the bubble. The same trade
+    /// as link previews and therefore the same switch shape: drawing tiles
+    /// means asking Apple for them, with a coordinate a family member
+    /// deliberately sent. Off, the bubble still shows the pin, the label
+    /// and a way into the system map app — which is a hand-off the reader
+    /// chooses rather than a request the app makes on its own.
+    /// Stored inverted so the absent key reads as on.
+    static var mapPreviewsEnabled: Bool {
+        get { !defaults.bool(forKey: Key.mapPreviewsDisabled) }
+        set { defaults.set(!newValue, forKey: Key.mapPreviewsDisabled) }
     }
 
     /// The APNs token (lowercase hex) most recently accepted by
@@ -170,9 +195,45 @@ nonisolated enum AppSettings {
         set { defaults.set(Int(newValue), forKey: Key.boardSeenNoteID) }
     }
 
+    /// The assistant's reserved account id, or nil when the server has no
+    /// assistant configured.
+    ///
+    /// Absent means BOTH "there is nobody to name" and "do not offer the
+    /// mention": a composer that offered `@ai` against a server without an
+    /// assistant would offer an affordance that silently does nothing
+    /// (docs/protocol.md, "Mentioning the assistant in the family chat").
+    static var assistantUserID: Int64? {
+        get {
+            let stored = defaults.object(forKey: Key.assistantUserID) as? Int
+            return stored.map(Int64.init)
+        }
+        set {
+            if let newValue {
+                defaults.set(Int(newValue), forKey: Key.assistantUserID)
+            } else {
+                defaults.removeObject(forKey: Key.assistantUserID)
+            }
+        }
+    }
+
+    /// What to call it. Server-configured, so it is whatever the family's
+    /// own server says rather than a string compiled in here.
+    static var assistantName: String? {
+        get { defaults.string(forKey: Key.assistantName) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.assistantName)
+            } else {
+                defaults.removeObject(forKey: Key.assistantName)
+            }
+        }
+    }
+
     static func wipe(keepServerURL: Bool) {
         if !keepServerURL { defaults.removeObject(forKey: Key.serverURL) }
         defaults.removeObject(forKey: Key.currentUserID)
+        defaults.removeObject(forKey: Key.assistantUserID)
+        defaults.removeObject(forKey: Key.assistantName)
         defaults.removeObject(forKey: Key.joinPending)
         defaults.removeObject(forKey: Key.pushToken)
         defaults.removeObject(forKey: Key.pushDeviceID)

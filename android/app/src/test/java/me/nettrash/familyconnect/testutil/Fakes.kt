@@ -138,6 +138,13 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         }
     }
 
+    override suspend fun setAssistant(userId: Long?, displayName: String?) {
+        _state.value = _state.value.copy(
+            assistantUserId = userId,
+            assistantName = displayName,
+        )
+    }
+
     override suspend fun resetKeepingServerUrl() {
         // Mirrors production: server URL AND the device-scoped FCM token
         // survive; the account-scoped device id does not.
@@ -627,6 +634,34 @@ class FakeAttachmentApi : AttachmentApi {
         uploadedMetadata += Triple(kind, width, height)
         uploadedNames += name
         return uploadHandler(file, mime, kind)
+    }
+
+    /** Every location this fake was asked to send, in order. */
+    val uploadedLocations = mutableListOf<Triple<Double, Double, Int?>>()
+    var locationHandler: (Double, Double) -> ApiResult<AttachmentResponse> = { lat, lon ->
+        ApiResult.Ok(
+            AttachmentResponse(
+                attachment(id = 61).copy(
+                    kind = AttachmentDto.KIND_LOCATION,
+                    mime = "application/vnd.family-connect.location",
+                    size = 0,
+                    latitude = lat,
+                    longitude = lon,
+                ),
+            ),
+        )
+    }
+
+    override suspend fun uploadLocation(
+        latitude: Double,
+        longitude: Double,
+        accuracyM: Int?,
+        name: String?,
+    ): ApiResult<AttachmentResponse> {
+        calls += "uploadLocation"
+        uploadedLocations += Triple(latitude, longitude, accuracyM)
+        uploadedNames += name
+        return locationHandler(latitude, longitude)
     }
 
     override suspend fun uploadPreview(attachmentId: Long, jpeg: ByteArray): ApiResult<Unit> {

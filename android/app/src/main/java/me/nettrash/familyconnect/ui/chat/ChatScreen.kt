@@ -103,6 +103,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -189,6 +190,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -221,6 +224,8 @@ import android.net.Uri
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
+import androidx.compose.material.icons.filled.Place
+import me.nettrash.familyconnect.data.repo.LocationProvider
 import androidx.compose.material.icons.filled.Mic
 import android.graphics.BitmapFactory
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -262,6 +267,13 @@ fun ChatScreen(
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
     val memberAvatars by viewModel.memberAvatars.collectAsStateWithLifecycle()
+    // Which rows the assistant is still writing into. In-memory only, so a
+    // row that was mid-stream when the app was killed is not stuck looking
+    // live after a relaunch.
+    val streamingIds by viewModel.streamingMessageIds.collectAsStateWithLifecycle()
+    // Null when the server has no assistant configured, which is what
+    // decides whether the composer offers `@ai` at all.
+    val assistantUserId by viewModel.assistantUserId.collectAsStateWithLifecycle()
     val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
     val socketState by viewModel.socketState.collectAsStateWithLifecycle()
     val loadingOlder by viewModel.loadingOlder.collectAsStateWithLifecycle()
@@ -376,6 +388,28 @@ fun ChatScreen(
             Manifest.permission.RECORD_AUDIO,
         ) == PackageManager.PERMISSION_GRANTED
         if (held) viewModel.startRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    // Sharing a location. Asked at the moment of use, and the grant
+    // CONTINUES the action rather than making the person tap again — the
+    // same rule the microphone follows. `RequestMultiplePermissions`
+    // because either coarse or fine is enough: a member who allows only
+    // approximate location still gets the feature.
+    val locationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (grants.values.any { it }) {
+            viewModel.shareLocation()
+        } else {
+            Toast.makeText(context, R.string.e_location_permission, Toast.LENGTH_LONG).show()
+        }
+    }
+    val shareLocation: () -> Unit = {
+        if (viewModel.hasLocationPermission()) {
+            viewModel.shareLocation()
+        } else {
+            locationPermission.launch(LocationProvider.PERMISSIONS)
+        }
     }
 
     // Saving to the gallery. On 26–28 the write needs a permission first;
@@ -704,6 +738,8 @@ fun ChatScreen(
                                     item = item,
                                     chat = chat,
                                     isMine = item.entity.senderId == myUserId,
+                                    isStreaming = item.entity.serverId
+                                        ?.let { it in streamingIds } == true,
                                     myUserId = myUserId,
                                     memberNames = memberNames,
                                     memberAvatars = memberAvatars,
@@ -844,6 +880,8 @@ fun ChatScreen(
                 onCancelRecording = viewModel::cancelRecording,
                 onDiscardStaged = viewModel::discardStaged,
                 onDismissMediaError = viewModel::clearMediaState,
+                showsAssistantMention = chat?.kind == "family" && assistantUserId != null,
+                onShareLocation = shareLocation,
             )
         }
     }
@@ -1491,6 +1529,8 @@ private fun MessageBubble(
     item: ChatListItem.MessageItem,
     chat: ChatEntity?,
     isMine: Boolean,
+    /** The assistant is still writing into this row. */
+    isStreaming: Boolean,
     myUserId: Long?,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
@@ -1546,8 +1586,39 @@ private fun MessageBubble(
     // detector is a raw pointerInput, which contributes no click action,
     // so without these the links would be sighted-only.
     val emojiFontSize = remember(entity.body) { EmojiOnly.displayFontSize(entity.body) }
-    val linkSpans = remember(entity.body, emojiFontSize) {
-        if (emojiFontSize != null) emptyList() else MessageLinks.linkSpans(entity.body)
+    // MARKDOWN FIRST, and the order is load-bearing. Markdown DELETES
+    // characters (`**`, backticks, `](url)`), so detecting links over the
+    // raw body and drawing the rendered one would leave every link after
+    // the first markup token pointing at the wrong glyphs — silently, with
+    // nothing failing. Everything below indexes `rendered.text`.
+    //
+    // Emoji-only bodies branch around it: the ladder's whole subject is
+    // that the message is nothing but glyphs, so a markup pass could only
+    // take something away. Same rule as iOS and macOS.
+    val rendered = remember(entity.body, emojiFontSize) {
+        if (emojiFontSize != null) {
+            MessageMarkdown.plain(entity.body)
+        } else {
+            MessageMarkdown.render(entity.body)
+        }
+    }
+    val linkSpans = remember(rendered, emojiFontSize) {
+        if (emojiFontSize != null) {
+            emptyList()
+        } else {
+            // The markup's own links first, then whatever the detector
+            // finds in the text NOT already covered by one. Both index the
+            // rendered text, and both feed one hit test.
+            //
+            // The overlap rule is not tidiness. `[https://www.paypal.com](https://evil.example)`
+            // renders the label "https://www.paypal.com", which Linkify then
+            // detects as a link to PayPal — two spans over the same glyphs,
+            // one going somewhere else. Whichever the hit test picked, a tap
+            // could open a destination the reader had every reason to think
+            // was the one they could see. Dropping the detector's overlap
+            // leaves exactly one answer: the destination the author wrote.
+            MessageLinks.mergeSpans(rendered.links, MessageLinks.linkSpans(rendered.text))
+        }
     }
     val uriHandler = LocalUriHandler.current
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -1566,7 +1637,11 @@ private fun MessageBubble(
                     Modifier.semantics {
                         customActions = linkSpans.map { span ->
                             CustomAccessibilityAction(
-                                MessageLinks.accessibilityLabel(entity.body, span),
+                                // The RENDERED text, not the raw body: the
+                                // span's offsets index what is drawn, and
+                                // slicing the source here would announce
+                                // the wrong words.
+                                MessageLinks.accessibilityLabel(rendered.text, span),
                             ) {
                                 runCatching { uriHandler.openUri(span.url) }.isSuccess
                             }
@@ -1650,7 +1725,9 @@ private fun MessageBubble(
                     item = item,
                     chat = chat,
                     isMine = isMine,
+                    isStreaming = isStreaming,
                     emojiFontSize = emojiFontSize,
+                    rendered = rendered,
                     linkSpans = linkSpans,
                     memberNames = memberNames,
                     memberAvatars = memberAvatars,
@@ -2027,9 +2104,17 @@ private fun BubbleContent(
     item: ChatListItem.MessageItem,
     chat: ChatEntity?,
     isMine: Boolean,
+    /** The assistant is still writing into this row. */
+    isStreaming: Boolean,
     /** Emoji-ladder size for an emoji-only body, else null. Resolved by the caller. */
     emojiFontSize: Float?,
-    /** Links detected in the body (empty for emoji-only). Resolved by the caller. */
+    /**
+     * The body with markdown applied. Resolved by the caller, because the
+     * bubble's semantics need the same rendered text the drawing does —
+     * every offset below indexes `rendered.text`, never `entity.body`.
+     */
+    rendered: MessageMarkdown.Rendered,
+    /** Links in the RENDERED text (empty for emoji-only). Resolved by the caller. */
     linkSpans: List<LinkSpan>,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
@@ -2054,13 +2139,21 @@ private fun BubbleContent(
     /** Tapping a photo or video opens it full screen. */
     onOpenAttachment: (AttachmentDto) -> Unit,
 ) {
-    // Aligned to the balloon's own side so the chip row (and a short
-    // body under a wide row) hugs the same edge as the timestamp —
-    // matching iOS, whose balloon VStack aligns the same way. The chips
-    // used to inherit this from the outer Column they hung below.
+    // Everything that is CONTENT shares one left edge, whichever side the
+    // balloon is on — the quote, the attachment, the body and the link
+    // card. Aligning them to the balloon's own side (which this used to do,
+    // matching iOS) pushed whichever was narrower against the right edge of
+    // an own-message balloon: a short reply under a long quote came out
+    // right-aligned, and a short quote over a long reply floated its accent
+    // bar away from the first character it points at. Text reads from the
+    // left; only the balloon has a side.
+    //
+    // The chip row and the timestamp still hug the balloon's edge, and they
+    // now say so themselves — see their `align` modifiers below. iOS makes
+    // the same split with a nested leading VStack.
     Column(
         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
+        horizontalAlignment = Alignment.Start,
     ) {
         // The quote sits inside the balloon, above the reply's own text —
         // same placement as iOS.
@@ -2106,12 +2199,24 @@ private fun BubbleContent(
         // under dynamic color), on theirs they take primary — mirrors
         // iOS (white vs accent).
         val linkColor = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
-        val body = remember(entity.body, linkSpans, linkColor) {
-            MessageLinks.styled(
-                entity.body,
+        val mentionColor = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
+        val body = remember(rendered, linkSpans, linkColor, mentionColor, isStreaming) {
+            val linked = MessageLinks.styled(
+                rendered.annotated,
                 linkSpans,
                 SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline),
             )
+            val styled = MessageLinks.withMentions(
+                linked,
+                SpanStyle(color = mentionColor, fontWeight = FontWeight.Bold),
+            )
+            // While the assistant is writing, the text ends in a cursor
+            // rather than just stopping mid-word — the same signal iOS and
+            // macOS give. APPENDED, never inserted: every link offset in
+            // `linkSpans` indexes the body, and the hand-rolled hit test
+            // below matches those offsets against this laid-out string, so
+            // anything added ahead of them would silently misdirect taps.
+            if (isStreaming) buildAnnotatedString { append(styled); append("▍") } else styled
         }
         // Tap arbitration is OURS, not LinkAnnotation's: a linked body
         // must still heart on double-tap and open the reaction capsule
@@ -2178,6 +2283,16 @@ private fun BubbleContent(
             )
             if (entity.body.isNotEmpty()) Spacer(Modifier.height(6.dp))
         }
+        // The row exists but nothing has arrived yet: a bare cursor says
+        // "working" where an empty balloon looks broken. iOS and macOS draw
+        // the same thing.
+        if (isStreaming && entity.body.isEmpty()) {
+            Text(
+                text = "▍",
+                style = MaterialTheme.typography.bodyMedium,
+                color = LocalContentColor.current.copy(alpha = 0.6f),
+            )
+        }
         // A photo needs no caption, and an empty Text would still take a
         // line's height inside the balloon.
         if (entity.body.isNotEmpty()) {
@@ -2223,14 +2338,19 @@ private fun BubbleContent(
         // from the bubble's content colour, so one rule works on both
         // tones (a primaryContainer chip is invisible on my bubble).
         if (item.reactionChips.isNotEmpty()) {
-            ReactionChipsRow(
-                item = item,
-                memberNames = memberNames,
-                memberAvatars = memberAvatars,
-                myUserId = myUserId,
-                isMine = isMine,
-                onToggle = onToggleReaction,
-            )
+            // Boxed only to carry the alignment: `ReactionChipsRow` takes
+            // no modifier, and the chips have to keep hugging the same edge
+            // as the timestamp now the Column itself is Start-aligned.
+            Box(modifier = Modifier.align(if (isMine) Alignment.End else Alignment.Start)) {
+                ReactionChipsRow(
+                    item = item,
+                    memberNames = memberNames,
+                    memberAvatars = memberAvatars,
+                    myUserId = myUserId,
+                    isMine = isMine,
+                    onToggle = onToggleReaction,
+                )
+            }
         }
         if (item.showTimestamp || isMine) {
             Spacer(Modifier.size(2.dp))
@@ -2633,6 +2753,15 @@ private fun InputBar(
     onCancelRecording: () -> Unit,
     onDiscardStaged: () -> Unit,
     onDismissMediaError: () -> Unit,
+    /** Share where this device is, once. */
+    onShareLocation: () -> Unit,
+    /**
+     * Offer the `@ai` mention. Only in the family chat, and only on a
+     * server that has an assistant — an absent `assistant` on
+     * `GET /families/mine` is the whole capability check
+     * (docs/protocol.md, "Mentioning the assistant in the family chat").
+     */
+    showsAssistantMention: Boolean,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
@@ -2730,6 +2859,14 @@ private fun InputBar(
                             },
                         )
                         DropdownMenuItem(
+                            text = { Text(stringResource(R.string.s_share_your_location)) },
+                            leadingIcon = { Icon(Icons.Filled.Place, contentDescription = null) },
+                            onClick = {
+                                attachMenuOpen = false
+                                onShareLocation()
+                            },
+                        )
+                        DropdownMenuItem(
                             text = { Text(stringResource(R.string.s_record_video)) },
                             leadingIcon = {
                                 Icon(Icons.Filled.Videocam, contentDescription = null)
@@ -2738,6 +2875,35 @@ private fun InputBar(
                                 attachMenuOpen = false
                                 onTakeVideo()
                             },
+                        )
+                    }
+                }
+                if (showsAssistantMention) {
+                    IconButton(
+                        onClick = {
+                            // Appended, never inserted at the caret: moving
+                            // somebody's cursor is worse than adding to the
+                            // end of what they were writing, and the phone
+                            // and the Mac do the same.
+                            val current = state.text.toString()
+                            if (!AssistantMention.mentions(current)) {
+                                val prefix = when {
+                                    current.isEmpty() -> ""
+                                    current.endsWith(" ") -> ""
+                                    else -> " "
+                                }
+                                state.edit {
+                                    append(prefix + AssistantMention.TOKEN + " ")
+                                }
+                            }
+                            focusRequester.requestFocus()
+                        },
+                        enabled = !isEditing,
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AutoAwesome,
+                            contentDescription = stringResource(R.string.s_ask_the_assistant),
                         )
                     }
                 }

@@ -4,6 +4,7 @@
     <string name="s_add_a_note_everyone_in_the_family_sees_it">メモを追加すると、家族全員が見られます。</string>
     <string name="s_add_note">メモを追加</string>
     <string name="s_approval">承認</string>
+    <string name="s_ask_the_assistant">アシスタントに聞く</string>
     <string name="s_attach_a_photo_video_or_file">写真・ビデオ・ファイルを添付</string>
     <string name="s_back">戻る</string>
     <string name="s_board">ボード</string>
@@ -31,6 +32,10 @@
     <string name="s_failed_tap_to_retry">失敗しました — タップして再試行</string>
     <string name="s_family">ファミリー</string>
     <string name="s_family_name">ファミリー名</string>
+    <string name="s_location">位置情報</string>
+    <string name="s_share_your_location">位置情報</string>
+    <string name="e_location_permission">Family が位置情報を使う許可が必要です。</string>
+    <string name="e_location_unavailable">位置情報を取得できませんでした。</string>
     <string name="s_file">ファイル</string>
     <string name="s_invite_code">招待コード</string>
     <string name="s_join">参加</string>

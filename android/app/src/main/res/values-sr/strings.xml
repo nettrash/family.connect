@@ -4,6 +4,7 @@
     <string name="s_add_a_note_everyone_in_the_family_sees_it">Додај белешку — виде је сви у породици.</string>
     <string name="s_add_note">Додај белешку</string>
     <string name="s_approval">Одобрење</string>
+    <string name="s_ask_the_assistant">Питај асистента</string>
     <string name="s_attach_a_photo_video_or_file">Приложи фотографију, видео или датотеку</string>
     <string name="s_back">Назад</string>
     <string name="s_board">Табла</string>
@@ -31,6 +32,10 @@
     <string name="s_failed_tap_to_retry">Није успело — додирни да покушаш поново</string>
     <string name="s_family">Породица</string>
     <string name="s_family_name">Име породице</string>
+    <string name="s_location">Локација</string>
+    <string name="s_share_your_location">Локација</string>
+    <string name="e_location_permission">Family треба дозволу за приступ твојој локацији.</string>
+    <string name="e_location_unavailable">Локација није могла да се одреди.</string>
     <string name="s_file">Датотека</string>
     <string name="s_invite_code">Позивни код</string>
     <string name="s_join">Придружи се</string>

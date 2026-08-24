@@ -150,6 +150,58 @@ class MessageRepository @Inject constructor(
      * Returns false when the bytes did not make it — the caller keeps the
      * picked media and says so.
      */
+    /**
+     * Share a place.
+     *
+     * The same shape as [sendMedia] — upload first, insert the row only
+     * once the attachment has an id — and for the same reason: a bubble
+     * pointing at an upload that failed is worse than a composer that is
+     * visibly busy. What differs is that there is nothing to upload and no
+     * file to delete afterwards (docs/protocol.md, "Locations").
+     */
+    suspend fun sendLocation(
+        latitude: Double,
+        longitude: Double,
+        accuracyM: Int?,
+        label: String?,
+        caption: String,
+        chatId: Long,
+        replyTo: ReplyToDto? = null,
+    ): Boolean {
+        val me = settings.state.first().myUserId ?: return false
+        val uploaded = attachmentApi.uploadLocation(latitude, longitude, accuracyM, label)
+        val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment ?: return false
+
+        val body = caption.trim()
+        val clientMsgId = UUID.randomUUID().toString()
+        val now = clock.now()
+        messageDao.insert(
+            MessageEntity(
+                clientMsgId = clientMsgId,
+                serverId = null,
+                chatId = chatId,
+                senderId = me,
+                body = body,
+                createdAt = now,
+                status = MessageStatus.SENDING,
+                attachmentId = attachment.id,
+                attachmentKind = attachment.kind,
+                attachmentMime = attachment.mime,
+                attachmentSize = attachment.size,
+                attachmentName = attachment.name,
+                attachmentLatitude = attachment.latitude,
+                attachmentLongitude = attachment.longitude,
+                attachmentAccuracyM = attachment.accuracyM,
+                replyToMessageId = replyTo?.messageId,
+                replySenderId = replyTo?.senderId,
+                replyExcerpt = replyTo?.excerpt,
+            ),
+        )
+        chatDao.updateLastMessage(chatId, previewText(body, attachment), now, me)
+        dispatch(clientMsgId, chatId, body, replyTo?.messageId, attachment.id)
+        return true
+    }
+
     suspend fun sendMedia(
         prepared: MediaPrep.Prepared,
         caption: String,
@@ -197,6 +249,9 @@ class MessageRepository @Inject constructor(
                     attachmentDurationMs = attachment.durationMs,
                     attachmentHasPreview = hasPreview,
                     attachmentName = attachment.name,
+                    attachmentLatitude = attachment.latitude,
+                    attachmentLongitude = attachment.longitude,
+                    attachmentAccuracyM = attachment.accuracyM,
                     // A photo can answer a message like any other reply;
                     // this used to be dropped on the floor, so the quote
                     // vanished and its banner stayed armed.
@@ -654,6 +709,9 @@ class MessageRepository @Inject constructor(
             if (attachment == null) return body
             return when {
                 attachment.isVideo -> "Video"
+                attachment.isAudio -> attachment.name?.takeIf { it.isNotEmpty() } ?: "Audio"
+                attachment.isLocation ->
+                    attachment.name?.takeIf { it.isNotEmpty() } ?: "Location"
                 attachment.isFile -> attachment.name?.takeIf { it.isNotEmpty() } ?: "File"
                 else -> "Photo"
             }

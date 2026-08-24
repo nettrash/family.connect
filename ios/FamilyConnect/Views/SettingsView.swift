@@ -54,6 +54,7 @@ struct SettingsView: View {
     /// Mirrors AppSettings.linkPreviewsEnabled — defaults are not
     /// observable, so the toggle owns the state and writes through.
     @State private var linkPreviewsEnabled = AppSettings.linkPreviewsEnabled
+    @State private var mapPreviewsEnabled = AppSettings.mapPreviewsEnabled
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var uploadingAvatar = false
     @State private var changingPassword = false
@@ -280,7 +281,7 @@ struct SettingsView: View {
         }
     }
 
-    /// The one setting that changes who the app talks to, so it says so
+    /// The settings that change who the app talks to, so they say so
     /// plainly rather than hiding behind a label.
     private var privacySection: some View {
         Section {
@@ -288,10 +289,14 @@ struct SettingsView: View {
                 .onChange(of: linkPreviewsEnabled) { _, newValue in
                     AppSettings.linkPreviewsEnabled = newValue
                 }
+            Toggle("Map Previews", isOn: $mapPreviewsEnabled)
+                .onChange(of: mapPreviewsEnabled) { _, newValue in
+                    AppSettings.mapPreviewsEnabled = newValue
+                }
         } header: {
             Text("Privacy")
         } footer: {
-            Text("Shows a preview under links in messages. Building one asks the linked website for its title and image, so that site sees a request from this device.")
+            Text("Shows a preview under links in messages, and a map on a shared location. Building either asks somebody else for it — the linked website for its title and image, Apple for the map — so they see a request from this device. With maps off, a shared location still shows its pin and opens in Maps when you tap it.")
         }
     }
 

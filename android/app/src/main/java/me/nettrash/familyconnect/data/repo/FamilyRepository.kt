@@ -104,6 +104,14 @@ class FamilyRepository @Inject constructor(
                 memberDao.markLeftExcept(roster.map { it.userId })
             }
             settings.setFamilyName(result.value.family.name)
+            // The assistant is NOT upserted as a member — it belongs to no
+            // family, so it appears in no roster. Kept aside purely so the
+            // family chat can put a name on its messages and the composer
+            // knows whether to offer `@ai`.
+            settings.setAssistant(
+                result.value.assistant?.userId,
+                result.value.assistant?.displayName,
+            )
         }
         return result
     }
@@ -113,6 +121,9 @@ class FamilyRepository @Inject constructor(
         if (result is ApiResult.Ok) {
             settings.setFamilyStatus(FamilyStatus.OWNER)
             settings.setFamilyName(result.value.family.name)
+            // The assistant comes from `GET /families/mine`, which the call
+            // below makes anyway — `POST /families` answers with the family
+            // alone.
             refreshMine()
         }
         return result

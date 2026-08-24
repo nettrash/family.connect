@@ -18,9 +18,11 @@
 
 package me.nettrash.familyconnect.data.net
 
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentResponse
 import java.io.File
 import java.net.URLEncoder
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,6 +37,23 @@ interface AttachmentApi {
         durationMs: Int?,
         /** Required for `kind=file`, ignored otherwise. */
         name: String? = null,
+    ): ApiResult<AttachmentResponse>
+
+    /**
+     * POST /attachments?kind=location — the one upload with nothing to
+     * upload.
+     *
+     * A location is three numbers, and they go in the query string like
+     * every other piece of attachment metadata; there is no body, no file
+     * to stream and delete, and nothing to fetch back afterwards
+     * (docs/protocol.md, "Locations"). Its own method rather than an
+     * argument to [upload], whose whole subject is a `File`.
+     */
+    suspend fun uploadLocation(
+        latitude: Double,
+        longitude: Double,
+        accuracyM: Int?,
+        name: String?,
     ): ApiResult<AttachmentResponse>
 
     /** PUT /attachments/{id}/preview — the bubble's thumbnail. */
@@ -72,6 +91,33 @@ class DefaultAttachmentApi @Inject constructor(
         }.joinToString("&")
         return client.decode(client.rawUploadFile("POST", "/attachments?$query", file, mime))
     }
+
+    override suspend fun uploadLocation(
+        latitude: Double,
+        longitude: Double,
+        accuracyM: Int?,
+        name: String?,
+    ): ApiResult<AttachmentResponse> {
+        val query = buildList {
+            add("kind=${AttachmentDto.KIND_LOCATION}")
+            add("latitude=${coordinate(latitude)}")
+            add("longitude=${coordinate(longitude)}")
+            accuracyM?.let { add("accuracy_m=$it") }
+            name?.takeIf { it.isNotEmpty() }
+                ?.let { add("name=" + URLEncoder.encode(it, "UTF-8")) }
+        }.joinToString("&")
+        return client.decode(client.raw("POST", "/attachments?$query", null))
+    }
+
+    /**
+     * A coordinate as the wire wants it: decimal degrees with a full stop
+     * for the point, and enough places to be exact to a centimetre.
+     *
+     * `Locale.ROOT` is the whole point — a device set to a comma decimal
+     * separator would otherwise send "55,7558" and the server would refuse
+     * a perfectly good coordinate.
+     */
+    private fun coordinate(value: Double): String = String.format(Locale.ROOT, "%.7f", value)
 
     override suspend fun uploadPreview(attachmentId: Long, jpeg: ByteArray): ApiResult<Unit> =
         client.decode(

@@ -8,6 +8,13 @@
          without holding it — this one is genuinely required: the app opens
          the microphone itself rather than handing off to another app.
     -->
+    <!-- Sharing a location. Both, because either is enough: COARSE alone
+         names a street, which is what "where are you?" asks, so a member
+         who grants only the approximate permission still gets the feature.
+         Asked at the moment of use, never held in the background, and the
+         app has no background location permission at all. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- ConnectivityObserver — short-circuits the reconnect backoff the

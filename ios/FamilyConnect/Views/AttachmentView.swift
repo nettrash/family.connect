@@ -83,7 +83,15 @@ struct AttachmentView: View {
     }
 
     var body: some View {
-        if attachment.isAudio {
+        if attachment.isLocation {
+            // Its own view: a location has no bytes, so none of the
+            // download/preview machinery below applies to it at all.
+            LocationAttachmentView(
+                attachment: attachment,
+                onLongPress: onLongPress,
+                onDoubleTap: onDoubleTap,
+                isMine: isMine)
+        } else if attachment.isAudio {
             // Audio has nothing to look at, so it gets a player rather than
             // a tile or a document row (docs/protocol.md, "Audio").
             AudioPlayerView(attachment: attachment, isMine: isMine)

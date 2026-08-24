@@ -45,6 +45,7 @@ import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.GallerySaver
+import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
 import me.nettrash.familyconnect.data.repo.MessageRepository
@@ -176,6 +177,9 @@ class ChatViewModelTest {
             voiceRecorder = VoiceRecorder(RuntimeEnvironment.getApplication()),
             attachmentApi = attachmentApi,
             gallerySaver = GallerySaver(),
+            // Real provider, never asked: these tests hold no location
+            // permission, so `hasPermission()` is false and nothing runs.
+            locationProvider = LocationProvider(RuntimeEnvironment.getApplication()),
             // The repo scope stands in for the app scope: a media send
             // must outlive the ViewModel, which is the whole point of it.
             appScope = repoScope,

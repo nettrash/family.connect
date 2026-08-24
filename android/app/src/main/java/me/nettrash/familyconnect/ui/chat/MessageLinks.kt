@@ -89,6 +89,9 @@ object MessageLinks {
      * action of its own — without these the links would be sighted-only.
      */
     fun accessibilityLabel(body: String, span: LinkSpan): String {
+        // [body] is the RENDERED text, not the raw message. Markdown
+        // deletes characters, so slicing the raw body here would announce
+        // the wrong words — the same offset trap the hit test has.
         val text = body.substring(span.start.coerceIn(0, body.length), span.end.coerceIn(0, body.length))
         return when {
             span.url.startsWith("tel:") -> "Call $text"
@@ -101,13 +104,63 @@ object MessageLinks {
      * [text] with [style] applied over every span in [spans] — the link
      * LOOK only; tap handling lives in BubbleContent's own detector
      * (see the header for why this is not LinkAnnotation.Url).
+     *
+     * Takes an ALREADY-RENDERED [AnnotatedString] rather than a raw body:
+     * markdown runs first (MessageMarkdown), and every offset in [spans]
+     * indexes what it produced. Appending the rendered string preserves the
+     * emphasis it carries — rebuilding from `text` alone would throw the
+     * markdown away.
      */
-    fun styled(text: String, spans: List<LinkSpan>, style: SpanStyle): AnnotatedString {
-        if (spans.isEmpty()) return AnnotatedString(text)
+    fun styled(text: AnnotatedString, spans: List<LinkSpan>, style: SpanStyle): AnnotatedString {
+        if (spans.isEmpty()) return text
         return buildAnnotatedString {
             append(text)
             for (span in spans) {
-                addStyle(style, span.start, span.end)
+                addStyle(style, span.start.coerceIn(0, length), span.end.coerceIn(0, length))
+            }
+        }
+    }
+
+    /**
+     * The markdown's own links, plus every detected one that does not
+     * overlap them, in order of appearance.
+     *
+     * The overlap rule is a SAFETY rule, not tidiness. A markdown link
+     * whose label is itself a URL — `[https://www.paypal.com](https://evil.example)`
+     * — renders as that URL's text, which the detector then matches as a
+     * link to the place it names. Two spans, same glyphs, different
+     * destinations. Whichever won, a tap could open somewhere the reader
+     * had every reason to think was what they were looking at. The author's
+     * own destination is the one the message actually declares, so it wins
+     * and the detector's duplicate is dropped — leaving exactly one answer
+     * for every glyph, which is also what the hit test assumes.
+     */
+    fun mergeSpans(markdown: List<LinkSpan>, detected: List<LinkSpan>): List<LinkSpan> {
+        if (markdown.isEmpty()) return detected
+        val kept = detected.filterNot { span ->
+            markdown.any { span.start < it.end && it.start < span.end }
+        }
+        return (markdown + kept).sortedBy { it.start }
+    }
+
+    /**
+     * The `@ai` mention, marked so it reads as addressed to somebody.
+     *
+     * Same grammar the SERVER decides by ([AssistantMention], mirrored in
+     * three places): a highlight the server would not act on, or an
+     * unhighlighted token it would, is a family watching a question go
+     * unanswered with no way to tell why.
+     *
+     * Applied over the RENDERED text, like everything else here, and only
+     * as a style — so it never competes with a link span for a tap.
+     */
+    fun withMentions(text: AnnotatedString, style: SpanStyle): AnnotatedString {
+        val ranges = AssistantMention.ranges(text.text)
+        if (ranges.isEmpty()) return text
+        return buildAnnotatedString {
+            append(text)
+            for (range in ranges) {
+                addStyle(style, range.first, range.last + 1)
             }
         }
     }

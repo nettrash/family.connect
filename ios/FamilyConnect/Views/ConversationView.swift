@@ -143,6 +143,8 @@ struct ConversationView: View {
     @State private var recorder = AudioRecorder()
     @State private var showFilePicker = false
     @State private var mediaState: MediaSendState = .idle
+    /// One fix, on demand — never a running location service.
+    @State private var locationProvider = LocationProvider()
     /// The attachment being viewed full-screen.
     @State private var viewingAttachment: AttachmentDTO?
     /// A downloaded file on its way to Quick Look.
@@ -590,6 +592,11 @@ struct ConversationView: View {
                     } label: {
                         Label("Record Audio", systemImage: "mic")
                     }
+                    Button {
+                        shareLocation()
+                    } label: {
+                        Label("Location", systemImage: "mappin.and.ellipse")
+                    }
                 } label: {
                     Image(systemName: "paperclip")
                         .font(.system(size: 20))
@@ -609,6 +616,19 @@ struct ConversationView: View {
                     selection: $pickedMedia,
                     matching: .any(of: [.images, .videos]),
                     photoLibrary: .shared())
+                if showsAssistantMention {
+                    Button {
+                        insertAssistantMention()
+                    } label: {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 20))
+                            .foregroundStyle(.tint)
+                            .frame(width: composerControl, height: composerControl)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(editTarget != nil)
+                    .accessibilityLabel("Ask the assistant")
+                }
                 TextField("Message", text: Bindable(model).draft, axis: .vertical)
                     .focused($inputFocused)
                     .lineLimit(1...5)
@@ -1481,12 +1501,99 @@ struct ConversationView: View {
         }
     }
 
+    /// Send where this device is, once.
+    ///
+    /// One tap rather than a map to drag a pin around: "share my location"
+    /// is what people mean, and a picker for anywhere else is a different
+    /// feature. The composer shows it working, and a refusal says which
+    /// kind of refusal it was — a denied permission and a fix that never
+    /// arrived need different things from the reader.
+    private func shareLocation() {
+        guard mediaState == .idle else { return }
+        mediaState = .preparing
+        Task {
+            do {
+                let fix = try await locationProvider.currentFix()
+                mediaState = .uploading
+                // Take-then-restore, like every other send here: whatever
+                // was typed travels with the pin, and comes back if the
+                // send never happened.
+                let composer = takeComposer()
+                let sent = await coordinator.sendLocation(
+                    latitude: fix.latitude,
+                    longitude: fix.longitude,
+                    accuracyM: fix.accuracyM,
+                    label: nil,
+                    caption: composer.caption,
+                    replyTo: composer.replyTo,
+                    in: chatID)
+                if sent {
+                    mediaState = .idle
+                } else {
+                    restore(composer)
+                    mediaState = .failed("Could not share your location.")
+                }
+            } catch LocationProvider.Failure.denied {
+                mediaState = .failed(
+                    "Family needs permission to use your location. Turn it on in Settings.")
+            } catch {
+                mediaState = .failed("Could not find your location.")
+            }
+        }
+    }
+
+    /// Offer the mention only where it does something.
+    ///
+    /// The family chat is the only place `@ai` is answered (a direct chat
+    /// is two people who each already have a private assistant, and the
+    /// assistant's own chat answers everything), and only when the server
+    /// actually has one — which is exactly what an absent `assistant` on
+    /// `GET /families/mine` says (docs/protocol.md).
+    ///
+    /// A button rather than an autocomplete popup: there is precisely one
+    /// name to complete, and a menu of one is a worse way to type three
+    /// characters than a button that types them.
+    private var showsAssistantMention: Bool {
+        chat?.kind == "family" && AppSettings.assistantUserID != nil
+    }
+
+    /// Put `@ai ` in the draft and give the field back to the keyboard.
+    ///
+    /// Appended rather than inserted at the caret: SwiftUI's TextField
+    /// publishes no selection, so "at the caret" is not knowable here, and
+    /// silently moving somebody's cursor would be worse than adding to the
+    /// end of what they were writing.
+    private func insertAssistantMention() {
+        let token = AssistantMention.token
+        var draft = model.draft
+        guard !AssistantMention.mentions(draft) else {
+            inputFocused = true
+            return
+        }
+        if draft.isEmpty {
+            draft = "\(token) "
+        } else if draft.hasSuffix(" ") {
+            draft += "\(token) "
+        } else {
+            draft += " \(token) "
+        }
+        model.draft = draft
+        inputFocused = true
+    }
+
     private func displayName(for userID: Int64) -> String? {
         // The assistant's account is not in the roster on purpose, so a
         // lookup would come back "Someone". In its own chat there are
         // exactly two participants, and anyone who is not me is it.
         if isAssistantChat, userID != coordinator.currentUserID {
             return chat?.title
+        }
+        // In the FAMILY chat there is no such shortcut — many senders, and
+        // the assistant answers there whenever somebody mentions it. Its id
+        // comes from `GET /families/mine`, which is the only place a client
+        // is told it (docs/protocol.md).
+        if let assistantID = AppSettings.assistantUserID, userID == assistantID {
+            return AppSettings.assistantName
         }
         return members.first(where: { $0.userID == userID })?.displayName
     }

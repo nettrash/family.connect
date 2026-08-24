@@ -63,9 +63,21 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                // Regardless of session phase — a badge on the icon of a
-                // logged-out app would be just as stale.
+                #if os(iOS)
+                // iOS ONLY. There the badge belongs to the push payload —
+                // the server sends the number and the app's only job is to
+                // clear it on the way in. Regardless of session phase: a
+                // badge on the icon of a logged-out app would be just as
+                // stale.
+                //
+                // On the Mac the number is derived locally instead (see
+                // UnreadBadge), because a Mac holds its socket open and so
+                // is almost never sent a push to carry one. Clearing it
+                // here would wipe that count every time the user clicked
+                // the app — which is precisely when they are looking to
+                // see whether anything arrived.
                 Task { try? await UNUserNotificationCenter.current().setBadgeCount(0) }
+                #endif
             }
             guard session.phase == .active else { return }
             switch newPhase {

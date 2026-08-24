@@ -13,6 +13,7 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.style.TextDecoration
 import com.google.common.truth.Truth.assertThat
@@ -87,12 +88,45 @@ class MessageLinksTest {
             .isEqualTo("Call 555-123-4567")
     }
 
+    /**
+     * The phishing shape, and the reason `mergeSpans` exists: a markdown
+     * link whose LABEL is itself a URL renders as that URL's text, which
+     * Linkify then matches as a link to the place it NAMES — two spans over
+     * the same glyphs with different destinations. The author's own
+     * destination is what the message declares, so it is the only one left.
+     */
+    @Test
+    fun aLinkLabelThatLooksLikeAUrlKeepsTheAuthorsDestination() {
+        val rendered = MessageMarkdown.render("[https://www.paypal.com](https://evil.example)")
+        val merged = MessageLinks.mergeSpans(
+            rendered.links,
+            MessageLinks.linkSpans(rendered.text),
+        )
+        assertThat(merged).hasSize(1)
+        assertThat(merged[0].url).isEqualTo("https://evil.example")
+    }
+
+    /** A detected link that overlaps nothing still survives the merge. */
+    @Test
+    fun mergeSpansKeepsDetectedLinksOutsideMarkdownOnes() {
+        val rendered = MessageMarkdown.render("[menu](https://a.example) and https://b.example")
+        val merged = MessageLinks.mergeSpans(
+            rendered.links,
+            MessageLinks.linkSpans(rendered.text),
+        )
+        assertThat(merged.map { it.url })
+            .containsExactly("https://a.example", "https://b.example")
+            .inOrder()
+    }
+
     @Test
     fun styledKeepsTheTextAndStylesExactlyTheSpanRanges() {
         val text = "docs: https://example.com ok"
         val spans = MessageLinks.linkSpans(text)
         val style = SpanStyle(textDecoration = TextDecoration.Underline)
-        val styled = MessageLinks.styled(text, spans, style)
+        // `styled` takes the RENDERED AnnotatedString now — markdown runs
+        // before it, and every span offset indexes what that produced.
+        val styled = MessageLinks.styled(AnnotatedString(text), spans, style)
         assertThat(styled.text).isEqualTo(text)
         assertThat(styled.spanStyles).hasSize(1)
         assertThat(styled.spanStyles[0].start).isEqualTo(spans[0].start)

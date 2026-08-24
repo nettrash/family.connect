@@ -33,8 +33,13 @@ import SwiftUI
 
 nonisolated enum MessageLinks {
 
-    /// The message body with every detected link, email and phone
-    /// number turned into a tappable, underlined .link run.
+    /// A message body, ready to draw: markdown rendered, every detected
+    /// link, email and phone number turned into a tappable underlined
+    /// `.link` run, and `@ai` marked as a mention.
+    ///
+    /// All three in ONE attributed string, and one `Text` at the call site
+    /// — see MessageMarkdown for why that is a constraint rather than a
+    /// convenience.
     static func attributedBody(_ text: String, isMine: Bool) -> AttributedString {
         let key = ((isMine ? "m|" : "t|") + text) as NSString
         if let boxed = cache.object(forKey: key) {
@@ -43,6 +48,39 @@ nonisolated enum MessageLinks {
         let built = build(text, isMine: isMine)
         cache.setObject(Box(built), forKey: key)
         return built
+    }
+
+    /// A message body for a surface with NO link handling: markdown and the
+    /// `@ai` mention rendered, links STYLED but not tappable.
+    ///
+    /// That is the macOS bubble. Its balloon hearts on a double click, and
+    /// SwiftUI's `Text` fires a link's own tap first — which is exactly the
+    /// collision the phone had to solve with a deferred `\.openURL`
+    /// override (see MessageBubbleView). The Mac has never had tappable
+    /// links at all, so leaving them inert is the status quo rather than a
+    /// regression; making them live means porting that arbitration, and
+    /// that is a gesture change on a surface no test here can exercise.
+    ///
+    /// Styled anyway, because a link that reads as plain prose is worse
+    /// than one that reads as a link and waits to be copied.
+    static func attributedBodyWithoutLinks(_ text: String, isMine: Bool) -> AttributedString {
+        var attributed = attributedBody(text, isMine: isMine)
+        for run in attributed.runs where run.link != nil {
+            attributed[run.range].link = nil
+        }
+        return attributed
+    }
+
+    /// The first https link in a body AS IT IS DRAWN — what the preview
+    /// card describes.
+    ///
+    /// Rendered first, for the reason `build` gives: markdown deletes
+    /// characters, so detecting over the raw body finds links in text the
+    /// bubble never shows. `**https://a.example**` would have previewed a
+    /// URL whose asterisks are not on screen, and `[label](url)` would
+    /// preview nothing at all even though a link is plainly there.
+    static func firstWebLinkAsDrawn(in text: String) -> URL? {
+        firstWebLink(in: String(MessageMarkdown.render(text).characters))
     }
 
     /// The first https link in a body — what the preview card
@@ -104,21 +142,118 @@ nonisolated enum MessageLinks {
     }()
 
     private static func build(_ text: String, isMine: Bool) -> AttributedString {
-        guard let detector else { return AttributedString(text) }
-        let mutable = NSMutableAttributedString(string: text)
-        let fullRange = NSRange(location: 0, length: mutable.length)
-        for match in detector.matches(in: text, range: fullRange) {
-            guard let url = url(for: match) else { continue }
-            mutable.addAttribute(.link, value: url, range: match.range)
+        // MARKDOWN FIRST, and the order is load-bearing.
+        //
+        // The detector works in offsets, and markdown DELETES characters —
+        // the `**`, the backticks, the `](url)`. Detecting over the raw
+        // body and then rendering would leave every link after the first
+        // markup token pointing at the wrong glyphs. Rendering first and
+        // detecting over what is actually drawn makes the offsets correct
+        // by construction, which is the same rule Android's hit test needs.
+        var attributed = MessageMarkdown.render(text)
+        let rendered = String(attributed.characters)
+
+        // Markdown's own destinations, made openable.
+        //
+        // Foundation hands back exactly what was typed, so `[here](example.com)`
+        // produces a scheme-less URL that opens nothing. Android normalises
+        // the same way — without this the identical message is a live link
+        // on one platform and a dead one on the other.
+        for run in attributed.runs where run.link != nil {
+            if let normalized = Self.normalized(run.link) {
+                attributed[run.range].link = normalized
+            }
         }
-        var attributed = AttributedString(mutable)
+
+        if let detector {
+            let fullRange = NSRange(location: 0, length: (rendered as NSString).length)
+            for match in detector.matches(in: rendered, range: fullRange) {
+                guard let url = url(for: match),
+                    let range = attributedRange(match.range, in: attributed, of: rendered)
+                else { continue }
+                // NEVER over a link the markup already declared.
+                //
+                // `[https://www.paypal.com](https://evil.example)` renders
+                // as that first URL's text, which the detector then matches
+                // as a link to the place it NAMES — overwriting the
+                // author's destination, or not, depending on order. Either
+                // way a tap could open somewhere the reader had every
+                // reason to think was what they were looking at. The
+                // author's own destination is what the message declares, so
+                // it stands and the detector's duplicate is dropped.
+                guard attributed[range].runs.allSatisfy({ $0.link == nil }) else { continue }
+                // Applied ONTO the rendered attributed string rather than
+                // onto a fresh copy: a copy carries no emphasis, so taking
+                // it wholesale would throw the markdown away.
+                attributed[range].link = url
+            }
+        }
+
         for run in attributed.runs where run.link != nil {
             attributed[run.range].underlineStyle = .single
             if isMine {
                 attributed[run.range].foregroundColor = .white
             }
         }
+        highlightMentions(in: &attributed, isMine: isMine)
         return attributed
+    }
+
+    /// Mark `@ai` so it reads as addressed to somebody.
+    ///
+    /// Same grammar the SERVER decides by (AssistantMention, mirrored in
+    /// three places): a highlight the server would not act on, or an
+    /// unhighlighted token it would, is a family watching a question go
+    /// unanswered with no way to tell why.
+    ///
+    /// Applied over the RENDERED text, after markdown, for the same reason
+    /// the detector is — and it is only a style, so it never fights the
+    /// link runs above for a tap.
+    private static func highlightMentions(in attributed: inout AttributedString, isMine: Bool) {
+        let rendered = String(attributed.characters)
+        for range in AssistantMention.ranges(in: rendered) {
+            let nsRange = NSRange(range, in: rendered)
+            guard let target = attributedRange(nsRange, in: attributed, of: rendered) else {
+                continue
+            }
+            attributed[target].inlinePresentationIntent = .stronglyEmphasized
+            if !isMine {
+                attributed[target].foregroundColor = .accentColor
+            }
+        }
+    }
+
+    /// A markdown destination that can actually be opened, or nil when it
+    /// already could be.
+    ///
+    /// Only a scheme is added, and only when there is none: anything the
+    /// author wrote in full is left exactly as written. `https` rather than
+    /// `http`, matching Android's `normalize`.
+    private static func normalized(_ url: URL?) -> URL? {
+        guard let url else { return nil }
+        guard url.scheme == nil else { return nil }
+        return URL(string: "https://\(url.absoluteString)")
+    }
+
+    /// Map a range of the rendered PLAIN text onto the attributed string it
+    /// came from.
+    ///
+    /// `AttributedString` has no initialiser taking a `String.Index` range,
+    /// and its own indices are not interchangeable with a `String`'s — so
+    /// the bridge is character OFFSETS, which both count the same way
+    /// (grapheme clusters). Everything here indexes the rendered text, so
+    /// there is no raw-versus-rendered mismatch left to get wrong.
+    private static func attributedRange(
+        _ nsRange: NSRange, in attributed: AttributedString, of rendered: String
+    ) -> Range<AttributedString.Index>? {
+        guard let stringRange = Range(nsRange, in: rendered) else { return nil }
+        let start = rendered.distance(from: rendered.startIndex, to: stringRange.lowerBound)
+        let length = rendered.distance(from: stringRange.lowerBound, to: stringRange.upperBound)
+        let characters = attributed.characters
+        guard start >= 0, length >= 0, start + length <= characters.count else { return nil }
+        let lower = characters.index(characters.startIndex, offsetBy: start)
+        let upper = characters.index(lower, offsetBy: length)
+        return lower..<upper
     }
 
     /// The URL a match should open. Web links and emails come back from

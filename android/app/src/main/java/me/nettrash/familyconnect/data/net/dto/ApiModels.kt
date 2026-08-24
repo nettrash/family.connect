@@ -185,14 +185,30 @@ data class AttachmentDto(
     @SerialName("duration_ms") val durationMs: Int? = null,
     @SerialName("has_preview") val hasPreview: Boolean = false,
     /**
-     * Files only, and their whole identity — a photo renders itself,
-     * where "attachment 34" tells nobody anything.
+     * Required on a file, where it is the attachment's whole identity — a
+     * photo renders itself, where "attachment 34" tells nobody anything.
+     * Optional on audio and on a location, where it is a label.
      */
     val name: String? = null,
+    /**
+     * Locations only, and always both: a location IS its coordinates
+     * (docs/protocol.md, "Locations"). They ride on the attachment rather
+     * than in bytes so a bubble can draw the pin the moment the message
+     * arrives, without a download that might fail.
+     */
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    /**
+     * Locations only, and only when the sending device knew one: the radius
+     * in metres it believed the fix good to. Null means UNKNOWN, drawn as a
+     * plain pin rather than as perfect precision.
+     */
+    @SerialName("accuracy_m") val accuracyM: Int? = null,
 ) {
     val isVideo: Boolean get() = kind == KIND_VIDEO
     val isFile: Boolean get() = kind == KIND_FILE
     val isAudio: Boolean get() = kind == KIND_AUDIO
+    val isLocation: Boolean get() = kind == KIND_LOCATION
 
     /**
      * A filename for something that carries no name of its own.
@@ -220,6 +236,8 @@ data class AttachmentDto(
         get() = name?.takeIf { it.isNotEmpty() }
             ?: when {
                 isVideo -> "Video"
+                isAudio -> "Audio"
+                isLocation -> "Location"
                 isFile -> "File"
                 else -> "Photo"
             }
@@ -241,6 +259,7 @@ data class AttachmentDto(
         const val KIND_VIDEO = "video"
         const val KIND_AUDIO = "audio"
         const val KIND_FILE = "file"
+        const val KIND_LOCATION = "location"
         const val DEFAULT_ASPECT = 4f / 3f
     }
 }
@@ -423,6 +442,33 @@ data class FamilyMineResponse(
     val members: List<MemberDto>,
     // The board cursor, omitted while the board has never been written to.
     @SerialName("max_board_seq") val maxBoardSeq: Long? = null,
+    // Absent when the server has no assistant configured, which is the
+    // whole of the capability check (docs/protocol.md, "Mentioning the
+    // assistant in the family chat").
+    val assistant: AssistantDto? = null,
+)
+
+/**
+ * The assistant, as `GET /families/mine` reports it.
+ *
+ * Not a [MemberDto] and deliberately not in `members`: it belongs to no
+ * family, cannot be messaged one-to-one, removed, made owner or given a
+ * password, and every screen that lists people would need a special case
+ * for it. What it IS good for is naming its messages in the family chat —
+ * its reserved account is absent from the roster on purpose, so a lookup
+ * there finds nothing — and telling the composer the feature exists.
+ */
+@Serializable
+data class AssistantDto(
+    @SerialName("user_id") val userId: Long,
+    @SerialName("display_name") val displayName: String,
+    /**
+     * The token that summons it, from the server rather than hard-coded:
+     * the grammar is shared ([me.nettrash.familyconnect.ui.chat.AssistantMention])
+     * but the spelling belongs to the protocol, and a client inventing its
+     * own would be unanswerable.
+     */
+    val mention: String,
 )
 
 @Serializable

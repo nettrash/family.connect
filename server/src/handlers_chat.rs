@@ -140,7 +140,9 @@ const MESSAGE_COLS: &str = "m.id, m.chat_id, m.sender_id, m.client_msg_id, m.bod
                             att.id AS att_id, att.kind AS att_kind, att.mime AS att_mime, \
                             att.size_bytes AS att_size, att.width AS att_width, \
                             att.height AS att_height, att.duration_ms AS att_duration_ms, \
-                            att.has_preview AS att_has_preview, att.name AS att_name";
+                            att.has_preview AS att_has_preview, att.name AS att_name, \
+                            att.latitude AS att_latitude, att.longitude AS att_longitude, \
+                            att.accuracy_m AS att_accuracy_m";
 const MESSAGE_FROM: &str = "FROM messages m LEFT JOIN messages p \
                             ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id \
                             LEFT JOIN messages g \
@@ -400,13 +402,35 @@ pub async fn create_message(
         // Spawned, so the sender's send returns at once: a reply takes
         // seconds, and holding the send open for it would make asking a
         // question feel like a failure.
-        if state.cfg.ai.is_usable() && chat_kind == "ai" {
-            crate::handlers_ai::spawn_reply(
-                state.clone(),
-                chat_id,
-                sender_id,
-                language.map(str::to_string),
-            );
+        if state.cfg.ai.is_usable() {
+            match chat_kind.as_str() {
+                "ai" => crate::handlers_ai::spawn_reply(
+                    state.clone(),
+                    chat_id,
+                    sender_id,
+                    language.map(str::to_string),
+                ),
+                // The family chat answers only when it is ASKED to
+                // (protocol.md, "Mentioning the assistant in the family
+                // chat"). The mention is the consent: without it nothing
+                // about the message leaves the server, which is what keeps
+                // an ordinary family conversation ordinary.
+                //
+                // Family only, deliberately. A direct chat is two people
+                // who each already have a private assistant, and an
+                // assistant answering inside someone's one-to-one is a
+                // third party in a conversation that had two.
+                "family" if crate::mentions::mentions_assistant(body) => {
+                    crate::handlers_ai::spawn_mention_reply(
+                        state.clone(),
+                        chat_id,
+                        sender_id,
+                        message.id,
+                        language.map(str::to_string),
+                    )
+                }
+                _ => {}
+            }
         }
         return Ok((message, true));
     }
@@ -544,7 +568,8 @@ async fn claim_attachment(
     let row = sqlx::query(
         "UPDATE attachments SET message_id = $3
          WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL
-         RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name",
+         RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name,
+                   latitude, longitude, accuracy_m",
     )
     .bind(attachment_id)
     .bind(uploader_id)
@@ -843,6 +868,13 @@ pub async fn list_chats(
                     duration_ms: None,
                     has_preview: row.get("att_has_preview"),
                     name: row.get("att_name"),
+                    // Nor the coordinates. A chat-list row is one line of
+                    // text — "Location" — and shipping a family member's
+                    // position on every list read to draw nothing with it
+                    // would be a wider answer than the question.
+                    latitude: None,
+                    longitude: None,
+                    accuracy_m: None,
                 }),
             });
             let last_reaction_seq: i64 = row.get("last_reaction_seq");

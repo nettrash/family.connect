@@ -4,6 +4,7 @@
     <string name="s_add_a_note_everyone_in_the_family_sees_it">Ajoute une note : toute la famille la voit.</string>
     <string name="s_add_note">Ajouter une note</string>
     <string name="s_approval">Approbation</string>
+    <string name="s_ask_the_assistant">Demander à l’assistant</string>
     <string name="s_attach_a_photo_video_or_file">Joindre une photo, une vidéo ou un fichier</string>
     <string name="s_back">Retour</string>
     <string name="s_board">Tableau</string>
@@ -31,6 +32,10 @@
     <string name="s_failed_tap_to_retry">Échec — touche pour réessayer</string>
     <string name="s_family">Famille</string>
     <string name="s_family_name">Nom de la famille</string>
+    <string name="s_location">Position</string>
+    <string name="s_share_your_location">Position</string>
+    <string name="e_location_permission">Family a besoin de l’autorisation d’utiliser ta position.</string>
+    <string name="e_location_unavailable">Impossible de trouver ta position.</string>
     <string name="s_file">Fichier</string>
     <string name="s_invite_code">Code d’invitation</string>
     <string name="s_join">Rejoindre</string>

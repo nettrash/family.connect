@@ -169,16 +169,69 @@ pub async fn deliver_new_message(
     message: &Message,
     origin_conn: Option<u64>,
 ) -> Result<(), ApiError> {
-    let members = chat_member_ids(&state.pool, message.chat_id).await?;
-    let frame = ServerFrame::Message {
-        message: message.clone(),
-    };
-    let offline = state.registry.fan_out(&members, &frame, origin_conn).await;
-
+    let offline = fan_out_new_message(state, message, origin_conn).await?;
     let push_targets: Vec<i64> = offline
         .into_iter()
         .filter(|user_id| *user_id != message.sender_id)
         .collect();
+    push_message_to(state, message, push_targets).await
+}
+
+/// A new message to every member connection, raising NO notification.
+///
+/// For a message that is not yet worth waking anyone for — today that is
+/// the assistant's empty placeholder, which exists only so every device has
+/// a row to stream into (protocol.md, "The assistant"). Pushing it would
+/// alert the family to a blank line, and the finished text arrives as an
+/// edit, which deliberately never pushes: the alert has to be raised later,
+/// by `push_message_late`, once there is something to read.
+pub async fn deliver_message_without_push(
+    state: &AppState,
+    message: &Message,
+    origin_conn: Option<u64>,
+) -> Result<(), ApiError> {
+    fan_out_new_message(state, message, origin_conn).await?;
+    Ok(())
+}
+
+/// Raise the notification for a message whose fan-out already happened.
+///
+/// The pair to `deliver_message_without_push`. "Offline" is re-decided here
+/// rather than reused, because between the two calls a member may have put
+/// their phone down — which is exactly the person the alert is for.
+pub async fn push_message_late(state: &AppState, message: &Message) -> Result<(), ApiError> {
+    let members = chat_member_ids(&state.pool, message.chat_id).await?;
+    let mut push_targets = Vec::new();
+    for user_id in members {
+        if user_id != message.sender_id && !state.registry.has_connections(user_id).await {
+            push_targets.push(user_id);
+        }
+    }
+    push_message_to(state, message, push_targets).await
+}
+
+/// Fan a `message` frame out to every member of its chat, answering with
+/// the members who had no connection to take it.
+async fn fan_out_new_message(
+    state: &AppState,
+    message: &Message,
+    origin_conn: Option<u64>,
+) -> Result<Vec<i64>, ApiError> {
+    let members = chat_member_ids(&state.pool, message.chat_id).await?;
+    let frame = ServerFrame::Message {
+        message: message.clone(),
+    };
+    Ok(state.registry.fan_out(&members, &frame, origin_conn).await)
+}
+
+/// Compose and send the notification for a message to a decided set of
+/// recipients. Split out of `deliver_new_message` so a message whose alert
+/// has to wait for its body can reuse it unchanged.
+async fn push_message_to(
+    state: &AppState,
+    message: &Message,
+    push_targets: Vec<i64>,
+) -> Result<(), ApiError> {
     if push_targets.is_empty() {
         return Ok(());
     }

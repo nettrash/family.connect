@@ -95,6 +95,12 @@ struct FamilyConnectApp: App {
                 try? context.delete(model: MemberEntity.self)
                 try? context.delete(model: NoteEntity.self)
                 try? context.save()
+                // This path deletes the rows directly rather than through
+                // the coordinator, so nothing here would otherwise take the
+                // Mac's Dock badge down — leaving a count from a session
+                // that no longer exists on an app sitting at the login
+                // screen.
+                UnreadBadge.show(0)
             }
 
             // Push: the registrar shares the coordinator's APIClient (same

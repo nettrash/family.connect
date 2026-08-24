@@ -17,6 +17,10 @@
 package me.nettrash.familyconnect.ui.components
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.material.icons.filled.Place
+import java.util.Locale
 import android.text.format.Formatter
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -142,7 +146,16 @@ fun AttachmentBlock(
     onLongPress: () -> Unit = {},
     onDoubleTap: () -> Unit = {},
 ) {
-    if (attachment.isAudio) {
+    if (attachment.isLocation) {
+        // A location has no bytes at all, so none of the download machinery
+        // below applies to it (docs/protocol.md, "Locations").
+        LocationRow(
+            attachment = attachment,
+            onLongPress = onLongPress,
+            onDoubleTap = onDoubleTap,
+            modifier = modifier,
+        )
+    } else if (attachment.isAudio) {
         // Audio has nothing to look at, so it gets a player rather than a
         // tile or a document row (protocol.md, "Audio").
         AudioPlayerRow(
@@ -169,6 +182,109 @@ fun AttachmentBlock(
             modifier = modifier,
         )
     }
+}
+
+/**
+ * A shared place.
+ *
+ * A ROW rather than a map tile, and that is a platform decision rather than
+ * a design one: drawing map tiles on Android needs the Play Services Maps
+ * SDK and an API key, and this app's dependency catalog states plainly that
+ * firebase-messaging is the only Google service it will carry — "nothing
+ * else may phone Google". So the pin, its label and its coordinates are
+ * drawn from what arrived with the message, and TAPPING hands off to
+ * whichever map app the person already has, through a `geo:` intent. That
+ * hand-off is a choice the reader makes, not a request the app makes on
+ * their behalf, which is the stricter half of the same privacy trade iOS
+ * offers as a switch.
+ */
+@Composable
+private fun LocationRow(
+    attachment: AttachmentDto,
+    onLongPress: () -> Unit,
+    onDoubleTap: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val latitude = attachment.latitude
+    val longitude = attachment.longitude
+    if (latitude == null || longitude == null) return
+    val label = attachment.name?.takeIf { it.isNotEmpty() }
+        ?: stringResource(R.string.s_location)
+    val coordinates = remember(latitude, longitude, attachment.accuracyM) {
+        val lat = String.format(Locale.ROOT, "%.5f", latitude)
+        val lon = String.format(Locale.ROOT, "%.5f", longitude)
+        val accuracy = attachment.accuracyM
+        if (accuracy == null) "$lat, $lon" else "$lat, $lon · ±$accuracy m"
+    }
+    // Same rule as the file row: everything derives from the balloon's own
+    // content colour, so it reads on both the tinted and the neutral ground.
+    val ink = LocalContentColor.current
+    Row(
+        modifier = modifier
+            .widthIn(max = MAX_WIDTH.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(ink.copy(alpha = 0.10f))
+            .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+            .combinedClickable(
+                onClick = { openInMaps(context, latitude, longitude, label) },
+                onLongClick = onLongPress,
+                onDoubleClick = onDoubleTap,
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .semantics { contentDescription = "$label, $coordinates" },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(ink.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Place,
+                contentDescription = null,
+                tint = ink,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+        Column(modifier = Modifier.weight(1f, fill = false)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = coordinates,
+                style = MaterialTheme.typography.labelSmall,
+                color = ink.copy(alpha = 0.72f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
+ * Hand a place to whichever map app is installed.
+ *
+ * `geo:lat,lon?q=lat,lon(label)` rather than a Google Maps URL: the scheme
+ * is what every map app on Android registers for, so this opens the one the
+ * person actually uses. The `q` is what puts a PIN there — a bare
+ * `geo:lat,lon` only centres the map, with nothing marked.
+ */
+private fun openInMaps(context: Context, latitude: Double, longitude: Double, label: String) {
+    val point = "${String.format(Locale.ROOT, "%.6f", latitude)}," +
+        String.format(Locale.ROOT, "%.6f", longitude)
+    val uri = Uri.parse("geo:$point?q=$point(${Uri.encode(label)})")
+    val intent = Intent(Intent.ACTION_VIEW, uri)
+    // No map app installed is a real state on a stripped device; failing
+    // silently beats an ActivityNotFoundException taking the app down.
+    runCatching { context.startActivity(intent) }
 }
 
 /**

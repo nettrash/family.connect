@@ -437,8 +437,31 @@ async fn handle_client_text(
                 return None;
             }
             typing_last.insert(chat_id, now);
-            // Best-effort: membership failures are dropped silently rather
-            // than answered — erroring on every keystroke would spam.
+            // Membership is checked HERE, after the throttle, and the answer
+            // is silence either way.
+            //
+            // After, because the throttle is what keeps a key-masher from
+            // turning every keystroke into a database round trip — a check
+            // placed before it would be unthrottled.
+            //
+            // Silent, because this frame has no reply on ANY path: telling a
+            // caller "not_chat_member" for one id and nothing for another
+            // would turn the indicator into an oracle for which chat ids
+            // exist, and erroring on every keystroke would spam a client
+            // whose membership simply lapsed mid-connection.
+            //
+            // The check itself is not optional: without it any authenticated
+            // account — including one in no family at all — could make any
+            // chat in the database show them typing, since `deliver_typing`
+            // reads the member list only to address the fan-out.
+            if handlers_chat::ensure_chat_access(state, chat_id, auth.user_id)
+                .await
+                .is_err()
+            {
+                debug!(chat_id, "typing frame for a chat the sender is not in");
+                return None;
+            }
+            // Best-effort: fan-out failures are dropped silently too.
             if let Err(err) = events::deliver_typing(state, chat_id, auth.user_id).await {
                 debug!(error = ?err, chat_id, "typing frame dropped");
             }

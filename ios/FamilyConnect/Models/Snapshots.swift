@@ -225,16 +225,23 @@ nonisolated enum MessagePresentation {
         _ messages: [MessageSnapshot],
         calendar: Calendar = .current
     ) -> [DaySection] {
-        var sections: [DaySection] = []
+        // Built as (day, rows) pairs and only turned into DaySections at
+        // the end. The obvious shape — `sections[last] = DaySection(…,
+        // messages: sections[last].messages + [message])` — READS the array
+        // it is assigning to, which defeats copy-on-write and makes this
+        // quadratic in the number of messages in one day. It went unnoticed
+        // while the phone only ever passed it a 60-row window; the Mac
+        // passed it the whole thread, on every body evaluation.
+        var days: [(day: Date, messages: [MessageSnapshot])] = []
         for message in messages {
             let day = calendar.startOfDay(for: message.createdAt)
-            if let last = sections.indices.last, sections[last].day == day {
-                sections[last] = DaySection(day: day, messages: sections[last].messages + [message])
+            if let last = days.indices.last, days[last].day == day {
+                days[last].messages.append(message)
             } else {
-                sections.append(DaySection(day: day, messages: [message]))
+                days.append((day: day, messages: [message]))
             }
         }
-        return sections
+        return days.map { DaySection(day: $0.day, messages: $0.messages) }
     }
 
     /// Whether the sender's name caption shows above a bubble.

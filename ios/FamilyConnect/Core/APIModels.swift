@@ -259,9 +259,20 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
     let height: Int?
     let durationMS: Int?
     let hasPreview: Bool
-    /// Files only, and their whole identity — a photo renders itself,
-    /// where "attachment 34" tells nobody anything.
+    /// Required on a file, where it is the attachment's whole identity — a
+    /// photo renders itself, where "attachment 34" tells nobody anything.
+    /// Optional on audio and on a location, where it is a label.
     let name: String?
+    /// Locations only, and always both: a location IS its coordinates
+    /// (docs/protocol.md, "Locations"). They ride on the attachment rather
+    /// than in bytes so a bubble can draw the pin the moment the message
+    /// arrives, without a download that might fail.
+    let latitude: Double?
+    let longitude: Double?
+    /// Locations only, and only when the sending device knew one: the
+    /// radius in metres it believed the fix good to. Absent means UNKNOWN,
+    /// which is drawn as a plain pin — never as perfect precision.
+    let accuracyM: Int?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -273,17 +284,29 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         case durationMS = "duration_ms"
         case hasPreview = "has_preview"
         case name
+        case latitude
+        case longitude
+        case accuracyM = "accuracy_m"
     }
 
     var isVideo: Bool { kind == Kind.video }
     var isFile: Bool { kind == Kind.file }
     var isAudio: Bool { kind == Kind.audio }
+    var isLocation: Bool { kind == Kind.location }
+
+    /// The pin, when there is one. Both halves or neither — a location with
+    /// one coordinate is not a place.
+    var coordinate: (latitude: Double, longitude: Double)? {
+        guard isLocation, let latitude, let longitude else { return nil }
+        return (latitude, longitude)
+    }
 
     enum Kind {
         static let photo = "photo"
         static let video = "video"
         static let audio = "audio"
         static let file = "file"
+        static let location = "location"
     }
 
     /// What the bubble calls it: the name for a file, a word for the rest.
@@ -291,6 +314,7 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         if let name, !name.isEmpty { return name }
         if isVideo { return "Video" }
         if isAudio { return "Audio" }
+        if isLocation { return "Location" }
         return isFile ? "File" : "Photo"
     }
 
@@ -419,9 +443,35 @@ nonisolated struct JoinResponse: Codable, Equatable, Sendable {
     let status: String
 }
 
+/// The assistant, as `GET /families/mine` reports it.
+///
+/// Not a `MemberDTO` and deliberately not in `members`: it belongs to no
+/// family, cannot be messaged one-to-one, removed, made owner or given a
+/// password, and every screen that lists people would need a special case
+/// for it. What it IS good for is naming its messages in the family chat —
+/// its reserved account is absent from the roster on purpose, so a lookup
+/// there finds nothing — and telling the composer the feature exists.
+nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
+    let userID: Int64
+    let displayName: String
+    /// The token that summons it, from the server rather than hard-coded:
+    /// the grammar is shared (AssistantMention) but the spelling belongs to
+    /// the protocol, and a client inventing its own would be unanswerable.
+    let mention: String
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case displayName = "display_name"
+        case mention
+    }
+}
+
 nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     let family: FamilyDTO
     let members: [MemberDTO]
+    /// Absent when the server has no assistant configured — which is the
+    /// whole of the capability check.
+    let assistant: AssistantDTO?
     /// The board cursor, omitted while the board has never been written to.
     /// It rides along on the call every client already makes on resync, so
     /// learning whether a board catch-up is needed costs no extra request.
@@ -430,12 +480,19 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case family
         case members
+        case assistant
         case maxBoardSeq = "max_board_seq"
     }
 
-    init(family: FamilyDTO, members: [MemberDTO], maxBoardSeq: Int64? = nil) {
+    init(
+        family: FamilyDTO,
+        members: [MemberDTO],
+        assistant: AssistantDTO? = nil,
+        maxBoardSeq: Int64? = nil
+    ) {
         self.family = family
         self.members = members
+        self.assistant = assistant
         self.maxBoardSeq = maxBoardSeq
     }
 }

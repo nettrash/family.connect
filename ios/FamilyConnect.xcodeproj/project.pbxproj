@@ -434,6 +434,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Taking a photo or video sends it to your family, and nowhere else. Family never opens the camera on its own.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A video you shoot in a chat records sound with it. Family never listens outside the camera.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -479,6 +480,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Taking a photo or video sends it to your family, and nowhere else. Family never opens the camera on its own.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A video you shoot in a chat records sound with it. Family never listens outside the camera.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -674,6 +676,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Taking a photo or video sends it to your family, and nowhere else. Family never opens the camera on its own.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A video you shoot in a chat records sound with it. Family never listens outside the camera.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

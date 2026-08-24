@@ -336,6 +336,56 @@ actor APIClient {
     /// memory is 100 MB resident on a phone that also has to render a chat.
     /// Metadata rides in the query string, so there is no multipart body
     /// for either side to assemble or parse.
+    /// The one upload with nothing to upload.
+    ///
+    /// A location is three numbers, and they go in the query string like
+    /// every other piece of attachment metadata — there is no body, no
+    /// file on disk to stream and delete, and nothing to fetch back
+    /// afterwards (docs/protocol.md, "Locations"). It is a separate call
+    /// rather than an argument to the one below because that one's whole
+    /// subject is a file: it takes a `fileURL`, streams it, and every
+    /// caller deletes it afterwards.
+    func uploadLocation(
+        latitude: Double,
+        longitude: Double,
+        accuracyM: Int?,
+        name: String?
+    ) async throws -> AttachmentDTO {
+        guard let serverURL else { throw APIError.notConfigured }
+        var query = [
+            URLQueryItem(name: "kind", value: AttachmentDTO.Kind.location),
+            // Plain decimal degrees, and never a localized formatter: a
+            // device set to a comma decimal separator would send "55,7558"
+            // and the server would refuse a perfectly good coordinate.
+            URLQueryItem(name: "latitude", value: Self.coordinateString(latitude)),
+            URLQueryItem(name: "longitude", value: Self.coordinateString(longitude)),
+        ]
+        if let accuracyM { query.append(URLQueryItem(name: "accuracy_m", value: String(accuracyM))) }
+        if let name, !name.isEmpty { query.append(URLQueryItem(name: "name", value: name)) }
+        guard let url = Self.endpointURL(base: serverURL, path: "/attachments", query: query) else {
+            throw APIError.notConfigured
+        }
+        var request = URLRequest(url: url, timeoutInterval: uploadTimeout)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, http) = try await send(request)
+        guard (200..<300).contains(http.statusCode) else {
+            throw Self.mapError(status: http.statusCode, data: data)
+        }
+        let decoded: AttachmentResponse = try decodeResponse(data)
+        return decoded.attachment
+    }
+
+    /// A coordinate as the wire wants it: decimal degrees, a full stop for
+    /// the point, no grouping, and enough places to be exact to a
+    /// centimetre — well past what any phone can actually measure.
+    static func coordinateString(_ value: Double) -> String {
+        String(format: "%.7f", locale: Locale(identifier: "en_US_POSIX"), value)
+    }
+
     func uploadAttachment(
         fileURL: URL,
         mime: String,

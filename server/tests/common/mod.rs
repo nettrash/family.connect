@@ -18,6 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -513,7 +514,20 @@ impl Drop for TestServer {
                 .build()
                 .expect("teardown runtime");
             rt.block_on(async move {
-                pool.close().await;
+                // BOUNDED, and that bound is load-bearing rather than
+                // defensive. `close()` waits for every checked-out
+                // connection to come back, and a `#[tokio::test]` runs on a
+                // CURRENT-THREAD runtime whose only thread is the one
+                // blocked in the `join()` below — so a connection held by a
+                // task the server spawned (the assistant answering a
+                // question, say) can never be returned and the wait never
+                // ends. That is the whole of the "this suite hangs past ten
+                // minutes" mystery.
+                //
+                // Nothing is lost by giving up: `DROP DATABASE ... WITH
+                // (FORCE)` on the next line terminates whatever is still
+                // attached, which is what actually cleans up.
+                let _ = tokio::time::timeout(Duration::from_secs(3), pool.close()).await;
                 if let Ok(admin_pool) = db::connect(&admin).await {
                     let _ = sqlx::query(&format!(
                         "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"

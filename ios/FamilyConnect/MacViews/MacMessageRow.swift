@@ -260,7 +260,12 @@ struct MacMessageRow: View {
                 MacQuoteBlock(quote: quote, isMine: isMine, nameFor: nameFor)
             }
             if let attachment = message.attachment {
-                if attachment.isAudio {
+                if attachment.isLocation {
+                    // Its own view, shared with the phone: a location has
+                    // no bytes, so none of the download machinery applies,
+                    // and it carries its own click-to-open-in-Maps.
+                    LocationAttachmentView(attachment: attachment, isMine: isMine)
+                } else if attachment.isAudio {
                     // The player IS the interaction; a click belongs to its
                     // own controls, so no open/heart pair here.
                     MacAttachmentBlock(attachment: attachment, isMine: isMine)
@@ -282,7 +287,8 @@ struct MacMessageRow: View {
                 Text(verbatim: "▍").opacity(0.6)
             }
             if !message.body.isEmpty {
-                Text(message.body)
+                Text(bodyText)
+                    .font(emojiFont)
                     .fixedSize(horizontal: false, vertical: true)
                     .overlay(alignment: .bottomTrailing) {
                         if isStreaming {
@@ -312,19 +318,72 @@ struct MacMessageRow: View {
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 7)
+        // A message that is nothing but emoji renders BARE, exactly as it
+        // does on the phone and on Android: the padding and the shape stay
+        // (so the hover target, the context menu and the run-aware corners
+        // are untouched) and only the fill goes.
         .background(
-            isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.appSecondaryFill),
+            isEmojiOnly
+                ? AnyShapeStyle(Color.clear)
+                : isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.appSecondaryFill),
             in: shape)
-        .foregroundStyle(isMine ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+        // ...and with the fill gone, white would vanish. Own messages flip
+        // to .primary so a monochrome pictograph (☂, ™) is still visible
+        // against the window. Same rule as MessageBubbleView.
+        .foregroundStyle(
+            isMine && !isEmojiOnly ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
         .frame(maxWidth: 460, alignment: isMine ? .trailing : .leading)
         // A pending row is dimmed until the server has it — the same
         // signal the phone gives, without a status glyph.
         .opacity(message.state == .pending ? 0.55 : 1)
         // A hint of lift under the cursor: this row has a menu on it, and
-        // nothing else says so on a Mac.
-        .shadow(color: .black.opacity(hovering ? 0.12 : 0), radius: 3, y: 1)
+        // nothing else says so on a Mac. Suppressed on a bare balloon,
+        // where there is no balloon to lift — the shadow would fall on the
+        // glyphs themselves and read as a smudge.
+        .shadow(
+            color: .black.opacity(hovering && !isEmojiOnly ? 0.12 : 0), radius: 3, y: 1)
         .animation(.easeOut(duration: 0.12), value: hovering)
     }
+
+    /// True when the body is nothing but a few emoji.
+    private var isEmojiOnly: Bool { EmojiOnly.displayFontSize(for: message.body) != nil }
+
+    /// What the balloon draws.
+    ///
+    /// Markdown and the `@ai` mention, through the SAME renderer the phone
+    /// uses — a message written on one platform has to read the same on the
+    /// other, and two renderers would be two subsets within a week.
+    ///
+    /// Emoji-only bodies branch AROUND it, exactly as they do on the phone
+    /// and on Android: the ladder's whole subject is that the message is
+    /// nothing but glyphs, and running a markup pass over it could only
+    /// take something away.
+    private var bodyText: AttributedString {
+        guard !isEmojiOnly else { return AttributedString(message.body) }
+        return MessageLinks.attributedBodyWithoutLinks(message.body, isMine: isMine)
+    }
+
+    /// The body font: the shared emoji ladder, or the inherited default.
+    ///
+    /// The ladder itself is a pinned cross-platform contract (96/80/68/56,
+    /// with mirrored vectors in EmojiOnly.swift and EmojiOnly.kt) and must
+    /// NOT be edited to suit the Mac. What is adjusted here, at the call
+    /// site, is the one thing that genuinely differs: those points were
+    /// chosen against a phone's ~17pt body text, and a Mac's is ~13pt, so
+    /// a literal 96pt glyph sits far larger relative to everything around
+    /// it than the same message does on a phone. Scaling by the ratio of
+    /// the two body sizes keeps the PROPORTION the ladder was designed for,
+    /// which is what "the same as iOS" means on a different-sized surface.
+    ///
+    /// No `@ScaledMetric`: macOS has no Dynamic Type for it to track.
+    private var emojiFont: Font? {
+        guard let size = EmojiOnly.displayFontSize(for: message.body) else { return nil }
+        return .system(size: size * Self.macBodyRatio)
+    }
+
+    /// macOS's default body size over iOS's. One constant to change if the
+    /// Mac's emoji ever want to be bigger or smaller.
+    private static let macBodyRatio: CGFloat = 13.0 / 17.0
 }
 
 /// The emoji already on a message.
@@ -395,7 +454,13 @@ private struct MacQuoteBlock: View {
                     .opacity(0.85)
             }
         }
-        .frame(maxWidth: 420, alignment: .leading)
+        // No width of its own, on purpose. `frame(maxWidth:)` in SwiftUI is
+        // GREEDY — it takes the whole proposal whenever one is offered — so
+        // the 420 that used to be here reported ~420pt however short the
+        // excerpt was, and every reply balloon on the Mac came out a
+        // fixed-width slab regardless of what the reply said. The balloon
+        // already caps itself at 460 after its background, which is the
+        // bound that was actually wanted.
     }
 }
 

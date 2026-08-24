@@ -280,6 +280,91 @@ class ReplyMigrationTest {
         AppDatabase.MIGRATION_6_7.migrate(db)
         AppDatabase.MIGRATION_7_8.migrate(db)
         AppDatabase.MIGRATION_9_10.migrate(db)
+        AppDatabase.MIGRATION_10_11.migrate(db)
+    }
+
+    /**
+     * The LOCATION columns (v11). Same PRAGMA comparison as above, and for
+     * the same reason: Room refuses to open a migrated database whose
+     * columns differ from what it would have created, and getting that
+     * wrong does not fail a test — it bricks every install that upgrades.
+     *
+     * All three are nullable with NO default, because null IS the normal
+     * case: every attachment that is not a location has no coordinates,
+     * and a `0` default would claim every photo ever sent was taken off
+     * the coast of Africa.
+     */
+    @Test
+    fun `the location columns match what Room creates from the entity`() {
+        migrateToLatest()
+        val migrated = columnsOf(db, "messages")
+
+        val fresh = androidx.room.Room.inMemoryDatabaseBuilder(
+            RuntimeEnvironment.getApplication(),
+            AppDatabase::class.java,
+        ).build()
+        val expected = try {
+            columnsOf(fresh.openHelper.writableDatabase, "messages")
+        } finally {
+            fresh.close()
+        }
+
+        for (name in listOf(
+            "attachmentLatitude",
+            "attachmentLongitude",
+            "attachmentAccuracyM",
+        )) {
+            assertThat(migrated[name]).isNotNull()
+            assertThat(migrated[name]).isEqualTo(expected[name])
+        }
+    }
+
+    /**
+     * A message that predates locations keeps everything it had and simply
+     * has no coordinates — which is what "this is not a location" means.
+     */
+    @Test
+    fun `history survives the locations migration`() {
+        db.execSQL(
+            "INSERT INTO messages (clientMsgId, serverId, chatId, senderId, body, createdAt, status) " +
+                "VALUES ('a', 1, 42, 7, 'Dinner at 7?', 1000, 'SENT')",
+        )
+        migrateToLatest()
+
+        db.query(
+            "SELECT body, attachmentLatitude, attachmentLongitude, attachmentAccuracyM " +
+                "FROM messages WHERE clientMsgId = 'a'",
+        ).use { cursor ->
+            cursor.moveToFirst()
+            assertThat(cursor.getString(0)).isEqualTo("Dinner at 7?")
+            assertThat(cursor.isNull(1)).isTrue()
+            assertThat(cursor.isNull(2)).isTrue()
+            assertThat(cursor.isNull(3)).isTrue()
+        }
+    }
+
+    /** A location written after the migration reads back whole. */
+    @Test
+    fun `a location written after the migration reads back whole`() {
+        migrateToLatest()
+        db.execSQL(
+            "INSERT INTO messages (clientMsgId, serverId, chatId, senderId, body, createdAt, status, " +
+                "attachmentId, attachmentKind, attachmentMime, attachmentSize, " +
+                "attachmentLatitude, attachmentLongitude, attachmentAccuracyM) " +
+                "VALUES ('b', 2, 42, 7, '', 2000, 'SENT', 61, 'location', " +
+                "'application/vnd.family-connect.location', 0, 55.7558, 37.6173, 12)",
+        )
+
+        db.query(
+            "SELECT attachmentKind, attachmentLatitude, attachmentLongitude, attachmentAccuracyM " +
+                "FROM messages WHERE clientMsgId = 'b'",
+        ).use { cursor ->
+            cursor.moveToFirst()
+            assertThat(cursor.getString(0)).isEqualTo("location")
+            assertThat(cursor.getDouble(1)).isEqualTo(55.7558)
+            assertThat(cursor.getDouble(2)).isEqualTo(37.6173)
+            assertThat(cursor.getInt(3)).isEqualTo(12)
+        }
     }
 
     @Test

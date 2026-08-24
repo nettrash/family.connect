@@ -210,6 +210,52 @@ async fn a_send_into_a_foreign_chat_answers_with_an_error_frame() {
     );
 }
 
+/// `typing` was the one inbound frame with no membership check: any
+/// authenticated account — including one in no family at all — could name
+/// any chat id in the database and make that family's chat show them
+/// typing. The relay is now gated, and the refusal is SILENT on purpose:
+/// an `error` frame here would spam a client whose membership lapsed
+/// mid-connection with one error per keystroke, and answering only for
+/// chats that exist would turn the indicator into a way to enumerate ids.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_typing_frame_for_a_foreign_chat_is_dropped_in_silence() {
+    let ts = spawn_server().await;
+    let (_owner, _owner_id, member, _member_id, _code) = family_of_two(&ts).await;
+    let chat_id = ts.family_chat_id(&member).await;
+
+    // Somebody who belongs to no family at all — the weakest possible
+    // caller who still holds a valid session.
+    let (stranger, _) = ts.register("stranger", "Stranger").await;
+    let mut stranger_ws = connect_ws(&ts, &stranger).await;
+    let mut member_ws = connect_ws(&ts, &member).await;
+
+    send_frame(
+        &mut stranger_ws,
+        json!({"type": "typing", "chat_id": chat_id}),
+    )
+    .await;
+
+    // Nothing reaches the family...
+    assert_no_frame_of_type(&mut member_ws, "typing", Duration::from_millis(800)).await;
+    // ...and nothing comes back either, so nothing is confirmed about the id.
+    assert_no_frame_of_type(&mut stranger_ws, "error", Duration::from_millis(400)).await;
+
+    // The gate is membership, not the frame: a real member still relays.
+    send_frame(
+        &mut member_ws,
+        json!({"type": "typing", "chat_id": chat_id}),
+    )
+    .await;
+    let mut owner_ws = connect_ws(&ts, &_owner).await;
+    // The member's throttle has already burned this window, so type from a
+    // fresh connection to prove the path is alive.
+    let mut second = connect_ws(&ts, &member).await;
+    send_frame(&mut second, json!({"type": "typing", "chat_id": chat_id})).await;
+    let typing = next_frame_of_type(&mut owner_ws, "typing").await;
+    assert_eq!(typing["chat_id"].as_i64(), Some(chat_id));
+}
+
 #[tokio::test]
 #[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
 async fn membership_changes_fan_out_as_member_joined_and_member_left() {

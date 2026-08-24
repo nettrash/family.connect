@@ -58,6 +58,7 @@ pub async fn family_stats(
                 COALESCE(a.video, 0)            AS att_video,
                 COALESCE(a.audio, 0)            AS att_audio,
                 COALESCE(a.file, 0)             AS att_file,
+                COALESCE(a.location, 0)         AS att_location,
                 COALESCE(ai.questions, 0)       AS ai_questions,
                 COALESCE(ai.prompt_tokens, 0)   AS ai_prompt_tokens,
                 COALESCE(ai.completion_tokens, 0) AS ai_completion_tokens
@@ -76,7 +77,8 @@ pub async fn family_stats(
                     COUNT(*) FILTER (WHERE att.kind = 'photo') AS photo,
                     COUNT(*) FILTER (WHERE att.kind = 'video') AS video,
                     COUNT(*) FILTER (WHERE att.kind = 'audio') AS audio,
-                    COUNT(*) FILTER (WHERE att.kind = 'file')  AS file
+                    COUNT(*) FILTER (WHERE att.kind = 'file')  AS file,
+                    COUNT(*) FILTER (WHERE att.kind = 'location') AS location
              FROM attachments att
              JOIN messages msg ON msg.id = att.message_id
              JOIN chats c ON c.id = msg.chat_id
@@ -113,6 +115,7 @@ pub async fn family_stats(
                     "video": row.get::<i64, _>("att_video"),
                     "audio": row.get::<i64, _>("att_audio"),
                     "file":  row.get::<i64, _>("att_file"),
+                    "location": row.get::<i64, _>("att_location"),
                 },
                 "ai": {
                     "questions": row.get::<i64, _>("ai_questions"),
@@ -167,6 +170,10 @@ pub async fn family_stats(
                 JOIN messages msg ON msg.id = att.message_id
                 JOIN chats c ON c.id = msg.chat_id
                 WHERE c.family_id = $1 AND att.kind = 'file') AS att_file,
+            (SELECT COUNT(*) FROM attachments att
+                JOIN messages msg ON msg.id = att.message_id
+                JOIN chats c ON c.id = msg.chat_id
+                WHERE c.family_id = $1 AND att.kind = 'location') AS att_location,
             (SELECT COUNT(*) FROM ai_usage WHERE family_id = $1) AS ai_questions,
             (SELECT COALESCE(SUM(prompt_tokens), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
                 AS ai_prompt_tokens,
@@ -195,6 +202,7 @@ pub async fn family_stats(
                 "video": totals.get::<i64, _>("att_video"),
                 "audio": totals.get::<i64, _>("att_audio"),
                 "file":  totals.get::<i64, _>("att_file"),
+                "location": totals.get::<i64, _>("att_location"),
             },
             "ai": {
                 "questions": totals.get::<i64, _>("ai_questions"),

@@ -4,12 +4,31 @@
 //
 //  One chat's thread on the Mac.
 //
-//  Structurally simpler than the iOS one, and legitimately so: a Mac
-//  window does not resize under a keyboard, so the whole scroll-anchoring
-//  apparatus the phone needs (windowed non-lazy rendering, a bottom
-//  sentinel, a convergence loop — see ConversationView's header) has
-//  nothing to fight here. A LazyVStack with `defaultScrollAnchor(.bottom)`
-//  and one scroll-on-new-message is enough.
+//  This used to say the Mac needed none of the phone's scroll-anchoring
+//  apparatus, because a Mac window does not resize under a keyboard. The
+//  premise was true and the conclusion was wrong, in two ways that showed
+//  up as two different bugs:
+//
+//  1. A Mac window DOES resize — every time the sidebar is toggled, by the
+//     240–380pt of the sidebar's width. A ScrollView keeps a point offset
+//     across that, not a message, so the thread came back at the wrong
+//     place.
+//  2. An UNBOUNDED LazyVStack inside a ScrollView is not lazy where it
+//     matters. Asking the scroll view for its height walks the whole
+//     nested ForEach to estimate every row, and SwiftUI's own
+//     `LazyLayoutViewCache.signalPrefetch` schedules another transaction
+//     from inside that pass — so with a long thread the update never
+//     converges. Two captured hang reports show 36 of 38 main-thread
+//     samples inside `LazyStack.measureEstimates`, with an animation
+//     demanding a fresh layout on every display frame. That is the
+//     beachball, and it needed a Force Quit.
+//
+//  So the Mac now renders the same BOUNDED, NON-LAZY window the phone
+//  does — real heights, an exact bottom anchor, every id a valid scroll
+//  target — grown by a top sentinel, locally first and then over the
+//  network. It keeps a bottom sentinel too, which is both the truth about
+//  whether the reader is at the bottom and the target to put them back
+//  there after a resize.
 //
 //  Sending: Return sends, Shift-Return makes a new line, which is what
 //  every Mac chat app does and what a hardware keyboard makes possible.
@@ -47,10 +66,43 @@ struct MacConversationView: View {
     @Environment(\.openWindow) private var openWindow
     @FocusState private var composerFocused: Bool
     @State private var recorder = AudioRecorder()
+    /// One fix, on demand — never a running location service.
+    @State private var locationProvider = LocationProvider()
 
     /// Side of the attach and send buttons — one box for both, so they sit
     /// level. Matches the composer's one-line height.
     private let composerControl: CGFloat = 24
+
+    /// How many of the locally cached messages are RENDERED.
+    ///
+    /// The whole cure for the hang. See the header: an unbounded lazy stack
+    /// estimates every row's height on every layout negotiation and never
+    /// settles. A bounded window in a plain VStack has real heights, costs
+    /// a page of rows to lay out, and makes every id a scroll target.
+    @State private var visibleCount = MacConversationView.windowStep
+    /// True while the newest message is on screen. Ground truth from the
+    /// bottom sentinel's geometry, not from a guess about scroll offset.
+    @State private var isPinnedToBottom = true
+    /// The thread's width, watched because the SIDEBAR TOGGLE changes it.
+    @State private var threadWidth: CGFloat = 0
+    /// Set while an older page is in flight, so the sentinel does not ask
+    /// again and the reader sees that something is happening.
+    @State private var isLoadingOlder = false
+
+    /// Rows per window, and per widening step. The phone's number, for the
+    /// same reasons — big enough that scrolling rarely reaches the top
+    /// sentinel, small enough that laying all of it out is cheap.
+    private static let windowStep = 60
+    /// Most rows rendered at once. The stack is NON-lazy, so this is a real
+    /// bound on main-thread layout work rather than a hint — which is the
+    /// whole reason the window exists. Roughly five pages: far more history
+    /// than a reader scrolls back through in one sitting, and still cheap
+    /// enough to lay out. The phone caps its own jump window the same way.
+    private static let maxWindow = 300
+    /// The bottom sentinel's scroll id. A constant rather than the last
+    /// message's, because aiming a pin at the last BUBBLE parks the row
+    /// just off-screen and then reads as unpinned.
+    private static let bottomAnchor = "mac-thread-bottom"
 
 
     init(chatID: Int64) {
@@ -109,7 +161,18 @@ struct MacConversationView: View {
     /// uses (MessagePresentation) — a Mac that grouped messages its own
     /// way would show the same conversation with different breaks in it.
     private var sections: [DaySection] {
-        MessagePresentation.daySections(messages.map(MessageSnapshot.init))
+        MessagePresentation.daySections(visibleMessages.map(MessageSnapshot.init))
+    }
+
+    /// The rendered slice — the newest `visibleCount` of what is cached.
+    private var visibleMessages: ArraySlice<MessageEntity> {
+        messages.suffix(visibleCount)
+    }
+
+    /// Is there anything older to reach, either in the cache or on the
+    /// server? Decides whether the top sentinel is drawn at all.
+    private var hasOlder: Bool {
+        !messages.isEmpty && (visibleCount < messages.count || chat?.hasFullHistory != true)
     }
 
     /// One row's worth of presentation, worked out ONCE.
@@ -151,7 +214,17 @@ struct MacConversationView: View {
     private var thread: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                // A plain VStack, NOT a LazyVStack, and that is the fix
+                // rather than a preference. The window above bounds this to
+                // about a page of rows, so laying all of them out is cheap
+                // and their heights are REAL — which is what makes the
+                // bottom anchor exact and every row's id something
+                // `scrollTo` can actually reach. A lazy stack here has to
+                // estimate the height of every row it has not built, on
+                // every layout negotiation, and re-arms itself while doing
+                // it (see the header).
+                VStack(alignment: .leading, spacing: 0) {
+                    if hasOlder { topSentinel(proxy: proxy) }
                     ForEach(sections) { section in
                         MacDayPill(day: section.day)
                             .frame(maxWidth: .infinity)
@@ -159,7 +232,7 @@ struct MacConversationView: View {
                         ForEach(rows(in: section)) { row in
                             MacMessageRow(
                                 message: row.message,
-                                senderName: memberNames[row.message.senderID],
+                                senderName: senderName(for: row.message.senderID),
                                 nameFor: quoteAuthorName,
                                 avatarVersionFor: { avatarVersions[$0] ?? 0 },
                                 isStreaming: row.message.serverID.map {
@@ -186,12 +259,33 @@ struct MacConversationView: View {
                                 .id(row.message.localID)
                         }
                     }
+                    bottomSentinel
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .defaultScrollAnchor(.bottom)
+            // The sidebar toggle is a WIDTH change, and a ScrollView keeps
+            // a point offset across one rather than a message. Watching the
+            // width is what lets the thread be put back where the reader
+            // left it (protocol-free — this is purely a client concern).
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                guard threadWidth != 0, width != threadWidth else {
+                    threadWidth = width
+                    return
+                }
+                threadWidth = width
+                // Only the bottom is restorable without tracking per-row
+                // geometry, and it is the case that actually bit: a reader
+                // at the newest message expects to still be there when the
+                // sidebar comes back. Away from the bottom the bounded
+                // window keeps any drift to genuine re-wrapping of a page
+                // of rows, rather than thousands of re-estimated ones.
+                if isPinnedToBottom {
+                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+                }
+            }
             .overlay {
                 if messages.isEmpty {
                     ContentUnavailableView(
@@ -200,13 +294,111 @@ struct MacConversationView: View {
                         description: Text("Say something to get started."))
                 }
             }
-            .onChange(of: messages.count) {
-                // A Mac window does not move under a keyboard, so following
-                // the newest message is the whole of what is needed here.
-                guard let last = messages.last else { return }
-                withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo(last.localID, anchor: .bottom)
+            .onChange(of: messages.count) { oldCount, newCount in
+                // Grow the window over what just arrived, or new messages
+                // fall outside the rendered slice and the thread looks
+                // stuck. Only ever forward — a reader who paged back keeps
+                // what they widened to — but CAPPED, which is the point of
+                // having a window at all: this stack is non-lazy, so an
+                // uncapped count would creep up over a long session until
+                // the layout cost that caused the hang came back. Past the
+                // cap the window SLIDES instead, keeping the newest rows.
+                if newCount > oldCount {
+                    visibleCount = min(
+                        min(newCount, visibleCount + (newCount - oldCount)), Self.maxWindow)
                 }
+                // Follow the newest message for a reader who was ALREADY at
+                // the bottom — yanking somebody out of history because
+                // somebody else typed is the bug the phone fixed long ago —
+                // OR when the newest message is this member's OWN. Pressing
+                // Send and watching nothing happen is worse than either.
+                let mine = messages.last?.senderID == coordinator.currentUserID
+                guard isPinnedToBottom || mine else { return }
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    /// Reaching the oldest rendered message asks for more.
+    ///
+    /// Geometry-triggered rather than `onAppear`, because in a NON-lazy
+    /// stack every row appears at creation — an `onAppear` here would fire
+    /// a history page on every open.
+    private func topSentinel(proxy: ScrollViewProxy) -> some View {
+        HStack {
+            if isLoadingOlder {
+                ProgressView().controlSize(.small)
+            } else {
+                Color.clear.frame(height: 1)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 24)
+        .onGeometryChange(for: Bool.self) { geometry in
+            guard let viewport = geometry.bounds(of: .scrollView) else { return false }
+            let y = geometry.frame(in: .scrollView).maxY
+            return y >= -200 && y <= viewport.height + 200
+        } action: { visible in
+            if visible { loadOlder(proxy: proxy) }
+        }
+    }
+
+    /// The truth about whether the newest message is on screen, and the
+    /// target of every pin. One view, one geometry read — cheap enough to
+    /// keep even though the window made everything else cheap.
+    private var bottomSentinel: some View {
+        Color.clear
+            .frame(height: 1)
+            .id(Self.bottomAnchor)
+            .onGeometryChange(for: Bool.self) { geometry in
+                guard let viewport = geometry.bounds(of: .scrollView) else { return true }
+                let y = geometry.frame(in: .scrollView).minY
+                return y <= viewport.height + 40
+            } action: { visible in
+                isPinnedToBottom = visible
+            }
+    }
+
+    /// Widen the window, and page over the network once the cache runs out.
+    ///
+    /// Local first: messages already downloaded but outside the rendered
+    /// slice cost nothing to show, so a reader scrolling back gets them
+    /// instantly and the server is only asked when there is nothing left.
+    private func loadOlder(proxy: ScrollViewProxy) {
+        guard !isLoadingOlder else { return }
+        if visibleCount < messages.count {
+            let anchorID = visibleMessages.first?.localID
+            visibleCount = min(min(messages.count, visibleCount + Self.windowStep), Self.maxWindow)
+            if let anchorID {
+                // Two turns, like the phone's: rows widened into existence
+                // in this pass are not laid out yet, and a scrollTo at a
+                // row that has no frame is a silent no-op.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    proxy.scrollTo(anchorID, anchor: .top)
+                }
+            }
+            return
+        }
+        guard chat?.hasFullHistory != true else { return }
+        isLoadingOlder = true
+        let anchorID = visibleMessages.first?.localID
+        Task { @MainActor in
+            let fetched = await coordinator.loadOlder(chatID: chatID)
+            isLoadingOlder = false
+            // Restore the reading position ONLY when rows really were
+            // prepended: the sentinel can fire during the opening layout
+            // pass, and scrolling the old top row back to the top would
+            // yank a freshly opened chat away from the newest messages.
+            guard fetched > 0 else { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            visibleCount = min(min(messages.count, visibleCount + fetched), Self.maxWindow)
+            if let anchorID, !isPinnedToBottom {
+                proxy.scrollTo(anchorID, anchor: .top)
+            } else {
+                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
             }
         }
     }
@@ -254,6 +446,11 @@ struct MacConversationView: View {
                     } label: {
                         Label("Record Audio", systemImage: "mic")
                     }
+                    Button {
+                        shareLocation()
+                    } label: {
+                        Label("Location", systemImage: "mappin.and.ellipse")
+                    }
                 } label: {
                     Image(systemName: "paperclip")
                         .font(.system(size: 16))
@@ -273,6 +470,20 @@ struct MacConversationView: View {
                 // attaching would post it as a new message while leaving the
                 // edit banner armed. iOS and Android already gated this.
                 .disabled(editTarget != nil)
+
+                if showsAssistantMention {
+                    Button {
+                        insertAssistantMention()
+                    } label: {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 15))
+                            .frame(width: composerControl, height: composerControl)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Ask the assistant")
+                    .disabled(editTarget != nil)
+                }
 
                 TextField("Message", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -308,11 +519,110 @@ struct MacConversationView: View {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
     }
 
+    /// Send where this Mac is, once.
+    ///
+    /// The same one-tap shape as the phone: "share my location" is what
+    /// people mean, and a map to drag a pin around is a different feature.
+    /// A sandboxed Mac additionally needs the
+    /// `com.apple.security.personal-information.location` entitlement, or
+    /// CoreLocation refuses without explaining itself.
+    private func shareLocation() {
+        guard !isSending else { return }
+        isSending = true
+        Task {
+            defer { isSending = false }
+            do {
+                let fix = try await locationProvider.currentFix()
+                // Read and clear together, so a caption typed while the fix
+                // was arriving travels with the pin rather than being lost
+                // — and so a primed reply is not left armed for the next
+                // ordinary message. That pair of bugs has been fixed here
+                // once already, on the media path.
+                let caption = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                let quote = replyDraft
+                draft = ""
+                replyDraft = nil
+                let sent = await coordinator.sendLocation(
+                    latitude: fix.latitude,
+                    longitude: fix.longitude,
+                    accuracyM: fix.accuracyM,
+                    label: nil,
+                    caption: caption,
+                    replyTo: quote,
+                    in: chatID)
+                if !sent {
+                    // Through the guarded restore, like every other send
+                    // here: a location fix can take twenty seconds, and
+                    // assigning unconditionally would wipe whatever was
+                    // typed while it was being acquired.
+                    restoreComposer(caption: caption, quote: quote)
+                    mediaNotice = String(localized: "Could not share your location.")
+                }
+            } catch LocationProvider.Failure.denied {
+                mediaNotice = String(
+                    localized:
+                        "Family needs permission to use your location. Turn it on in System Settings."
+                )
+            } catch {
+                mediaNotice = String(localized: "Could not find your location.")
+            }
+        }
+    }
+
+    /// Offer the mention only where it does something: the family chat,
+    /// on a server that actually has an assistant. An absent `assistant`
+    /// on `GET /families/mine` is the whole capability check
+    /// (docs/protocol.md, "Mentioning the assistant in the family chat").
+    private var showsAssistantMention: Bool {
+        chat?.kind == "family" && AppSettings.assistantUserID != nil
+    }
+
+    /// Put `@ai ` in the draft and put the caret back in the field.
+    ///
+    /// Appended rather than inserted at the caret, for the reason the phone
+    /// has: SwiftUI's TextField publishes no selection, so "at the caret"
+    /// is not knowable, and moving somebody's cursor is worse than adding
+    /// to the end of what they were writing.
+    private func insertAssistantMention() {
+        let token = AssistantMention.token
+        guard !AssistantMention.mentions(draft) else {
+            composerFocused = true
+            return
+        }
+        if draft.isEmpty {
+            draft = "\(token) "
+        } else if draft.hasSuffix(" ") {
+            draft += "\(token) "
+        } else {
+            draft += " \(token) "
+        }
+        composerFocused = true
+    }
+
+    /// The name above a bubble in the family chat.
+    ///
+    /// The roster alone is not enough any more: the assistant answers here
+    /// whenever somebody mentions it, and its reserved account belongs to
+    /// no family, so it is in no roster by design. Without this the run
+    /// head would draw a bubble with no name at all.
+    private func senderName(for userID: Int64) -> String? {
+        if let assistantID = AppSettings.assistantUserID, userID == assistantID {
+            return AppSettings.assistantName ?? String(localized: "Assistant")
+        }
+        return memberNames[userID]
+    }
+
     /// Who a quoted sender is, matching the phone's wording.
     private func quoteAuthorName(_ userID: Int64) -> String {
         if userID == coordinator.currentUserID { return String(localized: "You") }
-        // The assistant's account is deliberately not in the roster, so in
-        // its own chat anyone who is not me is it.
+        // In the FAMILY chat the assistant answers whenever somebody
+        // mentions it, and there is no "the other participant" shortcut
+        // there. Its id comes from `GET /families/mine`.
+        if let assistantID = AppSettings.assistantUserID, userID == assistantID {
+            return AppSettings.assistantName ?? String(localized: "Assistant")
+        }
+        // In its OWN chat the account is deliberately not in the roster, so
+        // anyone who is not me is it.
         if chat?.kind == "ai" { return chat?.title ?? String(localized: "Someone") }
         return memberNames[userID] ?? String(localized: "Someone")
     }
