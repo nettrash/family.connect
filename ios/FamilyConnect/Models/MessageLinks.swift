@@ -50,27 +50,6 @@ nonisolated enum MessageLinks {
         return built
     }
 
-    /// A message body for a surface with NO link handling: markdown and the
-    /// `@ai` mention rendered, links STYLED but not tappable.
-    ///
-    /// That is the macOS bubble. Its balloon hearts on a double click, and
-    /// SwiftUI's `Text` fires a link's own tap first — which is exactly the
-    /// collision the phone had to solve with a deferred `\.openURL`
-    /// override (see MessageBubbleView). The Mac has never had tappable
-    /// links at all, so leaving them inert is the status quo rather than a
-    /// regression; making them live means porting that arbitration, and
-    /// that is a gesture change on a surface no test here can exercise.
-    ///
-    /// Styled anyway, because a link that reads as plain prose is worse
-    /// than one that reads as a link and waits to be copied.
-    static func attributedBodyWithoutLinks(_ text: String, isMine: Bool) -> AttributedString {
-        var attributed = attributedBody(text, isMine: isMine)
-        for run in attributed.runs where run.link != nil {
-            attributed[run.range].link = nil
-        }
-        return attributed
-    }
-
     /// The first https link in a body AS IT IS DRAWN — what the preview
     /// card describes.
     ///

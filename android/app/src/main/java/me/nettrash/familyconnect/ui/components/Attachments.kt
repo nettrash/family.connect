@@ -17,6 +17,16 @@
 package me.nettrash.familyconnect.ui.components
 
 import android.content.Context
+import androidx.compose.foundation.layout.height
+import com.google.android.gms.maps.GoogleMapOptions
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.LatLng
+import com.google.maps.android.compose.GoogleMap
+import com.google.maps.android.compose.MapUiSettings
+import com.google.maps.android.compose.Marker
+import com.google.maps.android.compose.rememberCameraPositionState
+import com.google.maps.android.compose.rememberUpdatedMarkerState
+import me.nettrash.familyconnect.BuildConfig
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.material.icons.filled.Place
@@ -145,6 +155,12 @@ fun AttachmentBlock(
      */
     onLongPress: () -> Unit = {},
     onDoubleTap: () -> Unit = {},
+    /**
+     * Whether a shared location draws a map. The reader's own setting —
+     * drawing one asks Google for tiles, so it is theirs to switch off, the
+     * same trade the link previews make.
+     */
+    showMapPreviews: Boolean = true,
 ) {
     if (attachment.isLocation) {
         // A location has no bytes at all, so none of the download machinery
@@ -153,6 +169,7 @@ fun AttachmentBlock(
             attachment = attachment,
             onLongPress = onLongPress,
             onDoubleTap = onDoubleTap,
+            showMap = showMapPreviews && BuildConfig.HAS_MAPS_KEY,
             modifier = modifier,
         )
     } else if (attachment.isAudio) {
@@ -203,6 +220,12 @@ private fun LocationRow(
     attachment: AttachmentDto,
     onLongPress: () -> Unit,
     onDoubleTap: () -> Unit,
+    /**
+     * Draw the map. Off when the reader switched it off, and off when this
+     * build carries no Maps API key — without a key Google renders a grey
+     * "authorization failure" tile, which is worse than the card alone.
+     */
+    showMap: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -220,7 +243,7 @@ private fun LocationRow(
     // Same rule as the file row: everything derives from the balloon's own
     // content colour, so it reads on both the tinted and the neutral ground.
     val ink = LocalContentColor.current
-    Row(
+    Column(
         modifier = modifier
             .widthIn(max = MAX_WIDTH.dp)
             .clip(RoundedCornerShape(12.dp))
@@ -231,11 +254,16 @@ private fun LocationRow(
                 onLongClick = onLongPress,
                 onDoubleClick = onDoubleTap,
             )
-            .padding(horizontal = 10.dp, vertical = 8.dp)
             .semantics { contentDescription = "$label, $coordinates" },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        if (showMap) {
+            LocationMap(latitude = latitude, longitude = longitude)
+        }
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
         Box(
             modifier = Modifier
                 .size(36.dp)
@@ -250,22 +278,64 @@ private fun LocationRow(
                 modifier = Modifier.size(22.dp),
             )
         }
-        Column(modifier = Modifier.weight(1f, fill = false)) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = ink,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = coordinates,
-                style = MaterialTheme.typography.labelSmall,
-                color = ink.copy(alpha = 0.72f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column(modifier = Modifier.weight(1f, fill = false)) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = coordinates,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ink.copy(alpha = 0.72f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
+    }
+}
+
+/**
+ * The map itself.
+ *
+ * **LITE MODE, and that is not a detail.** A normal `MapView` is a live
+ * OpenGL surface; one per row in a scrolling thread is not affordable, and
+ * a thread full of them stutters and drains the battery. Lite mode renders
+ * a static bitmap with no GL context and no gestures — which is also
+ * exactly what a bubble wants, since a pannable map inside a scrolling list
+ * fights the list for every drag.
+ *
+ * Interaction is deliberately none: the whole row is clickable and hands
+ * off to a real map app, which is where panning belongs.
+ */
+@Composable
+private fun LocationMap(latitude: Double, longitude: Double) {
+    val position = remember(latitude, longitude) { LatLng(latitude, longitude) }
+    val cameraPositionState = rememberCameraPositionState {
+        // ~600 m across: close enough to recognise the street, wide enough
+        // to place it in a neighbourhood. Matches the Apple clients.
+        this.position = CameraPosition.fromLatLngZoom(position, 15f)
+    }
+    GoogleMap(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(140.dp),
+        cameraPositionState = cameraPositionState,
+        googleMapOptionsFactory = { GoogleMapOptions().liteMode(true) },
+        uiSettings = MapUiSettings(
+            compassEnabled = false,
+            mapToolbarEnabled = false,
+            zoomControlsEnabled = false,
+            scrollGesturesEnabled = false,
+            zoomGesturesEnabled = false,
+            tiltGesturesEnabled = false,
+            rotationGesturesEnabled = false,
+        ),
+    ) {
+        Marker(state = rememberUpdatedMarkerState(position = position))
     }
 }
 

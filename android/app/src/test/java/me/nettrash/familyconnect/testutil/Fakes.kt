@@ -138,6 +138,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         }
     }
 
+    override suspend fun setMapPreviewsEnabled(enabled: Boolean) {
+        _state.value = _state.value.copy(mapPreviewsEnabled = enabled)
+    }
+
     override suspend fun setAssistant(userId: Long?, displayName: String?) {
         _state.value = _state.value.copy(
             assistantUserId = userId,

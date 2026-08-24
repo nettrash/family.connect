@@ -25,6 +25,7 @@ struct MacSettingsView: View {
     /// Mirrors AppSettings — defaults are not observable, so the view
     /// holds its own copy and writes through on change.
     @State private var mapPreviewsEnabled = AppSettings.mapPreviewsEnabled
+    @State private var linkPreviewsEnabled = AppSettings.linkPreviewsEnabled
 
     /// Who you are, at the top, with a face — the rows underneath are then
     /// only the things you can DO, which is what a settings sheet is for.
@@ -78,6 +79,10 @@ struct MacSettingsView: View {
                 // map on a shared location IS drawn, and drawing one asks
                 // Apple for tiles.
                 Section {
+                    Toggle("Link Previews", isOn: $linkPreviewsEnabled)
+                        .onChange(of: linkPreviewsEnabled) { _, newValue in
+                            AppSettings.linkPreviewsEnabled = newValue
+                        }
                     Toggle("Map Previews", isOn: $mapPreviewsEnabled)
                         .onChange(of: mapPreviewsEnabled) { _, newValue in
                             AppSettings.mapPreviewsEnabled = newValue
@@ -85,7 +90,7 @@ struct MacSettingsView: View {
                 } header: {
                     Text("Privacy")
                 } footer: {
-                    Text("Shows a map on a shared location. Drawing one asks Apple for it, so Apple sees a request from this Mac. With it off, a location still shows its pin and opens in Maps when you click it.")
+                    Text("Shows a preview under links in messages, and a map on a shared location. Building either asks somebody else for it — the linked website for its title and image, Apple for the map — so they see a request from this Mac. With maps off, a shared location still shows its pin and opens in Maps when you click it.")
                 }
 
                 Section("Server") {

@@ -39,6 +39,20 @@ struct MacMessageRow: View {
     var onOpenAttachment: (AttachmentDTO) -> Void = { _ in }
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    /// Shared preview cache — asking it for a link's state is what starts
+    /// the (single, app-wide) fetch for that link.
+    @Environment(LinkPreviewLoader.self) private var previewLoader
+    /// The environment's own openURL, captured BEFORE this row overrides
+    /// it: the override defers into this, never into itself.
+    @Environment(\.openURL) private var systemOpenURL
+    /// The in-flight deferred link open — non-nil exactly while a first
+    /// click waits out the double-click window (see `handleLinkClick`).
+    @State private var pendingLinkOpen: Task<Void, Never>?
+    /// True once this row has actually been on screen. The Mac thread now
+    /// renders a bounded WINDOW rather than the viewport, so binding the
+    /// fetch to rendering would contact every host in that window — links
+    /// the reader has not scrolled to, and may never see.
+    @State private var hasBeenVisible = false
     @State private var hovering = false
     /// The full 771-entry catalogue, behind "More reactions…".
     @State private var showsEmojiPicker = false
@@ -77,6 +91,17 @@ struct MacMessageRow: View {
                     // space beside a message must not leave a reaction on
                     // it. Acked only — there is no id to react to before.
                     .onTapGesture(count: 2) { quickHeart() }
+                    // Every link in this balloon — in the text and on the
+                    // preview card — opens through the arbitration above,
+                    // so a double-click still reaches the heart. Captured
+                    // BEFORE the override (`systemOpenURL`), or the
+                    // deferral would recurse into itself.
+                    .environment(
+                        \.openURL,
+                        OpenURLAction { url in
+                            handleLinkClick(url)
+                            return .handled
+                        })
                 if message.state == .failed {
                     // A send that failed is the one thing here the user has
                     // to act on, so it says so in place rather than only
@@ -108,6 +133,21 @@ struct MacMessageRow: View {
         }
         // Runs breathe less than turns do: 1pt inside a run, 8 between.
         .padding(.top, isRunStart ? 8 : 1)
+        // A preview is fetched only once the row has actually been ON
+        // SCREEN, not merely rendered. The thread renders a bounded WINDOW
+        // of rows, so binding the fetch to rendering would contact every
+        // linked host in that window — pages the reader has not scrolled to
+        // and may never see. Geometry, not `onAppear`: in a non-lazy stack
+        // every row "appears" at creation.
+        .onGeometryChange(for: Bool.self) { geometry in
+            guard previewableLink != nil, let viewport = geometry.bounds(of: .scrollView) else {
+                return false
+            }
+            let frame = geometry.frame(in: .scrollView)
+            return frame.maxY >= 0 && frame.minY <= viewport.height
+        } action: { visible in
+            if visible { hasBeenVisible = true }
+        }
         .onHover { hovering = $0 }
         .contextMenu { rowMenu }
         .sheet(isPresented: $showsEmojiPicker) {
@@ -296,6 +336,13 @@ struct MacMessageRow: View {
                         }
                     }
             }
+            if let preview = linkPreview {
+                LinkPreviewCard(
+                    preview: preview,
+                    image: previewLoader.image(for: preview.url),
+                    onOpen: { handleLinkClick($0) })
+                    .padding(.top, 4)
+            }
             let chips = MessagePresentation.reactionChips(
                 message.reactions, currentUserID: coordinator.currentUserID)
             if !chips.isEmpty {
@@ -348,6 +395,25 @@ struct MacMessageRow: View {
     /// True when the body is nothing but a few emoji.
     private var isEmojiOnly: Bool { EmojiOnly.displayFontSize(for: message.body) != nil }
 
+    /// The web link this bubble would preview, if any. Emoji-only bodies
+    /// have no links, and tel:/mailto: are not previewable.
+    ///
+    /// Resolved over the RENDERED text, like the phone: markdown deletes
+    /// characters, so detecting over the raw body previews links the reader
+    /// cannot see and misses ones they can.
+    private var previewableLink: URL? {
+        guard !isEmojiOnly else { return nil }
+        return MessageLinks.firstWebLinkAsDrawn(in: message.body)
+    }
+
+    /// The card to draw under this bubble, once its fetch has landed.
+    private var linkPreview: LinkPreview? {
+        guard hasBeenVisible, let url = previewableLink,
+            case .loaded(let preview) = previewLoader.state(for: url)
+        else { return nil }
+        return preview
+    }
+
     /// What the balloon draws.
     ///
     /// Markdown and the `@ai` mention, through the SAME renderer the phone
@@ -360,7 +426,39 @@ struct MacMessageRow: View {
     /// take something away.
     private var bodyText: AttributedString {
         guard !isEmojiOnly else { return AttributedString(message.body) }
-        return MessageLinks.attributedBodyWithoutLinks(message.body, isMine: isMine)
+        return MessageLinks.attributedBody(message.body, isMine: isMine)
+    }
+
+    /// Open a clicked link — unless a second click arrives first, in which
+    /// case the reader was double-clicking to ❤️.
+    ///
+    /// SwiftUI's `Text` handles a link's own click INTERNALLY and does it
+    /// before the balloon's count-2 gesture can run, so without this a
+    /// double-click over link glyphs opens the page twice and never leaves
+    /// a heart. The phone hit exactly this and solved it exactly this way;
+    /// the Mac needed it the moment links became live here.
+    ///
+    /// Deferring by the double-click window costs a clearly perceptible
+    /// pause before a page opens, which is the price of the heart working
+    /// everywhere rather than only over the padding.
+    private func handleLinkClick(_ url: URL) {
+        if pendingLinkOpen != nil {
+            pendingLinkOpen?.cancel()
+            pendingLinkOpen = nil
+            // Unacked has no id to react to, so the click stays an open.
+            if message.serverID != nil {
+                quickHeart()
+            } else {
+                systemOpenURL(url)
+            }
+            return
+        }
+        pendingLinkOpen = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            pendingLinkOpen = nil
+            systemOpenURL(url)
+        }
     }
 
     /// The body font: the shared emoji ladder, or the inherited default.

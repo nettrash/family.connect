@@ -142,6 +142,8 @@
     <string name="s_edited">bearbeitet</string>
     <string name="s_leave_family_explanation">Du verlierst den Zugang zum Familienchat und zu deinen Direktchats. Der Verlauf bleibt auf dem Server und kommt zurück, wenn du wieder beitrittst.</string>
     <string name="s_link_previews_explanation">Zeigt eine Vorschau unter Links in Nachrichten. Dafür wird die verlinkte Website nach Titel und Bild gefragt – diese Website sieht also eine Anfrage von diesem Gerät.</string>
+    <string name="s_map_previews">Kartenvorschau</string>
+    <string name="s_map_previews_explanation">Zeigt eine Karte zu einem geteilten Standort. Dafür wird die Karte bei Google angefragt, Google sieht also eine Anfrage von diesem Gerät. Ist es aus, zeigt ein Standort weiterhin seine Markierung und öffnet sich mit einem Tippen in deiner Karten-App.</string>
     <string name="s_plain_http_warning">Diese Adresse nutzt einfaches http – die Nachrichten gehen unverschlüsselt durchs Netz. Im vertrauten Heimnetz in Ordnung, überall sonst riskant.</string>
     <string name="s_request_declined_explanation">Der Eigentümer hat deine Anfrage abgelehnt. Du kannst einen anderen Einladungscode versuchen oder eine eigene Familie gründen.</string>
     <string name="s_waiting_explanation">Von hier gibt es nichts abzubrechen – der Eigentümer lässt dich rein oder lehnt die Anfrage ab.</string>

@@ -68,6 +68,15 @@
              to share a file since Android 7 — a file:// Uri throws
              FileUriExposedException — and `grantUriPermissions` keeps the
              grant scoped to the single Intent rather than the directory. -->
+        <!-- The map on a shared location. The key comes from a gitignored
+             local.properties (or a CI env var) via manifestPlaceholders —
+             it is never in the repo. Empty is a supported state: the UI
+             branches on BuildConfig.HAS_MAPS_KEY and simply draws the pin
+             card instead of Google's grey "authorization failure" tile. -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${mapsApiKey}" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

@@ -24,7 +24,7 @@
 # stay out of the build.
 
 [versions]
-agp = "9.3.1"
+agp = "9.3.2"
 kotlin = "2.3.20"
 coreKtx = "1.18.0"
 lifecycleRuntimeKtx = "2.10.0"
@@ -41,6 +41,8 @@ datastore = "1.2.1"
 exifinterface = "1.4.1"
 media3 = "1.11.0"
 firebaseBom = "34.18.0"
+playServicesMaps = "19.2.0"
+mapsCompose = "6.7.0"
 googleServices = "4.5.0"
 junit = "4.13.2"
 robolectric = "4.15.1"
@@ -96,6 +98,20 @@ androidx-media3-effect = { group = "androidx.media3", name = "media3-effect", ve
 # posture (docs/protocol.md — the server is the family's own box) means
 # nothing else may phone Google. The BoM pins the transitive graph so
 # firebase-messaging needs no version of its own.
+# Maps — the SECOND Google service, and a deliberate exception to the note
+# at the top of this file rather than a drift from it. nettrash asked for a
+# real map on a shared location and chose this over OpenStreetMap: Android
+# has no way to draw one from the framework, so the alternative was a
+# platform where the feature visibly does not work. Consequences, all
+# accepted: an API key is required (kept OUT of the repo — see
+# app/build.gradle.kts), and a viewer's device asks Google for tiles for
+# each location a family member sent. The bubble is drawn in LITE MODE (a
+# bitmap, not a GL surface) because a live MapView per row in a scrolling
+# thread is not affordable, and the whole thing is behind a Settings switch
+# that mirrors the link-preview one.
+play-services-maps = { group = "com.google.android.gms", name = "play-services-maps", version.ref = "playServicesMaps" }
+maps-compose = { group = "com.google.maps.android", name = "maps-compose", version.ref = "mapsCompose" }
+
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 

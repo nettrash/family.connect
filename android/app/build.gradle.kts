@@ -59,6 +59,26 @@ val skipVersionBump: Boolean = project.hasProperty("noBump")
 // Returns `null` when nothing is configured — the release build then falls
 // back to the debug signing config so `assembleRelease` still works locally
 // without keys (it just won't be uploadable to Play).
+// The Google Maps API key, for the map on a shared location.
+//
+// NEVER in the repo. Same shape as the signing config below: a gitignored
+// `local.properties` at the android/ root (`MAPS_API_KEY=...`), or a
+// `FAMILYCONNECT_MAPS_API_KEY` env var for CI. Absent is a supported state,
+// not a broken build — without a key the bubble simply draws the pin card
+// and never asks Google for anything, which is exactly what a fork of this
+// repo with no key of its own should do. `BuildConfig.HAS_MAPS_KEY` is what
+// the UI branches on, so an unkeyed build never shows Google's grey
+// "authorization failure" tile.
+val mapsApiKey: String = run {
+    val propsFile = rootProject.file("local.properties")
+    val fromFile = if (propsFile.exists()) {
+        Properties().apply { propsFile.inputStream().use(::load) }.getProperty("MAPS_API_KEY")
+    } else {
+        null
+    }
+    fromFile ?: System.getenv("FAMILYCONNECT_MAPS_API_KEY") ?: ""
+}
+
 val releaseSigning: Map<String, String>? = run {
     val propsFile = rootProject.file("keystore.properties")
     if (propsFile.exists()) {
@@ -96,6 +116,11 @@ android {
         versionCode = storedVersionCode
         versionName = resolvedVersionName
 
+        // Read by the manifest's com.google.android.geo.API_KEY meta-data.
+        // Empty is fine: the map is never drawn without HAS_MAPS_KEY, so an
+        // unkeyed build shows the pin card and asks Google for nothing.
+        manifestPlaceholders["mapsApiKey"] = mapsApiKey
+        buildConfigField("boolean", "HAS_MAPS_KEY", mapsApiKey.isNotEmpty().toString())
     }
 
     // Predefined default server, as product flavors so the variant is
@@ -261,6 +286,14 @@ dependencies {
     // sites no-op at runtime.
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
+
+    // Maps — the map drawn on a shared location. See the note in
+    // libs.versions.toml: this is the second Google service and a
+    // deliberate exception nettrash asked for, not a drift. Drawn in LITE
+    // MODE, behind a Settings switch, and only when an API key is
+    // configured.
+    implementation(libs.play.services.maps)
+    implementation(libs.maps.compose)
 
     debugImplementation(libs.androidx.ui.tooling)
 

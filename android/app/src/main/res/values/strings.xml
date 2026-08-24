@@ -187,6 +187,8 @@
     <string name="s_edited">edited</string>
     <string name="s_leave_family_explanation">You\'ll lose access to the family chat and your direct chats. History stays on the server and comes back if you rejoin.</string>
     <string name="s_link_previews_explanation">Shows a preview under links in messages. Building one asks the linked website for its title and image, so that site sees a request from this device.</string>
+    <string name="s_map_previews">Map Previews</string>
+    <string name="s_map_previews_explanation">Shows a map on a shared location. Drawing one asks Google for it, so Google sees a request from this device. With it off, a location still shows its pin and opens in your map app when you tap it.</string>
     <string name="s_plain_http_warning">This address uses plain http — messages travel unencrypted on the network. Fine on a trusted home LAN, risky anywhere else.</string>
     <string name="s_request_declined_explanation">The family owner declined your request. You can try a different invite code or start your own family.</string>
     <string name="s_waiting_explanation">There\'s nothing to cancel from here — the owner either lets you in or declines the request.</string>

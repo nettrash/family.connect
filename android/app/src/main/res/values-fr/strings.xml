@@ -142,6 +142,8 @@
     <string name="s_edited">modifié</string>
     <string name="s_leave_family_explanation">Tu perdras l’accès à la conversation familiale et à tes conversations directes. L’historique reste sur le serveur et revient si tu reviens.</string>
     <string name="s_link_previews_explanation">Affiche un aperçu sous les liens des messages. Pour le créer, on demande au site son titre et son image : ce site voit donc une requête venant de cet appareil.</string>
+    <string name="s_map_previews">Aperçu de la carte</string>
+    <string name="s_map_previews_explanation">Affiche une carte sur une position partagée. La dessiner la demande à Google, qui voit donc une requête depuis cet appareil. Désactivé, une position affiche toujours son repère et s’ouvre dans ton app de cartes d’une touche.</string>
     <string name="s_plain_http_warning">Cette adresse utilise du http simple : les messages circulent sans chiffrement sur le réseau. Acceptable sur un réseau domestique de confiance, risqué ailleurs.</string>
     <string name="s_request_declined_explanation">Le propriétaire a refusé ta demande. Tu peux essayer un autre code d’invitation ou créer ta propre famille.</string>
     <string name="s_waiting_explanation">Il n’y a rien à annuler ici : le propriétaire t’accepte ou refuse la demande.</string>

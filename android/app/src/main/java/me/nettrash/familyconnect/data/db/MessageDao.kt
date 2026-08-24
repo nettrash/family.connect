@@ -117,7 +117,10 @@ interface MessageDao {
             attachmentHeight = :height,
             attachmentDurationMs = :durationMs,
             attachmentHasPreview = :hasPreview,
-            attachmentName = :name
+            attachmentName = :name,
+            attachmentLatitude = :latitude,
+            attachmentLongitude = :longitude,
+            attachmentAccuracyM = :accuracyM
         WHERE clientMsgId = :clientMsgId
         """,
     )
@@ -132,6 +135,9 @@ interface MessageDao {
         durationMs: Int?,
         hasPreview: Boolean,
         name: String?,
+        latitude: Double?,
+        longitude: Double?,
+        accuracyM: Int?,
     )
 
     /**

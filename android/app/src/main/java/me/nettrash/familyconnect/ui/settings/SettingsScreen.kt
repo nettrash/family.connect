@@ -421,6 +421,23 @@ fun SettingsScreen(
                     viewModel.setLinkPreviewsEnabled(!state.linkPreviewsEnabled)
                 },
             )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.s_map_previews)) },
+                supportingContent = {
+                    Text(
+                        stringResource(R.string.s_map_previews_explanation),
+                    )
+                },
+                trailingContent = {
+                    Switch(
+                        checked = state.mapPreviewsEnabled,
+                        onCheckedChange = viewModel::setMapPreviewsEnabled,
+                    )
+                },
+                modifier = Modifier.clickable {
+                    viewModel.setMapPreviewsEnabled(!state.mapPreviewsEnabled)
+                },
+            )
             HorizontalDivider(
                 modifier = Modifier.padding(start = 16.dp),
                 color = MaterialTheme.colorScheme.outlineVariant,

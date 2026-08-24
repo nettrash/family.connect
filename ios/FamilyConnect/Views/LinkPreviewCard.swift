@@ -18,8 +18,13 @@
 //  android/…/ui/chat/ChatScreen.kt.
 //
 
-// iOS only — the Mac has its own views (MacViews/).
-#if os(iOS)
+// PLATFORM-FREE, and it did not start that way: this was iOS-only, so a
+// Mac showed a bare URL where a phone showed a card for the very same
+// message. The only iOS-specific things in it were two colours, which
+// PlatformStyle already names for both platforms.
+//
+// The Mac forwards no gesture callbacks (its balloon uses a context menu
+// rather than a floating tapback), so those default to no-ops there.
 
 import SwiftUI
 
@@ -67,10 +72,10 @@ struct LinkPreviewCard: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
         }
-        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color.appBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color(.separator), lineWidth: 1)
+                .strokeBorder(Color.appSeparator, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .contentShape(Rectangle())
@@ -92,5 +97,3 @@ struct LinkPreviewCard: View {
         .accessibilityAction { onOpen(preview.url) }
     }
 }
-
-#endif

@@ -73,6 +73,7 @@ class SettingsViewModel @Inject constructor(
         val loggedOut: Boolean = false,
         /** Whether this device may fetch link previews. */
         val linkPreviewsEnabled: Boolean = true,
+        val mapPreviewsEnabled: Boolean = true,
         /** My profile-picture version; 0 = none, and the button says "Add". */
         val avatarVersion: Long = 0,
         /** True while a settings write is in flight. */
@@ -93,6 +94,7 @@ class SettingsViewModel @Inject constructor(
                 _state.update {
                     it.copy(
                         linkPreviewsEnabled = stored.linkPreviewsEnabled,
+                        mapPreviewsEnabled = stored.mapPreviewsEnabled,
                         avatarVersion = stored.myAvatarVersion,
                     )
                 }
@@ -102,6 +104,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setLinkPreviewsEnabled(enabled: Boolean) {
         viewModelScope.launch { settings.setLinkPreviewsEnabled(enabled) }
+    }
+
+    fun setMapPreviewsEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setMapPreviewsEnabled(enabled) }
     }
 
     fun load() {

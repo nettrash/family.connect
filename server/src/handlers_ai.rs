@@ -186,6 +186,31 @@ pub fn language_instruction(header: Option<&str>) -> Option<String> {
     Some(format!("Answer in {named}."))
 }
 
+/// The system prompt for one question: the family's own, plus the notes
+/// this particular question needs, plus the language to answer in.
+///
+/// The family writes ONE prompt — what the assistant is FOR does not change
+/// with the situation, only what it should know about THIS question does —
+/// and the language goes LAST on purpose. Everything above it is English
+/// (the configured prompt usually is, and the mention note certainly is),
+/// and a model handed a paragraph of English instructions will answer in
+/// English unless the last thing it reads says otherwise.
+///
+/// Its own function so the composition can be tested. It used to be inline
+/// in `answer`, where "does a family-chat mention carry the asker's
+/// language?" was a question nothing could answer without a live provider.
+pub fn compose_system_prompt(configured: &str, notes: &[String], language: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(notes.len() + 2);
+    if !configured.trim().is_empty() {
+        parts.push(configured.trim_end().to_string());
+    }
+    parts.extend(notes.iter().cloned());
+    if let Some(instruction) = language_instruction(language) {
+        parts.push(instruction);
+    }
+    parts.join("\n\n")
+}
+
 /// What the assistant is told about being mentioned in a group chat.
 ///
 /// Worth saying explicitly, because the honest description of what it can
@@ -196,7 +221,9 @@ pub const MENTION_INSTRUCTION: &str = "You have been mentioned with @ai in a fam
      You can see ONLY the message that mentioned you, and the message it quotes when there is one; \
      you cannot see the rest of the conversation, who else is in it, or anything said earlier. \
      If answering needs context you were not given, say so in one line and ask for it. \
-     Keep the answer short — this is a group chat, not a document.";
+     Keep the answer short — this is a group chat, not a document. \
+     Answer in the language the message you were sent is written in, whatever language these \
+     instructions are in.";
 
 /// One question, prepared: what goes to the model, who watches it arrive,
 /// and what the answer should quote.
@@ -422,22 +449,8 @@ async fn answer(
         events::deliver_message_without_push(state, &placeholder, None).await,
     );
 
-    // The family writes ONE system prompt; per-request notes are appended.
-    // That is deliberately not a prompt per situation to maintain: what the
-    // assistant is FOR is the same everywhere, and only what it should know
-    // about this particular question differs.
     let mut cfg = state.cfg.ai.clone();
-    let mut notes = prompt.notes;
-    if let Some(instruction) = language_instruction(language) {
-        notes.push(instruction);
-    }
-    for note in notes {
-        if cfg.system_prompt.trim().is_empty() {
-            cfg.system_prompt = note;
-        } else {
-            cfg.system_prompt = format!("{}\n\n{note}", cfg.system_prompt.trim_end());
-        }
-    }
+    cfg.system_prompt = compose_system_prompt(&cfg.system_prompt, &prompt.notes, language);
 
     // One ordered pump, rather than a task per fragment.
     //
@@ -601,7 +614,56 @@ async fn answer(
 
 #[cfg(test)]
 mod tests {
-    use super::language_instruction;
+    use super::{MENTION_INSTRUCTION, compose_system_prompt, language_instruction};
+
+    /// A family-chat mention must come back in the language it was asked
+    /// in, exactly as a question in the private thread does.
+    ///
+    /// The wiring is easy to have and easy to lose — `Accept-Language`
+    /// reaches `create_message` for EVERY chat, gets handed to
+    /// `spawn_mention_reply`, and has to survive all the way into the
+    /// prompt. This is the assertion that says it did, without a provider.
+    #[test]
+    fn a_family_mention_carries_the_askers_language() {
+        let prompt = compose_system_prompt(
+            "You are a helpful assistant in a family's private chat app.",
+            &[MENTION_INSTRUCTION.to_string()],
+            Some("ru-RU,ru;q=0.9,en;q=0.8"),
+        );
+        assert!(
+            prompt.ends_with("Answer in Russian."),
+            "the language instruction goes LAST, after the English notes: {prompt}"
+        );
+        assert!(prompt.contains("mentioned with @ai"), "{prompt}");
+        assert!(prompt.starts_with("You are a helpful"), "{prompt}");
+    }
+
+    /// The private thread has no mention note, and still gets the language.
+    #[test]
+    fn a_private_question_carries_it_too() {
+        let prompt = compose_system_prompt("Be brief.", &[], Some("ja"));
+        assert_eq!(prompt, "Be brief.\n\nAnswer in Japanese.");
+    }
+
+    /// A device that sent no usable header adds nothing at all, and the
+    /// model simply mirrors the language it was written to.
+    #[test]
+    fn no_header_adds_nothing() {
+        assert_eq!(compose_system_prompt("Be brief.", &[], None), "Be brief.");
+        assert_eq!(
+            compose_system_prompt("Be brief.", &[], Some("*")),
+            "Be brief."
+        );
+    }
+
+    /// An empty configured prompt must not leave a blank line in front of
+    /// the notes — a prompt starting with whitespace is a prompt that has
+    /// been built by string concatenation and not looked at.
+    #[test]
+    fn an_empty_configured_prompt_leaves_no_blank_line() {
+        let prompt = compose_system_prompt("   ", &["Only this.".to_string()], Some("de"));
+        assert_eq!(prompt, "Only this.\n\nAnswer in German.");
+    }
 
     #[test]
     fn a_weighted_header_yields_only_the_first_language() {

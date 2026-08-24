@@ -352,6 +352,11 @@ three Unicode tables agreeing; the ambiguity it exists to resolve only arises in
 a third party appearing in a conversation that had two is not something either of them asked for. A
 mention in an `ai` chat is just text — that chat already answers everything.
 
+**It answers in the language the mention was written from**, exactly as a question in a private
+thread does: the same `Accept-Language` the sending device already sends, resolved the same way.
+That matters more here than in a private thread — the answer appears in front of everyone, so the
+wrong language is visible to the whole family rather than to one person.
+
 The sequence is the one above, with two differences: the reply carries `reply_to` naming the
 mentioning message, and the `ai_delta` frames go to **every member of the family chat**, not one
 person, so the whole family watches the answer arrive. Fragments are coalesced server-side to a few

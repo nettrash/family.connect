@@ -77,6 +77,13 @@ data class SettingsState(
      * assistant would offer an affordance that silently does nothing
      * (docs/protocol.md, "Mentioning the assistant in the family chat").
      */
+    /**
+     * Whether a shared location draws a map. On by default; switchable
+     * because drawing one asks GOOGLE for tiles — the same trade the link
+     * previews make with the linked site, and the second of the only two
+     * things this app fetches from anywhere but the family's own server.
+     */
+    val mapPreviewsEnabled: Boolean = true,
     val assistantUserId: Long? = null,
     /** What to call it — server-configured, not compiled in here. */
     val assistantName: String? = null,
@@ -123,6 +130,8 @@ interface SettingsRepository {
      * scoped, so it goes with the session on logout — a different server
      * may have no assistant, or a differently named one.
      */
+    suspend fun setMapPreviewsEnabled(enabled: Boolean)
+
     suspend fun setAssistant(userId: Long?, displayName: String?)
 
     suspend fun resetKeepingServerUrl()
@@ -147,6 +156,9 @@ class DataStoreSettingsRepository @Inject constructor(
         val LINK_PREVIEWS_DISABLED = booleanPreferencesKey("link_previews_disabled")
         val BOARD_CURSOR = longPreferencesKey("board_cursor")
         val BOARD_SEEN_NOTE_ID = longPreferencesKey("board_seen_note_id")
+        // Stored inverted so a missing key reads as "on", like the link
+        // preview key above.
+        val MAP_PREVIEWS_DISABLED = booleanPreferencesKey("map_previews_disabled")
         val ASSISTANT_USER_ID = longPreferencesKey("assistant_user_id")
         val ASSISTANT_NAME = stringPreferencesKey("assistant_name")
     }
@@ -167,6 +179,7 @@ class DataStoreSettingsRepository @Inject constructor(
             linkPreviewsEnabled = prefs[Keys.LINK_PREVIEWS_DISABLED] != true,
             boardCursor = prefs[Keys.BOARD_CURSOR] ?: 0L,
             boardSeenNoteId = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L,
+            mapPreviewsEnabled = prefs[Keys.MAP_PREVIEWS_DISABLED] != true,
             assistantUserId = prefs[Keys.ASSISTANT_USER_ID],
             assistantName = prefs[Keys.ASSISTANT_NAME],
         )
@@ -233,6 +246,10 @@ class DataStoreSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setMapPreviewsEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.MAP_PREVIEWS_DISABLED] = !enabled }
+    }
+
     override suspend fun setAssistant(userId: Long?, displayName: String?) {
         dataStore.edit { prefs ->
             if (userId != null && displayName != null) {
@@ -256,10 +273,16 @@ class DataStoreSettingsRepository @Inject constructor(
             // or any 401 — silently turning link previews back on would
             // start contacting third-party sites the user opted out of.
             val keepLinkPreviews = prefs[Keys.LINK_PREVIEWS_DISABLED]
+            // Same reasoning as the line above, and the same consequence if
+            // it is dropped: a logout — or any 401 — silently turning map
+            // previews back on would resume asking Google for tiles that
+            // this person opted out of.
+            val keepMapPreviews = prefs[Keys.MAP_PREVIEWS_DISABLED]
             prefs.clear()
             keepUrl?.let { prefs[Keys.SERVER_URL] = it }
             keepPushToken?.let { prefs[Keys.PUSH_TOKEN] = it }
             keepLinkPreviews?.let { prefs[Keys.LINK_PREVIEWS_DISABLED] = it }
+            keepMapPreviews?.let { prefs[Keys.MAP_PREVIEWS_DISABLED] = it }
         }
     }
 }

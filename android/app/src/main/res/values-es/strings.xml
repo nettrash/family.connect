@@ -142,6 +142,8 @@
     <string name="s_edited">editado</string>
     <string name="s_leave_family_explanation">Perderás el acceso al chat familiar y a tus chats directos. El historial se queda en el servidor y vuelve si te unes de nuevo.</string>
     <string name="s_link_previews_explanation">Muestra una vista previa bajo los enlaces. Para crearla se pide al sitio enlazado su título e imagen, así que ese sitio verá una petición desde este dispositivo.</string>
+    <string name="s_map_previews">Vista previa del mapa</string>
+    <string name="s_map_previews_explanation">Muestra un mapa en una ubicación compartida. Para dibujarlo se le pide a Google, así que Google ve una petición desde este dispositivo. Si está desactivado, la ubicación sigue mostrando su marcador y se abre en tu app de mapas al tocarla.</string>
     <string name="s_plain_http_warning">Esta dirección usa http sin cifrar: los mensajes viajan sin protección por la red. Está bien en una red doméstica de confianza, arriesgado en cualquier otro sitio.</string>
     <string name="s_request_declined_explanation">El propietario rechazó tu solicitud. Puedes probar con otro código de invitación o crear tu propia familia.</string>
     <string name="s_waiting_explanation">No hay nada que cancelar desde aquí: el propietario te deja entrar o rechaza la solicitud.</string>

@@ -63,6 +63,9 @@ struct LocationAttachmentView: View {
         }
     }
 
+    /// No caption on the pin. See the note at the call site.
+    private let unlabelled = ""
+
     private func map(_ coordinate: CLLocationCoordinate2D) -> some View {
         Map(
             initialPosition: .region(
@@ -76,7 +79,12 @@ struct LocationAttachmentView: View {
             // makes the conversation feel stuck.
             interactionModes: []
         ) {
-            Marker("", coordinate: coordinate)
+            // A String VARIABLE, not a literal: `Marker(""…)` takes a
+            // LocalizedStringKey, so the empty literal was extracted into
+            // the string catalogue as an empty key needing eight
+            // translations. The pin wants no label at all — the name is
+            // already on the row underneath it.
+            Marker(unlabelled, coordinate: coordinate)
                 .tint(.red)
         }
         .frame(height: 140)

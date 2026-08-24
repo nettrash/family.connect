@@ -47,6 +47,9 @@ struct MacConversationView: View {
     let chatID: Int64
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    /// Watched only for `generation`: a card landing grows a bubble, and a
+    /// bubble growing above the viewport moves everything below it.
+    @Environment(LinkPreviewLoader.self) private var previewLoader
     /// `.key` when this window is the frontmost one. With several
     /// conversation windows open, this is what decides which chat counts
     /// as the one being READ.
@@ -293,6 +296,15 @@ struct MacConversationView: View {
                         systemImage: "bubble.left.and.bubble.right",
                         description: Text("Say something to get started."))
                 }
+            }
+            .onChange(of: previewLoader.generation) {
+                // A link-preview card just landed: the bubble hosting it
+                // GREW, and a bubble growing above the viewport slides the
+                // visible region into older content. Re-pin, but only for a
+                // reader who was at the bottom — the same rule, and the
+                // same repair, the phone makes.
+                guard isPinnedToBottom else { return }
+                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
             }
             .onChange(of: messages.count) { oldCount, newCount in
                 // Grow the window over what just arrived, or new messages

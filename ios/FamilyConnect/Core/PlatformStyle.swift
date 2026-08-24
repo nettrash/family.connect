@@ -34,6 +34,15 @@ extension Color {
         #endif
     }
 
+    /// A hairline between things — a card's border, a divider.
+    static var appSeparator: Color {
+        #if os(iOS)
+        Color(.separator)
+        #else
+        Color(nsColor: .separatorColor)
+        #endif
+    }
+
     /// The grouped-list backdrop a settings screen sits on.
     static var appGroupedBackground: Color {
         #if os(iOS)

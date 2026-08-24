@@ -142,6 +142,8 @@
     <string name="s_edited">編集済み</string>
     <string name="s_leave_family_explanation">ファミリーチャットと個別チャットにアクセスできなくなります。履歴はサーバに残り、再参加すれば戻ります。</string>
     <string name="s_link_previews_explanation">メッセージ内のリンクの下にプレビューを表示します。作成時にリンク先へタイトルと画像を要求するため、そのサイトにはこの端末からのアクセスが記録されます。</string>
+    <string name="s_map_previews">地図のプレビュー</string>
+    <string name="s_map_previews_explanation">共有された位置情報に地図を表示します。地図は Google に要求するため、この端末からのリクエストが Google に届きます。オフでも、ピンは表示され、タップすると地図アプリで開きます。</string>
     <string name="s_plain_http_warning">このアドレスは平文の http です。メッセージは暗号化されずにネットワークを流れます。信頼できる家庭内 LAN なら問題ありませんが、それ以外では危険です。</string>
     <string name="s_request_declined_explanation">ファミリーのオーナーがリクエストを拒否しました。別の招待コードを試すか、自分のファミリーを作成できます。</string>
     <string name="s_waiting_explanation">ここでキャンセルできることはありません。オーナーが承認するか拒否します。</string>

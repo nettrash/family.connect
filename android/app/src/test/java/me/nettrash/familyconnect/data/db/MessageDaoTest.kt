@@ -242,4 +242,48 @@ class MessageDaoTest {
         assertThat(dao.observeMessages(1L, 50).first().map { it.clientMsgId })
             .containsExactly("keep")
     }
+
+    /**
+     * A location that ARRIVES rather than one this device sent.
+     *
+     * A location has no bytes to fall back on — the coordinates ARE the
+     * attachment — so an ack that forgets to carry them does not degrade
+     * the bubble, it empties it. The bug this pins was invisible to the
+     * sender (whose optimistic row already held them) and total for
+     * everybody else, which is exactly why it reached three platforms.
+     */
+    @Test
+    fun setAttachmentCarriesTheCoordinatesOfALocation() = runTest(dispatcher) {
+        dao.insert(message("a", serverId = null, createdAt = 1_000))
+
+        dao.setAttachment(
+            clientMsgId = "a",
+            attachmentId = 61L,
+            kind = "location",
+            mime = "application/vnd.family-connect.location",
+            size = 0L,
+            width = null,
+            height = null,
+            durationMs = null,
+            hasPreview = false,
+            name = "Home",
+            latitude = 55.7558,
+            longitude = 37.6173,
+            accuracyM = 12,
+        )
+
+        val stored = dao.findByClientMsgId("a")
+        assertThat(stored).isNotNull()
+        assertThat(stored!!.attachmentLatitude).isEqualTo(55.7558)
+        assertThat(stored.attachmentLongitude).isEqualTo(37.6173)
+        assertThat(stored.attachmentAccuracyM).isEqualTo(12)
+        // And the wire shape the bubble actually reads is complete, which
+        // is the property that matters: `LocationRow` returns early on a
+        // null coordinate and draws nothing at all.
+        val attachment = stored.attachment
+        assertThat(attachment).isNotNull()
+        assertThat(attachment!!.isLocation).isTrue()
+        assertThat(attachment.latitude).isEqualTo(55.7558)
+        assertThat(attachment.longitude).isEqualTo(37.6173)
+    }
 }

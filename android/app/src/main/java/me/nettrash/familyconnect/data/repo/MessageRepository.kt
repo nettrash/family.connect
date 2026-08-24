@@ -414,6 +414,9 @@ class MessageRepository @Inject constructor(
             message.attachment?.durationMs,
             message.attachment?.hasPreview ?: false,
             message.attachment?.name,
+            message.attachment?.latitude,
+            message.attachment?.longitude,
+            message.attachment?.accuracyM,
         )
         chatDao.updateLastMessage(
             message.chatId,
@@ -497,6 +500,15 @@ class MessageRepository @Inject constructor(
                     attachmentDurationMs = message.attachment?.durationMs,
                     attachmentHasPreview = message.attachment?.hasPreview ?: false,
                     attachmentName = message.attachment?.name,
+                    // A location IS these three columns — it has no bytes
+                    // to fall back on, so dropping them here does not
+                    // degrade the bubble, it EMPTIES it. This is the path a
+                    // message ARRIVES on, which is why the bug they caused
+                    // was invisible to whoever sent the location and total
+                    // for everybody else.
+                    attachmentLatitude = message.attachment?.latitude,
+                    attachmentLongitude = message.attachment?.longitude,
+                    attachmentAccuracyM = message.attachment?.accuracyM,
                 ),
             ),
         )

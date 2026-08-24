@@ -264,6 +264,11 @@ class ChatViewModel @Inject constructor(
         .map { it.linkPreviewsEnabled }
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
+    /** Whether a shared location draws a map — drawing one asks Google. */
+    val mapPreviewsEnabled: StateFlow<Boolean> = settings.state
+        .map { it.mapPreviewsEnabled }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
     /** Composition asks for a link the first time a bubble renders it. */
     fun requestLinkPreview(url: String) {
         if (!linkPreviewsEnabled.value) return

@@ -350,6 +350,37 @@ struct AttachmentTests {
         #expect(entity.attachmentSnapshot == dto)
     }
 
+    /// A location that ARRIVES rather than one this device sent.
+    ///
+    /// A location has no bytes to fall back on — the coordinates ARE the
+    /// attachment — so the inbound initializer forgetting them does not
+    /// degrade the bubble, it empties it. The bug this pins was invisible
+    /// to whoever sent the location (their own row already held the
+    /// coordinates) and total for everybody else, which is exactly how it
+    /// reached three platforms at once.
+    @Test("A location arriving from another device keeps its coordinates")
+    func inboundLocationKeepsItsCoordinates() throws {
+        let json = #"{"id": 61, "kind": "location", "mime": "application/vnd.family-connect.location", "size": 0, "has_preview": false, "name": "Home", "latitude": 55.7558, "longitude": 37.6173, "accuracy_m": 12}"#
+        let dto = try JSONDecoder().decode(AttachmentDTO.self, from: Data(json.utf8))
+        #expect(dto.isLocation)
+        #expect(dto.coordinate?.latitude == 55.7558)
+
+        // The initializer the INBOUND path uses — ChatSyncCoordinator
+        // builds a new entity this way for any message it does not
+        // already hold.
+        let entity = MessageEntity(
+            localID: "local-3", chatID: 42, senderID: 9, body: "",
+            createdAt: Date(), status: .sent, attachment: dto)
+
+        #expect(entity.attachmentLatitude == 55.7558)
+        #expect(entity.attachmentLongitude == 37.6173)
+        #expect(entity.attachmentAccuracyM == 12)
+        // And the snapshot the bubble actually reads round-trips whole:
+        // LocationAttachmentView draws nothing at all without a coordinate.
+        #expect(entity.attachmentSnapshot == dto)
+        #expect(entity.attachmentSnapshot?.coordinate != nil)
+    }
+
     @Test("A message with no attachment has no snapshot")
     func noAttachmentNoSnapshot() throws {
         let entity = MessageEntity(

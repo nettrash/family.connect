@@ -142,6 +142,8 @@
     <string name="s_edited">已编辑</string>
     <string name="s_leave_family_explanation">你将失去家庭对话和单独对话的访问权限。历史记录保留在服务器上，重新加入后会回来。</string>
     <string name="s_link_previews_explanation">在消息中的链接下方显示预览。生成预览需要向该网站请求标题和图片，因此该网站会看到来自本设备的请求。</string>
+    <string name="s_map_previews">地图预览</string>
+    <string name="s_map_previews_explanation">在共享位置上显示地图。绘制地图需要向 Google 请求，因此 Google 会看到来自本设备的请求。关闭后，位置仍会显示图钉，点按即可在你的地图应用中打开。</string>
     <string name="s_plain_http_warning">该地址使用普通 http——消息会以未加密的方式在网络上传输。在可信的家庭网络中没问题，在其他地方则有风险。</string>
     <string name="s_request_declined_explanation">家庭拥有者拒绝了你的申请。你可以试试其他邀请码，或者创建自己的家庭。</string>
     <string name="s_waiting_explanation">这里没有什么可取消的——拥有者会让你加入或拒绝申请。</string>

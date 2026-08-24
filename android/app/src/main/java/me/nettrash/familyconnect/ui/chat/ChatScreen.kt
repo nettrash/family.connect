@@ -280,6 +280,7 @@ fun ChatScreen(
     val initialLoadSettled by viewModel.initialLoadSettled.collectAsStateWithLifecycle()
     val linkPreviews by viewModel.linkPreviews.collectAsStateWithLifecycle()
     val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
+    val mapPreviewsEnabled by viewModel.mapPreviewsEnabled.collectAsStateWithLifecycle()
 
     val mediaState by viewModel.mediaState.collectAsStateWithLifecycle()
     val staged by viewModel.staged.collectAsStateWithLifecycle()
@@ -745,6 +746,7 @@ fun ChatScreen(
                                     memberAvatars = memberAvatars,
                                     linkPreviews = linkPreviews,
                                     previewsEnabled = linkPreviewsEnabled,
+                                    mapPreviewsEnabled = mapPreviewsEnabled,
                                     onRequestPreview = viewModel::requestLinkPreview,
                                     streamUrl = viewModel::attachmentStreamUrl,
                                     onFailedTap = { failedActionTarget = it },
@@ -1536,6 +1538,8 @@ private fun MessageBubble(
     memberAvatars: Map<Long, Long>,
     linkPreviews: Map<String, LinkPreviewState>,
     previewsEnabled: Boolean,
+    /** Whether a shared location draws a map — the reader's own setting. */
+    mapPreviewsEnabled: Boolean,
     onRequestPreview: (String) -> Unit,
     streamUrl: suspend (Long) -> Pair<String, Map<String, String>>?,
     onFailedTap: (String) -> Unit,
@@ -1734,6 +1738,7 @@ private fun MessageBubble(
                     myUserId = myUserId,
                     linkPreviews = linkPreviews,
                     previewsEnabled = previewsEnabled,
+                    mapPreviewsEnabled = mapPreviewsEnabled,
                     onRequestPreview = onRequestPreview,
                     streamUrl = streamUrl,
                     onOpenLink = { runCatching { uriHandler.openUri(it) } },
@@ -2123,6 +2128,8 @@ private fun BubbleContent(
     linkPreviews: Map<String, LinkPreviewState>,
     /** False = this device never requests a linked page (Settings). */
     previewsEnabled: Boolean,
+    /** Whether a shared location draws a map — the reader's own setting. */
+    mapPreviewsEnabled: Boolean,
     onRequestPreview: (String) -> Unit,
     /** Where audio streams from, with the auth header it needs. */
     streamUrl: suspend (Long) -> Pair<String, Map<String, String>>?,
@@ -2275,6 +2282,7 @@ private fun BubbleContent(
         entity.attachment?.let { attachment ->
             AttachmentBlock(
                 attachment = attachment,
+                showMapPreviews = mapPreviewsEnabled,
                 onOpen = { onOpenAttachment(attachment) },
                 modifier = measureBlock,
                 streamUrl = streamUrl,

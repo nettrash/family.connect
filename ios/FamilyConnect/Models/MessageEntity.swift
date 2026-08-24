@@ -228,5 +228,13 @@ final class MessageEntity {
         self.attachmentDurationMS = attachment?.durationMS
         self.attachmentHasPreview = attachment?.hasPreview ?? false
         self.attachmentName = attachment?.name
+        // A location IS these three columns — it has no bytes to fall back
+        // on, so dropping them here does not degrade the bubble, it empties
+        // it. This is the path a message ARRIVES on, which is why the bug
+        // it caused was invisible to whoever sent the location and total
+        // for everybody else.
+        self.attachmentLatitude = attachment?.latitude
+        self.attachmentLongitude = attachment?.longitude
+        self.attachmentAccuracyM = attachment?.accuracyM
     }
 }

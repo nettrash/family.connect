@@ -22,6 +22,8 @@ ANDROID_ONLY = {
 "e_recording_too_short": "Снимак је прекратак.",
 "e_microphone_permission": "Family треба дозволу за коришћење микрофона.",
 "s_ask_the_assistant": "Питај асистента",
+"s_map_previews": "Приказ мапе",
+"s_map_previews_explanation": "Приказује мапу уз подељену локацију. Мапа се тражи од Google-а, па Google види захтев са овог уређаја. Ако је искључено, локација и даље приказује ознаку и отвара се у твојој апликацији за мапе на додир.",
 "s_location": "Локација",
 "s_share_your_location": "Локација",
 "e_location_permission": "Family треба дозволу за приступ твојој локацији.",
