@@ -700,6 +700,32 @@ class MessageRepository @Inject constructor(
      * page when nothing is loaded yet). Returns true when the start of
      * history was reached (short page).
      */
+    /**
+     * Re-fetch locations this device stored without their coordinates.
+     *
+     * **Catch-up only ever ADDS.** `after_id` asks for messages newer than
+     * the newest one held, so a message already in the cache is never read
+     * again — which means a row written by a build that dropped the
+     * coordinates stays broken FOREVER on a device that has otherwise been
+     * fixed, as a bubble with nothing in it.
+     *
+     * `before_id = serverId + 1, limit = 1` asks for exactly that one
+     * message through an endpoint that already exists, and `applyServer`
+     * puts it back through the same path a live delivery takes. Bounded, so
+     * a cache full of them cannot turn a reconnect into a storm.
+     */
+    suspend fun repairLocationsMissingCoordinates() {
+        val broken = messageDao.locationsMissingCoordinates(REPAIR_BATCH)
+        if (broken.isEmpty()) return
+        for (row in broken) {
+            val serverId = row.serverId ?: continue
+            val page = chatApi.messages(row.chatId, beforeId = serverId + 1, limit = 1)
+            val dto = (page as? ApiResult.Ok)?.value?.messages?.firstOrNull { it.id == serverId }
+                ?: continue
+            applyServerMessage(dto, live = false)
+        }
+    }
+
     suspend fun loadOlder(chatId: Long): Boolean {
         val oldest = messageDao.oldestServerId(chatId)
         val result = chatApi.messages(chatId, beforeId = oldest, limit = HISTORY_PAGE)
@@ -728,6 +754,9 @@ class MessageRepository @Inject constructor(
                 else -> "Photo"
             }
         }
+
+        /** Most broken locations repaired per resync — see the note above. */
+        private const val REPAIR_BATCH = 25
 
         private const val ACK_TIMEOUT_MS = 15_000L
         private const val HISTORY_PAGE = 50

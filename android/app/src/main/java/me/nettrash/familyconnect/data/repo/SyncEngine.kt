@@ -72,6 +72,11 @@ class SyncEngine @Inject constructor(
             }
         }
 
+        // 3d. Repair any location stored without its coordinates. Same
+        // reason as edits above: `after_id` can never see an older row, so
+        // nothing else would ever fix one.
+        messageRepository.repairLocationsMissingCoordinates()
+
         // 4. Re-send anything still pending — safe, client_msg_id dedups.
         messageRepository.flushPending()
     }

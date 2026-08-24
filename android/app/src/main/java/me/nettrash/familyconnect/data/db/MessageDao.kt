@@ -49,6 +49,26 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE clientMsgId = :clientMsgId")
     suspend fun findByClientMsgId(clientMsgId: String): MessageEntity?
 
+    /**
+     * Locations stored WITHOUT their coordinates — rows a build that
+     * dropped them on the inbound path left behind.
+     *
+     * A location has no bytes to fall back on, so such a row is a bubble
+     * with nothing in it. Catch-up is `after_id`-only and can never see an
+     * older row again, so these never heal on their own; see
+     * `MessageRepository.repairLocationsMissingCoordinates`.
+     */
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE attachmentKind = 'location'
+          AND attachmentLatitude IS NULL
+          AND serverId IS NOT NULL
+        LIMIT :limit
+        """,
+    )
+    suspend fun locationsMissingCoordinates(limit: Int): List<MessageEntity>
+
     @Query("SELECT * FROM messages WHERE serverId = :serverId")
     suspend fun findByServerId(serverId: Long): MessageEntity?
 

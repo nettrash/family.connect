@@ -231,14 +231,24 @@ private fun LocationRow(
     val context = LocalContext.current
     val latitude = attachment.latitude
     val longitude = attachment.longitude
-    if (latitude == null || longitude == null) return
+    // The row is drawn even with NO coordinate, and that is a deliberate
+    // floor rather than defensive noise. A location has no bytes to fall
+    // back on, so anything that loses the pin — a sync bug, a row written
+    // by an older build — used to `return` here and render an absolutely
+    // EMPTY balloon, which reads as the app being broken rather than as one
+    // missing detail. Saying "Location" and nothing else is a bad outcome;
+    // saying nothing at all is a worse one.
     val label = attachment.name?.takeIf { it.isNotEmpty() }
         ?: stringResource(R.string.s_location)
     val coordinates = remember(latitude, longitude, attachment.accuracyM) {
-        val lat = String.format(Locale.ROOT, "%.5f", latitude)
-        val lon = String.format(Locale.ROOT, "%.5f", longitude)
-        val accuracy = attachment.accuracyM
-        if (accuracy == null) "$lat, $lon" else "$lat, $lon · ±$accuracy m"
+        if (latitude == null || longitude == null) {
+            ""
+        } else {
+            val lat = String.format(Locale.ROOT, "%.5f", latitude)
+            val lon = String.format(Locale.ROOT, "%.5f", longitude)
+            val accuracy = attachment.accuracyM
+            if (accuracy == null) "$lat, $lon" else "$lat, $lon · ±$accuracy m"
+        }
     }
     // Same rule as the file row: everything derives from the balloon's own
     // content colour, so it reads on both the tinted and the neutral ground.
@@ -250,13 +260,17 @@ private fun LocationRow(
             .background(ink.copy(alpha = 0.10f))
             .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
             .combinedClickable(
-                onClick = { openInMaps(context, latitude, longitude, label) },
+                onClick = {
+                    if (latitude != null && longitude != null) {
+                        openInMaps(context, latitude, longitude, label)
+                    }
+                },
                 onLongClick = onLongPress,
                 onDoubleClick = onDoubleTap,
             )
             .semantics { contentDescription = "$label, $coordinates" },
     ) {
-        if (showMap) {
+        if (showMap && latitude != null && longitude != null) {
             LocationMap(latitude = latitude, longitude = longitude)
         }
         Row(
@@ -286,13 +300,15 @@ private fun LocationRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    text = coordinates,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ink.copy(alpha = 0.72f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                if (coordinates.isNotEmpty()) {
+                    Text(
+                        text = coordinates,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ink.copy(alpha = 0.72f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }

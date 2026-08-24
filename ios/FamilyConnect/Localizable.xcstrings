@@ -375,16 +375,16 @@
         "sr" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld члан"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld члана"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld члан"
                 }
               },
               "other" : {
@@ -399,16 +399,16 @@
         "sr-Latn" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld član"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld člana"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld član"
                 }
               },
               "other" : {
@@ -10244,6 +10244,7 @@
     },
     "Shows a map on a shared location. Drawing one asks Apple for it, so Apple sees a request from this Mac. With it off, a location still shows its pin and opens in Maps when you click it." : {
       "comment" : "The macOS Privacy section footer.",
+      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {

@@ -1156,6 +1156,43 @@ final class ChatSyncCoordinator {
         }
     }
 
+    /// Re-fetch locations this device stored without their coordinates.
+    ///
+    /// **Catch-up only ever ADDS.** `after_id` asks for messages newer than
+    /// the newest one held, so a message already in the cache is never read
+    /// again — which means a row written by a build that dropped the
+    /// coordinates stays broken FOREVER, on a device that has otherwise
+    /// been fixed. A location has no bytes to fall back on, so such a row
+    /// is a bubble with nothing in it at all.
+    ///
+    /// `before_id = serverID + 1, limit = 1` asks for exactly that one
+    /// message through an endpoint that already exists, and `upsert` puts
+    /// it back through the same path a live delivery takes. Bounded: at
+    /// most `repairBatch` of them per resync, so a cache full of them
+    /// cannot turn a reconnect into a storm of requests.
+    private func repairLocationsMissingCoordinates() async {
+        let kind = AttachmentDTO.Kind.location
+        var descriptor = FetchDescriptor<MessageEntity>(
+            predicate: #Predicate { row in
+                row.attachmentKind == kind && row.attachmentLatitude == nil && row.serverID != nil
+            })
+        descriptor.fetchLimit = Self.repairBatch
+        guard let broken = try? modelContext.fetch(descriptor), !broken.isEmpty else { return }
+        AppLog.sync.info("Repairing \(broken.count, privacy: .public) location(s) with no coordinates")
+        for row in broken {
+            guard let serverID = row.serverID else { continue }
+            guard
+                let page = try? await api.messages(
+                    chatID: row.chatID, beforeID: serverID + 1, limit: 1),
+                let dto = page.first(where: { $0.id == serverID })
+            else { continue }
+            upsert(dto, bumpUnread: false)
+        }
+    }
+
+    /// Most broken locations repaired per resync — see the note above.
+    private static let repairBatch = 25
+
     /// Tap-to-retry on a failed bubble: same row, same client_msg_id.
     func retry(localID: String) {
         guard let row = fetchMessage(localID: localID), row.state == .failed else { return }
@@ -1265,6 +1302,9 @@ final class ChatSyncCoordinator {
         // 6. Outbox sweep: anything still pending after 30 s gets re-sent
         // (same client_msg_id — the server dedups).
         await sweepOutbox()
+
+        // 6a. Repair any location that was stored without its coordinates.
+        await repairLocationsMissingCoordinates()
 
         // 7. Push registration: the first pass asks for notification
         // permission (we're .active, so the user is in a family and the

@@ -38,29 +38,34 @@ struct LocationAttachmentView: View {
     }
 
     var body: some View {
-        if let coordinate {
-            VStack(alignment: .leading, spacing: 6) {
-                if AppSettings.mapPreviewsEnabled {
-                    map(coordinate)
-                }
-                label(coordinate)
+        // The row is drawn even with NO coordinate, and that is a
+        // deliberate floor rather than defensive noise. A location has no
+        // bytes to fall back on, so anything that loses the pin — a sync
+        // bug, a row written by an older build — used to render an
+        // absolutely EMPTY balloon, which reads as the app being broken
+        // rather than as one missing detail. Saying "Location" and nothing
+        // else is a bad outcome; saying nothing at all is a worse one.
+        VStack(alignment: .leading, spacing: 6) {
+            if let coordinate, AppSettings.mapPreviewsEnabled {
+                map(coordinate)
             }
-            .frame(maxWidth: 260, alignment: .leading)
-            // Count 2 BEFORE count 1: that is what makes them exclusive.
-            // A bare `simultaneousGesture` means "recognise alongside", so
-            // the single tap opens Maps before the double tap can land the
-            // heart — the exact bug the attachment blocks already fixed.
-            .onTapGesture(count: 2) { onDoubleTap() }
-            .onTapGesture { open(coordinate) }
-            .onLongPressGesture { onLongPress() }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(accessibilityText)
-            .accessibilityAddTraits(.isButton)
-            // A bare gesture publishes NO accessibility action — measured
-            // in this repo, on this exact pattern. Without this VoiceOver
-            // announces a button that does nothing.
-            .accessibilityAction { open(coordinate) }
+            label()
         }
+        .frame(maxWidth: 260, alignment: .leading)
+        // Count 2 BEFORE count 1: that is what makes them exclusive. A
+        // bare `simultaneousGesture` means "recognise alongside", so the
+        // single tap opens Maps before the double tap can land the heart —
+        // the exact bug the attachment blocks already fixed.
+        .onTapGesture(count: 2) { onDoubleTap() }
+        .onTapGesture { if let coordinate { open(coordinate) } }
+        .onLongPressGesture { onLongPress() }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText)
+        .accessibilityAddTraits(.isButton)
+        // A bare gesture publishes NO accessibility action — measured in
+        // this repo, on this exact pattern. Without this VoiceOver
+        // announces a button that does nothing.
+        .accessibilityAction { if let coordinate { open(coordinate) } }
     }
 
     /// No caption on the pin. See the note at the call site.
@@ -92,7 +97,7 @@ struct LocationAttachmentView: View {
         .allowsHitTesting(false)
     }
 
-    private func label(_ coordinate: CLLocationCoordinate2D) -> some View {
+    private func label() -> some View {
         HStack(spacing: 8) {
             Image(systemName: "mappin.circle.fill")
                 .font(.title3)
@@ -104,10 +109,12 @@ struct LocationAttachmentView: View {
                 Text(attachment.name?.isEmpty == false ? attachment.name! : String(localized: "Location"))
                     .font(.callout)
                     .lineLimit(1)
-                Text(verbatim: coordinateLine)
-                    .font(.caption2)
-                    .opacity(0.75)
-                    .lineLimit(1)
+                if !coordinateLine.isEmpty {
+                    Text(verbatim: coordinateLine)
+                        .font(.caption2)
+                        .opacity(0.75)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
         }

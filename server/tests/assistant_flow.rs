@@ -477,6 +477,80 @@ async fn wait_for_assistant_message(
     panic!("the assistant never created its placeholder");
 }
 
+/// A location sent the way a CONNECTED client sends one — over the socket
+/// — and received the way another member's client receives it.
+///
+/// The live `message` frame is its own path: it does not come from the
+/// joined read used by history, it is built by `create_message` from the
+/// INSERT's RETURNING plus `claim_attachment`'s. A location has NO BYTES,
+/// so if either of those forgets the coordinate columns the frame carries
+/// an attachment that renders as nothing at all — and the sender, whose own
+/// device already holds them, sees nothing wrong.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_location_sent_over_the_socket_arrives_with_its_coordinates() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    ts.join(&member, &code, "joined").await;
+    let chat = ts.family_chat_id(&owner).await;
+
+    // The upload, exactly as a client with no bytes makes it: metadata in
+    // the query string, empty body, no content type.
+    let response = ts
+        .put_bytes_method(
+            "POST",
+            &member,
+            "/attachments?kind=location&latitude=55.7558&longitude=37.6173&accuracy_m=12",
+            "",
+            Vec::new(),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    let uploaded: Value = response.json().await.expect("JSON");
+    let attachment_id = uploaded["attachment"]["id"].as_i64().expect("id");
+
+    // The OTHER member is listening, which is the case that matters.
+    let mut watcher = connect_ws(&ts, &owner).await;
+    let mut sender = connect_ws(&ts, &member).await;
+    sender
+        .send(Message::text(
+            json!({
+                "type": "send",
+                "chat_id": chat,
+                "client_msg_id": uuid::Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_id": attachment_id,
+            })
+            .to_string(),
+        ))
+        .await
+        .expect("sending over the socket");
+
+    let frame = next_frame_of_type(&mut watcher, "message").await;
+    let attachment = &frame["message"]["attachment"];
+    assert_eq!(attachment["kind"], "location", "frame: {frame}");
+    assert_eq!(
+        attachment["latitude"].as_f64(),
+        Some(55.7558),
+        "the LIVE frame must carry the pin, or the bubble draws nothing: {frame}"
+    );
+    assert_eq!(attachment["longitude"].as_f64(), Some(37.6173));
+    assert_eq!(attachment["accuracy_m"].as_i64(), Some(12));
+
+    // ...and so must the history read the other client falls back on.
+    let read: Value = ts
+        .get(&owner, &format!("/chats/{chat}/messages"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let drawn = &read["messages"][0]["attachment"];
+    assert_eq!(drawn["latitude"].as_f64(), Some(55.7558), "history: {read}");
+}
+
 // -- socket helpers (mirroring push_flow.rs) ---------------------------------
 
 type WsClient =

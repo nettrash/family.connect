@@ -286,4 +286,51 @@ class MessageDaoTest {
         assertThat(attachment.latitude).isEqualTo(55.7558)
         assertThat(attachment.longitude).isEqualTo(37.6173)
     }
+
+    /**
+     * The repair query has to FIND the broken rows and leave everything
+     * else alone — it is what heals a location that a build with the
+     * inbound bug already stored, and catch-up never revisits those.
+     */
+    @Test
+    fun locationsMissingCoordinatesFindsOnlyTheBrokenOnes() = runTest(dispatcher) {
+        // Broken: a location with no pin. This is the empty bubble.
+        dao.insert(
+            message("broken", serverId = 10, createdAt = 1_000).copy(
+                attachmentId = 61,
+                attachmentKind = "location",
+                attachmentMime = "application/vnd.family-connect.location",
+            ),
+        )
+        // Whole: the same kind, with its coordinates.
+        dao.insert(
+            message("whole", serverId = 11, createdAt = 2_000).copy(
+                attachmentId = 62,
+                attachmentKind = "location",
+                attachmentMime = "application/vnd.family-connect.location",
+                attachmentLatitude = 55.7558,
+                attachmentLongitude = 37.6173,
+            ),
+        )
+        // A photo has no coordinates and never should — it must not be
+        // dragged into a repair loop on every single resync.
+        dao.insert(
+            message("photo", serverId = 12, createdAt = 3_000).copy(
+                attachmentId = 63,
+                attachmentKind = "photo",
+                attachmentMime = "image/jpeg",
+            ),
+        )
+        // Not yet acked, so there is no server id to re-fetch by.
+        dao.insert(
+            message("pending", serverId = null, createdAt = 4_000).copy(
+                attachmentId = 64,
+                attachmentKind = "location",
+                attachmentMime = "application/vnd.family-connect.location",
+            ),
+        )
+
+        val found = dao.locationsMissingCoordinates(limit = 25)
+        assertThat(found.map { it.clientMsgId }).containsExactly("broken")
+    }
 }
