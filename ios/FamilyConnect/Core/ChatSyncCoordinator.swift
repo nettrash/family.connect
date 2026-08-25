@@ -36,6 +36,15 @@
 //                           server's max_reaction_seq is ahead of ours,
 //    6. outbox sweep      — pending rows older than 30 s re-delivered.
 //
+//  UNREAD: a chat is read when — and only when — someone is looking at
+//  its newest message with the app in front of them. That is ChatPresence,
+//  published by the conversation views and consulted here in exactly two
+//  places: the live-message path (which suppresses the bump instead of
+//  bumping and clearing, so the icon badge does not flicker) and
+//  `markRead`. Nothing else in this file may mark anything read — see
+//  ChatPresence for what a mistaken read costs, which is the badge on
+//  every device that person owns, forever.
+//
 //  @MainActor because it mutates ModelContainer.mainContext and
 //  @Observable state that SwiftUI reads; the blocking work all lives in
 //  the APIClient / ChatSocket actors it awaits into.
@@ -63,13 +72,50 @@ final class ChatSyncCoordinator {
     /// older than 5 s are pruned so "X is typing…" can't get stuck.
     private(set) var typingByChat: [Int64: [Int64: Date]] = [:]
 
-    /// The conversation currently on screen. While set, inbound messages
-    /// for that chat advance the read marker instead of the unread badge.
-    var activeChatID: Int64? {
-        didSet {
-            guard let chatID = activeChatID, oldValue != chatID else { return }
-            markRead(chatID: chatID)
-        }
+    /// Who is looking at what, right now — see ChatPresence, which is the
+    /// only definition of that in this app. Published by whichever
+    /// conversation view is on screen; read by the unread rule in
+    /// `updateChat` and by the Mac's local notification in `announce`,
+    /// which must never disagree about it.
+    ///
+    /// This replaced a plain `activeChatID` whose `didSet` marked the chat
+    /// read, i.e. a chat was read by APPEARING. Mounting the view on a Mac
+    /// that launched behind every other window read the family chat;
+    /// clicking the Dock icon to see what had arrived destroyed the count
+    /// in the same gesture; and because the claim survived backgrounding on
+    /// iOS, the next resync walked every missed message through the read
+    /// path and threw away the count it had just fetched from the server.
+    private(set) var presence: ChatPresence?
+
+    /// Publish what the person in front of `chatID` can currently see, and
+    /// read the chat when all of it is true.
+    ///
+    /// The view calls this from every hook that can change one of the three
+    /// facts — appearing, the bottom sentinel's geometry, the opening
+    /// settle, new messages, and the scene or window becoming (un)frontmost
+    /// — rather than deciding for itself what "read" means. Unconditional
+    /// on purpose: `markRead` is a cheap no-op when there is nothing to
+    /// read, and re-asking on an unchanged presence is what catches the
+    /// case where the thread scrolled to a new message without the sentinel
+    /// ever leaving the viewport.
+    func updatePresence(chatID: Int64, isAtNewest: Bool, isFrontmost: Bool) {
+        presence = ChatPresence(chatID: chatID, isAtNewest: isAtNewest, isFrontmost: isFrontmost)
+        if isAtNewest && isFrontmost { markRead(chatID: chatID) }
+    }
+
+    /// Give up the claim — but only if it is still ours, because on the Mac
+    /// another window may have taken it since. Without that guard, closing
+    /// one window clears the claim of another that is still on screen, and
+    /// every message arriving in it starts bumping the badge of a chat the
+    /// user is looking at.
+    func releasePresence(chatID: Int64) {
+        if presence?.chatID == chatID { presence = nil }
+    }
+
+    /// Is the user genuinely reading this chat this instant? The one
+    /// question, asked in the one way.
+    func isReading(_ chatID: Int64) -> Bool {
+        presence?.isReading(chatID) ?? false
     }
 
     // MARK: - Collaborators
@@ -92,6 +138,44 @@ final class ChatSyncCoordinator {
     /// chatID → when we last sent a typing frame (client-side throttle).
     private var lastTypingSentAt: [Int64: Date] = [:]
     private var isResyncing = false
+
+    /// chatID → the ids of the messages a live `message` frame has bumped
+    /// its unread count for, and which no `GET /chats` response has been
+    /// shown to have counted yet.
+    ///
+    /// IDS RATHER THAN A COUNT, and that is the whole correction. The
+    /// repair in resync step 3 used to be a counter difference across the
+    /// await, which assumes the server's `unread_count` always predates a
+    /// message delivered mid-flight. It does not: the server commits a
+    /// message and THEN broadcasts it, and the chat-list query is served
+    /// concurrently — so a message can be in the count AND arrive as a
+    /// frame before the response lands, and adding a blind delta counted it
+    /// twice. A badge of 2 for one unread message, until something else
+    /// refreshed it. An id can be checked against what the response says
+    /// the server had seen; a number cannot.
+    ///
+    /// See `uncountedBumps`, which is also where they are forgotten.
+    private var liveBumpedMessageIDs: [Int64: Set<Int64>] = [:]
+
+    /// Chats with a read report on the wire. The local marker no longer
+    /// advances before the post succeeds (see `markRead`), so this is what
+    /// stops a reader who scrolls while the network is slow from stacking a
+    /// report per scroll event.
+    private var readPostsInFlight: Set<Int64> = []
+
+    /// chatID → the highest read target that became due while that chat's
+    /// report was still on the wire.
+    ///
+    /// Coalescing is the point of the in-flight set; DROPPING is not, and
+    /// dropping is what it did. Two messages landing 200 ms apart in a chat
+    /// somebody is reading produce two `markRead` calls, and the second one
+    /// used to return and be forgotten: nothing re-enters `markRead` on its
+    /// own afterwards, because the sentinel's geometry did not change, the
+    /// scene did not change, and no further message arrived. The server's
+    /// marker then stayed one message behind a reader who had seen it — a
+    /// stale read receipt for the sender, and a badge the next `GET /chats`
+    /// re-inflated onto the conversation they were looking at.
+    private var pendingReadTargets: [Int64: Int64] = [:]
 
     /// How long the socket ack may take before REST wins the race.
     /// Internal + variable so the send-pipeline tests don't wait 10 s.
@@ -130,6 +214,15 @@ final class ChatSyncCoordinator {
     /// process with it. Awaiting this is how a test stays alive until the
     /// row has settled. Nothing in the app reads it.
     private(set) var pendingDelivery: Task<Void, Never>?
+
+    /// The read report started by the most recent `markRead`.
+    ///
+    /// Test seam, the twin of `pendingDelivery` and sharp for the same
+    /// reason: the local marker now advances INSIDE that task, once the
+    /// server has actually taken the read, so a test asserting on
+    /// `myLastReadID` without awaiting this is asserting on a value that
+    /// has not been written yet. Nothing in the app reads it.
+    private(set) var pendingReadPost: Task<Void, Never>?
 
     /// The coordinator owns its network collaborators; tests inject
     /// stub-session-backed instances through the same initializer.
@@ -186,7 +279,7 @@ final class ChatSyncCoordinator {
         typingPruneTask = nil
         typingByChat = [:]
         lastTypingSentAt = [:]
-        activeChatID = nil
+        presence = nil
         connectionState = .offline
         let socket = self.socket
         Task { await socket.stop() }
@@ -195,6 +288,17 @@ final class ChatSyncCoordinator {
     /// Scene went to background: drop the socket (iOS would kill it
     /// anyway); the stream and consumer task survive for `resume`.
     func enterBackground() {
+        // Backgrounding revokes the AUTHORITY to read without disturbing
+        // the view's claim on the chat — the view is still the owner, it
+        // just cannot see anything from here. It has to happen centrally,
+        // and before the socket guard: `ConversationView.onDisappear` does
+        // NOT fire when the app goes to the background, so the claim used
+        // to survive with `isFrontmost` intact and the resync that follows
+        // the next foreground read everything it had just downloaded.
+        if let presence {
+            self.presence = ChatPresence(
+                chatID: presence.chatID, isAtNewest: presence.isAtNewest, isFrontmost: false)
+        }
         guard socketTask != nil else { return }
         connectionState = .offline
         let socket = self.socket
@@ -264,6 +368,7 @@ final class ChatSyncCoordinator {
 
         case .message(let message):
             _ = upsert(message, bumpUnread: true)
+            announce(message)
 
         case .boardNote(let note):
             applyNote(note)
@@ -672,14 +777,63 @@ final class ChatSyncCoordinator {
             chat.lastMessageDate = dto.createdAt
             chat.lastMessageSenderID = dto.senderID
         }
-        if dto.senderID != currentUserID {
-            if activeChatID == chat.chatID {
-                // The user is looking at it: it is read, not unread.
-                markRead(chatID: chat.chatID)
-            } else if bumpUnread {
-                chat.unreadCount += 1
-            }
+        guard dto.senderID != currentUserID else { return }
+        // A catch-up page is HISTORY, not mail arriving in front of
+        // anybody: `bumpUnread: false` means the server's unread_count from
+        // GET /chats is the truth, so this path must neither add to it nor
+        // — and this is the one that cost the badge — clear it. The resync
+        // that follows a foregrounding used to walk every missed message
+        // through here while the view still held the claim, marking them
+        // read one at a time and throwing away the count step 3 had written
+        // from the server seconds earlier.
+        guard bumpUnread else { return }
+        if isReading(chat.chatID) {
+            // Seen as it lands: the newest message is on screen with the
+            // app in front of the reader, and the thread follows it down.
+            // Suppressing the bump rather than bumping and then clearing is
+            // deliberate — the round trip flickers the app-icon badge.
+            markRead(chatID: chat.chatID)
+        } else {
+            chat.unreadCount += 1
+            liveBumpedMessageIDs[chat.chatID, default: []].insert(dto.id)
         }
+    }
+
+    /// Tell the person at the Mac that something arrived, when they are not
+    /// already looking at it.
+    ///
+    /// A phone and an Android device hear about this from APNs/FCM. A Mac
+    /// cannot: it holds its socket open for as long as the app runs, and
+    /// the server pushes only to a device whose session is not live — so
+    /// the app that received the frame is the only thing that can say
+    /// anything, and until now it said nothing at all.
+    ///
+    /// "Not already looking at it" is `isReading` and nothing else, which
+    /// is the same answer the unread rule above just used. A message that
+    /// counts as unread is exactly a message worth telling somebody about;
+    /// if the two ever disagreed the loser would be a message silently
+    /// marked read AND silently not announced.
+    private func announce(_ dto: MessageDTO) {
+        #if os(macOS)
+        guard dto.senderID != currentUserID, !isReading(dto.chatID) else { return }
+        guard let chat = fetchChat(dto.chatID) else { return }
+        ChatNotifier.announce(
+            chatID: dto.chatID,
+            messageID: dto.id,
+            title: ChatNotifier.title(
+                chatKind: chat.kind, chatTitle: chat.title, senderName: displayName(of: dto.senderID)),
+            body: ChatNotifier.body(text: dto.body, attachment: dto.attachment))
+        #endif
+    }
+
+    /// Who a sender is, by the same rules the views use: the roster, then
+    /// the assistant (which belongs to no family and is therefore in no
+    /// roster by design), then a name for somebody we have not met yet.
+    private func displayName(of userID: Int64) -> String {
+        if let assistantID = AppSettings.assistantUserID, userID == assistantID {
+            return AppSettings.assistantName ?? String(localized: "Assistant")
+        }
+        return fetchMember(userID)?.displayName ?? String(localized: "Someone")
     }
 
     // MARK: - Reactions
@@ -1259,8 +1413,17 @@ final class ChatSyncCoordinator {
         }
 
         // 3. Chat list: server unread wins; chats the server dropped go.
+        //
+        // "Wins" with one correction. `unread_count` is computed on the
+        // server BEFORE the response is sent, so a live `message` frame
+        // applied while it was in flight may not be in it — and assigning
+        // the response flat dropped that message from the count for good,
+        // because the catch-up in step 4 never bumps. Add back exactly the
+        // live messages the response shows the server had not counted.
         guard let chatList = try? await api.chats() else { return }
-        for item in chatList.chats { upsertChat(item) }
+        for item in chatList.chats {
+            upsertChat(item, uncountedLiveMessages: uncountedBumps(in: item))
+        }
         dropChats(absentFrom: chatList.chats)
         saveContext()
 
@@ -1407,26 +1570,80 @@ final class ChatSyncCoordinator {
 
     // MARK: - Read markers
 
-    /// Report everything currently held for `chatID` as read. Throttled by
-    /// monotonicity: nothing is sent unless the marker would advance.
+    /// Report everything currently held for `chatID` as read.
+    ///
+    /// Reached from exactly two places, both of which have already
+    /// established that the person is LOOKING at the newest message with
+    /// the app in front of them: `updatePresence`, and the live-message
+    /// path for a chat they are reading. Never from appearing, selecting,
+    /// foregrounding or resyncing — see ChatPresence for why the bar is
+    /// that high.
+    ///
+    /// The local marker advances only once the server has actually taken
+    /// the read. It used to advance first and swallow both failures, so a
+    /// report that never reached the server left the marker permanently
+    /// ahead of it: the next GET /chats re-inflated the badge, and the
+    /// monotonic guard here then refused to send it again — a badge no
+    /// amount of opening the chat could clear. The local count is zeroed
+    /// immediately either way, because that is display, not truth, and must
+    /// never be held hostage by the wire.
     func markRead(chatID: Int64) {
         guard let chat = fetchChat(chatID) else { return }
-        chat.unreadCount = 0
         let target = chat.maxServerMessageID
-        guard target > chat.myLastReadID else {
-            saveContext()
+        let advances = target > chat.myLastReadID
+        // A no-op read is a real case, not a defensive one: the view
+        // re-publishes its presence on every scroll settle and every new
+        // message, and most of those have nothing left to read.
+        guard chat.unreadCount > 0 || advances else { return }
+        chat.unreadCount = 0
+        saveContext()
+        // The banners are the same statement as the badge; leaving them in
+        // Notification Center contradicts an icon that now says nothing.
+        ChatNotifier.dismissDelivered(chatID: chatID)
+        guard advances else { return }
+        // Remember it instead of losing it: the report on the wire is for an
+        // older message, and when it settles this is what gets sent.
+        guard !readPostsInFlight.contains(chatID) else {
+            pendingReadTargets[chatID] = max(pendingReadTargets[chatID] ?? 0, target)
             return
         }
-        chat.myLastReadID = target
-        saveContext()
+        readPostsInFlight.insert(chatID)
         let socket = self.socket
         let api = self.api
-        Task {
+        pendingReadPost = Task { [weak self] in
+            var delivered = true
             do {
                 try await socket.send(.read(chatID: chatID, lastReadMessageID: target))
             } catch {
-                try? await api.markRead(chatID: chatID, lastReadMessageID: target)
+                // REST is the fallback for a socket that is down, and its
+                // answer is the one that decides — the old code discarded
+                // it and assumed success.
+                do {
+                    try await api.markRead(chatID: chatID, lastReadMessageID: target)
+                } catch {
+                    delivered = false
+                    AppLog.sync.info("Read report for chat \(chatID, privacy: .public) failed: \(String(describing: error))")
+                }
             }
+            guard let self else { return }
+            self.readPostsInFlight.remove(chatID)
+            // Only now may the throttle move: a failed report leaves the
+            // marker where it was, so the next presence update sends it
+            // again instead of the read being lost for good.
+            if delivered, let chat = self.fetchChat(chatID), target > chat.myLastReadID {
+                chat.myLastReadID = target
+                self.saveContext()
+            }
+            // A newer message became due while this one was in flight. Send
+            // it now — nothing else will ask: the reader is still at the
+            // bottom, so no geometry moves, and the message that would have
+            // re-asked has already arrived. `markRead` re-reads the chat, so
+            // this posts whatever is newest rather than the remembered
+            // number, and it is a no-op if the reader has since left.
+            guard let queued = self.pendingReadTargets.removeValue(forKey: chatID),
+                queued > (self.fetchChat(chatID)?.myLastReadID ?? 0)
+            else { return }
+            self.markRead(chatID: chatID)
         }
     }
 
@@ -1480,7 +1697,37 @@ final class ChatSyncCoordinator {
         return dto.id
     }
 
-    private func upsertChat(_ item: ChatListItemDTO, resetWhenNoLastMessage: Bool = true) {
+    /// How many of this chat's live bumps the response in `item` cannot
+    /// have counted — and forget the ones it can.
+    ///
+    /// The test is IDENTITY, not arithmetic: `last_message` and
+    /// `unread_count` come from the same query, so a message the server had
+    /// already stored is at or below `last_message.id` and is therefore
+    /// already in the count. Anything above it reached this client before
+    /// it reached that query, and is the message the correction exists for.
+    /// Re-applying the same response can only ever produce the same answer,
+    /// which a counter difference could not promise.
+    ///
+    /// Bumps at or below the line are dropped here: every later response
+    /// carries a `last_message` at least as high, so they can never need
+    /// adding back again, and a session that never resyncs is not a reason
+    /// to remember every message id it ever received.
+    private func uncountedBumps(in item: ChatListItemDTO) -> Int {
+        guard let bumped = liveBumpedMessageIDs[item.chat.id] else { return 0 }
+        let counted = item.lastMessage?.id ?? 0
+        let uncounted = bumped.filter { $0 > counted }
+        liveBumpedMessageIDs[item.chat.id] = uncounted.isEmpty ? nil : uncounted
+        return uncounted.count
+    }
+
+    /// `uncountedLiveMessages`: live messages this client counted that the
+    /// server's `unread_count` demonstrably does not include. See resync
+    /// step 3 and `uncountedBumps`.
+    private func upsertChat(
+        _ item: ChatListItemDTO,
+        resetWhenNoLastMessage: Bool = true,
+        uncountedLiveMessages: Int = 0
+    ) {
         let dto = item.chat
         let chat: ChatEntity
         if let existing = fetchChat(dto.id) {
@@ -1497,7 +1744,7 @@ final class ChatSyncCoordinator {
         chat.pinRank = dto.kind == "family" ? 0 : 1
         chat.peerUserID = dto.peerUserID
         chat.title = dto.title
-        chat.unreadCount = item.unreadCount // server-authoritative
+        chat.unreadCount = item.unreadCount + max(0, uncountedLiveMessages) // server-authoritative
         if let last = item.lastMessage {
             chat.lastMessagePreview = Self.preview(body: last.body, attachment: last.attachment)
             chat.lastMessageDate = last.createdAt
@@ -1522,7 +1769,7 @@ final class ChatSyncCoordinator {
                 FetchDescriptor<MessageEntity>(predicate: #Predicate { $0.chatID == chatID }))) ?? []
             for message in messages { modelContext.delete(message) }
             modelContext.delete(chat)
-            if activeChatID == chatID { activeChatID = nil }
+            releasePresence(chatID: chatID)
         }
     }
 
@@ -1534,7 +1781,8 @@ final class ChatSyncCoordinator {
                 username: member.username,
                 displayName: member.displayName,
                 role: member.role,
-                avatarVersion: member.avatarVersion)
+                avatarVersion: member.avatarVersion,
+                birthday: .some(member.birthday))
         }
         // Anyone we know locally but the roster omits has left; keep the
         // row (name resolution on old bubbles) but flag it.
@@ -1551,7 +1799,16 @@ final class ChatSyncCoordinator {
         username: String,
         displayName: String,
         role: String,
-        avatarVersion: Int64
+        avatarVersion: Int64,
+        /// Doubly wrapped, and not for fun: `.none` means the caller was
+        /// never told anything about a birthday and the stored one must
+        /// survive, while `.some(nil)` means the roster says there is
+        /// none. The `member_joined` frame carries no birthday at all
+        /// (protocol.md, "Server → client"), so a member who leaves and
+        /// rejoins would otherwise lose theirs to a frame that never
+        /// mentioned it — the same "absent fields never wipe" rule the
+        /// reaction upsert follows.
+        birthday: BirthdayDTO?? = .none
     ) {
         if let existing = fetchMember(userID) {
             existing.username = username
@@ -1560,6 +1817,10 @@ final class ChatSyncCoordinator {
             existing.isCurrentUser = userID == currentUserID
             existing.hasLeft = false
             existing.avatarVersion = avatarVersion
+            if let birthday {
+                existing.birthdayMonth = birthday?.month
+                existing.birthdayDay = birthday?.day
+            }
         } else {
             modelContext.insert(MemberEntity(
                 userID: userID,
@@ -1567,8 +1828,22 @@ final class ChatSyncCoordinator {
                 displayName: displayName,
                 role: role,
                 isCurrentUser: userID == currentUserID,
-                avatarVersion: avatarVersion))
+                avatarVersion: avatarVersion,
+                birthday: birthday ?? nil))
         }
+        saveContext()
+    }
+
+    /// Write a birthday onto a roster row after this device edited one.
+    ///
+    /// There is no `member_updated` frame and no push for a birthday
+    /// (protocol.md, "Birthdays") — every other device learns it on its
+    /// next resync — so the device that made the change is the only one
+    /// that can show it now, and it has the new value in hand.
+    func applyMemberBirthday(userID: Int64, birthday: BirthdayDTO?) {
+        guard let member = fetchMember(userID) else { return }
+        member.birthdayMonth = birthday?.month
+        member.birthdayDay = birthday?.day
         saveContext()
     }
 

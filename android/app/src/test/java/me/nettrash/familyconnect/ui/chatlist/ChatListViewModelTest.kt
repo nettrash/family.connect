@@ -106,6 +106,7 @@ class ChatListViewModelTest {
         )
         val familyRepository = FamilyRepository(
             familyApi = FakeFamilyApi(),
+            authApi = FakeAuthApi(),
             memberDao = db.memberDao(),
             settings = settings,
             sessionRepository = sessionRepository,

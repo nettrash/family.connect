@@ -13,8 +13,11 @@
 //  PushRegistrar, the tap parks the same PushRoute on the same AppSession.
 //
 //  A Mac holds a live socket the whole time it is open, and the server
-//  never pushes to a user with an open socket — so what push buys here is
-//  the case the phone has too: something arriving while the app is closed.
+//  never pushes to a device whose session is live — so what push buys here
+//  is the case the phone has too: something arriving while the app is
+//  closed. Everything that arrives while it is OPEN comes over the socket
+//  and is announced locally instead (ChatNotifier), which is why the
+//  presentation rule below has to tell the two apart.
 //
 
 #if os(macOS)
@@ -50,14 +53,24 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    /// Foreground: present nothing, for the same reason iOS does not — the
-    /// socket already delivered it, and a banner would double-notify.
+    /// Foreground: present a notification this app raised itself, and
+    /// nothing else.
+    ///
+    /// A REMOTE one arriving while the app is frontmost is the race where a
+    /// push sent to a closed app lands just after launch — the socket
+    /// already delivered the same event, and a banner would double-notify.
+    /// A LOCAL one is the opposite case by construction: ChatNotifier
+    /// raises it only when the user is NOT looking at that chat, which on a
+    /// Mac includes "frontmost, with a different conversation selected".
+    /// Suppressing those would leave the app back where it started, telling
+    /// its owner nothing.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([])
+        let isLocal = notification.request.content.userInfo[ChatNotifier.localKey] as? Bool ?? false
+        completionHandler(isLocal ? [.banner, .sound, .list] : [])
     }
 
     /// Clicked a notification. Parse here (userInfo is not Sendable, the

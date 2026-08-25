@@ -98,7 +98,8 @@ pub async fn put_avatar(
     let row = sqlx::query(
         "UPDATE users SET avatar_seq = avatar_seq + 1, avatar_version = avatar_seq + 1
          WHERE id = $1
-         RETURNING id, username, display_name, created_at, avatar_version",
+         RETURNING id, username, display_name, created_at, avatar_version,
+                   birthday_month, birthday_day",
     )
     .bind(auth.user_id)
     .fetch_one(&mut *tx)

@@ -2,7 +2,8 @@
  * SettingsViewModel.kt
  * Family Connect (Android)
  *
- * Profile + family block + the two destructive actions. Leave-family
+ * Profile (picture + birthday) + family block + the two destructive
+ * actions. Leave-family
  * surfaces the protocol's `owner_cannot_leave` 409 as a human message
  * (an owner with members must hand the family over — v1 has no
  * transfer, so: remove everyone or keep it). Logout is best-effort
@@ -28,6 +29,7 @@ import kotlinx.coroutines.withContext
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.AvatarApi
+import me.nettrash.familyconnect.data.net.dto.BirthdayDto
 import android.net.Uri
 import me.nettrash.familyconnect.data.repo.AvatarImage
 import me.nettrash.familyconnect.data.repo.AvatarSource
@@ -76,6 +78,17 @@ class SettingsViewModel @Inject constructor(
         val mapPreviewsEnabled: Boolean = true,
         /** My profile-picture version; 0 = none, and the button says "Add". */
         val avatarVersion: Long = 0,
+        /**
+         * My own birthday — a day and a month, never a year, and null
+         * until somebody sets one.
+         *
+         * Read out of the ROSTER rather than from a call of its own: my
+         * own Member row is in `GET /families/mine` like everyone else's,
+         * and that request is already made here. The write paths keep it
+         * current from their own responses, since a birthday change
+         * raises no frame (protocol.md, "Birthdays").
+         */
+        val birthday: BirthdayDto? = null,
         /** True while a settings write is in flight. */
         val busy: Boolean = false,
         val uploadingAvatar: Boolean = false,
@@ -125,12 +138,14 @@ class SettingsViewModel @Inject constructor(
             }
             if (snapshot.status == FamilyStatus.MEMBER || snapshot.status == FamilyStatus.OWNER) {
                 familyRepository.refreshMine().okOrNull()?.let { mine ->
+                    val myRow = mine.members.firstOrNull { it.id == snapshot.myUserId }
                     _state.update {
                         it.copy(
                             familyName = mine.family.name,
                             // Owner-only on the wire — null for members.
                             inviteCode = mine.family.inviteCode,
                             joinPolicy = mine.family.joinPolicy,
+                            birthday = myRow?.birthday,
                         )
                     }
                 }
@@ -227,6 +242,52 @@ class SettingsViewModel @Inject constructor(
 
     fun dismissAvatarError() {
         _state.update { it.copy(avatarError = null) }
+    }
+
+    /**
+     * My own birthday. Day and month, no year — [BirthdayDto] says why.
+     *
+     * A `validation` refusal from the server is shown rather than
+     * swallowed: the picker cannot offer 31 April, but the server owns
+     * the rule and a silent failure would leave this screen claiming a
+     * birthday nobody stored.
+     */
+    fun setBirthday(month: Int, day: Int, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setMyBirthday(month, day)) {
+                is ApiResult.Ok -> {
+                    _state.update { it.copy(birthday = result.value) }
+                    onSuccess()
+                }
+                is ApiResult.HttpError -> _state.update {
+                    it.copy(error = result.message ?: appContext.getString(R.string.e_birthday_failed))
+                }
+                is ApiResult.NetworkError -> _state.update {
+                    it.copy(error = appContext.getString(R.string.e_unreachable))
+                }
+            }
+            _state.update { it.copy(busy = false) }
+        }
+    }
+
+    fun clearBirthday(onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.clearMyBirthday()) {
+                is ApiResult.Ok -> {
+                    _state.update { it.copy(birthday = null) }
+                    onSuccess()
+                }
+                is ApiResult.HttpError -> _state.update {
+                    it.copy(error = result.message ?: appContext.getString(R.string.e_birthday_failed))
+                }
+                is ApiResult.NetworkError -> _state.update {
+                    it.copy(error = appContext.getString(R.string.e_unreachable))
+                }
+            }
+            _state.update { it.copy(busy = false) }
+        }
     }
 
     fun leaveFamily() {

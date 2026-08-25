@@ -1,0 +1,46 @@
+-- Which session a device registered itself from — the link that turns the
+-- push gate from a question about a PERSON into a question about a DEVICE
+-- (docs/protocol.md, "Push notifications").
+--
+-- Without this column, one device of a user is indistinguishable from
+-- another, so the only question the server could ask was "does this user
+-- have a socket open anywhere". A Mac left running answers yes all day, and
+-- answering yes silenced the backgrounded iPhone and the backgrounded
+-- Android on the same account — the one machine that was certainly being
+-- watched kept the two that were not from ever being told anything. The
+-- answer was already in the database: a socket authenticates with a
+-- session, a device registers with a session, and matching the two is the
+-- entire fix.
+--
+-- NULLABLE, and it has to stay that way rather than gain a backfill and a
+-- NOT NULL. A row written by a client that has not re-registered since this
+-- migration genuinely does not know which session it belongs to, and there
+-- is no honest value to invent — picking the user's newest session would
+-- declare a Mac to be the iPhone's socket and silence the iPhone for real.
+-- An unknown session is read as "push it": the complaint this column
+-- answers is about alerts that never arrived, so an unattributed device is
+-- woken, and a redundant banner is the price of never inventing a reason to
+-- stay quiet.
+--
+-- SUPERSEDED BY 0021: the paragraph below argued for ON DELETE SET NULL and
+-- got it wrong. Read it with 0021 beside it — combined with "unknown means
+-- push it" above, SET NULL made every signed-out device a guaranteed push
+-- target. 0021 replaces this constraint with CASCADE. The rest of this file
+-- still holds.
+--
+-- ON DELETE SET NULL rather than CASCADE, and the difference is a working
+-- push token. Sessions are deleted routinely: logout drops one, a password
+-- change drops every OTHER session the user has, and an owner resetting a
+-- member's password drops all of theirs. CASCADE would take the device row
+-- away with the session and the APNs/FCM token with it, so a password
+-- change would quietly stop that phone being notified until somebody
+-- happened to open the app again. SET NULL only makes the device
+-- unattributed, which falls back to the safe answer above.
+ALTER TABLE devices ADD COLUMN session_id BIGINT REFERENCES sessions(id) ON DELETE SET NULL;
+
+-- PostgreSQL indexes the referenced side of a foreign key and never the
+-- referencing side, so without this every session delete has to prove no
+-- device row names it by scanning `devices` end to end. A password change
+-- deletes sessions one row at a time, which would make that one scan per
+-- revoked session.
+CREATE INDEX devices_session_id_idx ON devices (session_id);

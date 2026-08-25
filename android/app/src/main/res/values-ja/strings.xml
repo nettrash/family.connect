@@ -179,4 +179,17 @@
     <string name="s_saved_by_one_copy">同じファイルを1つだけ保存することで %1$s を節約しました。</string>
     <string name="s_attachments_and_size">添付 %1$d 件、%2$s</string>
     <string name="s_questions_to_assistant">アシスタントへの質問 %1$d 件</string>
+    <string name="s_family_language">ファミリーの言語</string>
+    <string name="s_family_language_explanation">ファミリーチャットで質問したとき、アシスタントが答える言語です。このアプリの表示言語は変わりません。選ばなければ、質問した人の言語で答えます。</string>
+    <string name="s_not_set">未設定</string>
+    <string name="s_assistant_history">アシスタントが最近の履歴を見る</string>
+    <string name="s_assistant_history_explanation">ファミリーチャットで誰かがアシスタントに話しかけると、その直近1か月分のやり取りも質問と一緒に送られ、前に話した内容について答えられるようになります。オフのときは、話しかけたメッセージだけが送られます。</string>
+    <string name="s_birthday">誕生日</string>
+    <string name="s_birthday_for">%1$s の誕生日</string>
+    <string name="s_day_and_month_no_year">月と日だけ。年も年齢も入りません。</string>
+    <string name="s_month">月</string>
+    <string name="s_day">日</string>
+    <string name="e_birthday_failed">誕生日を保存できませんでした</string>
+    <string name="e_change_language_failed">ファミリーの言語を変更できませんでした</string>
+    <string name="e_change_assistant_history_failed">設定を変更できませんでした</string>
 </resources>

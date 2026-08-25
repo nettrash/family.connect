@@ -203,10 +203,22 @@ attachments_dir = "/var/lib/family-connect/attachments"
 # # What the assistant is told it is, before the member's own words.
 # #
 # # ONE prompt, not one per language: the server appends "Answer in
-# # <language>." per question, taken from the asking device's
-# # Accept-Language. So write this in whatever language you like — its job
-# # is to say what the assistant is FOR, and the answer still comes back in
-# # each member's own language.
+# # <language>." to it per question, and that last line is what decides
+# # which language the answer comes back in. So write this in whatever
+# # language you like — its job is to say what the assistant is FOR.
+# #
+# # Which language it names depends on WHERE the question was asked. In a
+# # member's private assistant chat it is the asking device's own
+# # Accept-Language, because that thread has one reader and it is the person
+# # holding the device. In the FAMILY chat the family's own language wins
+# # when the owner has set one (PATCH /families/mine), falling back to the
+# # asking device when they have not: the answer appears in front of
+# # everyone, so it should be in the language the family reads rather than
+# # the one whoever typed happens to have their phone in.
+# #
+# # With neither, the appended line tells it to answer in the language of
+# # the message it was sent — which is what it would have done anyway, said
+# # out loud so the English above it does not win by default.
 # system_prompt = """
 # You are a helpful assistant in a family's private chat app. Answer briefly
 # and plainly. You can only see this one conversation.
@@ -221,5 +233,9 @@ attachments_dir = "/var/lib/family-connect/attachments"
 # # one thread is ever included whatever this is set to.
 # history_messages = 20
 #
-# # What the chat is called in the list.
+# # What the chat is called in the list — and what the family calls the
+# # assistant everywhere else: it is the name sent as `assistant.display_name`
+# # on GET /families/mine, and the name the assistant's own past replies are
+# # attributed to in the transcript an @ai mention carries. Change it and the
+# # assistant is called that in front of the family and to itself.
 # title = "Assistant"

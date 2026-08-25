@@ -128,11 +128,23 @@ struct MessageBubbleView: View {
         return preview
     }
 
-    /// True when some other block in the balloon — a link card, a photo —
-    /// has already set how wide it is, and the text should wrap against
-    /// that width rather than its own.
+    /// The blocks the body lays out in — ONE text block unless it carries
+    /// a table (MessageMarkdown).
+    ///
+    /// Emoji-only bodies branch around the renderer here, exactly as they
+    /// do on the Mac and on Android: the ladder's whole subject is that the
+    /// message is nothing but glyphs, and a markup pass could only take
+    /// something away.
+    private var bodyBlocks: [MessageMarkdown.Block] {
+        if isEmojiOnly { return [.text(AttributedString(message.body))] }
+        return MessageLinks.blocks(message.body, isMine: isMine)
+    }
+
+    /// True when some other block in the balloon — a link card, a photo, a
+    /// table — has already set how wide it is, and the text should wrap
+    /// against that width rather than its own.
     private var fillsBalloonWidth: Bool {
-        linkPreview != nil || message.attachment != nil
+        linkPreview != nil || message.attachment != nil || bodyBlocks.contains { $0.isTable }
     }
 
     var body: some View {
@@ -379,6 +391,15 @@ struct MessageBubbleView: View {
         }
         .padding(.vertical, 4)
         .padding(.trailing, 4)
+        // The accent bar above has a width-only frame, which leaves this
+        // whole block infinitely flexible in height — and one greedy child
+        // makes the balloon's stack distribute height instead of granting
+        // it, which is what truncated the reply's own body (see the body
+        // Text). Pinning it here fixes the cause rather than the symptom,
+        // and it also stops the bar itself running on past the excerpt it
+        // is pointing at. Vertical only: the bar's width must stay the 3pt
+        // it asks for.
+        .fixedSize(horizontal: false, vertical: true)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(Color.primary.opacity(0.06)))
@@ -475,35 +496,71 @@ struct MessageBubbleView: View {
             // A photo needs no caption, and an empty Text would still take
             // a line's height inside the balloon.
             if !message.body.isEmpty {
-                Text(
-                    isEmojiOnly
-                        ? AttributedString(message.body)
-                        : MessageLinks.attributedBody(message.body, isMine: isMine))
-                    .font(bubbleFont)
-                    .foregroundStyle(bubbleContentColor)
-                    // While the assistant is writing, the text ends in a
-                    // cursor rather than just stopping mid-word.
-                    .overlay(alignment: .bottomTrailing) {
-                        if isStreaming {
-                            Text(verbatim: "▍")
-                                .font(bubbleFont)
-                                .foregroundStyle(bubbleContentColor.opacity(0.6))
-                                .offset(x: 8)
+                // One text block — everything without a table — comes back
+                // as exactly this `Text` and nothing around it. A table
+                // stacks blocks instead, and only then.
+                MessageBodyBlocks(
+                    blocks: bodyBlocks,
+                    isStreaming: isStreaming,
+                    isMine: isMine
+                ) { text, carriesCursor in
+                    Text(text)
+                        .font(bubbleFont)
+                        .foregroundStyle(bubbleContentColor)
+                        // WHY A REPLY USED TO LOSE ITS LAST LINES.
+                        //
+                        // The quote's accent bar is a Shape with a width-only
+                        // frame, so it is infinitely flexible in HEIGHT. One
+                        // such child flips this VStack out of "everybody gets
+                        // their ideal height" into height DISTRIBUTION: SwiftUI
+                        // sizes the least flexible child first and offers each
+                        // an equal share of what is left. A Text is finitely
+                        // flexible (it can always shed lines), so it was sized
+                        // FIRST, handed roughly half the balloon, and a Text
+                        // given less height than it needs does not wrap — it
+                        // TRUNCATES with an ellipsis. Hence a reply ending in
+                        // "…" with blank space under it, and only ever a reply:
+                        // the quote is the only height-greedy block a balloon
+                        // can hold (attachments, link cards and the map all pin
+                        // their height).
+                        //
+                        // This is the modifier macOS has always had
+                        // (MacMessageRow's body Text) and is why the Mac never
+                        // showed the bug. `horizontal: false` is load-bearing:
+                        // it cannot touch width, so it cannot re-trigger the
+                        // full-width-balloon regression the comments above and
+                        // below warn about. The quote block below is pinned too,
+                        // which is the cause rather than the symptom.
+                        .fixedSize(horizontal: false, vertical: true)
+                        // While the assistant is writing, the text ends in a
+                        // cursor rather than just stopping mid-word — on the
+                        // LAST text block, which is the only one still growing.
+                        .overlay(alignment: .bottomTrailing) {
+                            if isStreaming, carriesCursor {
+                                Text(verbatim: "▍")
+                                    .font(bubbleFont)
+                                    .foregroundStyle(bubbleContentColor.opacity(0.6))
+                                    .offset(x: 8)
+                            }
                         }
-                    }
-                    // A sibling block — a link card or a photo — has already
-                    // decided how wide this balloon is. Text left to itself
-                    // reports the width it WANTS (SwiftUI balances the lines,
-                    // so two lines each come out around half width), and the
-                    // result is a narrow paragraph floating over a wide card.
-                    // Filling the width makes it wrap against the same edge.
-                    //
-                    // Gated on there BEING such a block: unconditionally,
-                    // this is the change that made every balloon full width
-                    // when the reply quote did it.
-                    .frame(
-                        maxWidth: fillsBalloonWidth ? .infinity : nil,
-                        alignment: .leading)
+                        // A sibling block — a link card or a photo — has already
+                        // decided how wide this balloon is. Text left to itself
+                        // reports the width it WANTS (SwiftUI balances the lines,
+                        // so two lines each come out around half width), and the
+                        // result is a narrow paragraph floating over a wide card.
+                        // Filling the width makes it wrap against the same edge.
+                        //
+                        // Gated on there BEING such a block: unconditionally,
+                        // this is the change that made every balloon full width
+                        // when the reply quote did it.
+                        .frame(
+                            maxWidth: fillsBalloonWidth ? .infinity : nil,
+                            alignment: .leading)
+                }
+                // The colour again, one level up: a table's cells are Texts
+                // of their own and have no colour of their own, and on my
+                // balloon .primary is black on the tint.
+                .foregroundStyle(bubbleContentColor)
             }
 
             if let preview = linkPreview {

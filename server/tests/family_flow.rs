@@ -300,3 +300,231 @@ async fn leaving_and_removal_respect_the_owner_guards() {
         .await;
     assert_error(dead_code, 404, "invalid_invite_code").await;
 }
+
+/// The family's main language: the owner names it, every member sees it,
+/// and it is ABSENT until somebody chooses — not `null` and not `"en"`
+/// (protocol.md, "The family's language").
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn the_owner_names_the_familys_language_and_every_member_sees_it() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_family_id, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &invite_code, "joined").await;
+
+    let mine: Value = ts
+        .get(&owner, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("mine");
+    assert!(
+        mine["family"].get("language").is_none(),
+        "a family that never chose has no language key: {}",
+        mine["family"]
+    );
+
+    // Sent in a client's own casing; the canonical spelling comes back.
+    let patched = ts
+        .patch(&owner, "/families/mine", json!({"language": "sr-latn"}))
+        .await;
+    assert_eq!(patched.status(), 200);
+    let body: Value = patched.json().await.expect("patch is JSON");
+    assert_eq!(body["family"]["language"], "sr-Latn");
+    // The policy was not in the request, so it is exactly as it was.
+    assert_eq!(body["family"]["join_policy"], "open");
+
+    // Both places a client bootstraps from agree, which is the point of
+    // /me carrying the same object.
+    let me: Value = ts.get(&member, "/me").await.json().await.expect("me");
+    assert_eq!(me["family"]["language"], "sr-Latn");
+    assert!(
+        me["family"].get("invite_code").is_none(),
+        "the language is shared; the invite code is still owner-only"
+    );
+    let mine: Value = ts
+        .get(&member, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("mine");
+    assert_eq!(mine["family"]["language"], "sr-Latn");
+
+    // An explicit null clears it. An absent key would have left it alone,
+    // which is the whole reason the two are different requests.
+    let cleared: Value = ts
+        .patch(&owner, "/families/mine", json!({"language": null}))
+        .await
+        .json()
+        .await
+        .expect("patch is JSON");
+    assert!(
+        cleared["family"].get("language").is_none(),
+        "null clears it back to unset: {}",
+        cleared["family"]
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_language_outside_the_nine_is_refused_and_changes_nothing() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_family_id, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.join(&member, &invite_code, "pending").await;
+
+    // Well-formed BCP 47 is not enough: nothing ships Portuguese, and a
+    // family that set it would get answers they could not explain.
+    for refused in ["klingon", "pt-BR", "en-GB", ""] {
+        assert_error(
+            ts.patch(&owner, "/families/mine", json!({"language": refused}))
+                .await,
+            400,
+            "invalid_language",
+        )
+        .await;
+    }
+
+    // A good policy alongside a bad language changes NEITHER — the owner is
+    // never left guessing which half of a request landed.
+    assert_error(
+        ts.patch(
+            &owner,
+            "/families/mine",
+            json!({"join_policy": "open", "language": "klingon"}),
+        )
+        .await,
+        400,
+        "invalid_language",
+    )
+    .await;
+    let mine: Value = ts
+        .get(&owner, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("mine");
+    assert_eq!(
+        mine["family"]["join_policy"], "approval",
+        "still the default"
+    );
+
+    // Only the owner. A pending applicant is not even in the family.
+    assert_error(
+        ts.patch(&member, "/families/mine", json!({"language": "ru"}))
+            .await,
+        403,
+        "not_family_owner",
+    )
+    .await;
+
+    // Nothing at all is a valid request that changes nothing.
+    let empty = ts.patch(&owner, "/families/mine", json!({})).await;
+    assert_eq!(empty.status(), 200);
+    let body: Value = empty.json().await.expect("patch is JSON");
+    assert_eq!(body["family"]["join_policy"], "approval");
+    assert!(body["family"].get("language").is_none());
+}
+
+/// The switch that decides what an `@ai` mention may take with it: the
+/// owner sets it, every member sees it, and it is ON until somebody says
+/// otherwise (protocol.md, "Mentioning the assistant in the family chat").
+///
+/// ALWAYS present, unlike the language: a boolean with a real default has
+/// no "unset" for a missing key to mean, and a client that had to guess one
+/// would be guessing about what leaves the server.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn the_owner_decides_whether_a_mention_sees_the_family_chats_history() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (family_id, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &invite_code, "joined").await;
+
+    let mine: Value = ts
+        .get(&member, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("mine");
+    assert_eq!(
+        mine["family"]["ai_history"], true,
+        "on by default, and present without anybody having set it: {}",
+        mine["family"]
+    );
+
+    // The owner turns it off. Nothing else in the request, so nothing else
+    // moves.
+    let patched = ts
+        .patch(&owner, "/families/mine", json!({"ai_history": false}))
+        .await;
+    assert_eq!(patched.status(), 200);
+    let body: Value = patched.json().await.expect("patch is JSON");
+    let family = body["family"].clone();
+    assert_eq!(
+        family,
+        json!({
+            "id": family_id,
+            "name": "The Smiths",
+            "join_policy": "open",
+            "created_at": family["created_at"],
+            "invite_code": invite_code,
+            "ai_history": false,
+        }),
+        "the whole Family object, exactly the shape in protocol.md — no language key, \
+         because nobody has chosen one, and ai_history present because it always is"
+    );
+
+    // Both places a client bootstraps from agree, which is the point of
+    // /me carrying the same object.
+    let me: Value = ts.get(&member, "/me").await.json().await.expect("me");
+    assert_eq!(me["family"]["ai_history"], false);
+    let mine: Value = ts
+        .get(&member, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("mine");
+    assert_eq!(mine["family"]["ai_history"], false);
+
+    // A member may read it and may not change it: this decides what their
+    // own words can be used for, but the family has one owner.
+    assert_error(
+        ts.patch(&member, "/families/mine", json!({"ai_history": true}))
+            .await,
+        403,
+        "not_family_owner",
+    )
+    .await;
+
+    // An absent key leaves it alone, exactly as it leaves the policy alone.
+    let other: Value = ts
+        .patch(&owner, "/families/mine", json!({"language": "ru"}))
+        .await
+        .json()
+        .await
+        .expect("patch is JSON");
+    assert_eq!(other["family"]["language"], "ru");
+    assert_eq!(
+        other["family"]["ai_history"], false,
+        "a request that did not mention it did not change it"
+    );
+
+    // And back on again — there is no third state to get stuck in.
+    let back: Value = ts
+        .patch(&owner, "/families/mine", json!({"ai_history": true}))
+        .await
+        .json()
+        .await
+        .expect("patch is JSON");
+    assert_eq!(back["family"]["ai_history"], true);
+    assert_eq!(
+        back["family"]["language"], "ru",
+        "and the language survived"
+    );
+}

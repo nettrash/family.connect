@@ -17,8 +17,29 @@ package me.nettrash.familyconnect.data.net.dto
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 
 // -- Objects ---------------------------------------------------------------
+
+/**
+ * A day and a month, with **no year** (docs/protocol.md, "Birthdays").
+ *
+ * Nobody should have to publish their age to be wished a happy birthday,
+ * and the year is the only part of a date that carries one. Two
+ * consequences ride on that and both are deliberate: 29 February is a
+ * perfectly good birthday, because there is no year for it to fail to
+ * exist in, and nothing here can compute an age — so nothing should try.
+ *
+ * One object rather than two sibling fields, because the two halves are a
+ * single fact: "month but no day" is not a state anything has to handle.
+ */
+@Serializable
+data class BirthdayDto(
+    val month: Int,
+    val day: Int,
+)
 
 @Serializable
 data class UserDto(
@@ -34,6 +55,8 @@ data class UserDto(
      * never be served from a stale entry.
      */
     @SerialName("avatar_version") val avatarVersion: Long = 0,
+    /** Present when (and only when) one is set; absent means unset. */
+    val birthday: BirthdayDto? = null,
 )
 
 @Serializable
@@ -44,6 +67,8 @@ data class MemberDto(
     val role: String,
     /** See UserDto.avatarVersion. */
     @SerialName("avatar_version") val avatarVersion: Long = 0,
+    /** See UserDto.birthday — the same field, on the roster shape. */
+    val birthday: BirthdayDto? = null,
 )
 
 @Serializable
@@ -54,6 +79,25 @@ data class FamilyDto(
     @SerialName("created_at") val createdAt: String? = null,
     // Present when (and only when) the caller is the owner.
     @SerialName("invite_code") val inviteCode: String? = null,
+    /**
+     * The one language the family speaks, or null for UNSET — and unset
+     * is NOT English (docs/protocol.md, "The family's language"). The key
+     * is absent until an owner chooses one, so the default is what lets
+     * this decode against a server that predates the field; it must stay
+     * distinguishable from `"en"` everywhere, on the wire and on screen.
+     */
+    val language: String? = null,
+    /**
+     * Whether a mention of the assistant in the family chat is shown the
+     * recent history of that chat, or only the message that mentioned it.
+     *
+     * ALWAYS present on the wire, unlike the two fields above: it is a
+     * boolean with a real default and no "unset" for a missing key to
+     * mean. The default here is therefore purely the compatibility rule —
+     * an older server sends nothing, and `true` is what such a server's
+     * successor does.
+     */
+    @SerialName("ai_history") val aiHistory: Boolean = true,
 )
 
 @Serializable
@@ -304,8 +348,43 @@ data class CreateFamilyRequest(val name: String)
 @Serializable
 data class JoinFamilyRequest(@SerialName("invite_code") val inviteCode: String)
 
+/**
+ * PATCH /families/mine. Which fields are PRESENT decides what changes, so
+ * an untouched one must be OMITTED — encodeDefaults=false in the house
+ * Json is what does that.
+ *
+ * [language] is the exception the protocol calls out, and the only place
+ * in it where a `null` means something a missing key does not: an omitted
+ * key leaves the family's language alone, while an explicit JSON `null`
+ * CLEARS it. A Kotlin `null` cannot say that here — it is the default, so
+ * it is exactly what gets dropped — which is why the field is a
+ * [JsonElement] and clearing sends [JsonNull]. The two cases are
+ * indistinguishable in Kotlin's types and total on the wire, hence the
+ * factories below rather than a raw constructor at each call site.
+ */
 @Serializable
-data class PatchFamilyRequest(@SerialName("join_policy") val joinPolicy: String)
+data class PatchFamilyRequest(
+    @SerialName("join_policy") val joinPolicy: String? = null,
+    val language: JsonElement? = null,
+    @SerialName("ai_history") val aiHistory: Boolean? = null,
+) {
+    companion object {
+        fun joinPolicy(policy: String) = PatchFamilyRequest(joinPolicy = policy)
+
+        /** A tag SETS the language; null CLEARS it, as a real JSON null. */
+        fun language(tag: String?) =
+            PatchFamilyRequest(language = tag?.let(::JsonPrimitive) ?: JsonNull)
+
+        fun aiHistory(enabled: Boolean) = PatchFamilyRequest(aiHistory = enabled)
+    }
+}
+
+/** PUT /me/birthday and PUT /families/members/{id}/birthday — same body. */
+@Serializable
+data class BirthdayRequest(
+    val month: Int,
+    val day: Int,
+)
 
 @Serializable
 data class CreateDirectChatRequest(@SerialName("user_id") val userId: Long)
@@ -432,6 +511,20 @@ data class JoinResponse(val status: String)
 /** PUT /me/avatar — the caller's user with its bumped avatar_version. */
 @Serializable
 data class AvatarResponse(val user: UserDto)
+
+/** PUT /me/birthday — the caller's user, carrying what was just stored. */
+@Serializable
+data class BirthdayResponse(val user: UserDto)
+
+/**
+ * PUT /families/members/{id}/birthday — the member the owner just wrote.
+ *
+ * The response is the ONLY way the writing device learns the new value
+ * without a resync: a birthday change raises no WebSocket frame and no
+ * push (docs/protocol.md, "Birthdays").
+ */
+@Serializable
+data class MemberBirthdayResponse(val member: MemberDto)
 
 @Serializable
 data class FamilyResponse(val family: FamilyDto)

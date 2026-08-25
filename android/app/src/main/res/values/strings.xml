@@ -192,4 +192,17 @@
     <string name="s_plain_http_warning">This address uses plain http — messages travel unencrypted on the network. Fine on a trusted home LAN, risky anywhere else.</string>
     <string name="s_request_declined_explanation">The family owner declined your request. You can try a different invite code or start your own family.</string>
     <string name="s_waiting_explanation">There\'s nothing to cancel from here — the owner either lets you in or declines the request.</string>
+    <string name="s_family_language">Family language</string>
+    <string name="s_family_language_explanation">The language the assistant answers in when it is asked in the family chat. It does not change the language this app is drawn in. With none chosen, it answers in the language of whoever asked.</string>
+    <string name="s_not_set">Not set</string>
+    <string name="s_assistant_history">Assistant sees recent history</string>
+    <string name="s_assistant_history_explanation">When someone mentions the assistant in the family chat, the last month of that chat is sent with the question so it can answer about what was said. With this off, only the message that mentions it is sent.</string>
+    <string name="s_birthday">Birthday</string>
+    <string name="s_birthday_for">Birthday for %1$s</string>
+    <string name="s_day_and_month_no_year">A day and a month. No year, and no age.</string>
+    <string name="s_month">Month</string>
+    <string name="s_day">Day</string>
+    <string name="e_birthday_failed">Couldn\'t save that birthday</string>
+    <string name="e_change_language_failed">Couldn\'t change the family language</string>
+    <string name="e_change_assistant_history_failed">Couldn\'t change that setting</string>
 </resources>

@@ -236,8 +236,8 @@ struct SendPipelineTests {
 
     // MARK: - Unread bump rules
 
-    @Test("live messages bump unread only for other senders in inactive chats")
-    func unreadBumpRules() throws {
+    @Test("live messages bump unread unless the newest one is in front of the reader")
+    func unreadBumpRules() async throws {
         let harness = try makeHarness(host: "send-unread.test", handler: { _ in .empty(204) })
         defer { harness.tearDown() }
 
@@ -248,18 +248,28 @@ struct SendPipelineTests {
         harness.coordinator.handle(frame: .message(dto(id: 11, senderID: 9, clientMsgID: "a-2")))
         #expect(harness.chat(42)?.unreadCount == 2)
 
-        // Opening the chat clears the badge (and advances the marker).
-        harness.coordinator.activeChatID = 42
+        // Opening the chat is not reading it: the view claims the chat
+        // before its layout has settled, so it publishes "not at the newest
+        // message" and the badge survives. This used to clear it, which is
+        // how a chat became read by being pushed onto the stack.
+        harness.coordinator.updatePresence(chatID: 42, isAtNewest: false, isFrontmost: true)
+        #expect(harness.chat(42)?.unreadCount == 2)
+        #expect(harness.chat(42)?.myLastReadID == 0)
+
+        // Settling at the bottom with the app in front IS reading it.
+        harness.coordinator.updatePresence(chatID: 42, isAtNewest: true, isFrontmost: true)
+        await harness.coordinator.pendingReadPost?.value
         #expect(harness.chat(42)?.unreadCount == 0)
         #expect(harness.chat(42)?.myLastReadID == 11)
 
-        // New message while on screen → read, not unread.
+        // New message while it is genuinely on screen → read, not unread.
         harness.coordinator.handle(frame: .message(dto(id: 12, senderID: 9, clientMsgID: "a-3")))
+        await harness.coordinator.pendingReadPost?.value
         #expect(harness.chat(42)?.unreadCount == 0)
         #expect(harness.chat(42)?.myLastReadID == 12)
 
         // Own echo (other device) never bumps.
-        harness.coordinator.activeChatID = nil
+        harness.coordinator.releasePresence(chatID: 42)
         harness.coordinator.handle(frame: .message(dto(id: 13, senderID: 7, clientMsgID: "a-4")))
         #expect(harness.chat(42)?.unreadCount == 0)
     }

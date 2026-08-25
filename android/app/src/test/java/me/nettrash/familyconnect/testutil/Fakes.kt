@@ -30,6 +30,8 @@ import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentResponse
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
 import me.nettrash.familyconnect.data.net.dto.AvatarResponse
+import me.nettrash.familyconnect.data.net.dto.BirthdayDto
+import me.nettrash.familyconnect.data.net.dto.BirthdayResponse
 import me.nettrash.familyconnect.data.net.dto.ChatResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.DeviceResponse
@@ -38,6 +40,8 @@ import me.nettrash.familyconnect.data.net.dto.FamilyResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
 import me.nettrash.familyconnect.data.net.dto.JoinRequestsResponse
 import me.nettrash.familyconnect.data.net.dto.JoinResponse
+import me.nettrash.familyconnect.data.net.dto.MemberBirthdayResponse
+import me.nettrash.familyconnect.data.net.dto.MemberDto
 import me.nettrash.familyconnect.data.net.dto.MeResponse
 import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
@@ -255,6 +259,28 @@ class FakeAuthApi : AuthApi {
         return changePasswordHandler(current, new)
     }
 
+    /** Every birthday PUT this fake saw: (month, day). */
+    val birthdaysSet = mutableListOf<Pair<Int, Int>>()
+    var birthdaysCleared = 0
+
+    /** Whose user the PUT answers with — the roster mirror keys off it. */
+    var birthdayUserId = 7L
+    var setBirthdayHandler: (Int, Int) -> ApiResult<BirthdayResponse>? = { _, _ -> null }
+
+    override suspend fun setMyBirthday(month: Int, day: Int): ApiResult<BirthdayResponse> {
+        birthdaysSet += month to day
+        return setBirthdayHandler(month, day) ?: ApiResult.Ok(
+            BirthdayResponse(
+                userDto(birthdayUserId).copy(birthday = BirthdayDto(month = month, day = day)),
+            ),
+        )
+    }
+
+    override suspend fun clearMyBirthday(): ApiResult<Unit> {
+        birthdaysCleared += 1
+        return ApiResult.Ok(Unit)
+    }
+
     override suspend fun logout(): ApiResult<Unit> {
         logoutCalls += 1
         return ApiResult.Ok(Unit)
@@ -304,7 +330,17 @@ class FakeChatApi : ChatApi {
     var messagesCalls = 0
     var reactionsCalls = 0
 
-    override suspend fun chats(): ApiResult<ChatsResponse> = chatsResult
+    /**
+     * Parks `GET /chats` until a test releases it, so what lands DURING
+     * the await can be observed (a live message racing a chat-list
+     * refresh). Null — the default — answers immediately.
+     */
+    var chatsGate: CompletableDeferred<Unit>? = null
+
+    override suspend fun chats(): ApiResult<ChatsResponse> {
+        chatsGate?.await()
+        return chatsResult
+    }
 
     override suspend fun createDirect(userId: Long): ApiResult<ChatResponse> = createDirectResult
 
@@ -337,9 +373,12 @@ class FakeChatApi : ChatApi {
         return postMessageHandler(chatId, clientMsgId, body)
     }
 
+    /** Scriptable: a read that the server never took must not advance the marker. */
+    var postReadResult: ApiResult<Unit> = ApiResult.Ok(Unit)
+
     override suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit> {
         postedReads += chatId to lastReadMessageId
-        return ApiResult.Ok(Unit)
+        return postReadResult
     }
 
     /** Every (messageId, body) an edit was attempted with, in order. */
@@ -418,9 +457,28 @@ class FakeFamilyApi : FamilyApi {
         ApiResult.Ok(RotateInviteCodeResponse("NEWCODE1"))
 
     override suspend fun setJoinPolicy(policy: String): ApiResult<FamilyResponse> = createResult
+
+    /** Every language PATCH, in order — null is the explicit clear. */
+    val languagesSet = mutableListOf<String?>()
+
+    /** Every ai_history PATCH, in order. */
+    val aiHistorySet = mutableListOf<Boolean>()
+
+    override suspend fun setLanguage(tag: String?): ApiResult<FamilyResponse> {
+        languagesSet += tag
+        return createResult
+    }
+
+    override suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiHistorySet += enabled
+        return createResult
+    }
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult
-    override suspend fun approve(requestId: Long): ApiResult<ApproveResponse> =
+
+    var approveResult: ApiResult<ApproveResponse> =
         ApiResult.NetworkError(IllegalStateException("unscripted"))
+
+    override suspend fun approve(requestId: Long): ApiResult<ApproveResponse> = approveResult
 
     override suspend fun reject(requestId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
     override suspend fun leave(): ApiResult<Unit> = ApiResult.Ok(Unit)
@@ -434,6 +492,36 @@ class FakeFamilyApi : FamilyApi {
         newPassword: String,
     ): ApiResult<Unit> {
         passwordResets += userId to newPassword
+        return ApiResult.Ok(Unit)
+    }
+
+    /** Every owner-set birthday: (userId, month, day). */
+    val memberBirthdaysSet = mutableListOf<Triple<Long, Int, Int>>()
+    val memberBirthdaysCleared = mutableListOf<Long>()
+
+    /**
+     * What the PUT answers with. Defaults to echoing back what was sent,
+     * which is what the real server does — a test that wants to prove the
+     * RESPONSE is what lands locally overrides it.
+     */
+    var memberBirthdayHandler: (Long, Int, Int) -> ApiResult<MemberBirthdayResponse>? =
+        { _, _, _ -> null }
+
+    override suspend fun setMemberBirthday(
+        userId: Long,
+        month: Int,
+        day: Int,
+    ): ApiResult<MemberBirthdayResponse> {
+        memberBirthdaysSet += Triple(userId, month, day)
+        return memberBirthdayHandler(userId, month, day) ?: ApiResult.Ok(
+            MemberBirthdayResponse(
+                memberDto(userId).copy(birthday = BirthdayDto(month = month, day = day)),
+            ),
+        )
+    }
+
+    override suspend fun clearMemberBirthday(userId: Long): ApiResult<Unit> {
+        memberBirthdaysCleared += userId
         return ApiResult.Ok(Unit)
     }
 }
@@ -559,6 +647,13 @@ fun noteDto(
 
 /** A tombstone: id and seq only, which is all the server sends. */
 fun noteTombstone(id: Long, boardSeq: Long) = noteDto(id = id, boardSeq = boardSeq, deleted = true)
+
+fun memberDto(id: Long, name: String = "user$id", role: String = "member") = MemberDto(
+    id = id,
+    username = name,
+    displayName = name.replaceFirstChar { it.uppercase() },
+    role = role,
+)
 
 fun userDto(id: Long, name: String = "user$id") = UserDto(
     id = id,

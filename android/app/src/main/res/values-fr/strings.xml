@@ -179,4 +179,17 @@
     <string name="s_saved_by_one_copy">%1$s économisés en ne gardant qu\'une copie des fichiers identiques.</string>
     <string name="s_attachments_and_size">%1$d pièces jointes, %2$s</string>
     <string name="s_questions_to_assistant">%1$d questions à l\'assistant</string>
+    <string name="s_family_language">Langue de la famille</string>
+    <string name="s_family_language_explanation">La langue dans laquelle l’assistant répond quand on l’interroge dans la conversation familiale. Cela ne change pas la langue de cette app. Sans choix, il répond dans la langue de la question.</string>
+    <string name="s_not_set">Non défini</string>
+    <string name="s_assistant_history">L’assistant voit l’historique récent</string>
+    <string name="s_assistant_history_explanation">Quand quelqu’un mentionne l’assistant dans la conversation familiale, le dernier mois de cette conversation part avec la question, pour qu’il puisse répondre sur ce qui a été dit. Désactivé, seul le message qui le mentionne part.</string>
+    <string name="s_birthday">Anniversaire</string>
+    <string name="s_birthday_for">Anniversaire de %1$s</string>
+    <string name="s_day_and_month_no_year">Un jour et un mois. Pas d’année, pas d’âge.</string>
+    <string name="s_month">Mois</string>
+    <string name="s_day">Jour</string>
+    <string name="e_birthday_failed">Impossible d’enregistrer cet anniversaire</string>
+    <string name="e_change_language_failed">Impossible de changer la langue de la famille</string>
+    <string name="e_change_assistant_history_failed">Impossible de changer ce réglage</string>
 </resources>

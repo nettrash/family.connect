@@ -24,6 +24,14 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class MessageLinksTest {
 
+    /**
+     * The single text block a table-free body renders to. `blocks` is the
+     * only way into the renderer — a body with a table is a stack of them,
+     * and none of these vectors has one.
+     */
+    private fun render(body: String): MessageMarkdown.Rendered =
+        (MessageMarkdown.blocks(body).single() as MessageMarkdown.Block.Text).rendered
+
     @Test
     fun webUrlsBecomeTappableLinks() {
         val text = "release notes at https://example.com/notes?v=1 today"
@@ -97,7 +105,7 @@ class MessageLinksTest {
      */
     @Test
     fun aLinkLabelThatLooksLikeAUrlKeepsTheAuthorsDestination() {
-        val rendered = MessageMarkdown.render("[https://www.paypal.com](https://evil.example)")
+        val rendered = render("[https://www.paypal.com](https://evil.example)")
         val merged = MessageLinks.mergeSpans(
             rendered.links,
             MessageLinks.linkSpans(rendered.text),
@@ -109,7 +117,7 @@ class MessageLinksTest {
     /** A detected link that overlaps nothing still survives the merge. */
     @Test
     fun mergeSpansKeepsDetectedLinksOutsideMarkdownOnes() {
-        val rendered = MessageMarkdown.render("[menu](https://a.example) and https://b.example")
+        val rendered = render("[menu](https://a.example) and https://b.example")
         val merged = MessageLinks.mergeSpans(
             rendered.links,
             MessageLinks.linkSpans(rendered.text),
@@ -132,5 +140,69 @@ class MessageLinksTest {
         assertThat(styled.spanStyles[0].start).isEqualTo(spans[0].start)
         assertThat(styled.spanStyles[0].end).isEqualTo(spans[0].end)
         assertThat(styled.spanStyles[0].item).isEqualTo(style)
+    }
+
+    // -- what the preview card describes ----------------------------------
+
+    /**
+     * A URL that appears ONLY inside a table cell still gets a card.
+     *
+     * The cell is deliberately not tappable (MessageMarkdown.cell says
+     * why), and the block a table renders to carries no link spans at
+     * all — so sourcing the preview from the spans alone left the reader
+     * looking at a URL with no way whatsoever to reach it. Apple has
+     * always scanned the flat render, tables included; this is Android
+     * agreeing.
+     */
+    @Test
+    fun aUrlOnlyInsideATableCellStillGetsAPreview() {
+        val blocks = MessageMarkdown.blocks(
+            "| site | url |\n| --- | --- |\n| menu | https://example.com |",
+        )
+        assertThat(blocks.single()).isInstanceOf(MessageMarkdown.Block.Table::class.java)
+        assertThat(MessageLinks.firstDrawnWebLinkUrl(blocks))
+            .isEqualTo("https://example.com")
+    }
+
+    /**
+     * FIRST means first as DRAWN, in block order — a link above the grid
+     * is what the one card describes, not whatever a cell happens to
+     * hold. Both platforms have to mean the same message by "first" or
+     * the same body previews two different pages.
+     */
+    @Test
+    fun theFirstDrawnLinkWinsAcrossBlocks() {
+        val above = MessageMarkdown.blocks(
+            "see [menu](https://first.example)\n| a |\n| --- |\n| https://second.example |",
+        )
+        assertThat(MessageLinks.firstDrawnWebLinkUrl(above)).isEqualTo("https://first.example")
+
+        val below = MessageMarkdown.blocks(
+            "| a |\n| --- |\n| https://second.example |\nand https://third.example",
+        )
+        assertThat(MessageLinks.firstDrawnWebLinkUrl(below)).isEqualTo("https://second.example")
+    }
+
+    /**
+     * The phishing rule holds here too: where a label and a destination
+     * disagree, the card describes the destination the AUTHOR wrote —
+     * the page a tap would actually open.
+     */
+    @Test
+    fun theCardDescribesTheAuthorsDestinationNotTheLabel() {
+        val blocks = MessageMarkdown.blocks("[https://www.paypal.com](https://evil.example)")
+        assertThat(MessageLinks.firstDrawnWebLinkUrl(blocks)).isEqualTo("https://evil.example")
+    }
+
+    /** No web link anywhere is no card — a phone number is not one. */
+    @Test
+    fun aBodyWithNoWebLinkHasNothingToPreview() {
+        assertThat(MessageLinks.firstDrawnWebLinkUrl(MessageMarkdown.blocks("call 555-1234")))
+            .isNull()
+        assertThat(
+            MessageLinks.firstDrawnWebLinkUrl(
+                MessageMarkdown.blocks("| a | b |\n| --- | --- |\n| 1 | 2 |"),
+            ),
+        ).isNull()
     }
 }

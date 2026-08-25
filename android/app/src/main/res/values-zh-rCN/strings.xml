@@ -179,4 +179,17 @@
     <string name="s_saved_by_one_copy">相同的文件只保存一份，节省了 %1$s。</string>
     <string name="s_attachments_and_size">%1$d 个附件，%2$s</string>
     <string name="s_questions_to_assistant">向助手提问 %1$d 次</string>
+    <string name="s_family_language">家庭语言</string>
+    <string name="s_family_language_explanation">在家庭对话里向助手提问时，它回答所用的语言。这不会改变这个 app 的界面语言。未选择时，它用提问者的语言回答。</string>
+    <string name="s_not_set">未设置</string>
+    <string name="s_assistant_history">助手可以查看最近的历史记录</string>
+    <string name="s_assistant_history_explanation">当有人在家庭对话里提到助手时，会把这个对话最近一个月的内容连同问题一起发送，它就能回答之前说过的事。关闭后，只发送提到它的那条消息。</string>
+    <string name="s_birthday">生日</string>
+    <string name="s_birthday_for">%1$s 的生日</string>
+    <string name="s_day_and_month_no_year">只有月和日。没有年份，也没有年龄。</string>
+    <string name="s_month">月</string>
+    <string name="s_day">日</string>
+    <string name="e_birthday_failed">无法保存这个生日</string>
+    <string name="e_change_language_failed">无法更改家庭语言</string>
+    <string name="e_change_assistant_history_failed">无法更改该设置</string>
 </resources>

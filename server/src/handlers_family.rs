@@ -12,7 +12,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::json;
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, Row};
@@ -21,7 +21,7 @@ use time::OffsetDateTime;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Family, JoinRequest, Member, User, UserBrief};
+use crate::models::{Birthday, Family, JoinRequest, Member, User, UserBrief};
 use crate::state::AppState;
 use crate::tokens;
 
@@ -35,9 +35,75 @@ pub struct JoinFamilyRequest {
     pub invite_code: String,
 }
 
+/// Every field optional, in the shape `PatchNoteRequest` already uses:
+/// which fields are PRESENT is what decides what happens, and sending
+/// nothing is a no-op that answers with the family unchanged.
+///
+/// `language` is a DOUBLE option, and the two layers mean different things:
+/// the outer is "was the key sent at all", the inner is the value. That is
+/// the only way `{"language": null}` can mean CLEAR IT while leaving the
+/// key out means LEAVE IT ALONE — and without the distinction a family
+/// could set a language and never get rid of it again.
+///
+/// `ai_history` is deliberately NOT one of those, for the reason the column
+/// is `NOT NULL`: a switch has no third state. Absent leaves it alone, and
+/// a `null` would only be a second spelling of one of the two values that
+/// every reader would then have to map back.
 #[derive(Debug, Deserialize)]
 pub struct PatchFamilyRequest {
-    pub join_policy: String,
+    #[serde(default)]
+    pub join_policy: Option<String>,
+    #[serde(default, deserialize_with = "present_option")]
+    pub language: Option<Option<String>>,
+    #[serde(default)]
+    pub ai_history: Option<bool>,
+}
+
+/// Deserialize a present key into `Some(...)`, so that `#[serde(default)]`
+/// can keep an ABSENT key as `None`. serde has no attribute for the
+/// distinction; this three-line function is how it is spelled.
+fn present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// The nine locales the apps themselves ship in, spelled the way iOS and
+/// Android spell them (docs/protocol.md, "The family's language").
+///
+/// A fixed list rather than any well-formed BCP 47 tag, for the reason the
+/// board's colours are a fixed list: the only thing that reads this is the
+/// assistant, and a family that typed a tag the server merely accepted
+/// would get answers they could not explain and no error to explain them.
+///
+/// Both script variants are here on purpose. `sr` and `sr-Latn` are one
+/// language in two alphabets and a family that reads one cannot read the
+/// other, which is also why `language_instruction` must not collapse them.
+pub const FAMILY_LANGUAGES: [&str; 9] = [
+    "en", "de", "es", "fr", "ja", "ru", "sr", "sr-Latn", "zh-Hans",
+];
+
+/// Match a requested language against the list, case-insensitively, and
+/// answer with the CANONICAL spelling.
+///
+/// Case-insensitively because BCP 47 casing is a convention rather than a
+/// rule — `sr-latn` is the same tag as `sr-Latn` — and canonical on the way
+/// out so a client can compare what it reads back against its own list
+/// without normalising first.
+fn validate_language(language: &str) -> Result<String, ApiError> {
+    let requested = language.trim();
+    FAMILY_LANGUAGES
+        .iter()
+        .find(|known| known.eq_ignore_ascii_case(requested))
+        .map(|known| (*known).to_string())
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                codes::INVALID_LANGUAGE,
+                format!("language must be one of {}", FAMILY_LANGUAGES.join(", ")),
+            )
+        })
 }
 
 /// Internal view of a `families` row.
@@ -46,6 +112,8 @@ struct FamilyRecord {
     name: String,
     invite_code: String,
     join_policy: String,
+    language: Option<String>,
+    ai_history: bool,
     owner_user_id: i64,
     created_at: OffsetDateTime,
 }
@@ -57,6 +125,8 @@ impl FamilyRecord {
             name: row.get("name"),
             invite_code: row.get("invite_code"),
             join_policy: row.get("join_policy"),
+            language: row.get("language"),
+            ai_history: row.get("ai_history"),
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
         }
@@ -70,12 +140,21 @@ impl FamilyRecord {
             join_policy: self.join_policy.clone(),
             created_at: self.created_at,
             invite_code: caller_is_owner.then(|| self.invite_code.clone()),
+            // Not owner-gated, unlike the invite code: the language is what
+            // the assistant answers the whole family in, so the whole
+            // family sees it.
+            language: self.language.clone(),
+            // Not owner-gated either, and for a stronger reason than the
+            // language: this decides what a member's own words may be used
+            // for when somebody else mentions the assistant. Only the owner
+            // can CHANGE it; everybody gets to know what it is.
+            ai_history: self.ai_history,
         }
     }
 }
 
-const SELECT_FAMILY: &str =
-    "SELECT id, name, invite_code, join_policy, owner_user_id, created_at FROM families";
+const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, ai_history,
+                             owner_user_id, created_at FROM families";
 
 async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, ApiError> {
     let row = sqlx::query(&format!("{SELECT_FAMILY} WHERE id = $1"))
@@ -146,6 +225,15 @@ async fn grant_membership(
     Ok(true)
 }
 
+/// One member's birthday, read on its own.
+async fn member_birthday(state: &AppState, user_id: i64) -> Result<Option<Birthday>, ApiError> {
+    let row = sqlx::query("SELECT birthday_month, birthday_day FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&state.pool)
+        .await?;
+    Ok(Birthday::from_row(&row))
+}
+
 async fn user_brief(state: &AppState, user_id: i64) -> Result<UserBrief, ApiError> {
     let row =
         sqlx::query("SELECT id, username, display_name, avatar_version FROM users WHERE id = $1")
@@ -189,7 +277,8 @@ pub async fn create_family(
         let inserted = sqlx::query(
             "INSERT INTO families (name, invite_code, owner_user_id)
              VALUES ($1, $2, $3)
-             RETURNING id, name, invite_code, join_policy, owner_user_id, created_at",
+             RETURNING id, name, invite_code, join_policy, language, ai_history, owner_user_id,
+                       created_at",
         )
         .bind(&name)
         .bind(&invite_code)
@@ -335,7 +424,7 @@ pub async fn my_family(
     };
     let family = fetch_family(&state, family_id).await?;
     let rows = sqlx::query(
-        "SELECT id, username, display_name, avatar_version
+        "SELECT id, username, display_name, avatar_version, birthday_month, birthday_day
          FROM users WHERE family_id = $1 ORDER BY id",
     )
     .bind(family_id)
@@ -343,16 +432,7 @@ pub async fn my_family(
     .await?;
     let members: Vec<Member> = rows
         .iter()
-        .map(|row| {
-            let id: i64 = row.get("id");
-            Member {
-                id,
-                username: row.get("username"),
-                display_name: row.get("display_name"),
-                role: member_role(id, family.owner_user_id).to_string(),
-                avatar_version: row.get("avatar_version"),
-            }
-        })
+        .map(|row| member_from_row(row, family.owner_user_id))
         .collect();
     let is_owner = family.owner_user_id == auth.user_id;
     // The board cursor rides along: this is the call every client already
@@ -429,24 +509,56 @@ pub async fn rotate_invite_code(
     )))
 }
 
-/// `PATCH /families/mine` (owner) — change the join policy.
+/// `PATCH /families/mine` (owner) — the join policy, the family's main
+/// language, whether a mention sees the chat's recent history, or any
+/// combination of the three.
+///
+/// Which fields are PRESENT decides what changes, exactly as on a board
+/// note. Everything is validated before anything is written, so a request
+/// naming a good policy and a bad language changes neither and the owner is
+/// never left guessing which half of it landed.
 pub async fn patch_family(
     auth: AuthUser,
     State(state): State<AppState>,
     AppJson(req): AppJson<PatchFamilyRequest>,
 ) -> Result<Response, ApiError> {
-    if req.join_policy != "open" && req.join_policy != "approval" {
-        return Err(ApiError::validation(
-            "join_policy must be \"open\" or \"approval\"",
-        ));
-    }
+    let join_policy = match req.join_policy.as_deref() {
+        None => None,
+        Some(policy @ ("open" | "approval")) => Some(policy.to_string()),
+        Some(_) => {
+            return Err(ApiError::validation(
+                "join_policy must be \"open\" or \"approval\"",
+            ));
+        }
+    };
+    // Three states, not two: absent leaves the language alone, `null`
+    // clears it, and a tag sets it.
+    let language = match &req.language {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(requested)) => Some(Some(validate_language(requested)?)),
+    };
+
     let family = require_owner(&state, &auth).await?;
+    // COALESCE for the policy and for the history switch, because an unsent
+    // field binds NULL and the column should keep what it had — which is
+    // exactly what COALESCE says. The language cannot use it — NULL is a
+    // VALUE there rather than "unchanged" — so a separate flag says whether
+    // to write that column at all.
     let row = sqlx::query(
-        "UPDATE families SET join_policy = $1 WHERE id = $2
-         RETURNING id, name, invite_code, join_policy, owner_user_id, created_at",
+        "UPDATE families
+         SET join_policy = COALESCE($2, join_policy),
+             language = CASE WHEN $3 THEN $4 ELSE language END,
+             ai_history = COALESCE($5, ai_history)
+         WHERE id = $1
+         RETURNING id, name, invite_code, join_policy, language, ai_history, owner_user_id,
+                   created_at",
     )
-    .bind(&req.join_policy)
     .bind(family.id)
+    .bind(join_policy)
+    .bind(language.is_some())
+    .bind(language.flatten())
+    .bind(req.ai_history)
     .fetch_one(&state.pool)
     .await?;
     let family = FamilyRecord::from_row(&row);
@@ -462,6 +574,7 @@ pub async fn list_join_requests(
     let rows = sqlx::query(
         "SELECT jr.id, jr.created_at,
                 u.id AS user_id, u.username, u.display_name, u.avatar_version,
+                u.birthday_month, u.birthday_day,
                 u.created_at AS user_created_at
          FROM join_requests jr
          JOIN users u ON u.id = jr.user_id
@@ -481,6 +594,7 @@ pub async fn list_join_requests(
                 display_name: row.get("display_name"),
                 created_at: row.get("user_created_at"),
                 avatar_version: row.get("avatar_version"),
+                birthday: Birthday::from_row(row),
             },
             created_at: row.get("created_at"),
         })
@@ -561,6 +675,10 @@ pub async fn approve_join_request(
         display_name: joined.display_name.clone(),
         role: "member".to_string(),
         avatar_version: joined.avatar_version,
+        // Read on its own rather than carried by `user_brief`: that brief
+        // IS the `member_joined` frame payload, whose shape is pinned, and
+        // a birthday has no business travelling in a WS frame.
+        birthday: member_birthday(&state, applicant_id).await?,
     };
     events::log_fanout_error(
         "member_joined",
@@ -710,20 +828,7 @@ pub async fn reset_member_password(
         ));
     }
 
-    let target_family: Option<i64> =
-        sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
-            .bind(target_user_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .flatten();
-    if target_family != Some(family.id) {
-        // Same answer whether they are in another family or do not exist:
-        // the endpoint never confirms ids outside this family.
-        return Err(ApiError::forbidden(
-            codes::NOT_SAME_FAMILY,
-            "no such member in your family",
-        ));
-    }
+    require_same_family(&state, &family, target_user_id).await?;
 
     let password_hash = crate::auth::hash_password(req.new_password).await?;
     let mut tx = state.pool.begin().await?;
@@ -745,6 +850,103 @@ pub async fn reset_member_password(
         state.registry.close_session(session_id).await;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `PUT /families/members/{user_id}/birthday` — the owner sets a member's
+/// birthday.
+///
+/// The case this exists for is a parent and a child: the parent knows the
+/// date, and the child is never going to open a settings screen to type it.
+///
+/// The owner MAY name themselves here, unlike `reset_member_password`. That
+/// endpoint refuses a self-target because it would be a way around proving
+/// you know the current password; there is no such proof to skip here, the
+/// owner can already set their own with `PUT /me/birthday`, and both paths
+/// write the same two numbers. Refusing would buy nothing and would make
+/// every roster screen carry a special case for exactly one row.
+pub async fn set_member_birthday(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(target_user_id): Path<i64>,
+    AppJson(req): AppJson<crate::handlers_auth::BirthdayRequest>,
+) -> Result<Response, ApiError> {
+    let family = require_owner(&state, &auth).await?;
+    crate::handlers_auth::validate_birthday(req.month, req.day)?;
+    require_same_family(&state, &family, target_user_id).await?;
+
+    let row = sqlx::query(
+        "UPDATE users SET birthday_month = $2, birthday_day = $3 WHERE id = $1
+         RETURNING id, username, display_name, avatar_version,
+                   birthday_month, birthday_day",
+    )
+    .bind(target_user_id)
+    .bind(req.month)
+    .bind(req.day)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok((
+        StatusCode::OK,
+        Json(json!({"member": member_from_row(&row, family.owner_user_id)})),
+    )
+        .into_response())
+}
+
+/// `DELETE /families/members/{user_id}/birthday` — the owner clears one.
+/// Idempotent, like the member's own delete.
+pub async fn delete_member_birthday(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(target_user_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let family = require_owner(&state, &auth).await?;
+    require_same_family(&state, &family, target_user_id).await?;
+
+    sqlx::query("UPDATE users SET birthday_month = NULL, birthday_day = NULL WHERE id = $1")
+        .bind(target_user_id)
+        .execute(&state.pool)
+        .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Refuse a target who is not in the owner's own family.
+///
+/// Same answer whether they are in another family or do not exist at all,
+/// following the password reset rather than `remove_member`: a birthday is
+/// personal information, and an endpoint that answered differently for a
+/// real stranger than for an id nobody holds would be a way to find out
+/// which accounts exist.
+async fn require_same_family(
+    state: &AppState,
+    family: &FamilyRecord,
+    target_user_id: i64,
+) -> Result<(), ApiError> {
+    let target_family: Option<i64> =
+        sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
+            .bind(target_user_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .flatten();
+    if target_family != Some(family.id) {
+        return Err(ApiError::forbidden(
+            codes::NOT_SAME_FAMILY,
+            "no such member in your family",
+        ));
+    }
+    Ok(())
+}
+
+/// Build a `Member` from a row exposing `id, username, display_name,
+/// avatar_version, birthday_month, birthday_day`.
+fn member_from_row(row: &PgRow, owner_user_id: i64) -> Member {
+    let id: i64 = row.get("id");
+    Member {
+        id,
+        username: row.get("username"),
+        display_name: row.get("display_name"),
+        role: member_role(id, owner_user_id).to_string(),
+        avatar_version: row.get("avatar_version"),
+        birthday: Birthday::from_row(row),
+    }
 }
 
 /// Shared leave/remove write: detach the user and drop them from every chat
@@ -794,5 +996,72 @@ mod tests {
     fn member_role_is_owner_only_for_the_owner_user_id() {
         assert_eq!(member_role(7, 7), "owner");
         assert_eq!(member_role(9, 7), "member");
+    }
+
+    #[test]
+    fn a_language_outside_the_nine_the_apps_ship_is_refused() {
+        for known in FAMILY_LANGUAGES {
+            assert_eq!(validate_language(known).expect("known tag"), known);
+        }
+        assert!(validate_language("klingon").is_err());
+        assert!(validate_language("").is_err());
+        // Well-formed BCP 47 is not enough: nothing renders it and the
+        // family would get answers they could not explain.
+        assert!(validate_language("pt-BR").is_err());
+        assert!(
+            validate_language("en-GB").is_err(),
+            "a region is not one of the nine"
+        );
+    }
+
+    /// BCP 47 casing is a convention rather than a rule, so a client that
+    /// spells it its own way is understood — and what comes back is always
+    /// the canonical spelling, so a client can compare with `==`.
+    #[test]
+    fn casing_is_forgiven_on_the_way_in_and_canonical_on_the_way_out() {
+        assert_eq!(validate_language("sr-latn").expect("valid"), "sr-Latn");
+        assert_eq!(validate_language("SR-LATN").expect("valid"), "sr-Latn");
+        assert_eq!(validate_language("ZH-hans").expect("valid"), "zh-Hans");
+        assert_eq!(validate_language("  ru  ").expect("valid"), "ru");
+    }
+
+    /// The refusal has its own code, like the board's fixed palette, so a
+    /// client can tell "not a language we offer" from any other 400.
+    #[test]
+    fn the_refusal_carries_the_invalid_language_code() {
+        let error = validate_language("klingon").expect_err("refused");
+        assert!(
+            matches!(error, ApiError::BadRequest { code, .. } if code == codes::INVALID_LANGUAGE),
+            "a language outside the list is invalid_language, not a bare validation error"
+        );
+    }
+
+    /// The two layers of the double option are what make "clear it" and
+    /// "leave it alone" different requests. Losing the distinction would
+    /// leave a family unable to unset a language they had set.
+    #[test]
+    fn an_absent_language_key_is_not_the_same_request_as_a_null_one() {
+        let absent: PatchFamilyRequest =
+            serde_json::from_str(r#"{"join_policy": "open"}"#).expect("parses");
+        assert_eq!(absent.language, None, "absent means leave it alone");
+
+        let cleared: PatchFamilyRequest =
+            serde_json::from_str(r#"{"language": null}"#).expect("parses");
+        assert_eq!(cleared.language, Some(None), "null means clear it");
+        assert_eq!(cleared.join_policy, None);
+
+        let set: PatchFamilyRequest =
+            serde_json::from_str(r#"{"language": "ru"}"#).expect("parses");
+        assert_eq!(set.language, Some(Some("ru".to_string())));
+    }
+
+    /// An empty body is a valid no-op rather than a 400: every field is
+    /// optional, and "which fields are present decides what happens" has to
+    /// survive none of them being present.
+    #[test]
+    fn an_empty_patch_body_parses() {
+        let empty: PatchFamilyRequest = serde_json::from_str("{}").expect("parses");
+        assert_eq!(empty.join_policy, None);
+        assert_eq!(empty.language, None);
     }
 }

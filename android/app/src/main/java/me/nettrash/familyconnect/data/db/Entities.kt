@@ -25,6 +25,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.BirthdayDto
 
 /** Lifecycle of an outbound message; inbound rows are always SENT. */
 enum class MessageStatus {
@@ -227,4 +228,25 @@ data class MemberEntity(
      * out of name resolution.
      */
     @ColumnInfo(defaultValue = "0") val hasLeft: Boolean = false,
-)
+    /**
+     * A day and a month, flattened into two nullable columns — the same
+     * treatment the reply quote and the attachment get, and for the same
+     * reason: it belongs to exactly one row and is read on every render
+     * of it.
+     *
+     * Nullable with no default, because absence IS the meaning: unset is
+     * not month 0, and there is no year here to be missing. Both columns
+     * move together or not at all — read them through [birthday], which
+     * is the only thing that should be asked.
+     */
+    val birthdayMonth: Int? = null,
+    val birthdayDay: Int? = null,
+) {
+    /** The wire shape back out of the flat columns, or null for unset. */
+    val birthday: BirthdayDto?
+        get() {
+            val month = birthdayMonth ?: return null
+            val day = birthdayDay ?: return null
+            return BirthdayDto(month = month, day = day)
+        }
+}

@@ -4,10 +4,13 @@
 //
 //  Owner-only console: pending join requests (approve/reject), invite
 //  code rotation (confirmed — the old code dies immediately and anyone
-//  mid-typing it is out of luck), join policy, and the member roster
-//  with swipe-to-remove. The owner's own row is protected — the server
+//  mid-typing it is out of luck), join policy, the assistant's two family
+//  settings, and the member roster with swipe-to-remove. The owner's own
+//  row is protected from removal and from a password reset — the server
 //  would 409 cannot_remove_owner anyway, but not offering the swipe is
-//  better than explaining the refusal.
+//  better than explaining the refusal — and is deliberately NOT protected
+//  from the birthday editor, which the protocol lets the owner point at
+//  themselves precisely so this screen needs no special case.
 //
 //  Shares SettingsModel with its parent so a rotate/policy change is
 //  reflected immediately when the user swipes back.
@@ -38,6 +41,8 @@ struct FamilyManageView: View {
     @State private var model = FamilyManageModel()
     /// The member whose password the owner is resetting; nil while closed.
     @State private var resettingPassword: MemberDTO?
+    /// The member whose birthday the owner is editing; nil while closed.
+    @State private var editingBirthday: MemberDTO?
 
     var body: some View {
         List {
@@ -48,12 +53,24 @@ struct FamilyManageView: View {
                 requestsSection
                 inviteSection
                 policySection
+                if let family = settingsModel.family {
+                    FamilyAssistantSettings(family: family) { updated in
+                        settingsModel.family = updated
+                        session.applyFamily(updated)
+                    }
+                }
             }
             membersSection
         }
         .navigationTitle(session.isOwner ? "Manage Family" : "Family Members")
         .sheet(item: $resettingPassword) { member in
             ResetPasswordView(member: member)
+        }
+        .sheet(item: $editingBirthday) { member in
+            MemberBirthdayView(member: member) { birthday in
+                guard let index = settingsModel.members.firstIndex(where: { $0.id == member.id }) else { return }
+                settingsModel.members[index] = settingsModel.members[index].withBirthday(birthday)
+            }
         }
         .navigationBarTitleDisplayMode(.inline)
         .task {
@@ -180,9 +197,18 @@ struct FamilyManageView: View {
                         avatarVersion: member.avatarVersion)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(member.displayName)
+                        // The username, and the birthday under it when
+                        // there is one — day and month in the reader's
+                        // locale, never a year and never an age, because
+                        // there is nothing here to compute one from.
                         Text("@\(member.username)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if let birthday = member.birthday {
+                            Label(birthday.formatted(), systemImage: "birthday.cake")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
                     if member.role == "owner" {
@@ -192,9 +218,9 @@ struct FamilyManageView: View {
                     }
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    // Both are owner actions, and the owner row is
-                    // protected from both: an owner changes their own
-                    // password from Settings, with the current one.
+                    // Remove and Password are owner actions, and the owner
+                    // row is protected from both: an owner changes their
+                    // own password from Settings, with the current one.
                     if session.isOwner, member.role != "owner" {
                         Button(role: .destructive) {
                             remove(member)
@@ -207,6 +233,17 @@ struct FamilyManageView: View {
                             Label("Password", systemImage: "key")
                         }
                         .tint(.orange)
+                    }
+                    // Birthday is the exception, and on purpose: the
+                    // roster endpoint accepts the owner's own id, so this
+                    // row needs no special case (protocol.md, "Birthdays").
+                    if session.isOwner {
+                        Button {
+                            editingBirthday = member
+                        } label: {
+                            Label("Birthday", systemImage: "birthday.cake")
+                        }
+                        .tint(.pink)
                     }
                 }
             }
@@ -265,7 +302,9 @@ struct FamilyManageView: View {
                         name: family.name,
                         joinPolicy: family.joinPolicy,
                         createdAt: family.createdAt,
-                        inviteCode: newCode)
+                        inviteCode: newCode,
+                        language: family.language,
+                        aiHistory: family.aiHistory)
                 }
             } catch {
                 model.errorText = "Couldn't rotate the code. Try again."
@@ -284,7 +323,9 @@ struct FamilyManageView: View {
                     name: updated.name,
                     joinPolicy: updated.joinPolicy,
                     createdAt: updated.createdAt,
-                    inviteCode: updated.inviteCode ?? settingsModel.family?.inviteCode)
+                    inviteCode: updated.inviteCode ?? settingsModel.family?.inviteCode,
+                    language: updated.language,
+                    aiHistory: updated.aiHistory)
             } catch {
                 model.errorText = "Couldn't change the policy. Try again."
             }

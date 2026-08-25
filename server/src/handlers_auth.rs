@@ -43,6 +43,19 @@ pub struct ResetPasswordRequest {
     pub new_password: String,
 }
 
+/// `{month, day}` — the body BOTH birthday endpoints take, the member's own
+/// and the owner's.
+///
+/// Required together rather than optional, because clearing a birthday is
+/// `DELETE` and not a half-empty `PUT`: the database refuses a month with
+/// no day (migration 0018), so there is no shape here that could express
+/// one anyway.
+#[derive(Debug, Deserialize)]
+pub struct BirthdayRequest {
+    pub month: i16,
+    pub day: i16,
+}
+
 /// The one place the rule lives, so register, change and reset cannot
 /// drift apart on what counts as a password.
 pub fn validate_password(password: &str) -> Result<(), ApiError> {
@@ -55,6 +68,39 @@ pub fn validate_password(password: &str) -> Result<(), ApiError> {
 }
 
 pub const MIN_PASSWORD_CHARS: usize = 8;
+
+/// The one place the birthday rule lives, so the member's own endpoint and
+/// the owner's cannot drift apart on which dates exist.
+///
+/// The day is checked against ITS month, not against a flat 1–31: 31 April
+/// is not a date and neither is 30 February, and a server that stored them
+/// would be handing three clients a value none of them can draw. 29
+/// February IS accepted — with no year stored there is no year for it to
+/// fail to exist in, which is the one place dropping the year makes the
+/// rule looser rather than stricter (docs/protocol.md, "Birthdays").
+pub fn validate_birthday(month: i16, day: i16) -> Result<(), ApiError> {
+    if !(1..=12).contains(&month) {
+        return Err(ApiError::validation("birthday month must be 1-12"));
+    }
+    let last = days_in_month(month);
+    if !(1..=last).contains(&day) {
+        return Err(ApiError::validation(format!(
+            "birthday day must be 1-{last} for month {month}"
+        )));
+    }
+    Ok(())
+}
+
+/// How long a month is when there is no year to ask about. February is 29
+/// for exactly that reason: the short February is a property of the year,
+/// and no year is stored.
+fn days_in_month(month: i16) -> i16 {
+    match month {
+        2 => 29,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
 
 /// `POST /auth/register`
 pub async fn register(
@@ -70,7 +116,8 @@ pub async fn register(
     let inserted = sqlx::query(
         "INSERT INTO users (username, display_name, password_hash)
          VALUES ($1, $2, $3)
-         RETURNING id, username, display_name, created_at, avatar_version",
+         RETURNING id, username, display_name, created_at, avatar_version,
+                   birthday_month, birthday_day",
     )
     .bind(&req.username)
     .bind(&display_name)
@@ -106,7 +153,8 @@ pub async fn login(
     AppJson(req): AppJson<LoginRequest>,
 ) -> Result<Response, ApiError> {
     let row = sqlx::query(
-        "SELECT id, username, display_name, password_hash, created_at, avatar_version
+        "SELECT id, username, display_name, password_hash, created_at, avatar_version,
+                birthday_month, birthday_day
          FROM users WHERE lower(username) = lower($1)",
     )
     .bind(&req.username)
@@ -174,6 +222,45 @@ pub async fn change_password(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// `PUT /me/birthday` — your own birthday, a day and a month.
+///
+/// No current-password proof, unlike the password change: a birthday is not
+/// a credential, and the worst an unattended phone can do here is wish
+/// somebody happy birthday on the wrong day.
+pub async fn set_birthday(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    AppJson(req): AppJson<BirthdayRequest>,
+) -> Result<Response, ApiError> {
+    validate_birthday(req.month, req.day)?;
+    // Both columns in one statement, always: they are one fact, and the
+    // equivalence constraint would refuse them separately anyway.
+    let row = sqlx::query(
+        "UPDATE users SET birthday_month = $2, birthday_day = $3 WHERE id = $1
+         RETURNING id, username, display_name, created_at, avatar_version,
+                   birthday_month, birthday_day",
+    )
+    .bind(auth.user_id)
+    .bind(req.month)
+    .bind(req.day)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok((StatusCode::OK, Json(json!({"user": User::from_row(&row)}))).into_response())
+}
+
+/// `DELETE /me/birthday` — clear it. Idempotent, like the avatar delete:
+/// clearing a birthday nobody set is still a `204`.
+pub async fn delete_birthday(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    sqlx::query("UPDATE users SET birthday_month = NULL, birthday_day = NULL WHERE id = $1")
+        .bind(auth.user_id)
+        .execute(&state.pool)
+        .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 /// `POST /auth/logout` — revokes the calling session and closes its sockets.
 pub async fn logout(auth: AuthUser, State(state): State<AppState>) -> Result<Response, ApiError> {
     sqlx::query("DELETE FROM sessions WHERE id = $1")
@@ -188,8 +275,10 @@ pub async fn logout(auth: AuthUser, State(state): State<AppState>) -> Result<Res
 pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Response, ApiError> {
     let row = sqlx::query(
         "SELECT u.id, u.username, u.display_name, u.created_at, u.avatar_version,
+                u.birthday_month, u.birthday_day,
                 f.id AS family_id, f.name AS family_name, f.join_policy,
-                f.created_at AS family_created_at, f.owner_user_id, f.invite_code
+                f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
+                f.language, f.ai_history
          FROM users u
          LEFT JOIN families f ON f.id = u.family_id
          WHERE u.id = $1",
@@ -211,6 +300,16 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 created_at: row.get("family_created_at"),
                 // The invite code is owner-only information.
                 invite_code: is_owner.then(|| row.get("invite_code")),
+                // Everyone sees the language, owner or not: it is what the
+                // assistant answers the whole family in.
+                language: row.get("language"),
+                // And everyone sees the history switch, for a stronger
+                // reason: it decides what a member's own words may be used
+                // for. This literal exists twice — here and in
+                // `FamilyRecord::to_api` — and a field added to one and not
+                // the other makes /me and /families/mine disagree about the
+                // same family, which is worse than either answer alone.
+                ai_history: row.get("ai_history"),
             };
             let role = if is_owner { "owner" } else { "member" };
             (Some(family), Some(role))
@@ -305,6 +404,25 @@ mod tests {
         assert!(validate_username("assistant").is_err(), "reserved");
         assert!(validate_username("Assistant").is_err(), "reserved, cased");
         assert!(validate_username("anna@home").is_err(), "symbol");
+    }
+
+    #[test]
+    fn a_birthday_day_is_checked_against_its_own_month() {
+        assert!(validate_birthday(3, 14).is_ok());
+        assert!(validate_birthday(1, 31).is_ok());
+        assert!(validate_birthday(4, 30).is_ok());
+        // 31 April is not a date, however happily "1-31" would take it.
+        assert!(validate_birthday(4, 31).is_err(), "April has 30 days");
+        assert!(validate_birthday(2, 30).is_err(), "February never has 30");
+        assert!(validate_birthday(0, 14).is_err(), "month below range");
+        assert!(validate_birthday(13, 1).is_err(), "month above range");
+        assert!(validate_birthday(3, 0).is_err(), "day below range");
+    }
+
+    /// The one date that only works because no year is stored.
+    #[test]
+    fn the_twenty_ninth_of_february_is_a_birthday() {
+        assert!(validate_birthday(2, 29).is_ok());
     }
 
     #[test]

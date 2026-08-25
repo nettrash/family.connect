@@ -12,6 +12,8 @@
 package me.nettrash.familyconnect.data.net
 
 import me.nettrash.familyconnect.data.net.dto.AuthResponse
+import me.nettrash.familyconnect.data.net.dto.BirthdayRequest
+import me.nettrash.familyconnect.data.net.dto.BirthdayResponse
 import me.nettrash.familyconnect.data.net.dto.ChangePasswordRequest
 import me.nettrash.familyconnect.data.net.dto.DeviceRequest
 import me.nettrash.familyconnect.data.net.dto.DeviceResponse
@@ -33,6 +35,18 @@ interface AuthApi {
      * my OTHER sessions server-side; this one survives.
      */
     suspend fun changePassword(current: String, new: String): ApiResult<Unit>
+
+    /**
+     * My own birthday: a day and a month, no year (protocol.md,
+     * "Birthdays"). Shaped like the avatar deliberately — a PUT that
+     * replaces whatever was there and a DELETE that clears it — because
+     * it is the same kind of thing, a small optional piece of a profile
+     * that is either set or is not.
+     */
+    suspend fun setMyBirthday(month: Int, day: Int): ApiResult<BirthdayResponse>
+
+    /** Idempotent: clearing a birthday nobody set is still a 204. */
+    suspend fun clearMyBirthday(): ApiResult<Unit>
     suspend fun me(): ApiResult<MeResponse>
 
     /**
@@ -72,6 +86,12 @@ class DefaultAuthApi @Inject constructor(
 
     override suspend fun changePassword(current: String, new: String): ApiResult<Unit> =
         client.post("/me/password", ChangePasswordRequest(current, new))
+
+    override suspend fun setMyBirthday(month: Int, day: Int): ApiResult<BirthdayResponse> =
+        client.put("/me/birthday", BirthdayRequest(month, day))
+
+    override suspend fun clearMyBirthday(): ApiResult<Unit> =
+        client.delete("/me/birthday")
 
     override suspend fun logout(): ApiResult<Unit> =
         client.postEmpty("/auth/logout")

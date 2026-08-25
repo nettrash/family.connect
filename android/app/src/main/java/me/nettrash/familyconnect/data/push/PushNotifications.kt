@@ -116,6 +116,29 @@ object PushNotifications {
             .build()
     }
 
+    /**
+     * Drop everything this chat has in the tray, because it has been read.
+     *
+     * On Android the tray entry IS the launcher dot — build() sets no
+     * `number` and no `badgeIconType`, so the dot lives and dies with the
+     * notification. Nothing else cancels it: setAutoCancel only covers the
+     * TAP, so a chat read inside the app used to leave the dot lit
+     * indefinitely, advertising messages the user had already seen.
+     *
+     * Swept by tag rather than cancelled at the (tag, [NOTIFICATION_ID])
+     * slot: when a push lands while the app is dead the SYSTEM tray builds
+     * the notification and picks its own id — only the tag is ours
+     * (protocol: android.notification.tag) — and those are precisely the
+     * ones still sitting there when the app is finally opened.
+     */
+    fun cancelChat(context: Context, chatId: Long) {
+        val tag = chatTag(chatId)
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.activeNotifications
+            .filter { it.tag == tag }
+            .forEach { manager.cancel(it.tag, it.id) }
+    }
+
     fun show(
         context: Context,
         title: String,

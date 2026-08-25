@@ -123,6 +123,7 @@ class SyncEngineTest {
         val chatRepository = ChatRepository(chatApi, db.chatDao(), socket)
         val familyRepository = FamilyRepository(
             familyApi = familyApi,
+            authApi = authApi,
             memberDao = db.memberDao(),
             settings = settings,
             sessionRepository = sessionRepository,

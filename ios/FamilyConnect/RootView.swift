@@ -6,15 +6,13 @@
 //  screen below can assume its preconditions (a token exists, a family
 //  exists, …) instead of re-checking them. Also the single owner of the
 //  scenePhase → coordinator lifecycle mapping: background suspends the
-//  socket, active resumes it and resyncs (the socket is a live wire —
-//  everything missed while suspended comes back over REST), and
-//  becoming active always clears the app badge — the number meant
-//  "unread while you were away", and the server recomputes it fresh on
-//  its next push anyway.
+//  socket AND revokes the authority to mark anything read (see
+//  ChatSyncCoordinator.enterBackground), active resumes the socket and
+//  resyncs — the socket is a live wire, so everything missed while
+//  suspended comes back over REST.
 //
 
 import SwiftUI
-import UserNotifications
 
 struct RootView: View {
     @Environment(AppSession.self) private var session
@@ -62,23 +60,17 @@ struct RootView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active {
-                #if os(iOS)
-                // iOS ONLY. There the badge belongs to the push payload —
-                // the server sends the number and the app's only job is to
-                // clear it on the way in. Regardless of session phase: a
-                // badge on the icon of a logged-out app would be just as
-                // stale.
-                //
-                // On the Mac the number is derived locally instead (see
-                // UnreadBadge), because a Mac holds its socket open and so
-                // is almost never sent a push to carry one. Clearing it
-                // here would wipe that count every time the user clicked
-                // the app — which is precisely when they are looking to
-                // see whether anything arrived.
-                Task { try? await UNUserNotificationCenter.current().setBadgeCount(0) }
-                #endif
-            }
+            // Nothing clears the badge here any more, on either platform.
+            // iOS used to wipe it on every single foreground, on the theory
+            // that the number belonged to the push payload and the server
+            // would send a fresh one. It does not: the server pushes only
+            // to a device with no live socket, so a foregrounded phone is
+            // never sent another badge and the icon stayed bare while the
+            // chat list still showed three unread. Both platforms now
+            // derive the number from the store instead (UnreadBadge, fed
+            // from saveContext), which needs no permission on the Mac and
+            // no push on the phone — and coming back to an app is not
+            // reading anything anyway (ChatPresence).
             guard session.phase == .active else { return }
             switch newPhase {
             case .background:

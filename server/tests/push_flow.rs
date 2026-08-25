@@ -744,3 +744,439 @@ async fn an_unknown_platform_is_refused() {
     )
     .await;
 }
+
+// --- One user, several devices.
+//
+// A desktop app holds its WebSocket open for as long as it is running, and
+// for years the push gate asked whether the USER had a socket. A Mac is a
+// socket, so a Mac left running answered that question for every phone on
+// the account and silenced all of them at once — the phone in a pocket has
+// no way to know the Mac is showing anything. The gate is per DEVICE now:
+// the Mac stays quiet because ITS OWN session is the live one, and the
+// phone, whose session is not connected, is pushed. Each of the four
+// pushing events gets the same treatment, because a family that hears about
+// messages but never about a board note is only half fixed.
+
+/// Every device the mock was asked to wake, in arrival order.
+fn woken_devices(mock: &MockPush) -> Vec<String> {
+    mock.requests()
+        .into_iter()
+        .map(|r| r.path)
+        .filter(|path| path.starts_with("/3/device/"))
+        .collect()
+}
+
+/// Let any second push that was going to happen happen, so asserting on the
+/// whole list is an observation rather than a race won.
+async fn settle() {
+    tokio::time::sleep(Duration::from_millis(300)).await;
+}
+
+/// Log in a second time as an already-registered user: a second session,
+/// which is what a second device of the same person really is.
+async fn second_session(ts: &TestServer, username: &str) -> String {
+    ts.login(username, "password123").await
+}
+
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_live_mac_does_not_silence_the_same_users_iphone() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let (mac, _member_id) = ts.register("junior", "Junior").await;
+    ts.join(&mac, &invite_code, "joined").await;
+    let phone = second_session(&ts, "junior").await;
+    register_device(&ts, &mac, "macos", "junior-macos-token").await;
+    register_device(&ts, &phone, "ios", "junior-ios-token").await;
+
+    let chat_id = ts.family_chat_id(&owner).await;
+    let mut mac_ws = connect_ws(&ts, &mac).await;
+    let message_id = post_message_id(&ts, &owner, chat_id, "Dinner at 7?").await;
+    // The Mac has it over the wire. The phone has not, and that is the
+    // whole point of the push that must follow.
+    next_frame_of_type(&mut mac_ws, "message").await;
+
+    let requests = mock
+        .wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    assert_eq!(
+        requests[0].body,
+        json!({
+            "aps": {
+                "alert": {"title": "The Smiths — Olive", "body": "Dinner at 7?"},
+                "sound": "default",
+                "badge": 1,
+                "thread-id": format!("chat-{chat_id}"),
+            },
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "kind": "message",
+        })
+    );
+    settle().await;
+    assert_eq!(
+        woken_devices(&mock),
+        vec!["/3/device/junior-ios-token".to_string()],
+        "the phone is woken and the Mac, which already has the message, is not"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_live_mac_does_not_silence_the_same_users_iphone_for_a_board_note() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (mac, _) = ts.register("owner", "Olive").await;
+    let (family_id, invite_code) = ts.create_family(&mac, "The Smiths").await;
+    ts.set_open_policy(&mac).await;
+    let phone = second_session(&ts, "owner").await;
+    register_device(&ts, &mac, "macos", "olive-macos-token").await;
+    register_device(&ts, &phone, "ios", "olive-ios-token").await;
+
+    let (member, _) = ts.register("junior", "Junior").await;
+    ts.join(&member, &invite_code, "joined").await;
+
+    let mut mac_ws = connect_ws(&ts, &mac).await;
+    let response = ts
+        .post(
+            &member,
+            "/families/mine/board/notes",
+            json!({"text": "Milk", "color": "yellow", "x": 0.5, "y": 0.5}),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    let note: Value = response.json().await.expect("JSON");
+    let note_id = note["note"]["id"].as_i64().expect("id");
+    next_frame_of_type(&mut mac_ws, "board_note").await;
+
+    let requests = mock
+        .wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    assert_eq!(
+        requests[0].body,
+        json!({
+            "aps": {
+                "alert": {"title": "The Smiths — Junior", "body": "Milk"},
+                "sound": "default",
+                "badge": 0,
+                "thread-id": format!("board-{family_id}"),
+            },
+            "family_id": family_id,
+            "note_id": note_id,
+            "kind": "board_note",
+        })
+    );
+    settle().await;
+    assert_eq!(
+        woken_devices(&mock),
+        vec!["/3/device/olive-ios-token".to_string()],
+        "the note reaches the phone even though the Mac is looking at the board"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_live_mac_does_not_silence_the_owners_iphone_for_a_join_request() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (mac, _) = ts.register("owner", "Olive").await;
+    // Default join policy is "approval", which is what this test needs.
+    let (family_id, invite_code) = ts.create_family(&mac, "The Smiths").await;
+    let phone = second_session(&ts, "owner").await;
+    register_device(&ts, &mac, "macos", "olive-macos-token").await;
+    register_device(&ts, &phone, "ios", "olive-ios-token").await;
+
+    // A join request raises no frame, so the ping/pong inside `connect_ws`
+    // is what proves the Mac's connection is registered before the request
+    // is made.
+    let _mac_ws = connect_ws(&ts, &mac).await;
+
+    let (requester, _) = ts.register("junior", "Junior").await;
+    ts.join(&requester, &invite_code, "pending").await;
+
+    let requests = mock
+        .wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    assert_eq!(
+        requests[0].body,
+        json!({
+            "aps": {
+                "alert": {"title": "The Smiths", "body": "Junior asked to join"},
+                "sound": "default",
+                "badge": 0,
+            },
+            "family_id": family_id,
+            "kind": "join_request",
+        })
+    );
+    settle().await;
+    assert_eq!(
+        woken_devices(&mock),
+        vec!["/3/device/olive-ios-token".to_string()],
+        "somebody knocking at the door must reach the owner's phone"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_live_mac_does_not_silence_the_requesters_iphone_when_approved() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (family_id, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    let (mac, _) = ts.register("junior", "Junior").await;
+    let phone = second_session(&ts, "junior").await;
+    register_device(&ts, &mac, "macos", "junior-macos-token").await;
+    register_device(&ts, &phone, "ios", "junior-ios-token").await;
+    ts.join(&mac, &invite_code, "pending").await;
+
+    let mut mac_ws = connect_ws(&ts, &mac).await;
+    let list: Value = ts
+        .get(&owner, "/families/join-requests")
+        .await
+        .json()
+        .await
+        .expect("join requests are JSON");
+    let request_id = list["requests"][0]["id"].as_i64().expect("request id");
+    let response = ts
+        .post(
+            &owner,
+            &format!("/families/join-requests/{request_id}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(response.status(), 200, "approving the join request");
+    next_frame_of_type(&mut mac_ws, "member_joined").await;
+
+    let requests = mock
+        .wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    assert_eq!(
+        requests[0].body,
+        json!({
+            "aps": {
+                "alert": {"title": "The Smiths",
+                          "body": "You're in — welcome to The Smiths"},
+                "sound": "default",
+                "badge": 0,
+            },
+            "family_id": family_id,
+            "kind": "joined",
+        })
+    );
+    settle().await;
+    assert_eq!(
+        woken_devices(&mock),
+        vec!["/3/device/junior-ios-token".to_string()],
+        "being let in is news the phone should carry too"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A signed-out device is not a push target. The per-device rule above errs
+// towards the alert whenever the server cannot prove somebody is looking —
+// and being SIGNED OUT is not one of those cases, it is a case where the
+// server knows. Read together, "unknown ⇒ push it" and a device row that
+// outlived its session made every logged-out phone a guaranteed target for
+// family message bodies on its lock screen. Migration 0021 answers the
+// revocation half (the row goes with the session) and `devices_for_users`
+// answers the expiry half (the link has to name a session that is alive).
+// ---------------------------------------------------------------------------
+
+/// The session a device registered itself from, straight out of the
+/// database — the only way to reach a session id from a test, since the
+/// wire never carries one.
+async fn session_of_device(ts: &TestServer, push_token: &str) -> Option<i64> {
+    sqlx::query_scalar("SELECT session_id FROM devices WHERE push_token = $1")
+        .bind(push_token)
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("the device row exists")
+}
+
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_device_whose_session_was_revoked_is_not_pushed() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, phone, _) = family_of_two(&ts).await;
+    // Two devices of the same person, one per session — and only one of
+    // the two sessions is about to be revoked, which is what makes the
+    // assertion below an observation rather than "nothing happened".
+    let mac = second_session(&ts, "junior").await;
+    register_device(&ts, &phone, "ios", "junior-ios-token").await;
+    register_device(&ts, &mac, "macos", "junior-macos-token").await;
+
+    // Changing the password from the Mac revokes every OTHER session —
+    // here, the phone's.
+    assert_eq!(
+        ts.post(
+            &mac,
+            "/me/password",
+            json!({"current_password": "password123", "new_password": "brand-new-one"}),
+        )
+        .await
+        .status(),
+        204
+    );
+
+    let chat_id = ts.family_chat_id(&owner).await;
+    post_message_id(&ts, &owner, chat_id, "Dinner at 7?").await;
+
+    // The Mac is still signed in and gets its banner; the phone was signed
+    // out and must never hear another word.
+    mock.wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    settle().await;
+    assert_eq!(
+        woken_devices(&mock),
+        vec!["/3/device/junior-macos-token".to_string()],
+        "a device whose session was revoked is not woken, and the one that \
+         is still signed in still is"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn an_owner_resetting_a_members_password_silences_their_lock_screen() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, member, member_id) = family_of_two(&ts).await;
+    register_device(&ts, &member, "ios", "junior-ios-token").await;
+
+    // The endpoint whose documented purpose is that "a device somebody else
+    // is holding stops working the moment the reset lands". A lock screen
+    // is part of that device.
+    assert_eq!(
+        ts.post(
+            &owner,
+            &format!("/families/members/{member_id}/password"),
+            json!({"new_password": "fresh-start-42"}),
+        )
+        .await
+        .status(),
+        204
+    );
+
+    let chat_id = ts.family_chat_id(&owner).await;
+    post_message_id(&ts, &owner, chat_id, "Dinner at 7?").await;
+    settle().await;
+    assert!(
+        woken_devices(&mock).is_empty(),
+        "the reset revoked every session that phone had, so nothing may \
+         reach it: {:?}",
+        woken_devices(&mock)
+    );
+
+    // And the same phone in the hands of the person who still knows the
+    // password comes straight back: signing in and re-registering is all it
+    // takes, which is also what proves the silence above was the rule and
+    // not a push that never worked in this test.
+    let back = ts.login("junior", "fresh-start-42").await;
+    register_device(&ts, &back, "ios", "junior-ios-token").await;
+    post_message_id(&ts, &owner, chat_id, "Still on for 7?").await;
+    mock.wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    settle().await;
+    assert_eq!(
+        woken_devices(&mock),
+        vec!["/3/device/junior-ios-token".to_string()],
+        "a re-registered device is a push target again"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_device_whose_session_has_expired_is_not_pushed() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, phone, _) = family_of_two(&ts).await;
+    let mac = second_session(&ts, "junior").await;
+    register_device(&ts, &phone, "ios", "junior-ios-token").await;
+    register_device(&ts, &mac, "macos", "junior-macos-token").await;
+
+    // Nothing deletes an expired session — the sliding expiry only ever
+    // moves `expires_at` forward, and authentication reads it. So a session
+    // that has run out is still a row, and the device still names it. Aged
+    // by hand here because the alternative is a test that waits days.
+    let expired = session_of_device(&ts, "junior-ios-token")
+        .await
+        .expect("the phone registered from a session");
+    sqlx::query("UPDATE sessions SET expires_at = now() - INTERVAL '1 day' WHERE id = $1")
+        .bind(expired)
+        .execute(&ts.state.pool)
+        .await
+        .expect("ageing the session");
+    // Expired means signed out: the bearer token no longer authenticates.
+    assert_eq!(ts.get(&phone, "/me").await.status(), 401);
+
+    let chat_id = ts.family_chat_id(&owner).await;
+    post_message_id(&ts, &owner, chat_id, "Dinner at 7?").await;
+    mock.wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    settle().await;
+    assert_eq!(
+        woken_devices(&mock),
+        vec!["/3/device/junior-macos-token".to_string()],
+        "a device whose session has expired is as signed out as one that \
+         was revoked"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_device_from_before_the_session_column_is_still_pushed() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, member, _) = family_of_two(&ts).await;
+    register_device(&ts, &member, "ios", "junior-ios-token").await;
+    // What a row written before migration 0020 looks like: a real device
+    // with a real token that never told anybody which session it was. It
+    // must keep the benefit of the doubt — the whole reason the column is
+    // nullable — and it heals the moment the app launches again.
+    sqlx::query("UPDATE devices SET session_id = NULL WHERE push_token = $1")
+        .bind("junior-ios-token")
+        .execute(&ts.state.pool)
+        .await
+        .expect("orphaning the device row");
+    assert_eq!(session_of_device(&ts, "junior-ios-token").await, None);
+
+    let chat_id = ts.family_chat_id(&owner).await;
+    post_message_id(&ts, &owner, chat_id, "Dinner at 7?").await;
+    mock.wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    settle().await;
+    assert_eq!(
+        woken_devices(&mock),
+        vec!["/3/device/junior-ios-token".to_string()],
+        "an unattributed device is still woken; only a session that was \
+         revoked or has expired silences one"
+    );
+}

@@ -179,4 +179,17 @@
     <string name="s_plain_http_warning">Ova adresa koristi običan http — poruke putuju mrežom nešifrovane. U pouzdanoj kućnoj mreži je u redu, bilo gde drugde je rizično.</string>
     <string name="s_request_declined_explanation">Vlasnik porodice je odbio tvoj zahtev. Možeš da probaš drugi pozivni kod ili da napraviš svoju porodicu.</string>
     <string name="s_waiting_explanation">Odavde nema šta da se otkaže — vlasnik će te ili pustiti unutra ili odbiti zahtev.</string>
+    <string name="s_family_language">Jezik porodice</string>
+    <string name="s_family_language_explanation">Jezik na kom asistent odgovara kada ga pitaš u porodičnom razgovoru. Jezik same aplikacije se time ne menja. Ako ništa nije izabrano, odgovor stiže na jeziku pitanja.</string>
+    <string name="s_not_set">Nije podešeno</string>
+    <string name="s_assistant_history">Asistent vidi nedavnu istoriju</string>
+    <string name="s_assistant_history_explanation">Kada neko pomene asistenta u porodičnom razgovoru, uz pitanje se šalje i prepiska iz poslednjih mesec dana, pa može da odgovori i na ono što je ranije rečeno. Kada je isključeno, šalje se samo poruka u kojoj se pominje.</string>
+    <string name="s_birthday">Rođendan</string>
+    <string name="s_birthday_for">Rođendan za %1$s</string>
+    <string name="s_day_and_month_no_year">Dan i mesec. Nema godine, pa ni uzrasta.</string>
+    <string name="s_month">Mesec</string>
+    <string name="s_day">Dan</string>
+    <string name="e_birthday_failed">Rođendan nije sačuvan</string>
+    <string name="e_change_language_failed">Jezik porodice nije promenjen</string>
+    <string name="e_change_assistant_history_failed">Podešavanje nije promenjeno</string>
 </resources>

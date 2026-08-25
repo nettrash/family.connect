@@ -48,6 +48,7 @@ pub mod codes {
     pub const NOTE_NOT_FOUND: &str = "note_not_found";
     pub const NOT_NOTE_AUTHOR: &str = "not_note_author";
     pub const INVALID_NOTE_COLOR: &str = "invalid_note_color";
+    pub const INVALID_LANGUAGE: &str = "invalid_language";
     pub const BOARD_FULL: &str = "board_full";
     pub const INVALID_EMOJI: &str = "invalid_emoji";
     pub const INVALID_PAGINATION: &str = "invalid_pagination";

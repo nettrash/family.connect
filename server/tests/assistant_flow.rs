@@ -33,6 +33,15 @@ async fn server_with_assistant() -> TestServer {
     .await
 }
 
+/// The reserved assistant account's user id. Migration 0015 inserts the row
+/// on every server, configured or not, so this always answers.
+async fn assistant_id(ts: &TestServer) -> i64 {
+    family_connect::handlers_ai::assistant_user_id(&ts.state)
+        .await
+        .expect("the query runs")
+        .expect("migration 0015 inserted the assistant account")
+}
+
 /// Just the `chat` objects: a list entry wraps one alongside its
 /// `last_message` and `unread_count`.
 async fn chats(ts: &TestServer, token: &str) -> Vec<Value> {
@@ -309,6 +318,35 @@ async fn mentioning_the_assistant_in_the_family_chat_answers_the_whole_family() 
         Some(asked_id),
         "the answer quotes the question, or it belongs to nobody: {reply}"
     );
+}
+
+/// A family that has NAMED a language must still get an answer.
+///
+/// `mention_reply` resolves the family's language before it creates the
+/// placeholder, so a wrong join or an unbound parameter there kills the
+/// whole mention path and the only sign is a WARN line in the log — the
+/// exact shape of the bug `ensure_ai_chat` shipped with. What the model is
+/// then TOLD is a unit test (`compose_system_prompt`); this is the half
+/// that needs a database.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_mention_still_answers_when_the_family_has_named_a_language() {
+    let ts = server_with_assistant().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    assert_eq!(
+        ts.patch(&owner, "/families/mine", json!({"language": "sr-Latn"}))
+            .await
+            .status(),
+        200
+    );
+
+    let chat = ts.family_chat_id(&owner).await;
+    let asked = say(&ts, &owner, chat, "@ai what is the capital of Serbia?").await;
+    let asked_id = asked["id"].as_i64().expect("the question has an id");
+    let reply = wait_for_assistant_message(&ts, &owner, chat, asked_id).await;
+    assert_eq!(reply["body"], "");
+    assert_eq!(reply["reply_to"]["message_id"].as_i64(), Some(asked_id));
 }
 
 /// The other half of the same rule, and the more important one: an ordinary
@@ -593,4 +631,262 @@ async fn next_frame_of_type(ws: &mut WsClient, wanted: &str) -> Value {
             }
         }
     }
+}
+
+/// What a mention may take with it, against a real database.
+///
+/// The unit tests in `handlers_ai` pin the arithmetic of the window; this
+/// pins the QUERY — the join that resolves display names, the LEFT JOIN
+/// that finds an attachment, and above all the two things that must not
+/// come back from it: the mentioning message, and any coordinate.
+///
+/// Built directly rather than through a mention, because no reply can be
+/// generated here: what a family's messages turn into is exactly the half
+/// that needs no provider (docs/protocol.md, "Mentioning the assistant in
+/// the family chat").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_history_a_mention_carries_names_people_and_never_places() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &invite_code, "joined").await;
+    let chat = ts.family_chat_id(&owner).await;
+
+    say(&ts, &owner, chat, "Dinner at 7?").await;
+    say(&ts, &member, chat, "Works for me").await;
+
+    // A location: coordinates in the database, a LABEL in the transcript,
+    // and nothing else anywhere near the model.
+    let pin: Value = ts
+        .put_bytes_method(
+            "POST",
+            &member,
+            "/attachments?kind=location&latitude=55.7558&longitude=37.6173\
+             &accuracy_m=4242&name=Grandma%27s%20house",
+            "",
+            Vec::new(),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let pin_id = pin["attachment"]["id"].as_i64().expect("an attachment id");
+    assert_eq!(pin["attachment"]["latitude"], 55.7558, "stored, not sent");
+    let response = ts
+        .post(
+            &member,
+            &format!("/chats/{chat}/messages"),
+            json!({
+                "client_msg_id": uuid::Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_id": pin_id,
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+
+    // A file, whose NAME is its whole identity, sent with a caption.
+    let doc: Value = ts
+        .put_bytes_method(
+            "POST",
+            &owner,
+            "/attachments?kind=file&name=receipts.pdf",
+            "application/pdf",
+            b"not really a pdf".to_vec(),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let doc_id = doc["attachment"]["id"].as_i64().expect("an attachment id");
+    let response = ts
+        .post(
+            &owner,
+            &format!("/chats/{chat}/messages"),
+            json!({
+                "client_msg_id": uuid::Uuid::new_v4().to_string(),
+                "body": "from the restaurant",
+                "attachment_id": doc_id,
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+
+    // The question. This server has no assistant configured, so `@ai` is
+    // three characters of ordinary text and nothing is spawned to race
+    // with — which is what makes the assertion below about it stable.
+    let mention = say(&ts, &owner, chat, "@ai when did we say dinner?").await;
+    let mention_id = mention["id"].as_i64().expect("the question has an id");
+
+    let assistant_id = assistant_id(&ts).await;
+    let note =
+        family_connect::handlers_ai::family_chat_history(&ts.state, chat, mention_id, assistant_id)
+            .await
+            .expect("the query runs")
+            .expect("four messages of history");
+
+    let transcript = note
+        .split_once("\n\n")
+        .expect("a header, a blank line, then the transcript")
+        .1;
+    // The stamps are wall-clock and cannot be pinned, so each is checked
+    // for SHAPE and the whole of the rest of every line is pinned exactly.
+    let said: Vec<&str> = transcript
+        .lines()
+        .map(|line| {
+            let (stamp, rest) = line
+                .strip_prefix('[')
+                .and_then(|rest| rest.split_once("] "))
+                .unwrap_or_else(|| panic!("every line is stamped: {line}"));
+            assert_eq!(
+                stamp.len(),
+                20,
+                "[YYYY-MM-DD HH:MM UTC] is 20 chars inside the brackets: {line}"
+            );
+            assert!(
+                stamp.ends_with(" UTC"),
+                "every line says which clock it is on: {line}"
+            );
+            rest
+        })
+        .collect();
+    assert_eq!(
+        said,
+        vec![
+            "Olive: Dinner at 7?",
+            "Junior: Works for me",
+            "Junior: [location] Grandma's house",
+            "Olive: [file] receipts.pdf from the restaurant",
+        ],
+        "oldest first, display names, placeholders — and the question is \
+         not part of its own history"
+    );
+    assert!(
+        !note.contains("when did we say dinner"),
+        "the mentioning message reaches the model as the question, never twice: {note}"
+    );
+
+    // The whole point. Not one digit of the pin, in any rounding, is in
+    // what leaves the server — and this fails if anybody ever interpolates
+    // the attachment itself instead of asking it for a placeholder.
+    for forbidden in ["55.7558", "37.6173", "55.755", "37.617", "55.75", "4242"] {
+        assert!(
+            !note.contains(forbidden),
+            "a coordinate reached the model as {forbidden}: {note}"
+        );
+    }
+}
+
+/// A mention must answer at BOTH settings of `ai_history`.
+///
+/// With it on, `mention_prompt` runs a second query — the transcript —
+/// before the placeholder row exists, and `mention_reply` reads two columns
+/// where it used to read one. A wrong join or an unbound parameter in
+/// either kills the whole mention path, and the only sign is a WARN line in
+/// the log: the exact shape of the bug `ensure_ai_chat` shipped with. What
+/// the model is then TOLD is a unit test; this is the half that needs a
+/// database.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_mention_answers_whether_the_family_sees_history_or_not() {
+    let ts = server_with_assistant().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ts.family_chat_id(&owner).await;
+
+    // Something for the transcript to have in it, so the ON case really
+    // builds one rather than falling back for want of history.
+    say(&ts, &owner, chat, "Dinner at 7?").await;
+
+    // ON, which is the default nobody had to set.
+    let asked = say(&ts, &owner, chat, "@ai when did we say dinner?").await;
+    let asked_id = asked["id"].as_i64().expect("the question has an id");
+    let reply = wait_for_assistant_message(&ts, &owner, chat, asked_id).await;
+    assert_eq!(reply["body"], "");
+    assert_eq!(reply["reply_to"]["message_id"].as_i64(), Some(asked_id));
+
+    // OFF, which is today's older behaviour and must be just as alive.
+    assert_eq!(
+        ts.patch(&owner, "/families/mine", json!({"ai_history": false}))
+            .await
+            .status(),
+        200
+    );
+    let asked = say(&ts, &owner, chat, "@ai and what about Friday?").await;
+    let asked_id = asked["id"].as_i64().expect("the question has an id");
+    let reply = wait_for_assistant_message(&ts, &owner, chat, asked_id).await;
+    assert_eq!(reply["body"], "");
+    assert_eq!(reply["reply_to"]["message_id"].as_i64(), Some(asked_id));
+}
+
+/// The transcript calls the assistant by the name the FAMILY sees.
+///
+/// Migration 0015 wrote the reserved account's `display_name` as the literal
+/// "Assistant" and nothing ever updates it, while every client draws the
+/// assistant under the configured `[ai] title` — `GET /families/mine` sends
+/// that title as `assistant.display_name`, and it is what the ai chat is
+/// called in the list. So a family who have only ever seen "Ася" asking
+/// "@ai что Ася говорила про рецепт?" got a transcript in which Ася never
+/// says anything, and a model that answers it cannot find any such words —
+/// or hands them to whichever family member spoke next.
+///
+/// The assistant's row is written directly because generating one needs the
+/// provider; what is under test is the query that reads it back.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_transcript_calls_the_assistant_by_the_name_the_family_sees() {
+    let ts = spawn_server_with_config(|cfg| {
+        cfg.ai.enabled = true;
+        cfg.ai.endpoint = "https://example.invalid".to_string();
+        cfg.ai.deployment = "test-deployment".to_string();
+        cfg.ai.api_key = "test-key".to_string();
+        // NOT "Assistant", which is the name in the users table — the two
+        // have to be told apart for this test to mean anything.
+        cfg.ai.title = "Ася".to_string();
+    })
+    .await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ts.family_chat_id(&owner).await;
+    let assistant_id = assistant_id(&ts).await;
+
+    say(&ts, &owner, chat, "@ai capital of Serbia?").await;
+    sqlx::query(
+        "INSERT INTO messages (chat_id, sender_id, client_msg_id, body)
+         VALUES ($1, $2, gen_random_uuid(), 'Belgrade.')",
+    )
+    .bind(chat)
+    .bind(assistant_id)
+    .execute(&ts.state.pool)
+    .await
+    .expect("writing the assistant's past reply");
+    let mention = say(&ts, &owner, chat, "@ai and what did you say before?").await;
+    let mention_id = mention["id"].as_i64().expect("the question has an id");
+
+    let note =
+        family_connect::handlers_ai::family_chat_history(&ts.state, chat, mention_id, assistant_id)
+            .await
+            .expect("the query runs")
+            .expect("two messages of history");
+
+    assert!(
+        note.contains("Ася: Belgrade."),
+        "the assistant's own line carries the configured [ai] title: {note}"
+    );
+    assert!(
+        !note.contains("Assistant:"),
+        "the reserved account's display_name is a database detail no member \
+         has ever seen: {note}"
+    );
+    // And the header names the same thing, so the model can recognise the
+    // lines as its own rather than as a fourth family member's.
+    assert!(
+        note.contains("Lines named \"Ася\" are your own earlier replies"),
+        "{note}"
+    );
+    // A member's own line is untouched by the substitution.
+    assert!(note.contains("Olive: @ai capital of Serbia?"), "{note}");
 }

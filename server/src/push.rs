@@ -29,7 +29,8 @@ use crate::config::{ApnsConfig, FcmConfig, PushConfig};
 use crate::push_payload::{Notification, apns_payload, fcm_message};
 
 /// A device that should be notified: a row of `devices` with a non-null
-/// token, belonging to an offline recipient.
+/// token, which the per-device gate in `events` decided is not already
+/// being fed by a live socket of its own.
 #[derive(Debug, Clone)]
 pub struct DevicePush {
     pub device_id: i64,

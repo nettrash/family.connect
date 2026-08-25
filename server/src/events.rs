@@ -10,7 +10,7 @@
 //! latency or failure modes to the write path. Devices a transport reports
 //! as unregistered are deleted from the same spawned task.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use sqlx::{PgPool, Row};
 use tracing::{info, warn};
@@ -41,13 +41,6 @@ async fn family_member_ids(pool: &PgPool, family_id: i64) -> Result<Vec<i64>, Ap
     Ok(ids)
 }
 
-/// Fan a freshly inserted message out to every chat member.
-///
-/// `origin_conn` is the WS connection the `send` frame arrived on, if any —
-/// it is skipped because it receives its `ack` directly (a REST post has no
-/// origin connection, so all connections, including the sender's own,
-/// receive `message`, per protocol.md). Members with no live connection at
-/// all are handed to the push seam, except the sender.
 /// One board note — created, moved, edited or tombstoned — to every member
 /// of the family.
 ///
@@ -87,22 +80,16 @@ async fn deliver_board_note_inner(
         .fetch_all(&state.pool)
         .await?;
     let frame = ServerFrame::BoardNote { note: note.clone() };
-    let offline = state.registry.fan_out(&members, &frame, None).await;
+    state.registry.fan_out(&members, &frame, None).await;
     if !notify {
         return Ok(());
     }
 
-    // Same rule as messages: only members with no live socket, and never
-    // the author of the note.
+    // Same rule as messages: device by device, and never the author.
     let author_id = note.author_id;
-    let push_targets: Vec<i64> = offline
-        .into_iter()
-        .filter(|user_id| Some(*user_id) != author_id)
-        .collect();
-    if push_targets.is_empty() {
-        return Ok(());
-    }
-    let devices = devices_for_users(&state.pool, &push_targets).await?;
+    let live_sessions = state.registry.live_sessions(&members).await;
+    let devices = devices_for_users(&state.pool, &members).await?;
+    let devices = devices_to_wake(devices, &live_sessions, author_id);
     if devices.is_empty() {
         return Ok(());
     }
@@ -164,17 +151,21 @@ pub async fn deliver_message_edited(
     Ok(())
 }
 
+/// Fan a freshly inserted message out to every chat member.
+///
+/// `origin_conn` is the WS connection the `send` frame arrived on, if any —
+/// it is skipped because it receives its `ack` directly (a REST post has no
+/// origin connection, so all connections, including the sender's own,
+/// receive `message`, per protocol.md). Every member is then handed to the
+/// push seam, which decides device by device — not member by member; see
+/// `devices_to_wake`.
 pub async fn deliver_new_message(
     state: &AppState,
     message: &Message,
     origin_conn: Option<u64>,
 ) -> Result<(), ApiError> {
-    let offline = fan_out_new_message(state, message, origin_conn).await?;
-    let push_targets: Vec<i64> = offline
-        .into_iter()
-        .filter(|user_id| *user_id != message.sender_id)
-        .collect();
-    push_message_to(state, message, push_targets).await
+    let members = fan_out_new_message(state, message, origin_conn).await?;
+    push_message_to(state, message, members).await
 }
 
 /// A new message to every member connection, raising NO notification.
@@ -196,22 +187,18 @@ pub async fn deliver_message_without_push(
 
 /// Raise the notification for a message whose fan-out already happened.
 ///
-/// The pair to `deliver_message_without_push`. "Offline" is re-decided here
-/// rather than reused, because between the two calls a member may have put
-/// their phone down — which is exactly the person the alert is for.
+/// The pair to `deliver_message_without_push`. Who is already looking is
+/// decided here rather than carried over from that call, because between
+/// the two a member may have put their phone down — which is exactly the
+/// person the alert is for.
 pub async fn push_message_late(state: &AppState, message: &Message) -> Result<(), ApiError> {
     let members = chat_member_ids(&state.pool, message.chat_id).await?;
-    let mut push_targets = Vec::new();
-    for user_id in members {
-        if user_id != message.sender_id && !state.registry.has_connections(user_id).await {
-            push_targets.push(user_id);
-        }
-    }
-    push_message_to(state, message, push_targets).await
+    push_message_to(state, message, members).await
 }
 
 /// Fan a `message` frame out to every member of its chat, answering with
-/// the members who had no connection to take it.
+/// the member ids it went to — the candidate list the push gate then
+/// narrows. Handing it back saves the caller re-running the same query.
 async fn fan_out_new_message(
     state: &AppState,
     message: &Message,
@@ -221,22 +208,31 @@ async fn fan_out_new_message(
     let frame = ServerFrame::Message {
         message: message.clone(),
     };
-    Ok(state.registry.fan_out(&members, &frame, origin_conn).await)
+    state.registry.fan_out(&members, &frame, origin_conn).await;
+    Ok(members)
 }
 
-/// Compose and send the notification for a message to a decided set of
-/// recipients. Split out of `deliver_new_message` so a message whose alert
-/// has to wait for its body can reuse it unchanged.
+/// Compose and send the notification for a message to the devices of
+/// `candidates` that are worth waking. Split out of `deliver_new_message`
+/// so a message whose alert has to wait for its body can reuse it unchanged.
 async fn push_message_to(
     state: &AppState,
     message: &Message,
-    push_targets: Vec<i64>,
+    candidates: Vec<i64>,
 ) -> Result<(), ApiError> {
-    if push_targets.is_empty() {
+    if candidates.is_empty() {
         return Ok(());
     }
 
-    let devices = devices_for_users(&state.pool, &push_targets).await?;
+    // The live-session snapshot is taken BEFORE the device rows are read,
+    // and that order is the safe one: a socket that comes up in between is
+    // not yet in the snapshot, so its device is pushed — and it has to be,
+    // because it was not there for the fan-out either. The other order
+    // would let it swallow the alert on the strength of a socket that never
+    // carried the message.
+    let live_sessions = state.registry.live_sessions(&candidates).await;
+    let devices = devices_for_users(&state.pool, &candidates).await?;
+    let devices = devices_to_wake(devices, &live_sessions, Some(message.sender_id));
     if devices.is_empty() {
         return Ok(());
     }
@@ -281,10 +277,13 @@ async fn push_message_to(
     Ok(())
 }
 
-/// Push to the family owner when a join request is created — but only when
-/// the owner has no live socket, the same rule messages follow (protocol.md
-/// pushes exclusively to offline users). Join requests have no WS frame, so
-/// the check is a plain registry probe rather than a fan-out result.
+/// Push the family owner when a join request is created — device by
+/// device, skipping only the ones whose own session is holding a socket,
+/// the same rule messages follow (protocol.md, "Push notifications"). This
+/// used to bail out entirely the moment the owner had a socket ANYWHERE, so
+/// a desktop app left running swallowed the alert for the owner's phone as
+/// well; somebody knocking at the family's door is not a thing an owner
+/// should have to go looking for.
 pub async fn push_join_request_created(
     state: &AppState,
     family_id: i64,
@@ -292,10 +291,9 @@ pub async fn push_join_request_created(
     owner_user_id: i64,
     requester_id: i64,
 ) -> Result<(), ApiError> {
-    if state.registry.has_connections(owner_user_id).await {
-        return Ok(());
-    }
+    let live_sessions = state.registry.live_sessions(&[owner_user_id]).await;
     let devices = devices_for_users(&state.pool, &[owner_user_id]).await?;
+    let devices = devices_to_wake(devices, &live_sessions, None);
     if devices.is_empty() {
         return Ok(());
     }
@@ -310,19 +308,19 @@ pub async fn push_join_request_created(
     Ok(())
 }
 
-/// Push to the requester when their join request is approved — only when
-/// they have no live socket (an open socket already received the
-/// `member_joined` frame).
+/// Push the requester when their join request is approved — again device
+/// by device. The one that was connected already had the `member_joined`
+/// frame; the phone that was not connected had nothing, and being let into
+/// a family is not news to find out about days later.
 pub async fn push_join_approved(
     state: &AppState,
     family_id: i64,
     family_name: &str,
     requester_id: i64,
 ) -> Result<(), ApiError> {
-    if state.registry.has_connections(requester_id).await {
-        return Ok(());
-    }
+    let live_sessions = state.registry.live_sessions(&[requester_id]).await;
     let devices = devices_for_users(&state.pool, &[requester_id]).await?;
+    let devices = devices_to_wake(devices, &live_sessions, None);
     if devices.is_empty() {
         return Ok(());
     }
@@ -332,25 +330,112 @@ pub async fn push_join_approved(
     Ok(())
 }
 
-/// The devices (with push tokens) of the listed users.
-async fn devices_for_users(pool: &PgPool, user_ids: &[i64]) -> Result<Vec<DevicePush>, ApiError> {
+/// One candidate device: what the push seam needs to reach it, plus the
+/// session it registered itself from. `None` means the row cannot say — it
+/// was written before the column existed (migration 0020) and heals on the
+/// device's next launch. It no longer means "revoked": since 0021 a deleted
+/// session takes its device rows with it.
+struct DeviceTarget {
+    push: DevicePush,
+    session_id: Option<i64>,
+}
+
+/// The devices (with push tokens) of the listed users, minus the ones whose
+/// session is no longer valid.
+///
+/// A device that was SIGNED OUT must not be pushed, and there are two ways
+/// to be signed out. One is revocation — logout, a password change, an
+/// owner resetting a member's password — and migration 0021 answers that
+/// with `ON DELETE CASCADE`: the device row goes with the session, so it is
+/// simply not among these rows.
+///
+/// The other is EXPIRY, which no delete covers. Sessions have a sliding
+/// expiry and nothing ever removes an expired row (auth.rs authenticates
+/// with `expires_at > now()` and renews it in place), so a device whose
+/// session ran out still names a session that exists — and would otherwise
+/// be pushed forever on the strength of a link that stopped meaning
+/// anything. Hence the join and the `expires_at > now()`: the row has to
+/// name a session that is still ALIVE, not merely one that is still there.
+///
+/// `session_id IS NULL` survives this filter on purpose. That is the
+/// pre-0020 row that never told us anything, and the direction of the doubt
+/// has not changed for it.
+async fn devices_for_users(pool: &PgPool, user_ids: &[i64]) -> Result<Vec<DeviceTarget>, ApiError> {
     let rows = sqlx::query(
-        "SELECT id, user_id, platform, push_token
-         FROM devices
-         WHERE user_id = ANY($1) AND push_token IS NOT NULL",
+        "SELECT d.id, d.user_id, d.platform, d.push_token, d.session_id
+         FROM devices d
+         LEFT JOIN sessions s ON s.id = d.session_id
+         WHERE d.user_id = ANY($1)
+           AND d.push_token IS NOT NULL
+           AND (d.session_id IS NULL OR s.expires_at > now())",
     )
     .bind(user_ids)
     .fetch_all(pool)
     .await?;
     Ok(rows
         .iter()
-        .map(|row| DevicePush {
-            device_id: row.get("id"),
-            user_id: row.get("user_id"),
-            platform: row.get("platform"),
-            push_token: row.get("push_token"),
+        .map(|row| DeviceTarget {
+            push: DevicePush {
+                device_id: row.get("id"),
+                user_id: row.get("user_id"),
+                platform: row.get("platform"),
+                push_token: row.get("push_token"),
+            },
+            session_id: row.get("session_id"),
         })
         .collect())
+}
+
+/// Narrow a set of candidate devices down to the ones actually worth
+/// waking. The whole per-device rule lives here, and nowhere else.
+///
+/// A device is skipped only when it can PROVE it is already being fed: its
+/// own session is one of the live ones. The question used to be asked of
+/// the user instead — "are they connected anywhere" — and the three clients
+/// hold their sockets differently enough to make that ruinous: a desktop
+/// app holds one open for as long as it runs, iOS suspends its socket on
+/// backgrounding and Android closes its outright. One Mac left running at
+/// home therefore answered for every phone on the account and silenced all
+/// of them, all day, which is the bug this function exists to end.
+///
+/// A device whose `session_id` is `None` is woken. That is the deliberate
+/// direction of the doubt: an unattributed device is one the server cannot
+/// show anybody is looking at, and an alert too many beats an alert that
+/// never came. The same goes for a stale link — a device pointing at a
+/// session that is live-but-elsewhere or simply not connected takes one
+/// redundant push and heals on its next launch.
+///
+/// Doubt is NOT the rule for a device that was signed out, and the
+/// difference is the whole of `devices_for_users` above: a revoked session
+/// takes its device row away (0021) and an expired one is filtered out, so
+/// neither ever reaches this function. This one errs towards the alert
+/// only for devices somebody could still be holding, signed in.
+///
+/// What this costs is redundancy: someone reading on their Mac also gets a
+/// banner on the phone in their pocket for the message in front of them.
+/// The phone cannot know what the Mac is showing, nothing in the protocol
+/// tells it, and every desktop chat client makes the same trade for the
+/// same reason.
+///
+/// The SENDER is excluded WHOLESALE, by user id rather than device by
+/// device: you are never told about your own message on your own other
+/// devices, and that has not changed. `None` means the event has no author
+/// to exclude — nobody sends themselves a join request.
+fn devices_to_wake(
+    devices: Vec<DeviceTarget>,
+    live_sessions: &HashSet<i64>,
+    sender_id: Option<i64>,
+) -> Vec<DevicePush> {
+    devices
+        .into_iter()
+        .filter(|device| Some(device.push.user_id) != sender_id)
+        .filter(|device| {
+            !device
+                .session_id
+                .is_some_and(|session_id| live_sessions.contains(&session_id))
+        })
+        .map(|device| device.push)
+        .collect()
 }
 
 /// The recipient's total unread across chats — the APNs badge value.
@@ -487,4 +572,90 @@ pub fn log_fanout_error(context: &'static str, result: Result<(), ApiError>) {
 fn others(mut member_ids: Vec<i64>, excluded: i64) -> Vec<i64> {
     member_ids.retain(|id| *id != excluded);
     member_ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One candidate device. `session` is what the row knows about itself:
+    /// `None` is the row written before migration 0020 added the column.
+    fn device(device_id: i64, user_id: i64, session: Option<i64>) -> DeviceTarget {
+        DeviceTarget {
+            push: DevicePush {
+                device_id,
+                user_id,
+                platform: "ios".to_string(),
+                push_token: format!("token-{device_id}"),
+            },
+            session_id: session,
+        }
+    }
+
+    fn live(sessions: &[i64]) -> HashSet<i64> {
+        sessions.iter().copied().collect()
+    }
+
+    /// The device ids that would be woken, in the order they were offered.
+    fn woken(devices: Vec<DevicePush>) -> Vec<i64> {
+        devices.into_iter().map(|device| device.device_id).collect()
+    }
+
+    #[test]
+    fn a_mac_on_a_live_session_is_quiet_while_the_phone_beside_it_is_woken() {
+        // The bug in one assertion: one user, two devices, one socket.
+        let devices = vec![device(1, 7, Some(100)), device(2, 7, Some(101))];
+        assert_eq!(
+            woken(devices_to_wake(devices, &live(&[100]), Some(9))),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn a_device_whose_session_has_no_socket_is_woken() {
+        // A valid session with nothing connected on it — the app was
+        // killed, or the phone is asleep. This is the ordinary case the
+        // whole feature exists for. (A REVOKED session is not this: its
+        // device row is gone before `devices_for_users` ever sees it.)
+        let devices = vec![device(1, 7, Some(100))];
+        assert_eq!(
+            woken(devices_to_wake(devices, &live(&[999]), Some(9))),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn a_device_with_no_session_is_woken() {
+        // Nothing can show anybody is looking at it, so it gets the alert.
+        let devices = vec![device(1, 7, None)];
+        assert_eq!(
+            woken(devices_to_wake(devices, &live(&[]), Some(9))),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn every_device_of_the_sender_is_skipped_however_it_is_connected() {
+        // Wholesale, by user id: an unattributed device of the sender's is
+        // still the sender's.
+        let devices = vec![
+            device(1, 7, Some(100)),
+            device(2, 7, None),
+            device(3, 9, None),
+        ];
+        assert_eq!(
+            woken(devices_to_wake(devices, &live(&[]), Some(7))),
+            vec![3]
+        );
+    }
+
+    #[test]
+    fn with_no_sender_to_exclude_only_the_live_session_is_spared() {
+        // The join events have no author among their targets.
+        let devices = vec![device(1, 7, Some(100)), device(2, 7, Some(101))];
+        assert_eq!(
+            woken(devices_to_wake(devices, &live(&[101]), None)),
+            vec![1]
+        );
+    }
 }

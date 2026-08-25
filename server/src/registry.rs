@@ -19,7 +19,7 @@
 //!   connection tasks are spawned by axum, out of main's reach, so the
 //!   token has to live somewhere both main and the tasks can see.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -120,17 +120,11 @@ impl Registry {
     /// the connection `skip_conn` (the WS connection a `send` frame arrived
     /// on — it gets its `ack` directly instead).
     ///
-    /// Returns the user ids that had **no** connections at all — the
-    /// "offline" set that push notifications are derived from. A user whose
-    /// only connection is `skip_conn` counts as online (they are the
-    /// sender).
-    pub async fn fan_out(
-        &self,
-        user_ids: &[i64],
-        frame: &ServerFrame,
-        skip_conn: Option<u64>,
-    ) -> Vec<i64> {
-        let mut offline = Vec::new();
+    /// This used to hand back the users it found no connection for, and
+    /// push targeting was derived from that list. It is not any more, and
+    /// the list is gone rather than left lying about: "this user has a
+    /// socket somewhere" is the wrong question — see `live_sessions`.
+    pub async fn fan_out(&self, user_ids: &[i64], frame: &ServerFrame, skip_conn: Option<u64>) {
         // Clone the handles under the read lock; deliver after releasing it.
         let targets: Vec<(i64, Vec<ConnHandle>)> = {
             let inner = self.inner.read().await;
@@ -140,10 +134,6 @@ impl Registry {
                 .collect()
         };
         for (user_id, conns) in targets {
-            if conns.is_empty() {
-                offline.push(user_id);
-                continue;
-            }
             for conn in conns {
                 if Some(conn.conn_id) == skip_conn {
                     continue;
@@ -165,12 +155,11 @@ impl Registry {
                 }
             }
         }
-        offline
     }
 
     /// Send one frame to every connection of the listed users.
-    pub async fn send_to_users(&self, user_ids: &[i64], frame: &ServerFrame) -> Vec<i64> {
-        self.fan_out(user_ids, frame, None).await
+    pub async fn send_to_users(&self, user_ids: &[i64], frame: &ServerFrame) {
+        self.fan_out(user_ids, frame, None).await;
     }
 
     /// Ask every connection authenticated by `session_id` to close (logout:
@@ -187,16 +176,25 @@ impl Registry {
         }
     }
 
-    /// Whether the user has at least one live connection. The protocol
-    /// pushes only to users with *no* socket; message fan-out learns this
-    /// from `fan_out`'s return value, but join-request events have no WS
-    /// frame whose fan-out could be reused, so they need a plain probe.
-    pub async fn has_connections(&self, user_id: i64) -> bool {
-        self.inner
-            .read()
-            .await
-            .get(&user_id)
-            .is_some_and(|conns| !conns.is_empty())
+    /// Which SESSIONS of the listed users have a socket right now.
+    ///
+    /// This is what push targeting asks, because a session is what one
+    /// device is: a device registers itself with a bearer token, its socket
+    /// authenticates with the same token, and both name the same session
+    /// row. Asking per user instead — "is this person connected anywhere" —
+    /// let one Mac left running answer for every phone on the account and
+    /// silence all of them (docs/protocol.md, "Push notifications").
+    ///
+    /// The whole batch is sampled under ONE read lock, the way `fan_out`
+    /// clones its targets, so a single push decision sees one instant
+    /// rather than a user's socket appearing halfway down the list.
+    pub async fn live_sessions(&self, user_ids: &[i64]) -> HashSet<i64> {
+        let inner = self.inner.read().await;
+        user_ids
+            .iter()
+            .filter_map(|user_id| inner.get(user_id))
+            .flat_map(|conns| conns.iter().map(|conn| conn.session_id))
+            .collect()
     }
 
     /// Number of live connections — used by main's bounded shutdown drain.
@@ -213,12 +211,40 @@ mod tests {
         ServerFrame::Pong
     }
 
+    /// The sessions come back as a set, so the assertions sort into a Vec.
+    fn sorted(sessions: HashSet<i64>) -> Vec<i64> {
+        let mut sessions: Vec<i64> = sessions.into_iter().collect();
+        sessions.sort_unstable();
+        sessions
+    }
+
     #[tokio::test]
-    async fn fan_out_reports_users_without_connections_as_offline() {
+    async fn live_sessions_holds_every_session_a_user_is_connected_on() {
         let registry = Registry::new(4);
-        let _reg = registry.register(1, 100).await;
-        let offline = registry.send_to_users(&[1, 2, 3], &pong()).await;
-        assert_eq!(offline, vec![2, 3]);
+        let mac = registry.register(1, 100).await;
+        let _phone = registry.register(1, 101).await;
+        assert_eq!(sorted(registry.live_sessions(&[1]).await), vec![100, 101]);
+        registry.unregister(1, mac.conn_id).await;
+        assert_eq!(
+            sorted(registry.live_sessions(&[1]).await),
+            vec![101],
+            "closing one device's socket must not take the other's session with it"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_sessions_covers_the_batch_and_skips_users_with_no_socket() {
+        let registry = Registry::new(4);
+        let _one = registry.register(1, 100).await;
+        let _two = registry.register(2, 200).await;
+        assert_eq!(
+            sorted(registry.live_sessions(&[1, 2, 3]).await),
+            vec![100, 200]
+        );
+        assert_eq!(
+            sorted(registry.live_sessions(&[3]).await),
+            Vec::<i64>::new()
+        );
     }
 
     #[tokio::test]
@@ -261,24 +287,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn has_connections_tracks_register_and_unregister() {
-        let registry = Registry::new(4);
-        assert!(!registry.has_connections(1).await);
-        let reg = registry.register(1, 100).await;
-        assert!(registry.has_connections(1).await);
-        assert!(!registry.has_connections(2).await);
-        registry.unregister(1, reg.conn_id).await;
-        assert!(!registry.has_connections(1).await);
-    }
-
-    #[tokio::test]
     async fn unregister_removes_the_connection_and_empties_the_map() {
         let registry = Registry::new(4);
         let reg = registry.register(1, 100).await;
         assert_eq!(registry.connection_count().await, 1);
         registry.unregister(1, reg.conn_id).await;
         assert_eq!(registry.connection_count().await, 0);
-        let offline = registry.send_to_users(&[1], &pong()).await;
-        assert_eq!(offline, vec![1]);
+        assert_eq!(
+            sorted(registry.live_sessions(&[1]).await),
+            Vec::<i64>::new()
+        );
     }
 }

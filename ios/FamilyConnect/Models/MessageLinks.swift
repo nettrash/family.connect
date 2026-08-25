@@ -27,6 +27,12 @@
 //  and detection is regex-grade work, so results are memoized in a
 //  bounded NSCache keyed by (side, body).
 //
+//  A body carrying a table lays out as several blocks (MessageMarkdown),
+//  and every pass here runs PER TEXT BLOCK: each one is its own laid-out
+//  string, so each one is its own offset space. Table cells are skipped
+//  entirely — they carry no links by construction, which is the whole
+//  reason a table costs the balloon nothing.
+//
 
 import Foundation
 import SwiftUI
@@ -50,44 +56,89 @@ nonisolated enum MessageLinks {
         return built
     }
 
+    /// A message body, ready to draw, as the blocks it lays out in — the
+    /// same three passes as `attributedBody`, applied to each text block.
+    ///
+    /// A body with no table comes back as ONE block holding exactly the
+    /// string `attributedBody` returns, and it is the memoized one: the
+    /// no-table path must stay the single `Text` everything else in the
+    /// bubble is built around, not a stack of one.
+    static func blocks(_ text: String, isMine: Bool) -> [MessageMarkdown.Block] {
+        let key = ((isMine ? "m|" : "t|") + text) as NSString
+        if let boxed = blockCache.object(forKey: key) {
+            return boxed.value
+        }
+        let parsed = MessageMarkdown.blocks(text)
+        let built: [MessageMarkdown.Block]
+        if parsed.count == 1, case .text = parsed[0] {
+            // Through `attributedBody` rather than round the side of it, so
+            // the one string a bubble draws is the one string everything
+            // else in the app already asks for.
+            built = [.text(attributedBody(text, isMine: isMine))]
+        } else {
+            built = parsed.map { block in
+                switch block {
+                case .text(let rendered):
+                    return .text(decorated(rendered, isMine: isMine))
+                case .table:
+                    return block
+                }
+            }
+        }
+        blockCache.setObject(BlockBox(built), forKey: key)
+        return built
+    }
+
     /// The first https link in a body AS IT IS DRAWN — what the preview
     /// card describes.
     ///
     /// Rendered first, for the reason `build` gives: markdown deletes
     /// characters, so detecting over the raw body finds links in text the
     /// bubble never shows. `**https://a.example**` would have previewed a
-    /// URL whose asterisks are not on screen, and `[label](url)` would
-    /// preview nothing at all even though a link is plainly there.
-    static func firstWebLinkAsDrawn(in text: String) -> URL? {
-        firstWebLink(in: String(MessageMarkdown.render(text).characters))
-    }
-
-    /// The first https link in a body — what the preview card
-    /// describes. Phone numbers and email addresses are detected too but
-    /// have nothing to preview, previewing every link in a message would
-    /// bury the message itself, and plain http is excluded on purpose
-    /// (ATS blocks it, so a card would appear on Android and not here).
+    /// URL whose asterisks are not on screen.
     ///
-    /// Memoized for the same reason `attributedBody` is: this runs from
-    /// a bubble's body, which re-evaluates for the whole window.
-    static func firstWebLink(in text: String) -> URL? {
-        let key = ("first|" + text) as NSString
+    /// But it goes through the SAME decoration the balloon draws rather
+    /// than a detector pass over the drawn CHARACTERS, because markdown
+    /// deletes destinations too: `see [the menu](https://example.com/menu)`
+    /// draws four words and no URL, so scanning the glyphs found nothing
+    /// and the card vanished from a message that is nothing BUT a link.
+    /// Android kept previewing that message — its card comes from the same
+    /// merged spans its bubble is drawn from — so the same message showed a
+    /// card on one platform and not on the other.
+    ///
+    /// Run order is document order, so "first" still means first as read.
+    /// Where a label and a destination disagree the AUTHOR's destination
+    /// wins, because `decorated` has already dropped the detector's
+    /// duplicate over the label: `[https://www.paypal.com](https://evil.example)`
+    /// previews evil.example — the place the tap actually goes, which is
+    /// the only honest thing for a card under that balloon to describe.
+    ///
+    /// Over the FLAT render, tables and all: a URL typed into a cell is
+    /// drawn as the characters it is and cannot be tapped there, so the
+    /// card under the balloon is the only way in — which is a better answer
+    /// than pretending the reader never saw it.
+    ///
+    /// Phone numbers and email addresses are decorated too but have nothing
+    /// to preview, previewing every link in a message would bury the
+    /// message itself, and plain http is excluded on purpose (ATS blocks
+    /// it, so a card would appear on Android and not here).
+    ///
+    /// Memoized like everything else here, and now more than before: a
+    /// bubble asks for this on every body evaluation and the answer costs a
+    /// whole decoration pass rather than one detector sweep.
+    static func firstWebLinkAsDrawn(in text: String) -> URL? {
+        let key = ("drawn|" + text) as NSString
         if let boxed = firstLinkCache.object(forKey: key) {
             return boxed.value
         }
-        let found = detectFirstWebLink(in: text)
+        var found: URL?
+        for run in decorated(MessageMarkdown.render(text), isMine: false).runs {
+            guard let url = run.link, url.scheme?.lowercased() == "https" else { continue }
+            found = url
+            break
+        }
         firstLinkCache.setObject(URLBox(found), forKey: key)
         return found
-    }
-
-    private static func detectFirstWebLink(in text: String) -> URL? {
-        guard let detector, text.contains(".") else { return nil }
-        let range = NSRange(location: 0, length: (text as NSString).length)
-        for match in detector.matches(in: text, range: range) where match.resultType == .link {
-            guard let url = match.url else { continue }
-            if url.scheme?.lowercased() == "https" { return url }
-        }
-        return nil
     }
 
     private final class URLBox {
@@ -120,6 +171,17 @@ nonisolated enum MessageLinks {
         return cache
     }()
 
+    private final class BlockBox {
+        let value: [MessageMarkdown.Block]
+        init(_ value: [MessageMarkdown.Block]) { self.value = value }
+    }
+
+    private static let blockCache: NSCache<NSString, BlockBox> = {
+        let cache = NSCache<NSString, BlockBox>()
+        cache.countLimit = 512
+        return cache
+    }()
+
     private static func build(_ text: String, isMine: Bool) -> AttributedString {
         // MARKDOWN FIRST, and the order is load-bearing.
         //
@@ -129,7 +191,17 @@ nonisolated enum MessageLinks {
         // markup token pointing at the wrong glyphs. Rendering first and
         // detecting over what is actually drawn makes the offsets correct
         // by construction, which is the same rule Android's hit test needs.
-        var attributed = MessageMarkdown.render(text)
+        decorated(MessageMarkdown.render(text), isMine: isMine)
+    }
+
+    /// The three passes over ONE laid-out string: markdown's own
+    /// destinations, then the detector, then `@ai`.
+    ///
+    /// Everything here indexes the string it was handed, which is why a
+    /// table's text blocks can go through it one at a time — each is a
+    /// separate `Text` and so a separate offset space.
+    private static func decorated(_ source: AttributedString, isMine: Bool) -> AttributedString {
+        var attributed = source
         let rendered = String(attributed.characters)
 
         // Markdown's own destinations, made openable.

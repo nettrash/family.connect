@@ -179,4 +179,17 @@
     <string name="s_saved_by_one_copy">%1$s ahorrados al guardar una sola copia de los archivos idénticos.</string>
     <string name="s_attachments_and_size">%1$d adjuntos, %2$s</string>
     <string name="s_questions_to_assistant">%1$d preguntas al asistente</string>
+    <string name="s_family_language">Idioma de la familia</string>
+    <string name="s_family_language_explanation">El idioma en el que el asistente responde cuando se le pregunta en el chat familiar. No cambia el idioma en el que se muestra esta app. Sin ninguno elegido, responde en el idioma de quien pregunte.</string>
+    <string name="s_not_set">Sin definir</string>
+    <string name="s_assistant_history">El asistente ve el historial reciente</string>
+    <string name="s_assistant_history_explanation">Cuando alguien menciona al asistente en el chat familiar, el último mes de ese chat se envía junto con la pregunta para que pueda responder sobre lo que se dijo. Desactivado, solo se envía el mensaje que lo menciona.</string>
+    <string name="s_birthday">Cumpleaños</string>
+    <string name="s_birthday_for">Cumpleaños de %1$s</string>
+    <string name="s_day_and_month_no_year">Un día y un mes. Sin año y sin edad.</string>
+    <string name="s_month">Mes</string>
+    <string name="s_day">Día</string>
+    <string name="e_birthday_failed">No se pudo guardar ese cumpleaños</string>
+    <string name="e_change_language_failed">No se pudo cambiar el idioma de la familia</string>
+    <string name="e_change_assistant_history_failed">No se pudo cambiar ese ajuste</string>
 </resources>

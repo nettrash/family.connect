@@ -8,16 +8,23 @@
  *                  → buildChatItems. Pagination grows the window and
  *                  pulls older pages over REST, guarded so a scroll
  *                  storm triggers exactly one fetch.
- *   read markers — while RESUMED, the newest inbound serverId above
- *                  myLastReadId is reported after a 500 ms debounce
- *                  (collectLatest + delay): skimming past a hundred
- *                  messages produces one `read`, not a hundred.
+ *   read markers — read means SEEN: the newest inbound serverId is
+ *                  reported only while the screen is RESUMED *and* the
+ *                  list is parked at the newest message, after a 500 ms
+ *                  debounce (collectLatest + delay) so skimming past a
+ *                  hundred messages produces one `read`, not a hundred.
+ *                  Both gates are load-bearing — the server's marker is
+ *                  monotonic, so a read posted for a message nobody
+ *                  looked at is a badge that never comes back, on every
+ *                  device this person owns.
  *   typing       — outbound throttled to one frame per 3 s (matching
  *                  the server's own per-chat throttle); inbound shown
  *                  for 5 s past the last frame (collectLatest restarts
  *                  the expiry timer).
- *   open chat    — registered with ChatRepository while resumed, so
- *                  inbound messages for THIS chat never bump unread.
+ *   open chat    — registered with ChatRepository while resumed, with
+ *                  the same at-newest signal, so an inbound message for
+ *                  THIS chat skips the unread bump only when it actually
+ *                  lands in front of the reader.
  *
  * iOS counterpart: ios/FamilyConnect/UI/Chat/ChatViewModel.swift
  */
@@ -63,6 +70,7 @@ import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.net.ws.SocketState
+import me.nettrash.familyconnect.data.push.PushNotifications
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import android.content.Context
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
@@ -125,9 +133,16 @@ class ChatViewModel @Inject constructor(
 
     private val resumed = MutableStateFlow(false)
 
+    // Written by the screen (see [setAtNewest]); the second half of
+    // "read means seen".
+    private val atNewest = MutableStateFlow(false)
+
     // Eagerly shared (not WhileSubscribed): the read-marker collector
-    // reads `.value` off both — a lazily-started StateFlow would hand it
-    // stale nulls until the screen happens to subscribe.
+    // reads myUserId `.value` to tell inbound from my own — a lazily
+    // started StateFlow would hand it a stale null until the screen
+    // happens to subscribe, and every message would look inbound. `chat`
+    // keeps the same treatment: it feeds `items`, which the collector is
+    // built on.
     val chat: StateFlow<ChatEntity?> = chatRepository.observeChat(chatId)
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
@@ -278,21 +293,34 @@ class ChatViewModel @Inject constructor(
     private var lastTypingSentAt = 0L
 
     init {
-        // Read markers: newest inbound acked message, gated on RESUMED,
-        // debounced 500 ms. collectLatest restarts the debounce whenever
-        // either input changes — the report fires once things settle.
+        // Read markers: newest inbound acked message, gated on RESUMED
+        // *and* on the list being at the newest message, debounced
+        // 500 ms. collectLatest restarts the debounce whenever any input
+        // changes — the report fires once things settle. Null means "not
+        // reading right now", which is also what stops a scroll back up
+        // the thread from re-reporting on the way past.
+        //
+        // No `newest > myLastReadId` guard here: postRead applies the
+        // monotonic rule itself, and it has to clear the local badge
+        // BEFORE applying it. Short-circuiting on the marker in this
+        // collector instead would leave a chat whose marker is already
+        // ahead of the server (a read that never landed) showing a count
+        // that opening it never clears.
         viewModelScope.launch {
-            combine(resumed, items) { isResumed, list ->
-                if (!isResumed) null else newestInboundServerId(list)
+            combine(resumed, atNewest, items) { isResumed, isAtNewest, list ->
+                if (!isResumed || !isAtNewest) null else newestInboundServerId(list)
             }
                 .distinctUntilChanged()
                 .collectLatest { newest ->
                     if (newest == null) return@collectLatest
-                    val lastRead = chat.value?.myLastReadId ?: 0L
-                    if (newest > lastRead) {
-                        delay(READ_DEBOUNCE_MS)
-                        chatRepository.postRead(chatId, newest)
-                    }
+                    delay(READ_DEBOUNCE_MS)
+                    chatRepository.postRead(chatId, newest)
+                    // The chat is read, so the tray entry about it is
+                    // stale — and on Android the tray entry IS the
+                    // launcher dot, which would otherwise stay lit until
+                    // the user went and tapped a notification for
+                    // messages they have already read.
+                    PushNotifications.cancelChat(appContext, chatId)
                 }
         }
 
@@ -351,7 +379,33 @@ class ChatViewModel @Inject constructor(
     /** Screen calls this from a LifecycleResumeEffect. */
     fun setResumed(isResumed: Boolean) {
         resumed.value = isResumed
-        chatRepository.setOpenChat(if (isResumed) chatId else null)
+        publishOpenChat()
+    }
+
+    /**
+     * Screen reports whether the list is parked at the newest message
+     * (`firstVisibleItemIndex <= 1` on the reverseLayout thread).
+     *
+     * The ViewModel cannot derive this — only the LazyListState knows —
+     * and it defaults to false on purpose: until the screen has said
+     * otherwise, nothing is known to be on screen, and the cost of
+     * guessing wrong in that direction is a read that can never be
+     * undone.
+     */
+    fun setAtNewest(value: Boolean) {
+        atNewest.value = value
+        publishOpenChat()
+    }
+
+    // Paused means the screen is showing nobody anything, whatever the
+    // list is parked on — so the claim drops wholesale rather than
+    // leaving a stale "at newest" behind for the bump rule to trust.
+    private fun publishOpenChat() {
+        val isResumed = resumed.value
+        chatRepository.setOpenChat(
+            chatId = if (isResumed) chatId else null,
+            atNewest = isResumed && atNewest.value,
+        )
     }
 
     fun send() {

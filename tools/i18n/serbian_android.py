@@ -7,6 +7,25 @@ sentence differently.
 """
 
 ANDROID_ONLY = {
+# Birthdays and the assistant's family settings. The four Android words the
+# iOS catalogue already has — Birthday, Not set, Month, Day — are found by
+# the English match and are deliberately NOT repeated here.
+"s_family_language": "Језик породице",
+"s_family_language_explanation":
+  "Језик на ком асистент одговара када га питаш у породичном разговору. "
+  "Језик саме апликације се тиме не мења. "
+  "Ако ништа није изабрано, одговор стиже на језику питања.",
+"s_assistant_history": "Асистент види недавну историју",
+"s_assistant_history_explanation":
+  "Када неко помене асистента у породичном разговору, уз питање се шаље и преписка "
+  "из последњих месец дана, па може да одговори и на оно што је раније речено. "
+  "Када је искључено, шаље се само порука у којој се помиње.",
+"s_birthday_for": "Рођендан за %1$s",
+"s_day_and_month_no_year": "Дан и месец. Нема године, па ни узраста.",
+"e_birthday_failed": "Рођендан није сачуван",
+"e_change_language_failed": "Језик породице није промењен",
+"e_change_assistant_history_failed": "Подешавање није промењено",
+
 # The statistics strings whose English differs from iOS only in the format
 # specifiers (%1$d/%2$s rather than %lld/%@), so the English match cannot find
 # them. Same sentence, same wording as ios/FamilyConnect/Views/StatisticsView.

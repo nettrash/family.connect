@@ -327,14 +327,33 @@ struct MacMessageRow: View {
                 Text(verbatim: "▍").opacity(0.6)
             }
             if !message.body.isEmpty {
-                Text(bodyText)
-                    .font(emojiFont)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .overlay(alignment: .bottomTrailing) {
-                        if isStreaming {
-                            Text(verbatim: "▍").opacity(0.6).offset(x: 8)
+                // One text block — everything without a table — comes back
+                // as exactly this `Text` and nothing around it.
+                MessageBodyBlocks(
+                    blocks: bodyBlocks,
+                    isStreaming: isStreaming,
+                    isMine: isMine
+                ) { text, carriesCursor in
+                    Text(text)
+                        .font(emojiFont)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .overlay(alignment: .bottomTrailing) {
+                            // The last text block is the only one still
+                            // growing, so it is the one that ends in a
+                            // cursor.
+                            if isStreaming, carriesCursor {
+                                Text(verbatim: "▍").opacity(0.6).offset(x: 8)
+                            }
                         }
-                    }
+                        // A table has already decided how wide this balloon
+                        // is. Text left to itself reports the width it
+                        // WANTS, which leaves a narrow paragraph floating
+                        // beside a wide grid; filling makes it wrap against
+                        // the same edge. Gated on there BEING a table — the
+                        // phone learned the hard way that doing this
+                        // unconditionally makes every balloon full width.
+                        .frame(maxWidth: hasTable ? .infinity : nil, alignment: .leading)
+                }
             }
             if let preview = linkPreview {
                 LinkPreviewCard(
@@ -414,7 +433,8 @@ struct MacMessageRow: View {
         return preview
     }
 
-    /// What the balloon draws.
+    /// What the balloon draws: ONE text block unless the body carries a
+    /// table (MessageMarkdown).
     ///
     /// Markdown and the `@ai` mention, through the SAME renderer the phone
     /// uses — a message written on one platform has to read the same on the
@@ -424,9 +444,16 @@ struct MacMessageRow: View {
     /// and on Android: the ladder's whole subject is that the message is
     /// nothing but glyphs, and running a markup pass over it could only
     /// take something away.
-    private var bodyText: AttributedString {
-        guard !isEmojiOnly else { return AttributedString(message.body) }
-        return MessageLinks.attributedBody(message.body, isMine: isMine)
+    private var bodyBlocks: [MessageMarkdown.Block] {
+        guard !isEmojiOnly else { return [.text(AttributedString(message.body))] }
+        return MessageLinks.blocks(message.body, isMine: isMine)
+    }
+
+    /// A table sets the balloon's width, so the text around it wraps
+    /// against the grid instead of floating narrow beside it — the Mac's
+    /// half of what the phone calls `fillsBalloonWidth`.
+    private var hasTable: Bool {
+        bodyBlocks.contains { $0.isTable }
     }
 
     /// Open a clicked link — unless a second click arrives first, in which

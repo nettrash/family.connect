@@ -1,0 +1,25 @@
+-- Whether an @ai mention in the family chat is shown the recent history of
+-- that chat (docs/protocol.md, "Mentioning the assistant in the family
+-- chat").
+--
+-- NOT NULL DEFAULT TRUE, and the contrast with `families.language` two
+-- migrations ago is deliberate rather than an inconsistency. A language has
+-- a real third state — "we never chose" is not "we chose English" — and a
+-- NOT NULL default would have answered that question on every existing
+-- family's behalf. A switch has no third state: it is on or it is off, an
+-- unset switch is not a thing anybody can act on, and a NULL here would
+-- only be a second spelling of one of the two that every reader would then
+-- have to map back.
+--
+-- TRUE, so this turns ON for families that already exist. That is the
+-- widening the protocol section names out loud, and the reason is there:
+-- asking about something said last week is why a family mentions the
+-- assistant in the chat at all, and a feature that stays off until somebody
+-- finds a switch is one most families never see. FALSE reproduces the older
+-- behaviour exactly — the mentioning message and its quoted message, and
+-- nothing else.
+--
+-- What this column can never do is widen anything but the family chat: a
+-- private `ai` thread does not read it, and no code path that touches a
+-- direct chat reads it either.
+ALTER TABLE families ADD COLUMN ai_history BOOLEAN NOT NULL DEFAULT TRUE;

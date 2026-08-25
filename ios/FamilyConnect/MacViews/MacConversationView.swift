@@ -51,8 +51,9 @@ struct MacConversationView: View {
     /// bubble growing above the viewport moves everything below it.
     @Environment(LinkPreviewLoader.self) private var previewLoader
     /// `.key` when this window is the frontmost one. With several
-    /// conversation windows open, this is what decides which chat counts
-    /// as the one being READ.
+    /// conversation windows open, this is what decides which chat is the
+    /// one in front of the user — one of the three facts that make a chat
+    /// READ (ChatPresence), and on its own not enough to read anything.
     @Environment(\.controlActiveState) private var windowActivation
     @Query private var messages: [MessageEntity]
     @Query private var chats: [ChatEntity]
@@ -63,6 +64,32 @@ struct MacConversationView: View {
     @State private var mediaNotice: String?
     /// The message being answered, while the composer is primed.
     @State private var replyDraft: ReplyToDTO?
+    /// Live height of the composer, watched for the same reason the phone
+    /// watches its input bar: the thread and the composer are siblings in
+    /// one VStack, so anything that GROWS the composer — a reply banner, an
+    /// edit banner, the recording row, a draft wrapping to another line —
+    /// shrinks the thread's viewport under content that does not move, and
+    /// the newest message slides away behind it.
+    @State private var composerHeight: CGFloat = 0
+    /// How the composer was primed, and what the reader could see the
+    /// moment it happened — nil when nothing is primed.
+    ///
+    /// Captured in `beginReply` and `beginEdit`, BEFORE either banner
+    /// exists, and that is the whole trick: growing the composer takes the
+    /// bottom sentinel out of the viewport, so by the time the height
+    /// change lands `isPinnedToBottom` has already flipped to false and can
+    /// no longer answer "were they at the bottom a moment ago?". Without
+    /// it, priming the composer from an old message throws the reader to
+    /// the newest one — away from the very message they are answering or
+    /// rewriting. Same reason as the phone's flag.
+    ///
+    /// A VALUE rather than a Bool because the Bool was set at only one of
+    /// the two doors: `beginReply` captured it and `beginEdit` did not, so
+    /// editing a message from last week yanked the thread to the bottom
+    /// while the author was typing into it. Constructing this is the only
+    /// way to prime the composer, and it takes the answer as an argument,
+    /// so a third kind of banner cannot forget it either.
+    @State private var composerPriming: ComposerPriming?
     /// The message being rewritten; mutually exclusive with a reply, the
     /// same rule the phone has — you are answering or rewriting, not both.
     @State private var editTarget: (messageID: Int64, original: String)?
@@ -118,6 +145,10 @@ struct MacConversationView: View {
 
     private var chat: ChatEntity? { chats.first }
 
+    /// Is either banner up — a reply being answered or a message being
+    /// rewritten? What the priming above lives and dies with.
+    private var composerIsPrimed: Bool { replyDraft != nil || editTarget != nil }
+
     private var avatarVersions: [Int64: Int64] {
         Dictionary(members.map { ($0.userID, $0.avatarVersion) }, uniquingKeysWith: { first, _ in first })
     }
@@ -137,27 +168,63 @@ struct MacConversationView: View {
         .frame(minWidth: 420, minHeight: 320)
         .navigationTitle(chat?.title ?? "")
         .navigationSubtitle(typingLine ?? "")
+        // Through ChatPresenceOpening rather than inline, and that is the
+        // whole point of it: this task is cancelled the moment the window
+        // closes or the sidebar selection changes, and a cancelled sleep
+        // written `try?` would run the line after it in a view that is
+        // already gone — re-claiming the chat it used to show, at the
+        // optimistic `isPinnedToBottom` it started with, with nothing left
+        // to release it. See the note there; it ends in a permanently and
+        // silently read conversation.
         .task(id: chatID) {
-            claimActive()
-            // One page is enough to open with; the phone's paging sentinel
-            // is a scroll-position mechanism this window does not need yet.
-            if messages.isEmpty { _ = await coordinator.loadOlder(chatID: chatID) }
+            await ChatPresenceOpening.run(
+                // Claim the chat, and claim NOTHING about what is visible:
+                // `isPinnedToBottom` starts optimistically true so the first
+                // pin has a target, and believing that guess here would read
+                // the family chat on every cold start — before a single row
+                // had been laid out. MacChatView auto-selects the family chat
+                // when nothing is selected, so this ran on every launch.
+                claim: { publishPresence(isAtNewest: false) },
+                // One page is enough to open with; the phone's paging sentinel
+                // is a scroll-position mechanism this window does not need yet.
+                loadOlder: {
+                    if messages.isEmpty { _ = await coordinator.loadOlder(chatID: chatID) }
+                },
+                // The thread opens at the bottom by construction, but "by
+                // construction" is not "on screen". The wait defers the
+                // question, it does not answer it, and the answer is still
+                // geometry plus a key window.
+                settled: { publishPresence(isAtNewest: isPinnedToBottom) })
         }
-        // `activeChatID` is ONE value and a Mac can have several
-        // conversation windows, so ownership has to be explicit: the
-        // frontmost window claims it, and a window only ever releases a
-        // claim it still holds. Without that guard, closing one window
-        // clears the claim of another that is still on screen — and every
-        // message arriving in it starts bumping the unread badge of a chat
-        // the user is looking at.
-        .onChange(of: windowActivation) { _, state in
-            if state == .key {
-                claimActive()
-            } else {
-                releaseActive()
-            }
+        // Presence is ONE value and a Mac can have several conversation
+        // windows, so ownership has to be explicit: the frontmost window
+        // claims it, and a window only ever releases a claim it still
+        // holds. Without that guard, closing one window clears the claim of
+        // another that is still on screen — and every message arriving in
+        // it starts bumping the unread badge of a chat the user is looking
+        // at.
+        //
+        // Becoming key no longer marks anything read by itself. It used to,
+        // and that was the complaint in one sentence: a Mac keeps its
+        // socket open in the background, so messages arrive live and light
+        // the Dock badge — and clicking the Dock icon to see what arrived
+        // destroyed the count in the same gesture. Now focus is only one of
+        // the three facts, and the newest message still has to be on screen.
+        .onChange(of: windowActivation) { _, _ in
+            publishPresence(isAtNewest: isPinnedToBottom)
         }
-        .onDisappear { releaseActive() }
+        .onDisappear { coordinator.releasePresence(chatID: chatID) }
+        // The suppression ends with the banner it was captured for, and it
+        // is cleared HERE rather than beside each of the seven places a
+        // reply draft or an edit is dropped (cancel, send, the swap between
+        // the two, three handoffs) — an eighth would silently leave the
+        // thread refusing to follow new messages for the rest of the
+        // session. Keyed on "either banner is up" and not on the reply
+        // alone: keyed on the reply, starting an edit FROM a primed reply
+        // cleared the priming the edit had just captured.
+        .onChange(of: composerIsPrimed) { _, isPrimed in
+            if !isPrimed { composerPriming = nil }
+        }
     }
 
     /// Day sections and sender runs, through the SAME rules the phone
@@ -297,6 +364,23 @@ struct MacConversationView: View {
                         description: Text("Say something to get started."))
                 }
             }
+            .onChange(of: composerHeight) {
+                // The composer just grew or shrank into the thread. Re-pin,
+                // so the newest message stays above it — this is the phone's
+                // `onChange(of: inputBarHeight)`, which the Mac never had,
+                // and its absence is why clicking Reply left the thread
+                // parked behind the banner and — because the sentinel had
+                // left the viewport — no longer following new messages at
+                // all.
+                //
+                // Deliberately does NOT consult `isPinnedToBottom`: this
+                // fires after the layout pass that already invalidated it.
+                // The one case that must not pin is a composer primed from
+                // history — answering or rewriting — and that was decided
+                // before the banner appeared.
+                guard composerPriming?.suppressesRePin != true else { return }
+                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+            }
             .onChange(of: previewLoader.generation) {
                 // A link-preview card just landed: the bubble hosting it
                 // GREW, and a bubble growing above the viewport slides the
@@ -324,6 +408,12 @@ struct MacConversationView: View {
                 // somebody else typed is the bug the phone fixed long ago —
                 // OR when the newest message is this member's OWN. Pressing
                 // Send and watching nothing happen is worse than either.
+                // Re-ask what this reader can see: a message arriving for
+                // somebody already at the bottom scrolls the thread WITHOUT
+                // the sentinel ever leaving the viewport, so the geometry
+                // hook may not fire, and this is what reads the message
+                // they just watched land.
+                publishPresence(isAtNewest: isPinnedToBottom)
                 let mine = messages.last?.senderID == coordinator.currentUserID
                 guard isPinnedToBottom || mine else { return }
                 withAnimation(.easeOut(duration: 0.18)) {
@@ -370,6 +460,11 @@ struct MacConversationView: View {
                 return y <= viewport.height + 40
             } action: { visible in
                 isPinnedToBottom = visible
+                // The one fact only this geometry knows, and the one that
+                // decides whether anything is read — published the moment
+                // it moves, in both directions, and from the value just
+                // computed rather than the state it was written to.
+                publishPresence(isAtNewest: visible)
             }
     }
 
@@ -525,6 +620,11 @@ struct MacConversationView: View {
                     .strokeBorder(composerFocused ? Color.accentColor.opacity(0.6) : .clear))
         }
         .padding(12)
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            geometry.size.height
+        } action: { height in
+            composerHeight = height
+        }
     }
 
     private var canSend: Bool {
@@ -646,15 +746,30 @@ struct MacConversationView: View {
         return names.count == 1 ? "\(names[0]) is typing…" : "\(names.joined(separator: ", ")) are typing…"
     }
 
-    private func claimActive() {
-        coordinator.activeChatID = chatID
-    }
-
-    /// Only if it is still ours — another window may have claimed it since.
-    private func releaseActive() {
-        if coordinator.activeChatID == chatID {
-            coordinator.activeChatID = nil
+    /// Tell the coordinator what the person at this window can actually
+    /// see — the only thing that marks a chat read (ChatPresence).
+    ///
+    /// `isAtNewest` is the bottom sentinel's geometry, and it is passed in
+    /// rather than read from state so the sentinel can hand over the value
+    /// it just computed. It is also why nothing calls this from
+    /// `onChange(of: composerHeight)`: a reply banner GROWS the composer,
+    /// which takes the sentinel out of the viewport before the re-pin puts
+    /// it back, so for one layout pass the flag is false. False is the safe
+    /// direction — it reads nothing — and the sentinel publishes the truth
+    /// again the moment the re-pin lands.
+    ///
+    /// The guard is what makes several conversation windows work. Presence
+    /// is ONE value, so a window that is not key may only speak when the
+    /// claim is already its own or nobody holds one — otherwise a window
+    /// sitting behind everything else would overwrite what the window the
+    /// user IS looking at published, purely because a message landed in it,
+    /// and stop that window reading anything.
+    private func publishPresence(isAtNewest: Bool) {
+        let isKey = windowActivation == .key
+        guard isKey || coordinator.presence == nil || coordinator.presence?.chatID == chatID else {
+            return
         }
+        coordinator.updatePresence(chatID: chatID, isAtNewest: isAtNewest, isFrontmost: isKey)
     }
 
     private func send() {
@@ -687,6 +802,10 @@ struct MacConversationView: View {
     private func beginReply(_ message: MessageSnapshot) {
         guard let serverID = message.serverID else { return }
         editTarget = nil
+        // Decided HERE, before the banner grows the composer: afterwards the
+        // sentinel has left the viewport and the answer would always be
+        // "they were not at the bottom".
+        composerPriming = .reply(isPinnedToBottom: isPinnedToBottom)
         replyDraft = ReplyToDTO(
             messageID: serverID,
             senderID: message.senderID,
@@ -699,6 +818,12 @@ struct MacConversationView: View {
     private func beginEdit(_ message: MessageSnapshot) {
         guard let serverID = message.serverID else { return }
         replyDraft = nil
+        // The same capture a reply makes, for the same reason and at the
+        // same moment: the edit banner and the prefilled (often multi-line)
+        // draft grow the composer just as a reply banner does, and a reader
+        // rewriting something from history must not be thrown to the newest
+        // message. The phone has always done this; the Mac forgot.
+        composerPriming = .edit(isPinnedToBottom: isPinnedToBottom)
         // The draft in progress is not thrown away: it comes back when the
         // edit is cancelled or lands.
         editTarget = (messageID: serverID, original: draft)

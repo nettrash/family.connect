@@ -198,13 +198,66 @@ actor APIClient {
         return response.inviteCode
     }
 
-    private struct JoinPolicyRequest: Encodable {
-        let joinPolicy: String
-        enum CodingKeys: String, CodingKey { case joinPolicy = "join_policy" }
+    /// The body of `PATCH /families/mine`. Which fields are PRESENT decides
+    /// what changes, so every one is optional and omitted when untouched.
+    ///
+    /// `language` is a DOUBLE optional, and that is not a typo. The
+    /// protocol gives it three states, not two: an absent key leaves the
+    /// family's language alone, an explicit `null` CLEARS it, and a tag
+    /// sets it (protocol.md, "The family's language" — the one place in
+    /// this protocol where a null means something a missing key does not).
+    /// A plain `String?` can only spell two of the three, and
+    /// `encodeIfPresent` would silently turn "clear it" into "leave it".
+    /// `ai_history` is deliberately NOT such a field: it is a boolean with
+    /// a real default and nothing for a null to mean.
+    private struct FamilyPatchRequest: Encodable {
+        var joinPolicy: String?
+        var language: String??
+        var aiHistory: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case joinPolicy = "join_policy"
+            case language
+            case aiHistory = "ai_history"
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(joinPolicy, forKey: .joinPolicy)
+            if let language {
+                // The outer optional is "was this field touched"; the inner
+                // is the value. `encodeNil` is what puts a real JSON null
+                // on the wire — encodeIfPresent would drop the key.
+                if let tag = language {
+                    try container.encode(tag, forKey: .language)
+                } else {
+                    try container.encodeNil(forKey: .language)
+                }
+            }
+            try container.encodeIfPresent(aiHistory, forKey: .aiHistory)
+        }
     }
 
     func setJoinPolicy(_ policy: String) async throws -> FamilyDTO {
-        let response: FamilyResponse = try await request("PATCH", "/families/mine", body: JoinPolicyRequest(joinPolicy: policy))
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(joinPolicy: policy))
+        return response.family
+    }
+
+    /// Owner-only: the language `@ai` answers in when it is asked in the
+    /// family chat. `nil` CLEARS it back to unset, which is not the same
+    /// as choosing English — see FamilyPatchRequest.
+    func setFamilyLanguage(_ tag: String?) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(language: .some(tag)))
+        return response.family
+    }
+
+    /// Owner-only: whether a mention of `@ai` in the family chat is shown
+    /// the last month of that chat, or only the message that mentioned it.
+    func setAIHistory(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiHistory: enabled))
         return response.family
     }
 
@@ -266,6 +319,44 @@ actor APIClient {
         enum CodingKeys: String, CodingKey {
             case newPassword = "new_password"
         }
+    }
+
+    // MARK: - Birthdays
+
+    // Two endpoints, and whose birthday it is decides which. The shape is
+    // the avatar's on purpose (protocol.md, "Birthdays"): a PUT that
+    // replaces whatever was there and a DELETE that clears it, because it
+    // is the same kind of thing — a small optional piece of a profile.
+
+    /// My own. Anyone, for themselves.
+    func setMyBirthday(month: Int, day: Int) async throws -> UserDTO {
+        let response: UserResponse = try await request(
+            "PUT", "/me/birthday", body: BirthdayRequest(month: month, day: day))
+        return response.user
+    }
+
+    func clearMyBirthday() async throws {
+        try await requestVoid("DELETE", "/me/birthday")
+    }
+
+    /// Somebody else's, as the owner — a parent for a child, typically,
+    /// since the child is never going to open a settings screen to type it.
+    /// The owner MAY name themselves here, unlike the password reset:
+    /// there is no proof being skipped.
+    func setMemberBirthday(userID: Int64, month: Int, day: Int) async throws -> MemberDTO {
+        let response: MemberResponse = try await request(
+            "PUT", "/families/members/\(userID)/birthday",
+            body: BirthdayRequest(month: month, day: day))
+        return response.member
+    }
+
+    func clearMemberBirthday(userID: Int64) async throws {
+        try await requestVoid("DELETE", "/families/members/\(userID)/birthday")
+    }
+
+    private struct BirthdayRequest: Encodable {
+        let month: Int
+        let day: Int
     }
 
     // MARK: - Chats & messages

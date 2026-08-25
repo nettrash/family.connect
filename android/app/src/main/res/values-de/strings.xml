@@ -179,4 +179,17 @@
     <string name="s_saved_by_one_copy">%1$s gespart, weil identische Dateien nur einmal gespeichert werden.</string>
     <string name="s_attachments_and_size">%1$d Anhänge, %2$s</string>
     <string name="s_questions_to_assistant">%1$d Fragen an den Assistenten</string>
+    <string name="s_family_language">Sprache der Familie</string>
+    <string name="s_family_language_explanation">Die Sprache, in der euer Assistent antwortet, wenn er im Familienchat gefragt wird. Die Sprache dieser App ändert sich dadurch nicht. Ohne Auswahl antwortet er in der Sprache der Frage.</string>
+    <string name="s_not_set">Nicht festgelegt</string>
+    <string name="s_assistant_history">Assistent sieht den letzten Verlauf</string>
+    <string name="s_assistant_history_explanation">Erwähnt jemand den Assistenten im Familienchat, geht der letzte Monat dieses Chats mit der Frage mit, damit er zu früher Gesagtem antworten kann. Ist das aus, geht nur die Nachricht mit der Erwähnung raus.</string>
+    <string name="s_birthday">Geburtstag</string>
+    <string name="s_birthday_for">Geburtstag von %1$s</string>
+    <string name="s_day_and_month_no_year">Ein Tag und ein Monat. Kein Jahr, kein Alter.</string>
+    <string name="s_month">Monat</string>
+    <string name="s_day">Tag</string>
+    <string name="e_birthday_failed">Der Geburtstag konnte nicht gesichert werden</string>
+    <string name="e_change_language_failed">Die Sprache der Familie konnte nicht geändert werden</string>
+    <string name="e_change_assistant_history_failed">Die Einstellung konnte nicht geändert werden</string>
 </resources>

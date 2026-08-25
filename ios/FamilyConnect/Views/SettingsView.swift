@@ -58,6 +58,7 @@ struct SettingsView: View {
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var uploadingAvatar = false
     @State private var changingPassword = false
+    @State private var editingBirthday = false
     @State private var avatarError: String?
 
     var body: some View {
@@ -78,6 +79,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $changingPassword) {
                 ChangePasswordView()
+            }
+            .sheet(isPresented: $editingBirthday) {
+                MyBirthdayView()
             }
             .sheet(isPresented: Bindable(model).showsStatistics) {
                 NavigationStack { StatisticsView() }
@@ -155,6 +159,20 @@ struct SettingsView: View {
                     Label(avatarError, systemImage: "exclamationmark.circle")
                         .font(.caption)
                         .foregroundStyle(.red)
+                }
+                // Day and month, no year — so it can be shown to the
+                // family without publishing an age (protocol.md,
+                // "Birthdays"). Laid out like the photo rows above it: the
+                // value, then the one button that changes it.
+                LabeledContent(
+                    "Birthday",
+                    value: user.birthday?.formatted() ?? String(localized: "Not set"))
+                Button {
+                    editingBirthday = true
+                } label: {
+                    Label(
+                        user.birthday == nil ? "Add Birthday…" : "Change Birthday…",
+                        systemImage: "birthday.cake")
                 }
                 Button {
                     changingPassword = true

@@ -5,11 +5,16 @@
  * Three behaviors: the pure grouping rules (sender names, timestamps,
  * date separators — buildChatItems directly), the loadOlder guard (one
  * in-flight fetch, none past the start of history), and the read-marker
- * debounce (many inbound messages → one `read`).
+ * rule — read means SEEN, so a report needs the screen RESUMED *and*
+ * the list at the newest message, debounced (many inbound messages →
+ * one `read`). The scroll half is the load-bearing one: the server's
+ * marker is monotonic, so a read posted for a message nobody looked at
+ * cannot be taken back on any of that person's devices.
  */
 
 package me.nettrash.familyconnect.ui.chat
 
+import android.app.NotificationManager
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +46,7 @@ import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
+import me.nettrash.familyconnect.data.push.PushNotifications
 import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
@@ -537,13 +543,14 @@ class ChatViewModelTest {
         assertThat(chatApi.messagesCalls).isEqualTo(1)
     }
 
-    // -- Read-marker debounce -----------------------------------------------------------
+    // -- Read markers: resumed AND at the newest message ---------------------------------
 
     @Test
     fun rapidInboundMessagesProduceOneDebouncedReadReport() = runTest(dispatcher) {
         val viewModel = newViewModel()
         val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         viewModel.setResumed(true)
+        viewModel.setAtNewest(true)
         runCurrent()
 
         messageRepository.applyServerMessage(messageDto(id = 10, chatId = CHAT, senderId = PEER), live = false)
@@ -568,6 +575,7 @@ class ChatViewModelTest {
         val viewModel = newViewModel()
         val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         viewModel.setResumed(false)
+        viewModel.setAtNewest(true)
         runCurrent()
 
         messageRepository.applyServerMessage(messageDto(id = 10, chatId = CHAT, senderId = PEER), live = false)
@@ -579,12 +587,91 @@ class ChatViewModelTest {
         itemsSubscription.cancel()
     }
 
+    /**
+     * The one the user reported: the chat is open, the app is in front,
+     * and the reader is thirty messages up the thread reading something
+     * else. Nothing down at the bottom has been seen, and the server's
+     * marker only ever moves forward — so nothing may be reported.
+     */
+    @Test
+    fun noReadReportWhileScrolledAwayFromTheNewestMessage() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(false)
+        runCurrent()
+
+        messageRepository.applyServerMessage(messageDto(id = 30, chatId = CHAT, senderId = PEER), live = false)
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        assertThat(chatApi.postedReads).isEmpty()
+        assertThat(socket.sent.filterIsInstance<ClientFrame.Read>()).isEmpty()
+        assertThat(db.chatDao().getById(CHAT)!!.myLastReadId).isNull()
+        itemsSubscription.cancel()
+    }
+
+    @Test
+    fun scrollingBackToTheNewestMessageReportsTheRead() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(false)
+        runCurrent()
+
+        messageRepository.applyServerMessage(messageDto(id = 31, chatId = CHAT, senderId = PEER), live = false)
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertThat(chatApi.postedReads).isEmpty()
+
+        // Arriving at the bottom is the moment it is seen.
+        viewModel.setAtNewest(true)
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+
+        assertThat(chatApi.postedReads).containsExactly(CHAT to 31L)
+        itemsSubscription.cancel()
+    }
+
+    /**
+     * Backgrounding revokes the authority to read, and coming back does
+     * not hand it out again by itself: everything that arrived while the
+     * app was away is unread until the reader is looking at it.
+     */
+    @Test
+    fun backgroundingAndReturningScrolledAwayReadsNothing() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(false)
+        runCurrent()
+
+        viewModel.setResumed(false)
+        runCurrent()
+        messageRepository.applyServerMessage(messageDto(id = 32, chatId = CHAT, senderId = PEER), live = true)
+        runCurrent()
+
+        viewModel.setResumed(true)
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        assertThat(chatApi.postedReads).isEmpty()
+        // Arrived while backgrounded, so it counts.
+        assertThat(db.chatDao().getById(CHAT)!!.unreadCount).isEqualTo(1)
+        itemsSubscription.cancel()
+    }
+
     @Test
     fun readGoesOverTheSocketWhenOpen() = runTest(dispatcher) {
         val viewModel = newViewModel()
         val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         socket.setOpen(true)
         viewModel.setResumed(true)
+        viewModel.setAtNewest(true)
         runCurrent()
 
         messageRepository.applyServerMessage(messageDto(id = 20, chatId = CHAT, senderId = PEER), live = false)
@@ -595,6 +682,41 @@ class ChatViewModelTest {
         assertThat(socket.sent.filterIsInstance<ClientFrame.Read>())
             .containsExactly(ClientFrame.Read(chatId = CHAT, lastReadMessageId = 20L))
         assertThat(chatApi.postedReads).isEmpty() // no REST fallback needed
+        itemsSubscription.cancel()
+    }
+
+    /**
+     * D10: on Android the tray entry IS the launcher dot, so reading the
+     * chat has to take it down — otherwise the dot advertises messages
+     * the user is looking at.
+     */
+    @Test
+    fun readingTheChatDismissesItsTrayNotification() = runTest(dispatcher) {
+        val context = RuntimeEnvironment.getApplication()
+        val manager = context.getSystemService(NotificationManager::class.java)
+        PushNotifications.ensureChannel(context)
+        // Straight at the manager rather than through show(), which is
+        // gated on a runtime permission this test process does not hold —
+        // the (tag, id) slot is the same one show() posts into.
+        manager.notify(
+            PushNotifications.chatTag(CHAT),
+            PushNotifications.NOTIFICATION_ID,
+            PushNotifications.build(context, "Ben", "Dinner at 7?", kind = "message", chatId = CHAT),
+        )
+        assertThat(manager.activeNotifications).isNotEmpty()
+
+        val viewModel = newViewModel()
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(true)
+        runCurrent()
+
+        messageRepository.applyServerMessage(messageDto(id = 40, chatId = CHAT, senderId = PEER), live = false)
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+
+        assertThat(manager.activeNotifications).isEmpty()
         itemsSubscription.cancel()
     }
 }

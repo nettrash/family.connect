@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 9.
+ * Room database, version 12.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -169,6 +169,22 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE messages ADD COLUMN attachmentLatitude REAL")
                 db.execSQL("ALTER TABLE messages ADD COLUMN attachmentLongitude REAL")
                 db.execSQL("ALTER TABLE messages ADD COLUMN attachmentAccuracyM INTEGER")
+            }
+        }
+
+        /**
+         * v12: birthdays on the roster.
+         *
+         * Two nullable columns with NO default, because absence IS the
+         * meaning: nobody who was already in the table has told us a
+         * birthday, and there is no month 0 for a default to claim they
+         * had. They are written and cleared together — see
+         * MemberDao.setBirthday.
+         */
+        val MIGRATION_11_12: Migration = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE members ADD COLUMN birthdayMonth INTEGER")
+                db.execSQL("ALTER TABLE members ADD COLUMN birthdayDay INTEGER")
             }
         }
 

@@ -103,6 +103,31 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "attachment_location",
         sql: include_str!("../migrations/0016_attachment_location.sql"),
     },
+    Migration {
+        version: 17,
+        name: "family_language",
+        sql: include_str!("../migrations/0017_family_language.sql"),
+    },
+    Migration {
+        version: 18,
+        name: "member_birthday",
+        sql: include_str!("../migrations/0018_member_birthday.sql"),
+    },
+    Migration {
+        version: 19,
+        name: "family_ai_history",
+        sql: include_str!("../migrations/0019_family_ai_history.sql"),
+    },
+    Migration {
+        version: 20,
+        name: "device_session",
+        sql: include_str!("../migrations/0020_device_session.sql"),
+    },
+    Migration {
+        version: 21,
+        name: "device_session_revoked",
+        sql: include_str!("../migrations/0021_device_session_revoked.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

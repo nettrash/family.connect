@@ -48,7 +48,8 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `owner_cannot_leave`, `cannot_remove_owner`, `cannot_dm_self`, `not_same_family`,
 `user_not_found`, `chat_not_found`, `not_chat_member`, `message_empty`, `message_too_long`,
 `message_not_found`, `not_message_author`, `invalid_emoji`, `note_not_found`,
-`not_note_author`, `invalid_note_color`, `board_full`, `invalid_pagination`, `device_not_found`,
+`not_note_author`, `invalid_note_color`, `invalid_language`, `board_full`, `invalid_pagination`,
+`device_not_found`,
 `avatar_too_large`, `invalid_image`, `attachment_too_large`, `invalid_attachment`,
 `attachment_not_found`, `attachment_already_used`, `internal`.
 
@@ -57,10 +58,18 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 ```json
 User      {"id": 7, "username": "anna", "display_name": "Anna", "created_at": "…",
            "avatar_version": 3}
+          — plus "birthday": {"month": 3, "day": 14} when (and only when) one is set
 Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|member",
            "avatar_version": 3}
-Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval", "created_at": "…"}
+          — plus "birthday": {"month": 3, "day": 14} when (and only when) one is set
+Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval", "created_at": "…",
+           "ai_history": true}
           — plus "invite_code": "ABCD2345" when (and only when) the caller is the owner
+          — plus "language": "ru" when (and only when) the owner has chosen one; absent
+            means unset, and unset is NOT English — see "The family's language"
+          — "ai_history" is ALWAYS present, unlike the two above. It is a boolean with a
+            real default (true), so there is no "unset" for a missing key to mean and a
+            client never has to guess one — see "Mentioning the assistant in the family chat"
 JoinRequest {"id": 12, "user": {User}, "created_at": "…"}
 Chat      {"id": 42, "kind": "family|direct|ai", "title": "The Smiths", "peer_user_id": 9|null}
           — "title" is the family name for the family chat, the peer's display name for direct,
@@ -99,13 +108,29 @@ Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow",
 **A body is plain text on the wire, and always has been.** No markup is parsed, transformed or
 validated by the server: `body` goes out exactly as it came in, the 4000-character limit counts the
 characters that were typed, `reply_to.excerpt` is a cut of that same raw text, and a push carries it
-verbatim. What a client does when DRAWING it is a client's business, and clients do render a small
-markdown subset in the bubble — emphasis, inline code, strikethrough and fenced code blocks — so a
-message written on one platform reads the same on another. That is a rendering convention rather
-than a wire format: a client that renders none of it shows the source, which is still exactly what
-was written, and nothing about a message means anything different because of it. Anything that
-needed the server to agree — a stored rich body, a sanitiser, a markup flag — would belong here
-instead, and does not exist.
+verbatim. What a client does when DRAWING it is a client's business, and clients do render a
+markdown subset in the bubble — emphasis, inline code, strikethrough, fenced code blocks, headings
+(`#`, `##`, `###`), bullet and numbered lists, and tables — so a message written on one platform
+reads the same on another. That is a rendering convention rather than a wire format: a client that
+renders none of it shows the source, which is still exactly what was written, and nothing about a
+message means anything different because of it. Anything that needed the server to agree — a stored
+rich body, a sanitiser, a markup flag — would belong here instead, and does not exist.
+
+The subset grew, and the wire did not, which is the whole point of it being a convention. What
+pushed it was the assistant: ask for three options and it answers with a list, ask it to compare
+two things and it answers with a table, and until the bubbles drew them those arrived as literal
+hashes and pipe characters in front of the family.
+
+**Only the three chat bubbles render it** — the family chat, a direct chat, and the assistant's
+own. Every other surface shows the same body as SOURCE, and that is deliberate in each case: the
+excerpt above a quoted reply and the preview line under a chat in the list are one line with
+nowhere to lay a table out; a push body is drawn by the operating system and never by the app; and
+copy and share must hand on the characters that were typed rather than one client's idea of what
+they looked like. The visible consequence is that `reply_to.excerpt` is a cut of raw text at 120
+characters and can land in the middle of a table row or inside a fence, quoting half a `|---|---|`.
+That is worth saying rather than hiding, because the only way to avoid it is a server that
+understands the markup well enough to cut on a boundary — which is exactly what the paragraph above
+says does not exist.
 
 `avatar_version` counts how many times that user has set a profile picture: `0` means they have
 none and clients draw initials. It is a cache key, not a URL — the bytes come from
@@ -199,8 +224,10 @@ rearrange. Notes are not messages — they carry no unread count and never appea
 told about is a board nobody reads, and a note pinned to the family wall is exactly the kind of
 thing meant to be seen. Only CREATION notifies. Edits, moves and deletes do not — tidying the wall
 is the shared act (see below), and a push for every drag would make the board unusable. The author
-is never notified of their own note. Everything else about push applies unchanged: only members
-with no live socket are pushed, because an open socket already delivers the `board_note` frame.
+is never notified of their own note. Everything else about push applies unchanged, which means
+per device: a member with the board open on a desktop still gets the note on the phone in their
+pocket, because the socket that delivered the `board_note` frame delivered it to the desktop and
+to nothing else.
 
 Counting what is new is the CLIENT's job, and it needs a marker of its own. `max_board_seq` is a
 SYNC cursor — it advances whenever a client applies a change, including a background resync — so
@@ -234,13 +261,92 @@ the change feed as `{"id": 12, "deleted": true, "board_seq": 91}` with no conten
 client who was offline when a note was removed would go on showing it forever — there is no other
 signal that it is gone. The full-board read never returns tombstones; only the change feed does.
 
+### The family's language
+
+A family may declare the ONE language it actually speaks to each other in. It is unset until
+somebody sets it, and **unset is not English.** A `NOT NULL DEFAULT 'en'` would have been a shorter
+migration and would have declared, on behalf of every family that already exists, that they speak a
+language most of them do not — and afterwards there is no way left to tell "we never chose" from
+"we chose English".
+
+The value is one of the nine locales the apps themselves ship in, spelled the way the platforms
+spell them: `en`, `de`, `es`, `fr`, `ja`, `ru`, `sr`, `sr-Latn`, `zh-Hans`. A fixed list rather
+than any well-formed BCP 47 tag, for the same reason the board's colours are a fixed list: the only
+thing that reads this is the assistant, and a family that typed something the server merely
+accepted would get answers they could not explain and no error to explain them. Anything outside
+the list is `invalid_language`. Casing is not significant coming in — `sr-latn` is the same choice
+as `sr-Latn` — and what goes back out is always the canonical spelling above, so a client can
+compare it against its own list without normalising first.
+
+Two of the nine name a SCRIPT, and that is on purpose. `sr` and `sr-Latn` are one language in two
+alphabets — a family that reads Cyrillic cannot read the answer that comes back in the other one —
+and `zh-Hans` is there for the same reason. A resolution rule that kept only the language and threw
+the script away would quietly give two of the nine choices back.
+
+Only the OWNER may set it, through `PATCH /families/mine`, where `"language": null` clears it back
+to unset and omitting the key entirely leaves it alone. Every member SEES it: it rides on the
+`Family` object, so it reaches a client from `GET /families/mine` and from `GET /me` alike — which
+matters, because `/me` is what a client bootstraps from.
+
+What it is FOR, today, is one thing: the assistant answers in it when it is asked in the family
+chat (see "Mentioning the assistant in the family chat"). It is deliberately NOT a display
+language — clients go on drawing their interface in whatever the device is set to, and a family
+setting that silently re-languaged somebody's phone would be a surprise nobody asked for. It is
+also deliberately not applied to a member's private assistant thread, for the reason given there.
+
+### Birthdays
+
+A member may have a birthday, and it is **a day and a month, with no year**. Nobody should have to
+publish their age to be wished a happy birthday, and the year is the only part of a date that
+carries one. The consequence is deliberate rather than tolerated: 29 February is a perfectly good
+birthday here, because there is no year for it to fail to exist in, and a client that wanted to
+show an age has nothing to compute one from and should not try.
+
+```json
+"birthday": {"month": 3, "day": 14}
+```
+
+One object rather than two sibling fields, because the two halves are a single fact: a birthday is
+either there or it is not, and "month but no day" is not a state anything should have to handle.
+Absent means unset — the key is simply not present, exactly as `invite_code` is not present for a
+non-owner — and it rides on both `User` and `Member`, so it arrives with `GET /me`,
+`GET /families/mine` and the join-request list without any of them needing a new call.
+
+`month` is 1–12 and `day` must be a day THAT month has: 31 April is `validation` and so is 30
+February, while 29 February is accepted. The check is the server's rather than each client's, so
+that three apps cannot end up disagreeing about which dates exist.
+
+Two endpoints write it, and which one a client uses is decided by whose birthday it is.
+`PUT /me/birthday` sets your own, and its shape is deliberately the avatar's — a `PUT` that
+replaces whatever was there and a `DELETE` that clears it — because it is the same kind of thing:
+a small optional piece of a profile that is either set or is not.
+`PUT /families/members/{user_id}/birthday` is the owner filling one in for somebody else, which is
+what makes the family calendar usable at all: a parent knows a child's birthday, and the child is
+never going to open a settings screen to type it. The owner's endpoint is scoped to their own
+family, and a user outside it answers `not_same_family` whether or not they exist — the same
+refusal, and for the same reason, as the password reset: this is personal information, and an
+endpoint that answered differently for a real stranger than for an id nobody holds would be a way
+to enumerate accounts.
+
+Unlike the password reset, the owner MAY point the roster endpoint at their own row. The reset
+refuses that because it would be a way around proving you know the current password; a birthday has
+no such proof to skip, the owner can already set their own with `PUT /me/birthday`, and both paths
+write the same two numbers. Refusing would buy nothing and would make every roster screen carry a
+special case for exactly one row.
+
+**A birthday change raises no WebSocket frame and no push.** There is no `member_updated` in this
+protocol, and this is not the feature to invent one for: a birthday is set about once, it is not
+time-critical to the second, and both clients already re-read `GET /families/mine` on every
+resync — which is where they learn it, along with anything else about the roster that moved while
+they were away. The device that made the change has the new value in its own response.
+
 ### The assistant
 
 Each member may have one private chat with an assistant, and **private is the whole point**: it
 belongs to that member alone, and no other member can read it. The assistant can also be spoken to
 in the family chat, but only by being asked for by name — see "Mentioning the assistant in the
-family chat" below, which is a separate surface with a separate and much narrower rule about what
-it is shown.
+family chat" below, which is a separate surface with a rule of its own about what it is shown, and
+a family setting that decides which of two that rule is.
 `kind` is `"ai"`, `user_a_id` is its owner, and `GET /chats` returns it only to them.
 
 **In an `ai` chat the assistant is only ever shown that member's own AI thread.** Not the family
@@ -248,11 +354,23 @@ chat, not another member's AI chat, not anything anyone else wrote. This is the 
 a self-hosted family server talk to a hosted model at all: a member asking a question sends their
 own words, and nothing anybody else said leaves the server unasked.
 
-The family chat is the one other place the assistant can be reached, and it is deliberately not a
-widening of that thread: a mention there sends **one message and nothing else**, the thread is never
-consulted, and the two never see each other's history. What leaves the server is enumerated in full
-below. Any further widening — the last N messages, the roster, a summary — would be a change to what
-leaves the building rather than a preference, and would need saying so here first.
+The family chat is the one other place the assistant can be reached, and it is a **separate surface
+with its own rule about what it is shown**. That rule was once "one message and nothing else,
+always"; it is now the family's own choice between exactly that and the recent history of the family
+chat, and the choice belongs to the owner alone (`ai_history`, described in full below). This section
+used to say that such a widening "would need saying so here first" — this is it being said. What a
+mention may send is enumerated under "Mentioning the assistant in the family chat", both settings
+are enumerated there, and nothing outside those lists is sent at either setting.
+
+Two things did NOT widen with it, and neither of them is a setting anybody can turn:
+
+- **In an `ai` chat the assistant is still only ever shown that member's own thread**, exactly as
+  above. The family chat never reaches a private thread and a private thread never reaches the
+  family chat — the two surfaces cannot see each other's history in either direction, whatever the
+  family has chosen. A member's own words stay theirs.
+- **A direct chat is never consulted by anything.** Not by a mention, not by a private thread, at
+  any setting, ever. Two people talking one-to-one are the one conversation in this protocol that
+  nothing else reads.
 
 Talking to it is an ordinary send — `POST /chats/{id}/messages` — and what comes back is ordinary
 too. The server:
@@ -303,14 +421,28 @@ screen that lists people would need a special case for it.
 **The assistant answers in the language the question was asked from.** A client sends
 `Accept-Language` with its send (Apple's URLSession does automatically; Android sets it from the
 app's own resolved locale), and the server appends one instruction to the configured system prompt
-naming that language. Only the first tag's primary subtag is used — the header may be a whole
-weighted list, and what is wanted is "the language this device is in", not a negotiation. A missing
-or unusable header adds nothing, and the model simply answers in the language it was written to.
+naming that language. Only the FIRST tag is read — the header may be a whole weighted list, and
+what is wanted is "the language this device is in", not a negotiation — and of that tag, the
+language and the script. A region is dropped, because a region is not a language: `ru-RU` is
+Russian and `de-CH` is German. A script is kept, because a script is very nearly one: `sr-Latn` is
+Serbian written in Latin letters, and a family that reads Cyrillic cannot read the answer that
+comes back if the `Latn` is quietly thrown away.
+
+That instruction goes LAST in the prompt, and there is always exactly ONE of it. Last, because
+everything above it is English — the configured prompt usually is and the mention note certainly
+is — and a model handed a paragraph of English instructions answers in English unless the final
+line says otherwise. Exactly one, because when no language can be resolved at all the instruction
+becomes "answer in the language of the message you were sent": what the model would have done
+anyway, said out loud so the English above it cannot win by default. Two sentences about language,
+or none, is precisely the failure this ordering exists to prevent.
 
 This is deliberately per-DEVICE rather than per-account: the same person may run the app in Russian
 on their phone and English on a work Mac, and each question should come back in the language it was
 asked from. It is also one system prompt rather than one per language — what the assistant is FOR
 does not change with the language, only what it answers in.
+
+All of that is the rule for a member's PRIVATE thread. The family chat resolves the language
+differently and says why under "Mentioning the assistant in the family chat".
 
 The feature is OFF unless the server is configured for it (`[ai] enabled`, an endpoint, a deployment
 and a key). A server without it simply never creates the chat, and `POST` to one that does not exist
@@ -322,7 +454,18 @@ Writing **`@ai`** in the family chat asks the assistant a question in front of e
 arrives as an ordinary message in that chat, quoting the message that asked, and every member sees
 both — there is nothing private about this half.
 
-**What leaves the server is exactly this, and nothing else:**
+**What leaves the server is one of two lists, and a single family setting decides which.**
+
+`ai_history` is a boolean on the `Family` object. Only the owner may change it, through
+`PATCH /families/mine`; it is one family-wide switch with no third state and no per-member
+override; and it is **`true` by default**, for families created after it existed and for every
+family that existed before. Defaulting the other way would have been the more cautious sentence to
+write and the wrong thing to ship: asking about something said last week is the entire reason a
+family mentions the assistant in the chat rather than in a private thread, and a feature that stays
+off until somebody finds a switch is a feature most families never see. Turning it off restores
+the older behaviour exactly — nothing else about a mention changes with it.
+
+With **`ai_history: false`**, what leaves the server is exactly this and nothing else:
 
 - the body of the message that contains the mention;
 - the body of the message it is a reply to, when the member deliberately replied to one, with that
@@ -331,8 +474,73 @@ both — there is nothing private about this half.
 Not the messages before it. Not the messages after it. Not the roster, not the family name, not the
 board, not anyone's private assistant thread, and not the previous mention or its answer — **a
 mention has no memory**, so a follow-up must repeat what it is about. The quoted message is included
-only because the member chose it by replying, which is an explicit act by somebody in the chat; the
-assistant is told, in its prompt, that this is all it can see, so it asks rather than invents.
+only because the member chose it by replying, which is an explicit act by somebody in the chat.
+
+With **`ai_history: true`** the same two things go, and in addition a **transcript of what was
+recently said in this family chat** — that, and nothing more:
+
+- one line per message, `[YYYY-MM-DD HH:MM UTC] Display Name: what was said`, ordered oldest
+  first. The timestamps are the point rather than decoration: "when did we say we'd go" is not
+  answerable by a model that has been handed a month of undated sentences. The zone is spelled out
+  on every line and again in the note that introduces the transcript, which also says that the
+  family did not see UTC and that the assistant has not been told what they did see. **No timezone
+  is stored for a family and none travels on the wire** — not with a message, not on the `Family`
+  object — so nothing here can convert, and the alternative to saying so is a model answering
+  "16:03" to a family who all read 19:03 on their own phones;
+- display names, the same names the family sees, because an answer about what Anna said needs to
+  know which of these lines are Anna's;
+- the assistant's own past replies as well — they are part of what was said, and a conversation
+  handed back with its own half missing reads as a room of people talking past each other. Those
+  lines carry the assistant's CONFIGURED name, the same `assistant.display_name` that
+  `GET /families/mine` reports and every client draws it under, and the note names it too so the
+  assistant can recognise which lines are its own;
+- **not** the mentioning message. That is the question; it already reaches the model as the
+  question, and the transcript is strictly what came before it.
+
+The transcript is given as a NOTE, the same mechanism the mention instruction already uses, and not
+as conversation turns. What the family said last Tuesday is context, not an instruction addressed to
+the assistant, and the two must not be confusable by something whose whole job is following
+instructions.
+
+**The window has an arithmetic ceiling: the intersection of three bounds.** The last **30 days**,
+the newest **200 messages**, and **40 000 characters**. Filling runs backwards from the mention and
+stops at whichever bound is reached first, so what survives is always the newest. Three bounds
+rather than one because each catches a different family: one that says ten things a month would
+otherwise send a year of them, one that says a thousand things a day would otherwise send a morning,
+and one member pasting a novel would otherwise send the novel. There is no per-family tuning and no
+rate limiting layered on top — the reason for naming the three numbers here is that the cost of a
+mention should be something a reader can point at rather than estimate.
+
+**A message that is not text contributes a placeholder plus whatever words rode with it.** A photo
+with a caption is `[photo] look at this`; without one it is `[photo]`. The five kinds are
+`[photo]`, `[video]`, `[voice note]`, `[file] receipts.pdf` and `[location] Grandma's house` — a
+file by its name, which is its whole identity, and a location by its label. A kind added later that
+this list has not been extended for renders as the bare word `[attachment]`, never as anything about
+itself.
+
+**A location contributes its label or the bare `[location]`, and NEVER its coordinates.** That is
+the rule a coordinate already lives under everywhere else here — it may not reach a log, an alert or
+a push body — and a third-party model is the strictest case of all of them, because what reaches it
+leaves the building for good. `[location] Grandma's house` says a member shared a place and what
+they called it. `[location]` says a member shared a place. Neither says where anybody was.
+
+A message with neither a body nor an attachment contributes nothing and is skipped: the empty row an
+answer streams into is exactly such a message, and a transcript quoting blank lines back at the
+assistant is noise it would try to explain. Bodies go in raw, exactly as stored — the server parses
+markup nowhere else and this is not where it starts.
+
+**The assistant is told which of the two it was given**, in its prompt: what it can see, and what it
+still cannot — with the transcript, that means nothing older than the window, no member's private
+thread, and no direct chat. Both halves matter. Without the first it invents the context it thinks
+it is missing; without the second, a model told it can see one message while a month of them sits in
+front of it answers "I cannot see the conversation" to a question about the conversation.
+
+**And it is told what the transcript IS**: the conversation itself rather than a month of
+instructions addressed to it, with its own earlier replies among the lines, and only the message
+that mentioned it a question for it to answer. The obvious phrasing — these were written between
+the family, not to you — is false of every line the assistant wrote itself, and a model told
+nothing in front of it is its own answers "I can't see our earlier conversation" with its own reply
+four lines up.
 
 The mention grammar is part of this contract, because the server decides from it whether anything is
 sent at all and each client draws the same token as a highlight — a client that highlighted
@@ -352,10 +560,17 @@ three Unicode tables agreeing; the ambiguity it exists to resolve only arises in
 a third party appearing in a conversation that had two is not something either of them asked for. A
 mention in an `ai` chat is just text — that chat already answers everything.
 
-**It answers in the language the mention was written from**, exactly as a question in a private
-thread does: the same `Accept-Language` the sending device already sends, resolved the same way.
-That matters more here than in a private thread — the answer appears in front of everyone, so the
-wrong language is visible to the whole family rather than to one person.
+**In the family chat the FAMILY's language wins.** When the owner has set one (see "The family's
+language") the answer comes back in it, whatever the asking device happens to be set to. When they
+have not, it falls back to that device's own `Accept-Language`, resolved exactly as a private
+question is. With neither, nothing is named and the assistant answers in the language the mention
+itself was written in. That order and no other, because the answer appears in front of everyone:
+the language that matters here is the family's, not that of whoever happened to be holding a phone.
+A member whose work Mac runs in English, asking a question in a family that speaks Russian, gets an
+answer the rest of the family can read.
+
+The private thread keeps the per-device rule unchanged, and the difference between the two is not
+an inconsistency: a private thread has exactly one reader, and it is the person holding the device.
 
 The sequence is the one above, with two differences: the reply carries `reply_to` naming the
 mentioning message, and the `ai_delta` frames go to **every member of the family chat**, not one
@@ -581,6 +796,8 @@ backed up alongside it.
 | `POST /auth/login` | `{username, password}` → `200 {token, user: User}`. Error: `invalid_credentials` (401). |
 | `POST /auth/logout` | (auth) → `204`. Revokes the calling session and closes its sockets. |
 | `POST /me/password` | (auth) `{current_password, new_password}` → `204`. Changing your own password requires proving you know the current one — a live session is not proof, because an unattended unlocked phone is exactly what this protects against. Every OTHER session of yours is revoked and its sockets closed; the calling session survives, so the device making the change stays signed in. Errors: `invalid_credentials` (401, wrong current password), `validation` (new password under 8 characters). |
+| `PUT /me/birthday` | (auth) `{month, day}` → `200 {user: User}`. Your own birthday: a day and a month, no year (see "Birthdays"). Replaces whatever was there. Errors: `validation` (a month outside 1–12, or a day that month does not have). |
+| `DELETE /me/birthday` | (auth) → `204`. Clears it. Idempotent — clearing a birthday nobody set is still `204`. |
 | `POST /families/members/{id}/password` | (owner) `{new_password}` → `204`. The owner resets a member's password WITHOUT knowing the current one — the whole point is that the member has forgotten it. ALL of that member's sessions are revoked and their sockets closed, so every device they are signed in on returns to login; that is what makes a reset a recovery rather than a convenience. The owner cannot target themselves here (`POST /me/password` is for that), and a user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
 | `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. |
 
@@ -607,12 +824,14 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`. |
 | `GET /families/mine` | → `200 {family: Family, members: [Member], max_board_seq: 88, assistant: {user_id, display_name, mention}}`. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. `family.invite_code` present for the owner only. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
-| `PATCH /families/mine` | (owner) `{join_policy: "open"\|"approval"}` → `200 {family: Family}`. |
+| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval", language?: "ru"\|null, ai_history?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language, while leaving the key out entirely leaves it alone — the one place in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is neither), `invalid_language`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
 | `POST /families/join-requests/{id}/approve` | (owner) → `200 {member: Member}`. Errors: `join_request_not_pending`, `user_already_in_family`. |
 | `POST /families/join-requests/{id}/reject` | (owner) → `204`. Error: `join_request_not_pending`. |
 | `POST /families/leave` | → `204`. The owner may leave only as the sole member (the family is then deleted); otherwise `409 owner_cannot_leave`. Leaving removes the caller from the family chat and their direct chats; history is retained and resurfaces on rejoin. |
 | `DELETE /families/members/{user_id}` | (owner) → `204`. Error: `cannot_remove_owner`. |
+| `PUT /families/members/{user_id}/birthday` | (owner) `{month, day}` → `200 {member: Member}`. The owner filling in a birthday for a member of their own family — a parent for a child, typically. The owner MAY name themselves here, unlike the password reset: there is no proof being skipped (see "Birthdays"). A user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
+| `DELETE /families/members/{user_id}/birthday` | (owner) → `204`. Clears it. Idempotent. Same errors. |
 
 ### Attachments
 
@@ -652,7 +871,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /devices` | `{platform: "ios"\|"macos"\|"android", push_token: string\|null}` → `201 {device_id}`. Upserts by token when non-null. `macos` is delivered over APNs alongside `ios` — the macOS build shares the iOS bundle id, so it shares the APNs topic and the payload is identical; it is a distinct platform in the DATA because a Mac claiming to be an iPhone makes every future question about delivery harder to answer. |
+| `POST /devices` | `{platform: "ios"\|"macos"\|"android", push_token: string\|null}` → `201 {device_id}`. Upserts by token when non-null. `macos` is delivered over APNs alongside `ios` — the macOS build shares the iOS bundle id, so it shares the APNs topic and the payload is identical; it is a distinct platform in the DATA because a Mac claiming to be an iPhone makes every future question about delivery harder to answer. The caller's SESSION is recorded on the row as well, which is what makes the push gate per-device — see "Push notifications"; re-POST on every launch so it stays true. |
 | `DELETE /devices/{id}` | → `204`. Error: `device_not_found`. |
 
 ### Ops
@@ -754,15 +973,64 @@ apply it under the same rule the board catch-up uses: a note is written only whe
 
 ## Push notifications
 
-The server pushes only to users with **no live socket** (an open WebSocket means the device is
-getting frames already). Four events push: a **new message** (to every offline chat member), a
-**new board note** (to every other offline family member), a **join request created** (to the family
-owner), and a **join request approved** (to the requester). Typing, reads, reactions, note moves and
-edits, and other frames never push.
+The server pushes **per device, not per user**. A device is pushed unless the session it
+registered itself with has a live WebSocket at that moment — an open socket is already carrying
+the frames, so waking the device holding it would only say the same thing twice.
+
+That last sentence is a fact about ONE device, and it was for a long time applied to the whole
+person, which is a different and wrong rule. The three apps treat their sockets differently on
+purpose: a desktop app holds its socket open for as long as it is running, iOS suspends its socket
+the moment the app is backgrounded, and Android closes its socket outright. So "does this user have
+a socket" was always answered by whichever device needed the alert least. Somebody with a Mac
+running at home heard nothing on any phone all day — the machine that was certainly being watched
+silenced the two that were not.
+
+The consequence of the per-device rule is deliberate and worth stating: a member reading on their
+Mac also gets a banner on the phone in their pocket, for a message they are already looking at.
+The phone cannot know what the Mac is showing — nothing in this protocol tells it — and a
+redundant banner is a far smaller harm than a message nobody is told about. Every desktop chat
+client makes the same trade. What stays whole-user is the SENDER: none of your own devices is ever
+told about your own message, note or join, and none ever was.
+
+A device learns its session from the bearer token it registers with, so nothing new travels on the
+wire: `POST /devices` records the caller's session on the row. A device whose session is UNKNOWN is
+pushed: the server cannot prove anyone is looking at it, and it errs towards the alert. Unknown now
+means one thing only — a row written before this rule existed — and it heals on that device's next
+launch, because clients re-POST `/devices` every time they start. A STALE link (a session that is
+valid but has no socket open on it right now) is the ordinary case and is exactly what gets the
+push. Both fall on the side of a notification too many, which is the side this rule exists to fall
+on.
+
+**A device that is signed out is not pushed at all**, and that is the one place the doubt runs the
+other way. Two things sign a device out and both are handled at the source rather than by this
+rule:
+
+- **Revoked.** Deleting a session deletes the devices registered from it. A logout, a password
+  change (which revokes every other session) and an owner resetting a member's password (which
+  revokes all of them) therefore take those devices' push tokens away with them — which is what
+  makes "a device somebody else is holding stops working the moment the reset lands" true of the
+  lock screen as well as of the API. The device re-registers on its next launch, if whoever holds
+  it can still sign in.
+- **Expired.** A session that has passed its expiry is not deleted, only left behind, so a device
+  can go on naming one for as long as its row survives. Such a device is skipped: the link has to
+  name a session that is still alive, not merely one that still exists.
+
+Neither is a case of "the server cannot tell", which is why neither gets the benefit of the doubt.
+A signed-out phone showing family message bodies on its lock screen is not a redundant banner; it
+is a leak, and it lasts until somebody notices.
+
+Four events push: a **new message** (to every chat member but the sender), a **new board note** (to
+every family member but the author), a **join request created** (to the family owner), and a **join
+request approved** (to the requester) — each of them narrowed device by device by the rule above.
+Typing, reads, reactions, note moves and edits, and other frames never push.
 
 Device lifecycle: `POST /devices {platform, push_token}` upserts by token (re-login moves the
 token to the new account); the response `device_id` should be stored so `DELETE /devices/{id}`
-can be called on logout. Clients re-POST whenever the OS rotates the token. A push rejected as
+can be called on logout. That call is a courtesy rather than the guarantee — `POST /auth/logout`
+removes the session's devices anyway — so a client whose best-effort delete fails has not left a
+signed-out phone receiving alerts. Clients re-POST on every launch, after every login, and whenever
+the OS rotates the token — the launch re-POST is also what keeps the session link fresh, and after
+any of the sign-outs above it is what brings the device back at all. A push rejected as
 unregistered (APNs `410`/`BadDeviceToken`, FCM `UNREGISTERED`) deletes the device row.
 
 Titles: direct chat → sender's display name; family chat → `"<Family> — <Sender>"`. Body: the
@@ -793,7 +1061,7 @@ APNs (token-based auth, HTTP/2): headers `apns-topic` = bundle id, `apns-push-ty
 `"kind": "join_request"` / `"kind": "joined"` with `family_id` instead of chat/message ids.)
 
 FCM (HTTP v1): notification + data so the system tray renders when the app is dead, while a
-foregrounded app (socket live) is never pushed at all:
+foregrounded app — its own socket live — is never pushed at all:
 
 ```json
 {"message": {"token": "…",
@@ -817,3 +1085,4 @@ join-requests screen for `join_request`, the chat list for `joined`).
 | Profile picture | 256 KiB |
 | Per-socket outbound queue | 64 frames |
 | Session TTL | 180 days, sliding |
+| Family-chat history sent with a mention | 30 days / 200 messages / 40 000 chars, whichever binds first (fixed) |

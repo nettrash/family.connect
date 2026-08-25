@@ -2,8 +2,9 @@
 //  MacFamilyView.swift
 //  FamilyConnect
 //
-//  The family on the Mac: who is in it, who is asking to join, and the
-//  invite code — plus starting a direct chat with any of them.
+//  The family on the Mac: who is in it, who is asking to join, the
+//  invite code and the assistant's two family settings — plus starting a
+//  direct chat with any of them.
 //
 //  One sheet rather than the phone's two screens (New Chat, Manage
 //  Family). On a phone those are separate destinations because a phone
@@ -38,6 +39,8 @@ struct MacFamilyView: View {
     @State private var busy = false
     @State private var errorText: String?
     @State private var resetting: MemberDTO?
+    /// The member whose birthday the owner is editing; nil while closed.
+    @State private var editingBirthday: MemberDTO?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,6 +50,14 @@ struct MacFamilyView: View {
                 if session.isOwner {
                     inviteSection
                     if !requests.isEmpty { requestsSection }
+                    if let family = session.family {
+                        // The same two sections the phone shows, from the
+                        // same file — a setting changed on one device has
+                        // to be findable on the other.
+                        FamilyAssistantSettings(family: family) { updated in
+                            session.applyFamily(updated)
+                        }
+                    }
                 }
                 membersSection
             }
@@ -70,6 +81,12 @@ struct MacFamilyView: View {
         .task { await reload() }
         .sheet(item: $resetting) { member in
             ResetPasswordView(member: member)
+                .frame(width: 420)
+        }
+        .sheet(item: $editingBirthday) { member in
+            // The roster draws SwiftData, and applyMemberBirthday writes
+            // there, so there is nothing further for this screen to patch.
+            MemberBirthdayView(member: member) { _ in }
                 .frame(width: 420)
         }
     }
@@ -152,9 +169,17 @@ struct MacFamilyView: View {
                         size: 28)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(member.displayName)
+                        // The username, and the birthday under it when
+                        // there is one — day and month in the reader's
+                        // locale, never a year and never an age.
                         Text("@\(member.username)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if let birthday = member.birthday {
+                            Label(birthday.formatted(), systemImage: "birthday.cake")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
                     if member.role == "owner" {
@@ -168,14 +193,21 @@ struct MacFamilyView: View {
                     if !member.isCurrentUser {
                         Button("Message") { openDirect(member) }
                     }
-                    // Owner tools, and never aimed at the owner: they
-                    // change their own password in Settings, with the
-                    // current one.
-                    if session.isOwner, !member.isCurrentUser, member.role != "owner" {
+                    // Owner tools. The birthday editor is offered on
+                    // EVERY row, the owner's own included, because the
+                    // roster endpoint accepts their id (protocol.md,
+                    // "Birthdays") — the other two are never aimed at the
+                    // owner, who changes their own password in Settings,
+                    // with the current one.
+                    if session.isOwner {
                         Menu {
-                            Button("Reset Password…") { resetting = member.dto }
-                            Button("Remove from Family", role: .destructive) {
-                                remove(member)
+                            Button("Birthday…") { editingBirthday = member.dto }
+                            if !member.isCurrentUser, member.role != "owner" {
+                                Divider()
+                                Button("Reset Password…") { resetting = member.dto }
+                                Button("Remove from Family", role: .destructive) {
+                                    remove(member)
+                                }
                             }
                         } label: {
                             Image(systemName: "ellipsis.circle")
@@ -193,6 +225,12 @@ struct MacFamilyView: View {
 
     private func reload() async {
         guard session.isOwner else { return }
+        // Re-read the family rather than trusting the cached one: the
+        // invite code can be rotated from another device, and so can the
+        // two assistant settings drawn above.
+        if let mine = try? await coordinator.api.myFamily() {
+            session.applyFamily(mine.family)
+        }
         inviteCode = session.family?.inviteCode
         requests = (try? await coordinator.api.joinRequests()) ?? []
     }

@@ -144,6 +144,44 @@ object MessageLinks {
     }
 
     /**
+     * The first web link a body DRAWS — what the preview card under the
+     * balloon describes.
+     *
+     * TABLE CELLS COUNT, and that is the whole reason this exists rather
+     * than a `flatMap { it.links }` at the call site. A cell carries no
+     * links by construction ([MessageMarkdown.cell] says why: a cell is
+     * not an offset space, so a link in one could not be hit-tested), and
+     * a URL typed into one is therefore drawn as characters nobody can
+     * tap. The card is then the ONLY way in — a better answer than
+     * pretending the reader never saw it, and the answer Apple already
+     * gives (`MessageLinks.firstWebLinkAsDrawn`, which scans the flat
+     * render, tables included).
+     *
+     * In block order, and inside a table in reading order, so "the first"
+     * means the same message on both platforms. Text blocks go through
+     * [mergeSpans] exactly as the drawing does — the author's own
+     * destination beats a label that disagrees with it, so a
+     * `[label](url)` message previews the URL it actually opens.
+     */
+    fun firstDrawnWebLinkUrl(blocks: List<MessageMarkdown.Block>): String? {
+        for (block in blocks) {
+            when (block) {
+                is MessageMarkdown.Block.Text -> {
+                    val links = mergeSpans(block.rendered.links, linkSpans(block.rendered.text))
+                    links.firstWebLinkUrl()?.let { return it }
+                }
+                is MessageMarkdown.Block.Table -> {
+                    val cells = block.header.asSequence() + block.rows.asSequence().flatten()
+                    for (cell in cells) {
+                        linkSpans(cell.text).firstWebLinkUrl()?.let { return it }
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /**
      * The `@ai` mention, marked so it reads as addressed to somebody.
      *
      * Same grammar the SERVER decides by ([AssistantMention], mirrored in

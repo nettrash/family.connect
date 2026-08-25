@@ -1,9 +1,17 @@
 //! Device registration (the v1 push hook) and the health endpoint.
 //!
-//! Devices exist so the message fan-out can find push tokens for offline
-//! members; nothing is delivered in v1 (the `log` driver). Upsert-by-token
-//! matters because APNs/FCM tokens migrate between accounts on shared
-//! devices — the token, not the row, is the identity.
+//! Devices exist so the message fan-out can find push tokens for the
+//! devices that are not already being fed by a socket; nothing is delivered
+//! in v1 (the `log` driver). Upsert-by-token matters because APNs/FCM
+//! tokens migrate between accounts on shared devices — the token, not the
+//! row, is the identity.
+//!
+//! Registration is also where a device learns which SESSION it is, which is
+//! what makes push targeting per-device rather than per-user
+//! (docs/protocol.md, "Push notifications"). Nothing new is sent to get it:
+//! the caller's bearer token already names a session, and the socket that
+//! device opens later authenticates with the same token, so the two ends
+//! meet on the same row.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -45,27 +53,37 @@ pub async fn register_device(
         Some(token) => {
             // Upsert by token: if the token moved to another account (same
             // physical device, new login), re-home the row.
+            //
+            // The UPDATE branch is the one that carries the session, and it
+            // is the one that matters: a device re-registers its token on
+            // every launch, which is what keeps the link pointing at the
+            // session that is actually opening sockets rather than at one
+            // that was revoked at some previous login.
             sqlx::query_scalar(
-                "INSERT INTO devices (user_id, platform, push_token)
-                 VALUES ($1, $2, $3)
+                "INSERT INTO devices (user_id, platform, push_token, session_id)
+                 VALUES ($1, $2, $3, $4)
                  ON CONFLICT (push_token) WHERE push_token IS NOT NULL
                  DO UPDATE SET user_id = EXCLUDED.user_id,
                                platform = EXCLUDED.platform,
+                               session_id = EXCLUDED.session_id,
                                updated_at = now()
                  RETURNING id",
             )
             .bind(auth.user_id)
             .bind(&req.platform)
             .bind(token)
+            .bind(auth.session_id)
             .fetch_one(&state.pool)
             .await?
         }
         None => {
             sqlx::query_scalar(
-                "INSERT INTO devices (user_id, platform) VALUES ($1, $2) RETURNING id",
+                "INSERT INTO devices (user_id, platform, session_id)
+                 VALUES ($1, $2, $3) RETURNING id",
             )
             .bind(auth.user_id)
             .bind(&req.platform)
+            .bind(auth.session_id)
             .fetch_one(&state.pool)
             .await?
         }

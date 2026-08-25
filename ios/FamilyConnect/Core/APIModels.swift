@@ -43,6 +43,29 @@ nonisolated enum APICoding {
 
 // MARK: - Objects (protocol.md §Objects)
 
+/// A day and a month, with no year — deliberately, so nobody has to
+/// publish their age to be wished a happy birthday (protocol.md,
+/// "Birthdays").
+///
+/// Two integers and NOT a `Date`: the shared decoder above is `.iso8601`,
+/// and there is no year here for a calendar to anchor to. 29 February is
+/// a perfectly good birthday for the same reason.
+///
+/// One object rather than two sibling fields on `User`/`Member`, because
+/// the two halves are a single fact: a birthday is either there or it is
+/// not, and "month but no day" is not a state anything should handle.
+nonisolated struct BirthdayDTO: Codable, Equatable, Hashable, Sendable {
+    /// 1–12.
+    let month: Int
+    /// A day the month actually has — 1–29 for February, since no year.
+    let day: Int
+
+    init(month: Int, day: Int) {
+        self.month = month
+        self.day = day
+    }
+}
+
 nonisolated struct UserDTO: Codable, Equatable, Sendable {
     let id: Int64
     let username: String
@@ -51,6 +74,8 @@ nonisolated struct UserDTO: Codable, Equatable, Sendable {
     /// `0` = no profile picture. Absent on a server older than the
     /// avatars release, hence the default rather than an Optional.
     var avatarVersion: Int64 = 0
+    /// Present when (and only when) one is set — absence IS "unset".
+    var birthday: BirthdayDTO?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -58,14 +83,23 @@ nonisolated struct UserDTO: Codable, Equatable, Sendable {
         case displayName = "display_name"
         case createdAt = "created_at"
         case avatarVersion = "avatar_version"
+        case birthday
     }
 
-    init(id: Int64, username: String, displayName: String, createdAt: Date?, avatarVersion: Int64 = 0) {
+    init(
+        id: Int64,
+        username: String,
+        displayName: String,
+        createdAt: Date?,
+        avatarVersion: Int64 = 0,
+        birthday: BirthdayDTO? = nil
+    ) {
         self.id = id
         self.username = username
         self.displayName = displayName
         self.createdAt = createdAt
         self.avatarVersion = avatarVersion
+        self.birthday = birthday
     }
 
     /// Hand-written because a property default is NOT what Swift's
@@ -79,6 +113,7 @@ nonisolated struct UserDTO: Codable, Equatable, Sendable {
         displayName = try container.decode(String.self, forKey: .displayName)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
         avatarVersion = try container.decodeIfPresent(Int64.self, forKey: .avatarVersion) ?? 0
+        birthday = try container.decodeIfPresent(BirthdayDTO.self, forKey: .birthday)
     }
 }
 
@@ -91,6 +126,8 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
     /// `0` = no profile picture. Absent on a server older than the
     /// avatars release, hence the default rather than an Optional.
     var avatarVersion: Int64 = 0
+    /// Present when (and only when) one is set — absence IS "unset".
+    var birthday: BirthdayDTO?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -98,14 +135,23 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
         case displayName = "display_name"
         case role
         case avatarVersion = "avatar_version"
+        case birthday
     }
 
-    init(id: Int64, username: String, displayName: String, role: String, avatarVersion: Int64 = 0) {
+    init(
+        id: Int64,
+        username: String,
+        displayName: String,
+        role: String,
+        avatarVersion: Int64 = 0,
+        birthday: BirthdayDTO? = nil
+    ) {
         self.id = id
         self.username = username
         self.displayName = displayName
         self.role = role
         self.avatarVersion = avatarVersion
+        self.birthday = birthday
     }
 
     /// See UserDTO.init(from:) — a defaulted property is not a decoding
@@ -117,6 +163,22 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
         displayName = try container.decode(String.self, forKey: .displayName)
         role = try container.decode(String.self, forKey: .role)
         avatarVersion = try container.decodeIfPresent(Int64.self, forKey: .avatarVersion) ?? 0
+        birthday = try container.decodeIfPresent(BirthdayDTO.self, forKey: .birthday)
+    }
+
+    /// The same member wearing a different birthday. The roster screens
+    /// patch the row they already hold after an edit rather than re-reading
+    /// the whole family — a birthday raises no frame and no push
+    /// (protocol.md, "Birthdays"), so the editing device is the only one
+    /// that can show it before the next resync.
+    func withBirthday(_ birthday: BirthdayDTO?) -> MemberDTO {
+        MemberDTO(
+            id: id,
+            username: username,
+            displayName: displayName,
+            role: role,
+            avatarVersion: avatarVersion,
+            birthday: birthday)
     }
 }
 
@@ -128,6 +190,14 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     let createdAt: Date?
     /// Present when (and only when) the caller is the owner.
     let inviteCode: String?
+    /// One of the nine tags in `FamilyLanguage`, or nil for UNSET — and
+    /// unset is not English (protocol.md, "The family's language"). The
+    /// wire says so by omitting the key, so this must stay an Optional.
+    let language: String?
+    /// Whether a mention of `@ai` in the family chat is shown the last
+    /// month of it. ALWAYS present on the wire — a switch has no "unset" —
+    /// but `true` here is the fallback for a server that predates it.
+    let aiHistory: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -135,6 +205,43 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         case joinPolicy = "join_policy"
         case createdAt = "created_at"
         case inviteCode = "invite_code"
+        case language
+        case aiHistory = "ai_history"
+    }
+
+    init(
+        id: Int64,
+        name: String,
+        joinPolicy: String,
+        createdAt: Date?,
+        inviteCode: String?,
+        language: String? = nil,
+        aiHistory: Bool = true
+    ) {
+        self.id = id
+        self.name = name
+        self.joinPolicy = joinPolicy
+        self.createdAt = createdAt
+        self.inviteCode = inviteCode
+        self.language = language
+        self.aiHistory = aiHistory
+    }
+
+    /// Hand-written for the reason UserDTO's is, and this type had no
+    /// decoder at all until the two fields below arrived: Swift does NOT
+    /// fall back to a property's default for a missing key, it THROWS. A
+    /// synthesized decoder plus `aiHistory = true` would therefore make
+    /// every response from a server that predates the setting — /me
+    /// included, which is what the app bootstraps from — undecodable.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int64.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        joinPolicy = try container.decode(String.self, forKey: .joinPolicy)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+        inviteCode = try container.decodeIfPresent(String.self, forKey: .inviteCode)
+        language = try container.decodeIfPresent(String.self, forKey: .language)
+        aiHistory = try container.decodeIfPresent(Bool.self, forKey: .aiHistory) ?? true
     }
 }
 
@@ -416,6 +523,14 @@ nonisolated struct AuthResponse: Codable, Equatable, Sendable {
 
 /// `PUT /me/avatar` reply — the caller with their new `avatar_version`.
 nonisolated struct AvatarResponse: Codable, Equatable, Sendable {
+    let user: UserDTO
+}
+
+/// `PUT /me/birthday` reply — the caller with the birthday they just set.
+/// The same shape as AvatarResponse and deliberately not the same type:
+/// this file's rule is one named envelope per endpoint, so a reviewer can
+/// diff it against the protocol table line by line.
+nonisolated struct UserResponse: Codable, Equatable, Sendable {
     let user: UserDTO
 }
 

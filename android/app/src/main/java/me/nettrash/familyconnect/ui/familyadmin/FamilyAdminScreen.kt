@@ -4,8 +4,10 @@
  *
  * Owner console: pending requests with approve/reject, invite-code
  * rotation (confirmed — the old code dies immediately), join-policy
- * toggle, member list with remove (confirmed; the owner row has no
- * remove — the protocol forbids removing the owner).
+ * toggle, the family's language, whether a mention of the assistant sees
+ * the chat's recent history, member list with remove (confirmed; the
+ * owner row has no remove — the protocol forbids removing the owner) and
+ * a birthday editor on every row, the owner's own included.
  *
  * iOS counterpart: ios/FamilyConnect/UI/FamilyAdmin/FamilyAdminView.swift
  */
@@ -19,6 +21,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -28,7 +31,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -37,6 +42,9 @@ import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Cake
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material3.OutlinedTextField
@@ -51,7 +59,11 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
@@ -60,6 +72,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -76,6 +89,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
@@ -88,6 +102,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.MemberEntity
+import me.nettrash.familyconnect.data.net.dto.BirthdayDto
+import me.nettrash.familyconnect.util.TimeFormat
+import me.nettrash.familyconnect.util.daysInBirthdayMonth
+import java.time.LocalDate
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
 import me.nettrash.familyconnect.ui.components.EmptyState
@@ -113,6 +131,9 @@ fun FamilyAdminScreen(
     var confirmRemove by remember { mutableStateOf<MemberEntity?>(null) }
     /// The member whose password the owner is resetting; null while closed.
     var resetTarget by remember { mutableStateOf<MemberEntity?>(null) }
+    /// The member whose birthday the owner is editing — their own row included.
+    var birthdayTarget by remember { mutableStateOf<MemberEntity?>(null) }
+    var pickingLanguage by remember { mutableStateOf(false) }
 
     // Rows hide-and-shrink the moment an approve/reject/remove is fired,
     // so the departure animates instead of snapping when the server's
@@ -344,6 +365,71 @@ fun FamilyAdminScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
                 SectionDivider()
+
+                // -- Family language ---------------------------------------------------
+                Text(
+                    text = stringResource(R.string.s_family_language),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+                )
+                ListItem(
+                    headlineContent = {
+                        // Unset is not English, on the wire or here: a
+                        // family that never chose reads as "Not set", and
+                        // choosing English is a different thing they can
+                        // see they have done.
+                        Text(
+                            FAMILY_LANGUAGES.firstOrNull { it.first == state.language }?.second
+                                ?: stringResource(R.string.s_not_set),
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            Icons.Outlined.Language,
+                            contentDescription = null,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    },
+                    trailingContent = {
+                        Icon(
+                            Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    modifier = Modifier.clickable(enabled = !state.busy) { pickingLanguage = true },
+                )
+                Text(
+                    text = stringResource(R.string.s_family_language_explanation),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+                SectionDivider()
+
+                // -- What a mention of the assistant may see ---------------------------
+                // This is the setting that decides what leaves the
+                // server, so it says so in full rather than behind a
+                // label — same treatment as the two privacy switches in
+                // Settings.
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.s_assistant_history)) },
+                    supportingContent = {
+                        Text(stringResource(R.string.s_assistant_history_explanation))
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = state.aiHistory,
+                            onCheckedChange = viewModel::setAiHistory,
+                            enabled = !state.busy,
+                        )
+                    },
+                    modifier = Modifier.clickable(enabled = !state.busy) {
+                        viewModel.setAiHistory(!state.aiHistory)
+                    },
+                )
+                SectionDivider()
             }
 
             // -- Members ------------------------------------------------------------
@@ -363,7 +449,20 @@ fun FamilyAdminScreen(
                         ListItem(
                             headlineContent = { Text(member.displayName) },
                             supportingContent = {
-                                Text("@${member.username}" + if (member.role == "owner") " · owner" else "")
+                                // Every member sees a birthday that is
+                                // set — knowing when it is, is the whole
+                                // point of storing one. Day and month
+                                // only: there is no year on the wire and
+                                // nothing here computes an age.
+                                Text(
+                                    "@${member.username}" +
+                                        (if (member.role == "owner") " · owner" else "") +
+                                        (
+                                            member.birthday
+                                                ?.let { " · " + TimeFormat.birthday(it.month, it.day) }
+                                                .orEmpty()
+                                            ),
+                                )
                             },
                             leadingContent = {
                                 Avatar(
@@ -373,34 +472,55 @@ fun FamilyAdminScreen(
                                 )
                             },
                             trailingContent = {
-                                // Removing is an owner action. The owner
-                                // can't be removed (protocol:
-                                // cannot_remove_owner) — and that's also me here.
-                                if (isOwner && member.role != "owner" && member.userId != myUserId) {
+                                if (isOwner) {
                                     Row {
-                                        // The owner changes their own
-                                        // password in Settings, with the
-                                        // current one — hence the same
-                                        // gate as Remove.
+                                        // Every row, the owner's own
+                                        // included: the roster endpoint
+                                        // accepts the owner naming
+                                        // themselves, because there is no
+                                        // proof being skipped the way the
+                                        // password reset skips one
+                                        // (protocol.md, "Birthdays").
                                         IconButton(
-                                            onClick = { resetTarget = member },
+                                            onClick = { birthdayTarget = member },
                                             enabled = !state.busy,
                                         ) {
                                             Icon(
-                                                Icons.Filled.Key,
-                                                contentDescription =
-                                                    "Reset ${member.displayName}'s password",
+                                                Icons.Outlined.Cake,
+                                                contentDescription = stringResource(
+                                                    R.string.s_birthday_for,
+                                                    member.displayName,
+                                                ),
                                             )
                                         }
-                                        IconButton(
-                                            onClick = { confirmRemove = member },
-                                            enabled = !state.busy,
-                                        ) {
-                                            Icon(
-                                                Icons.Filled.PersonRemove,
-                                                contentDescription = "Remove ${member.displayName}",
-                                                tint = MaterialTheme.colorScheme.error,
-                                            )
+                                        // Removing is an owner action. The owner
+                                        // can't be removed (protocol:
+                                        // cannot_remove_owner) — and that's also me here.
+                                        if (member.role != "owner" && member.userId != myUserId) {
+                                            // The owner changes their own
+                                            // password in Settings, with the
+                                            // current one — hence the same
+                                            // gate as Remove.
+                                            IconButton(
+                                                onClick = { resetTarget = member },
+                                                enabled = !state.busy,
+                                            ) {
+                                                Icon(
+                                                    Icons.Filled.Key,
+                                                    contentDescription =
+                                                        "Reset ${member.displayName}'s password",
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = { confirmRemove = member },
+                                                enabled = !state.busy,
+                                            ) {
+                                                Icon(
+                                                    Icons.Filled.PersonRemove,
+                                                    contentDescription = "Remove ${member.displayName}",
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -459,6 +579,34 @@ fun FamilyAdminScreen(
                 TextButton(onClick = { confirmRemove = null }) {
                     Text(stringResource(R.string.s_cancel))
                 }
+            },
+        )
+    }
+
+    if (pickingLanguage) {
+        LanguagePickerDialog(
+            selected = state.language,
+            onDismiss = { pickingLanguage = false },
+            onPick = { tag ->
+                viewModel.setLanguage(tag)
+                pickingLanguage = false
+            },
+        )
+    }
+
+    birthdayTarget?.let { member ->
+        BirthdayDialog(
+            title = stringResource(R.string.s_birthday_for, member.displayName),
+            birthday = member.birthday,
+            busy = state.busy,
+            onDismiss = { birthdayTarget = null },
+            onSave = { month, day ->
+                viewModel.setMemberBirthday(member.userId, month, day)
+                birthdayTarget = null
+            },
+            onRemove = {
+                viewModel.clearMemberBirthday(member.userId)
+                birthdayTarget = null
             },
         )
     }
@@ -574,6 +722,229 @@ fun SetPasswordDialog(
 }
 
 const val MIN_PASSWORD_LENGTH = 8
+
+/**
+ * The nine languages a family may declare, each written in ITS OWN —
+ * the way every operating system's language picker does it, because
+ * somebody looking for their language scans for the word they recognise
+ * rather than for its English name.
+ *
+ * Spelled and ordered exactly as docs/protocol.md spells them: the list
+ * is fixed, casing is canonical coming back out, and anything outside it
+ * is `invalid_language`. Two of the nine name a SCRIPT rather than a
+ * language, and that is the point — a family that reads Cyrillic cannot
+ * read an answer that comes back in Latin letters.
+ *
+ * Deliberately NOT in strings.xml: these names read the same in every
+ * locale, so translating them would mean nine copies of one list that
+ * must never disagree.
+ *
+ * `internal` so FamilyLanguagesTest can pin the tags and the scripts
+ * against protocol.md and against the iOS list they must match.
+ */
+internal val FAMILY_LANGUAGES = listOf(
+    "en" to "English",
+    "de" to "Deutsch",
+    "es" to "Español",
+    "fr" to "Français",
+    "ja" to "日本語",
+    "ru" to "Русский",
+    "sr" to "Српски",
+    // In LATIN letters, matching iOS (FamilyLanguage.swift). This is the
+    // one row whose entire purpose is the alphabet: written in Cyrillic
+    // it is indistinguishable from the row above it to exactly the
+    // person the split exists for, who cannot read either of them.
+    "sr-Latn" to "Srpski (latinica)",
+    "zh-Hans" to "简体中文",
+)
+
+/**
+ * Ten choices, so a radio list rather than the segmented row the join
+ * policy uses — nine languages plus "not set" do not fit two segments,
+ * and would not fit nine either.
+ *
+ * A pick applies immediately: there is nothing to confirm, and the
+ * server's answer is what the row below redraws from.
+ */
+@Composable
+private fun LanguagePickerDialog(
+    selected: String?,
+    onDismiss: () -> Unit,
+    onPick: (String?) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.s_family_language)) },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                // Unset has to be reachable, because it is a state the
+                // wire has and English is not it.
+                LanguageChoice(
+                    label = stringResource(R.string.s_not_set),
+                    selected = selected == null,
+                    onClick = { onPick(null) },
+                )
+                FAMILY_LANGUAGES.forEach { (tag, name) ->
+                    LanguageChoice(
+                        label = name,
+                        selected = selected == tag,
+                        onClick = { onPick(tag) },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_close)) }
+        },
+    )
+}
+
+@Composable
+private fun LanguageChoice(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Null onClick: the whole row is the target, and a button that
+        // handled its own click would swallow half of it.
+        RadioButton(selected = selected, onClick = null)
+        Spacer(Modifier.width(12.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+/**
+ * A day and a month, and no way to enter a year — the picker has none to
+ * ask for, because a birthday on the wire has none to carry
+ * (docs/protocol.md, "Birthdays").
+ *
+ * The day list is the month's own length with February at 29: with no
+ * year, 29 February cannot fail to exist, and the server accepts it. The
+ * server is still the authority on the day-vs-month rule — this only
+ * stops an impossible date being offered in the first place, and a
+ * refusal from the server is shown rather than swallowed.
+ *
+ * Shared with Settings, exactly as SetPasswordDialog is: the owner
+ * filling one in for somebody else and a member filling in their own are
+ * the same editor over two different endpoints.
+ */
+@Composable
+fun BirthdayDialog(
+    title: String,
+    birthday: BirthdayDto?,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (month: Int, day: Int) -> Unit,
+    onRemove: () -> Unit,
+) {
+    // Today, when there is nothing set yet: a picker that opens on
+    // 1 January looks like a value somebody chose.
+    val today = remember { LocalDate.now() }
+    // Keyed on the value being edited: one dialog serves every roster
+    // row, and a picker that kept the last member's date would offer to
+    // save it onto the next one.
+    var month by remember(birthday) { mutableStateOf(birthday?.month ?: today.monthValue) }
+    var day by remember(birthday) { mutableStateOf(birthday?.day ?: today.dayOfMonth) }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    stringResource(R.string.s_day_and_month_no_year),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    DatePartField(
+                        label = stringResource(R.string.s_month),
+                        value = TimeFormat.monthName(month),
+                        enabled = !busy,
+                        options = (1..12).map { it to TimeFormat.monthName(it) },
+                        onPick = { picked ->
+                            month = picked
+                            // 31 March → February has to give: the day
+                            // list is about to be shorter than the day
+                            // that is selected.
+                            day = day.coerceAtMost(daysInBirthdayMonth(picked))
+                        },
+                        modifier = Modifier.weight(1.6f),
+                    )
+                    DatePartField(
+                        label = stringResource(R.string.s_day),
+                        value = day.toString(),
+                        enabled = !busy,
+                        options = (1..daysInBirthdayMonth(month)).map { it to it.toString() },
+                        onPick = { day = it },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !busy, onClick = { onSave(month, day) }) {
+                Text(stringResource(R.string.s_save))
+            }
+        },
+        dismissButton = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Only offered when there is something to remove — a
+                // birthday nobody set has nothing to clear, even though
+                // the endpoint would happily 204.
+                if (birthday != null) {
+                    DestructiveTextButton(
+                        label = stringResource(R.string.s_remove),
+                        onClick = onRemove,
+                    )
+                }
+                TextButton(onClick = onDismiss, enabled = !busy) {
+                    Text(stringResource(R.string.s_cancel))
+                }
+            }
+        },
+    )
+}
+
+/** One labelled value that opens a menu of the values it may take. */
+@Composable
+private fun DatePartField(
+    label: String,
+    value: String,
+    enabled: Boolean,
+    options: List<Pair<Int, String>>,
+    onPick: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var open by remember { mutableStateOf(false) }
+    Column(modifier = modifier) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(
+            onClick = { open = true },
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(value, maxLines = 1)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEach { (candidate, text) ->
+                DropdownMenuItem(
+                    text = { Text(text) },
+                    onClick = {
+                        onPick(candidate)
+                        open = false
+                    },
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun SectionDivider() {

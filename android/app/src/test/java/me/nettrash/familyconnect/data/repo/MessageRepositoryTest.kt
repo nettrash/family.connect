@@ -373,7 +373,7 @@ class MessageRepositoryTest {
     fun liveInboundMessageBumpsUnreadWhenChatIsNotOpen() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
-        chatRepository.setOpenChat(null)
+        chatRepository.setOpenChat(null, atNewest = false)
 
         socket.emit(ServerFrame.Message(messageDto(id = 200, chatId = CHAT, senderId = PEER)))
         advanceUntilIdle()
@@ -385,10 +385,13 @@ class MessageRepositoryTest {
     }
 
     @Test
-    fun liveInboundMessageForTheOpenChatDoesNotBumpUnread() = runTest(dispatcher) {
+    fun liveInboundMessageForTheOpenChatAtItsNewestDoesNotBumpUnread() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
-        chatRepository.setOpenChat(CHAT)
+        // Open AND parked at the bottom: the message lands in front of
+        // the reader, so it is seen rather than unread. Suppressing the
+        // bump beats bumping and clearing — that flickers the badge.
+        chatRepository.setOpenChat(CHAT, atNewest = true)
 
         socket.emit(ServerFrame.Message(messageDto(id = 201, chatId = CHAT, senderId = PEER)))
         advanceUntilIdle()
@@ -398,10 +401,26 @@ class MessageRepositoryTest {
     }
 
     @Test
+    fun liveInboundMessageForTheOpenChatScrolledAwayStillBumpsUnread() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        // Open, but the reader is up the thread. ChatScreen refuses to
+        // scroll them down to a new message, so it never reaches the
+        // screen — suppressing the bump would lose it for good, since the
+        // server's read marker only ever moves forward.
+        chatRepository.setOpenChat(CHAT, atNewest = false)
+
+        socket.emit(ServerFrame.Message(messageDto(id = 203, chatId = CHAT, senderId = PEER)))
+        advanceUntilIdle()
+
+        assertThat(chatDao.getById(CHAT)!!.unreadCount).isEqualTo(1)
+    }
+
+    @Test
     fun myOwnEchoFromAnotherDeviceDoesNotBumpUnread() = runTest(dispatcher) {
         val repository = newRepository()
         insertChat()
-        chatRepository.setOpenChat(null)
+        chatRepository.setOpenChat(null, atNewest = false)
 
         socket.emit(
             ServerFrame.Message(

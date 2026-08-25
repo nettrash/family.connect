@@ -2,7 +2,7 @@
  * SettingsScreen.kt
  * Family Connect (Android)
  *
- * Profile block (picture + name), family block (invite code + share sheet
+ * Profile block (picture + name + birthday), family block (invite code + share sheet
  * + manage entry for owners), leave family (confirmed), logout
  * (confirmed). The share action goes through a plain ACTION_SEND chooser
  * — the invite code is short text, every messenger can carry it.
@@ -43,6 +43,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ExitToApp
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.BarChart
+import androidx.compose.material.icons.outlined.Cake
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Groups
@@ -59,7 +60,9 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material3.ListItem
 import me.nettrash.familyconnect.R
+import me.nettrash.familyconnect.ui.familyadmin.BirthdayDialog
 import me.nettrash.familyconnect.ui.familyadmin.SetPasswordDialog
+import me.nettrash.familyconnect.util.TimeFormat
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -114,6 +117,7 @@ fun SettingsScreen(
     var confirmLeave by remember { mutableStateOf(false) }
     var confirmLogout by remember { mutableStateOf(false) }
     var changingPassword by remember { mutableStateOf(false) }
+    var editingBirthday by remember { mutableStateOf(false) }
     /// Held here rather than inside the dialog: the dialog is rebuilt on
     /// every keystroke of the other fields, and the current password must
     /// survive that.
@@ -220,6 +224,28 @@ fun SettingsScreen(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                     )
                 },
+            )
+            // Mine to set, unlike the roster's — which is why it sits
+            // with the picture rather than under Manage family. Day and
+            // month only: there is no year to give and no age to show
+            // (docs/protocol.md, "Birthdays").
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.s_birthday)) },
+                supportingContent = {
+                    Text(
+                        state.birthday
+                            ?.let { TimeFormat.birthday(it.month, it.day) }
+                            ?: stringResource(R.string.s_not_set),
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        Icons.Outlined.Cake,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                    )
+                },
+                modifier = Modifier.clickable(enabled = !state.busy) { editingBirthday = true },
             )
             if (state.avatarVersion > 0) {
                 ListItem(
@@ -508,6 +534,23 @@ fun SettingsScreen(
                 TextButton(onClick = { confirmLeave = false }) {
                     Text(stringResource(R.string.s_cancel))
                 }
+            },
+        )
+    }
+
+    if (editingBirthday) {
+        BirthdayDialog(
+            title = stringResource(R.string.s_birthday),
+            birthday = state.birthday,
+            busy = state.busy,
+            onDismiss = { editingBirthday = false },
+            onSave = { month, day ->
+                viewModel.setBirthday(month, day)
+                editingBirthday = false
+            },
+            onRemove = {
+                viewModel.clearBirthday()
+                editingBirthday = false
             },
         )
     }

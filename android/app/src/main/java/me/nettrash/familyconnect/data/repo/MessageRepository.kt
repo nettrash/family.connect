@@ -14,8 +14,9 @@
  *   - Inbound `message` frames dedup three ways: our own clientMsgId →
  *     treated as the ack; known serverId → dropped; otherwise inserted
  *     under the synthetic PK "s<serverId>".
- *   - Unread bumps only for live frames in chats the user is NOT
- *     looking at, from senders other than me.
+ *   - Unread bumps only for live frames from senders other than me,
+ *     and only where the message did not land in front of the user —
+ *     the chat open AND parked at its newest message.
  *   - retry(clientMsgId) re-enters the pipeline with the same UUID —
  *     never a duplicate, even if the first attempt actually landed.
  *
@@ -521,8 +522,15 @@ class MessageRepository @Inject constructor(
         if (live) {
             val me = settings.state.first().myUserId
             val openChat = chatRepository.openChatId.value
-            if (message.chatId != openChat && message.senderId != me) {
-                chatDao.bumpUnread(message.chatId)
+            // Open is not enough: the chat must also be parked at its
+            // newest message, because that is the only case where this
+            // one lands on screen. ChatScreen refuses to scroll a reader
+            // who is up the thread down to it, so suppressing the bump
+            // for them would hide a message they never saw — and nothing
+            // adds it back afterwards.
+            val seen = message.chatId == openChat && chatRepository.openChatAtNewest.value
+            if (!seen && message.senderId != me) {
+                chatRepository.bumpUnread(message.chatId, message.id)
             }
         }
     }

@@ -9,6 +9,37 @@ languages — this is a family chat, not a bank.
 
 # Serbian Cyrillic. Latin comes from TRANSLIT below.
 SR = {
+# Birthdays, and the assistant's two family settings.
+"Birthday": "Рођендан",
+"Birthday…": "Рођендан…",
+"Birthday for %@": "Рођендан за %@",
+"Add Birthday…": "Додај рођендан…",
+"Change Birthday…": "Промени рођендан…",
+"Remove Birthday": "Уклони рођендан",
+"Month": "Месец",
+"Day": "Дан",
+"A day and a month, with no year — so being wished a happy birthday never means publishing your age.":
+  "Дан и месец, без године — честитке за рођендан никада не откривају твоје године.",
+"A day and a month, with no year. Everyone in the family sees it.":
+  "Дан и месец, без године. Виде га сви у породици.",
+"That date doesn't exist.": "Тај датум не постоји.",
+"Couldn't save that birthday. Try again.": "Рођендан није сачуван. Покушај поново.",
+"Only the family owner can do that.": "То може да уради само власник породице.",
+"Assistant language": "Језик асистента",
+"Answers in": "Језик одговора",
+"Not set": "Није подешено",
+"Sees recent history": "Види недавну историју",
+"The language %@ answers in when it is asked in the family chat. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked.":
+  "Језик на ком %@ одговара када га питаш у породичном разговору. То није језик ове "
+  "апликације — он прати уређај. Ако ништа није изабрано, одговор стиже на језику питања.",
+"With this on, mentioning %@ in the family chat sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent.":
+  "Када је укључено, помињање %@ у породичном разговору шаље асистенту преписку из "
+  "последњих месец дана, па може да одговара и на питања о раније реченом. Када је "
+  "искључено, шаље се само порука у којој се помиње.",
+"Only the family owner can change this.": "Ово може да промени само власник породице.",
+"Couldn't save that. Try again.": "Није сачувано. Покушај поново.",
+"New message": "Нова порука",
+
 "%@ has been signed out everywhere.": "Све сесије за %@ су затворене.",
 "%@ will be signed out on every device and will need this password to sign back in. Tell it to them somewhere safe — the server has no way to email it.":
   "Све сесије за %@ биће затворене, а за поновну пријаву требаће ова лозинка. Пренеси је на сигуран начин — сервер не може да шаље мејлове.",

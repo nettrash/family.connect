@@ -3,9 +3,11 @@
  * Family Connect (Android)
  *
  * Owner console: pending join requests (approve/reject), invite-code
- * rotation, join-policy toggle, member removal. Every mutation reloads
- * the affected slice from the server — admin actions are rare enough
- * that correctness beats optimism here.
+ * rotation, join-policy toggle, the family's language, whether a mention
+ * of the assistant sees the chat's recent history, member removal and
+ * member birthdays. Every mutation reloads the affected slice from the
+ * server — admin actions are rare enough that correctness beats optimism
+ * here.
  *
  * iOS counterpart: ios/FamilyConnect/UI/FamilyAdmin/FamilyAdminViewModel.swift
  */
@@ -57,6 +59,14 @@ class FamilyAdminViewModel @Inject constructor(
         val requests: List<JoinRequestDto> = emptyList(),
         val inviteCode: String? = null,
         val joinPolicy: String = "open",
+        /**
+         * The family's language tag, or null for UNSET — which is not
+         * English (protocol.md, "The family's language"). The screen has
+         * to keep the two apart, because the server does.
+         */
+        val language: String? = null,
+        /** Whether a mention carries the chat's recent history. */
+        val aiHistory: Boolean = true,
         val busy: Boolean = false,
         val error: String? = null,
     )
@@ -94,6 +104,8 @@ class FamilyAdminViewModel @Inject constructor(
                     it.copy(
                         inviteCode = mine.family.inviteCode,
                         joinPolicy = mine.family.joinPolicy,
+                        language = mine.family.language,
+                        aiHistory = mine.family.aiHistory,
                     )
                 }
             }
@@ -147,6 +159,89 @@ class FamilyAdminViewModel @Inject constructor(
                 is ApiResult.NetworkError ->
                     _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
             }
+        }
+    }
+
+    /**
+     * Owner-only. A null tag CLEARS the language; the state that comes
+     * back is the server's, so an unchanged one shows the picker was
+     * refused rather than pretending it took.
+     */
+    fun setLanguage(tag: String?) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setLanguage(tag)) {
+                is ApiResult.Ok ->
+                    _state.update { it.copy(busy = false, language = result.value.family.language) }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message ?: appContext.getString(R.string.e_change_language_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /** Owner-only: what a mention of the assistant is allowed to see. */
+    fun setAiHistory(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setAiHistory(enabled)) {
+                is ApiResult.Ok ->
+                    _state.update { it.copy(busy = false, aiHistory = result.value.family.aiHistory) }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message ?: appContext.getString(R.string.e_change_assistant_history_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Owner-only, and the owner may name themselves — the roster offers
+     * this on every row, including their own (protocol.md, "Birthdays").
+     * The repository mirrors the answer onto the Room row, so the list
+     * redraws without another round trip.
+     */
+    fun setMemberBirthday(userId: Long, month: Int, day: Int, onSuccess: () -> Unit = {}) =
+        mutateBirthday(onSuccess) { familyRepository.setMemberBirthday(userId, month, day) }
+
+    fun clearMemberBirthday(userId: Long, onSuccess: () -> Unit = {}) =
+        mutateBirthday(onSuccess) { familyRepository.clearMemberBirthday(userId) }
+
+    /**
+     * [mutate] without the join-request reload — a birthday touches
+     * neither the requests nor anything else this screen holds, and
+     * refetching them on every save would be a request per keystroke of
+     * the picker.
+     *
+     * A `validation` from the server is SHOWN rather than swallowed: the
+     * picker cannot offer an impossible date, but the server is the
+     * authority on which dates exist and a silent failure would leave the
+     * roster claiming a birthday nobody stored.
+     */
+    private fun mutateBirthday(onSuccess: () -> Unit, block: suspend () -> ApiResult<*>) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = block()) {
+                is ApiResult.Ok -> onSuccess()
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(error = result.message ?: appContext.getString(R.string.e_birthday_failed))
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(error = appContext.getString(R.string.e_unreachable)) }
+            }
+            _state.update { it.copy(busy = false) }
         }
     }
 

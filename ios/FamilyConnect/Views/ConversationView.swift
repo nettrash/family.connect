@@ -27,9 +27,11 @@
 //    typing indicator therefore renders as the nav-bar subtitle (fixed
 //    height, and where the Android app already shows it).
 //
-//  The view sets coordinator.activeChatID on appear/disappear; while set,
-//  inbound messages for this chat advance the read marker instead of the
-//  unread badge (the coordinator owns that rule).
+//  The view publishes coordinator.updatePresence — which chat is open,
+//  whether the bottom sentinel says the newest message is actually on
+//  screen, and whether the scene is active. That triple is the ONLY thing
+//  that marks a chat read (ChatPresence); the view never decides for
+//  itself, and appearing is not one of the three.
 //
 //  Long-pressing a bubble floats a Tapback-style menu directly over it:
 //  the quick-reaction capsule (+ "+" into the full EmojiPickerView sheet)
@@ -88,6 +90,10 @@ struct ConversationView: View {
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(LinkPreviewLoader.self) private var previewLoader
+    /// The "app is frontmost" half of ChatPresence. Read here rather than
+    /// taken from RootView because this is where the other two facts are,
+    /// and all three have to be published together.
+    @Environment(\.scenePhase) private var scenePhase
     @Query private var messages: [MessageEntity]
     @Query private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
@@ -311,6 +317,10 @@ struct ConversationView: View {
                             return y >= -32 && y <= viewport.height + 32
                         } action: { visible in
                             isPinnedToBottom = visible
+                            // The one fact only this geometry knows. It is
+                            // also the fact that decides whether anything is
+                            // read, so it is published the moment it moves.
+                            publishPresence()
                         }
                 }
                 .padding(.horizontal, 12)
@@ -326,6 +336,12 @@ struct ConversationView: View {
                 if newCount > oldCount && !isPinnedToBottom {
                     visibleCount = min(newCount, visibleCount + (newCount - oldCount))
                 }
+                // Re-ask what this reader can see: a message arriving for
+                // somebody already at the bottom scrolls the thread WITHOUT
+                // the sentinel ever leaving the viewport, so the geometry
+                // hook above may not fire, and this is what reads the
+                // message they just watched land.
+                publishPresence()
                 // Follow the bottom for new messages — for my own sends
                 // from anywhere, otherwise only while actually pinned (a
                 // reader deep in history must not be yanked down) — and
@@ -419,16 +435,32 @@ struct ConversationView: View {
             }
         }
         .onAppear {
-            coordinator.activeChatID = chatID
+            // Claims the chat, and claims NOTHING about having seen it:
+            // `hasSettled` is still false, so this publishes "not at the
+            // newest message" no matter where the opening layout happens to
+            // have landed. Appearing used to be the whole test, which meant
+            // a chat was read by being pushed onto the stack.
+            publishPresence()
             if messages.isEmpty {
                 // Fresh chat with no local window yet: pull the newest page.
                 loadInitialIfNeeded()
             }
         }
         .onDisappear {
-            if coordinator.activeChatID == chatID {
-                coordinator.activeChatID = nil
-            }
+            coordinator.releasePresence(chatID: chatID)
+        }
+        .onChange(of: hasSettled) {
+            // The opening convergence finished: whatever the sentinel says
+            // now is real, and if it says the newest message is on screen
+            // then the reader has genuinely seen it.
+            publishPresence()
+        }
+        .onChange(of: scenePhase) {
+            // Backgrounding revokes the authority to read (the coordinator
+            // does that centrally, because onDisappear does NOT fire here);
+            // coming back re-establishes it from the same geometry, without
+            // the act of returning reading anything by itself.
+            publishPresence()
         }
         .onChange(of: model.draft) { _, newValue in
             guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -527,6 +559,29 @@ struct ConversationView: View {
             }
         }
         hasSettled = true
+    }
+
+    /// Tell the coordinator what this reader can actually see — the only
+    /// thing that marks a chat read (ChatPresence). Called from every hook
+    /// that can move one of the three facts, and from nowhere that cannot.
+    ///
+    /// The guard is for the iPad, where the app can have two scenes: a
+    /// scene that is not frontmost may only speak when the claim is already
+    /// its own or nobody holds one, or a thread sitting in a background
+    /// window would overwrite what the scene the user IS looking at
+    /// published — purely because a message landed in it.
+    private func publishPresence() {
+        let isFrontmost = scenePhase == .active
+        guard isFrontmost || coordinator.presence == nil
+                || coordinator.presence?.chatID == chatID else { return }
+        coordinator.updatePresence(
+            chatID: chatID,
+            // `hasSettled` matters as much as the sentinel does: until the
+            // convergence loop above has finished pinning, `isPinnedToBottom`
+            // describes a layout that is still moving, and the server's read
+            // marker never comes back once it has been advanced on a guess.
+            isAtNewest: hasSettled && isPinnedToBottom,
+            isFrontmost: isFrontmost)
     }
 
     /// Scroll target for every "be at the newest message" path: the bottom

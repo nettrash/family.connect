@@ -20,6 +20,7 @@ struct MacSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var changingPassword = false
+    @State private var editingBirthday = false
     @State private var showingStatistics = false
     @State private var confirmLogout = false
     /// Mirrors AppSettings — defaults are not observable, so the view
@@ -59,12 +60,26 @@ struct MacSettingsView: View {
         .padding(16)
     }
 
+    /// The birthday as the family sees it, or the plain fact that there
+    /// isn't one.
+    private var birthdayText: String {
+        session.currentUser?.birthday?.formatted() ?? String(localized: "Not set")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             identityHeader
             Divider()
             Form {
                 Section("Profile") {
+                    // Day and month, no year — so it can be shown to the
+                    // family without publishing an age (protocol.md,
+                    // "Birthdays").
+                    LabeledContent("Birthday", value: birthdayText)
+                    Button(
+                        session.currentUser?.birthday == nil
+                            ? "Add Birthday…" : "Change Birthday…"
+                    ) { editingBirthday = true }
                     Button("Change Password…") { changingPassword = true }
                 }
                 Section("Family") {
@@ -117,10 +132,18 @@ struct MacSettingsView: View {
             }
             .padding(12)
         }
-        .frame(width: 460, height: 420)
+        // Grown from 420 to make room for the two birthday rows. The Form
+        // would scroll rather than clip them, but a settings sheet that
+        // has to be scrolled to reach its second section is a settings
+        // sheet whose second section nobody finds.
+        .frame(width: 460, height: 490)
         .background(Color.appGroupedBackground)
         .sheet(isPresented: $changingPassword) {
             ChangePasswordView()
+                .frame(width: 420)
+        }
+        .sheet(isPresented: $editingBirthday) {
+            MyBirthdayView()
                 .frame(width: 420)
         }
         .sheet(isPresented: $showingStatistics) {

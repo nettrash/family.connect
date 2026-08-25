@@ -105,6 +105,15 @@ final class AppSession {
         currentUser = user
     }
     private(set) var family: FamilyDTO?
+
+    /// Replace the cached family after the owner changes a setting on it
+    /// — the twin of `applyProfile`, and narrow for the same reason.
+    /// PATCH /families/mine answers with the whole family, and nothing
+    /// else re-reads it until the next resync, so a settings screen that
+    /// did not write back here would keep showing the old value.
+    func applyFamily(_ family: FamilyDTO) {
+        self.family = family
+    }
     /// "owner" | "member" | nil — from the last /me or family call.
     private(set) var role: String?
     /// Set when a pending join request silently disappeared from /me:

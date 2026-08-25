@@ -25,11 +25,14 @@ pub struct User {
     /// Bumped on every profile-picture upload, `0` when there is none —
     /// the clients' cache key for `GET /users/{id}/avatar`.
     pub avatar_version: i64,
+    /// Present when (and only when) this member has set one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub birthday: Option<Birthday>,
 }
 
 impl User {
     /// Map a row exposing `id, username, display_name, created_at,
-    /// avatar_version`.
+    /// avatar_version, birthday_month, birthday_day`.
     pub fn from_row(row: &PgRow) -> Self {
         Self {
             id: row.get("id"),
@@ -37,6 +40,43 @@ impl User {
             display_name: row.get("display_name"),
             created_at: row.get("created_at"),
             avatar_version: row.get("avatar_version"),
+            birthday: Birthday::from_row(row),
+        }
+    }
+}
+
+/// `Birthday` object: a day and a month, and no year (protocol.md,
+/// "Birthdays").
+///
+/// One struct rather than two fields on the owning object because the two
+/// halves are a single fact — a birthday is set or it is not, and "month
+/// but no day" is not a state any reader should have to handle. The
+/// database enforces the same equivalence (migration 0018), so this type
+/// is the only shape either side can produce.
+///
+/// `i16` because the columns are `SMALLINT`; the range is the validator's
+/// business and the constraint's, not the type's.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Birthday {
+    pub month: i16,
+    pub day: i16,
+}
+
+impl Birthday {
+    /// Read `birthday_month`/`birthday_day` from a row, as the one or the
+    /// none they always are together.
+    ///
+    /// Both columns must be in the SELECT: `.get` panics on a name the
+    /// query did not ask for, which is the loud failure this crate wants
+    /// when a column list and a DTO drift apart.
+    pub fn from_row(row: &PgRow) -> Option<Self> {
+        let month: Option<i16> = row.get("birthday_month");
+        let day: Option<i16> = row.get("birthday_day");
+        match (month, day) {
+            (Some(month), Some(day)) => Some(Self { month, day }),
+            // Half a birthday cannot be written (migration 0018), so this
+            // arm is only ever reached by "nobody set one".
+            _ => None,
         }
     }
 }
@@ -61,6 +101,9 @@ pub struct Member {
     /// `"owner"` or `"member"`.
     pub role: String,
     pub avatar_version: i64,
+    /// Present when (and only when) this member has set one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub birthday: Option<Birthday>,
 }
 
 /// `Family` object. `invite_code` is present when (and only when) the caller
@@ -75,6 +118,22 @@ pub struct Family {
     pub created_at: OffsetDateTime,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invite_code: Option<String>,
+    /// The family's main language, one of the nine tags in
+    /// [`crate::handlers_family::FAMILY_LANGUAGES`], or absent when the
+    /// owner has never set one. Absent is NOT `"en"` — see protocol.md,
+    /// "The family's language".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Whether an `@ai` mention in the family chat is shown the recent
+    /// history of that chat (protocol.md, "Mentioning the assistant in the
+    /// family chat"). Owner-set, `true` by default.
+    ///
+    /// ALWAYS serialized, unlike the two fields above, and NOT an `Option`:
+    /// a boolean with a real default has no "unset" state for an absent key
+    /// to mean, so hiding it would only make a client invent one. The two
+    /// above are options because "never chosen" is a state that means
+    /// something there; here it is not.
+    pub ai_history: bool,
 }
 
 /// `JoinRequest` object as listed for the owner.
@@ -602,11 +661,117 @@ mod tests {
             join_policy: "approval".to_string(),
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             invite_code: None,
+            language: None,
+            ai_history: true,
         };
         let json = serde_json::to_value(&family).expect("serialize");
         assert!(
             json.get("invite_code").is_none(),
             "invite_code must be absent, not null: {json}"
+        );
+    }
+
+    /// A family that has never chosen a language carries no `language` key
+    /// at all. Absent is NOT `"en"`: a client that saw a null, or a default,
+    /// could not tell "we never chose" from "we chose English".
+    #[test]
+    fn a_family_with_no_language_matches_the_protocol_shape() {
+        let family = Family {
+            id: 3,
+            name: "The Smiths".to_string(),
+            join_policy: "open".to_string(),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+            invite_code: None,
+            language: None,
+            ai_history: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&family).expect("serialize"),
+            serde_json::json!({
+                "id": 3, "name": "The Smiths", "join_policy": "open",
+                "created_at": "2026-08-19T17:03:12Z", "ai_history": true
+            })
+        );
+    }
+
+    #[test]
+    fn a_family_with_a_language_and_a_code_matches_the_protocol_shape() {
+        let family = Family {
+            id: 3,
+            name: "The Smiths".to_string(),
+            join_policy: "open".to_string(),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+            invite_code: Some("ABCD2345".to_string()),
+            language: Some("ru".to_string()),
+            ai_history: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&family).expect("serialize"),
+            serde_json::json!({
+                "id": 3, "name": "The Smiths", "join_policy": "open",
+                "created_at": "2026-08-19T17:03:12Z",
+                "invite_code": "ABCD2345", "language": "ru", "ai_history": true
+            })
+        );
+    }
+
+    /// A birthday is a day and a month, one object, present or absent —
+    /// never a null and never half of one.
+    #[test]
+    fn a_member_with_a_birthday_matches_the_protocol_shape() {
+        let member = Member {
+            id: 7,
+            username: "anna".to_string(),
+            display_name: "Anna".to_string(),
+            role: "owner".to_string(),
+            avatar_version: 3,
+            birthday: Some(Birthday { month: 3, day: 14 }),
+        };
+        assert_eq!(
+            serde_json::to_value(&member).expect("serialize"),
+            serde_json::json!({
+                "id": 7, "username": "anna", "display_name": "Anna", "role": "owner",
+                "avatar_version": 3, "birthday": {"month": 3, "day": 14}
+            })
+        );
+    }
+
+    #[test]
+    fn a_member_without_one_carries_no_birthday_key() {
+        let member = Member {
+            id: 7,
+            username: "anna".to_string(),
+            display_name: "Anna".to_string(),
+            role: "member".to_string(),
+            avatar_version: 0,
+            birthday: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&member).expect("serialize"),
+            serde_json::json!({
+                "id": 7, "username": "anna", "display_name": "Anna", "role": "member",
+                "avatar_version": 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_user_with_a_birthday_matches_the_protocol_shape() {
+        let user = User {
+            id: 7,
+            username: "anna".to_string(),
+            display_name: "Anna".to_string(),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+            avatar_version: 3,
+            birthday: Some(Birthday { month: 2, day: 29 }),
+        };
+        assert_eq!(
+            serde_json::to_value(&user).expect("serialize"),
+            serde_json::json!({
+                "id": 7, "username": "anna", "display_name": "Anna",
+                "created_at": "2026-08-19T17:03:12Z", "avatar_version": 3,
+                "birthday": {"month": 2, "day": 29}
+            })
         );
     }
 
@@ -630,6 +795,7 @@ mod tests {
             display_name: "Anna".to_string(),
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             avatar_version: 0,
+            birthday: None,
         };
         let json = serde_json::to_value(&user).expect("serialize");
         assert_eq!(json["created_at"], "2026-08-19T17:03:12Z");

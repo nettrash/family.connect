@@ -131,12 +131,50 @@ struct MacChatView: View {
         }
         .onAppear {
             // Open something rather than an empty pane: the family chat is
-            // the one every member has.
+            // the one every member has. Selecting it does NOT read it — the
+            // thread has to be in front of somebody first (ChatPresence),
+            // which is what stops a Mac launched at login behind every other
+            // window from quietly clearing the family chat's badge.
             if selectedChatID == nil { selectedChatID = chats.first?.chatID }
+            consumePendingRoute() // clicked before this window existed
+        }
+        .onChange(of: session.pendingPushRoute) { _, _ in
+            consumePendingRoute() // clicked while the window is up
         }
         .onChange(of: chats.map(\.chatID)) { _, ids in
             if let selectedChatID, ids.contains(selectedChatID) { return }
             selectedChatID = ids.first
+        }
+    }
+
+    /// Act on a clicked notification, then clear it so it fires once.
+    ///
+    /// The Mac had no consumer at all: MacAppDelegate parked the route and
+    /// nothing ever picked it up, so clicking a banner brought the app
+    /// forward showing whatever happened to be open. Same parser and the
+    /// same routes as the phone (PushRoute), because the Mac now raises its
+    /// own notifications too and two routing schemes would drift.
+    private func consumePendingRoute() {
+        guard let route = session.pendingPushRoute else { return }
+        session.pendingPushRoute = nil
+        showingSettings = false
+        showingFamily = false
+        switch route {
+        case .chat(let chatID):
+            // No local-existence check, the phone's reasoning: after a
+            // reinstall the chat may not be cached yet, and the detail pane
+            // says so rather than showing an empty thread.
+            selectedChatID = chatID
+        case .board:
+            openWindow(id: MacWindow.board)
+            markBoardSeen()
+        case .joinRequests:
+            // Pending requests live inside the Family sheet on the Mac.
+            // Owner-only; a member who somehow gets this push stays put.
+            guard session.isOwner else { return }
+            showingFamily = true
+        case .chatList:
+            break // Already here.
         }
     }
 

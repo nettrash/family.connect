@@ -35,17 +35,35 @@ final class MemberEntity {
     /// SwiftData migration for anyone upgrading over an existing store.
     var avatarVersion: Int64 = 0
 
+    /// A day and a month, or neither. Two defaulted Optionals rather than
+    /// one stored struct for the reason `avatarVersion` is defaulted: a
+    /// property with a default IS the lightweight migration, and an
+    /// existing store must open without one being written by hand.
+    ///
+    /// They are only ever read through `birthday` below, which insists on
+    /// both — "month but no day" is not a state the protocol has and not
+    /// one any screen should have to draw.
+    var birthdayMonth: Int?
+    var birthdayDay: Int?
+
+    /// The pair, when it is a pair.
+    var birthday: BirthdayDTO? {
+        guard let birthdayMonth, let birthdayDay else { return nil }
+        return BirthdayDTO(month: birthdayMonth, day: birthdayDay)
+    }
 
     /// The wire shape, for the screens that take a DTO (the password
-    /// reset sheet, which is shared with iOS). A roster row IS a member —
-    /// this is a spelling difference, not a fetch.
+    /// reset sheet and the birthday editor, both shared with iOS). A
+    /// roster row IS a member — this is a spelling difference, not a
+    /// fetch.
     var dto: MemberDTO {
         MemberDTO(
             id: userID,
             username: username,
             displayName: displayName,
             role: role,
-            avatarVersion: avatarVersion)
+            avatarVersion: avatarVersion,
+            birthday: birthday)
     }
 
     init(
@@ -55,7 +73,8 @@ final class MemberEntity {
         role: String,
         isCurrentUser: Bool,
         hasLeft: Bool = false,
-        avatarVersion: Int64 = 0
+        avatarVersion: Int64 = 0,
+        birthday: BirthdayDTO? = nil
     ) {
         self.userID = userID
         self.username = username
@@ -64,5 +83,7 @@ final class MemberEntity {
         self.isCurrentUser = isCurrentUser
         self.hasLeft = hasLeft
         self.avatarVersion = avatarVersion
+        self.birthdayMonth = birthday?.month
+        self.birthdayDay = birthday?.day
     }
 }

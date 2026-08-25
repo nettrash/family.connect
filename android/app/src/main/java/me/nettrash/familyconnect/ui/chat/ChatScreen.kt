@@ -189,12 +189,15 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -210,6 +213,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.ChatEntity
@@ -498,6 +502,19 @@ fun ChatScreen(
     LifecycleResumeEffect(Unit) {
         viewModel.setResumed(true)
         onPauseOrDispose { viewModel.setResumed(false) }
+    }
+
+    // The other half of "reading": whether the newest message is on
+    // screen at all. Same index <= 1 test the follow rule below uses
+    // (reverseLayout, so index 0 is the newest, at the bottom; 1 covers
+    // the anchor holding onto the previous newest row). Only the
+    // LazyListState knows this, so the screen has to hand it over —
+    // without it the ViewModel reports a chat read wherever the list
+    // happens to be parked, and the server's marker never comes back.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex <= 1 }
+            .distinctUntilChanged()
+            .collect { viewModel.setAtNewest(it) }
     }
 
     // Pagination: nearing the visually-top (oldest) end triggers one
@@ -1594,34 +1611,50 @@ private fun MessageBubble(
     // characters (`**`, backticks, `](url)`), so detecting links over the
     // raw body and drawing the rendered one would leave every link after
     // the first markup token pointing at the wrong glyphs — silently, with
-    // nothing failing. Everything below indexes `rendered.text`.
+    // nothing failing. Everything below indexes the block's own
+    // `rendered.text`.
+    //
+    // Almost always ONE block: only a table splits a body, and each block
+    // is then a whole offset space of its own — its links index its own
+    // string, and the hit test below gets one layout result per block. A
+    // span from one block resolved against another's layout would point at
+    // whatever glyphs happened to sit at those offsets.
     //
     // Emoji-only bodies branch around it: the ladder's whole subject is
     // that the message is nothing but glyphs, so a markup pass could only
-    // take something away. Same rule as iOS and macOS.
-    val rendered = remember(entity.body, emojiFontSize) {
+    // take something away, and there is nothing in one to detect. Same rule
+    // as iOS and macOS.
+    val bodyBlocks = remember(entity.body, emojiFontSize) {
         if (emojiFontSize != null) {
-            MessageMarkdown.plain(entity.body)
+            listOf(BodyBlock(MessageMarkdown.Block.Text(MessageMarkdown.plain(entity.body))))
         } else {
-            MessageMarkdown.render(entity.body)
-        }
-    }
-    val linkSpans = remember(rendered, emojiFontSize) {
-        if (emojiFontSize != null) {
-            emptyList()
-        } else {
-            // The markup's own links first, then whatever the detector
-            // finds in the text NOT already covered by one. Both index the
-            // rendered text, and both feed one hit test.
-            //
-            // The overlap rule is not tidiness. `[https://www.paypal.com](https://evil.example)`
-            // renders the label "https://www.paypal.com", which Linkify then
-            // detects as a link to PayPal — two spans over the same glyphs,
-            // one going somewhere else. Whichever the hit test picked, a tap
-            // could open a destination the reader had every reason to think
-            // was the one they could see. Dropping the detector's overlap
-            // leaves exactly one answer: the destination the author wrote.
-            MessageLinks.mergeSpans(rendered.links, MessageLinks.linkSpans(rendered.text))
+            MessageMarkdown.blocks(entity.body).map { block ->
+                when (block) {
+                    // The markup's own links first, then whatever the
+                    // detector finds in the text NOT already covered by
+                    // one. Both index this block's rendered text, and both
+                    // feed one hit test.
+                    //
+                    // The overlap rule is not tidiness. `[https://www.paypal.com](https://evil.example)`
+                    // renders the label "https://www.paypal.com", which Linkify then
+                    // detects as a link to PayPal — two spans over the same glyphs,
+                    // one going somewhere else. Whichever the hit test picked, a tap
+                    // could open a destination the reader had every reason to think
+                    // was the one they could see. Dropping the detector's overlap
+                    // leaves exactly one answer: the destination the author wrote.
+                    is MessageMarkdown.Block.Text -> BodyBlock(
+                        block = block,
+                        links = MessageLinks.mergeSpans(
+                            block.rendered.links,
+                            MessageLinks.linkSpans(block.rendered.text),
+                        ),
+                    )
+                    // A table's cells carry no links by construction
+                    // (MessageMarkdown.cell says why), so there is nothing
+                    // inside one to hit-test.
+                    is MessageMarkdown.Block.Table -> BodyBlock(block)
+                }
+            }
         }
     }
     val uriHandler = LocalUriHandler.current
@@ -1635,19 +1668,24 @@ private fun MessageBubble(
             }
             .clip(bubbleShape)
             .then(
-                if (linkSpans.isEmpty()) {
+                if (bodyBlocks.none { it.links.isNotEmpty() }) {
                     Modifier
                 } else {
                     Modifier.semantics {
-                        customActions = linkSpans.map { span ->
-                            CustomAccessibilityAction(
-                                // The RENDERED text, not the raw body: the
-                                // span's offsets index what is drawn, and
-                                // slicing the source here would announce
-                                // the wrong words.
-                                MessageLinks.accessibilityLabel(rendered.text, span),
-                            ) {
-                                runCatching { uriHandler.openUri(span.url) }.isSuccess
+                        customActions = bodyBlocks.flatMap { bodyBlock ->
+                            // The RENDERED text of THIS block, not the raw
+                            // body and not some concatenation of all of
+                            // them: the label is a slice at the span's own
+                            // offsets, and slicing anything else here would
+                            // announce the wrong words.
+                            val text = (bodyBlock.block as? MessageMarkdown.Block.Text)
+                                ?.rendered?.text.orEmpty()
+                            bodyBlock.links.map { span ->
+                                CustomAccessibilityAction(
+                                    MessageLinks.accessibilityLabel(text, span),
+                                ) {
+                                    runCatching { uriHandler.openUri(span.url) }.isSuccess
+                                }
                             }
                         }
                     }
@@ -1731,8 +1769,7 @@ private fun MessageBubble(
                     isMine = isMine,
                     isStreaming = isStreaming,
                     emojiFontSize = emojiFontSize,
-                    rendered = rendered,
-                    linkSpans = linkSpans,
+                    blocks = bodyBlocks,
                     memberNames = memberNames,
                     memberAvatars = memberAvatars,
                     myUserId = myUserId,
@@ -2103,6 +2140,19 @@ private fun ReactionChipView(
     }
 }
 
+/**
+ * One block of a rendered body with the links that live INSIDE it.
+ *
+ * The pairing is the point: [links] index `block`'s own rendered string
+ * and are meaningless against any other, so the two travel together from
+ * the one place that resolves them down to the one layout result they are
+ * hit-tested against. A table block carries none — its cells hold no links.
+ */
+private data class BodyBlock(
+    val block: MessageMarkdown.Block,
+    val links: List<LinkSpan> = emptyList(),
+)
+
 @Composable
 private fun BubbleContent(
     entity: MessageEntity,
@@ -2114,13 +2164,14 @@ private fun BubbleContent(
     /** Emoji-ladder size for an emoji-only body, else null. Resolved by the caller. */
     emojiFontSize: Float?,
     /**
-     * The body with markdown applied. Resolved by the caller, because the
-     * bubble's semantics need the same rendered text the drawing does —
-     * every offset below indexes `rendered.text`, never `entity.body`.
+     * The body with markdown applied, and the links in each block.
+     * Resolved by the caller, because the bubble's semantics need the same
+     * rendered text the drawing does — every offset below indexes its own
+     * block's `rendered.text`, never `entity.body`. A body with no table is
+     * exactly one block, which is what keeps this the code path it always
+     * was for the messages people actually send.
      */
-    rendered: MessageMarkdown.Rendered,
-    /** Links in the RENDERED text (empty for emoji-only). Resolved by the caller. */
-    linkSpans: List<LinkSpan>,
+    blocks: List<BodyBlock>,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
     myUserId: Long?,
@@ -2207,61 +2258,15 @@ private fun BubbleContent(
         // iOS (white vs accent).
         val linkColor = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
         val mentionColor = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
-        val body = remember(rendered, linkSpans, linkColor, mentionColor, isStreaming) {
-            val linked = MessageLinks.styled(
-                rendered.annotated,
-                linkSpans,
-                SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline),
-            )
-            val styled = MessageLinks.withMentions(
-                linked,
-                SpanStyle(color = mentionColor, fontWeight = FontWeight.Bold),
-            )
-            // While the assistant is writing, the text ends in a cursor
-            // rather than just stopping mid-word — the same signal iOS and
-            // macOS give. APPENDED, never inserted: every link offset in
-            // `linkSpans` indexes the body, and the hand-rolled hit test
-            // below matches those offsets against this laid-out string, so
-            // anything added ahead of them would silently misdirect taps.
-            if (isStreaming) buildAnnotatedString { append(styled); append("▍") } else styled
-        }
-        // Tap arbitration is OURS, not LinkAnnotation's: a linked body
-        // must still heart on double-tap and open the reaction capsule
-        // on long-press, so one detector over the text handles all
-        // three, resolving a tap to a character offset and opening the
-        // span under it (glyph-box check so the empty space past a
-        // short line does not count as its last link). Messages without
-        // links skip the detector entirely and keep the bubble's own
-        // combinedClickable behavior.
-        var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
-        val uriHandler = LocalUriHandler.current
         val acked = entity.serverId != null
-        // The detector coroutine outlives recomposition and keeps the
-        // lambda instance it started with (pointerInput only restarts on
+        // The detector coroutines outlive recomposition and keep the
+        // lambda instance they started with (pointerInput only restarts on
         // a KEY change, and these keys never move), so the callbacks are
         // read through rememberUpdatedState — captured directly, the
         // capsule would reopen against the `item` snapshot from this
         // bubble's very first touch and show a stale reaction.
         val currentDoubleTap by rememberUpdatedState(onDoubleTap)
         val currentLongPress by rememberUpdatedState(onTextLongPress)
-        val textModifier = if (linkSpans.isEmpty()) {
-            Modifier
-        } else {
-            Modifier.pointerInput(linkSpans, acked) {
-                detectTapGestures(
-                    onTap = { position ->
-                        val layout = textLayout ?: return@detectTapGestures
-                        val span = linkSpanAt(layout, linkSpans, position)
-                            ?: return@detectTapGestures
-                        // openUri throws when no app handles the scheme
-                        // (tel: on some tablets) — a dead tap beats a crash.
-                        runCatching { uriHandler.openUri(span.url) }
-                    },
-                    onDoubleTap = if (acked) ({ currentDoubleTap() }) else null,
-                    onLongPress = if (acked) ({ currentLongPress() }) else null,
-                )
-            }
-        }
         // The width of whatever else is in this balloon — a photo, a link
         // card. Text left to itself wraps to the width it WANTS (Compose
         // balances the lines), which under a wide card reads as a narrow
@@ -2295,34 +2300,62 @@ private fun BubbleContent(
         // "working" where an empty balloon looks broken. iOS and macOS draw
         // the same thing.
         if (isStreaming && entity.body.isEmpty()) {
-            Text(
-                text = "▍",
-                style = MaterialTheme.typography.bodyMedium,
-                color = LocalContentColor.current.copy(alpha = 0.6f),
-            )
+            StreamingCursor()
         }
         // A photo needs no caption, and an empty Text would still take a
         // line's height inside the balloon.
         if (entity.body.isNotEmpty()) {
             val minTextWidth = with(LocalDensity.current) { blockWidth.toDp() }
-            Text(
-                text = body,
-                onTextLayout = { textLayout = it },
-                modifier = textModifier.widthIn(min = minTextWidth),
-                style = if (emojiFontSize != null) {
-                    MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = emojiFontSize.sp,
-                        lineHeight = TextUnit.Unspecified,
+            blocks.forEachIndexed { index, bodyBlock ->
+                // Blocks stack, and the newline that separated them in the
+                // source went with the split — this gap stands in for it.
+                if (index > 0) Spacer(Modifier.height(6.dp))
+                when (val block = bodyBlock.block) {
+                    is MessageMarkdown.Block.Text -> TextBlock(
+                        rendered = block.rendered,
+                        links = bodyBlock.links,
+                        // The cursor rides the LAST block, and only when
+                        // that block is text — see below for a body that
+                        // ends in a table.
+                        showCursor = isStreaming && index == blocks.lastIndex,
+                        emojiFontSize = emojiFontSize,
+                        linkColor = linkColor,
+                        mentionColor = mentionColor,
+                        minWidth = minTextWidth,
+                        acked = acked,
+                        onDoubleTap = onDoubleTap,
+                        onLongPress = onTextLongPress,
                     )
-                } else {
-                    MaterialTheme.typography.bodyMedium
-                },
-            )
+                    // Width-greedy on purpose: the table takes the balloon's
+                    // whole width, `measureBlock` reports it, and the text
+                    // blocks wrap against that instead of floating narrow
+                    // beside a wide grid.
+                    is MessageMarkdown.Block.Table -> MarkdownTable(
+                        table = block,
+                        modifier = measureBlock.fillMaxWidth(),
+                    )
+                }
+            }
+            // The assistant is still writing and the last thing rendered is
+            // a grid: the cursor becomes a block of its own rather than
+            // landing inside a cell.
+            if (isStreaming && blocks.lastOrNull()?.block is MessageMarkdown.Block.Table) {
+                Spacer(Modifier.height(6.dp))
+                StreamingCursor()
+            }
         }
         // The first web link's preview, once it has landed. Asking for
         // it is what starts the fetch — gated on the setting, so a
         // switched-off device never touches the linked site.
-        val previewUrl = remember(linkSpans) { linkSpans.firstWebLinkUrl() }
+        //
+        // Over the BLOCKS rather than over the resolved link spans: a
+        // table's cells carry no spans by construction, so sourcing the
+        // URL from the spans alone left a URL typed into a cell with no
+        // card and no other way in — the cell is not tappable either.
+        // See MessageLinks.firstDrawnWebLinkUrl.
+        val previewUrl = remember(blocks) {
+            MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
+        }
         if (previewUrl != null && previewsEnabled) {
             LaunchedEffect(previewUrl) { onRequestPreview(previewUrl) }
             val state = linkPreviews[previewUrl]
@@ -2394,6 +2427,170 @@ private fun BubbleContent(
                     StatusGlyph(entity = entity, chat = chat, onFailedTap = onFailedTap)
                 }
             }
+        }
+    }
+}
+
+/** The assistant's "still writing" mark, drawn where the text will land. */
+@Composable
+private fun StreamingCursor() {
+    Text(
+        text = "▍",
+        style = MaterialTheme.typography.bodyMedium,
+        color = LocalContentColor.current.copy(alpha = 0.6f),
+    )
+}
+
+/**
+ * One text block of a body: the string as drawn, and the tap arbitration
+ * over it.
+ *
+ * ONE `TextLayoutResult` and ONE offset space, which is why this is a
+ * composable and not a loop body — [links] index [rendered]`.text` and
+ * nothing else, so a body split by a table needs a layout result per
+ * block. Share one between two and every tap in the second resolves
+ * against the first one's glyphs, silently opening the wrong destination.
+ *
+ * The gesture detector stays a raw `pointerInput` (never
+ * `LinkAnnotation.Url`, see [MessageLinks]) and arbitrates all three
+ * gestures itself: a linked body must still heart on double-tap and open
+ * the reaction capsule on long-press. Blocks with no links skip it
+ * entirely and let the balloon's own `combinedClickable` handle them —
+ * which is every ordinary message.
+ */
+@Composable
+private fun TextBlock(
+    rendered: MessageMarkdown.Rendered,
+    /** Links in THIS block's rendered text. */
+    links: List<LinkSpan>,
+    /** The assistant's cursor rides this block — the last one only. */
+    showCursor: Boolean,
+    /** Emoji-ladder size for an emoji-only body, else null. */
+    emojiFontSize: Float?,
+    linkColor: Color,
+    mentionColor: Color,
+    /** What else in the balloon is already this wide — see `measureBlock`. */
+    minWidth: Dp,
+    /** Acked: there is a message id to react to. */
+    acked: Boolean,
+    onDoubleTap: () -> Unit,
+    onLongPress: () -> Unit,
+) {
+    val body = remember(rendered, links, linkColor, mentionColor, showCursor) {
+        val linked = MessageLinks.styled(
+            rendered.annotated,
+            links,
+            SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline),
+        )
+        val styled = MessageLinks.withMentions(
+            linked,
+            SpanStyle(color = mentionColor, fontWeight = FontWeight.Bold),
+        )
+        // While the assistant is writing, the text ends in a cursor
+        // rather than just stopping mid-word — the same signal iOS and
+        // macOS give. APPENDED, never inserted: every link offset in
+        // `links` indexes this block, and the hand-rolled hit test below
+        // matches those offsets against this laid-out string, so anything
+        // added ahead of them would silently misdirect taps.
+        if (showCursor) buildAnnotatedString { append(styled); append("▍") } else styled
+    }
+    var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val uriHandler = LocalUriHandler.current
+    // The detector coroutine outlives recomposition and keeps the lambda
+    // instance it started with (pointerInput only restarts on a KEY
+    // change, and these keys never move), so the callbacks are read
+    // through rememberUpdatedState — captured directly, the capsule would
+    // reopen against the snapshot from this bubble's very first touch and
+    // show a stale reaction.
+    val currentDoubleTap by rememberUpdatedState(onDoubleTap)
+    val currentLongPress by rememberUpdatedState(onLongPress)
+    val textModifier = if (links.isEmpty()) {
+        Modifier
+    } else {
+        Modifier.pointerInput(links, acked) {
+            detectTapGestures(
+                onTap = { position ->
+                    val layout = textLayout ?: return@detectTapGestures
+                    // Resolves a tap to a character offset and opens the
+                    // span under it (glyph-box check so the empty space
+                    // past a short line does not count as its last link).
+                    val span = linkSpanAt(layout, links, position)
+                        ?: return@detectTapGestures
+                    // openUri throws when no app handles the scheme
+                    // (tel: on some tablets) — a dead tap beats a crash.
+                    runCatching { uriHandler.openUri(span.url) }
+                },
+                onDoubleTap = if (acked) ({ currentDoubleTap() }) else null,
+                onLongPress = if (acked) ({ currentLongPress() }) else null,
+            )
+        }
+    }
+    Text(
+        text = body,
+        onTextLayout = { textLayout = it },
+        modifier = textModifier.widthIn(min = minWidth),
+        style = if (emojiFontSize != null) {
+            MaterialTheme.typography.bodyMedium.copy(
+                fontSize = emojiFontSize.sp,
+                lineHeight = TextUnit.Unspecified,
+            )
+        } else {
+            MaterialTheme.typography.bodyMedium
+        },
+    )
+}
+
+/**
+ * A pipe table inside a balloon: a Column of weighted Rows, header bold
+ * over a hairline rule.
+ *
+ * It NEVER scrolls horizontally. The columns share the balloon's width by
+ * weight and the cells wrap, which costs a few more lines of height and
+ * nothing else — where a nested scrollable inside the bounded non-lazy
+ * window the Apple clients draw the same conversation in is the exact
+ * shape that produced two captured hang reports. Cells hold no links and
+ * no gesture of their own, so the balloon's `combinedClickable` still
+ * carries the heart and the capsule over the whole grid.
+ */
+@Composable
+private fun MarkdownTable(table: MessageMarkdown.Block.Table, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        MarkdownTableRow(cells = table.header, alignments = table.alignments, header = true)
+        HorizontalDivider(
+            // Derived from the bubble's content color, like the timestamp:
+            // outlineVariant mismatches primaryContainer under dynamic color.
+            color = LocalContentColor.current.copy(alpha = 0.3f),
+            thickness = Dp.Hairline,
+        )
+        for (row in table.rows) {
+            MarkdownTableRow(cells = row, alignments = table.alignments, header = false)
+        }
+    }
+}
+
+@Composable
+private fun MarkdownTableRow(
+    cells: List<AnnotatedString>,
+    alignments: List<TextAlign>,
+    header: Boolean,
+) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        cells.forEachIndexed { index, cell ->
+            Text(
+                text = cell,
+                style = MaterialTheme.typography.bodyMedium,
+                // Only the base weight: a cell's own `**bold**` spans still
+                // win over it, in the header as well.
+                fontWeight = if (header) FontWeight.Bold else null,
+                textAlign = alignments.getOrElse(index) { TextAlign.Start },
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(
+                        end = if (index == cells.lastIndex) 0.dp else 8.dp,
+                        top = 3.dp,
+                        bottom = 3.dp,
+                    ),
+            )
         }
     }
 }
@@ -2482,8 +2679,12 @@ private fun LinkPreviewCard(
 }
 
 /**
- * The link span under [position] in a laid-out body, or null when the
- * point misses the text.
+ * The link span under [position] in ONE laid-out text block, or null when
+ * the point misses the text.
+ *
+ * [layout] and [spans] must come from the SAME block: the offsets are that
+ * block's, and resolving them against another block's layout would answer
+ * with whatever glyphs happen to sit at those numbers.
  *
  * Neither half of this is what the text APIs hand you directly.
  * getOffsetForPosition answers with the nearest CURSOR BOUNDARY, so a

@@ -375,16 +375,16 @@
         "sr" : {
           "variations" : {
             "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld члана"
-                }
-              },
               "one" : {
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld члан"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld члана"
                 }
               },
               "other" : {
@@ -399,16 +399,16 @@
         "sr-Latn" : {
           "variations" : {
             "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld člana"
-                }
-              },
               "one" : {
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld član"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld člana"
                 }
               },
               "other" : {
@@ -483,6 +483,110 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "向助手提问 %lld 次"
+          }
+        }
+      }
+    },
+    "A day and a month, with no year — so being wished a happy birthday never means publishing your age." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ein Tag und ein Monat, ohne Jahr – Geburtstagsgrüße verraten so nie dein Alter."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un día y un mes, sin año: que te feliciten nunca significará publicar tu edad."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un jour et un mois, sans année — recevoir des vœux ne révèle jamais ton âge."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "月と日だけで、年は入りません。誕生日を祝われても、年齢が知られることはありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "День и месяц, без года — поздравления не выдадут твой возраст."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Дан и месец, без године — честитке за рођендан никада не откривају твоје године."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dan i mesec, bez godine — čestitke za rođendan nikada ne otkrivaju tvoje godine."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有月和日，没有年份——收到生日祝福不会暴露你的年龄。"
+          }
+        }
+      }
+    },
+    "A day and a month, with no year. Everyone in the family sees it." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ein Tag und ein Monat, ohne Jahr. Die ganze Familie sieht ihn."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un día y un mes, sin año. Toda la familia lo ve."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un jour et un mois, sans année. Toute la famille le voit."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "月と日だけで、年は入りません。ファミリー全員が見られます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "День и месяц, без года. Его видит вся семья."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Дан и месец, без године. Виде га сви у породици."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dan i mesec, bez godine. Vide ga svi u porodici."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有月和日，没有年份。全家人都能看到。"
           }
         }
       }
@@ -700,6 +804,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "写一条便签——全家人都能看到。"
+          }
+        }
+      }
+    },
+    "Add Birthday…" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geburtstag hinzufügen…"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Añadir cumpleaños…"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ajouter un anniversaire…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "誕生日を追加…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить день рождения…"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Додај рођендан…"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj rođendan…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加生日…"
           }
         }
       }
@@ -1025,6 +1181,58 @@
         }
       }
     },
+    "Answers in" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Antwortet auf"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Responde en"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Répond en"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回答する言語"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Язык ответа"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Језик одговора"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jezik odgovora"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回答语言"
+          }
+        }
+      }
+    },
     "Any family member can read the code to you; the owner finds it in Settings." : {
       "comment" : "A description of how to find the invite code.",
       "isCommentAutoGenerated" : true,
@@ -1287,6 +1495,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "助手"
+          }
+        }
+      }
+    },
+    "Assistant language" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprache des Assistenten"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Idioma del asistente"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Langue de l’assistant"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アシスタントの言語"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Язык ассистента"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Језик асистента"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jezik asistenta"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "助手语言"
           }
         }
       }
@@ -1607,6 +1867,162 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "音频，%@"
+          }
+        }
+      }
+    },
+    "Birthday" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geburtstag"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cumpleaños"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anniversaire"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "誕生日"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "День рождения"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Рођендан"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rođendan"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生日"
+          }
+        }
+      }
+    },
+    "Birthday for %@" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geburtstag von %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cumpleaños de %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anniversaire de %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ の誕生日"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "День рождения: %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Рођендан за %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rođendan za %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 的生日"
+          }
+        }
+      }
+    },
+    "Birthday…" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geburtstag…"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cumpleaños…"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anniversaire…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "誕生日…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "День рождения…"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Рођендан…"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rođendan…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生日…"
           }
         }
       }
@@ -1983,6 +2399,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "取消回复"
+          }
+        }
+      }
+    },
+    "Change Birthday…" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geburtstag ändern…"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cambiar cumpleaños…"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Changer d’anniversaire…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "誕生日を変更…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Изменить день рождения…"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Промени рођендан…"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Promeni rođendan…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更改生日…"
           }
         }
       }
@@ -3163,6 +3631,110 @@
         }
       }
     },
+    "Couldn't save that birthday. Try again." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Geburtstag konnte nicht gesichert werden. Versuche es erneut."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo guardar ese cumpleaños. Inténtalo de nuevo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible d’enregistrer cet anniversaire. Réessaie."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "誕生日を保存できませんでした。もう一度お試しください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить день рождения. Попробуй снова."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Рођендан није сачуван. Покушај поново."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rođendan nije sačuvan. Pokušaj ponovo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存这个生日。请重试。"
+          }
+        }
+      }
+    },
+    "Couldn't save that. Try again." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das konnte nicht gesichert werden. Versuche es erneut."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo guardar. Inténtalo de nuevo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible d’enregistrer. Réessaie."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存できませんでした。もう一度お試しください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить. Попробуй снова."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Није сачувано. Покушај поново."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nije sačuvano. Pokušaj ponovo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存。请重试。"
+          }
+        }
+      }
+    },
     "Create a family" : {
       "comment" : "A label for a button that lets the user create a family.",
       "isCommentAutoGenerated" : true,
@@ -3535,6 +4107,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "当前密码"
+          }
+        }
+      }
+    },
+    "Day" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tag"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Día"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jour"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "日"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "День"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Дан"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dan"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "日"
           }
         }
       }
@@ -6385,6 +7009,58 @@
         }
       }
     },
+    "Month" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Monat"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mes"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mois"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "月"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Месяц"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Месец"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mesec"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "月"
+          }
+        }
+      }
+    },
     "More reactions" : {
       "comment" : "An accessibility label for the button that opens the full emoji picker.",
       "localizations" : {
@@ -6702,6 +7378,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "新成员"
+          }
+        }
+      }
+    },
+    "New message" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Neue Nachricht"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje nuevo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nouveau message"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新着メッセージ"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новое сообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нова порука"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nova poruka"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新消息"
           }
         }
       }
@@ -7082,6 +7810,58 @@
         }
       }
     },
+    "Not set" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nicht festgelegt"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sin definir"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non défini"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未設定"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не задано"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Није подешено"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nije podešeno"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未设置"
+          }
+        }
+      }
+    },
     "Note" : {
       "comment" : "A text field for entering a note.",
       "isCommentAutoGenerated" : true,
@@ -7352,6 +8132,110 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "磁盘占用"
+          }
+        }
+      }
+    },
+    "Only the family owner can change this." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das kann nur der Eigentümer der Familie ändern."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Solo el propietario de la familia puede cambiar esto."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Seul le propriétaire de la famille peut modifier ceci."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これを変更できるのはファミリーのオーナーだけです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Это может изменить только владелец семьи."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ово може да промени само власник породице."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovo može da promeni samo vlasnik porodice."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有家庭拥有者才能更改这项设置。"
+          }
+        }
+      }
+    },
+    "Only the family owner can do that." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das kann nur der Eigentümer der Familie tun."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Solo el propietario de la familia puede hacer eso."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Seul le propriétaire de la famille peut faire cela."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これができるのはファミリーのオーナーだけです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Это может сделать только владелец семьи."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "То може да уради само власник породице."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To može da uradi samo vlasnik porodice."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有家庭拥有者才能这样做。"
           }
         }
       }
@@ -8686,6 +9570,58 @@
         }
       }
     },
+    "Remove Birthday" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geburtstag entfernen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quitar cumpleaños"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Retirer l’anniversaire"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "誕生日を削除"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать день рождения"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уклони рођендан"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ukloni rođendan"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除生日"
+          }
+        }
+      }
+    },
     "Remove from Family" : {
       "localizations" : {
         "de" : {
@@ -9704,6 +10640,58 @@
         }
       }
     },
+    "Sees recent history" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sieht den letzten Verlauf"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ve el historial reciente"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voit l’historique récent"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近の履歴を見る"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видит недавнюю историю"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Види недавну историју"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vidi nedavnu istoriju"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看最近的历史记录"
+          }
+        }
+      }
+    },
     "Send" : {
       "comment" : "A button that sends a message.",
       "isCommentAutoGenerated" : true,
@@ -10351,7 +11339,57 @@
     },
     "Shows a preview under links in messages, and a map on a shared location. Building either asks somebody else for it — the linked website for its title and image, Apple for the map — so they see a request from this Mac. With maps off, a shared location still shows its pin and opens in Maps when you click it." : {
       "comment" : "A description of the privacy settings.",
-      "isCommentAutoGenerated" : true
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zeigt eine Vorschau unter Links in Nachrichten und eine Karte zu einem geteilten Standort. Beides wird bei jemand anderem angefragt — die verlinkte Website für Titel und Bild, Apple für die Karte — die dann eine Anfrage von diesem Mac sehen. Sind Karten aus, zeigt ein Standort weiterhin seine Markierung und öffnet sich mit einem Klick in Karten."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Muestra una vista previa bajo los enlaces de los mensajes y un mapa en una ubicación compartida. Ambas cosas se le piden a otra persona — al sitio enlazado su título e imagen, a Apple el mapa — así que ven una petición desde este Mac. Con los mapas desactivados, una ubicación compartida sigue mostrando su marcador y se abre en Mapas al hacer clic."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Affiche un aperçu sous les liens des messages, et une carte sur une position partagée. Les deux sont demandés à quelqu’un d’autre — au site lié son titre et son image, à Apple la carte — qui voient donc une requête depuis ce Mac. Cartes désactivées, une position affiche toujours son repère et s’ouvre dans Plans d’un clic."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージ内のリンクの下にプレビューを、共有された位置情報に地図を表示します。どちらも他者に要求するため — リンク先のサイトにはタイトルと画像を、Apple には地図を — この Macからのリクエストが届きます。地図がオフでも、ピンは表示され、クリックすると「マップ」で開きます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показывает предпросмотр под ссылками в сообщениях и карту у отправленного местоположения. И то и другое запрашивается у кого-то ещё — у сайта по ссылке заголовок и картинку, у Apple карту — поэтому они видят обращение с этого Mac. Если карты выключены, местоположение всё равно показывает точку и открывается в Картах по клику."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приказује преглед испод линкова у порукама и мапу уз подељену локацију. И једно и друго се тражи од неког другог — од сајта наслов и слику, од Apple-а мапу — па виде захтев са овог Mac-а. Ако су мапе искључене, локација и даље приказује ознаку и отвара се у Мапама на клик."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prikazuje pregled ispod linkova u porukama i mapu uz podeljenu lokaciju. I jedno i drugo se traži od nekog drugog — od sajta naslov i sliku, od Apple-a mapu — pa vide zahtev sa ovog Mac-a. Ako su mape isključene, lokacija i dalje prikazuje oznaku i otvara se u Mapama na klik."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在消息中的链接下方显示预览，并在共享位置上显示地图。两者都需要向他人请求 — 向链接网站请求标题和图片，向 Apple 请求地图 — 因此它们会看到来自这台 Mac的请求。关闭地图后，共享位置仍会显示图钉，点按即可在“地图”中打开。"
+          }
+        }
+      }
     },
     "Shows a preview under links in messages. Building one asks the linked website for its title and image, so that site sees a request from this device." : {
       "comment" : "A description of the privacy setting.",
@@ -10887,6 +11925,58 @@
         }
       }
     },
+    "That date doesn't exist." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieses Datum gibt es nicht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esa fecha no existe."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette date n’existe pas."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "その日付は存在しません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Такой даты не существует."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Тај датум не постоји."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Taj datum ne postoji."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个日期不存在。"
+          }
+        }
+      }
+    },
     "That recording was too short." : {
       "comment" : "An error shown when a voice note captured nothing.",
       "localizations" : {
@@ -11205,6 +12295,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "需要家庭拥有者批准你的申请。此界面会自动更新，也可以下拉立即查看。"
+          }
+        }
+      }
+    },
+    "The language %@ answers in when it is asked in the family chat. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Sprache, in der %@ antwortet, wenn es im Familienchat gefragt wird. Es ist nicht die Sprache dieser App – die richtet sich nach dem Gerät. Ohne Auswahl antwortet es in der Sprache der Frage."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El idioma en el que %@ responde cuando se le pregunta en el chat familiar. No es el idioma de esta app: ese lo decide el dispositivo. Sin ninguno elegido, responde en el idioma de quien pregunte."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La langue dans laquelle %@ répond quand on l’interroge dans la conversation familiale. Ce n’est pas la langue de cette app : celle-là suit l’appareil. Sans choix, il répond dans la langue de la question."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ファミリーチャットで %@ に質問したとき、返ってくる答えの言語です。このアプリの表示言語ではありません — そちらは端末に従います。選ばなければ、質問した人の言語で答えます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Язык, на котором %@ отвечает в семейном чате. Это не язык самого приложения — он берётся из настроек устройства. Если ничего не выбрано, ответ приходит на языке вопроса."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Језик на ком %@ одговара када га питаш у породичном разговору. То није језик ове апликације — он прати уређај. Ако ништа није изабрано, одговор стиже на језику питања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jezik na kom %@ odgovara kada ga pitaš u porodičnom razgovoru. To nije jezik ove aplikacije — on prati uređaj. Ako ništa nije izabrano, odgovor stiže na jeziku pitanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在家庭对话里向 %@ 提问时，它回答所用的语言。这不是这个 app 的界面语言——界面语言跟随设备。未选择时，它用提问者的语言回答。"
           }
         }
       }
@@ -11959,6 +13101,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "启用批准后，加入申请会留在这里等你批准。"
+          }
+        }
+      }
+    },
+    "With this on, mentioning %@ in the family chat sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ist das an, geht beim Erwähnen von %@ im Familienchat der letzte Monat dieses Chats an den Assistenten, damit er Fragen zu früher Gesagtem beantworten kann. Ist es aus, geht nur die Nachricht mit der Erwähnung raus."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Con esto activado, mencionar a %@ en el chat familiar envía al asistente el último mes de ese chat, para que pueda responder sobre lo que se dijo antes. Desactivado, solo se envía el mensaje que lo menciona."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Activé, mentionner %@ dans la conversation familiale envoie à l’assistant le dernier mois de cette conversation, pour qu’il puisse répondre sur ce qui a été dit avant. Désactivé, seul le message qui le mentionne part."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "オンにすると、ファミリーチャットで %@ に話しかけたとき、その直近1か月分のやり取りもアシスタントに送られ、前に話した内容について答えられるようになります。オフのときは、話しかけたメッセージだけが送られます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда включено, упоминание %@ в семейном чате отправляет ассистенту переписку за последний месяц, чтобы он мог отвечать на вопросы о сказанном раньше. Когда выключено, отправляется только само сообщение с упоминанием."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Када је укључено, помињање %@ у породичном разговору шаље асистенту преписку из последњих месец дана, па може да одговара и на питања о раније реченом. Када је искључено, шаље се само порука у којој се помиње."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kada je uključeno, pominjanje %@ u porodičnom razgovoru šalje asistentu prepisku iz poslednjih mesec dana, pa može da odgovara i na pitanja o ranije rečenom. Kada je isključeno, šalje se samo poruka u kojoj se pominje."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开后，在家庭对话里提到 %@ 时，会把这个对话最近一个月的内容一起发给助手，它就能回答之前说过的事。关闭后，只发送提到它的那条消息。"
           }
         }
       }
