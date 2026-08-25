@@ -118,6 +118,31 @@ struct MacConversationView: View {
     /// Set while an older page is in flight, so the sentinel does not ask
     /// again and the reader sees that something is happening.
     @State private var isLoadingOlder = false
+    /// This member pressed Send, and the row it produces has not landed yet.
+    ///
+    /// The one hook that follows an own send used to INFER this, from
+    /// `messages.last?.senderID == coordinator.currentUserID`, and that
+    /// answers a different question: "is the newest row mine", not "did I
+    /// just send one". The two come apart in this app, in three ways that
+    /// all end with Send being pressed and nothing moving:
+    ///
+    /// - The optimistic row is stamped with THIS Mac's clock
+    ///   (`ChatSyncCoordinator.enqueue`) while every acked row carries the
+    ///   SERVER's (`upsert`), and the thread sorts on that key — so a
+    ///   message somebody else sent a moment earlier can legitimately sort
+    ///   after mine, on nothing worse than the two clocks disagreeing.
+    /// - In the family chat the assistant answers a mention by streaming a
+    ///   row of its own, which then IS the newest one.
+    /// - Media and location travel through an upload first, so the row
+    ///   appears seconds after the click, by which time anything may have
+    ///   arrived.
+    ///
+    /// Declared at the door instead, where the answer is not in doubt, and
+    /// spent by the arrival it was declared for. It is deliberately NOT
+    /// `isPinnedToBottom`: that is an observation about the viewport, and
+    /// every send spoils it before this can be read (see `ComposerPriming`
+    /// for the same trap on the composer's side).
+    @State private var owesSendPin = false
 
     /// Rows per window, and per widening step. The phone's number, for the
     /// same reasons — big enough that scrolling rarely reaches the top
@@ -399,14 +424,28 @@ struct MacConversationView: View {
                 // uncapped count would creep up over a long session until
                 // the layout cost that caused the hang came back. Past the
                 // cap the window SLIDES instead, keeping the newest rows.
-                if newCount > oldCount {
-                    visibleCount = min(
-                        min(newCount, visibleCount + (newCount - oldCount)), Self.maxWindow)
-                }
+                //
+                // Only for a reader who is NOT at the bottom, which is the
+                // phone's rule (ConversationView) and was the one piece of it
+                // the Mac did not copy. For a reader at the bottom widening
+                // buys nothing — the suffix already ends at the newest row —
+                // and it costs a SECOND content change: this write lands in
+                // the next update, so the pass that renders the arrival drops
+                // the oldest rendered row and the pass after it puts that row
+                // back, moving the thread twice for one message. Away from
+                // the bottom it is still exactly right: arriving messages
+                // widen the window instead of sliding the suffix out from
+                // under somebody reading history.
+                visibleCount = ThreadFollow.windowAfterArrival(
+                    current: visibleCount,
+                    cached: newCount,
+                    arrived: newCount - oldCount,
+                    isAtNewest: isPinnedToBottom,
+                    cap: Self.maxWindow)
                 // Follow the newest message for a reader who was ALREADY at
                 // the bottom — yanking somebody out of history because
                 // somebody else typed is the bug the phone fixed long ago —
-                // OR when the newest message is this member's OWN. Pressing
+                // OR when this member is the one who pressed Send. Pressing
                 // Send and watching nothing happen is worse than either.
                 // Re-ask what this reader can see: a message arriving for
                 // somebody already at the bottom scrolls the thread WITHOUT
@@ -414,8 +453,13 @@ struct MacConversationView: View {
                 // hook may not fire, and this is what reads the message
                 // they just watched land.
                 publishPresence(isAtNewest: isPinnedToBottom)
-                let mine = messages.last?.senderID == coordinator.currentUserID
-                guard isPinnedToBottom || mine else { return }
+                // Read and clear together: the declaration belongs to the
+                // send that made it, and one left armed would yank the next
+                // reader out of history for a message somebody else sent.
+                let didSend = owesSendPin
+                owesSendPin = false
+                guard ThreadFollow.followsArrival(
+                    isAtNewest: isPinnedToBottom, didSend: didSend) else { return }
                 withAnimation(.easeOut(duration: 0.18)) {
                     proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
                 }
@@ -455,9 +499,17 @@ struct MacConversationView: View {
             .frame(height: 1)
             .id(Self.bottomAnchor)
             .onGeometryChange(for: Bool.self) { geometry in
-                guard let viewport = geometry.bounds(of: .scrollView) else { return true }
-                let y = geometry.frame(in: .scrollView).minY
-                return y <= viewport.height + 40
+                // The rule itself is in ThreadFollow, where it is arithmetic
+                // and has tests. Two things it decides that this closure used
+                // to get wrong on its own: a missing viewport answers NO
+                // rather than yes (this value marks a conversation READ, and
+                // the server's marker is monotonic — the safe guess is the
+                // one that reads nothing), and the band is bounded at BOTH
+                // ends, so a sentinel far above the viewport is not reported
+                // as "the newest message is on screen".
+                ThreadFollow.isAtNewest(
+                    sentinelMinY: geometry.frame(in: .scrollView).minY,
+                    viewportHeight: geometry.bounds(of: .scrollView)?.height)
             } action: { visible in
                 isPinnedToBottom = visible
                 // The one fact only this geometry knows, and the one that
@@ -477,7 +529,19 @@ struct MacConversationView: View {
         guard !isLoadingOlder else { return }
         if visibleCount < messages.count {
             let anchorID = visibleMessages.first?.localID
-            visibleCount = min(min(messages.count, visibleCount + Self.windowStep), Self.maxWindow)
+            let widened = ThreadFollow.windowAfterPagingBack(
+                current: visibleCount, cached: messages.count, step: Self.windowStep,
+                cap: Self.maxWindow)
+            // At the cap this branch widens by nothing, and it used to
+            // schedule its restore scroll anyway: no row appeared, so
+            // putting the oldest rendered row back at the TOP simply threw
+            // the reader up there. The top sentinel is still on screen
+            // afterwards (`hasOlder` stays true while the cache runs past
+            // the cap), so it fired again, and again. Leave quietly instead
+            // — the cap is a deliberate bound on layout cost, and refusing
+            // to widen is the honest answer to it.
+            guard widened > visibleCount else { return }
+            visibleCount = widened
             if let anchorID {
                 // Two turns, like the phone's: rows widened into existence
                 // in this pass are not laid out yet, and a scrollTo at a
@@ -654,6 +718,7 @@ struct MacConversationView: View {
                 let quote = replyDraft
                 draft = ""
                 replyDraft = nil
+                owesSendPin = true
                 let sent = await coordinator.sendLocation(
                     latitude: fix.latitude,
                     longitude: fix.longitude,
@@ -796,6 +861,9 @@ struct MacConversationView: View {
         let quote = replyDraft
         draft = ""
         replyDraft = nil
+        // Declared before the row exists, because that is the only moment
+        // this is knowable without guessing (see `owesSendPin`).
+        owesSendPin = true
         coordinator.send(body: body, in: chatID, replyTo: quote)
     }
 
@@ -863,6 +931,7 @@ struct MacConversationView: View {
         let quote = replyDraft
         draft = ""
         replyDraft = nil
+        owesSendPin = true
         Task {
             defer { mediaNotice = nil }
             do {
@@ -897,6 +966,7 @@ struct MacConversationView: View {
         let quote = replyDraft
         draft = ""
         replyDraft = nil
+        owesSendPin = true
         Task {
             defer { mediaNotice = nil }
             do {
@@ -921,6 +991,12 @@ struct MacConversationView: View {
     private func restoreComposer(caption: String, quote: ReplyToDTO?) {
         if draft.isEmpty { draft = caption }
         if replyDraft == nil { replyDraft = quote }
+        // No row is coming, so the pin declared at the door has nothing to
+        // spend itself on. Left armed it would sit there until the NEXT
+        // message arrived — somebody else's — and pull a reader out of
+        // history for it. The upload doors are the only ones that can fail
+        // this way; a text send is optimistic and always produces its row.
+        owesSendPin = false
     }
 }
 
