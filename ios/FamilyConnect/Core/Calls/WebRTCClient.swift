@@ -153,7 +153,7 @@ final class WebRTCClient: NSObject, CallMediaClient {
         session.lockForConfiguration()
         defer { session.unlockForConfiguration() }
         do {
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP])
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
         } catch {
             AppLog.ui.info("Call audio session configuration failed: \(String(describing: error))")
         }

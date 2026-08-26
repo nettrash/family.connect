@@ -130,7 +130,9 @@ final class CallManager {
         case ended(CallEndReason)
     }
 
-    enum Direction: Equatable, Sendable {
+    // `nonisolated`: nested in a @MainActor class it would inherit the
+    // actor's isolation, and the wording table compares it off the actor.
+    nonisolated enum Direction: Equatable, Sendable {
         case outgoing
         case incoming
     }
