@@ -59,8 +59,10 @@ nonisolated enum ThreadFollow {
 
     /// Is the floating "jump to the newest message" button up?
     ///
-    /// Android's rule is `firstVisibleItemIndex > 5` in its reverse-layout
-    /// list — "more than five rows away from the newest". Neither Apple
+    /// Android's rule is `settled && firstVisibleItemIndex > 1` in its
+    /// reverse-layout list — settled, and past the rows its read gate
+    /// counts as "at the newest" (it was `> 5` once, several screens of
+    /// tall bubbles the button never showed for). Neither Apple
     /// thread has row indices to ask about (they render a bounded suffix
     /// in a plain stack, positioned by a scroll view that knows only
     /// points), so what ports is the INTENT: the button is up exactly when

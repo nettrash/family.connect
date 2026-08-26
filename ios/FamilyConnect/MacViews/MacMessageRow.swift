@@ -36,6 +36,10 @@ struct MacMessageRow: View {
     var isRunEnd: Bool = true
     var onReply: () -> Void = {}
     var onEdit: () -> Void = {}
+    /// Clicking a quote asks to jump to the quoted message — the phone's
+    /// `onTapQuote`, ported with the same best-effort contract: the
+    /// receiver may do nothing when the target is not cached.
+    var onTapQuote: (Int64) -> Void = { _ in }
     var onOpenAttachment: (AttachmentDTO) -> Void = { _ in }
     /// How many people could vote, for a poll's footer.
     var memberCount: Int = 0
@@ -300,9 +304,27 @@ struct MacMessageRow: View {
 
     @ViewBuilder
     private var balloon: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        // Alignment rule, updated 2026-08 at the product owner's ask:
+        // content used to share one left edge unconditionally, but in MY
+        // replies the BODY now sits against the trailing edge while the
+        // QUOTE keeps the left one (its leading-pinned frame below is what
+        // holds it there inside the trailing stack). Everything else —
+        // others' messages, own messages without a quote — is unchanged.
+        // ReplyContentLayout (shared with the phone) is what lets the
+        // body sit trailing while the quote keeps the leading edge AND the
+        // balloon still hugs its widest child — the frame-based version of
+        // this rule took the row's width, the documented slab regression.
+        let contentStack = alignsBodyTrailing
+            ? AnyLayout(ReplyContentLayout(spacing: 5))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: 5))
+        contentStack {
             if let quote = message.replyTo {
-                MacQuoteBlock(quote: quote, isMine: isMine, nameFor: nameFor)
+                MacQuoteBlock(
+                    quote: quote,
+                    isMine: isMine,
+                    nameFor: nameFor,
+                    onTapQuote: onTapQuote,
+                    onDoubleTap: { quickHeart() })
             }
             if let attachment = message.attachment {
                 if attachment.isLocation {
@@ -350,6 +372,10 @@ struct MacMessageRow: View {
                     Text(text)
                         .font(emojiFont)
                         .fixedSize(horizontal: false, vertical: true)
+                        // The reply rule again, inside the wrap: a body
+                        // that sits on the trailing edge also rags its
+                        // lines against it.
+                        .multilineTextAlignment(alignsBodyTrailing ? .trailing : .leading)
                         .overlay(alignment: .bottomTrailing) {
                             // The last text block is the only one still
                             // growing, so it is the one that ends in a
@@ -365,7 +391,12 @@ struct MacMessageRow: View {
                         // the same edge. Gated on there BEING a table — the
                         // phone learned the hard way that doing this
                         // unconditionally makes every balloon full width.
-                        .frame(maxWidth: fillsBalloonWidth ? .infinity : nil, alignment: .leading)
+                        .frame(
+                            maxWidth: fillsBalloonWidth ? .infinity : nil,
+                            alignment: alignsBodyTrailing ? .trailing : .leading)
+                        // The edge this block hugs in an own reply's
+                        // ReplyContentLayout; a VStack ignores the tag.
+                        .balloonEdge(.trailing)
                 }
             }
             if let preview = linkPreview {
@@ -508,6 +539,14 @@ struct MacMessageRow: View {
         hasTable || message.poll != nil
     }
 
+    /// An own message that IS a reply right-aligns its body while the
+    /// quote above it stays on the left — the product rule, shared with
+    /// the phone (see the balloon stack's comment). Everyone else's
+    /// messages, and own messages without a quote, keep one left edge.
+    private var alignsBodyTrailing: Bool {
+        isMine && message.replyTo != nil
+    }
+
     /// Open a clicked link — unless a second click arrives first, in which
     /// case the reader was double-clicking to ❤️.
     ///
@@ -610,6 +649,13 @@ private struct MacQuoteBlock: View {
     /// excerpt stacked on another excerpt with no names attached is
     /// unreadable — you cannot tell who said which half.
     let nameFor: (Int64) -> String
+    /// A click asks to jump to the quoted message.
+    let onTapQuote: (Int64) -> Void
+    /// A double-click is still the balloon's quick heart. The balloon's
+    /// own count-2 gesture cannot see through a child's bare
+    /// `.onTapGesture`, so this block re-arms it itself — the phone's
+    /// child-wins lesson (MessageBubbleView's quote), same fix.
+    let onDoubleTap: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
@@ -637,7 +683,48 @@ private struct MacQuoteBlock: View {
         // excerpt was, and every reply balloon on the Mac came out a
         // fixed-width slab regardless of what the reply said. The balloon
         // already caps itself at 460 after its background, which is the
-        // bound that was actually wanted.
+        // bound that was actually wanted. (An OWN reply's trailing stack
+        // now pins this block leading and full width at the CALL SITE —
+        // that is the one case where the width is meant to be taken.)
+        // The phone's load-bearing pin, ported with the rest: the accent
+        // bar is a Shape with a width-only frame — infinitely flexible in
+        // height — and an unpinned block beside a body Text flips the
+        // balloon into height DISTRIBUTION, the reply-truncation bug
+        // (MessageBubbleView's quoteBlock comment; BubbleLayoutTests).
+        .fixedSize(horizontal: false, vertical: true)
+        .contentShape(Rectangle())
+        // Clickable, and on a Mac only the cursor says so — the same
+        // affordance the attachment tiles give.
+        .hoverCursor(.pointingHand)
+        // count: 1 with the balloon's double-click still reachable: a bare
+        // `.onTapGesture` on a CHILD wins outright over the parent's
+        // count-2 gesture, so double-clicking the quote would fire two
+        // jumps and never the heart. simultaneousGesture lets both see the
+        // click; the 2-click recognizer claims the double. The phone's
+        // pattern (MessageBubbleView's quote), verbatim.
+        .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap() })
+        .onTapGesture { onTapQuote(quote.messageID) }
+        // The Mac quote had no accessibility at all; the phone's combined
+        // element, spoken levels, trait AND explicit action come over as
+        // one. The action is not decoration: a bare .onTapGesture
+        // publishes no accessibility action, so the trait alone announces
+        // "button" and activating it does nothing (measured on the phone —
+        // ZZAXProbeTests).
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onTapQuote(quote.messageID) }
+    }
+
+    /// VoiceOver hears the same two levels the eye sees, innermost last —
+    /// the phone's wording, through the same localized keys.
+    private var accessibilityText: String {
+        let head = String(
+            localized: "Replying to \(nameFor(quote.senderID)): \(quote.excerpt)")
+        guard let parent = quote.parent else { return head }
+        let tail = String(
+            localized: "which replied to \(nameFor(parent.senderID)): \(parent.excerpt)")
+        return "\(head), \(tail)"
     }
 }
 

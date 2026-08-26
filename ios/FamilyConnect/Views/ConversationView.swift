@@ -434,7 +434,15 @@ struct ConversationView: View {
                 }
                 .animation(.spring(duration: 0.25), value: showsJumpToNewest)
             }
-            .task { await openThread(proxy: proxy) }
+            .task {
+                // Un-park a draft an earlier identity of this chat's view
+                // stashed on its way out — before the opening routine, so
+                // the composer is whole by the time the thread lands.
+                if model.draft.isEmpty, let parked = ComposerDrafts.take(for: chatID) {
+                    model.draft = parked
+                }
+                await openThread(proxy: proxy)
+            }
             .onChange(of: messages.count) { oldCount, newCount in
                 // A reader away from the bottom keeps their place: arriving
                 // messages widen the render window instead of sliding the
@@ -612,6 +620,10 @@ struct ConversationView: View {
         }
         .onDisappear {
             coordinator.releasePresence(chatID: chatID)
+            // The view's identity dies with the route (`.id(chatID)` in
+            // ChatListView) and the draft is @State: park it, or a tapped
+            // notification for another chat discards a half-typed message.
+            ComposerDrafts.stash(model.draft, for: chatID)
         }
         .onChange(of: hasSettled) {
             // The opening convergence finished: whatever the sentinel says

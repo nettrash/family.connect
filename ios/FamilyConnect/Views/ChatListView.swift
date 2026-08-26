@@ -78,6 +78,20 @@ struct ChatListView: View {
             .navigationTitle(session.family?.name ?? "Chats")
             .navigationDestination(for: Int64.self) { chatID in
                 ConversationView(chatID: chatID)
+                    // Rebuild cleanly when the routed chat changes IN
+                    // PLACE: a notification tap while another chat is open
+                    // replaces the path's element (`path = [chatID]`
+                    // below) at the same depth, and without an explicit
+                    // identity SwiftUI keeps the old view's @State — a
+                    // settled flag, scroll pins, the unread anchor and the
+                    // divider of the PREVIOUS chat — and never restarts
+                    // its `.task`, so the new chat opened with no opening
+                    // routine at all (no first-page fetch on an empty
+                    // cache, no anchored open, a stale jump-to-newest
+                    // state). The Mac's sidebar has always done this —
+                    // MacChatView's `.id(selectedChatID)` — for the same
+                    // reason.
+                    .id(chatID)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

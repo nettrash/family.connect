@@ -36,13 +36,19 @@
 //  server's rule and applies wherever an alert can be read off a screen
 //  nobody unlocked.
 //
-//  Authorization is never asked for here: PushRegistrar already asks once
-//  per install, for [.alert, .sound, .badge], at the end of the first
-//  resync. A refusal is final and silent — `add` simply fails, the Dock
-//  badge needs no permission and carries on alone.
+//  Authorization is never asked for here: PushRegistrar asks once per
+//  install, for [.alert, .sound, .badge] — at Mac launch and on every
+//  arrival at .active, not only at the resync's tail. A refusal is final
+//  but no longer silent: a failed `add` is logged (chat and message ids
+//  only, never bodies), because a silently-failing `add` is how this app
+//  once ran for days on a Mac that had never registered with Notification
+//  Center at all. And the Dock badge does NOT carry on alone: modern
+//  macOS gates it behind the same per-app Notification Center settings
+//  ("Badge application icon") — see UnreadBadge.
 //
 
 import Foundation
+import os
 import UserNotifications
 
 nonisolated enum ChatNotifier {
@@ -148,7 +154,13 @@ nonisolated enum ChatNotifier {
         content.userInfo = ["kind": "call", "call_id": callID, localKey: true]
         let request = UNNotificationRequest(identifier: "call-\(callID)", content: content, trigger: nil)
         let center = UNUserNotificationCenter.current()
-        Task { try? await center.add(request) }
+        Task {
+            do {
+                try await center.add(request)
+            } catch {
+                AppLog.push.error("Incoming-call notification failed for call \(callID, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        }
     }
 
     /// The call was answered, declined, or rang out — on any device.
@@ -177,10 +189,18 @@ nonisolated enum ChatNotifier {
             content: content,
             trigger: nil)
         let center = UNUserNotificationCenter.current()
-        // No error handling and no log: the one failure that happens in
-        // practice is a declined authorization, which is a decision, not a
-        // fault, and repeats on every single message.
-        Task { try? await center.add(request) }
+        // Failures are logged — ids only, never the title or body. The
+        // common failure is still a declined authorization, and the line
+        // repeating per message is the point: this exact call once sat
+        // behind a bare `try?` while the app was not even registered with
+        // Notification Center, and nothing anywhere said so.
+        Task {
+            do {
+                try await center.add(request)
+            } catch {
+                AppLog.push.error("Local notification failed for chat \(chatID, privacy: .public) message \(messageID, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        }
     }
     #endif
 

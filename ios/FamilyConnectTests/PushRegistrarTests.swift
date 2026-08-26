@@ -12,6 +12,7 @@
 
 import Foundation
 import Testing
+import UserNotifications
 @testable import FamilyConnect
 
 @MainActor
@@ -25,6 +26,17 @@ struct PushRegistrarTests {
         #expect(PushRegistrationLogic.hexToken(Data([0x00, 0x0F, 0xAB, 0xFF])) == "000fabff")
         #expect(PushRegistrationLogic.hexToken(Data([0xDE, 0xAD, 0xBE, 0xEF])) == "deadbeef")
         #expect(PushRegistrationLogic.hexToken(Data()) == "")
+    }
+
+    @Test("authorization: never-asked prompts, denial abstains, any grant registers")
+    func authorizationActions() {
+        // .notDetermined is the ONLY status that may prompt; a prior denial
+        // stands down (re-checked every pass, so System Settings heals it);
+        // anything already granted skips straight to APNs registration.
+        #expect(PushRegistrationLogic.authorizationAction(for: .notDetermined) == .request)
+        #expect(PushRegistrationLogic.authorizationAction(for: .denied) == .abstain)
+        #expect(PushRegistrationLogic.authorizationAction(for: .authorized) == .registerOnly)
+        #expect(PushRegistrationLogic.authorizationAction(for: .provisional) == .registerOnly)
     }
 
     @Test("needsRegistration: fresh / rotated / half-stored yes, confirmed no")

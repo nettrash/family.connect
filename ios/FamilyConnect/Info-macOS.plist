@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The macOS twin of Info.plist, selected by
+	  INFOPLIST_FILE[sdk=macosx*] in project.pbxproj. Identical except
+	  that it omits UIBackgroundModes: `audio`/`voip` are iOS keys, and
+	  shipping them in a Mac bundle is an App Store validation risk. A
+	  Mac needs neither — the app holds its socket open while it runs,
+	  and there is no PushKit wake-to-ring on macOS.
+
+	  Keep the two files in step: any key added to Info.plist that is
+	  not iOS-only must be added here too.
+
+	  NSAllowsLocalNetworking (and nothing broader): a family typically
+	  self-hosts the server on a LAN box reachable only over plain
+	  http://192.168.x.x or http://name.local, which ATS would otherwise
+	  block. Public servers must still be https — no
+	  NSAllowsArbitraryLoads here, ever.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!--
+	  FCDefaultServerURL: the server this build is pre-pointed at, read
+	  by AppSettings.defaultServerURL. Expanded from the user-defined
+	  build setting FC_DEFAULT_SERVER_URL — empty in Debug/Release (first
+	  run asks for a server), https://fc.nettrash.me in Release-nettrash
+	  (the App Store build lands straight on Register/Login). Users can
+	  still switch servers via "Change server…" on the auth screen.
+	-->
+	<key>FCDefaultServerURL</key>
+	<string>$(FC_DEFAULT_SERVER_URL)</string>
+</dict>
+</plist>

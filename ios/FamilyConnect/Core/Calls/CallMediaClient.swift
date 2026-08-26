@@ -41,7 +41,18 @@ protocol CallMediaClient: AnyObject {
     func setRemoteDescription(sdp: String, isOffer: Bool) async throws
     func addRemoteCandidate(_ candidate: IceCandidatePayload) async throws
     func setMuted(_ muted: Bool)
+    /// Called shortly after the call goes active: if the platform's audio
+    /// units are not running by then, start them. On iOS CallKit normally
+    /// activates the audio session and this is a no-op; when its
+    /// `didActivate` never fires — the classic connected-but-silent call —
+    /// this is the fallback that makes the call audible. A no-op on macOS
+    /// (audio is automatic) and in tests.
+    func ensureAudioRunning()
     /// iOS only; a no-op elsewhere.
     func setSpeaker(_ enabled: Bool)
     func close()
+}
+
+extension CallMediaClient {
+    func ensureAudioRunning() {}
 }

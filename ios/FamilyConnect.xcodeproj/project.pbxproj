@@ -38,6 +38,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				"Info-macOS.plist",
 			);
 			target = FC0000102EAB0010013FC000 /* FamilyConnect */;
 		};
@@ -439,15 +440,17 @@
 				CODE_SIGN_ENTITLEMENTS = FamilyConnect/FamilyConnect.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "FamilyConnect/FamilyConnect-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 78;
+				CURRENT_PROJECT_VERSION = 81;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
+				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Taking a photo or video sends it to your family, and nowhere else. Family never opens the camera on its own.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose.";
@@ -490,15 +493,17 @@
 				CODE_SIGN_ENTITLEMENTS = FamilyConnect/FamilyConnect.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "FamilyConnect/FamilyConnect-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 78;
+				CURRENT_PROJECT_VERSION = 81;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
+				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Taking a photo or video sends it to your family, and nowhere else. Family never opens the camera on its own.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose.";
@@ -537,7 +542,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 78;
+				CURRENT_PROJECT_VERSION = 81;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -561,7 +566,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 78;
+				CURRENT_PROJECT_VERSION = 81;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -584,7 +589,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 78;
+				CURRENT_PROJECT_VERSION = 81;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -607,7 +612,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 78;
+				CURRENT_PROJECT_VERSION = 81;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -697,15 +702,17 @@
 				CODE_SIGN_ENTITLEMENTS = FamilyConnect/FamilyConnect.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "FamilyConnect/FamilyConnect-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 78;
+				CURRENT_PROJECT_VERSION = 81;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
+				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Taking a photo or video sends it to your family, and nowhere else. Family never opens the camera on its own.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose.";
@@ -744,7 +751,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 78;
+				CURRENT_PROJECT_VERSION = 81;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -767,7 +774,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 78;
+				CURRENT_PROJECT_VERSION = 81;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;

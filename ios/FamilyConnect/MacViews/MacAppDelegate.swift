@@ -23,6 +23,7 @@
 #if os(macOS)
 
 import AppKit
+import os
 import UserNotifications
 
 final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -37,6 +38,20 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.setNotificationCategories([ChatNotifier.incomingCallCategory()])
+        // Ask for notification authorization NOW when a session already
+        // exists, not only at the tail of a successful resync. That tail
+        // sits behind every silent early-return in resync(), and relying
+        // on it alone is how a Mac ran this app for days without ever
+        // appearing in Notification Center: requestAuthorization never
+        // executed, so no banners — and no "Badge application icon"
+        // toggle, which is what actually gates NSApp.dockTile on modern
+        // macOS (see UnreadBadge). A first run with no stored session
+        // still waits: the resync path asks with context after login.
+        if (try? KeychainStore.getString(account: KeychainStore.tokenAccount)) != nil {
+            Task { await MacAppDelegate.registrar?.ensureRegistered() }
+        } else {
+            AppLog.push.info("Launch without a stored session; deferring notification authorization")
+        }
     }
 
     // MARK: - APNs token

@@ -24,13 +24,20 @@
 //  The two mechanisms are NOT symmetric and the asymmetry is the reason
 //  this file exists rather than one line at the call site:
 //
-//    - macOS uses `NSApp.dockTile`, which needs no permission at all. A
-//      Mac user who declined notifications — an entirely reasonable thing
-//      to do for an app that is always open — still gets the Dock badge.
+//    - macOS sets `NSApp.dockTile.badgeLabel` AND routes the same number
+//      through `UNUserNotificationCenter.setBadgeCount`, belt and braces.
+//      An earlier revision claimed dockTile "needs no permission at all",
+//      and that claim was false in the way that cost this app its badge:
+//      modern macOS gates the Dock badge behind the app's per-app
+//      Notification Center settings ("Badge application icon"), and until
+//      the app has REGISTERED with Notification Center — called
+//      requestAuthorization at least once (PushRegistrar) — the toggle
+//      does not even exist and `badgeLabel` draws nothing at all.
 //    - iOS has only `UNUserNotificationCenter.setBadgeCount`, which is
 //      gated on the `.badge` authorization and is async. A denial is a
 //      decision, not a fault: it is swallowed, never logged (it would
-//      repeat on every save) and never prompts.
+//      repeat on every save) and never prompts. The same swallow applies
+//      to the macOS setBadgeCount route, for the same reason.
 //
 //  WHAT THE ICON SHOWS AT LAUNCH is a third question, and not the same
 //  one as "what does it show while the app runs". Deriving the number
@@ -83,17 +90,15 @@
 //
 
 import Foundation
+import UserNotifications
 
 #if os(macOS)
 import AppKit
-#else
-import UserNotifications
 #endif
 
 @MainActor
 enum UnreadBadge {
 
-    #if os(iOS)
     /// The number the icon should be showing, and the single task applying
     /// it. `setBadgeCount` is async while every caller is not, so a burst
     /// of saves inside one resync would otherwise queue several awaits that
@@ -101,9 +106,11 @@ enum UnreadBadge {
     /// stale count on the icon until something else happens to save. The
     /// applier re-reads `desired` after each attempt instead, so the last
     /// value written always wins and intermediate ones are coalesced away.
+    /// Shared by both platforms now that macOS routes through
+    /// setBadgeCount too (macOS 13+ / iOS 16+, both below our deployment
+    /// targets, so no availability guard).
     private static var desired = 0
     private static var applyTask: Task<Void, Never>?
-    #endif
 
     /// The one number, from the per-chat counts.
     ///
@@ -119,8 +126,11 @@ enum UnreadBadge {
     /// Show `count` unread on the app icon, or nothing when it is zero.
     static func show(_ count: Int) {
         #if os(macOS)
+        // Synchronous and kept: once the "Badge application icon" toggle
+        // exists (see the header), dockTile is honest and instant. The
+        // setBadgeCount below is the documented, permission-gated path.
         NSApp?.dockTile.badgeLabel = count > 0 ? String(count) : nil
-        #else
+        #endif
         desired = count
         guard applyTask == nil else { return }
         applyTask = Task { @MainActor in
@@ -131,6 +141,5 @@ enum UnreadBadge {
             }
             applyTask = nil
         }
-        #endif
     }
 }

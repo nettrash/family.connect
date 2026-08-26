@@ -85,6 +85,14 @@ struct RootView: View {
         .onChange(of: session.phase) { oldPhase, newPhase in
             if newPhase == .active {
                 Task { await coordinator.activate() }
+                #if os(macOS)
+                // Beside — not instead of — the launch-time call in
+                // MacAppDelegate: a fresh login has no stored token at
+                // launch, and the resync-tail call alone sits behind every
+                // silent early-return in resync(). Idempotent: settings
+                // are read before any prompt (PushRegistrar).
+                Task { await coordinator.ensurePushRegistration() }
+                #endif
             } else if oldPhase == .active {
                 coordinator.deactivate()
             }

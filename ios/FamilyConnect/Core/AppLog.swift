@@ -27,4 +27,8 @@ nonisolated enum AppLog {
     /// Device ids and route kinds only — never tokens or payload bodies.
     static let push   = Logger(subsystem: subsystem, category: "push")
     static let ui     = Logger(subsystem: subsystem, category: "ui")
+    /// Voice calls: state transitions and the selected ICE pair — the
+    /// minimum needed to diagnose a call from `log show` on the device.
+    /// Never an address, never SDP.
+    static let call   = Logger(subsystem: subsystem, category: "call")
 }

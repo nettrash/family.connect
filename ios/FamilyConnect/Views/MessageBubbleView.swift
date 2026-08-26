@@ -162,6 +162,14 @@ struct MessageBubbleView: View {
             || bodyBlocks.contains { $0.isTable }
     }
 
+    /// An own message that IS a reply right-aligns its body while the
+    /// quote above it stays on the left — the product rule as of 2026-08
+    /// (see the content stack's comment in `bubble`). Everyone else's
+    /// messages, and own messages without a quote, keep one left edge.
+    private var alignsBodyTrailing: Bool {
+        isMine && message.replyTo != nil
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
             if isMine { Spacer(minLength: 48) }
@@ -470,22 +478,29 @@ struct MessageBubbleView: View {
         // belong to the message, and outside they made the bubble's
         // footprint ragged.
         VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
-            // Everything that is CONTENT shares one left edge, whichever
-            // side the balloon is on.
+            // Alignment rule, updated 2026-08 at the product owner's ask.
+            // Content used to share ONE left edge unconditionally ("text
+            // reads from the left; only the balloon has a side"), and that
+            // rule is now deliberately reversed for exactly one case: in
+            // MY replies the BODY sits against the trailing edge, while
+            // the QUOTE keeps the left one. Everyone else's messages, and
+            // own messages without a quote, still share one left edge.
             //
-            // The outer stack is aligned to the message's own side so the
-            // chip row below hugs the same edge as the timestamp. Applied
-            // to the content too, that pushed whichever child was narrower
-            // against the right edge of an own-message balloon: a short
-            // reply under a long quote ended up right-aligned, and a short
-            // quote over a long reply floated its accent bar away from the
-            // first character it is pointing at. Text reads from the left;
-            // only the balloon has a side.
-            //
-            // Deliberately an ALIGNMENT and not a width. Making the quote
-            // (or the body) greedy is the change that once made every reply
-            // balloon full width — see `fillsBalloonWidth` below.
-            VStack(alignment: .leading, spacing: 2) {
+            // How the quote stays left while the body sits right — and
+            // the balloon still HUGS its content: ReplyContentLayout. Its
+            // header records why a frame cannot do this (the only width a
+            // frame can borrow is the proposal, which is the documented
+            // full-width-slab regression); the container takes its width
+            // from the widest child, Android-style, and each child places
+            // against its tagged edge. The load-bearing
+            // `.fixedSize(horizontal: false, vertical: true)` on the quote
+            // block and the body Text is untouched: vertical pinning is
+            // what keeps a reply from truncating its own body
+            // (BubbleLayoutTests pins that).
+            let contentStack = alignsBodyTrailing
+                ? AnyLayout(ReplyContentLayout(spacing: 2))
+                : AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+            contentStack {
             if let quote = message.replyTo {
                 quoteBlock(quote)
             }
@@ -559,6 +574,9 @@ struct MessageBubbleView: View {
                         // below warn about. The quote block below is pinned too,
                         // which is the cause rather than the symptom.
                         .fixedSize(horizontal: false, vertical: true)
+                        // The reply rule again, inside the wrap: a body on
+                        // the trailing edge also rags its lines against it.
+                        .multilineTextAlignment(alignsBodyTrailing ? .trailing : .leading)
                         // While the assistant is writing, the text ends in a
                         // cursor rather than just stopping mid-word — on the
                         // LAST text block, which is the only one still growing.
@@ -582,7 +600,12 @@ struct MessageBubbleView: View {
                         // when the reply quote did it.
                         .frame(
                             maxWidth: fillsBalloonWidth ? .infinity : nil,
-                            alignment: .leading)
+                            alignment: alignsBodyTrailing ? .trailing : .leading)
+                        // The edge this block hugs in an own reply's
+                        // ReplyContentLayout; a VStack ignores the tag.
+                        // Only the BODY rides trailing — Android is the
+                        // reference, and it moves nothing else.
+                        .balloonEdge(.trailing)
                 }
                 // The colour again, one level up: a table's cells are Texts
                 // of their own and have no colour of their own, and on my

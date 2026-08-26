@@ -63,6 +63,26 @@ nonisolated enum PushRegistrationLogic {
         guard let voipToken else { return false }
         return voipToken != storedVoIPToken
     }
+
+    /// What `ensureRegistered` does for a given authorization status:
+    /// prompt when the user has never been asked, go straight to APNs
+    /// registration when a previous answer (or a provisional grant)
+    /// already authorizes us, and stand down on an explicit denial —
+    /// which is a decision, re-checked on every pass so flipping the
+    /// switch back on in System Settings heals without a reinstall.
+    enum AuthorizationAction: Equatable {
+        case request
+        case registerOnly
+        case abstain
+    }
+
+    static func authorizationAction(for status: UNAuthorizationStatus) -> AuthorizationAction {
+        switch status {
+        case .notDetermined: return .request
+        case .denied: return .abstain
+        default: return .registerOnly
+        }
+    }
 }
 
 // MARK: - The stateful shell
@@ -105,6 +125,13 @@ final class PushRegistrar {
     /// is news too, and clears the server's copy.
     private var voipToken: String??
 
+    /// `ensureRegistered` now has three doors on macOS (launch, .active,
+    /// the resync tail) and the first arrival at .active can open all of
+    /// them in one turn of the runloop. The system coalesces concurrent
+    /// permission prompts, but three interleaved passes still race the
+    /// stored-token check; one at a time is the honest shape.
+    private var ensureInFlight = false
+
     init(api: APIClient) {
         self.api = api
     }
@@ -113,32 +140,53 @@ final class PushRegistrar {
 
     /// Called at the end of every coordinator resync — i.e. when the
     /// session first reaches .active and again on every reconnect and
-    /// foregrounding. First pass asks for permission; once granted (now
-    /// or on an earlier launch) it (re)requests the APNs token, whose
-    /// delegate callback drives the actual POST. Denial is final and
-    /// silent — checked via settings first so this never becomes a nag,
-    /// and a denied user simply keeps the live-socket experience.
+    /// foregrounding — and, on macOS, directly at launch and on every
+    /// arrival at .active (MacAppDelegate / RootView). The resync tail is
+    /// behind every one of resync()'s silent early-returns, and parking
+    /// the ONLY requestAuthorization call there once produced a Mac that
+    /// had never registered with Notification Center at all — no banners,
+    /// and no "Badge application icon" toggle for the Dock badge either.
+    ///
+    /// First pass asks for permission; once granted (now or on an earlier
+    /// launch) it (re)requests the APNs token, whose delegate callback
+    /// drives the actual POST. Denial is final — checked via settings
+    /// first, so this never becomes a nag, and a denied user keeps the
+    /// live-socket experience — but no branch is silent any more: every
+    /// outcome leaves a line in the push log.
     func ensureRegistered() async {
+        if ensureInFlight {
+            AppLog.push.debug("ensureRegistered already in flight; skipping")
+            return
+        }
+        ensureInFlight = true
+        defer { ensureInFlight = false }
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
-        switch settings.authorizationStatus {
-        case .notDetermined:
-            let granted = (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
-            guard granted else {
-                AppLog.push.info("Notification authorization denied")
+        let status = settings.authorizationStatus
+        AppLog.push.info("Notification authorization status: \(status.rawValue, privacy: .public)")
+        switch PushRegistrationLogic.authorizationAction(for: status) {
+        case .request:
+            do {
+                let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+                AppLog.push.info("Notification authorization prompt: granted=\(granted, privacy: .public)")
+                guard granted else { return }
+            } catch {
+                AppLog.push.error("Notification authorization request failed: \(String(describing: error), privacy: .public)")
                 return
             }
-        case .denied:
+        case .abstain:
+            AppLog.push.info("Notification authorization denied; skipping APNs registration")
             return
-        default:
+        case .registerOnly:
             break
         }
-        // Cheap and idempotent: iOS re-delivers the current token to the
-        // app delegate even when it hasn't changed — which is exactly the
-        // retry path for a POST that failed on an earlier pass.
+        // Cheap and idempotent: the OS re-delivers the current token to
+        // the app delegate even when it hasn't changed — which is exactly
+        // the retry path for a POST that failed on an earlier pass.
         // Both platforms register the same way through a differently
         // spelled application object; everything after this — the token
         // callback, the POST /devices — is shared.
+        AppLog.push.info("Requesting APNs registration (registerForRemoteNotifications)")
         #if os(iOS)
         UIApplication.shared.registerForRemoteNotifications()
         #elseif os(macOS)

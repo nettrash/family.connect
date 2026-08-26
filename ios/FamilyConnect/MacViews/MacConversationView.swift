@@ -183,6 +183,9 @@ struct MacConversationView: View {
     /// never recomputed — the phone's `openAnchor`, same reasons (see
     /// UnreadAnchor's header: both inputs move while the reader reads).
     @State private var openAnchor: OpenAnchor?
+    /// The row a quote jump just landed on, tinted briefly so the eye
+    /// finds it in a wall of text — the phone's flag, same fade.
+    @State private var highlightedMessageID: String?
 
     /// The two ways a chat can open. The phone's twin.
     private enum OpenAnchor: Equatable {
@@ -230,6 +233,11 @@ struct MacConversationView: View {
     /// than a reader scrolls back through in one sitting, and still cheap
     /// enough to lay out. The phone caps its own jump window the same way.
     private static let maxWindow = 300
+    /// Rows kept ABOVE a jumped-to message. Enough that the target does
+    /// not land against the top sentinel, whose appearance fires a history
+    /// page whose own restore scroll would fight the jump — the phone's
+    /// number, from the same shared source.
+    private static let jumpMargin = UnreadAnchor.margin
     /// The bottom sentinel's scroll id. A constant rather than the last
     /// message's, because aiming a pin at the last BUBBLE parks the row
     /// just off-screen and then reads as unpinned.
@@ -350,7 +358,13 @@ struct MacConversationView: View {
         .onChange(of: windowActivation) { _, _ in
             publishPresence(isAtNewest: isPinnedToBottom)
         }
-        .onDisappear { coordinator.releasePresence(chatID: chatID) }
+        .onDisappear {
+            coordinator.releasePresence(chatID: chatID)
+            // The sidebar's `.id(selectedChatID)` kills this identity on
+            // every chat switch, and the draft with it — parked instead,
+            // and handed back when the reader returns.
+            ComposerDrafts.stash(draft, for: chatID)
+        }
         // The suppression ends with the banner it was captured for, and it
         // is cleared HERE rather than beside each of the seven places a
         // reply draft or an edit is dropped (cancel, send, the swap between
@@ -507,6 +521,7 @@ struct MacConversationView: View {
                                 isRunEnd: row.isRunEnd,
                                 onReply: { beginReply(row.message) },
                                 onEdit: { beginEdit(row.message) },
+                                onTapQuote: { jumpToMessage($0, proxy: proxy) },
                                 onOpenAttachment: { attachment in
                                     if attachment.isFile {
                                         openFile(attachment)
@@ -521,6 +536,17 @@ struct MacConversationView: View {
                                 memberCount: familyMemberCount,
                                 onCallBack: canCall ? { startCall() } : nil)
                                 .id(row.message.localID)
+                                // A jumped-to row is briefly tinted, so
+                                // the eye lands on the right one — the
+                                // phone's highlight, same visual language.
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color.accentColor.opacity(
+                                            highlightedMessageID == row.message.localID
+                                                ? 0.14 : 0))
+                                        .padding(.horizontal, -4))
+                                .animation(
+                                    .easeOut(duration: 0.25), value: highlightedMessageID)
                         }
                     }
                     bottomSentinel
@@ -561,6 +587,9 @@ struct MacConversationView: View {
             // with nothing left to release it. See the note there; it ends
             // in a permanently and silently read conversation.
             .task(id: chatID) {
+                if draft.isEmpty, let parked = ComposerDrafts.take(for: chatID) {
+                    draft = parked
+                }
                 await ChatPresenceOpening.run(
                     // Claim the chat, and claim NOTHING about what is
                     // visible: `isPinnedToBottom` starts optimistically true
@@ -854,6 +883,59 @@ struct MacConversationView: View {
         try? await Task.sleep(nanoseconds: 350_000_000)
         guard !Task.isCancelled else { return }
         proxy.scrollTo(UnreadDivider.scrollID, anchor: .top)
+    }
+
+    /// Scroll to a quoted message when this Mac actually holds it — the
+    /// phone's quote jump, through the same idiom the anchored open above
+    /// already proved on this platform.
+    ///
+    /// Best-effort by design: the thread renders a bounded window and the
+    /// quoted message may be thousands of rows back, so rather than paging
+    /// the whole history to chase it, this widens the window once to cover
+    /// what is cached and scrolls if the row is there. A quote that cannot
+    /// be reached simply does nothing — the excerpt is already on screen,
+    /// which is most of what the click was asking for.
+    ///
+    /// Each step is a bug that has already happened on one platform or the
+    /// other (see `placeOpeningAnchor` right above): WIDEN FIRST, because
+    /// `scrollTo` at an unmaterialized id is a silent no-op; WITH MARGIN,
+    /// so the target does not land against the top sentinel; YIELD, THEN
+    /// SCROLL, TWICE, because rows widened into existence in this turn
+    /// have no frames yet.
+    private func jumpToMessage(_ serverID: Int64, proxy: ScrollViewProxy) {
+        guard let index = messages.firstIndex(where: { $0.serverID == serverID }) else { return }
+        let target = messages[index]
+
+        let needed = messages.count - index + Self.jumpMargin
+        // The window is a SUFFIX and the rows are non-lazy, so reaching a
+        // message thousands back would materialize everything after it in
+        // one layout pass. Past the cap the jump simply does not happen —
+        // the phone and Android give up the same way.
+        guard needed <= Self.maxWindow else { return }
+        if needed > visibleCount { visibleCount = min(needed, messages.count) }
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo(target.localID, anchor: .center)
+            }
+            highlight(target.localID)
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            proxy.scrollTo(target.localID, anchor: .center)
+        }
+    }
+
+    /// Tint the jumped-to row, then let it fade. The token guards the
+    /// clear so a second jump before the first fades does not wipe the
+    /// newer highlight — the phone's rule.
+    private func highlight(_ localID: String) {
+        highlightedMessageID = localID
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.6))
+            if highlightedMessageID == localID { highlightedMessageID = nil }
+        }
     }
 
     /// Widen the window, and page over the network once the cache runs out.

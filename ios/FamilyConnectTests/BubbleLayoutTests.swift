@@ -246,7 +246,25 @@ struct BubbleLayoutTests {
             }
         }
         if let start = bandStart { result.append((start, height)) }
-        return result
+        // Weld micro-gaps. A glyph row can dip below the 3-pixel floor for
+        // a single row INSIDE a line (a descender's waist), splitting one
+        // line into two bands — measured on the left-aligned control body,
+        // whose sixth line split at exactly one blank row, while the same
+        // body trailing-aligned (an own reply, since the 2026-08 alignment
+        // rule) did not. Counting must not depend on which edge the text
+        // rags against, so bands separated by fewer than 3 blank rows are
+        // one band. A REAL lost line removes a full line pitch (~22 rows at
+        // .large), which this cannot absorb — the regression the suite
+        // exists for still fails it.
+        var welded: [(start: Int, end: Int)] = []
+        for band in result {
+            if let last = welded.last, band.start - last.end <= 2 {
+                welded[welded.count - 1] = (last.start, band.end)
+            } else {
+                welded.append(band)
+            }
+        }
+        return welded
     }
 
     private func inkBands(replyTo: ReplyToSnapshot?) throws -> Int {

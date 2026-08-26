@@ -129,6 +129,51 @@ final class WebRTCClient: NSObject, CallMediaClient {
         connection.close()
     }
 
+    func ensureAudioRunning() {
+        #if os(iOS)
+        // CallKit's `didActivate` is what normally flips this on. When it
+        // never fires — a race with another audio session, a watch answer —
+        // the call stays silent while perfectly connected. Recover.
+        let session = RTCAudioSession.sharedInstance()
+        guard session.useManualAudio, !session.isAudioEnabled else { return }
+        AppLog.call.warning("Audio was never activated by CallKit; starting it manually")
+        Self.configureAudioSessionForCall()
+        session.lockForConfiguration()
+        do {
+            try session.setActive(true)
+        } catch {
+            AppLog.call.error("Manual audio activation failed: \(String(describing: error))")
+        }
+        session.unlockForConfiguration()
+        session.isAudioEnabled = true
+        #endif
+    }
+
+    /// One line per decision point: which kind of pair ICE settled on
+    /// (host/srflx/relay — never an address). This is the line that tells a
+    /// same-network call from a relayed one in a user's `log show`.
+    private func logSelectedPair(_ context: StaticString) {
+        connection.statistics { report in
+            let stats = report.statistics
+            var line = "no selected pair"
+            let selected = Set(stats.values.filter { $0.type == "transport" }
+                .compactMap { $0.values["selectedCandidatePairId"] as? String })
+            for (id, s) in stats where s.type == "candidate-pair" {
+                let nominated = (s.values["nominated"] as? Bool) == true
+                let succeeded = (s.values["state"] as? String) == "succeeded"
+                guard selected.contains(id) || (nominated && succeeded) else { continue }
+                let local = (s.values["localCandidateId"] as? String).flatMap { stats[$0] }
+                let remote = (s.values["remoteCandidateId"] as? String).flatMap { stats[$0] }
+                let localType = local?.values["candidateType"] as? String ?? "?"
+                let remoteType = remote?.values["candidateType"] as? String ?? "?"
+                let proto = local?.values["protocol"] as? String ?? "?"
+                line = "local \(localType)/\(proto) -> remote \(remoteType)"
+                break
+            }
+            AppLog.call.info("\(context, privacy: .public): \(line, privacy: .public)")
+        }
+    }
+
     #if os(iOS)
     /// CallKit activated the session (CXProviderDelegate
     /// `provider(_:didActivate:)`): hand it to WebRTC, which starts the
@@ -172,19 +217,31 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
 
+    /// Log-only. The call machine keys off `didChangeConnectionState`
+    /// below — the AGGREGATE state (ICE and DTLS both), because ICE alone
+    /// connecting is a call that LOOKS active while the encryption
+    /// handshake may still fail: "connected but silent" on this side,
+    /// "connecting…" forever on the other. Android has always used the
+    /// aggregate state; this made the two agree.
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
+        AppLog.call.info("ICE connection state: \(newState.rawValue, privacy: .public)")
+    }
+
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
         let mapped: CallMediaConnectionState
         switch newState {
         case .new: mapped = .new
-        case .checking: mapped = .connecting
-        case .connected, .completed: mapped = .connected
+        case .connecting: mapped = .connecting
+        case .connected: mapped = .connected
         case .disconnected: mapped = .disconnected
         case .failed: mapped = .failed
         case .closed: mapped = .closed
-        case .count: return
         @unknown default: return
         }
+        AppLog.call.info("Peer connection state: \(newState.rawValue, privacy: .public)")
         Task { @MainActor in
+            if mapped == .connected { self.logSelectedPair("connected") }
+            if mapped == .failed { self.logSelectedPair("failed") }
             self.delegate?.mediaClient(self, connectionStateChanged: mapped)
         }
     }

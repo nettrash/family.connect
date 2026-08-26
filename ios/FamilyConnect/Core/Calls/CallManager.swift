@@ -706,6 +706,14 @@ extension CallManager: CallMediaClientDelegate {
                 if direction == .outgoing, let callUUID {
                     systemBridge?.reportOutgoingConnected(callID: callUUID)
                 }
+                // The connected-but-silent fallback: give CallKit a moment
+                // to activate the audio session, then make sure it did.
+                let id = callID
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    guard id == self.callID, case .active = self.phase else { return }
+                    self.media?.ensureAudioRunning()
+                }
             }
         case .failed:
             // WebRTC has given up; a `disconnected` before it may still

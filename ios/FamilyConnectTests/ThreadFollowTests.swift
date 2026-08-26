@@ -146,6 +146,25 @@ struct ThreadFollowTests {
             current: 60, cached: 80, step: 60, cap: 300) == 80)
     }
 
+    // MARK: - The jump-to-newest button
+
+    @Test("The button is up exactly when a settled thread is away from the newest message")
+    func jumpButtonShowsAwayFromNewest() {
+        #expect(ThreadFollow.showsJumpToNewest(isAtNewest: false, hasSettled: true))
+        #expect(!ThreadFollow.showsJumpToNewest(isAtNewest: true, hasSettled: true))
+    }
+
+    @Test("Nothing shows before the opening routine has settled")
+    func jumpButtonWaitsForSettle() {
+        // Both threads spend their opening window with `isAtNewest` at
+        // whatever their state defaults to — the phone's false, the Mac's
+        // optimistic true — so without the settle gate the button blinks
+        // on and off through every open, and after an anchored open it
+        // would blink at the one moment it is genuinely needed.
+        #expect(!ThreadFollow.showsJumpToNewest(isAtNewest: false, hasSettled: false))
+        #expect(!ThreadFollow.showsJumpToNewest(isAtNewest: true, hasSettled: false))
+    }
+
     // MARK: - What a re-run of the opening routine still owes
 
     @Test("A finished open is not opened again")

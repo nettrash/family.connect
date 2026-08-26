@@ -1065,8 +1065,18 @@ fun ChatScreen(
 
                 // Scroll-to-newest: a pure overlay above the input bar; in
                 // this reverseLayout list index 0 is the newest message.
-                val showScrollToBottom by remember {
-                    derivedStateOf { listState.firstVisibleItemIndex > 5 }
+                // The decision is showScrollToNewest's (see its header):
+                // settled AND meaningfully off the bottom — the read
+                // gate's own at-newest shape. The old `index > 5` hid
+                // the button behind several screens of tall bubbles, and
+                // an unsettled screen must never flash it mid-open.
+                val showScrollToBottom by remember(settled) {
+                    derivedStateOf {
+                        showScrollToNewest(
+                            settled = settled,
+                            firstVisibleItemIndex = listState.firstVisibleItemIndex,
+                        )
+                    }
                 }
                 androidx.compose.animation.AnimatedVisibility(
                     visible = showScrollToBottom,
@@ -2990,12 +3000,14 @@ private fun BubbleContent(
 ) {
     // Everything that is CONTENT shares one left edge, whichever side the
     // balloon is on — the quote, the attachment, the body and the link
-    // card. Aligning them to the balloon's own side (which this used to do,
-    // matching iOS) pushed whichever was narrower against the right edge of
-    // an own-message balloon: a short reply under a long quote came out
-    // right-aligned, and a short quote over a long reply floated its accent
-    // bar away from the first character it points at. Text reads from the
-    // left; only the balloon has a side.
+    // card — with ONE deliberate exception the product owner reversed:
+    // in MY OWN replies the BODY text is right-aligned again (the block
+    // sits at End and wrapped lines take TextAlign.End), while the QUOTE
+    // above it keeps the left edge, so its accent bar still points at
+    // the first character of the excerpt. Everything else stays
+    // left-aligned for the original reason: aligning ALL content to the
+    // balloon's own side floated a short quote's accent bar away from
+    // the text it points at.
     //
     // The chip row and the timestamp still hug the balloon's edge, and they
     // now say so themselves — see their `align` modifiers below. iOS makes
@@ -3110,6 +3122,12 @@ private fun BubbleContent(
         // line's height inside the balloon.
         if (entity.body.isNotEmpty() && callRecord == null) {
             val minTextWidth = with(LocalDensity.current) { blockWidth.toDp() }
+            // The one alignment exception — see the header comment: my
+            // own REPLY right-aligns its body under the left-aligned
+            // quote. Only plain-text blocks flip; a table keeps its
+            // full-width footprint and per-column alignment.
+            val bodyAlignsEnd = isMine &&
+                quotedId != null && quotedSender != null && quotedExcerpt != null
             blocks.forEachIndexed { index, bodyBlock ->
                 // Blocks stack, and the newline that separated them in the
                 // source went with the split — this gap stands in for it.
@@ -3127,6 +3145,8 @@ private fun BubbleContent(
                         mentionColor = mentionColor,
                         minWidth = minTextWidth,
                         acked = acked,
+                        textAlign = if (bodyAlignsEnd) TextAlign.End else null,
+                        modifier = if (bodyAlignsEnd) Modifier.align(Alignment.End) else Modifier,
                         onDoubleTap = onDoubleTap,
                         onLongPress = onTextLongPress,
                     )
@@ -3293,6 +3313,9 @@ private fun TextBlock(
     minWidth: Dp,
     /** Acked: there is a message id to react to. */
     acked: Boolean,
+    /** End for the body of my own reply — see BubbleContent's header comment. */
+    textAlign: TextAlign? = null,
+    modifier: Modifier = Modifier,
     onDoubleTap: () -> Unit,
     onLongPress: () -> Unit,
 ) {
@@ -3348,7 +3371,11 @@ private fun TextBlock(
     Text(
         text = body,
         onTextLayout = { textLayout = it },
-        modifier = textModifier.widthIn(min = minWidth),
+        // linkSpanAt queries the laid-out result (getLineLeft/Right,
+        // getBoundingBox), which already reflects the alignment — no
+        // offset compensation needed for an End-aligned block.
+        textAlign = textAlign,
+        modifier = modifier.then(textModifier).widthIn(min = minWidth),
         style = if (emojiFontSize != null) {
             MaterialTheme.typography.bodyMedium.copy(
                 fontSize = emojiFontSize.sp,

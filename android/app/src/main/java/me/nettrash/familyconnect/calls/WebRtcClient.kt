@@ -15,6 +15,7 @@
 package me.nettrash.familyconnect.calls
 
 import android.content.Context
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -22,6 +23,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import me.nettrash.familyconnect.data.net.dto.IceCandidateDto
 import me.nettrash.familyconnect.data.net.dto.IceServerDto
 import org.webrtc.AudioSource
+import org.webrtc.CandidatePairChangeEvent
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
@@ -90,6 +92,7 @@ class WebRtcClient(
         }
 
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
+            Log.i(TAG, "peer connection state: $newState")
             when (newState) {
                 PeerConnection.PeerConnectionState.CONNECTED -> listener.onConnected()
                 // FAILED is final; DISCONNECTED is not — ICE keeps trying,
@@ -101,9 +104,26 @@ class WebRtcClient(
         }
 
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
-        override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) = Unit
+
+        override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
+            Log.i(TAG, "ice connection state: $state")
+        }
+
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
-        override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) = Unit
+
+        override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
+            Log.i(TAG, "ice gathering: $state")
+        }
+
+        // Which KIND of pair ICE settled on — host/srflx/relay, never an
+        // address. The one line that tells a direct call from a relayed
+        // one in a bug report's logcat.
+        override fun onSelectedCandidatePairChanged(event: CandidatePairChangeEvent) {
+            Log.i(
+                TAG,
+                "selected pair: local=${candidateType(event.local)} remote=${candidateType(event.remote)} (${event.reason})",
+            )
+        }
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
         override fun onAddStream(stream: MediaStream) = Unit
         override fun onRemoveStream(stream: MediaStream) = Unit
@@ -212,6 +232,14 @@ class WebRtcClient(
         runCatching { connection.close() }
         runCatching { connection.dispose() }
         runCatching { audioSource.dispose() }
+    }
+
+    private companion object {
+        const val TAG = "FcCallMedia"
+
+        /** The `typ` token of a candidate line: host, srflx, prflx or relay. */
+        fun candidateType(candidate: IceCandidate): String =
+            candidate.sdp.substringAfter(" typ ", "?").substringBefore(' ')
     }
 
     /** The four SdpObserver callbacks, defaulted so each site overrides only what it awaits. */
