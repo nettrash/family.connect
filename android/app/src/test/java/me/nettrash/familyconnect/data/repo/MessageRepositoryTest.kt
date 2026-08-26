@@ -47,6 +47,7 @@ import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
+import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
 import me.nettrash.familyconnect.testutil.pollDto
@@ -112,7 +113,7 @@ class MessageRepositoryTest {
 
     /** Builds the repository on the foreground repoScope and lets its frame collector subscribe. */
     private fun TestScope.newRepository(): MessageRepository {
-        chatRepository = ChatRepository(chatApi, chatDao, messageDao, socket, repoScope)
+        chatRepository = testChatRepository(chatApi, chatDao, messageDao, socket, repoScope)
         val repository = MessageRepository(
             chatApi = chatApi,
             attachmentApi = attachmentApi,
@@ -452,6 +453,67 @@ class MessageRepositoryTest {
 
         assertThat(chatDao.getById(CHAT)!!.peerLastReadId).isEqualTo(300L)
         assertThat(chatDao.getById(1L)!!.peerLastReadId).isNull()
+    }
+
+    /**
+     * The same frame carrying MY user id is not a receipt — it is this
+     * person reading on another of their devices. The marker belongs to
+     * them, not to the device (docs/protocol.md, `GET /chats` →
+     * `last_read_message_id`), so it lands on MY marker and the badge
+     * follows; ✓✓ is untouched, because nobody else read anything.
+     *
+     * Dormant against today's server, which excludes the reader from the
+     * fan-out (`others(...)` in server/src/events.rs) — see the file
+     * header on MessageRepository.onRead.
+     */
+    @Test
+    fun aReadFrameNamingMeMovesMyMarkerAndNotThePeers() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat(id = CHAT, kind = "direct", peerUserId = PEER)
+        insertInbound(id = 300L)
+        chatDao.bumpUnread(CHAT)
+
+        socket.emit(ServerFrame.Read(chatId = CHAT, userId = ME, lastReadMessageId = 300))
+        advanceUntilIdle()
+
+        assertThat(chatDao.getById(CHAT)!!.myLastReadId).isEqualTo(300L)
+        assertThat(chatDao.getById(CHAT)!!.peerLastReadId).isNull()
+        assertThat(chatDao.getById(CHAT)!!.unreadCount).isEqualTo(0)
+    }
+
+    /**
+     * A marker is a THRESHOLD, not an ending: what arrived after it on
+     * this device is still unread, and clearing outright would drop those
+     * messages from the badge for good — `GET /chats` computes from the
+     * same marker and would agree with the wrong answer.
+     */
+    @Test
+    fun aReadFrameNamingMeRecountsWhatArrivedAfterTheMarker() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat(id = CHAT, kind = "direct", peerUserId = PEER)
+        insertInbound(id = 300L)
+        insertInbound(id = 301L)
+        insertInbound(id = 302L)
+        repeat(3) { chatDao.bumpUnread(CHAT) }
+
+        socket.emit(ServerFrame.Read(chatId = CHAT, userId = ME, lastReadMessageId = 300))
+        advanceUntilIdle()
+
+        assertThat(chatDao.getById(CHAT)!!.unreadCount).isEqualTo(2)
+    }
+
+    private suspend fun insertInbound(id: Long, senderId: Long = PEER) {
+        messageDao.insert(
+            MessageEntity(
+                clientMsgId = "s$id",
+                serverId = id,
+                chatId = CHAT,
+                senderId = senderId,
+                body = "hi",
+                createdAt = NOW,
+                status = MessageStatus.SENT,
+            ),
+        )
     }
 
     @Test

@@ -9,14 +9,31 @@
  *                  pulls older pages over REST, guarded so a scroll
  *                  storm triggers exactly one fetch.
  *   read markers — read means SEEN: the newest inbound serverId is
- *                  reported only while the screen is RESUMED *and* the
- *                  list is parked at the newest message, after a 500 ms
- *                  debounce (collectLatest + delay) so skimming past a
- *                  hundred messages produces one `read`, not a hundred.
- *                  Both gates are load-bearing — the server's marker is
- *                  monotonic, so a read posted for a message nobody
- *                  looked at is a badge that never comes back, on every
- *                  device this person owns.
+ *                  reported only while the screen is RESUMED, the list
+ *                  is parked at the newest message, *and* the screen
+ *                  has SETTLED, after a 500 ms debounce (collectLatest
+ *                  + delay) so skimming past a hundred messages
+ *                  produces one `read`, not a hundred. All three gates
+ *                  are load-bearing — the server's marker is monotonic,
+ *                  so a read posted for a message nobody looked at is a
+ *                  badge that never comes back, on every device this
+ *                  person owns.
+ *   settled      — the screen has finished OPENING. An empty list has
+ *                  firstVisibleItemIndex == 0, so the screen reports
+ *                  "at newest" on its very first frame; without this
+ *                  third gate any opening scroll that takes longer than
+ *                  the debounce marks the whole chat read before the
+ *                  reader has seen a thing. iOS has had the same flag
+ *                  (`hasSettled`) for exactly this. It lives HERE
+ *                  rather than in the screen so it is testable without
+ *                  Compose, and it is one-way: nothing ever unsettles.
+ *   open anchor  — a chat with unread messages opens at the OLDEST of
+ *                  them, under a "N new messages" divider. Decided ONCE
+ *                  from the chat row and the cache as they stood at
+ *                  open (see OpenAnchor.kt) — the count is zeroed and
+ *                  the marker advances the moment the reader reaches
+ *                  the bottom, so anything recomputed would delete the
+ *                  divider out from under them.
  *   typing       — outbound throttled to one frame per 3 s (matching
  *                  the server's own per-chat throttle); inbound shown
  *                  for 5 s past the last frame (collectLatest restarts
@@ -53,6 +70,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
@@ -80,6 +98,7 @@ import me.nettrash.familyconnect.data.repo.VoiceRecorder
 import kotlinx.coroutines.Job
 import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
+import me.nettrash.familyconnect.data.repo.MessageBody
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.repo.PastedMedia
 import android.content.ClipData
@@ -140,6 +159,24 @@ class ChatViewModel @Inject constructor(
     // Written by the screen (see [setAtNewest]); the second half of
     // "read means seen".
     private val atNewest = MutableStateFlow(false)
+
+    // The third half of it: the screen has finished opening (see
+    // [setSettled]). False until the screen says so, because an empty
+    // LazyColumn reports firstVisibleItemIndex == 0 — i.e. "at the
+    // newest message" — on the first frame of EVERY chat, unread or
+    // not.
+    private val _settled = MutableStateFlow(false)
+
+    /**
+     * Whether the opening scroll is done and the list's position means
+     * something.
+     *
+     * Public because the screen consults it too: it is what stops a
+     * rotation from re-anchoring a reader who has already scrolled
+     * away, and what suppresses the near-old-end pagination trigger
+     * during the opening window.
+     */
+    val settled: StateFlow<Boolean> = _settled
 
     // Eagerly shared (not WhileSubscribed): the read-marker collector
     // reads myUserId `.value` to tell inbound from my own — a lazily
@@ -214,13 +251,34 @@ class ChatViewModel @Inject constructor(
         .map { it.assistantUserId }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    // Where the chat opens, and what the divider says. Null while the
+    // decision has not been made yet — which is also why the screen
+    // must not act on it until it is non-null, and why nothing else
+    // ever writes it (see the init block).
+    private val _openAnchor = MutableStateFlow<OpenAnchor?>(null)
+
+    /**
+     * Where this chat opens: at the newest message, or anchored at the
+     * oldest one the reader has not seen.
+     *
+     * Null means "not decided yet" and is NOT the same as
+     * [OpenAnchor.Newest]: the screen settles on the decision, so acting
+     * on a null would settle it before the anchor exists — which is the
+     * data-losing race [settled] is here to close.
+     */
+    val openAnchor: StateFlow<OpenAnchor?> = _openAnchor
+
     val items: StateFlow<List<ChatListItem>> = combine(
         visibleLimit.flatMapLatest { messageRepository.observeMessages(chatId, it) },
         chat,
         settings.state,
         memberNames,
-        familyMemberCount,
-    ) { messages, chatEntity, settingsState, members, memberCount ->
+        // Paired because combine tops out at five flows, and because
+        // these two are the only ones that are not a message: the
+        // roster's size and the anchor captured at open.
+        combine(familyMemberCount, _openAnchor) { memberCount, anchor -> memberCount to anchor },
+    ) { messages, chatEntity, settingsState, members, memberCountAndAnchor ->
+        val (memberCount, anchor) = memberCountAndAnchor
         buildChatItems(
             messagesNewestFirst = messages,
             isFamilyChat = chatEntity?.kind == "family",
@@ -230,6 +288,8 @@ class ChatViewModel @Inject constructor(
             assistantUserId = settingsState.assistantUserId,
             assistantName = settingsState.assistantName,
             familyMemberCount = memberCount,
+            firstUnreadServerId = (anchor as? OpenAnchor.Message)?.serverId,
+            newMessageCount = (anchor as? OpenAnchor.Message)?.newCount ?: 0,
         )
     }
         .onEach { _initialLoadSettled.value = true }
@@ -409,8 +469,40 @@ class ChatViewModel @Inject constructor(
     private var lastTypingSentAt = 0L
 
     init {
-        // Read markers: newest inbound acked message, gated on RESUMED
-        // *and* on the list being at the newest message, debounced
+        // WHERE THIS CHAT OPENS. Decided exactly once, from the chat row
+        // and the cache as they stand the moment the screen appears, and
+        // never revisited: reaching the bottom zeroes the count and
+        // advances the marker, so an anchor derived on every pass would
+        // erase itself the instant it worked.
+        //
+        // The wait is on the FIRST items emission rather than on a
+        // timer: it proves both halves have answered — the message flow,
+        // and settings.state (items combines it), which is where
+        // myUserId comes from. The read collector below subscribes to
+        // `items` from this same scope, so that emission always arrives,
+        // screen or no screen.
+        //
+        // The read path cannot race this: it needs [settled], and the
+        // screen only settles on a decision that is already made.
+        viewModelScope.launch {
+            _initialLoadSettled.first { it }
+            val chatRow = chatRepository.chatSnapshot(chatId)
+            _openAnchor.value = openAnchor(
+                unreadCount = chatRow?.unreadCount ?: 0,
+                myLastReadId = chatRow?.myLastReadId ?: 0L,
+                // Read further back than the render window, because the
+                // anchor may sit behind it — the screen's bounded page
+                // loop is what brings the window out to meet it, and
+                // ANCHOR_CAP is exactly how far that loop can go.
+                cachedNewestFirst = messageRepository.anchorRows(chatId, ANCHOR_CAP),
+                myUserId = myUserId.value ?: -1L,
+                cap = ANCHOR_CAP,
+            )
+        }
+
+        // Read markers: newest inbound acked message, gated on RESUMED,
+        // on the list being at the newest message, *and* on the screen
+        // having settled, debounced
         // 500 ms. collectLatest restarts the debounce whenever any input
         // changes — the report fires once things settle. Null means "not
         // reading right now", which is also what stops a scroll back up
@@ -423,8 +515,15 @@ class ChatViewModel @Inject constructor(
         // ahead of the server (a read that never landed) showing a count
         // that opening it never clears.
         viewModelScope.launch {
-            combine(resumed, atNewest, items) { isResumed, isAtNewest, list ->
-                if (!isResumed || !isAtNewest) null else newestInboundServerId(list)
+            combine(resumed, atNewest, _settled, items) { isResumed, isAtNewest, isSettled, list ->
+                // isSettled is the one that closes the opening race: an
+                // empty list reports index 0 — "at the newest message" —
+                // on the first frame, so a chat that opens anchored
+                // thirty messages up would post a read for the NEWEST id
+                // as soon as the debounce elapsed, and the server's
+                // marker never comes back down on any of this person's
+                // devices.
+                if (!isResumed || !isAtNewest || !isSettled) null else newestInboundServerId(list)
             }
                 .distinctUntilChanged()
                 .collectLatest { newest ->
@@ -481,6 +580,19 @@ class ChatViewModel @Inject constructor(
          */
         data class Working(val label: String) : MediaSendState
         data class Failed(val reason: String) : MediaSendState
+
+        /**
+         * Whether the composer is occupied with something a new
+         * attachment would collide with.
+         *
+         * [Failed] is deliberately NOT busy: it is a sentence sitting in
+         * the strip until somebody dismisses it, and treating it as busy
+         * is what made an error from one paste block the next one — the
+         * attach button greyed out, and the field's own paste refusing,
+         * for no reason the user could see.
+         */
+        val isBusy: Boolean
+            get() = this is Preparing || this is Uploading || this is Working
     }
 
     private val _mediaState = MutableStateFlow<MediaSendState>(MediaSendState.Idle)
@@ -513,14 +625,37 @@ class ChatViewModel @Inject constructor(
         publishOpenChat()
     }
 
+    /**
+     * Screen reports that it has finished opening — the end of BOTH
+     * opening branches, the anchored scroll and the plain
+     * open-at-the-newest one.
+     *
+     * One-way, and deliberately so: this is not "the list is idle", it
+     * is "the list's position now means what it says". Nothing ever
+     * unsettles a screen, because nothing after the open can put the
+     * list back into a state where index 0 is a lie.
+     */
+    fun setSettled() {
+        if (_settled.value) return
+        _settled.value = true
+        publishOpenChat()
+    }
+
     // Paused means the screen is showing nobody anything, whatever the
     // list is parked on — so the claim drops wholesale rather than
     // leaving a stale "at newest" behind for the bump rule to trust.
+    //
+    // UNSETTLED publishes "not at newest" for the same reason the read
+    // collector refuses to fire: during the opening window nothing is
+    // known to be in front of anybody. That is the safe direction — a
+    // message arriving mid-open counts as unread, and a message that
+    // genuinely landed in front of the reader costs one badge they can
+    // clear by reaching the bottom, which they are about to do anyway.
     private fun publishOpenChat() {
         val isResumed = resumed.value
         chatRepository.setOpenChat(
             chatId = if (isResumed) chatId else null,
-            atNewest = isResumed && atNewest.value,
+            atNewest = isResumed && _settled.value && atNewest.value,
         )
     }
 
@@ -851,15 +986,25 @@ class ChatViewModel @Inject constructor(
         /** Being prepared now; the strip shows it, then the chip appears. */
         STAGING,
 
-        /** Words, and they went into the composer. */
+        /**
+         * Words. Whether they were APPENDED here or left for the text
+         * field to insert at the caret depends on which door asked —
+         * see [pasteFromClipboard] and [pasteIntoField].
+         */
         TEXT,
 
         /**
          * Nothing was taken because attaching is not possible right now —
-         * an edit is in progress, or an upload is running. The composer
-         * already says so; this is not an error to report a second time.
+         * an edit is in progress, or the composer is already busy with an
+         * upload or a download.
          */
         BUSY,
+
+        /** More words than there was room for; what fit was taken. */
+        TRUNCATED,
+
+        /** None of it fit: the draft was already at the ceiling. */
+        FULL,
 
         /** Nothing in it this composer can take. */
         NOTHING,
@@ -876,30 +1021,78 @@ class ChatViewModel @Inject constructor(
      * behind (one attachment per message, docs/protocol.md).
      *
      * [declaredMime] is what the clipboard said the item is, used only
-     * when the provider will not answer for itself.
+     * when the provider will not answer for itself. [keepAlive] is the
+     * platform payload the Uri's read grant hangs off — see [stagePasted].
      *
      * Returns [PasteResult.NOTHING] for anything that is not an item to
      * attach — a copied LINK, most of all — so the caller can let it paste
      * as ordinary text instead.
      */
-    fun pasteAttachment(uri: Uri, declaredMime: String? = null): PasteResult {
+    fun pasteAttachment(
+        uri: Uri,
+        declaredMime: String? = null,
+        keepAlive: Any? = null,
+    ): PasteResult {
+        // The provider's own answer first: it describes THIS item, while
+        // the clip's type describes the clip.
+        val mime = providerType(uri) ?: declaredMime
+        // The RULE, before anything else — before the busy guard most of
+        // all. It used to run after, which meant a copied LINK pasted
+        // mid-edit came back BUSY: the door then swallowed an address
+        // that was never an attachment in the first place and had every
+        // right to land in the composer as words.
+        val kind = PastedMedia.kindFor(uri.scheme, mime) ?: return PasteResult.NOTHING
+        return stagePasted(uri, mime, kind, keepAlive)
+    }
+
+    /**
+     * Prepare and stage one item the rule has already called an
+     * attachment.
+     *
+     * Private, and reachable only through [PastedMedia] having said so:
+     * the preparation must never be the thing that decides what a
+     * clipboard is, or there are two policies and they drift.
+     *
+     * [keepAlive] is whatever object the platform hung this Uri's read
+     * grant on — for content committed by a KEYBOARD that is an
+     * `InputContentInfo`, and the grant dies with it, not at some later
+     * timeout. The copy below runs on another thread, so that object is
+     * referenced until the copy is done and cannot be collected out from
+     * under it.
+     */
+    private fun stagePasted(
+        uri: Uri,
+        mime: String?,
+        kind: String,
+        keepAlive: Any?,
+    ): PasteResult {
         // The same guard the attach menu carries: the composer is borrowed
         // for an edit (which has no attachment), or already busy with one
         // upload. Repeated here because a paste can arrive from the text
         // field's own menu, which the attach button does not gate.
-        if (_editTarget.value != null) return PasteResult.BUSY
-        if (_mediaState.value == MediaSendState.Preparing ||
-            _mediaState.value == MediaSendState.Uploading
-        ) {
+        if (_editTarget.value != null) {
+            // Said out loud, because the edit banner explains the MODE and
+            // not the refusal — a picture pasted into an edit otherwise
+            // just does nothing at all.
+            _mediaState.value =
+                MediaSendState.Failed(appContext.getString(R.string.e_finish_editing_first))
+            return PasteResult.BUSY
+        }
+        if (_mediaState.value.isBusy) {
+            // Deliberately silent: this state IS the strip's message
+            // ("Preparing…", "Sending…", or what a download is fetching),
+            // and overwriting it with an error would both hide live
+            // progress and release the busy guard — it is the same field a
+            // second paste checks.
             return PasteResult.BUSY
         }
 
-        // The provider's own answer first: it describes THIS item, while
-        // the clip's type describes the clip.
-        val mime = providerType(uri) ?: declaredMime
-        val kind = PastedMedia.kindFor(uri.scheme, mime) ?: return PasteResult.NOTHING
-
         _mediaState.value = MediaSendState.Preparing
+        // Held, not stashed: the grant on a Uri a keyboard committed is
+        // revoked the moment its InputContentInfo is collected, and the
+        // copy below is on another thread. Cleared as soon as the bytes
+        // are ours, so nothing outlives the one paste it belongs to.
+        pasteGrant = keepAlive
         // App scope, like every other prepare-and-send here: leaving the
         // screen must not take a 90 MB upload with it.
         appScope.launch {
@@ -948,6 +1141,8 @@ class ChatViewModel @Inject constructor(
                     ),
                 )
                 return@launch
+            } finally {
+                pasteGrant = null
             }
 
             stage(prepared)
@@ -956,42 +1151,130 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * The read grant of the paste being prepared right now, held only for
+     * as long as that takes. See [stagePasted].
+     */
+    private var pasteGrant: Any? = null
+
+    /**
      * The attach menu's Paste: take whatever is on the clipboard, whether
      * or not the text field has focus.
      *
-     * An attachable item wins; failing that the words go into the composer,
-     * which is what "paste" means when there is nothing to attach; failing
-     * both, it says so rather than looking broken.
+     * This door APPENDS the words it finds, because the text field may not
+     * even have focus and there is no caret to insert at — the same rule
+     * the assistant-mention button follows, and the same one the Mac and
+     * the phone follow: moving somebody's cursor is worse than adding to
+     * the end of what they were writing.
      */
-    fun pasteFromClipboard(clip: ClipData?): PasteResult {
+    fun pasteFromClipboard(clip: ClipData?): PasteResult =
+        paste(clip, appendsText = true, keepAlive = null)
+
+    /**
+     * The text field's OWN paste: its long-press menu, Ctrl+V from a
+     * hardware keyboard, a keyboard that inserts pictures, a drop onto the
+     * composer.
+     *
+     * Same rule, same answer — but the words are LEFT for the field, which
+     * inserts them where the caret is. That is the one thing this platform
+     * can do that the append-only doors cannot, and throwing it away to
+     * match them would be a regression nobody asked for.
+     *
+     * [keepAlive] is the platform payload the item's read grant hangs off;
+     * see [stagePasted].
+     */
+    fun pasteIntoField(clip: ClipData?, keepAlive: Any? = null): PasteResult =
+        paste(clip, appendsText = false, keepAlive = keepAlive)
+
+    /**
+     * Every paste door, once the door has stopped having opinions.
+     *
+     * The clipboard is DESCRIBED first — scheme, media type, text, no
+     * bytes — and [PastedMedia.decide] says what it is. Only then is a
+     * preparation reached, and only for the item the rule named. A door's
+     * whole remaining job is [appendsText]: whether it puts words in the
+     * composer itself, or hands them back to something that will.
+     */
+    private fun paste(clip: ClipData?, appendsText: Boolean, keepAlive: Any?): PasteResult {
         val count = clip?.itemCount ?: 0
-        for (index in 0 until count) {
-            val uri = clip!!.getItemAt(index).uri ?: continue
-            when (val result = pasteAttachment(uri, clipMime(clip, index))) {
-                PasteResult.STAGING, PasteResult.BUSY -> return result
-                // Not attachable — a copied link, typically. Keep looking,
-                // then fall through to the text below.
-                else -> Unit
+        val items = (0 until count).map { index ->
+            val item = clip!!.getItemAt(index)
+            val uri = item.uri
+            PastedMedia.Item(
+                scheme = uri?.scheme,
+                // The provider's own answer first: it describes THIS item,
+                // while the clip's type describes the clip.
+                mime = uri?.let { providerType(it) } ?: clipMime(clip, index),
+                text = item.text?.toString(),
+            )
+        }
+        return when (val verdict = PastedMedia.decide(items)) {
+            is PastedMedia.Verdict.Attach -> stagePasted(
+                uri = clip!!.getItemAt(verdict.index).uri!!,
+                mime = items[verdict.index].mime,
+                kind = verdict.kind,
+                keepAlive = keepAlive,
+            )
+
+            is PastedMedia.Verdict.Words ->
+                if (appendsText) appendPasted(verdict.text) else PasteResult.TEXT
+
+            PastedMedia.Verdict.Empty -> {
+                // Only the menu says so. The field's own paste reaches this
+                // for anything it could not classify, and the field then
+                // does whatever it does with it — an error strip over a
+                // paste that pasted normally would be a lie.
+                if (appendsText) {
+                    _mediaState.value =
+                        MediaSendState.Failed(appContext.getString(R.string.e_nothing_to_paste))
+                }
+                PasteResult.NOTHING
             }
         }
-        val text = (0 until count)
-            .firstNotNullOfOrNull { clip!!.getItemAt(it).text?.toString()?.takeIf(String::isNotEmpty) }
-        if (text != null) {
-            // Appended, never inserted at the caret — the same rule the
-            // assistant-mention button follows: moving somebody's cursor
-            // is worse than adding to the end of what they were writing.
-            val current = inputState.text.toString()
-            val separator = when {
-                current.isEmpty() -> ""
-                current.last().isWhitespace() -> ""
-                else -> " "
+    }
+
+    /**
+     * Add pasted words to the draft, within the body limit.
+     *
+     * Nothing enforced the 4000-character limit anywhere before this: a
+     * pasted wall of text looked like it had worked and then failed at
+     * Send with `message_too_long`, by which time the clipboard had often
+     * moved on (docs/protocol.md, "Limits"). What fits is kept and the
+     * sentence says the rest was not pasted — the same choice the Apple
+     * clients make, so a family that uses both sees one behaviour.
+     */
+    private fun appendPasted(text: String): PasteResult =
+        when (val outcome = MessageBody.appending(text, inputState.text)) {
+            is MessageBody.Paste.Appended -> {
+                inputState.setTextAndPlaceCursorAtEnd(outcome.draft)
+                PasteResult.TEXT
             }
-            inputState.setTextAndPlaceCursorAtEnd(current + separator + text)
-            return PasteResult.TEXT
+
+            is MessageBody.Paste.Truncated -> {
+                inputState.setTextAndPlaceCursorAtEnd(outcome.draft)
+                reportPasteTruncated()
+                PasteResult.TRUNCATED
+            }
+
+            // None of it fit, so the draft is left exactly as it was —
+            // "the rest wasn't pasted" would be the wrong sentence when
+            // none of it was.
+            MessageBody.Paste.Full -> {
+                _mediaState.value = MediaSendState.Failed(
+                    appContext.getString(R.string.e_message_at_limit, MessageBody.MAX_CHARS),
+                )
+                PasteResult.FULL
+            }
         }
-        _mediaState.value =
-            MediaSendState.Failed(appContext.getString(R.string.e_nothing_to_paste))
-        return PasteResult.NOTHING
+
+    /**
+     * Part of a paste was cut off for length — either here, or by the
+     * composer's own input transformation, which is where the text field's
+     * caret paste lands and is silent by design while somebody is typing.
+     */
+    fun reportPasteTruncated() {
+        _mediaState.value = MediaSendState.Failed(
+            appContext.getString(R.string.e_paste_truncated, MessageBody.MAX_CHARS),
+        )
     }
 
     /**
@@ -1124,10 +1407,21 @@ class ChatViewModel @Inject constructor(
      * at a time, and none once the start of history is reached.
      */
     fun loadOlder() {
-        if (reachedStart || !_loadingOlder.compareAndSet(expect = false, update = true)) return
+        if (!_loadingOlder.compareAndSet(expect = false, update = true)) return
         viewModelScope.launch {
             try {
-                reachedStart = messageRepository.loadOlder(chatId)
+                // `reachedStart` bounds the FETCH, not the window. It
+                // used to bound both, and that was a real hole: it means
+                // "the server has nothing older", while the window means
+                // "how much of what Room holds is on screen" — and a
+                // resync page can leave rows in Room the window has
+                // never reached. Once the fetch was exhausted the window
+                // could never grow again, so those rows were unreachable
+                // for good, a quote jump into them stalled forever, and
+                // the opening anchor could never be paged into view.
+                if (!reachedStart) {
+                    reachedStart = messageRepository.loadOlder(chatId)
+                }
                 visibleLimit.value += PAGE_SIZE
             } finally {
                 _loadingOlder.value = false
@@ -1146,6 +1440,29 @@ class ChatViewModel @Inject constructor(
     companion object {
         const val INITIAL_LIMIT = 100
         const val PAGE_SIZE = 50
+
+        /**
+         * How many older pages a jump — a quote tap, or the opening
+         * anchor — will page through before giving up. Bounded on its
+         * OWN count and never on the window growing: [loadOlder] widens
+         * the window whether or not the network answered, so a loop
+         * watching the window would page forever while offline.
+         */
+        const val MAX_JUMP_PAGES = 3
+
+        /**
+         * How far back an opening anchor may reach: where the window
+         * starts, plus everything the jump loop can add to it. Tied to
+         * the loop by construction, because the give-up rule and the
+         * loop's bound have to be the same number — a target the
+         * arithmetic accepts and the loop cannot reach is a chat that
+         * never finishes opening.
+         *
+         * This is a technical floor, not a product threshold: nettrash
+         * chose to jump whenever there is ANYTHING unread.
+         */
+        const val ANCHOR_CAP = INITIAL_LIMIT + MAX_JUMP_PAGES * PAGE_SIZE
+
         const val READ_DEBOUNCE_MS = 500L
         const val TYPING_THROTTLE_MS = 3_000L
         const val TYPING_EXPIRY_MS = 5_000L

@@ -19,7 +19,37 @@
  * launcher intent when the *system tray* built the notification — one
  * parser (PushRouteParser) then serves both delivery paths.
  *
- * iOS counterpart: none yet (push is not ported to ios/ at this time).
+ * THE NUMBER. `setNumber` is the whole of Android's badge story (see
+ * UnreadBadge.kt): there is no icon-badge API, so the count a launcher
+ * may draw is `Notification.number`, summed across this app's live
+ * notifications. The server sends it per chat as
+ * `android.notification.notification_count` (docs/protocol.md), and
+ * which of the two delivery paths a push takes decides who applies it:
+ *
+ *   system tray  — the COMMON path, app backgrounded or dead. FCM builds
+ *                  the notification itself and calls setNumber for us
+ *                  (CommonNotificationBuilder, from NotificationParams'
+ *                  `gcm.n.notification_count`). Nothing in this file
+ *                  runs. This is exactly why the count had to travel on
+ *                  the wire rather than be worked out here.
+ *   this file    — the RARE path, [build] via FcPushService: foreground
+ *                  with no live socket. The same wire value is read off
+ *                  RemoteMessage and passed to [build], so the number a
+ *                  launcher sees does not depend on which path a push
+ *                  happened to take.
+ *
+ * No notification GROUP and no summary, deliberately. A group is not
+ * what makes a number readable — `setNumber` alone is — and the tray
+ * path above cannot be given one: the server sends no `group` and this
+ * process is not running to add it. Grouping only the rare path would
+ * make two structurally different trays for one product, with the
+ * summary as an extra row to be counted or not counted depending on the
+ * launcher. Android auto-bundles four or more notifications from one app
+ * anyway.
+ *
+ * iOS counterpart: ios/FamilyConnect/Core/ChatNotifier.swift (the
+ * dismissal half; the badge half is UnreadBadge.swift, which has an icon
+ * to write a total onto and so needs none of this).
  */
 
 package me.nettrash.familyconnect.data.push
@@ -82,6 +112,18 @@ object PushNotifications {
         body: String,
         kind: String?,
         chatId: Long?,
+        /**
+         * The recipient's unread IN THIS CHAT, straight off the wire
+         * (`android.notification.notification_count`). Null leaves the
+         * number unset, which is the honest answer for a push that
+         * carried none — an older server, or one of the kinds that has no
+         * chat to count (`board_note`, `join_request`, `joined`). It is
+         * never guessed from the local store: this path runs precisely
+         * when the app has NOT stored the message being announced, so the
+         * store is one behind by construction and a number derived from
+         * it would be wrong by one.
+         */
+        unreadInChat: Int? = null,
     ): Notification {
         val tapIntent = Intent(context, MainActivity::class.java).apply {
             kind?.let { putExtra(EXTRA_KIND, it) }
@@ -111,19 +153,48 @@ object PushNotifications {
             .setContentText(body)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            // Which icon the launcher draws INSIDE the badge when someone
+            // long-presses it — not whether the number appears, which is
+            // setNumber's job alone. Small, because this app sets no large
+            // icon at all, so the default (BADGE_ICON_LARGE) resolves to
+            // the same silhouette by a longer road.
+            .setBadgeIconType(NotificationCompat.BADGE_ICON_SMALL)
             .setAutoCancel(true)
             .setContentIntent(contentIntent)
+            // Set only when the wire said so. `setNumber(0)` is not
+            // "no number" — it is a zero, and a launcher that sums live
+            // notifications would happily draw a badge saying nothing is
+            // waiting on a notification that says something is.
+            .apply { unreadInChat?.let(::setNumber) }
             .build()
     }
 
     /**
      * Drop everything this chat has in the tray, because it has been read.
      *
-     * On Android the tray entry IS the launcher dot — build() sets no
-     * `number` and no `badgeIconType`, so the dot lives and dies with the
-     * notification. Nothing else cancels it: setAutoCancel only covers the
-     * TAP, so a chat read inside the app used to leave the dot lit
-     * indefinitely, advertising messages the user had already seen.
+     * On Android the tray entry IS the badge — the number rides on it
+     * ([build], setNumber) and a launcher that draws only a dot draws
+     * that dot for as long as the notification lives. Nothing else
+     * cancels it: setAutoCancel covers the TAP alone, so a chat read
+     * anywhere else used to leave the badge lit indefinitely, advertising
+     * messages the user had already read.
+     *
+     * "Read" is a PERSON's state and not a device's — the marker is
+     * shared across every device its owner has (docs/protocol.md, `GET
+     * /chats` → `last_read_message_id`) — so the callers are all four
+     * ways this device can learn of it; see UnreadNotifications.
+     */
+    fun cancelChat(context: Context, chatId: Long) {
+        cancelChats(context, setOf(chatId))
+    }
+
+    /**
+     * The same, for several chats at once.
+     *
+     * A set rather than a chat at a time because a resync answers for the
+     * whole list in one go, and one pass over the tray settles all of it —
+     * `activeNotifications` is a binder round trip, and doing it per chat
+     * would repeat that for every silent chat in the family.
      *
      * Swept by tag rather than cancelled at the (tag, [NOTIFICATION_ID])
      * slot: when a push lands while the app is dead the SYSTEM tray builds
@@ -131,11 +202,12 @@ object PushNotifications {
      * (protocol: android.notification.tag) — and those are precisely the
      * ones still sitting there when the app is finally opened.
      */
-    fun cancelChat(context: Context, chatId: Long) {
-        val tag = chatTag(chatId)
+    fun cancelChats(context: Context, chatIds: Set<Long>) {
+        if (chatIds.isEmpty()) return
+        val tags = chatIds.mapTo(HashSet(), ::chatTag)
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.activeNotifications
-            .filter { it.tag == tag }
+            .filter { it.tag in tags }
             .forEach { manager.cancel(it.tag, it.id) }
     }
 
@@ -145,6 +217,7 @@ object PushNotifications {
         body: String,
         kind: String?,
         chatId: Long?,
+        unreadInChat: Int? = null,
     ) {
         // 13+ runtime permission may be denied (notify() would be silently
         // dropped anyway; checking keeps lint and the intent explicit).
@@ -156,6 +229,6 @@ object PushNotifications {
         }
         val tag = chatId?.let(::chatTag) ?: kind ?: "push"
         NotificationManagerCompat.from(context)
-            .notify(tag, NOTIFICATION_ID, build(context, title, body, kind, chatId))
+            .notify(tag, NOTIFICATION_ID, build(context, title, body, kind, chatId, unreadInChat))
     }
 }

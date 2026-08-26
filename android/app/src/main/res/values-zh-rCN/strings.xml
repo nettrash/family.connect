@@ -223,4 +223,14 @@
     <plurals name="s_voted_total">
         <item quantity="other">%1$d 人已投票</item>
     </plurals>
+    <!-- The push fallback body, the composer's 4000-character ceiling
+         (docs/protocol.md, "Limits") and the divider a chat with unread
+         messages opens under. -->
+    <string name="s_new_message">新消息</string>
+    <string name="e_finish_editing_first">请先完成这条消息的编辑。</string>
+    <string name="e_message_at_limit">消息已经达到 %1$d 个字符的上限。</string>
+    <string name="e_paste_truncated">一条消息最多 %1$d 个字符。其余内容没有粘贴。</string>
+    <plurals name="s_n_new_messages">
+        <item quantity="other">%1$d 条新消息</item>
+    </plurals>
 </resources>

@@ -69,6 +69,7 @@
     <string name="s_take_photo">Сликај</string>
     <string name="s_statistics">Статистика</string>
     <string name="s_messages">Поруке</string>
+    <string name="s_new_message">Нова порука</string>
     <string name="s_the_family">Породица</string>
     <string name="s_board_notes">Белешке на табли</string>
     <string name="s_attachments">Прилози</string>
@@ -152,16 +153,19 @@
     <string name="e_download_to_save_failed">Преузимање ради чувања није успело.</string>
     <string name="e_enter_invite_code">Унеси позивни код</string>
     <string name="e_file_too_large">Та датотека прелази ограничење од 100 MB.</string>
+    <string name="e_finish_editing_first">Прво заврши измену ове поруке.</string>
     <string name="e_gallery_permission">Family треба дозволу да чува у твоју галерију.</string>
     <string name="e_image_unreadable">Та слика не може да се прочита.</string>
     <string name="e_invalid_address">То не личи на исправну адресу</string>
     <string name="e_invalid_invite_code">Неисправан позивни код</string>
     <string name="e_join_failed">Придруживање није успело</string>
     <string name="e_load_requests_failed">Захтеви за приступ нису учитани</string>
+    <string name="e_message_at_limit">Порука је већ на ограничењу од %1$d знакова.</string>
     <string name="e_no_app_for_file">Ниједна апликација на овом телефону не може да отвори ту датотеку.</string>
     <string name="e_nothing_to_paste">Нема шта да се налепи.</string>
     <string name="e_open_chat_failed">Разговор не може да се отвори</string>
     <string name="e_password_too_short">Најмање 8 знакова</string>
+    <string name="e_paste_truncated">Порука може имати највише %1$d знакова. Остатак није налепљен.</string>
     <string name="e_prepare_failed">Та ставка није припремљена.</string>
     <string name="e_read_file_failed">Та датотека не може да се прочита.</string>
     <string name="e_rotate_failed">Промена кода није успела</string>
@@ -223,5 +227,10 @@
         <item quantity="one">%1$d глас</item>
         <item quantity="few">%1$d гласа</item>
         <item quantity="other">%1$d гласова</item>
+    </plurals>
+    <plurals name="s_n_new_messages">
+        <item quantity="one">%1$d нова порука</item>
+        <item quantity="few">%1$d нове поруке</item>
+        <item quantity="other">%1$d нових порука</item>
     </plurals>
 </resources>

@@ -18,6 +18,16 @@ import androidx.room.Query
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
+/**
+ * One chat's unread count and nothing else — a query projection, not a
+ * table.
+ *
+ * Narrow on purpose: the unread flow is collected for the whole life of
+ * the process (UnreadNotifications) and must not carry chat titles,
+ * previews and cursors past every typing indicator that touches the row.
+ */
+data class ChatUnread(val chatId: Long, val unreadCount: Int)
+
 @Dao
 interface ChatDao {
 
@@ -92,6 +102,26 @@ interface ChatDao {
 
     @Query("UPDATE chats SET unreadCount = 0 WHERE id = :chatId")
     suspend fun clearUnread(chatId: Long)
+
+    /**
+     * Set a chat's count outright, for the one caller that has RECOUNTED
+     * it rather than moved it — a read reported by another of this
+     * person's devices leaves an arbitrary number behind, not zero
+     * (ChatRepository.applyMyReadMarker).
+     */
+    @Query("UPDATE chats SET unreadCount = :count WHERE id = :chatId")
+    suspend fun setUnreadCount(chatId: Long, count: Int)
+
+    /**
+     * Every chat's unread count, for the life of the process.
+     *
+     * The source the notification numbers and the clearing rule are
+     * derived from (UnreadBadge, UnreadNotifications). Room re-runs it on
+     * any write to `chats`, which is exactly the set of moments the
+     * number can have changed.
+     */
+    @Query("SELECT id AS chatId, unreadCount FROM chats")
+    fun observeUnread(): Flow<List<ChatUnread>>
 
     /** MAX() keeps both markers monotonic — mirrors the server's rule. */
     @Query(

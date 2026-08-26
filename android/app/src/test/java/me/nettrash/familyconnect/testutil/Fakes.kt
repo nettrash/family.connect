@@ -64,6 +64,12 @@ import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.data.net.dto.RotateInviteCodeResponse
 import me.nettrash.familyconnect.data.net.dto.UserDto
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
+import kotlinx.coroutines.CoroutineScope
+import me.nettrash.familyconnect.data.db.ChatDao
+import me.nettrash.familyconnect.data.db.MessageDao
+import me.nettrash.familyconnect.data.push.UnreadNotifications
+import me.nettrash.familyconnect.data.repo.ChatRepository
+import org.robolectric.RuntimeEnvironment
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.net.ws.SocketState
@@ -912,3 +918,32 @@ class FakeAttachmentApi : AttachmentApi {
         )
     }
 }
+
+/**
+ * A ChatRepository wired to a real UnreadNotifications.
+ *
+ * The badge's clearing is not a seam that can be faked away here: the
+ * repository CONSTRUCTING the sweeper is what starts it (see
+ * ChatRepository's constructor doc), and the sweeper's own dependency is
+ * the same DAO the repository writes through. So the tests build the real
+ * one — Robolectric gives it a real NotificationManager, which the
+ * clearing tests then read the tray back off.
+ *
+ * A factory rather than a default argument on the production constructor:
+ * Hilt injects that parameter and nothing in the app should be able to
+ * forget it.
+ */
+fun testChatRepository(
+    chatApi: ChatApi,
+    chatDao: ChatDao,
+    messageDao: MessageDao,
+    socket: ChatSocket,
+    scope: CoroutineScope,
+): ChatRepository = ChatRepository(
+    chatApi,
+    chatDao,
+    messageDao,
+    socket,
+    UnreadNotifications(RuntimeEnvironment.getApplication(), chatDao, scope),
+    scope,
+)

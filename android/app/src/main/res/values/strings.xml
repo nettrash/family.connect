@@ -82,6 +82,15 @@
     <string name="s_take_photo">Take photo</string>
     <string name="s_statistics">Statistics</string>
     <string name="s_messages">Messages</string>
+    <!--
+      The notification body when a push arrives carrying none of its own.
+      Never happens against a current server (push_payload.rs always
+      composes one), so it is the last line of defence rather than a
+      wording anybody should see — but it WAS a hardcoded English literal
+      in FcPushService, which is the one string in this app the user reads
+      in a language nobody chose.
+    -->
+    <string name="s_new_message">New message</string>
     <string name="s_the_family">The family</string>
     <string name="s_board_notes">Board notes</string>
     <string name="s_attachments">Attachments</string>
@@ -165,16 +174,19 @@
     <string name="e_download_to_save_failed">Couldn\'t download that to save.</string>
     <string name="e_enter_invite_code">Enter the invite code</string>
     <string name="e_file_too_large">That file is over the 100 MB limit.</string>
+    <string name="e_finish_editing_first">Finish editing this message first.</string>
     <string name="e_gallery_permission">Family needs permission to save to your gallery.</string>
     <string name="e_image_unreadable">That image couldn\'t be read.</string>
     <string name="e_invalid_address">That doesn\'t look like a valid address</string>
     <string name="e_invalid_invite_code">Invalid invite code</string>
     <string name="e_join_failed">Couldn\'t join</string>
     <string name="e_load_requests_failed">Couldn\'t load join requests</string>
+    <string name="e_message_at_limit">The message is already at the %1$d-character limit.</string>
     <string name="e_no_app_for_file">No app on this phone can open that file.</string>
     <string name="e_nothing_to_paste">There\'s nothing to paste.</string>
     <string name="e_open_chat_failed">Couldn\'t open the chat</string>
     <string name="e_password_too_short">At least 8 characters</string>
+    <string name="e_paste_truncated">A message can be at most %1$d characters. The rest wasn\'t pasted.</string>
     <string name="e_prepare_failed">Couldn\'t prepare that item.</string>
     <string name="e_read_file_failed">Couldn\'t read that file.</string>
     <string name="e_rotate_failed">Rotation failed</string>
@@ -241,4 +253,11 @@
         <item quantity="other">%1$d voted</item>
     </plurals>
     <string name="e_close_poll_failed">Couldn\'t close that poll.</string>
+    <!-- The divider a chat with unread messages opens under, above the oldest
+         one the reader has not seen. A plural because the count is the whole
+         sentence, and most of the eight languages inflect on it. -->
+    <plurals name="s_n_new_messages">
+        <item quantity="one">%1$d new message</item>
+        <item quantity="other">%1$d new messages</item>
+    </plurals>
 </resources>

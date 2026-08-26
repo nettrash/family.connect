@@ -232,6 +232,17 @@ nonisolated struct DaySection: Equatable, Sendable, Identifiable {
     var id: Date { day }
     let day: Date
     let messages: [MessageSnapshot]
+    /// `localID` of the row in THIS section that the "N new messages"
+    /// divider is drawn above, or nil when the boundary is not in this
+    /// section (or not on screen at all).
+    ///
+    /// Carried by the section rather than worked out again in each thread
+    /// for the reason day sectioning itself is: iOS and macOS draw the
+    /// same conversation from this one builder, and a boundary computed
+    /// twice is a boundary that eventually lands in two different places.
+    /// At most one section can carry it — the builder stops looking once
+    /// it has been placed.
+    var unreadDividerAbove: String? = nil
 }
 
 /// One aggregated chip in the reaction row under a bubble: an emoji, how
@@ -374,8 +385,18 @@ nonisolated enum MessagePresentation {
     /// out in the order their first message appears — so a correctly
     /// sorted input yields chronologically sorted sections without a
     /// second sort.
+    ///
+    /// `firstUnreadID` is the SERVER id of the oldest message the reader
+    /// has not seen, decided once at open (UnreadAnchor) and handed in
+    /// here so that the section holding it can say which of its rows the
+    /// "N new messages" divider belongs above. nil — the ordinary case,
+    /// and every open of a chat with nothing unread — puts a divider
+    /// nowhere. An id that is not in `messages` (it fell out of the render
+    /// window, or was never in it) likewise places nothing, which is the
+    /// honest outcome: the divider marks a row, and the row is not here.
     static func daySections(
         _ messages: [MessageSnapshot],
+        firstUnreadID: Int64? = nil,
         calendar: Calendar = .current
     ) -> [DaySection] {
         // Built as (day, rows) pairs and only turned into DaySections at
@@ -385,16 +406,32 @@ nonisolated enum MessagePresentation {
         // quadratic in the number of messages in one day. It went unnoticed
         // while the phone only ever passed it a 60-row window; the Mac
         // passed it the whole thread, on every body evaluation.
-        var days: [(day: Date, messages: [MessageSnapshot])] = []
+        var days: [(day: Date, messages: [MessageSnapshot], dividerAbove: String?)] = []
+        // At most one, structurally. The divider carries a CONSTANT scroll
+        // id (it is the anchored open's target), so a second one drawn from
+        // a duplicate row would make `scrollTo` ambiguous — and an ambiguous
+        // scroll target is a silent no-op, which is the one failure mode
+        // this whole rule is written to avoid.
+        var placed = false
         for message in messages {
             let day = calendar.startOfDay(for: message.createdAt)
             if let last = days.indices.last, days[last].day == day {
                 days[last].messages.append(message)
             } else {
-                days.append((day: day, messages: [message]))
+                days.append((day: day, messages: [message], dividerAbove: nil))
+            }
+            // The boundary row, if this is it. Written into whichever
+            // section the row landed in — which is why it is placed here
+            // rather than searched for afterwards.
+            if !placed, let firstUnreadID, message.serverID == firstUnreadID,
+                let last = days.indices.last {
+                days[last].dividerAbove = message.localID
+                placed = true
             }
         }
-        return days.map { DaySection(day: $0.day, messages: $0.messages) }
+        return days.map {
+            DaySection(day: $0.day, messages: $0.messages, unreadDividerAbove: $0.dividerAbove)
+        }
     }
 
     /// Whether the sender's name caption shows above a bubble.

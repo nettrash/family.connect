@@ -5,10 +5,13 @@
  * Chat list + read reporting.
  *
  *   refreshChats — GET /chats merged into Room. The server's unread
- *                  count always wins (it is the authority); the local
- *                  read markers (my/peer last-read) survive the merge
- *                  because they only exist client-side. Messages the
- *                  socket delivered WHILE the request was in flight are
+ *                  count always wins (it is the authority); MY read
+ *                  marker is merged monotonically with the one the
+ *                  response now carries (`last_read_message_id` —
+ *                  protocol resync step 2), and the PEER's survives the
+ *                  merge untouched because nothing on the response
+ *                  describes it. Messages the socket delivered WHILE
+ *                  the request was in flight are
  *                  added back on top, but only the ones newer than the
  *                  `last_message` the response carries — the rest the
  *                  server had already counted. A direct chat the
@@ -27,6 +30,17 @@
  *                  fallback otherwise. Monotonic guard here; the
  *                  500 ms debounce lives in ChatViewModel (closest to
  *                  the scroll events that trigger it).
+ *   applyMyReadMarker
+ *                — the same marker arriving from ANOTHER of this
+ *                  person's devices, off a `read` frame. Monotonic, and
+ *                  it recounts rather than clears.
+ *
+ * THE BADGE. A read marker belongs to the person and not the device, so
+ * both of the paths above end at UnreadNotifications: a chat read
+ * anywhere has to take its notification — which on Android IS the badge
+ * — down here too. `refreshChats` is the one that fires on today's
+ * server, because `deliver_read` fans the frame out to OTHER members and
+ * the reader's own devices never see it (server/src/events.rs).
  *
  * iOS counterpart: ios/FamilyConnect/Data/Repo/ChatRepository.swift
  */
@@ -47,6 +61,7 @@ import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.net.ws.SocketState
+import me.nettrash.familyconnect.data.push.UnreadNotifications
 import me.nettrash.familyconnect.di.AppScope
 import me.nettrash.familyconnect.util.TimeFormat
 import java.util.concurrent.ConcurrentHashMap
@@ -62,6 +77,13 @@ class ChatRepository @Inject constructor(
     private val chatDao: ChatDao,
     private val messageDao: MessageDao,
     private val socket: ChatSocket,
+    /**
+     * Injected rather than reached for statically because constructing it
+     * is what STARTS the unread sweep — this repository is in the graph
+     * Hilt builds before the first frame can arrive (FamilyConnectApp),
+     * and the badge has to be watching from then on.
+     */
+    private val unreadNotifications: UnreadNotifications,
     @param:AppScope private val scope: CoroutineScope,
 ) {
 
@@ -164,6 +186,16 @@ class ChatRepository @Inject constructor(
     fun observeChat(chatId: Long): Flow<ChatEntity?> = chatDao.observeById(chatId)
 
     /**
+     * The chat row as it stands right now, once.
+     *
+     * The opening anchor needs `unreadCount` and `myLastReadId` as they
+     * were the moment the screen opened, and it needs them TOGETHER: the
+     * flow's first emission can be a null while Room answers, and its
+     * later ones already have the read path's zero in them.
+     */
+    suspend fun chatSnapshot(chatId: Long): ChatEntity? = chatDao.getById(chatId)
+
+    /**
      * On success, returns the server's `max_reaction_seq`, `max_edit_seq`
      * and `max_poll_seq` per chat id (0 where the server omitted any of
      * them) — SyncEngine compares each against the locally stored cursor
@@ -215,8 +247,17 @@ class ChatRepository @Inject constructor(
                         // Authoritative (protocol: resync step 2), plus
                         // what arrived after the server counted.
                         unreadCount = item.unreadCount + arrivedDuringRequest,
-                        // Local-only markers survive the merge.
-                        myLastReadId = existing?.myLastReadId,
+                        // MY marker is no longer local-only: `GET /chats`
+                        // reports it (protocol: resync step 2), and it is
+                        // the only thing that can tell this device the
+                        // chat was read on another one. MONOTONIC, never
+                        // assigned — see [mergedReadMarker].
+                        myLastReadId = mergedReadMarker(
+                            stored = existing?.myLastReadId,
+                            received = item.lastReadMessageId,
+                        ),
+                        // The PEER's marker still is: nothing on this
+                        // response describes it.
                         peerLastReadId = existing?.peerLastReadId,
                         // What arrived rather than the raw body: a
                         // caption-less photo has an EMPTY body, which is
@@ -255,6 +296,22 @@ class ChatRepository @Inject constructor(
                 for (chatId in directAtRequest) {
                     if (chatId !in listed) deleteDirectChat(chatId)
                 }
+                // The cross-device half of the badge. A chat the SERVER
+                // says has nothing unread has been read by this person —
+                // on this device or on another one, the marker does not
+                // distinguish — so anything this device is still showing
+                // about it in the tray is stale. Read from the RESPONSE
+                // and not from the merged rows, which may carry
+                // `arrivedDuringRequest` on top: a message that arrived
+                // during the await came over a LIVE socket, and the
+                // server never pushes to a device holding one — so it has
+                // no notification of its own, and letting it veto the
+                // sweep would leave the stale one lit.
+                unreadNotifications.onServerSaysRead(
+                    result.value.chats
+                        .filter { it.unreadCount <= 0 }
+                        .mapTo(HashSet()) { it.chat.id },
+                )
                 ApiResult.Ok(
                     result.value.chats.associate {
                         it.chat.id to ServerCursors(
@@ -347,6 +404,69 @@ class ChatRepository @Inject constructor(
         // then lost for good.
         if (reported) {
             chatDao.setMyLastRead(chatId, lastReadMessageId)
+        }
+    }
+
+    /**
+     * Apply a read marker this person set on ANOTHER of their devices.
+     *
+     * The marker belongs to the person, not the device (docs/protocol.md,
+     * `GET /chats` → `last_read_message_id`): reading on a tablet must
+     * put the phone's badge down too. Applied monotonically by the DAO's
+     * MAX(), so a frame that crosses a read happening here cannot walk
+     * this device's marker backwards.
+     *
+     * The count is RECOUNTED rather than cleared, because a marker is a
+     * threshold and not an ending: another device reading up to 1337 says
+     * nothing about the two messages that arrived after it, and clearing
+     * would drop them from the badge for good — `GET /chats` computes
+     * from the same marker and would agree with the wrong answer.
+     * [MessageDao.countInboundAfter] carries the caveat: it counts what
+     * this device HOLDS, which is everything only because this path is
+     * reached from a live socket.
+     *
+     * [myUserId] is passed in because the caller (MessageRepository, off
+     * the `read` frame) already had to know who it is to decide the frame
+     * was about this user at all.
+     */
+    suspend fun applyMyReadMarker(chatId: Long, lastReadMessageId: Long, myUserId: Long) {
+        chatDao.setMyLastRead(chatId, lastReadMessageId)
+        // Re-read rather than reused: MAX() may have kept a HIGHER marker
+        // this device already had, and recounting against the incoming
+        // one would then resurrect messages it has already read.
+        val marker = chatDao.getById(chatId)?.myLastReadId ?: lastReadMessageId
+        val remaining = messageDao.countInboundAfter(chatId, marker, myUserId)
+        chatDao.setUnreadCount(chatId, remaining)
+        if (remaining == 0) {
+            // Directly as well as through the sweep: the sweep only fires
+            // on a count this process watched go DOWN, and a device that
+            // never saw the pushed message was already sitting at zero
+            // with the notification still up.
+            unreadNotifications.onServerSaysRead(setOf(chatId))
+        }
+    }
+
+    companion object {
+        /**
+         * `max(stored, received)` — the rule protocol.md states for
+         * `last_read_message_id`, and the reason it is a function rather
+         * than an assignment.
+         *
+         * A `GET /chats` still in flight while the reader is reading
+         * carries a marker from before they read: writing it in would
+         * walk the marker backwards, and this client's monotonic guard in
+         * [postRead] would then re-report reads the server already has —
+         * or, worse, the chat list would re-inflate a count the reader
+         * just cleared.
+         *
+         * Absent (an older server) and `0` ("never reported anything
+         * here") land in the same place on purpose: both leave whatever
+         * is stored exactly as it was, including a stored NULL, which is
+         * this schema's way of saying the same thing as the protocol's 0.
+         */
+        fun mergedReadMarker(stored: Long?, received: Long?): Long? {
+            val merged = maxOf(stored ?: 0L, received ?: 0L)
+            return if (merged > 0L) merged else stored
         }
     }
 }

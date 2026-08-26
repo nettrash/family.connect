@@ -918,6 +918,11 @@ pub async fn list_chats(
                 lm.att_id, lm.att_kind, lm.att_mime, lm.att_size,
                 lm.att_has_preview, lm.att_name,
                 uc.unread AS unread_count,
+                -- The caller's own marker, off the SAME chat_reads row the
+                -- unread count is measured against: it costs no extra join
+                -- and no extra query, and 0 (never read anything here) is
+                -- the answer the count already assumes.
+                COALESCE(cr.last_read_message_id, 0) AS last_read_message_id,
                 c.last_reaction_seq,
                 c.last_edit_seq,
                 c.last_poll_seq
@@ -1021,6 +1026,7 @@ pub async fn list_chats(
                 },
                 last_message,
                 unread_count: row.get("unread_count"),
+                last_read_message_id: row.get("last_read_message_id"),
                 max_reaction_seq: (last_reaction_seq > 0).then_some(last_reaction_seq),
                 max_edit_seq: (last_edit_seq > 0).then_some(last_edit_seq),
                 max_poll_seq: (last_poll_seq > 0).then_some(last_poll_seq),

@@ -11,6 +11,16 @@
 //  resyncs — the socket is a live wire, so everything missed while
 //  suspended comes back over REST.
 //
+//  It is also where the app-icon badge is taken over from the system, once
+//  per launch and before anything else runs. Until something SAVES, no
+//  code in this app has touched the icon: on iOS it is still showing
+//  whatever the last APNs push left there, which is a count of a server
+//  state this device may never have seen; on the Mac it is showing
+//  nothing, because `dockTile.badgeLabel` is per-process and starts nil.
+//  Here, rather than in FamilyConnectApp.init, because `NSApp` does not
+//  exist yet at init time and the Mac's half would silently do nothing.
+//  See UnreadBadge for why the seed is the store's number and not a clear.
+//
 
 import SwiftUI
 
@@ -50,6 +60,14 @@ struct RootView: View {
             }
         }
         .task {
+            // Before bootstrap on purpose: this is the number that has to
+            // be right on a launch with no network at all, where the store
+            // is the only truth there is and no resync is coming to
+            // correct it. It can be LOWER than a correct pushed number for
+            // one round trip — the store cannot know about messages that
+            // arrived while the process was dead — and that is invisible,
+            // because the icon is behind the app that is drawing it.
+            coordinator.refreshUnreadBadge()
             await session.bootstrap()
         }
         .onChange(of: session.phase) { oldPhase, newPhase in

@@ -223,4 +223,14 @@
     <plurals name="s_voted_total">
         <item quantity="other">%1$d人が投票</item>
     </plurals>
+    <!-- The push fallback body, the composer's 4000-character ceiling
+         (docs/protocol.md, "Limits") and the divider a chat with unread
+         messages opens under. -->
+    <string name="s_new_message">新着メッセージ</string>
+    <string name="e_finish_editing_first">先にこのメッセージの編集を終えてください。</string>
+    <string name="e_message_at_limit">メッセージはすでに%1$d文字の上限に達しています。</string>
+    <string name="e_paste_truncated">メッセージは最大%1$d文字までです。残りは貼り付けられませんでした。</string>
+    <plurals name="s_n_new_messages">
+        <item quantity="other">新着メッセージ%1$d件</item>
+    </plurals>
 </resources>

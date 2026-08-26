@@ -501,6 +501,21 @@ pub struct ChatListEntry {
     pub chat: Chat,
     pub last_message: Option<Message>,
     pub unread_count: i64,
+    /// The CALLER'S OWN read marker in this chat — the other half of
+    /// `unread_count`, read from the same `chat_reads` row by the same
+    /// query.
+    ///
+    /// Unconditional, unlike the three `max_*_seq` cursors below: `0` is a
+    /// real answer here ("this caller has never reported reading anything
+    /// in this chat"), which is exactly what the server stores and what the
+    /// unread-count subquery already COALESCEs to. Omitting it would make a
+    /// client that has a marker unable to tell "the server says zero" from
+    /// "the server said nothing" — and a cursor is absent-when-zero only
+    /// where absence and zero mean the same thing.
+    ///
+    /// It is an id THRESHOLD, never a reference: retention may already have
+    /// swept the message it names (protocol.md, `GET /chats`).
+    pub last_read_message_id: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_reaction_seq: Option<i64>,
     /// Omitted while nothing in the chat has ever been edited.
@@ -935,6 +950,59 @@ mod tests {
                     {"id": 6, "text": "Pasta", "votes": []}
                 ]
             })
+        );
+    }
+
+    /// The exact keys of a `GET /chats` entry, pinned. `unread_count` and
+    /// `last_read_message_id` are the two the caller always gets — the
+    /// second is the one most likely to regress, because `0` looks like
+    /// "nothing to say" to anybody adding a `skip_serializing_if` by habit,
+    /// and a client cannot tell an omitted marker from a zero one. The
+    /// three `max_*_seq` cursors ARE absent at zero, and that difference is
+    /// the point of the test.
+    #[test]
+    fn a_chat_list_entry_always_carries_the_read_marker_beside_the_unread_count() {
+        let entry = ChatListEntry {
+            chat: Chat {
+                id: 42,
+                kind: "family".to_string(),
+                title: "The Smiths".to_string(),
+                peer_user_id: None,
+            },
+            last_message: None,
+            unread_count: 0,
+            last_read_message_id: 0,
+            max_reaction_seq: None,
+            max_edit_seq: None,
+            max_poll_seq: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&entry).expect("serialize"),
+            serde_json::json!({
+                "chat": {"id": 42, "kind": "family", "title": "The Smiths",
+                         "peer_user_id": null},
+                "last_message": null,
+                "unread_count": 0,
+                "last_read_message_id": 0
+            }),
+            "a never-read chat reports 0, and reports it as a KEY"
+        );
+
+        // And it is the stored value, not a derivative of the count: a chat
+        // read to the end reports the marker and a zero count together.
+        let read = ChatListEntry {
+            unread_count: 0,
+            last_read_message_id: 1337,
+            max_reaction_seq: Some(9),
+            ..entry
+        };
+        let json = serde_json::to_value(&read).expect("serialize");
+        assert_eq!(json["last_read_message_id"], 1337);
+        assert_eq!(json["unread_count"], 0);
+        assert_eq!(json["max_reaction_seq"], 9);
+        assert!(
+            json.get("max_edit_seq").is_none() && json.get("max_poll_seq").is_none(),
+            "the cursors stay absent-when-zero — only the marker is unconditional: {json}"
         );
     }
 

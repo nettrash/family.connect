@@ -227,4 +227,16 @@
         <item quantity="many">%1$d ont voté</item>
         <item quantity="other">%1$d ont voté</item>
     </plurals>
+    <!-- The push fallback body, the composer's 4000-character ceiling
+         (docs/protocol.md, "Limits") and the divider a chat with unread
+         messages opens under. -->
+    <string name="s_new_message">Nouveau message</string>
+    <string name="e_finish_editing_first">Termine d’abord la modification de ce message.</string>
+    <string name="e_message_at_limit">Le message a déjà atteint la limite de %1$d caractères.</string>
+    <string name="e_paste_truncated">Un message peut contenir au maximum %1$d caractères. Le reste n’a pas été collé.</string>
+    <plurals name="s_n_new_messages">
+        <item quantity="one">%1$d nouveau message</item>
+        <item quantity="many">%1$d nouveaux messages</item>
+        <item quantity="other">%1$d nouveaux messages</item>
+    </plurals>
 </resources>

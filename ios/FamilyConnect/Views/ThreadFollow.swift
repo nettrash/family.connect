@@ -20,7 +20,13 @@
 
 import Foundation
 
-enum ThreadFollow {
+/// `nonisolated` for the same reason UnreadAnchor beside it is: every member
+/// is pure arithmetic over values, the whole point of the file is that it can
+/// be asserted from anywhere, and the test suite is not MainActor. Without it
+/// a nested type's protocol conformance picks up the module's default
+/// MainActor isolation and cannot be used from a `#expect` — a warning today
+/// and an error in the Swift 6 language mode.
+nonisolated enum ThreadFollow {
 
     /// How far ABOVE the viewport's top edge the bottom sentinel may sit and
     /// still count as on screen. Nothing legitimate puts it there — a bottom
@@ -49,6 +55,70 @@ enum ThreadFollow {
     static func isAtNewest(sentinelMinY: CGFloat, viewportHeight: CGFloat?) -> Bool {
         guard let viewportHeight else { return false }
         return sentinelMinY >= -aboveSlack && sentinelMinY <= viewportHeight + belowSlack
+    }
+
+    /// Is the floating "jump to the newest message" button up?
+    ///
+    /// Android's rule is `firstVisibleItemIndex > 5` in its reverse-layout
+    /// list — "more than five rows away from the newest". Neither Apple
+    /// thread has row indices to ask about (they render a bounded suffix
+    /// in a plain stack, positioned by a scroll view that knows only
+    /// points), so what ports is the INTENT: the button is up exactly when
+    /// the newest message is not on screen, which is the same state the
+    /// unread rule already computes from the bottom sentinel's geometry.
+    ///
+    /// `hasSettled` is not a nicety. Both threads spend their opening
+    /// window with `isAtNewest` at whatever their state defaults to — the
+    /// phone's false, the Mac's optimistic true — so without it the button
+    /// blinks on and off through every open, and after an anchored open it
+    /// would blink at the one moment it is genuinely needed.
+    static func showsJumpToNewest(isAtNewest: Bool, hasSettled: Bool) -> Bool {
+        hasSettled && !isAtNewest
+    }
+
+    /// What an opening pass has left to do, given how far an earlier pass
+    /// on the same view got.
+    ///
+    /// Both threads run their opening routine from a `.task`, and a `.task`
+    /// restarts every time its view re-appears — a full-screen attachment
+    /// viewer closing is enough. Two things have to survive that, and they
+    /// are NOT the same thing:
+    ///
+    /// - The ANCHOR is decided once and never again. Both of its inputs move
+    ///   while the reader reads (the count is zeroed the instant they reach
+    ///   the bottom, the marker advances behind it), so a second opinion
+    ///   taken later is an opinion about a different chat: it would erase a
+    ///   divider still in use, and throw a reader who has been reading for
+    ///   five minutes back to a boundary they passed long ago.
+    /// - The PLACEMENT has to FINISH. It spans ~400 ms of yields, and a
+    ///   cancellation anywhere inside that leaves the thread landed nowhere.
+    ///
+    /// Keying both on "is there an anchor yet" — which is what both threads
+    /// did — makes an interrupted open unrecoverable, because that is
+    /// precisely the state a cancelled placement leaves behind: an anchor
+    /// decided, a scroll that never ran. The re-appear then found an anchor
+    /// and did nothing at all. On the phone `hasSettled` stayed false for as
+    /// long as the chat was open, and a thread that never settles can never
+    /// publish a read (both `publishPresence` implementations AND it in), so
+    /// the conversation could not be marked read again at all. On the Mac,
+    /// where the settle flag is set by the step AFTER the placement, the same
+    /// re-appear was worse: it settled a thread still sitting at the BOTTOM,
+    /// and read messages nobody had seen.
+    enum OpeningStep: Equatable {
+        /// An earlier pass finished. Do nothing — the thread's position
+        /// belongs to the reader now.
+        case done
+        /// Nothing has been decided yet: work out where this open lands,
+        /// then go there.
+        case decideAndPlace
+        /// An earlier pass decided and was interrupted before it landed.
+        /// Keep its answer, and finish the scroll it never made.
+        case placeOnly
+    }
+
+    static func openingStep(hasSettled: Bool, hasAnchor: Bool) -> OpeningStep {
+        if hasSettled { return .done }
+        return hasAnchor ? .placeOnly : .decideAndPlace
     }
 
     /// Should the thread scroll to its newest message now that one has

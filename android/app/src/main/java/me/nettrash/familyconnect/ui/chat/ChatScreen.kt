@@ -19,6 +19,18 @@
  * Scrolling within 10 items of the old end triggers loadOlder (spinner
  * in the list's oldest-end item); a small FAB overlaid above the input
  * bar jumps back to the newest message.
+ * OPENING: a chat with anything unread opens ANCHORED at the oldest
+ * unread message, under an "N new messages" divider, instead of at the
+ * bottom. The decision is the ViewModel's (OpenAnchor.kt) and is taken
+ * once; this file only performs it, through the same bounded
+ * page-and-scroll pipeline a quote tap uses — pendingJump searches and
+ * pages older, scrollToJump moves. An anchored open reads NOTHING:
+ * the bottom is off screen, so the read collector's at-newest gate is
+ * false, and until the move finishes `settled` holds that gate shut
+ * whatever the empty list's index 0 claims. Both opening branches end
+ * in viewModel.setSettled(), and everything that could yank the reader
+ * back to the bottom (the arrival follow rule, the near-old-end
+ * pagination trigger) waits for it.
  * Reactions: chips under the bubble (tap toggles, long-press shows who
  * reacted); long-press on an acked bubble opens a floating capsule
  * anchored above it (below near the top) with the quick set + my
@@ -53,7 +65,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.content.ReceiveContentListener
-import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.content.TransferableContent
 import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Image
@@ -227,7 +239,9 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MessageEntity
@@ -272,7 +286,7 @@ private data class ReactionPickerTarget(
     val anchorBounds: Rect,
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     onBack: () -> Unit,
@@ -295,6 +309,11 @@ fun ChatScreen(
     val socketState by viewModel.socketState.collectAsStateWithLifecycle()
     val loadingOlder by viewModel.loadingOlder.collectAsStateWithLifecycle()
     val initialLoadSettled by viewModel.initialLoadSettled.collectAsStateWithLifecycle()
+    // Where this chat opens, and whether the opening is over. Null anchor
+    // = still deciding; acting on it then would settle the screen before
+    // there is anything to settle on.
+    val openAnchor by viewModel.openAnchor.collectAsStateWithLifecycle()
+    val settled by viewModel.settled.collectAsStateWithLifecycle()
     val linkPreviews by viewModel.linkPreviews.collectAsStateWithLifecycle()
     val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
     val mapPreviewsEnabled by viewModel.mapPreviewsEnabled.collectAsStateWithLifecycle()
@@ -337,18 +356,26 @@ fun ChatScreen(
     var pickerTarget by remember { mutableStateOf<ReactionPickerTarget?>(null) }
     var fullPickerTarget by remember { mutableStateOf<ChatListItem.MessageItem?>(null) }
     val listState = rememberLazyListState()
-    // Set by tapping a quote; cleared once the target is found (or given
-    // up on). Held here rather than in the ViewModel because it is purely
-    // a scroll intent — nothing about it survives leaving the screen.
-    var pendingJumpId by remember { mutableStateOf<Long?>(null) }
+    // Set by tapping a quote, or by the opening anchor; cleared once the
+    // target is found (or given up on). Held here rather than in the
+    // ViewModel because it is purely a scroll intent — nothing about it
+    // survives leaving the screen. The DECISION to anchor is the
+    // ViewModel's and does survive, which is the difference.
+    var pendingJump by remember { mutableStateOf<JumpRequest?>(null) }
     var highlightedMessageId by remember { mutableStateOf<Long?>(null) }
     var jumpPagesTried by remember { mutableIntStateOf(0) }
-    var scrollToMessageId by remember { mutableStateOf<Long?>(null) }
+    var scrollToJump by remember { mutableStateOf<JumpRequest?>(null) }
     // Half the viewport, so animateScrollToItem's top-edge alignment lands
     // the target in the middle instead.
     val centreOffsetPx = with(LocalDensity.current) {
         (LocalConfiguration.current.screenHeightDp.dp / 2).roundToPx()
     }
+    // How far below the top edge an anchored open lands the divider. The
+    // margin is not decoration: land the target flush against the top and
+    // the near-old-end band fires load-older, whose own window growth
+    // fights the scroll that just happened. It also leaves room for the
+    // divider itself on the pass where the row has not been built yet.
+    val anchorTopMarginPx = with(LocalDensity.current) { ANCHOR_TOP_MARGIN.roundToPx() }
     val focusRequester = remember { FocusRequester() }
     val replyDraft by viewModel.replyDraft.collectAsStateWithLifecycle()
     val editTarget by viewModel.editTarget.collectAsStateWithLifecycle()
@@ -389,16 +416,24 @@ fun ChatScreen(
 
     // Pasting. Two doors into the same staging: the attach menu's Paste,
     // which reads the clipboard itself and works with the field unfocused,
-    // and the field's own paste gesture (below, via contentReceiver),
-    // which hands over one item at a time.
+    // and the field's own paste gesture (below, via contentReceiver) —
+    // which is also where Ctrl+V from a hardware keyboard, a keyboard that
+    // inserts pictures, and a drop onto the composer arrive.
+    //
+    // Neither door decides anything: both hand the whole clipboard to the
+    // ViewModel, which asks PastedMedia.decide what it is. What differs is
+    // only what they do with WORDS — see pasteIntoField.
     //
     // Reading the clipboard is a suspend call — deliberately, since it can
     // reach across to another app's provider — hence the scope.
     val pasteFromClipboard: () -> Unit = {
         scope.launch { viewModel.pasteFromClipboard(clipboard.getClipEntry()?.clipData) }
     }
-    val pasteItem: (Uri, String?) -> Boolean = { uri, declaredMime ->
-        viewModel.pasteAttachment(uri, declaredMime) == ChatViewModel.PasteResult.STAGING
+    val pasteContent: (TransferableContent) -> ChatViewModel.PasteResult = { transferable ->
+        // The transferable itself is the keep-alive: content committed by a
+        // keyboard carries a read grant that dies when its InputContentInfo
+        // is collected, and the copy runs on another thread.
+        viewModel.pasteIntoField(transferable.clipEntry.clipData, keepAlive = transferable)
     }
 
     // The camera. MediaStore's capture intents hand the picture back into a
@@ -577,62 +612,138 @@ fun ChatScreen(
             .collect { viewModel.setAtNewest(it) }
     }
 
-    // Pagination: nearing the visually-top (oldest) end triggers one
-    // Jump to a quoted message. Best-effort by design: the thread holds a
-    // bounded window, so this pages older a few times looking for the
-    // target and then gives up — the excerpt is already on screen, which
-    // is most of what the tap was asking for. Pages OLDER only: a quote
-    // always points backwards.
+    // THE OPENING BRANCHES. Both of them end in setSettled(), which is
+    // what lets the read collector believe the list's position — see
+    // ChatViewModel's header for why an unsettled screen must never be
+    // trusted to say "at the newest message".
+    //
+    // Gated on the ViewModel's own `settled` rather than on a
+    // rememberSaveable: it survives a rotation exactly as one would, so
+    // a reader who has already scrolled away is not re-anchored — and
+    // unlike a saveable it cannot outlive the flow it gates, which is
+    // what would leave a restored screen anchored and never settled,
+    // i.e. never able to report a read at all.
+    LaunchedEffect(openAnchor) {
+        val decision = openAnchor ?: return@LaunchedEffect
+        if (settled) return@LaunchedEffect
+        when (decision) {
+            // Nothing unread, or the anchor gave up: the chat opens
+            // where it always did, and there is nothing to wait for.
+            is OpenAnchor.Newest -> viewModel.setSettled()
+            // Anchored: hand the target to the same pipeline a quote tap
+            // uses. Whichever way that ends — found and scrolled, or out
+            // of pages — it settles.
+            is OpenAnchor.Message ->
+                pendingJump = JumpRequest(serverId = decision.serverId, anchor = true)
+        }
+    }
+
+    // Jump to a quoted message, or to the opening anchor. Best-effort by
+    // design: the thread holds a bounded window, so this pages older a
+    // few times looking for the target and then gives up — for a quote
+    // the excerpt is already on screen, which is most of what the tap was
+    // asking for. Pages OLDER only: both kinds of target point backwards.
     // Searching for the target: pages older, bounded, then gives up. It
-    // deliberately does NOT scroll or highlight — writing pendingJumpId
-    // from inside an effect keyed on pendingJumpId cancels that same
+    // deliberately does NOT scroll or highlight — writing pendingJump
+    // from inside an effect keyed on pendingJump cancels that same
     // effect, which is what silently killed the scroll and the highlight
     // mid-flight. Finding it hands over to the effect below.
-    LaunchedEffect(pendingJumpId, items) {
-        val target = pendingJumpId ?: return@LaunchedEffect
+    LaunchedEffect(pendingJump, items) {
+        val request = pendingJump ?: return@LaunchedEffect
         val found = items.any {
-            it is ChatListItem.MessageItem && it.entity.serverId == target
+            it is ChatListItem.MessageItem && it.entity.serverId == request.serverId
         }
         when {
             found -> {
                 jumpPagesTried = 0
-                pendingJumpId = null
-                scrollToMessageId = target
+                pendingJump = null
+                scrollToJump = request
             }
             // A page is already in flight; this effect re-runs when it lands.
             loadingOlder -> Unit
-            // Bounded: without a cap this re-fires on every later change to
-            // `items` (a new message arriving is enough) and would keep
-            // paging a history that does not contain the target — which is
-            // the normal case once a chat is old enough.
-            items.isNotEmpty() && jumpPagesTried < MAX_JUMP_PAGES -> {
+            // Bounded on its OWN count, never on the window growing:
+            // loadOlder widens the window whether or not the network
+            // answered, so an offline search would otherwise appear to
+            // make progress forever while fetching nothing. Without a cap
+            // this also re-fires on every later change to `items` (a new
+            // message arriving is enough) and would keep paging a history
+            // that does not contain the target — the normal case for a
+            // quote once a chat is old enough.
+            items.isNotEmpty() && jumpPagesTried < ChatViewModel.MAX_JUMP_PAGES -> {
                 jumpPagesTried++
                 viewModel.loadOlder()
             }
             else -> {
-                pendingJumpId = null
+                pendingJump = null
                 jumpPagesTried = 0
+                // Out of pages. For an anchored open that is the
+                // give-up: the reader stays at the newest message, and
+                // the screen has to settle or it would never report a
+                // read again.
+                if (request.anchor) viewModel.setSettled()
             }
         }
     }
 
-    // Doing the move, keyed only on the id it is moving to, so nothing it
-    // writes can restart it. `items` is read but not a key: a message
-    // arriving mid-scroll must not cancel the highlight.
-    LaunchedEffect(scrollToMessageId) {
-        val target = scrollToMessageId ?: return@LaunchedEffect
+    // Doing the move, keyed only on the request it is moving to, so
+    // nothing it writes can restart it. `items` is read but not a key: a
+    // message arriving mid-scroll must not cancel the highlight, and the
+    // index is recomputed inside anyway.
+    LaunchedEffect(scrollToJump) {
+        val request = scrollToJump ?: return@LaunchedEffect
+        if (request.anchor) {
+            // The offset comes from the LIST's viewport, not from the
+            // configuration's screen height — the latter counts neither
+            // the IME nor the composer, and in a reverseLayout list an
+            // offset that is too small lands the anchor at the BOTTOM
+            // edge with every unread message off screen ABOVE it, which
+            // looks exactly like the bug this feature exists to fix. The
+            // viewport is only known once the list has laid out, so wait
+            // for it rather than reading a zero on the first frame.
+            // Bounded, because the ONE thing this must never do is fail
+            // to finish: settling is what re-arms read reporting, and a
+            // screen that waits forever for a viewport it is never going
+            // to get would stop reporting reads for as long as it is
+            // open. Timing out means opening where we already are, which
+            // is the same answer the search's give-up gives.
+            val viewportPx = withTimeoutOrNull(ANCHOR_VIEWPORT_TIMEOUT_MS) {
+                snapshotFlow { listState.layoutInfo.viewportSize.height }.first { it > 0 }
+            }
+            if (viewportPx != null) {
+                val offset = -(viewportPx - anchorTopMarginPx).coerceAtLeast(0)
+                // Twice, recomputing between: item indices are not
+                // message indices (date pills are interleaved), the
+                // divider row is built from the same state change that
+                // started this and may not be in `items` on the first
+                // pass, and a message arriving mid-move shifts
+                // everything by one. The second pass costs nothing when
+                // the first one already landed.
+                repeat(2) { pass ->
+                    val index = anchorIndex(items, request.serverId)
+                    if (index >= 0) listState.scrollToItem(index, scrollOffset = offset)
+                    if (pass == 0) delay(ANCHOR_SETTLE_MS)
+                }
+            }
+            // Settled BEFORE the key is cleared: this is the line that
+            // re-arms read reporting, and it must not depend on how
+            // Compose schedules the restart of an effect that just
+            // rewrote its own key.
+            viewModel.setSettled()
+            scrollToJump = null
+            return@LaunchedEffect
+        }
         val index = items.indexOfFirst {
-            it is ChatListItem.MessageItem && it.entity.serverId == target
+            it is ChatListItem.MessageItem && it.entity.serverId == request.serverId
         }
         if (index >= 0) {
             // Centred, like iOS: the quoted message with its neighbourhood
             // still visible, rather than jammed against the bottom edge.
             listState.animateScrollToItem(index, scrollOffset = -centreOffsetPx)
-            highlightedMessageId = target
+            highlightedMessageId = request.serverId
             delay(HIGHLIGHT_MS)
-            if (highlightedMessageId == target) highlightedMessageId = null
+            if (highlightedMessageId == request.serverId) highlightedMessageId = null
         }
-        scrollToMessageId = null
+        scrollToJump = null
     }
 
     // guarded loadOlder. derivedStateOf collapses scroll churn into a
@@ -649,8 +760,14 @@ fun ChatScreen(
             items.isNotEmpty() && info.totalItemsCount > 0 && last >= info.totalItemsCount - 10
         }
     }
-    LaunchedEffect(nearOldEnd) {
-        if (nearOldEnd) viewModel.loadOlder()
+    // Suppressed until the screen has settled. An anchored open parks
+    // the reader well up the list, which is inside this trigger's band —
+    // so it would fire a page fetch on open, in a race with the anchor
+    // search's own bounded paging, for history nobody has scrolled to
+    // yet. The anchor search calls loadOlder directly for what it needs;
+    // once the screen settles this takes over as usual.
+    LaunchedEffect(nearOldEnd, settled) {
+        if (nearOldEnd && settled) viewModel.loadOlder()
     }
 
     // Follow new messages explicitly. The LazyColumn only auto-follows
@@ -674,6 +791,11 @@ fun ChatScreen(
         // First emission = the chat opening at the bottom, not a new
         // message; a same-key relaunch is just this effect settling.
         if (previousKey == null || previousKey == newest.key) return@LaunchedEffect
+        // Not while the screen is still opening. index <= 1 is true of
+        // every list that has not been scrolled yet, anchored or not, so
+        // a message arriving mid-open would pull the reader to the
+        // bottom out from under the anchor that is about to move them.
+        if (!settled) return@LaunchedEffect
         if (newest.entity.senderId == myUserId || listState.firstVisibleItemIndex <= 1) {
             listState.animateScrollToItem(0)
         }
@@ -812,6 +934,8 @@ fun ChatScreen(
                         ) {
                             when (item) {
                                 is ChatListItem.DateSeparator -> DateSeparatorPill(item.label)
+                                is ChatListItem.NewMessagesDivider ->
+                                    NewMessagesDividerRow(item.count)
                                 is ChatListItem.MessageItem -> MessageBubble(
                                     item = item,
                                     chat = chat,
@@ -832,7 +956,9 @@ fun ChatScreen(
                                         haptics.performHapticFeedback(HapticFeedbackType.Confirm)
                                         viewModel.vote(serverId, optionId)
                                     },
-                                    onTapQuote = { pendingJumpId = it },
+                                    onTapQuote = {
+                                        pendingJump = JumpRequest(serverId = it, anchor = false)
+                                    },
                                     onOpenAttachment = { attachment ->
                                         if (attachment.isFile) {
                                             openFile(attachment)
@@ -955,7 +1081,8 @@ fun ChatScreen(
                 },
                 onPickFile = { pickFile.launch(arrayOf("*/*")) },
                 onPasteFromClipboard = pasteFromClipboard,
-                onPasteItem = pasteItem,
+                onPasteContent = pasteContent,
+                onPasteTruncated = viewModel::reportPasteTruncated,
                 showsPoll = canCreatePoll,
                 onStartPoll = viewModel::beginPoll,
                 staged = staged,
@@ -1647,6 +1774,39 @@ private fun DateSeparatorPill(label: String) {
     }
 }
 
+/**
+ * "N new messages" — the line the reader started from.
+ *
+ * A rule with the count in the middle, in the primary tint so it reads
+ * as a mark rather than as chrome (the day pill is deliberately the
+ * quieter of the two, and they can sit one above the other). Full width
+ * and centred, so it works over either side's bubbles.
+ *
+ * The count is the chat's unread count as it stood at OPEN and does not
+ * tick down while the reader reads — see ChatListItem.NewMessagesDivider.
+ *
+ * iOS counterpart: the same row in ConversationView's day-section model.
+ */
+@Composable
+private fun NewMessagesDividerRow(count: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val line = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+        HorizontalDivider(modifier = Modifier.weight(1f), color = line)
+        Text(
+            text = pluralStringResource(R.plurals.s_n_new_messages, count, count),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        HorizontalDivider(modifier = Modifier.weight(1f), color = line)
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(
@@ -1914,8 +2074,56 @@ private fun MessageBubble(
  * identically whatever this device happens to hold. Jumping is the tap
  * handler's job, and degrades to nothing when the target is not loaded.
  */
-/** How many older pages a quote tap will fetch before giving up. */
-private const val MAX_JUMP_PAGES = 3
+/**
+ * A scroll intent: which message, and which of the two idioms.
+ *
+ * A quote tap CENTRES its target and tints it; the opening anchor lands
+ * it near the TOP with the unread messages readable below, and tints
+ * nothing — the divider is the mark, and a highlight would be a second
+ * one saying something slightly different.
+ */
+private data class JumpRequest(
+    val serverId: Long,
+    val anchor: Boolean,
+)
+
+/**
+ * The row an anchored open scrolls to: the "N new messages" divider if
+ * the builder has produced it, otherwise the message itself.
+ *
+ * Recomputed at scroll time and never captured — item indices are not
+ * message indices (the builder interleaves date pills and this divider),
+ * and a message arriving mid-move shifts every one of them.
+ */
+private fun anchorIndex(items: List<ChatListItem>, serverId: Long): Int {
+    val divider = items.indexOfFirst { it is ChatListItem.NewMessagesDivider }
+    if (divider >= 0) return divider
+    return items.indexOfFirst {
+        it is ChatListItem.MessageItem && it.entity.serverId == serverId
+    }
+}
+
+/**
+ * How far below the top edge an anchored open lands the divider — see
+ * anchorTopMarginPx at the call site for why it is not zero.
+ */
+private val ANCHOR_TOP_MARGIN = 72.dp
+
+/**
+ * One frame between an anchored open's two scroll passes: the list has
+ * to lay out at the new position (and take on the divider row, if it
+ * arrived with the same state change) before the second pass can read a
+ * true index. Long enough to be a frame on a slow device, short enough
+ * that nobody sees two moves.
+ */
+private const val ANCHOR_SETTLE_MS = 32L
+
+/**
+ * How long an anchored open waits for the list to report a viewport
+ * before giving up and opening where it is. Generous — this is a
+ * backstop against never settling, not a deadline anybody should hit.
+ */
+private const val ANCHOR_VIEWPORT_TIMEOUT_MS = 1_000L
 
 /** How long a jumped-to bubble stays tinted. Same as iOS. */
 private const val HIGHLIGHT_MS = 1_600L
@@ -3452,11 +3660,13 @@ private fun InputBar(
     /** The attach menu's Paste: whatever is on the clipboard, right now. */
     onPasteFromClipboard: () -> Unit,
     /**
-     * One item arriving through the field's own paste (or a drop, or a
-     * keyboard that inserts images). True when it was taken as an
-     * attachment, which is what tells the field not to paste it as text.
+     * A clipboard arriving through the field's own paste (or Ctrl+V, or a
+     * drop, or a keyboard that inserts pictures). The verdict that comes
+     * back is what tells this field how much of it is left to paste.
      */
-    onPasteItem: (Uri, String?) -> Boolean,
+    onPasteContent: (TransferableContent) -> ChatViewModel.PasteResult,
+    /** A paste or a drop was cut short for being longer than a body may be. */
+    onPasteTruncated: () -> Unit,
     onTakePhoto: () -> Unit,
     onTakeVideo: () -> Unit,
     onRecordAudio: () -> Unit,
@@ -3529,7 +3739,11 @@ private fun InputBar(
                 Box {
                     IconButton(
                         onClick = { attachMenuOpen = true },
-                        enabled = !isEditing && mediaState == ChatViewModel.MediaSendState.Idle,
+                        // isBusy, not "is Idle": a FAILED notice is a
+                        // sentence waiting to be dismissed, and it used to
+                        // grey this button out — so an error from one paste
+                        // blocked the next one until something cleared it.
+                        enabled = !isEditing && !mediaState.isBusy,
                         modifier = Modifier.size(44.dp),
                     ) {
                         Icon(
@@ -3657,47 +3871,49 @@ private fun InputBar(
                         )
                     }
                 }
-                // The field's OWN paste — the long-press menu, a keyboard
-                // that inserts images, and a drop onto the composer, which
-                // all arrive here. It takes the first item it can attach
-                // and CONSUMES only that one, so anything else in the clip
-                // (the text half of a copied photo-and-caption, say) still
-                // pastes into the field the ordinary way. Nothing is
-                // consumed while attaching is blocked — the same guard the
-                // attach menu carries, repeated because this door is not
-                // behind that button.
-                val canAttach = !isEditing && mediaState == ChatViewModel.MediaSendState.Idle
+                // The field's OWN paste — the long-press menu, Ctrl+V from
+                // a hardware keyboard, a keyboard that inserts pictures,
+                // and a drop onto the composer, which all arrive here.
+                //
+                // No policy lives in this door any more. It used to decide
+                // for itself whether attaching was possible (a stricter
+                // test than the ViewModel's, so a paste was refused merely
+                // because an unrelated error notice was showing) and to
+                // pick the item out of the clip itself. Both are the RULE's
+                // business now: this only turns the verdict into what
+                // Compose wants back — what is LEFT for the field to paste.
+                //
                 // Through an updated state, so the listener survives a
                 // recomposition that only produced a new lambda instance.
-                val pasteHandler by rememberUpdatedState(onPasteItem)
-                val pasteReceiver = remember(canAttach) {
+                val pasteHandler by rememberUpdatedState(onPasteContent)
+                val pasteReceiver = remember {
                     ReceiveContentListener { transferable ->
-                        if (!canAttach) {
-                            transferable
-                        } else {
-                            val description = transferable.clipMetadata.clipDescription
-                            val declared = if (description.mimeTypeCount > 0) {
-                                description.getMimeType(0)
-                            } else {
-                                null
-                            }
-                            // One attachment per message, so at most one
-                            // item is taken however many the clip holds.
-                            var taken = false
-                            transferable.consume { item ->
-                                val uri = item.uri
-                                if (taken || uri == null) {
-                                    false
-                                } else {
-                                    taken = pasteHandler(uri, declared)
-                                    taken
-                                }
-                            }
+                        when (pasteHandler(transferable)) {
+                            // Staged, or refused because the composer is
+                            // busy: either way nothing of this clip belongs
+                            // in the field. Consumed whole rather than left
+                            // behind — an unconsumed media Uri is dropped
+                            // silently by the field's own paste, which is a
+                            // gesture that visibly does nothing at all.
+                            ChatViewModel.PasteResult.STAGING,
+                            ChatViewModel.PasteResult.BUSY,
+                            -> null
+                            // Words, and anything the rule could not place:
+                            // handed back untouched so the field inserts
+                            // them where the CARET is. The length cap is
+                            // the transformation below, since that
+                            // insertion happens inside the field.
+                            else -> transferable
                         }
                     }
                 }
+                // Told once per cut-short paste; typing into a full field
+                // stops in silence. See BodyLengthLimit.
+                val truncated by rememberUpdatedState(onPasteTruncated)
+                val bodyLimit = remember { BodyLengthLimit { truncated() } }
                 TextField(
                     state = state,
+                    inputTransformation = bodyLimit,
                     // heightIn beats the field's 56.dp defaultMinSize, which
                     // only applies when the incoming min constraint is zero.
                     modifier = Modifier

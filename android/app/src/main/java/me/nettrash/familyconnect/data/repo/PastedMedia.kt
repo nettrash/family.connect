@@ -28,6 +28,16 @@
  *    the media type. It is only ever a FALLBACK: MediaPrep still prefers
  *    the item's own DISPLAY_NAME when its provider has one.
  *
+ * [decide] is the same rule read one level up: a whole clipboard, not one
+ * item. It exists because every paste DOOR was answering that question
+ * for itself — the attach menu's Paste looped the items one way, the text
+ * field's own paste looped them another, and the two quietly disagreed
+ * about a clip holding both a picture and words. One rule, one answer,
+ * and a door's only job is to obey it. Nothing here reads a byte or
+ * touches a ContentResolver, so the decision is made before anything is
+ * opened — and the preparation in MediaPrep is reached only once this has
+ * said "attachment".
+ *
  * Pure and platform-free on purpose: the scheme and the media type arrive
  * as strings, so every branch here is a plain unit test.
  *
@@ -69,6 +79,52 @@ object PastedMedia {
             // a PDF, a spreadsheet. A file accepts anything.
             else -> AttachmentDto.KIND_FILE
         }
+    }
+
+    /**
+     * One clipboard item, as the clipboard DESCRIBES it.
+     *
+     * Description only: a scheme, a media type and whatever text came
+     * with the item. No bytes, and none may be read to build one — the
+     * whole point of deciding first is that nothing is opened until the
+     * answer is "attachment".
+     */
+    data class Item(val scheme: String?, val mime: String?, val text: String?)
+
+    /** What a whole clipboard is, once [decide] has looked at it. */
+    sealed interface Verdict {
+        /**
+         * Stage the item at [index] as an attachment of [kind]. The words
+         * in the same clip, if any, are NOT also pasted: a browser's
+         * "copy image" carries the picture's own address as its text, and
+         * nobody wants that address typed next to the picture. A caption
+         * is something the sender writes.
+         */
+        data class Attach(val index: Int, val kind: String) : Verdict
+
+        /** Put these words in the composer. */
+        data class Words(val text: String) : Verdict
+
+        /** Nothing this composer can take. */
+        data object Empty : Verdict
+    }
+
+    /**
+     * What a clipboard is: an attachment, some words, or nothing.
+     *
+     * An attachable item WINS, wherever it sits in the clip — the first
+     * one, since a message carries at most one attachment
+     * (docs/protocol.md). Failing that the first non-empty text is what
+     * "paste" means. Failing both there is nothing here, and the door
+     * says so rather than looking broken.
+     */
+    fun decide(items: List<Item>): Verdict {
+        items.forEachIndexed { index, item ->
+            val kind = kindFor(item.scheme, item.mime)
+            if (kind != null) return Verdict.Attach(index, kind)
+        }
+        val text = items.firstNotNullOfOrNull { it.text?.takeIf(String::isNotEmpty) }
+        return if (text != null) Verdict.Words(text) else Verdict.Empty
     }
 
     /**

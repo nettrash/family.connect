@@ -99,18 +99,29 @@ enum ChatPresenceOpening {
     ///   - claim: take the presence claim, claiming NOTHING about what is
     ///     visible yet.
     ///   - loadOlder: fetch the first page, if the cache has nothing.
+    ///   - place: put the thread where this open is meant to land — at the
+    ///     oldest unread message, under its divider — and do nothing at all
+    ///     for the ordinary open, which the scroll view's own bottom anchor
+    ///     already handles. It runs AFTER `loadOlder` because the anchor is
+    ///     arithmetic over cached rows, and BEFORE the settle wait because
+    ///     what `settled` publishes has to be where the thread ended up,
+    ///     not where it started. Its own sleeps are the caller's; this
+    ///     function only guarantees a cancellation check on each side.
     ///   - settled: publish what the bottom sentinel now reports. Runs only
     ///     if the view is still there to speak for.
     static func run(
         settleDelay: UInt64 = Self.settleDelay,
         claim: () -> Void,
         loadOlder: () async -> Void,
+        place: () async -> Void = {},
         settled: () -> Void
     ) async {
         claim()
         await loadOlder()
         // The page above is a network round trip — ample time for the
         // window to be closed while it is in flight.
+        guard !Task.isCancelled else { return }
+        await place()
         guard !Task.isCancelled else { return }
         // Not `try?`: the only thing this can throw is the cancellation
         // this whole function exists to respect.

@@ -53,6 +53,7 @@ import me.nettrash.familyconnect.data.net.dto.MemberDto
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
+import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import org.junit.After
 import org.junit.Before
@@ -101,7 +102,7 @@ class DeletedPeerChatPruneTest {
     }
 
     private fun TestScope.repository(): ChatRepository {
-        val repository = ChatRepository(chatApi, chatDao, messageDao, socket, repoScope)
+        val repository = testChatRepository(chatApi, chatDao, messageDao, socket, repoScope)
         // Let the frame collector subscribe before anything is emitted.
         runCurrent()
         return repository

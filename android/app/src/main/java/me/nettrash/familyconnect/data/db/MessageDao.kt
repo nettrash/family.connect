@@ -318,4 +318,65 @@ interface MessageDao {
     /** History-paging cursor. */
     @Query("SELECT MIN(serverId) FROM messages WHERE chatId = :chatId")
     suspend fun oldestServerId(chatId: Long): Long?
+
+    /**
+     * How many messages this device holds that are newer than a read
+     * marker and were not sent by me — the local recount of one chat's
+     * unread.
+     *
+     * The predicate is the server's own, word for word (push_payload.rs,
+     * `build_message_unread_query`: newer than my read marker, not sent
+     * by me), so the two can never disagree about what "unread" MEANS.
+     * They can still disagree about the ANSWER, because this device only
+     * counts what it holds: a phone that was offline while three messages
+     * arrived recounts zero. That is why only the cross-device read frame
+     * uses it — that frame arrives on a live socket, which is also what
+     * has been delivering the messages — and why `GET /chats` stays
+     * authoritative for everything else.
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM messages
+        WHERE chatId = :chatId AND serverId > :afterId AND senderId <> :myUserId
+        """,
+    )
+    suspend fun countInboundAfter(chatId: Long, afterId: Long, myUserId: Long): Int
+
+    /**
+     * The two columns the opening anchor reasons over, newest-first.
+     *
+     * A NARROW projection rather than [observeMessages] because it reads
+     * further back than the render window does: the window opens at
+     * ChatViewModel.INITIAL_LIMIT rows and the anchor may sit behind
+     * them, and inflating the window to look would drag every body,
+     * attachment and poll JSON in the chat through the flow to answer a
+     * question about two Longs.
+     *
+     * The ORDER BY is [observeMessages]'s, character for character, and
+     * has to stay that way: the anchor is resolved as a POSITION in this
+     * list and then found again by id in the rendered one, and two
+     * orderings that disagree would put the divider above a different
+     * message than the one the arithmetic chose.
+     */
+    @Query(
+        """
+        SELECT serverId, senderId FROM messages WHERE chatId = :chatId
+        ORDER BY (serverId IS NULL) DESC, serverId DESC, createdAt DESC
+        LIMIT :limit
+        """,
+    )
+    suspend fun anchorRows(chatId: Long, limit: Int): List<AnchorRow>
 }
+
+/**
+ * One row as the opening-anchor arithmetic sees it (see
+ * ui/chat/OpenAnchor.kt). A query result, NOT an @Entity — nothing here
+ * changes the schema.
+ *
+ * `serverId == null` is a locally-pending outbound row: it has no id the
+ * server ever counted, which is exactly why the arithmetic skips it.
+ */
+data class AnchorRow(
+    val serverId: Long?,
+    val senderId: Long,
+)

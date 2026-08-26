@@ -90,9 +90,20 @@ class FcPushService : FirebaseMessagingService() {
             // messages are notification + data); the data payload has
             // only ids. Fall back to the server's own no-body wording.
             title = message.notification?.title ?: getString(R.string.app_name),
-            body = message.notification?.body ?: "New message",
+            body = message.notification?.body ?: getString(R.string.s_new_message),
             kind = data[PushRouteParser.KEY_KIND],
             chatId = chatId,
+            // The badge number, off the same `android.notification` block
+            // the title and body come from — `notification_count`, the
+            // recipient's unread in THIS chat (protocol.md, "Push
+            // notifications"). Read here rather than computed, because
+            // this is the RARE path: on the common one FCM has already
+            // called setNumber with this same value before the app ever
+            // hears about the message (PushNotifications' header), and
+            // the two paths must not produce different numbers for the
+            // same push. Null on a server that predates the field, and on
+            // every push that is not about a chat.
+            unreadInChat = message.notification?.notificationCount,
         )
     }
 }

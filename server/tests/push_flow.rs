@@ -386,9 +386,140 @@ async fn an_offline_android_member_receives_the_exact_fcm_request() {
             },
             "android": {
                 "priority": "HIGH",
-                "notification": {"channel_id": "messages", "tag": format!("chat-{chat_id}")},
+                "notification": {
+                    "channel_id": "messages",
+                    "tag": format!("chat-{chat_id}"),
+                    // The recipient's unread in THIS chat — a number, not a
+                    // string: the everything-is-a-string rule is about
+                    // `data`, and this field is not in `data`.
+                    "notification_count": 1,
+                },
             },
         }})
+    );
+}
+
+/// `notification_count` is the recipient's unread in the chat the push is
+/// about, and never their total — Android has no icon badge, so the number
+/// rides on a per-chat notification (`tag: "chat-<id>"`) that a launcher
+/// SUMS across chats. A total on each of two chats would render as twice
+/// the total. This test makes the two numbers different on purpose: the
+/// member has 2 unread in a direct chat and 3 in the family chat, so a
+/// payload reaching for the badge would say 5 in both.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn the_fcm_notification_count_is_the_chats_unread_and_not_the_total() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let credentials = write_test_service_account(
+        dir.path(),
+        "test-project",
+        &format!("http://{mock_addr}/oauth/token"),
+    );
+    let ts = spawn_server_with_push(fcm_config(mock_addr, credentials)).await;
+
+    let (owner, member, member_id) = family_of_two(&ts).await;
+    let family_chat = ts.family_chat_id(&owner).await;
+    register_device(&ts, &member, "android", "android-token-1").await;
+
+    let direct: Value = ts
+        .post(&owner, "/chats/direct", json!({"user_id": member_id}))
+        .await
+        .json()
+        .await
+        .expect("direct chat body");
+    let direct_chat = direct["chat"]["id"].as_i64().expect("direct chat id");
+
+    // Two in the direct chat, three in the family chat — the member reads
+    // none of them.
+    post_message_id(&ts, &owner, direct_chat, "coffee?").await;
+    let last_direct = post_message_id(&ts, &owner, direct_chat, "or tea?").await;
+    post_message_id(&ts, &owner, family_chat, "Dinner at 7?").await;
+    post_message_id(&ts, &owner, family_chat, "or 8?").await;
+    let last_family = post_message_id(&ts, &owner, family_chat, "bring bread").await;
+
+    // The totals the chat list agrees on, so the numbers below are known to
+    // be per-chat rather than coincidences.
+    let chats: Value = ts.get(&member, "/chats").await.json().await.expect("json");
+    let per_chat: Vec<i64> = chats["chats"]
+        .as_array()
+        .expect("chats array")
+        .iter()
+        .map(|entry| entry["unread_count"].as_i64().expect("unread"))
+        .collect();
+    assert_eq!(per_chat.iter().sum::<i64>(), 5, "the total across chats");
+
+    let sends = mock
+        .wait_for(5, |path| path.ends_with("messages:send"))
+        .await;
+    // Delivery is spawned, so the capture order is not the send order:
+    // find each push by the message it announces.
+    let notification_count = |message_id: i64| -> Value {
+        let send = sends
+            .iter()
+            .find(|send| {
+                send.body["message"]["data"]["message_id"] == message_id.to_string().as_str()
+            })
+            .unwrap_or_else(|| panic!("no FCM send for message {message_id}"));
+        send.body["message"]["android"]["notification"]["notification_count"].clone()
+    };
+
+    assert_eq!(
+        notification_count(last_family),
+        json!(3),
+        "the family chat's own unread, not the 5 the badge would carry"
+    );
+    assert_eq!(
+        notification_count(last_direct),
+        json!(2),
+        "and the direct chat's own"
+    );
+}
+
+/// A board note has no chat to count in, so it carries no count at all —
+/// protocol.md omits `notification_count` from every kind but `message`.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_board_note_fcm_push_carries_no_notification_count() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let credentials = write_test_service_account(
+        dir.path(),
+        "test-project",
+        &format!("http://{mock_addr}/oauth/token"),
+    );
+    let ts = spawn_server_with_push(fcm_config(mock_addr, credentials)).await;
+
+    let (owner, member, _member_id) = family_of_two(&ts).await;
+    register_device(&ts, &owner, "android", "owner-android-token").await;
+
+    // An unread message first: the owner's badge is non-zero, so a payload
+    // that leaked ANY count into a note push would be visible here.
+    let chat_id = ts.family_chat_id(&owner).await;
+    post_message_id(&ts, &member, chat_id, "Dinner at 7?").await;
+
+    let response = ts
+        .post(
+            &member,
+            "/families/mine/board/notes",
+            json!({"text": "Milk", "color": "yellow", "x": 0.5, "y": 0.5}),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+
+    let sends = mock
+        .wait_for(2, |path| path.ends_with("messages:send"))
+        .await;
+    let note_push = sends
+        .iter()
+        .find(|send| send.body["message"]["data"]["kind"] == "board_note")
+        .expect("the board note push");
+    assert!(
+        note_push.body["message"]["android"]["notification"]
+            .get("notification_count")
+            .is_none(),
+        "a board note counts nothing: {}",
+        note_push.body
     );
 }
 

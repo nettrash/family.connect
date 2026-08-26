@@ -8,6 +8,13 @@
  *
  *   - DateSeparator after the last (oldest) message of each day — in
  *     reverseLayout that draws the pill *above* the day's first bubble.
+ *   - NewMessagesDivider directly after (= visually above) the oldest
+ *     message the reader has not seen, when the screen opened anchored
+ *     there. Its id and count come from OpenAnchor, captured ONCE at
+ *     open — this builder never derives them, because the count is
+ *     zeroed the instant the reader reaches the bottom and a derived
+ *     divider would vanish mid-read. Inserted BELOW the day pill in
+ *     list order so the two read top-down as [date][N new][bubble].
  *   - showSenderName: family chat only, not my own messages, and only
  *     on the first message of a same-sender run (previous OLDER item
  *     differs in sender or day).
@@ -227,6 +234,21 @@ sealed interface ChatListItem {
         val label: String,
         override val key: String,
     ) : ChatListItem
+
+    /**
+     * "N new messages", above the oldest message the reader has not
+     * seen. At most one per thread, and only for a chat that opened
+     * anchored.
+     *
+     * [count] is the chat's unread count as it stood AT OPEN. It does
+     * not tick down as the reader reads: the divider is a mark of where
+     * they started, and a number that melted while they scrolled would
+     * be a different statement.
+     */
+    data class NewMessagesDivider(
+        val count: Int,
+        override val key: String,
+    ) : ChatListItem
 }
 
 fun buildChatItems(
@@ -249,6 +271,15 @@ fun buildChatItems(
      * only how many votes there are rather than inventing a denominator.
      */
     familyMemberCount: Int = 0,
+    /**
+     * The oldest unread message, when this chat opened anchored at it —
+     * OpenAnchor.Message.serverId, captured once. Null (the default) is
+     * every other case: nothing unread, an anchor that gave up, or a
+     * chat still deciding.
+     */
+    firstUnreadServerId: Long? = null,
+    /** What the divider says. Ignored while [firstUnreadServerId] is null. */
+    newMessageCount: Int = 0,
 ): List<ChatListItem> {
     val items = ArrayList<ChatListItem>(messagesNewestFirst.size + 8)
     messagesNewestFirst.forEachIndexed { index, message ->
@@ -289,6 +320,19 @@ fun buildChatItems(
             isRunStart = startsRun,
             isRunEnd = endsRun,
         )
+
+        // Directly after the row in list order = directly above it on
+        // screen. Before the day pill, so a first-unread that opens a
+        // day reads [date][N new][bubble] rather than the other way up.
+        if (firstUnreadServerId != null &&
+            message.serverId == firstUnreadServerId &&
+            newMessageCount > 0
+        ) {
+            items += ChatListItem.NewMessagesDivider(
+                count = newMessageCount,
+                key = "unread-$firstUnreadServerId",
+            )
+        }
 
         val dayEnds = older == null ||
             !TimeFormat.sameDay(older.createdAt, message.createdAt, zone)

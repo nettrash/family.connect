@@ -28,7 +28,11 @@
 //  not a queue): on every (re)connect and foregrounding —
 //    1. GET /me           — membership reconcile (kicked → AppSession),
 //    2. GET /families/mine — roster upsert for name resolution,
-//    3. GET /chats        — chat upsert; server unread_count wins; local
+//    3. GET /chats        — chat upsert; server unread_count wins; the
+//                           caller's own last_read_message_id is applied
+//                           monotonically and any chat whose marker MOVED
+//                           has its stale banners taken down (it was read
+//                           on another of this person's devices); local
 //                           DIRECT chats the response does not list are
 //                           dropped with their messages (the general
 //                           repair for an account deletion this device
@@ -218,6 +222,18 @@ final class ChatSyncCoordinator {
     /// process with it. Awaiting this is how a test stays alive until the
     /// row has settled. Nothing in the app reads it.
     private(set) var pendingDelivery: Task<Void, Never>?
+
+    /// The read markers the most recent resync TO REACH THE CHAT LIST
+    /// found further along than this device had recorded — the chats
+    /// somebody read on another of this person's devices, and so exactly
+    /// the chats whose delivered banners it took down. A resync that fell
+    /// over before GET /chats leaves the previous answer standing, because
+    /// it learned nothing to replace it with.
+    ///
+    /// Test seam, and the only way to assert that TRIGGER: what it drives
+    /// is UNUserNotificationCenter, which a unit test has nothing to look
+    /// at and no way to put anything into. Nothing in the app reads it.
+    private(set) var lastResyncReadElsewhere: [Int64: Int64] = [:]
 
     /// The read report started by the most recent `markRead`.
     ///
@@ -1479,10 +1495,24 @@ final class ChatSyncCoordinator {
         guard !trimmed.isEmpty else { return false }
         do {
             let dto = try await api.editMessage(chatID: chatID, messageID: messageServerID, body: trimmed)
+            // The ROW only. `upsert` applies `edit_seq` under the
+            // per-message guard; the CHAT-WIDE cursor deliberately does not
+            // move, which is the rule `vote`, `closePoll` and
+            // `toggleReaction` already follow and the one protocol.md sets
+            // out under "Best-effort delivery": only a live frame and a
+            // catch-up page may advance a chat cursor, never the HTTP reply
+            // to this client's own change.
+            //
+            // It used to move here, and that is a lost edit rather than a
+            // tidiness point. REST goes on working while the socket is
+            // down, which is exactly when the frames carrying LOWER seqs
+            // were missed: my edit answered with `edit_seq` 100 pushed this
+            // cursor past somebody else's 99, the next resync's
+            // `max_edit_seq > cursor` test then asked for nothing, and
+            // their rewrite never arrived — until that message happened to
+            // be edited again. One redundant catch-up page is the cheaper
+            // mistake.
             _ = upsert(dto, bumpUnread: false)
-            if let seq = dto.editSeq, let chat = fetchChat(chatID), seq > chat.maxEditSeq {
-                chat.maxEditSeq = seq
-            }
             saveContext()
             return true
         } catch APIError.unauthorized {
@@ -1723,12 +1753,29 @@ final class ChatSyncCoordinator {
         // the response flat dropped that message from the count for good,
         // because the catch-up in step 4 never bumps. Add back exactly the
         // live messages the response shows the server had not counted.
+        //
+        // The response also carries this caller's OWN read marker per chat
+        // (protocol.md, resync step 2), and a marker that moves FORWARD is
+        // the only thing that ever tells this device the chat was read on
+        // another one: the live `read` frame is relayed to other members
+        // only, so a reader's own devices never see their own read go past.
+        // The count corrects itself from `unread_count` either way; what
+        // needs the marker is Notification Center, which no resync has ever
+        // touched and which would otherwise still be showing banners for
+        // messages this person read on their phone an hour ago.
         guard let chatList = try? await api.chats() else { return }
+        var readElsewhere: [Int64: Int64] = [:]
         for item in chatList.chats {
-            upsertChat(item, uncountedLiveMessages: uncountedBumps(in: item))
+            if let marker = upsertChat(item, uncountedLiveMessages: uncountedBumps(in: item)) {
+                readElsewhere[item.chat.id] = marker
+            }
         }
         dropChats(absentFrom: chatList.chats)
         saveContext()
+        // After the save, so the icon is already showing the server's number
+        // when the banners go.
+        lastResyncReadElsewhere = readElsewhere
+        ChatNotifier.dismissDelivered(readMarkers: readElsewhere)
 
         // 4. Per-chat catch-up: after_id loops until a short page.
         let cursors = chatList.chats.map {
@@ -2036,11 +2083,18 @@ final class ChatSyncCoordinator {
     /// `uncountedLiveMessages`: live messages this client counted that the
     /// server's `unread_count` demonstrably does not include. See resync
     /// step 3 and `uncountedBumps`.
+    ///
+    /// Returns the chat's `last_read_message_id` if it moved this device's
+    /// stored marker FORWARD, and nil otherwise — which is the resync's
+    /// only evidence that the chat was read somewhere else. A marker that
+    /// did not move proves nothing either way and must cost nothing: it is
+    /// what this device already believed.
+    @discardableResult
     private func upsertChat(
         _ item: ChatListItemDTO,
         resetWhenNoLastMessage: Bool = true,
         uncountedLiveMessages: Int = 0
-    ) {
+    ) -> Int64? {
         let dto = item.chat
         let chat: ChatEntity
         if let existing = fetchChat(dto.id) {
@@ -2058,6 +2112,26 @@ final class ChatSyncCoordinator {
         chat.peerUserID = dto.peerUserID
         chat.title = dto.title
         chat.unreadCount = item.unreadCount + max(0, uncountedLiveMessages) // server-authoritative
+        // The caller's OWN read marker, off the same row of the same query
+        // as `unread_count` (protocol.md, GET /chats) — so the count and
+        // the marker always describe one instant, and the count stays the
+        // authority on the number while the marker says how far the person
+        // has read.
+        //
+        // MONOTONICALLY, for the reason the server applies it that way
+        // too: this response was built before it was sent, and one still in
+        // flight while its owner keeps reading would otherwise walk the
+        // local marker BACKWARDS — re-arming `markRead`'s throttle to
+        // re-report a read the server already has, and telling the banner
+        // teardown below that a chat it just settled is unread again. An
+        // absent field (a server older than it) lands in the same place as
+        // the `0` that means "has never reported reading anything here":
+        // on the stored value, unchanged.
+        var readMarkerAdvanced: Int64?
+        if let marker = item.lastReadMessageID, marker > chat.myLastReadID {
+            chat.myLastReadID = marker
+            readMarkerAdvanced = marker
+        }
         if let last = item.lastMessage {
             chat.lastMessagePreview = Self.preview(body: last.body, attachment: last.attachment)
             chat.lastMessageDate = last.createdAt
@@ -2069,6 +2143,7 @@ final class ChatSyncCoordinator {
             // An empty chat has no history to page for.
             chat.hasFullHistory = true
         }
+        return readMarkerAdvanced
     }
 
     /// THE local delete-by-chat, and the only one: everything this device
@@ -2384,6 +2459,17 @@ final class ChatSyncCoordinator {
         refreshUnreadBadge()
     }
 
+    /// The number the icon should be showing, according to the store alone.
+    ///
+    /// Needs no network and no push — which is the point: it is the only
+    /// answer that exists on a device that cannot reach the server, and the
+    /// answer the app takes over with the moment it starts running
+    /// (UnreadBadge's header has the split).
+    func storedUnreadTotal() -> Int {
+        let chats = (try? modelContext.fetch(FetchDescriptor<ChatEntity>())) ?? []
+        return UnreadBadge.total(unreadCounts: chats.map(\.unreadCount))
+    }
+
     /// Push the total unread onto the app icon.
     ///
     /// Hung off `saveContext` rather than off each of the three places that
@@ -2392,9 +2478,13 @@ final class ChatSyncCoordinator {
     /// has to persist, so this is the one seam none of them can skip. A
     /// family has a handful of chats, so summing them is cheaper than
     /// keeping a running total correct across those three paths.
-    private func refreshUnreadBadge() {
-        guard let chats = try? modelContext.fetch(FetchDescriptor<ChatEntity>()) else { return }
-        UnreadBadge.show(chats.reduce(0) { $0 + max(0, $1.unreadCount) })
+    ///
+    /// Internal rather than private for exactly one other caller: RootView
+    /// calls it once at launch, because until something saves, this app has
+    /// not touched the icon at all and it is still showing whatever the last
+    /// push left there — or, on the Mac, nothing.
+    func refreshUnreadBadge() {
+        UnreadBadge.show(storedUnreadTotal())
     }
 
 }

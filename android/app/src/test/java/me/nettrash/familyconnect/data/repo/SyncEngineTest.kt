@@ -47,6 +47,7 @@ import me.nettrash.familyconnect.testutil.FakeFamilyApi
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
+import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
 import me.nettrash.familyconnect.testutil.pollDto
@@ -124,7 +125,7 @@ class SyncEngineTest {
             unauthorizedEvents = MutableSharedFlow(),
             scope = repoScope,
         )
-        val chatRepository = ChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
+        val chatRepository = testChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
         val familyRepository = FamilyRepository(
             familyApi = familyApi,
             authApi = authApi,

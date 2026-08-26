@@ -98,10 +98,51 @@ struct ConversationView: View {
     @Query private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
     @State private var model = ConversationModel()
-    /// False until the opening layout settled at the newest message (the
-    /// convergence loop in `.task`); a history-load scroll-restore before
-    /// that would yank a freshly opened chat away from the bottom.
+    /// False until the opening layout settled where this open was meant to
+    /// land (the convergence loop in `.task`, or the anchored scroll that
+    /// replaces it); a history-load scroll-restore before that would yank a
+    /// freshly opened chat away from where it was going.
     @State private var hasSettled = false
+    /// Where this open landed, decided ONCE by UnreadAnchor before the
+    /// first scroll and never recomputed — nil only until it is decided.
+    ///
+    /// Never derived per pass, and that is the whole design: both of its
+    /// inputs move while the reader reads. The count is zeroed by the read
+    /// path the instant they reach the bottom and the marker advances
+    /// behind it, so a divider computed on every body evaluation would
+    /// disappear at exactly the moment the person it was drawn for arrived
+    /// at it.
+    @State private var openAnchor: OpenAnchor?
+
+    /// The two ways a chat can open.
+    private enum OpenAnchor: Equatable {
+        /// The ordinary open: at the newest message.
+        case newest
+        /// At the oldest unread message, under a divider carrying the
+        /// count as the store held it at open.
+        case unread(serverID: Int64, count: Int)
+    }
+
+    /// Did this open deliberately land the reader in history? Read by
+    /// every hook that would otherwise pin the thread to the bottom.
+    ///
+    /// True from the moment the anchor is decided, which is BEFORE any
+    /// scrolling happens — so the opening window is covered too, which is
+    /// where the fight actually is.
+    private var opensInHistory: Bool {
+        if case .unread = openAnchor { return true }
+        return false
+    }
+
+    /// Is an anchored open still LANDING? True only between the anchor
+    /// being decided and the opening scroll finishing.
+    ///
+    /// The window where nothing else may move the thread: the opening
+    /// scroll has already run (so it will not run again), the reader has
+    /// not touched anything, and any content change in between — a
+    /// prepended history page, above all — slides the viewport away from
+    /// the divider with nothing left to put it back.
+    private var openingAnchorPending: Bool { opensInHistory && !hasSettled }
     /// True while the bottom sentinel (the row after the newest message)
     /// is materialized — the ground-truth "the user is at the bottom"
     /// signal that the convergence loop and the re-pin hooks key on.
@@ -149,6 +190,15 @@ struct ConversationView: View {
     @State private var recorder = AudioRecorder()
     @State private var showFilePicker = false
     @State private var mediaState: MediaSendState = .idle
+    /// A one-line answer to something the person just tried that this
+    /// composer could not do — a ⌘V while an upload is running, a pasted
+    /// wall of text over the body limit, an empty clipboard.
+    ///
+    /// Deliberately NOT `mediaState = .failed`. That state IS the upload:
+    /// overwriting it would both lose "Sending…" and un-gate
+    /// `composerIsBusy`, which reads it — so the guard that produced the
+    /// message would be gone the moment the message appeared.
+    @State private var composerNotice: String?
     /// One fix, on demand — never a running location service.
     @State private var locationProvider = LocationProvider()
     /// True while the poll form is up. A sheet rather than a banner over
@@ -228,18 +278,60 @@ struct ConversationView: View {
     /// Rows kept ABOVE a jumped-to message. Enough that the target does
     /// not land against the top sentinel, whose appearance triggers a
     /// history page whose scroll restore would undo the jump.
-    private static let jumpMargin = 15
-    /// Most rows a quote tap may render at once. Roughly five windows —
-    /// far enough for any quote a reader is plausibly following, short of
-    /// laying out a whole family history.
-    private static let maxJumpWindow = 300
+    ///
+    /// One number, in one place: the anchored open needs exactly this and
+    /// for exactly this reason, and the Mac — which has no quote jump —
+    /// needs it too.
+    private static let jumpMargin = UnreadAnchor.margin
+    /// Most rows rendered at once, by ANY path that widens the window.
+    ///
+    /// The stack is non-lazy, so this is a real bound on main-thread
+    /// layout work rather than a hint — it is the Mac's `maxWindow` and it
+    /// is a hang fix (see MacConversationView's header: two captured hang
+    /// reports ending in a Force Quit). Roughly five pages.
+    ///
+    /// It used to bound the quote jump alone, under the name
+    /// `maxJumpWindow`, while the three paths that widen the window on
+    /// their own — an arrival, a local page back, a fetched page back —
+    /// were uncapped on the phone and capped on the Mac. Over a long
+    /// session that is the same drift back towards the unbounded stack the
+    /// window exists to prevent, and starting the window MUCH wider (which
+    /// is what an anchored open does) makes it materially worse.
+    private static let maxWindow = 300
 
     private var visibleMessages: ArraySlice<MessageEntity> {
         messages.suffix(visibleCount)
     }
 
     private var sections: [DaySection] {
-        MessagePresentation.daySections(visibleMessages.map(MessageSnapshot.init))
+        // An explicit closure rather than `map(MessageSnapshot.init)`: the
+        // bridge initializer reads MainActor-bound @Model properties, and
+        // handing it over UNAPPLIED makes it a nonisolated function value —
+        // which the compiler has been warning about here for a while. The
+        // closure is inferred with this view's isolation, so the call is
+        // the same call, made where it was always being made.
+        MessagePresentation.daySections(
+            visibleMessages.map { MessageSnapshot($0) },
+            firstUnreadID: unreadDividerServerID)
+    }
+
+    /// The server id the "N new messages" rule is drawn above, and the
+    /// count on it — both nil/absent unless this open resolved to an
+    /// unread anchor.
+    private var unreadDividerServerID: Int64? {
+        if case .unread(let serverID, _) = openAnchor { return serverID }
+        return nil
+    }
+
+    private var unreadDividerCount: Int? {
+        if case .unread(_, let count) = openAnchor { return count }
+        return nil
+    }
+
+    /// Is the floating jump-to-newest button up? The rule is shared with
+    /// the Mac (and, in intent, with Android) — see ThreadFollow.
+    private var showsJumpToNewest: Bool {
+        ThreadFollow.showsJumpToNewest(isAtNewest: isPinnedToBottom, hasSettled: hasSettled)
     }
 
     var body: some View {
@@ -309,14 +401,42 @@ struct ConversationView: View {
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
-            .task { await settleAtBottom(proxy: proxy) }
+            // The way back down, for a reader the anchored open has
+            // deliberately left in history — and for anyone who scrolled
+            // there themselves. Android's button, Android's icon, and the
+            // trigger rule ported to what an Apple thread can actually
+            // observe (ThreadFollow.showsJumpToNewest).
+            //
+            // The animation is scoped to this container rather than hung on
+            // the scroll view: `value:` on the ScrollView itself would put
+            // every content change that happens to coincide with it inside
+            // an animation transaction, which is how a thread starts
+            // sliding for reasons nobody asked for.
+            .overlay(alignment: .bottomTrailing) {
+                ZStack {
+                    if showsJumpToNewest {
+                        JumpToNewestButton { pinToBottom(proxy, animated: true) }
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .animation(.spring(duration: 0.25), value: showsJumpToNewest)
+            }
+            .task { await openThread(proxy: proxy) }
             .onChange(of: messages.count) { oldCount, newCount in
                 // A reader away from the bottom keeps their place: arriving
                 // messages widen the render window instead of sliding the
-                // suffix out from under them.
-                if newCount > oldCount && !isPinnedToBottom {
-                    visibleCount = min(newCount, visibleCount + (newCount - oldCount))
-                }
+                // suffix out from under them — CAPPED, because this stack
+                // is not lazy and an uncapped count creeps up over a long
+                // session until the layout cost the window exists to bound
+                // comes back. Past the cap the suffix SLIDES, which is also
+                // what eventually carries an old divider off the top of a
+                // very long session; see `openThread`.
+                visibleCount = ThreadFollow.windowAfterArrival(
+                    current: visibleCount,
+                    cached: newCount,
+                    arrived: newCount - oldCount,
+                    isAtNewest: isPinnedToBottom,
+                    cap: Self.maxWindow)
                 // Re-ask what this reader can see: a message arriving for
                 // somebody already at the bottom scrolls the thread WITHOUT
                 // the sentinel ever leaving the viewport, so the geometry
@@ -327,8 +447,19 @@ struct ConversationView: View {
                 // from anywhere, otherwise only while actually pinned (a
                 // reader deep in history must not be yanked down) — and
                 // never while a history page is being prepended above.
+                //
+                // PIN HOOK 1 of 3. The `!hasSettled` clause is the one that
+                // had to be gated: it exists so a message landing during
+                // the opening window keeps a normal open at the bottom
+                // (where `isPinnedToBottom` is still false because no
+                // geometry has been reported yet), and it would just as
+                // happily undo an anchored open — which spends its whole
+                // opening window deliberately NOT at the bottom. An own
+                // send still wins from anywhere, as it must.
                 guard model.state == .idle, let last = messages.last else { return }
-                guard last.senderID == currentUserID || isPinnedToBottom || !hasSettled else { return }
+                guard last.senderID == currentUserID
+                    || isPinnedToBottom
+                    || (!hasSettled && !opensInHistory) else { return }
                 pinToBottom(proxy, animated: true)
             }
             .onChange(of: previewLoader.generation) {
@@ -359,6 +490,15 @@ struct ConversationView: View {
                 // own avoidance is best-effort — deterministically pin the
                 // newest message above it (twice: as the animation starts
                 // and after it lands; standard messenger behavior).
+                //
+                // PIN HOOK 3 of 3, and deliberately NOT gated on the
+                // opening anchor. Nothing focuses this field on open, so it
+                // cannot fire during the opening window; when it does fire
+                // a person has just tapped into the composer, and a person
+                // who taps the composer is done reading history. Answering
+                // from an old message keeps its own suppression
+                // (`replyStartedFromHistory`), which is the case where that
+                // is not true.
                 guard inputFocused, !replyStartedFromHistory else { return }
                 Task {
                     try? await Task.sleep(nanoseconds: 100_000_000)
@@ -437,10 +577,11 @@ struct ConversationView: View {
             // have landed. Appearing used to be the whole test, which meant
             // a chat was read by being pushed onto the stack.
             publishPresence()
-            if messages.isEmpty {
-                // Fresh chat with no local window yet: pull the newest page.
-                loadInitialIfNeeded()
-            }
+            // The first page is fetched by `openThread` rather than here.
+            // It has to be: the anchor is arithmetic over the CACHED rows,
+            // and a chat opened with an empty cache would resolve every
+            // time to "fewer cached rows than the count" and give up — so
+            // the one open that most needs an anchor would never get one.
         }
         .onDisappear {
             coordinator.releasePresence(chatID: chatID)
@@ -472,6 +613,16 @@ struct ConversationView: View {
                         DayPill(day: section.day)
                             .padding(.vertical, 6)
                         ForEach(Array(section.messages.enumerated()), id: \.element.id) { index, message in
+                            // "N new messages", above the oldest message
+                            // this reader has not seen. Which row that is
+                            // comes from the section (one shared builder
+                            // for both Apple threads); the count is the
+                            // one captured at open.
+                            if section.unreadDividerAbove == message.localID,
+                                let unreadDividerCount {
+                                UnreadDivider(count: unreadDividerCount)
+                                    .id(UnreadDivider.scrollID)
+                            }
                             MessageBubbleView(
                                 message: message,
                                 isMine: message.senderID == currentUserID,
@@ -546,14 +697,134 @@ struct ConversationView: View {
                     }
     }
 
+    /// Open the chat: fetch a first page if there is nothing cached,
+    /// decide ONCE where this open lands, and put the thread there.
+    ///
+    /// Runs in `.task`, so a back-swipe cancels it with the view; every
+    /// sleep below is followed by a cancellation check for the reason
+    /// ChatPresenceOpening's header spells out at length — a `try?` sleep
+    /// in a torn-down view runs the line after it anyway.
+    ///
+    /// WHAT HAPPENS TO THE DIVIDER OVER A LONG SESSION. The window is a
+    /// suffix, arrivals widen it from the TOP, and once it reaches
+    /// `maxWindow` it slides — so after a few hundred messages in one
+    /// sitting the divider's row leaves the rendered window and the
+    /// divider goes with it. That is deliberate and it is the only
+    /// coherent answer: the divider marks one row, the row is no longer
+    /// drawn, and re-anchoring it to something else would be inventing a
+    /// boundary rather than remembering one. The anchor is not recomputed
+    /// to chase it, and the reader is not moved.
+    private func openThread(proxy: ScrollViewProxy) async {
+        // ONCE per open — and "once" is two questions, not one, because
+        // `.task` runs again every time this view re-appears (a full-screen
+        // attachment viewer closing is enough). The anchor must not be
+        // re-decided; the opening scroll must not be re-run once it has
+        // landed; but a scroll that was CANCELLED half way through has to be
+        // finished, and asking only "is there an anchor" cannot tell that
+        // apart from a completed open. See ThreadFollow.openingStep.
+        let step = ThreadFollow.openingStep(
+            hasSettled: hasSettled, hasAnchor: openAnchor != nil)
+        guard step != .done else { return }
+
+        if messages.isEmpty {
+            await loadInitial()
+            // One runloop tick for the @Query to reflect the inserts — the
+            // same tick the pagination path takes, and here for a sharper
+            // reason: the anchor below is arithmetic over exactly these
+            // rows, and over an empty array it always gives up.
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard !Task.isCancelled else { return }
+
+        // Decided ONCE, before anything scrolls, and never re-decided by a
+        // re-appear: by then the chat may have been read, and the answer
+        // would be `.newest` — silently erasing a divider still in use.
+        if step == .decideAndPlace {
+            let chat = self.chat
+            let unreadCount = chat?.unreadCount ?? 0
+            let target = UnreadAnchor.openAnchor(
+                unreadCount: unreadCount,
+                myLastReadID: chat?.myLastReadID ?? 0,
+                // The suffix, not the whole cache: anything further back
+                // than the cap is refused by the rule anyway, and this is
+                // a per-row read through SwiftData.
+                cachedNewestFirst: messages.suffix(Self.maxWindow).reversed().map {
+                    UnreadAnchor.Row(serverID: $0.serverID, senderID: $0.senderID)
+                },
+                myUserID: currentUserID,
+                cap: Self.maxWindow)
+            switch target {
+            case .newest:
+                openAnchor = .newest
+            case .message(let serverID):
+                openAnchor = .unread(serverID: serverID, count: unreadCount)
+            }
+        }
+
+        if case .unread(let serverID, _) = openAnchor {
+            await settleAtUnread(serverID: serverID, proxy: proxy)
+        } else {
+            await settleAtBottom(proxy: proxy)
+        }
+    }
+
+    /// Put the thread at the oldest unread message, with its divider at the
+    /// top of the viewport.
+    ///
+    /// The shape is the quote jump's, copied rather than reinvented, and
+    /// each step of it is a bug that has already happened here:
+    ///
+    /// - WIDEN FIRST. The window is a bounded SUFFIX, so a row far enough
+    ///   back is not in the view tree at all, and `scrollTo` at an
+    ///   unmaterialized id is a SILENT no-op — no error, no log, nothing
+    ///   moves and nothing says why.
+    /// - WITH MARGIN. Landing the target against the top sentinel fires a
+    ///   history page whose own restore scroll fights this one.
+    /// - YIELD, THEN SCROLL, TWICE. Rows widened into existence in this
+    ///   turn have no frames yet; the second pass is for the layout that
+    ///   lands after the first.
+    /// - AT THE DIVIDER, not the message. `.top` on the message parks the
+    ///   divider one row above the edge, and the reader arrives at their
+    ///   unread messages with nothing saying where the boundary was.
+    ///
+    /// Anything that cannot be reached falls back to the ordinary open.
+    private func settleAtUnread(serverID: Int64, proxy: ScrollViewProxy) async {
+        guard let index = messages.firstIndex(where: { $0.serverID == serverID }) else {
+            openAnchor = .newest
+            await settleAtBottom(proxy: proxy)
+            return
+        }
+        let needed = UnreadAnchor.rowsToRender(distanceFromNewest: messages.count - 1 - index)
+        guard needed <= Self.maxWindow else {
+            openAnchor = .newest
+            await settleAtBottom(proxy: proxy)
+            return
+        }
+        if needed > visibleCount {
+            visibleCount = min(needed, messages.count)
+        }
+
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        guard !Task.isCancelled else { return }
+        proxy.scrollTo(UnreadDivider.scrollID, anchor: .top)
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        guard !Task.isCancelled else { return }
+        proxy.scrollTo(UnreadDivider.scrollID, anchor: .top)
+        // Only now: `hasSettled` is what re-arms the pin hooks and what
+        // lets the bottom sentinel's geometry mean anything. It is set even
+        // though this open is NOT at the newest message — it means "the
+        // opening scroll has finished", not "the reader is at the bottom",
+        // and `publishPresence` still asks the sentinel where they are.
+        hasSettled = true
+    }
+
     /// Opening convergence: defaultScrollAnchor positions from ESTIMATED
     /// row heights, and on a long multi-day history (especially on slower
     /// devices) the estimate can land the viewport in blank unmaterialized
     /// space, with follow-up layout passes drifting it further — one
     /// delayed snap loses that race. Keep snapping to the real newest row
     /// until the bottom sentinel reports the bottom is actually on screen
-    /// (or ~2.4 s pass), then hand over to the pin hooks. Runs in `.task`,
-    /// so a back-swipe cancels it with the view.
+    /// (or ~2.4 s pass), then hand over to the pin hooks.
     private func settleAtBottom(proxy: ScrollViewProxy) async {
         pinToBottom(proxy, animated: false)
         for _ in 0..<16 {
@@ -615,7 +886,7 @@ struct ConversationView: View {
             if editTarget != nil {
                 editBanner()
             }
-            if mediaState != .idle {
+            if mediaState != .idle || composerNotice != nil {
                 mediaStrip
             }
             if recorder.isRecording {
@@ -643,8 +914,15 @@ struct ConversationView: View {
                     // an item here inherits it for free. It is also the door
                     // that works when the field is NOT focused, which is
                     // where a keyboard ⌘V cannot reach.
+                    //
+                    // Through `pasteFromClipboard` like every other door,
+                    // and that is the fix: this item used to call
+                    // `pasteAttachment` directly, so it answered "There's
+                    // nothing to paste." to a clipboard full of words and
+                    // attached the picture out of a clipboard the rule says
+                    // is text.
                     Button {
-                        pasteAttachment()
+                        pasteFromClipboard()
                     } label: {
                         Label("Paste", systemImage: "doc.on.clipboard")
                     }
@@ -692,7 +970,7 @@ struct ConversationView: View {
                 // attaching would have posted the edit as a new message
                 // while leaving the banner armed. Android already gated
                 // this; iOS did not.
-                .disabled(mediaState == .preparing || mediaState == .uploading || editTarget != nil)
+                .disabled(composerIsBusy)
                 .accessibilityLabel("Attach a photo, video or file")
                 .photosPicker(
                     isPresented: $showPhotoPicker,
@@ -714,6 +992,20 @@ struct ConversationView: View {
                 }
                 TextField("Message", text: Bindable(model).draft, axis: .vertical)
                     .focused($inputFocused)
+                    // The backstop for the door this side does not own:
+                    // the field's OWN paste — the edit menu's Paste item,
+                    // a drag into the field — happens inside UIKit, and
+                    // reaching it would mean replacing this composer with a
+                    // UIViewRepresentable. The draft it leaves behind can
+                    // always be seen, so the protocol's 4000-character
+                    // ceiling is applied here for those, with the same
+                    // sentence the paste doors use.
+                    .onChange(of: model.draft) { _, draft in
+                        guard let clamped = ComposerText.clamping(draft) else { return }
+                        model.draft = clamped
+                        composerNotice = String(
+                            localized: "A message can be at most \(ComposerText.bodyLimit) characters.")
+                    }
                     .lineLimit(1...5)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
@@ -752,15 +1044,21 @@ struct ConversationView: View {
     /// It is written to be correct under BOTH possible orders of the
     /// responder chain, because which one UIKit picks is not something this
     /// side can assert. If the focused field claims ⌘V — which is what a
-    /// standard edit action does against a key command that has not asked
-    /// to override it — this never runs and an ordinary text paste is
-    /// untouched. If it runs instead, `pasteFromKeyboard` puts the
-    /// clipboard's WORDS in the draft, so a text paste is not swallowed
-    /// either way. It carries the attach menu's guard, so during an edit or
-    /// an upload it is not registered at all and the field keeps ⌘V.
+    /// standard edit action does against a key command declared further up
+    /// the chain — this never runs and an ordinary text paste is untouched.
+    /// If it runs instead, the rule answers `.type` for a clipboard of
+    /// words and `pasteText` appends them, so a text paste is not swallowed
+    /// either way.
+    ///
+    /// NOT `.disabled` during an edit or an upload any more, and that is a
+    /// fix rather than a relaxation. Disabled, ⌘V of a picture mid-upload
+    /// did nothing and said nothing — the one outcome a keyboard gesture
+    /// must never have. The guard now lives in the rule, where it gates the
+    /// ATTACHMENT branch only: `.busy` says so out loud, and words still
+    /// land in the draft, which during an edit is precisely what was meant.
     private var pasteShortcut: some View {
         Button {
-            pasteFromKeyboard()
+            pasteFromClipboard()
         } label: {
             // A real title, clipped to nothing: iPadOS reads the label when
             // it draws the ⌘-held shortcut list, and a blank row there
@@ -772,7 +1070,6 @@ struct ConversationView: View {
         }
         .buttonStyle(.plain)
         .keyboardShortcut("v", modifiers: .command)
-        .disabled(mediaState == .preparing || mediaState == .uploading || editTarget != nil)
         .accessibilityHidden(true)
     }
 
@@ -894,7 +1191,7 @@ struct ConversationView: View {
         // the excerpt is already on screen, which is most of what the tap
         // was asking for. (Android gives up the same way, after
         // MAX_JUMP_PAGES.)
-        guard needed <= Self.maxJumpWindow else { return }
+        guard needed <= Self.maxWindow else { return }
         if needed > visibleCount {
             visibleCount = min(needed, messages.count)
         }
@@ -983,6 +1280,13 @@ struct ConversationView: View {
         }
     }
 
+    /// The guard every attachment door carries: the composer is borrowed
+    /// for an edit, or already busy with a file. Named once so the attach
+    /// menu, the ⌘V door and the rule's `busy` branch cannot drift apart.
+    private var composerIsBusy: Bool {
+        mediaState == .preparing || mediaState == .uploading || editTarget != nil
+    }
+
     /// Whether Send has anything to do: words, or something staged, or both.
     private var canSend: Bool {
         if staged != nil { return true }
@@ -1000,32 +1304,52 @@ struct ConversationView: View {
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
+    /// The one line this composer uses to say what it is doing or what
+    /// went wrong.
+    ///
+    /// A paste-time notice takes precedence over the media state and does
+    /// not replace it: "you can't attach that while this is uploading" is
+    /// said WHILE the upload is running, and dismissing it has to leave the
+    /// upload exactly where it was. Every failure here has a way out — an
+    /// error nothing clears sits in the composer for the rest of the
+    /// conversation.
     private var mediaStrip: some View {
         HStack(spacing: 8) {
-            switch mediaState {
-            case .preparing, .uploading:
-                ProgressView()
-                    .controlSize(.small)
-                Text(mediaState == .preparing ? "Preparing…" : "Sending…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            case .working(let label):
-                ProgressView()
-                    .controlSize(.small)
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            case .failed(let reason):
+            if let composerNotice {
                 Image(systemName: "exclamationmark.circle")
                     .foregroundStyle(.red)
-                Text(reason)
+                Text(composerNotice)
                     .font(.caption)
                     .foregroundStyle(.red)
-            case .idle:
-                EmptyView()
+            } else {
+                switch mediaState {
+                case .preparing, .uploading:
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(mediaState == .preparing ? "Preparing…" : "Sending…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .working(let label):
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .failed(let reason):
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(.red)
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                case .idle:
+                    EmptyView()
+                }
             }
             Spacer(minLength: 0)
-            if case .failed = mediaState {
+            if composerNotice != nil {
+                Button("Dismiss") { composerNotice = nil }
+                    .font(.caption)
+            } else if case .failed = mediaState {
                 Button("Dismiss") { mediaState = .idle }
                     .font(.caption)
             }
@@ -1098,31 +1422,79 @@ struct ConversationView: View {
         if replyDraft == nil { replyDraft = handoff.replyTo }
     }
 
-    /// ⌘V: attach when that is plainly what was meant, and otherwise put
-    /// the words where they were going.
+    /// EVERY paste door on this screen, and the only one.
     ///
-    /// The text branch only ever runs if the composer's field did NOT take
-    /// the keystroke, so nothing is being intercepted from it. It appends
-    /// rather than inserting at the caret, for the reason
-    /// `insertAssistantMention` does: SwiftUI's TextField publishes no
-    /// selection, so "at the caret" is not knowable from here.
-    private func pasteFromKeyboard() {
-        guard ClipboardAttachment.offersAttachment else {
-            if let text = ClipboardAttachment.pendingText, !text.isEmpty {
-                model.draft += text
-                inputFocused = true
-            }
+    /// The attach menu's Paste item and the hardware ⌘V both end up here,
+    /// and neither repeats a word of the policy: `ClipboardAttachment.door`
+    /// reads the free probes, applies the one rule, and names the single
+    /// thing to do. A door that decided for itself is what produced the two
+    /// behaviours this replaces — a menu item that said "There's nothing to
+    /// paste." to a clipboard of words, and a ⌘V that went silent whenever
+    /// the composer was busy.
+    ///
+    /// The payload is read exactly once, after the answer, by whichever of
+    /// `prepare` or `pendingText` the answer names — which is what keeps
+    /// iOS's "Allow Paste?" alert down to one, at the moment somebody
+    /// actually asked for a paste.
+    private func pasteFromClipboard() {
+        switch ClipboardAttachment.door(composerIsBusy: composerIsBusy) {
+        case .attach:
+            pasteAttachment()
+        case .type:
+            pasteText()
+        case .busy:
+            // Which busy it is, because the two have different ways out.
+            composerNotice = editTarget != nil
+                ? String(localized: "Finish editing before attaching something.")
+                : String(localized: "Wait until the current attachment is done.")
+        case .nothing:
+            composerNotice = String(localized: "There's nothing to paste.")
+        }
+    }
+
+    /// The clipboard's words, into the draft.
+    ///
+    /// Appended rather than inserted at the caret, for the reason
+    /// `insertAssistantMention` has: SwiftUI's TextField publishes no
+    /// selection before iOS 18, the deployment target is 17, and appending
+    /// is what this composer already does everywhere else.
+    ///
+    /// The ceiling is the protocol's (docs/protocol.md, "Limits": 4000
+    /// characters). Refusing here is the whole difference between a
+    /// sentence saying why and a Send that comes back `message_too_long`
+    /// long after the clipboard has moved on.
+    private func pasteText() {
+        guard let text = ClipboardAttachment.pendingText, !text.isEmpty else {
+            composerNotice = String(localized: "There's nothing to paste.")
             return
         }
-        pasteAttachment()
+        switch ComposerText.appending(text, to: model.draft) {
+        case .appended(let draft):
+            model.draft = draft
+            composerNotice = nil
+        case .truncated(let draft):
+            model.draft = draft
+            composerNotice = String(
+                localized: "A message can be at most \(ComposerText.bodyLimit) characters. The rest wasn't pasted.")
+        case .full:
+            composerNotice = String(
+                localized: "The message is already at the \(ComposerText.bodyLimit)-character limit.")
+        }
+        inputFocused = true
     }
 
     /// Attach whatever is on the clipboard.
+    ///
+    /// Reached only once the rule has said `.attachment`: `prepare` takes
+    /// the best representation it can find, which on a clipboard holding
+    /// both words and a picture is the picture — so leaving it to arbitrate
+    /// would quietly contradict the rule.
     ///
     /// Through `stage`, like every other door: one attachment per message,
     /// nothing is sent until Send is pressed, and the caption can be
     /// written while looking at the chip.
     private func pasteAttachment() {
+        composerNotice = nil
         mediaState = .preparing
         Task {
             do {
@@ -1199,6 +1571,7 @@ struct ConversationView: View {
     private func stage(_ prepared: MediaPrep.Prepared) {
         discardStaged()
         mediaState = .idle
+        composerNotice = nil
         withAnimation(.spring(duration: 0.25)) {
             staged = StagedAttachment(prepared: prepared)
         }
@@ -1591,11 +1964,31 @@ struct ConversationView: View {
         // render window just widen it — instant, no network.
         if visibleCount < messages.count {
             let anchorID = visibleMessages.first?.localID
-            visibleCount = min(messages.count, visibleCount + Self.windowStep)
+            // Capped, through the Mac's rule. At the cap this widens by
+            // nothing and the restore below must not run either: no row
+            // appeared, so putting the oldest rendered row back at the TOP
+            // simply throws the reader up there — and the top sentinel,
+            // still on screen, asks again.
+            let widened = ThreadFollow.windowAfterPagingBack(
+                current: visibleCount, cached: messages.count, step: Self.windowStep,
+                cap: Self.maxWindow)
+            guard widened > visibleCount else { return }
+            visibleCount = widened
             if hasSettled, let anchorID {
                 Task {
                     try? await Task.sleep(nanoseconds: 50_000_000)
                     proxy.scrollTo(anchorID, anchor: .top)
+                }
+            } else if openingAnchorPending {
+                // Widening a SUFFIX adds rows above the viewport, which
+                // slides the visible region into older content — the same
+                // movement the restore above exists to undo. During an
+                // anchored open there is no reading position to restore
+                // yet, and the opening scroll has already run, so nothing
+                // else would put the divider back. Re-assert it.
+                Task {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    proxy.scrollTo(UnreadDivider.scrollID, anchor: .top)
                 }
             }
             return
@@ -1613,16 +2006,31 @@ struct ConversationView: View {
             // messages.
             if fetched > 0 {
                 // Give the @Query one runloop tick to reflect the inserts,
-                // and widen the window over the fetched page so it renders.
+                // and widen the window over the fetched page so it renders
+                // — capped, like every other path that widens it.
                 try? await Task.sleep(nanoseconds: 50_000_000)
-                visibleCount = min(messages.count, visibleCount + fetched)
+                visibleCount = min(min(messages.count, visibleCount + fetched), Self.maxWindow)
                 if hasSettled, let anchorID {
                     // A real scroll-up: put the previous top bubble back
                     // at the top so the reading position holds.
                     proxy.scrollTo(anchorID, anchor: .top)
+                } else if openingAnchorPending {
+                    // Same repair as the local branch: prepended rows moved
+                    // the viewport, and during an anchored open the divider
+                    // is what it has to be moved back to.
+                    proxy.scrollTo(UnreadDivider.scrollID, anchor: .top)
                 } else {
                     // Fired during the opening pass: the user never left
                     // the bottom — keep them there over the grown content.
+                    //
+                    // PIN HOOK 2 of 3. Gated, because an anchored open
+                    // spends its whole opening window away from the bottom
+                    // ON PURPOSE, and this branch is exactly the one that
+                    // fires then: the top sentinel is much more likely to
+                    // be on screen when the thread opens in history, so a
+                    // page lands and this used to throw the reader down to
+                    // the newest message — the bug the feature exists to
+                    // fix, arriving a fraction of a second later.
                     pinToBottom(proxy, animated: false)
                 }
             }
@@ -1630,13 +2038,17 @@ struct ConversationView: View {
         }
     }
 
-    private func loadInitialIfNeeded() {
+    /// The first page of a chat with nothing cached.
+    ///
+    /// Awaited by `openThread` rather than fired and forgotten from
+    /// `onAppear`, because the opening anchor is arithmetic over the rows
+    /// this returns: deciding before it lands means deciding over an empty
+    /// cache, which always gives up to `.newest`.
+    private func loadInitial() async {
         guard model.state == .idle else { return }
         model.state = .loadingOlder
-        Task {
-            _ = await coordinator.loadOlder(chatID: chatID)
-            model.state = (chat?.hasFullHistory == true) ? .atStart : .idle
-        }
+        _ = await coordinator.loadOlder(chatID: chatID)
+        model.state = (chat?.hasFullHistory == true) ? .atStart : .idle
     }
 
     /// Send where this device is, once.

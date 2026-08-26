@@ -829,6 +829,24 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
     /// and what tells a client whether a poll catch-up is worth a
     /// request — a family that has never run a poll costs none.
     let maxPollSeq: Int64?
+    /// The CALLER'S OWN read marker for this chat — the value `POST
+    /// /chats/{id}/read` and the `read` frame maintain, monotonic and
+    /// shared across every device this person owns. The other half of
+    /// `unread_count`, off the same row of the same query, so the two
+    /// always describe one instant.
+    ///
+    /// Unlike the three `max_*_seq` cursors it is ALWAYS present and `0`
+    /// is a real answer — "has never reported reading anything here" —
+    /// rather than an absent one. It is Optional here for exactly one
+    /// reason: a server binary older than the field omits it, and this
+    /// client must go on reading its chat list. Nothing else has to care,
+    /// because the marker is applied monotonically (`max(stored,
+    /// received)`) and absent therefore lands in the same place as 0 — on
+    /// the stored value, unchanged.
+    ///
+    /// It is an id THRESHOLD and never a reference: retention may already
+    /// have swept the message it names, so nothing may try to fetch it.
+    let lastReadMessageID: Int64?
 
     enum CodingKeys: String, CodingKey {
         case chat
@@ -837,6 +855,7 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
         case maxReactionSeq = "max_reaction_seq"
         case maxEditSeq = "max_edit_seq"
         case maxPollSeq = "max_poll_seq"
+        case lastReadMessageID = "last_read_message_id"
     }
 
     /// Explicit memberwise init so the seq fields default to absent —
@@ -847,7 +866,8 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
         unreadCount: Int,
         maxReactionSeq: Int64? = nil,
         maxEditSeq: Int64? = nil,
-        maxPollSeq: Int64? = nil
+        maxPollSeq: Int64? = nil,
+        lastReadMessageID: Int64? = nil
     ) {
         self.chat = chat
         self.lastMessage = lastMessage
@@ -855,6 +875,7 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
         self.maxReactionSeq = maxReactionSeq
         self.maxEditSeq = maxEditSeq
         self.maxPollSeq = maxPollSeq
+        self.lastReadMessageID = lastReadMessageID
     }
 }
 

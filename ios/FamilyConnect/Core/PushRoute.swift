@@ -44,6 +44,24 @@ nonisolated enum PushRoute: Equatable, Sendable {
         }
     }
 
+    /// The message a `message` push is ABOUT, rather than where tapping it
+    /// goes.
+    ///
+    /// One caller, and it wants the id precisely because the id is a
+    /// threshold: ChatNotifier compares it against `last_read_message_id`
+    /// to decide whether a delivered notification is still true (see
+    /// `isRead`). It lives here because this is the payload parser — the
+    /// custom keys are `kind` / `chat_id` / `message_id` / `family_id` and
+    /// there is no reason for a second thing that knows that.
+    ///
+    /// nil for every other kind, on purpose: `board_note`, `join_request`
+    /// and `joined` carry no message id, and a read marker has nothing to
+    /// say about them.
+    static func messageID(userInfo: [AnyHashable: Any]) -> Int64? {
+        guard userInfo["kind"] as? String == "message" else { return nil }
+        return int64(userInfo["message_id"])
+    }
+
     /// Int64 from the shapes an id actually arrives in: NSNumber for the
     /// JSON numbers our server sends over APNs, String as tolerance for
     /// stringly-typed payloads (FCM's data map is strings-only, and a

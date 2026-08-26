@@ -225,4 +225,15 @@
         <item quantity="one">%1$d hat abgestimmt</item>
         <item quantity="other">%1$d haben abgestimmt</item>
     </plurals>
+    <!-- The push fallback body, the composer's 4000-character ceiling
+         (docs/protocol.md, "Limits") and the divider a chat with unread
+         messages opens under. -->
+    <string name="s_new_message">Neue Nachricht</string>
+    <string name="e_finish_editing_first">Beende zuerst die Bearbeitung dieser Nachricht.</string>
+    <string name="e_message_at_limit">Die Nachricht ist schon am Limit von %1$d Zeichen.</string>
+    <string name="e_paste_truncated">Eine Nachricht darf höchstens %1$d Zeichen haben. Der Rest wurde nicht eingefügt.</string>
+    <plurals name="s_n_new_messages">
+        <item quantity="one">%1$d neue Nachricht</item>
+        <item quantity="other">%1$d neue Nachrichten</item>
+    </plurals>
 </resources>

@@ -32,6 +32,55 @@
 //      decision, not a fault: it is swallowed, never logged (it would
 //      repeat on every save) and never prompts.
 //
+//  WHAT THE ICON SHOWS AT LAUNCH is a third question, and not the same
+//  one as "what does it show while the app runs". Deriving the number
+//  from the store is hung off ChatSyncCoordinator.saveContext, so until
+//  something SAVES, no code in this app has touched the icon at all:
+//
+//    - on iOS it shows whatever the last APNs push left there, which is
+//      a count of a server state this device may never have seen and can
+//      be weeks old;
+//    - on the Mac it shows nothing, because `dockTile.badgeLabel` is
+//      per-process and starts nil — so a Mac launched with three unread
+//      has a bare icon beside a sidebar full of capsules.
+//
+//  Both are closed by publishing the store's total ONCE at launch, from
+//  RootView, before bootstrap. protocol.md is explicit about the split:
+//  the pushed `badge` is what the SYSTEM puts on the icon while the app
+//  is NOT running, and a RUNNING client derives its own from its store —
+//  so launching is precisely where the app takes the number over. It is
+//  also the only answer that exists with no network, which is the one
+//  case a resync can never help with.
+//
+//  That seed can be LOWER than a correct pushed number for one round
+//  trip: the store cannot know about messages that arrived while the
+//  process was dead until the resync fetches them. It is neither a
+//  regression nor observable — the icon is behind the app that is
+//  drawing it, and by the time anybody leaves the app the resync has
+//  written the real number. What the seed must never become is a CLEAR:
+//  it publishes what the store says, which is zero only when the store
+//  is genuinely empty. Clearing on launch, or on every foreground, is
+//  the reverted design above wearing a different hat.
+//
+//  READING SOMEWHERE ELSE is the last question, and the only one this file
+//  does not answer by itself. The number comes from the store, and the
+//  store learns the truth from `unread_count` on GET /chats — so a chat
+//  read on another of this person's devices corrects this icon at the next
+//  resync and not before. The live `read` frame cannot help: the server
+//  relays it to the OTHER members of the chat, so a reader's own devices
+//  never see their own read go past. On a phone that is a moment, because
+//  foregrounding resyncs. On a Mac it is not — the socket stays up for as
+//  long as the app is open and nothing resyncs on its own — so the Dock
+//  tile can sit on a number somebody cleared on their phone an hour ago
+//  until a ⌘R, a reconnect or a relaunch.
+//
+//  What a resync additionally applies now is the caller's own
+//  `last_read_message_id` (ChatSyncCoordinator, step 3), monotonically.
+//  A marker that moved FORWARD is the evidence that takes this device's
+//  stale banners out of Notification Center with it, which no resync used
+//  to do at all. The icon and the notification list are the same
+//  statement, and one of them being right is not enough.
+//
 
 import Foundation
 
@@ -55,6 +104,17 @@ enum UnreadBadge {
     private static var desired = 0
     private static var applyTask: Task<Void, Never>?
     #endif
+
+    /// The one number, from the per-chat counts.
+    ///
+    /// Pure, and separate from `show`, so the arithmetic can be asserted
+    /// without an icon to read it back off. The clamp is per chat rather
+    /// than on the sum: one negative count — a store somebody has been
+    /// poking at, a column default gone wrong — must not be able to
+    /// cancel out real unread messages sitting in another chat.
+    nonisolated static func total(unreadCounts: [Int]) -> Int {
+        unreadCounts.reduce(0) { $0 + max(0, $1) }
+    }
 
     /// Show `count` unread on the app icon, or nothing when it is zero.
     static func show(_ count: Int) {

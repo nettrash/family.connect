@@ -154,4 +154,83 @@ class PastedMediaTest {
         assertThat(PastedMedia.topLevelType("application/pdf")).isEqualTo("application")
         assertThat(PastedMedia.topLevelType(null)).isEmpty()
     }
+
+    // -- A whole clipboard ---------------------------------------------------
+    //
+    // The same rule one level up. It exists because every paste DOOR used
+    // to answer this for itself, and they disagreed: the attach menu took
+    // the picture out of a picture-and-words clip and dropped the words,
+    // while the text field took the picture AND pasted the words. One
+    // answer now, and a door's only job is to obey it.
+
+    private fun item(scheme: String? = null, mime: String? = null, text: String? = null) =
+        PastedMedia.Item(scheme = scheme, mime = mime, text = text)
+
+    @Test
+    fun `a clipboard of words is words`() {
+        val verdict = PastedMedia.decide(listOf(item(text = "dinner at 7")))
+        assertThat(verdict).isEqualTo(PastedMedia.Verdict.Words("dinner at 7"))
+    }
+
+    @Test
+    fun `a clipboard holding a picture is an attachment`() {
+        val verdict = PastedMedia.decide(listOf(item(scheme = "content", mime = "image/png")))
+        assertThat(verdict)
+            .isEqualTo(PastedMedia.Verdict.Attach(index = 0, kind = AttachmentDto.KIND_PHOTO))
+    }
+
+    @Test
+    fun `a clipboard holding a file is an attachment`() {
+        val verdict = PastedMedia.decide(listOf(item(scheme = "content", mime = "application/pdf")))
+        assertThat(verdict)
+            .isEqualTo(PastedMedia.Verdict.Attach(index = 0, kind = AttachmentDto.KIND_FILE))
+    }
+
+    /**
+     * The shape a browser's "copy image" has. The picture is the paste;
+     * the words it came with are its own address, and nobody wants that
+     * typed next to the picture — a caption is written, not inherited.
+     */
+    @Test
+    fun `an attachable item wins over words in the same clip`() {
+        val verdict = PastedMedia.decide(
+            listOf(
+                item(text = "https://example.com/holiday.jpg"),
+                item(scheme = "content", mime = "image/jpeg"),
+            ),
+        )
+        assertThat(verdict)
+            .isEqualTo(PastedMedia.Verdict.Attach(index = 1, kind = AttachmentDto.KIND_PHOTO))
+    }
+
+    /** A copied link is a Uri and is still words. */
+    @Test
+    fun `a link is words, not an attachment`() {
+        val verdict = PastedMedia.decide(
+            listOf(item(scheme = "https", mime = "image/jpeg", text = "https://example.com/a.jpg")),
+        )
+        assertThat(verdict).isEqualTo(PastedMedia.Verdict.Words("https://example.com/a.jpg"))
+    }
+
+    @Test
+    fun `an empty clipboard is nothing, and so is one with only empty words`() {
+        assertThat(PastedMedia.decide(emptyList())).isEqualTo(PastedMedia.Verdict.Empty)
+        assertThat(PastedMedia.decide(listOf(item(text = "")))).isEqualTo(PastedMedia.Verdict.Empty)
+        // A link with no text of its own: not attachable, nothing to paste.
+        assertThat(PastedMedia.decide(listOf(item(scheme = "https"))))
+            .isEqualTo(PastedMedia.Verdict.Empty)
+    }
+
+    /** The first attachable item, since a message carries only one. */
+    @Test
+    fun `the first attachable item is the one taken`() {
+        val verdict = PastedMedia.decide(
+            listOf(
+                item(scheme = "content", mime = "video/mp4"),
+                item(scheme = "content", mime = "image/png"),
+            ),
+        )
+        assertThat(verdict)
+            .isEqualTo(PastedMedia.Verdict.Attach(index = 0, kind = AttachmentDto.KIND_VIDEO))
+    }
 }

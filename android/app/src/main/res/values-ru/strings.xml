@@ -229,4 +229,17 @@
         <item quantity="many">%1$d голосов</item>
         <item quantity="other">%1$d голоса</item>
     </plurals>
+    <!-- The push fallback body, the composer's 4000-character ceiling
+         (docs/protocol.md, "Limits") and the divider a chat with unread
+         messages opens under. -->
+    <string name="s_new_message">Новое сообщение</string>
+    <string name="e_finish_editing_first">Сначала закончи изменение этого сообщения.</string>
+    <string name="e_message_at_limit">Сообщение уже достигло предела в %1$d символов.</string>
+    <string name="e_paste_truncated">Сообщение может быть не длиннее %1$d символов. Остальное не вставилось.</string>
+    <plurals name="s_n_new_messages">
+        <item quantity="one">%1$d новое сообщение</item>
+        <item quantity="few">%1$d новых сообщения</item>
+        <item quantity="many">%1$d новых сообщений</item>
+        <item quantity="other">%1$d новых сообщения</item>
+    </plurals>
 </resources>

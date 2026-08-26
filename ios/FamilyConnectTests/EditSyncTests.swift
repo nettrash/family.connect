@@ -45,8 +45,11 @@ struct EditSyncTests {
         func tearDown() { StubURLProtocol.unregister(host: host) }
     }
 
-    private func makeHarness(host: String) throws -> Harness {
-        StubURLProtocol.register(host: host, handler: { _ in .empty(204) })
+    private func makeHarness(
+        host: String,
+        handler: @escaping StubURLProtocol.Handler = { _ in .empty(204) }
+    ) throws -> Harness {
+        StubURLProtocol.register(host: host, handler: handler)
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
@@ -152,6 +155,52 @@ struct EditSyncTests {
             dto(id: 100, body: "Dinner at 8?", editSeq: 5, editedAt: Self.editDate)))
 
         #expect(harness.message(serverID: 101)?.replyExcerpt == "Dinner at 8?")
+    }
+
+    // MARK: - The chat-wide cursor
+
+    /// protocol.md, "Best-effort delivery": **only a live frame and a
+    /// catch-up page may move a chat cursor.** A state that arrives by any
+    /// other route — embedded on a fetched `Message`, or in the HTTP reply
+    /// to this client's own change — is applied under the per-MESSAGE guard
+    /// and must leave the chat-wide watermark alone. The doc spells the rule
+    /// out for reactions and polls (which `vote`, `closePoll` and
+    /// `toggleReaction` already follow); it holds for the third cursor for
+    /// exactly the same reason, and `edit` used to break it.
+    @Test("my own edit does not advance the chat's edit cursor")
+    func ownEditLeavesTheChatCursorAlone() async throws {
+        // What the server answers a PATCH with: this message, at seq 100.
+        let edited = """
+            {"message": {"id": 100, "chat_id": 42, "sender_id": 7,
+                         "body": "Dinner at 8?",
+                         "created_at": "2026-08-19T17:05:00Z",
+                         "edited_at": "2026-08-19T17:30:00Z",
+                         "edit_seq": 100}}
+            """
+        let harness = try makeHarness(host: "edit-own-cursor.test") { request in
+            request.method == "PATCH" ? .json(200, edited) : .empty(204)
+        }
+        defer { harness.tearDown() }
+
+        _ = harness.coordinator.upsert(dto(id: 100, body: "Dinner at 7?"), bumpUnread: false)
+        // Somebody ELSE rewrote a different message at seq 99 while this
+        // socket was down. This device never saw the frame, so its cursor is
+        // still behind it — which is the ordinary state, not a contrived one:
+        // REST goes on working precisely while the socket does not.
+        #expect(harness.chat(42)?.maxEditSeq == 0)
+
+        let ok = await harness.coordinator.edit(
+            messageServerID: 100, in: 42, body: "Dinner at 8?")
+        #expect(ok)
+
+        // The ROW takes the change, under its own seq guard.
+        #expect(harness.message(serverID: 100)?.body == "Dinner at 8?")
+        #expect(harness.message(serverID: 100)?.editSeq == 100)
+        // The CHAT-WIDE cursor does not move. It used to jump straight to
+        // 100, and the next resync — comparing the server's `max_edit_seq`
+        // against a cursor already at 100 — then asked for nothing at all.
+        // The edit at 99 was lost until that message next changed.
+        #expect(harness.chat(42)?.maxEditSeq == 0)
     }
 
     /// An edit is not new mail: it must never raise an unread count, even

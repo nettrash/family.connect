@@ -703,6 +703,185 @@
         }
       }
     },
+    "%lld new messages" : {
+      "comment" : "The divider drawn above the oldest message the reader has not seen, when a chat opens in history. The number is that chat's unread count.",
+      "localizations" : {
+        "de" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld neue Nachricht"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld neue Nachrichten"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld new message"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld new messages"
+                }
+              }
+            }
+          }
+        },
+        "es" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld mensaje nuevo"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld mensajes nuevos"
+                }
+              }
+            }
+          }
+        },
+        "fr" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld nouveau message"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld nouveaux messages"
+                }
+              }
+            }
+          }
+        },
+        "ja" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "新着メッセージ%lld件"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld новых сообщения"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld новых сообщений"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld новое сообщение"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld новых сообщения"
+                }
+              }
+            }
+          }
+        },
+        "sr" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld нова порука"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld нове поруке"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld нових порука"
+                }
+              }
+            }
+          }
+        },
+        "sr-Latn" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld nova poruka"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld nove poruke"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld novih poruka"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld 条新消息"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld of %lld voted" : {
       "comment" : "A poll footer: how many family members have voted, out of how many could. The first number is the voters, the second the size of the family.",
       "localizations" : {
@@ -1262,6 +1441,112 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "只有月和日，没有年份。全家人都能看到。"
+          }
+        }
+      }
+    },
+    "A message can be at most %lld characters." : {
+      "comment" : "Shown when text pasted or typed into the composer would go over the message length limit. The argument is the limit in characters.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eine Nachricht darf höchstens %lld Zeichen haben."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un mensaje puede tener como máximo %lld caracteres."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un message peut contenir au maximum %lld caractères."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージは最大%lld文字までです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщение может быть не длиннее %lld символов."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Порука може имати највише %lld знакова."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poruka može imati najviše %lld znakova."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一条消息最多 %lld 个字符。"
+          }
+        }
+      }
+    },
+    "A message can be at most %lld characters. The rest wasn't pasted." : {
+      "comment" : "Shown when a paste was cut short at the message length limit. The argument is the limit in characters.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eine Nachricht darf höchstens %lld Zeichen haben. Der Rest wurde nicht eingefügt."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un mensaje puede tener como máximo %lld caracteres. El resto no se pegó."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un message peut contenir au maximum %lld caractères. Le reste n’a pas été collé."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージは最大%lld文字までです。残りは貼り付けられませんでした。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщение может быть не длиннее %lld символов. Остальное не вставилось."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Порука може имати највише %lld знакова. Остатак није налепљен."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poruka može imati najviše %lld znakova. Ostatak nije nalepljen."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一条消息最多 %lld 个字符。其余内容没有粘贴。"
           }
         }
       }
@@ -7026,6 +7311,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "文件"
+          }
+        }
+      }
+    },
+    "Finish editing before attaching something." : {
+      "comment" : "Shown when someone pastes an attachment while the composer is being used to rewrite an existing message.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schließ die Bearbeitung ab, bevor du etwas anhängst."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Termina la edición antes de adjuntar algo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Termine la modification avant de joindre quelque chose."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "編集を終えてから添付してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закончи изменение, прежде чем что-то прикреплять."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заврши измену пре него што нешто приложиш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Završi izmenu pre nego što nešto priložiš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先完成编辑，再添加附件。"
           }
         }
       }
@@ -12851,6 +13189,59 @@
         }
       }
     },
+    "Scroll to newest" : {
+      "comment" : "Accessibility label of the floating button that takes the conversation back to its newest message. Same wording as Android's s_scroll_to_newest.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zum Neuesten springen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ir al más reciente"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aller au plus récent"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最新へスクロール"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "К последнему"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Иди на најновије"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Idi na najnovije"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "滚动到最新"
+          }
+        }
+      }
+    },
     "See who reacted" : {
       "comment" : "A label for a button that opens a list of who reacted.",
       "isCommentAutoGenerated" : true,
@@ -14828,6 +15219,59 @@
         }
       }
     },
+    "The message is already at the %lld-character limit." : {
+      "comment" : "Shown when a paste is refused because the draft is already at the message length limit. The argument is the limit in characters.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Nachricht ist schon am Limit von %lld Zeichen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El mensaje ya está en el límite de %lld caracteres."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le message a déjà atteint la limite de %lld caractères."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メッセージはすでに%lld文字の上限に達しています。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщение уже достигло предела в %lld символов."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Порука је већ на ограничењу од %lld знакова."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poruka je već na ograničenju od %lld znakova."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "消息已经达到 %lld 个字符的上限。"
+          }
+        }
+      }
+    },
     "The question is the message everyone sees." : {
       "comment" : "A footer explaining that a poll question is the chat message itself.",
       "localizations" : {
@@ -15630,6 +16074,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "视频"
+          }
+        }
+      }
+    },
+    "Wait until the current attachment is done." : {
+      "comment" : "Shown when someone pastes an attachment while another one is still being prepared or sent.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Warte, bis der aktuelle Anhang fertig ist."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Espera a que termine el adjunto actual."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attends que la pièce jointe en cours soit terminée."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "今の添付が終わるまで待ってください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подожди, пока текущее вложение будет готово."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сачекај да се тренутни прилог заврши."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sačekaj da se trenutni prilog završi."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请等当前附件处理完。"
           }
         }
       }

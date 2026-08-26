@@ -1000,7 +1000,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachment` — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. |
+| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachment` — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self`, `not_same_family`, `user_not_found`. |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_id` claims an attachment this caller uploaded; a message carrying one may have an empty body. `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. Errors: `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
@@ -1150,7 +1150,8 @@ apply it under the same rule the board catch-up uses: a note is written only whe
 - **Best-effort delivery**: the socket is a live wire, not a queue. A slow client's socket is
   dropped; REST is the source of truth. On every (re)connect a client must resync:
   1. `GET /me` — reconcile membership.
-  2. `GET /chats` — chat list, previews, authoritative unread counts.
+  2. `GET /chats` — chat list, previews, authoritative unread counts, and the caller's own
+     read marker per chat.
   3. Per chat: `GET /chats/{id}/messages?after_id=<max known message id>` looped until a short
      page — message ids are globally monotonic, so `max(id)` is the sync cursor. That cursor
      belongs to the LOOP: it is read once, before the first page, and then advanced by the
@@ -1271,8 +1272,11 @@ APNs (token-based auth, HTTP/2): headers `apns-topic` = bundle id, `apns-push-ty
  "chat_id": 42, "message_id": 1338, "kind": "message"}
 ```
 
-(`badge` = the user's total unread across chats at send time. Join events use
-`"kind": "join_request"` / `"kind": "joined"` with `family_id` instead of chat/message ids.)
+(`badge` = the user's total unread across chats at send time, and it is APNs-only. It is what the
+SYSTEM puts on the icon while the app is not running; a running client derives its own icon badge
+from its store instead, because the server pushes only to a device with no live socket and can
+therefore never correct a foregrounded app's number. Join events use `"kind": "join_request"` /
+`"kind": "joined"` with `family_id` instead of chat/message ids.)
 
 FCM (HTTP v1): notification + data so the system tray renders when the app is dead, while a
 foregrounded app — its own socket live — is never pushed at all:
@@ -1282,8 +1286,23 @@ foregrounded app — its own socket live — is never pushed at all:
   "notification": {"title": "Anna", "body": "Dinner at 7?"},
   "data": {"kind": "message", "chat_id": "42", "message_id": "1338"},
   "android": {"priority": "HIGH",
-              "notification": {"channel_id": "messages", "tag": "chat-42"}}}}
+              "notification": {"channel_id": "messages", "tag": "chat-42",
+                               "notification_count": 3}}}}
 ```
+
+`notification_count` is the recipient's unread count **in the chat this push is about**, not the
+total `badge` carries. It is a number rather than a string — the everything-is-a-string rule applies
+to `data` only — and it rides on `message` pushes alone, omitted from `board_note`, `join_request`
+and `joined`.
+
+Per chat rather than total, because Android has no icon-badge API at all: the only number an app can
+offer a launcher is `Notification.number`, and a launcher that draws one SUMS it across the app's
+live notifications. The app posts one per chat (`tag: "chat-<id>"`), so a total on each of three
+chats would render as three times the total. It follows that the count only means anything while the
+notifications it rides on are alive, which is why a client MUST take a chat's notification down when
+that chat is read — on any of the user's devices, not merely the one holding it. Whether a number
+appears at all is the launcher's decision and not the app's: several draw a plain dot and never a
+count, and that is a correct rendering of the same data.
 
 Tapping a notification opens the chat named by `chat_id` (or the board for `board_note`, the
 join-requests screen for `join_request`, the chat list for `joined`).

@@ -145,4 +145,40 @@ struct ThreadFollowTests {
         #expect(ThreadFollow.windowAfterPagingBack(
             current: 60, cached: 80, step: 60, cap: 300) == 80)
     }
+
+    // MARK: - What a re-run of the opening routine still owes
+
+    @Test("A finished open is not opened again")
+    func openingIsDoneOnceItHasSettled() {
+        // The reader owns the thread's position from here. Re-running the
+        // opening scroll would throw somebody who has been reading for five
+        // minutes back to a boundary they passed long ago.
+        #expect(ThreadFollow.openingStep(hasSettled: true, hasAnchor: true) == .done)
+        // `hasAnchor: false` is the ordinary open (it resolves to `.newest`,
+        // which the phone stores and the Mac does too) — settled is settled
+        // either way.
+        #expect(ThreadFollow.openingStep(hasSettled: true, hasAnchor: false) == .done)
+    }
+
+    @Test("A first pass decides and places")
+    func openingDecidesOnTheFirstPass() {
+        #expect(ThreadFollow.openingStep(hasSettled: false, hasAnchor: false)
+            == .decideAndPlace)
+    }
+
+    @Test("An open interrupted after deciding keeps its answer and finishes the scroll")
+    func openingResumesAnInterruptedPlacement() {
+        // THE CASE THIS RULE EXISTS FOR. The placement spans ~400 ms of
+        // yields; tapping an attachment inside it cancels the task with the
+        // anchor already decided and the scroll not yet run — an anchor
+        // present, nothing settled. Both threads used to key the whole
+        // routine on the anchor alone and so did NOTHING here: on the phone
+        // `hasSettled` then stayed false for as long as the chat was open,
+        // and since `publishPresence` ANDs it, that conversation could never
+        // be marked read again; on the Mac the settle step runs after the
+        // placement, so the same re-appear settled a thread still at the
+        // BOTTOM and read messages nobody had seen.
+        #expect(ThreadFollow.openingStep(hasSettled: false, hasAnchor: true)
+            == .placeOnly)
+    }
 }

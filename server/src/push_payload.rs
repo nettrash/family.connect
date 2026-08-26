@@ -70,6 +70,17 @@ pub struct Notification {
     /// Recipient's total unread across chats. APNs-only on the wire — the
     /// protocol's FCM shape carries no badge (Android renders its own).
     pub badge: i64,
+    /// Recipient's unread IN THE CHAT this push is about — FCM's
+    /// `android.notification.notification_count`, and never the `badge`
+    /// total. `None` for everything that is not a message: `board_note`,
+    /// `join_request` and `joined` carry no count at all.
+    ///
+    /// Per chat because Android has no icon-badge API: the only number an
+    /// app can offer a launcher is `Notification.number`, which a launcher
+    /// SUMS across the app's live notifications — and the app posts one per
+    /// chat (`tag: "chat-<id>"`), so a total on each of three chats would
+    /// render as three times the total (protocol.md, "Push notifications").
+    pub chat_unread: Option<i64>,
     pub event: PushEvent,
 }
 
@@ -117,6 +128,7 @@ pub fn message_notification(
     sender_name: &str,
     message: &Message,
     badge: i64,
+    chat_unread: i64,
 ) -> Notification {
     let title = if chat_kind == "family" {
         format!("{family_name} — {sender_name}")
@@ -136,6 +148,10 @@ pub fn message_notification(
         title,
         body,
         badge,
+        // A message push is the one kind that carries it, and it always
+        // does — the number is computed beside the badge, from the same
+        // rows (see `build_message_unread_query`).
+        chat_unread: Some(chat_unread),
         event: PushEvent::Message {
             chat_id: message.chat_id,
             message_id: message.id,
@@ -165,6 +181,8 @@ pub fn board_note_notification(
             "New note".to_string()
         },
         badge,
+        // A note is not a message: no chat, and so no per-chat count.
+        chat_unread: None,
         event: PushEvent::BoardNote { family_id, note_id },
     }
 }
@@ -182,6 +200,7 @@ pub fn join_request_notification(
         title: family_name.to_string(),
         body: format!("{requester_display_name} asked to join"),
         badge,
+        chat_unread: None,
         event: PushEvent::JoinRequest { family_id },
     }
 }
@@ -193,6 +212,7 @@ pub fn joined_notification(family_name: &str, family_id: i64, badge: i64) -> Not
         title: family_name.to_string(),
         body: format!("You're in — welcome to {family_name}"),
         badge,
+        chat_unread: None,
         event: PushEvent::Joined { family_id },
     }
 }
@@ -231,6 +251,8 @@ pub fn apns_payload(note: &Notification) -> Value {
 /// The FCM HTTP v1 request body per protocol.md: `notification` + `data` so
 /// the system tray renders when the app process is dead. FCM `data` values
 /// MUST be strings — ids are stringified here, never sent as numbers.
+/// `android.notification.notification_count` is the exception that is not
+/// one: it lives outside `data`, so it goes on the wire as a NUMBER.
 pub fn fcm_message(note: &Notification, push_token: &str) -> Value {
     let mut data = json!({"kind": note.event.kind()});
     match note.event {
@@ -253,6 +275,12 @@ pub fn fcm_message(note: &Notification, push_token: &str) -> Value {
     if let Some(tag) = note.event.thread_key() {
         android_notification["tag"] = json!(tag);
     }
+    // A NUMBER, deliberately: the everything-is-a-string rule above governs
+    // `data` alone, and `notification_count` is a field of the notification
+    // object FCM itself types as an integer. Present on message pushes only.
+    if let Some(chat_unread) = note.chat_unread {
+        android_notification["notification_count"] = json!(chat_unread);
+    }
     json!({"message": {
         "token": push_token,
         "notification": {"title": note.title, "body": note.body},
@@ -268,6 +296,29 @@ pub fn fcm_message(note: &Notification, push_token: &str) -> Value {
 /// `$1` is the recipient's user id.
 pub fn build_unread_badge_query() -> &'static str {
     "SELECT count(*)
+     FROM chat_members m
+     JOIN messages msg ON msg.chat_id = m.chat_id
+     LEFT JOIN chat_reads cr ON cr.chat_id = m.chat_id AND cr.user_id = m.user_id
+     WHERE m.user_id = $1
+       AND msg.id > COALESCE(cr.last_read_message_id, 0)
+       AND msg.sender_id <> $1"
+}
+
+/// The one SQL statement behind BOTH numbers a MESSAGE push carries: the
+/// recipient's total unread across chats (APNs `badge`) and their unread in
+/// the chat this push is about (FCM `notification_count`). `$1` is the
+/// recipient's user id, `$2` the chat.
+///
+/// One statement rather than two, and a FILTER rather than a second
+/// predicate: the per-chat number counts a SUBSET of the very rows the
+/// badge counts, so the two can never disagree about what "unread" means —
+/// which is the whole risk in shipping a second count. That predicate is
+/// also the one `GET /chats` measures its `unread_count` with, word for
+/// word: newer than my read marker (0 when I have never reported one), and
+/// not sent by me.
+pub fn build_message_unread_query() -> &'static str {
+    "SELECT count(*) AS badge,
+            count(*) FILTER (WHERE msg.chat_id = $2) AS chat_unread
      FROM chat_members m
      JOIN messages msg ON msg.chat_id = m.chat_id
      LEFT JOIN chat_reads cr ON cr.chat_id = m.chat_id AND cr.user_id = m.user_id
@@ -303,8 +354,15 @@ mod tests {
 
     #[test]
     fn the_apns_message_payload_matches_the_protocol_example_exactly() {
-        let note =
-            message_notification(true, "direct", "The Smiths", "Anna", &protocol_message(), 3);
+        let note = message_notification(
+            true,
+            "direct",
+            "The Smiths",
+            "Anna",
+            &protocol_message(),
+            3,
+            3,
+        );
         assert_eq!(
             apns_payload(&note),
             json!({
@@ -317,29 +375,158 @@ mod tests {
 
     #[test]
     fn the_fcm_message_matches_the_protocol_example_exactly() {
-        let note =
-            message_notification(true, "direct", "The Smiths", "Anna", &protocol_message(), 3);
+        let note = message_notification(
+            true,
+            "direct",
+            "The Smiths",
+            "Anna",
+            &protocol_message(),
+            3,
+            3,
+        );
         assert_eq!(
             fcm_message(&note, "token-1"),
             json!({"message": {"token": "token-1",
                 "notification": {"title": "Anna", "body": "Dinner at 7?"},
                 "data": {"kind": "message", "chat_id": "42", "message_id": "1338"},
                 "android": {"priority": "HIGH",
-                            "notification": {"channel_id": "messages", "tag": "chat-42"}}}})
+                            "notification": {"channel_id": "messages", "tag": "chat-42",
+                                             "notification_count": 3}}}})
         );
+    }
+
+    /// The two numbers a message push carries are DIFFERENT numbers, and
+    /// the wire is where that has to show: APNs takes the total, FCM takes
+    /// the count for this one chat. Composed with 9 and 2 precisely so a
+    /// payload that reached for the wrong field cannot pass.
+    #[test]
+    fn the_fcm_notification_count_is_the_chat_unread_and_never_the_badge_total() {
+        let note = message_notification(
+            true,
+            "direct",
+            "The Smiths",
+            "Anna",
+            &protocol_message(),
+            9,
+            2,
+        );
+        assert_eq!(
+            fcm_message(&note, "token-1")["message"]["android"]["notification"],
+            json!({"channel_id": "messages", "tag": "chat-42", "notification_count": 2})
+        );
+        assert_eq!(
+            apns_payload(&note)["aps"]["badge"],
+            json!(9),
+            "APNs is unchanged: the badge stays the total across chats"
+        );
+        assert!(
+            !apns_payload(&note)
+                .to_string()
+                .contains("notification_count"),
+            "notification_count is an FCM field and has no place in the APNs payload"
+        );
+    }
+
+    /// A JSON number, not a string: the everything-is-a-string rule governs
+    /// `data`, and `notification_count` is not in `data`. A string here is
+    /// an FCM 400 (INVALID_ARGUMENT), so this is the byte that decides
+    /// whether Android hears anything at all.
+    #[test]
+    fn the_notification_count_goes_on_the_wire_as_a_number() {
+        let note = message_notification(
+            true,
+            "direct",
+            "The Smiths",
+            "Anna",
+            &protocol_message(),
+            3,
+            3,
+        );
+        let count =
+            &fcm_message(&note, "t")["message"]["android"]["notification"]["notification_count"];
+        assert!(count.is_number(), "must be a JSON number, got {count}");
+        assert_eq!(count.as_i64(), Some(3));
+        assert!(
+            fcm_message(&note, "t")["message"]["data"]
+                .as_object()
+                .expect("data is an object")
+                .values()
+                .all(Value::is_string),
+            "…while every value in `data` is still a string"
+        );
+    }
+
+    /// Zero is a real count and must still be sent: it is what a recipient
+    /// whose other device has already read the chat is owed, and a launcher
+    /// showing a stale 3 is worse than one showing nothing.
+    #[test]
+    fn a_zero_chat_unread_is_still_sent() {
+        let note = message_notification(
+            true,
+            "direct",
+            "The Smiths",
+            "Anna",
+            &protocol_message(),
+            0,
+            0,
+        );
+        assert_eq!(
+            fcm_message(&note, "t")["message"]["android"]["notification"]["notification_count"],
+            json!(0)
+        );
+    }
+
+    /// It rides on message pushes ALONE — protocol.md omits it from the
+    /// other three kinds, which have no chat to count in.
+    #[test]
+    fn only_message_pushes_carry_a_notification_count() {
+        let cases = [
+            fcm_message(
+                &board_note_notification(true, "The Smiths", "Junior", 7, 3, "Milk", 0),
+                "t",
+            ),
+            fcm_message(
+                &join_request_notification("The Smiths", "Junior", 7, 0),
+                "t",
+            ),
+            fcm_message(&joined_notification("The Smiths", 7, 0), "t"),
+        ];
+        for message in cases {
+            let kind = message["message"]["data"]["kind"].clone();
+            assert!(
+                message["message"]["android"]["notification"]
+                    .get("notification_count")
+                    .is_none(),
+                "a {kind} push has no chat to count in: {message}"
+            );
+        }
     }
 
     #[test]
     fn a_family_chat_title_combines_family_and_sender_with_an_em_dash() {
-        let note =
-            message_notification(true, "family", "The Smiths", "Anna", &protocol_message(), 1);
+        let note = message_notification(
+            true,
+            "family",
+            "The Smiths",
+            "Anna",
+            &protocol_message(),
+            1,
+            1,
+        );
         assert_eq!(note.title, "The Smiths — Anna");
     }
 
     #[test]
     fn a_direct_chat_title_is_just_the_sender_display_name() {
-        let note =
-            message_notification(true, "direct", "The Smiths", "Anna", &protocol_message(), 1);
+        let note = message_notification(
+            true,
+            "direct",
+            "The Smiths",
+            "Anna",
+            &protocol_message(),
+            1,
+            1,
+        );
         assert_eq!(note.title, "Anna");
     }
 
@@ -379,6 +566,7 @@ mod tests {
             "Anna",
             &with_attachment("location", None),
             1,
+            1,
         );
         assert_eq!(pin.body, "Location");
         let labelled = message_notification(
@@ -387,6 +575,7 @@ mod tests {
             "The Smiths",
             "Anna",
             &with_attachment("location", Some("Home")),
+            1,
             1,
         );
         assert_eq!(labelled.body, "Home");
@@ -398,6 +587,7 @@ mod tests {
             "Anna",
             &with_attachment("photo", None),
             1,
+            1,
         );
         assert_eq!(photo.body, "Photo");
         let video = message_notification(
@@ -406,6 +596,7 @@ mod tests {
             "The Smiths",
             "Anna",
             &with_attachment("video", None),
+            1,
             1,
         );
         assert_eq!(video.body, "Video");
@@ -417,6 +608,7 @@ mod tests {
             "Anna",
             &with_attachment("file", Some("Rechnung.pdf")),
             1,
+            1,
         );
         assert_eq!(file.body, "Rechnung.pdf");
 
@@ -425,7 +617,7 @@ mod tests {
             body: "at the lake".to_string(),
             ..with_attachment("photo", None)
         };
-        let note = message_notification(true, "direct", "S", "Anna", &captioned, 1);
+        let note = message_notification(true, "direct", "S", "Anna", &captioned, 1, 1);
         assert_eq!(note.body, "at the lake");
 
         // And the privacy switch still hides everything.
@@ -435,6 +627,7 @@ mod tests {
             "S",
             "Anna",
             &with_attachment("photo", None),
+            1,
             1,
         );
         assert_eq!(hidden.body, "New message");
@@ -448,6 +641,7 @@ mod tests {
             "The Smiths",
             "Anna",
             &protocol_message(),
+            1,
             1,
         );
         assert_eq!(note.body, "New message");
@@ -524,6 +718,37 @@ mod tests {
         assert!(
             query.contains("COALESCE(cr.last_read_message_id, 0)"),
             "a user with no read marker has everything unread: {query}"
+        );
+    }
+
+    /// The per-chat count and the badge must never be able to disagree
+    /// about what "unread" means — so the message-push query counts both
+    /// from ONE set of rows, the per-chat number being a FILTER over them.
+    /// This test pins that structure: same predicate, one statement.
+    #[test]
+    fn the_message_push_query_counts_the_chat_as_a_subset_of_the_badge() {
+        let query = build_message_unread_query();
+        for predicate in [
+            "msg.id > COALESCE(cr.last_read_message_id, 0)",
+            "msg.sender_id <> $1",
+        ] {
+            assert!(
+                query.contains(predicate),
+                "the per-chat count must use the badge's predicate `{predicate}`: {query}"
+            );
+            assert!(
+                build_unread_badge_query().contains(predicate),
+                "…which is also the badge's own: {predicate}"
+            );
+        }
+        assert!(
+            query.contains("count(*) FILTER (WHERE msg.chat_id = $2)"),
+            "the chat's count is a filter over the badge's rows, not a second query: {query}"
+        );
+        assert_eq!(
+            query.matches("FROM").count(),
+            1,
+            "both numbers come from one statement and one round trip: {query}"
         );
     }
 }

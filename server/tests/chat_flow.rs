@@ -262,12 +262,28 @@ async fn read_markers_are_monotonic_and_drive_unread_counts() {
     }
 
     let unread = |chats: &Value| chats["chats"][0]["unread_count"].as_i64().expect("unread");
+    // The other half of the same row: the caller's OWN read marker, always
+    // present — `0` means "never reported reading anything here", which is
+    // an answer and not an absence (protocol.md, `GET /chats`).
+    let marker = |chats: &Value| {
+        let entry = &chats["chats"][0];
+        assert!(
+            entry.get("last_read_message_id").is_some(),
+            "last_read_message_id is unconditional: {entry}"
+        );
+        entry["last_read_message_id"]
+            .as_i64()
+            .expect("last_read_message_id is a number")
+    };
 
     // Own messages never count as unread for the sender.
     let member_chats: Value = ts.get(&member, "/chats").await.json().await.expect("json");
     assert_eq!(unread(&member_chats), 0);
+    // …and sending is not reading: the sender's own marker is still 0.
+    assert_eq!(marker(&member_chats), 0);
     let owner_chats: Value = ts.get(&owner, "/chats").await.json().await.expect("json");
     assert_eq!(unread(&owner_chats), 3);
+    assert_eq!(marker(&owner_chats), 0, "nothing reported read yet");
     assert_eq!(owner_chats["chats"][0]["last_message"]["body"], "m3");
 
     // Read up to the second message.
@@ -281,6 +297,11 @@ async fn read_markers_are_monotonic_and_drive_unread_counts() {
     assert_eq!(marked.status(), 204);
     let owner_chats: Value = ts.get(&owner, "/chats").await.json().await.expect("json");
     assert_eq!(unread(&owner_chats), 1);
+    assert_eq!(
+        marker(&owner_chats),
+        ids[1],
+        "the list reports back exactly the id that was reported"
+    );
 
     // Reporting an older marker cannot move the count backwards.
     let stale = ts
@@ -293,6 +314,97 @@ async fn read_markers_are_monotonic_and_drive_unread_counts() {
     assert_eq!(stale.status(), 204);
     let owner_chats: Value = ts.get(&owner, "/chats").await.json().await.expect("json");
     assert_eq!(unread(&owner_chats), 1, "marker is monotonic");
+    assert_eq!(
+        marker(&owner_chats),
+        ids[1],
+        "and the marker itself never walks backwards either"
+    );
+
+    // Reading to the end: the marker names the newest message and the count
+    // goes to zero — both keys still there, one of them zero.
+    let caught_up = ts
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/read"),
+            json!({"last_read_message_id": ids[2]}),
+        )
+        .await;
+    assert_eq!(caught_up.status(), 204);
+    let owner_chats: Value = ts.get(&owner, "/chats").await.json().await.expect("json");
+    assert_eq!(unread(&owner_chats), 0);
+    assert_eq!(marker(&owner_chats), ids[2]);
+
+    // A marker is per user, not per chat: the member reported nothing and
+    // still reads 0 from their own row, unaffected by the owner's.
+    let member_chats: Value = ts.get(&member, "/chats").await.json().await.expect("json");
+    assert_eq!(marker(&member_chats), 0);
+}
+
+/// A read marker is an id THRESHOLD, not a reference to a row: the message
+/// it names may be swept by retention long before the reader comes back,
+/// and the marker must survive that untouched. A marker that reset when its
+/// message went would re-unread the whole of a quiet chat's history the day
+/// the sweep caught up with it.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_read_marker_outlives_the_message_it_names() {
+    let ts = spawn_server().await;
+    let (owner, _, member, _) = family_of_two(&ts).await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    let days = ts.state.cfg.limits.retention_days;
+
+    let old: Value = ts
+        .post_message(&member, chat_id, &Uuid::new_v4().to_string(), "last spring")
+        .await
+        .json()
+        .await
+        .expect("json");
+    let old_id = old["message"]["id"].as_i64().expect("id");
+
+    let marked = ts
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/read"),
+            json!({"last_read_message_id": old_id}),
+        )
+        .await;
+    assert_eq!(marked.status(), 204);
+
+    // Age it past the retention window and sweep — the sweep reads
+    // `created_at`, which is the whole of what "old" means to it.
+    sqlx::query("UPDATE messages SET created_at = now() - make_interval(days => $2) WHERE id = $1")
+        .bind(old_id)
+        .bind((days + 1) as i32)
+        .execute(&ts.state.pool)
+        .await
+        .expect("aging the message");
+    let swept = family_connect::handlers_chat::sweep_expired_messages(&ts.state)
+        .await
+        .expect("sweep");
+    assert_eq!(swept, 1, "the message the marker names is gone");
+
+    let owner_chats: Value = ts.get(&owner, "/chats").await.json().await.expect("json");
+    let entry = &owner_chats["chats"][0];
+    assert_eq!(
+        entry["last_read_message_id"].as_i64(),
+        Some(old_id),
+        "the marker is a threshold and stands on its own: {entry}"
+    );
+    assert_eq!(entry["unread_count"].as_i64(), Some(0));
+
+    // And it still does its job: a message sent after it is unread, and the
+    // marker is unchanged by the reading of nothing.
+    ts.post_message(
+        &member,
+        chat_id,
+        &Uuid::new_v4().to_string(),
+        "this morning",
+    )
+    .await;
+    let owner_chats: Value = ts.get(&owner, "/chats").await.json().await.expect("json");
+    let entry = &owner_chats["chats"][0];
+    assert_eq!(entry["unread_count"].as_i64(), Some(1));
+    assert_eq!(entry["last_read_message_id"].as_i64(), Some(old_id));
 }
 
 #[tokio::test]

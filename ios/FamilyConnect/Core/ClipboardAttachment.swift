@@ -25,6 +25,16 @@
 //  the same poster frame, and the single 100 MB ceiling is enforced in one
 //  place.
 //
+//  And the THIRD decision, which is the one every door gets wrong on its
+//  own: whether this paste is an attachment at all. `decide` answers that
+//  from free probes, `action` turns the answer into the one thing a door
+//  must do, and `door` is the single call every paste door makes — the
+//  attach menu's Paste item, the hardware ⌘V, the Mac's paste command.
+//  `prepare` is NOT that decision and must never be used as one: it takes
+//  the best representation it can find, which on a clipboard holding both
+//  words and a picture is the picture — the opposite of what the rule says.
+//  It runs only after `decide` has said `.attachment`.
+//
 //  Android counterpart: the composer's ClipData handling.
 //
 
@@ -98,21 +108,76 @@ enum ClipboardAttachment {
         return offered.first(where: isAttachable)
     }
 
-    /// Whether the platform's own paste gesture should ATTACH rather than
-    /// type, given what the clipboard holds.
+    /// What the clipboard is, as far as a composer is concerned.
     ///
-    /// The rule that keeps an ordinary text paste working is the second
-    /// line: WORDS WIN. The exception above it is a copied FILE — every
-    /// Finder copy puts the file's name on the clipboard as text too, so
-    /// "there are words" cannot be the test there, and taking the name
-    /// instead of the file would make the feature useless exactly where it
-    /// is most wanted.
-    nonisolated static func prefersAttachment(
+    /// Three answers rather than two, because "there is nothing here" and
+    /// "there are words here" want different things from a door: one has to
+    /// say so, the other has to type.
+    enum Decision: Equatable {
+        /// Bytes worth staging as an attachment.
+        case attachment
+        /// Words, which belong in the text field.
+        case text
+        /// Nothing this app can do anything with.
+        case nothing
+    }
+
+    /// THE rule, and the only one: what a paste means, given what the
+    /// clipboard holds.
+    ///
+    /// The line that keeps an ordinary text paste working is the second:
+    /// WORDS WIN. The exception above it is a copied FILE — every Finder
+    /// copy puts the file's name on the clipboard as text too, so "there
+    /// are words" cannot be the test there, and taking the name instead of
+    /// the file would make the feature useless exactly where it is most
+    /// wanted.
+    nonisolated static func decide(
         hasFileURL: Bool, hasAttachableData: Bool, hasText: Bool
-    ) -> Bool {
-        if hasFileURL { return true }
-        if hasText { return false }
-        return hasAttachableData
+    ) -> Decision {
+        if hasFileURL { return .attachment }
+        if hasText { return .text }
+        return hasAttachableData ? .attachment : .nothing
+    }
+
+    /// The one thing a paste door does.
+    enum Action: Equatable {
+        /// Stage what the clipboard holds, so a caption can be added and an
+        /// accidental paste discarded.
+        case attach
+        /// Put the clipboard's words in the draft.
+        case type
+        /// The composer cannot take an attachment right now — and has to
+        /// SAY so. The iPad's ⌘V used to be `.disabled` for this, so ⌘V of
+        /// a picture during an edit did nothing and explained nothing.
+        case busy
+        /// There is nothing on the clipboard worth a message.
+        case nothing
+    }
+
+    /// Turn the rule's answer into what the door must do.
+    ///
+    /// `composerIsBusy` gates the ATTACHMENT branch ONLY. Words are never
+    /// busy: a draft being edited is still a draft, and a text paste into
+    /// one is exactly what was meant. Gating words here is how the phone's
+    /// ⌘V would start swallowing ordinary text pastes the moment an upload
+    /// was running.
+    nonisolated static func action(for decision: Decision, composerIsBusy: Bool) -> Action {
+        switch decision {
+        case .attachment: return composerIsBusy ? .busy : .attach
+        case .text: return .type
+        case .nothing: return .nothing
+        }
+    }
+
+    /// The single call every paste door makes.
+    ///
+    /// Reads nothing but the free probes, so no door shows iOS's "Allow
+    /// Paste?" alert merely by asking what it is looking at. The payload is
+    /// read exactly once afterwards, by whichever of `prepare` or
+    /// `pendingText` the answer names.
+    @MainActor
+    static func door(composerIsBusy: Bool) -> Action {
+        action(for: decision, composerIsBusy: composerIsBusy)
     }
 
     /// What to call something the clipboard handed over.
@@ -141,27 +206,31 @@ enum ClipboardAttachment {
 
     #if os(iOS)
 
-    /// Whether ⌘V should attach rather than let the field paste words.
+    /// What the clipboard holds, decided WITHOUT reading it.
     ///
     /// Every property read here is one the system treats as harmless:
     /// `numberOfItems`, `hasStrings`, `hasImages` and
     /// `contains(pasteboardTypes:)` describe the clipboard without
     /// revealing it, so none of them shows the "pasted from" alert. Reading
-    /// the ITEMS does, which is why that happens only in `prepare`, at the
-    /// moment somebody actually asked for a paste.
+    /// the ITEMS does — and so does reading the string — which is why both
+    /// happen only in `prepare` and `pendingText`, once, after this has
+    /// said which of the two the paste is.
     @MainActor
-    static var offersAttachment: Bool {
+    static var decision: Decision {
         let pasteboard = UIPasteboard.general
-        guard pasteboard.numberOfItems > 0 else { return false }
-        return prefersAttachment(
+        guard pasteboard.numberOfItems > 0 else { return .nothing }
+        return decide(
             hasFileURL: pasteboard.contains(pasteboardTypes: [UTType.fileURL.identifier]),
             hasAttachableData: pasteboard.hasImages
                 || pasteboard.contains(pasteboardTypes: preferredTypes.map(\.identifier)),
             hasText: pasteboard.hasStrings)
     }
 
-    /// The clipboard's words, for the fallback described in the composer's
-    /// ⌘V door. Nil when there are none.
+    /// The clipboard's words. Nil when there are none.
+    ///
+    /// The one read of the payload on the text branch, and the one moment
+    /// the "Allow Paste?" alert is worth showing: somebody has just asked
+    /// for a paste and the rule has already said this one is words.
     @MainActor
     static var pendingText: String? {
         guard UIPasteboard.general.hasStrings else { return nil }
@@ -241,11 +310,40 @@ enum ClipboardAttachment {
 
     #elseif os(macOS)
 
-    // The Mac needs no `offersAttachment`: it never claims ⌘V. Its paste
-    // command reaches this app only once the responder chain has got past
-    // the composer's field editor, so an ordinary text paste has already
-    // been taken by the field and cannot be intercepted here — see
-    // MacConversationView's `.onPasteCommand`.
+    // The Mac never claims ⌘V with a keyboard shortcut of its own: a
+    // shortcut outranks the field editor and steals every ordinary text
+    // paste. Its paste command reaches this app only once the responder
+    // chain has got past the composer's field editor, so a text paste into
+    // a focused field has already been taken by the field — see
+    // MacConversationView's `.onPasteCommand`. Everything that DOES reach
+    // this app still goes through `decision`, because the attach menu's
+    // Paste item is a door like any other and the clipboard it reads may
+    // very well be words.
+
+    /// What the clipboard holds, decided without consuming it.
+    ///
+    /// `types` and the two `canReadObject` probes describe the pasteboard
+    /// rather than take from it, which is the same discipline the phone
+    /// needs for a different reason — there is no "Allow Paste?" alert
+    /// here, but there is still exactly one right answer and reading the
+    /// bytes is not how it is found.
+    @MainActor
+    static var decision: Decision {
+        let pasteboard = NSPasteboard.general
+        let offered = (pasteboard.types ?? []).compactMap { UTType($0.rawValue) }
+        return decide(
+            hasFileURL: pasteboard.canReadObject(
+                forClasses: [NSURL.self],
+                options: [.urlReadingFileURLsOnly: true]),
+            hasAttachableData: chosenType(from: offered) != nil,
+            hasText: pasteboard.canReadObject(forClasses: [NSString.self]))
+    }
+
+    /// The clipboard's words. Nil when there are none.
+    @MainActor
+    static var pendingText: String? {
+        NSPasteboard.general.string(forType: .string)
+    }
 
     @MainActor
     static func prepare(limit: Int) async throws -> MediaPrep.Prepared {

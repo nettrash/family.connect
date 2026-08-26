@@ -2,14 +2,19 @@
  * ChatViewModelTest.kt
  * Family Connect (Android)
  *
- * Three behaviors: the pure grouping rules (sender names, timestamps,
- * date separators — buildChatItems directly), the loadOlder guard (one
- * in-flight fetch, none past the start of history), and the read-marker
- * rule — read means SEEN, so a report needs the screen RESUMED *and*
- * the list at the newest message, debounced (many inbound messages →
- * one `read`). The scroll half is the load-bearing one: the server's
+ * Four behaviors: the pure grouping rules (sender names, timestamps,
+ * date separators, the unread divider — buildChatItems directly), the
+ * loadOlder guard (one in-flight fetch, none past the start of
+ * history), the read-marker rule — read means SEEN, so a report needs
+ * the screen RESUMED, the list at the newest message *and* the screen
+ * SETTLED, debounced (many inbound messages → one `read`) — and where
+ * a chat opens. The scroll half is the load-bearing one: the server's
  * marker is monotonic, so a read posted for a message nobody looked at
- * cannot be taken back on any of that person's devices.
+ * cannot be taken back on any of that person's devices. The settled
+ * half is the same defect from the other side: an empty list reports
+ * "at the newest message" on its first frame, so without it a chat
+ * that opens anchored marks itself wholly read before the reader has
+ * seen anything.
  */
 
 package me.nettrash.familyconnect.ui.chat
@@ -60,6 +65,7 @@ import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.GallerySaver
 import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
+import me.nettrash.familyconnect.data.repo.MessageBody
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
@@ -68,6 +74,7 @@ import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeConnectivityObserver
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
+import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
 import me.nettrash.familyconnect.testutil.pollDto
@@ -133,8 +140,13 @@ class ChatViewModelTest {
         db.close()
     }
 
-    private fun TestScope.newViewModel(kind: String = "direct"): ChatViewModel {
-        chatRepository = ChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
+    private fun TestScope.newViewModel(
+        kind: String = "direct",
+        /** What `GET /chats` last said about this chat — the anchor's inputs. */
+        unreadCount: Int = 0,
+        myLastReadId: Long? = null,
+    ): ChatViewModel {
+        chatRepository = testChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
         messageRepository = MessageRepository(
             chatApi = chatApi,
             attachmentApi = attachmentApi,
@@ -156,8 +168,8 @@ class ChatViewModelTest {
                         kind = kind,
                         peerUserId = if (kind == "direct") PEER else null,
                         title = "Chat",
-                        unreadCount = 0,
-                        myLastReadId = null,
+                        unreadCount = unreadCount,
+                        myLastReadId = myLastReadId,
                         peerLastReadId = null,
                         lastMessageBody = null,
                         lastMessageAt = null,
@@ -207,6 +219,18 @@ class ChatViewModelTest {
                 scope = repoScope,
             ),
         )
+    }
+
+    /**
+     * Put rows in the table BEFORE the ViewModel exists.
+     *
+     * The opening anchor is decided once, in init, from what this device
+     * already holds — so a test that seeds afterwards is testing a chat
+     * that opened empty.
+     */
+    private fun TestScope.seed(vararg rows: MessageEntity) {
+        launch { db.messageDao().insertIgnore(rows.toList()) }
+        runCurrent()
     }
 
     private fun entity(
@@ -284,6 +308,7 @@ class ChatViewModelTest {
             when (it) {
                 is ChatListItem.MessageItem -> it.entity.clientMsgId
                 is ChatListItem.DateSeparator -> "sep:${it.label}"
+                is ChatListItem.NewMessagesDivider -> "new:${it.count}"
             }
         }
         // reverseLayout renders list order bottom-up, so each day's pill
@@ -553,7 +578,7 @@ class ChatViewModelTest {
         assertThat(chatApi.messagesCalls).isEqualTo(1)
     }
 
-    // -- Read markers: resumed AND at the newest message ---------------------------------
+    // -- Read markers: resumed AND at the newest message AND settled ---------------------
 
     @Test
     fun rapidInboundMessagesProduceOneDebouncedReadReport() = runTest(dispatcher) {
@@ -561,6 +586,7 @@ class ChatViewModelTest {
         val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         viewModel.setResumed(true)
         viewModel.setAtNewest(true)
+        viewModel.setSettled()
         runCurrent()
 
         messageRepository.applyServerMessage(messageDto(id = 10, chatId = CHAT, senderId = PEER), live = false)
@@ -586,6 +612,7 @@ class ChatViewModelTest {
         val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         viewModel.setResumed(false)
         viewModel.setAtNewest(true)
+        viewModel.setSettled()
         runCurrent()
 
         messageRepository.applyServerMessage(messageDto(id = 10, chatId = CHAT, senderId = PEER), live = false)
@@ -609,6 +636,7 @@ class ChatViewModelTest {
         val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         viewModel.setResumed(true)
         viewModel.setAtNewest(false)
+        viewModel.setSettled()
         runCurrent()
 
         messageRepository.applyServerMessage(messageDto(id = 30, chatId = CHAT, senderId = PEER), live = false)
@@ -628,6 +656,7 @@ class ChatViewModelTest {
         val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         viewModel.setResumed(true)
         viewModel.setAtNewest(false)
+        viewModel.setSettled()
         runCurrent()
 
         messageRepository.applyServerMessage(messageDto(id = 31, chatId = CHAT, senderId = PEER), live = false)
@@ -657,6 +686,7 @@ class ChatViewModelTest {
         val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         viewModel.setResumed(true)
         viewModel.setAtNewest(false)
+        viewModel.setSettled()
         runCurrent()
 
         viewModel.setResumed(false)
@@ -682,6 +712,7 @@ class ChatViewModelTest {
         socket.setOpen(true)
         viewModel.setResumed(true)
         viewModel.setAtNewest(true)
+        viewModel.setSettled()
         runCurrent()
 
         messageRepository.applyServerMessage(messageDto(id = 20, chatId = CHAT, senderId = PEER), live = false)
@@ -719,6 +750,7 @@ class ChatViewModelTest {
         val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
         viewModel.setResumed(true)
         viewModel.setAtNewest(true)
+        viewModel.setSettled()
         runCurrent()
 
         messageRepository.applyServerMessage(messageDto(id = 40, chatId = CHAT, senderId = PEER), live = false)
@@ -728,6 +760,292 @@ class ChatViewModelTest {
 
         assertThat(manager.activeNotifications).isEmpty()
         itemsSubscription.cancel()
+    }
+
+    /**
+     * THE DATA-LOSING RACE, from the inside.
+     *
+     * Everything else is true — the screen is resumed, and the list says
+     * it is at the newest message, which is what an EMPTY LazyColumn
+     * says on its first frame because firstVisibleItemIndex is 0. If the
+     * read collector believed that, a chat about to be anchored thirty
+     * messages up the thread would report the newest id and mark itself
+     * wholly read, on every device this person owns and for good — the
+     * server's marker only moves forward.
+     *
+     * runCurrent(), never advanceUntilIdle(): the point is what happens
+     * while things are still in flight.
+     */
+    @Test
+    fun noReadIsPostedBeforeTheScreenHasSettled() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(true)
+        runCurrent()
+
+        messageRepository.applyServerMessage(messageDto(id = 50, chatId = CHAT, senderId = PEER), live = false)
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        assertThat(chatApi.postedReads).isEmpty()
+        assertThat(socket.sent.filterIsInstance<ClientFrame.Read>()).isEmpty()
+        assertThat(db.chatDao().getById(CHAT)!!.myLastReadId).isNull()
+
+        // And the moment the screen says it has finished opening, the
+        // same state means what it says.
+        viewModel.setSettled()
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+        assertThat(chatApi.postedReads).containsExactly(CHAT to 50L)
+        itemsSubscription.cancel()
+    }
+
+    /**
+     * The open chat is published as NOT at the newest message until the
+     * screen settles — the safe direction. A message arriving during the
+     * opening window is genuinely unseen, so it counts.
+     */
+    @Test
+    fun aMessageArrivingBeforeTheScreenSettlesStillCounts() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(true)
+        runCurrent()
+
+        messageRepository.applyServerMessage(messageDto(id = 51, chatId = CHAT, senderId = PEER), live = true)
+        runCurrent()
+
+        assertThat(db.chatDao().getById(CHAT)!!.unreadCount).isEqualTo(1)
+        itemsSubscription.cancel()
+    }
+
+    // -- Where the chat opens ------------------------------------------------
+    //
+    // The arithmetic itself is pinned in OpenAnchorTest; these are about
+    // the ViewModel wiring it to the chat row and the cache, once, at
+    // open — and about what an anchored open must NOT do.
+
+    @Test
+    fun aChatWithUnreadMessagesOpensAtTheOldestOfThem() = runTest(dispatcher) {
+        seed(
+            entity("m12", 12, PEER, NOON + 2 * MINUTE),
+            entity("m11", 11, PEER, NOON + MINUTE),
+            entity("m10", 10, PEER, NOON),
+            entity("m9", 9, PEER, NOON - MINUTE),
+        )
+        val viewModel = newViewModel(unreadCount = 3, myLastReadId = 9)
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        runCurrent()
+
+        assertThat(viewModel.openAnchor.value)
+            .isEqualTo(OpenAnchor.Message(serverId = 10, newCount = 3))
+        itemsSubscription.cancel()
+    }
+
+    @Test
+    fun aChatWithNothingUnreadOpensAtTheNewestMessage() = runTest(dispatcher) {
+        seed(
+            entity("m12", 12, PEER, NOON + MINUTE),
+            entity("m11", 11, PEER, NOON),
+        )
+        val viewModel = newViewModel(unreadCount = 0, myLastReadId = 12)
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        runCurrent()
+
+        assertThat(viewModel.openAnchor.value).isEqualTo(OpenAnchor.Newest)
+        // ...and nothing draws a divider.
+        assertThat(viewModel.items.value.filterIsInstance<ChatListItem.NewMessagesDivider>())
+            .isEmpty()
+        itemsSubscription.cancel()
+    }
+
+    /** A fresh install has no marker at all, so the count walks back. */
+    @Test
+    fun aFreshInstallCountsBackToTheOldestUnread() = runTest(dispatcher) {
+        seed(
+            entity("m12", 12, PEER, NOON + 2 * MINUTE),
+            entity("m11", 11, ME, NOON + MINUTE),
+            entity("m10", 10, PEER, NOON),
+            entity("m9", 9, PEER, NOON - MINUTE),
+        )
+        val viewModel = newViewModel(unreadCount = 2, myLastReadId = null)
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        runCurrent()
+
+        // 11 is mine and is skipped, exactly as the server skips it.
+        assertThat(viewModel.openAnchor.value)
+            .isEqualTo(OpenAnchor.Message(serverId = 10, newCount = 2))
+        itemsSubscription.cancel()
+    }
+
+    /**
+     * The whole product consequence in one test: a chat opened away from
+     * the bottom reads NOTHING and keeps its count — and then reaching
+     * the bottom does everything reading a chat ever did.
+     */
+    @Test
+    fun anAnchoredOpenReadsNothingUntilTheReaderReachesTheBottom() = runTest(dispatcher) {
+        val context = RuntimeEnvironment.getApplication()
+        val manager = context.getSystemService(NotificationManager::class.java)
+        PushNotifications.ensureChannel(context)
+        manager.notify(
+            PushNotifications.chatTag(CHAT),
+            PushNotifications.NOTIFICATION_ID,
+            PushNotifications.build(context, "Ben", "Dinner at 7?", kind = "message", chatId = CHAT),
+        )
+
+        seed(
+            entity("m12", 12, PEER, NOON + 2 * MINUTE),
+            entity("m11", 11, PEER, NOON + MINUTE),
+            entity("m10", 10, PEER, NOON),
+        )
+        val viewModel = newViewModel(unreadCount = 3, myLastReadId = 9)
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        runCurrent()
+        assertThat(viewModel.openAnchor.value)
+            .isEqualTo(OpenAnchor.Message(serverId = 10, newCount = 3))
+
+        // The screen anchors: the bottom sentinel is off screen, so it
+        // reports NOT at the newest message, and settles there.
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(false)
+        viewModel.setSettled()
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        assertThat(chatApi.postedReads).isEmpty()
+        assertThat(socket.sent.filterIsInstance<ClientFrame.Read>()).isEmpty()
+        assertThat(db.chatDao().getById(CHAT)!!.unreadCount).isEqualTo(3)
+        // The tray entry survives the open, deliberately: it is the
+        // launcher dot, and there really is something still unread.
+        assertThat(manager.activeNotifications).isNotEmpty()
+
+        // Reading down to the bottom is the moment it is all seen.
+        viewModel.setAtNewest(true)
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+
+        assertThat(chatApi.postedReads).containsExactly(CHAT to 12L)
+        assertThat(db.chatDao().getById(CHAT)!!.unreadCount).isEqualTo(0)
+        assertThat(manager.activeNotifications).isEmpty()
+        itemsSubscription.cancel()
+    }
+
+    /**
+     * The anchor is captured ONCE. Reaching the bottom zeroes the count
+     * and advances the marker, and the divider must not evaporate with
+     * them — the reader is still looking at it.
+     */
+    @Test
+    fun theDividerSurvivesTheChatBeingRead() = runTest(dispatcher) {
+        seed(
+            entity("m12", 12, PEER, NOON + MINUTE),
+            entity("m11", 11, PEER, NOON),
+        )
+        val viewModel = newViewModel(unreadCount = 2, myLastReadId = 10)
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        runCurrent()
+        assertThat(viewModel.items.value.filterIsInstance<ChatListItem.NewMessagesDivider>())
+            .hasSize(1)
+
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(true)
+        viewModel.setSettled()
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+
+        assertThat(db.chatDao().getById(CHAT)!!.unreadCount).isEqualTo(0)
+        assertThat(viewModel.items.value.filterIsInstance<ChatListItem.NewMessagesDivider>())
+            .hasSize(1)
+        itemsSubscription.cancel()
+    }
+
+    /**
+     * `reachedStart` bounds the FETCH, not the render window: a resync
+     * page can leave rows in Room the window has never reached, and a
+     * window that could no longer grow made them unreachable for good —
+     * which is also what would strand an opening anchor behind it.
+     */
+    @Test
+    fun theWindowKeepsWideningAfterTheServerRunsOutOfHistory() = runTest(dispatcher) {
+        seed(
+            *(1L..200L).map { entity("m$it", it, PEER, NOON + it * 1_000) }.toTypedArray(),
+        )
+        val viewModel = newViewModel()
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        // Empty page = the server has nothing older.
+        chatApi.messagesHandler = { _, _, _, _ -> ApiResult.Ok(MessagesResponse(emptyList())) }
+        runCurrent()
+
+        fun shown() = viewModel.items.value.filterIsInstance<ChatListItem.MessageItem>().size
+        assertThat(shown()).isEqualTo(ChatViewModel.INITIAL_LIMIT)
+
+        viewModel.loadOlder()
+        runCurrent()
+        assertThat(shown()).isEqualTo(ChatViewModel.INITIAL_LIMIT + ChatViewModel.PAGE_SIZE)
+
+        // The fetch is over, but the window is not.
+        viewModel.loadOlder()
+        runCurrent()
+        assertThat(chatApi.messagesCalls).isEqualTo(1)
+        assertThat(shown()).isEqualTo(ChatViewModel.INITIAL_LIMIT + 2 * ChatViewModel.PAGE_SIZE)
+        itemsSubscription.cancel()
+    }
+
+    // -- The divider (pure) --------------------------------------------------
+
+    @Test
+    fun theDividerSitsDirectlyAboveTheOldestUnreadMessage() {
+        val messages = listOf(
+            entity("s3", 3, PEER, NOON + 2 * MINUTE),
+            entity("s2", 2, PEER, NOON + MINUTE),
+            entity("s1", 1, PEER, NOON),
+        )
+        val items = buildChatItems(
+            messagesNewestFirst = messages,
+            isFamilyChat = false,
+            myUserId = ME,
+            memberNames = emptyMap(),
+            nowMillis = NOON,
+            zone = ZONE,
+            firstUnreadServerId = 2,
+            newMessageCount = 2,
+        )
+        val kinds = items.map {
+            when (it) {
+                is ChatListItem.MessageItem -> it.entity.clientMsgId
+                is ChatListItem.DateSeparator -> "sep:${it.label}"
+                is ChatListItem.NewMessagesDivider -> "new:${it.count}"
+            }
+        }
+        // List order is bottom-up, so the divider trailing s2 draws
+        // directly ABOVE it — under the day pill, which trails the
+        // oldest message of the day.
+        assertThat(kinds).containsExactly("s3", "s2", "new:2", "s1", "sep:Today").inOrder()
+    }
+
+    @Test
+    fun thereIsNoDividerWithoutAFirstUnreadMessage() {
+        val messages = listOf(
+            entity("s2", 2, PEER, NOON + MINUTE),
+            entity("s1", 1, PEER, NOON),
+        )
+        val items = buildChatItems(
+            messagesNewestFirst = messages,
+            isFamilyChat = false,
+            myUserId = ME,
+            memberNames = emptyMap(),
+            nowMillis = NOON,
+            zone = ZONE,
+        )
+        assertThat(items.filterIsInstance<ChatListItem.NewMessagesDivider>()).isEmpty()
     }
 
     // -- Pasting --------------------------------------------------------------
@@ -1000,6 +1318,242 @@ class ChatViewModelTest {
             .isEqualTo(
                 RuntimeEnvironment.getApplication().getString(R.string.e_nothing_to_paste),
             )
+    }
+
+    // -- The text field's own paste -------------------------------------------
+    //
+    // The other door: the field's long-press menu, Ctrl+V from a hardware
+    // keyboard, a keyboard that inserts pictures, a drop onto the composer.
+    // It used to decide for itself what a clip was; these say that it now
+    // gives the SAME answer the menu does, because both ask the same rule.
+
+    /** A clip holding a picture stages it, whichever door it came through. */
+    @Test
+    fun theFieldPasteStagesAnAttachableItem() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val clip = ClipData("image", arrayOf("image/gif"), ClipData.Item(clipboardItem("blob")))
+
+        val result = viewModel.pasteIntoField(clip)
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.STAGING)
+        assertThat(viewModel.awaitStaged().kind).isEqualTo(AttachmentDto.KIND_FILE)
+    }
+
+    /**
+     * Words are the one thing this door does NOT do itself: it reports
+     * them and hands them back, so the field inserts them where the caret
+     * is. Appending here would move somebody's cursor for no reason on the
+     * one platform that never had to.
+     */
+    @Test
+    fun theFieldPasteLeavesWordsToTheField() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        viewModel.inputState.setTextAndPlaceCursorAtEnd("see you at")
+
+        val result = viewModel.pasteIntoField(ClipData.newPlainText("l", "7"))
+        advanceUntilIdle()
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.TEXT)
+        // Untouched: the field has not pasted yet, and this door must not
+        // paste for it.
+        assertThat(viewModel.inputState.text.toString()).isEqualTo("see you at")
+        assertThat(viewModel.staged.value).isNull()
+    }
+
+    /** A copied link is words at this door too — not a download. */
+    @Test
+    fun theFieldPasteTreatsALinkAsWords() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val clip = ClipData(
+            "uri",
+            arrayOf("text/uri-list"),
+            ClipData.Item(
+                "https://example.com/holiday.jpg",
+                null,
+                Uri.parse("https://example.com/holiday.jpg"),
+            ),
+        )
+
+        val result = viewModel.pasteIntoField(clip)
+        advanceUntilIdle()
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.TEXT)
+        assertThat(viewModel.staged.value).isNull()
+    }
+
+    /**
+     * The clip the two doors used to disagree about: a picture and the
+     * words that came with it. Both take the picture, and neither types
+     * the words — a caption is written, not inherited.
+     */
+    @Test
+    fun bothDoorsAnswerAMixedClipTheSameWay() = runTest(dispatcher) {
+        val menuClip = ClipData.newPlainText("l", "look at this")
+        menuClip.addItem(ClipData.Item(clipboardItem("blob")))
+        val fieldClip = ClipData.newPlainText("l", "look at this")
+        fieldClip.addItem(ClipData.Item(clipboardItem("blob")))
+
+        val throughTheMenu = newViewModel()
+        val throughTheField = newViewModel()
+
+        val menuResult = throughTheMenu.pasteFromClipboard(menuClip)
+        val fieldResult = throughTheField.pasteIntoField(fieldClip)
+
+        assertThat(menuResult).isEqualTo(fieldResult)
+        assertThat(throughTheMenu.awaitStaged().kind).isEqualTo(AttachmentDto.KIND_FILE)
+        assertThat(throughTheField.awaitStaged().kind).isEqualTo(AttachmentDto.KIND_FILE)
+        assertThat(throughTheMenu.inputState.text.toString()).isEmpty()
+        assertThat(throughTheField.inputState.text.toString()).isEmpty()
+    }
+
+    /** The field's paste never claims there was nothing to paste — the field knows. */
+    @Test
+    fun theFieldPasteStaysQuietAboutAClipItCannotPlace() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+
+        val result = viewModel.pasteIntoField(ClipData.newPlainText("l", ""))
+        advanceUntilIdle()
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.NOTHING)
+        assertThat(viewModel.mediaState.value).isEqualTo(ChatViewModel.MediaSendState.Idle)
+    }
+
+    /**
+     * The ordering that used to be wrong: the busy guard ran BEFORE the
+     * rule, so a copied LINK pasted mid-edit came back BUSY and the door
+     * swallowed an address that was never an attachment.
+     */
+    @Test
+    fun aLinkStillPastesAsWordsWhileEditing() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        viewModel.beginEdit(messageId = 5, body = "old text")
+        runCurrent()
+        val clip = ClipData(
+            "uri",
+            arrayOf("text/uri-list"),
+            ClipData.Item("https://example.com/a", null, Uri.parse("https://example.com/a")),
+        )
+
+        val result = viewModel.pasteFromClipboard(clip)
+        advanceUntilIdle()
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.TEXT)
+        assertThat(viewModel.inputState.text.toString())
+            .isEqualTo("old text https://example.com/a")
+    }
+
+    /**
+     * And when it really was an attachment: the edit banner explains the
+     * MODE, not the refusal, so the refusal says itself.
+     */
+    @Test
+    fun aPasteRefusedByAnEditSaysWhy() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        viewModel.beginEdit(messageId = 5, body = "old text")
+        runCurrent()
+
+        val result = viewModel.pasteAttachment(clipboardItem("blob"), "application/pdf")
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.BUSY)
+        assertThat(viewModel.awaitFailure().reason).isEqualTo(
+            RuntimeEnvironment.getApplication().getString(R.string.e_finish_editing_first),
+        )
+    }
+
+    /**
+     * An error notice is not the composer being busy. It used to be —
+     * both doors treated any non-Idle state as blocked — so the sentence
+     * left behind by one failed paste blocked the next one until
+     * something cleared it.
+     */
+    @Test
+    fun aPasteWorksWhileAnErrorNoticeIsStillShowing() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        // The notice a paste of an empty clipboard leaves behind.
+        viewModel.pasteFromClipboard(null)
+        runCurrent()
+        assertThat(viewModel.mediaState.value)
+            .isInstanceOf(ChatViewModel.MediaSendState.Failed::class.java)
+
+        val result = viewModel.pasteAttachment(clipboardItem("blob"), "application/pdf")
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.STAGING)
+        assertThat(viewModel.awaitStaged().kind).isEqualTo(AttachmentDto.KIND_FILE)
+    }
+
+    // -- The body limit -------------------------------------------------------
+    //
+    // Nothing enforced 4000 characters anywhere before this: a pasted wall
+    // of text looked like it had worked, then failed at Send with
+    // `message_too_long` — by which time the clipboard had often moved on.
+
+    /**
+     * What fits is kept and the sentence says the rest was left out — the
+     * same choice the Apple clients make, so a family using both sees one
+     * behaviour.
+     */
+    @Test
+    fun theMenuPasteKeepsWhatFitsAndSaysTheRestWasNot() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+
+        val result = viewModel.pasteFromClipboard(
+            ClipData.newPlainText("l", "x".repeat(MessageBody.MAX_CHARS + 500)),
+        )
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.TRUNCATED)
+        assertThat(viewModel.inputState.text.length).isEqualTo(MessageBody.MAX_CHARS)
+        assertThat(viewModel.awaitFailure().reason).isEqualTo(
+            RuntimeEnvironment.getApplication()
+                .getString(R.string.e_paste_truncated, MessageBody.MAX_CHARS),
+        )
+    }
+
+    @Test
+    fun wordsThatExactlyFitAreTaken() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+
+        val result = viewModel.pasteFromClipboard(
+            ClipData.newPlainText("l", "x".repeat(MessageBody.MAX_CHARS)),
+        )
+        advanceUntilIdle()
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.TEXT)
+        assertThat(viewModel.inputState.text.length).isEqualTo(MessageBody.MAX_CHARS)
+    }
+
+    /** What is ALREADY in the draft counts towards the limit. */
+    @Test
+    fun aPasteIntoANearlyFullDraftKeepsOnlyWhatFits() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        viewModel.inputState.setTextAndPlaceCursorAtEnd("x".repeat(MessageBody.MAX_CHARS - 3))
+
+        val result = viewModel.pasteFromClipboard(ClipData.newPlainText("l", "yyy"))
+
+        // 3997 x's, a separator, then the two y's there was room for.
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.TRUNCATED)
+        assertThat(viewModel.inputState.text.toString())
+            .isEqualTo("x".repeat(MessageBody.MAX_CHARS - 3) + " yy")
+    }
+
+    /**
+     * A draft already at the ceiling takes nothing, is left exactly as it
+     * was, and gets the OTHER sentence — "the rest wasn't pasted" is wrong
+     * when none of it was.
+     */
+    @Test
+    fun aPasteIntoAFullDraftChangesNothingAndSaysSo() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val full = "x".repeat(MessageBody.MAX_CHARS)
+        viewModel.inputState.setTextAndPlaceCursorAtEnd(full)
+
+        val result = viewModel.pasteFromClipboard(ClipData.newPlainText("l", "more"))
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.FULL)
+        assertThat(viewModel.inputState.text.toString()).isEqualTo(full)
+        assertThat(viewModel.awaitFailure().reason).isEqualTo(
+            RuntimeEnvironment.getApplication()
+                .getString(R.string.e_message_at_limit, MessageBody.MAX_CHARS),
+        )
     }
 
     // -- Polls -----------------------------------------------------------------

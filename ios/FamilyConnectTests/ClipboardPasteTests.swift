@@ -5,7 +5,15 @@
 //  Paste-to-attach. There is no protocol change here, so what these check
 //  is the two decisions the clipboard forces that a picker never does —
 //  WHICH representation to take, and WHAT TO CALL IT — plus the rule that
-//  keeps an ordinary text paste landing in the composer.
+//  decides what a paste MEANS, and the routing table every door runs on
+//  the rule's answer.
+//
+//  That last part is the one that was missing. The rule was pure, tested
+//  and correct, and only one of the doors called it: the attach menu's
+//  Paste item went straight to `prepare`, which encodes a DIFFERENT policy
+//  for a mixed clipboard (it takes the picture; the rule says the words
+//  win). A rule nothing is made to obey is a comment. `action` is now the
+//  whole body of every door, so asserting it here asserts them.
 //
 //  Nothing touches the real pasteboard: reading it would clobber whatever
 //  the person running the suite had copied, and the platform halves of
@@ -70,24 +78,91 @@ struct ClipboardPasteTests {
         #expect(ClipboardAttachment.chosenType(from: [invented]) == nil)
     }
 
-    // MARK: - Whether ⌘V attaches at all
+    // MARK: - What a paste MEANS
 
     /// The rule that keeps the ordinary paste working.
     @Test("Words win, except against a copied file")
     func pasteGesturePrefersWords() {
-        // Text on the clipboard: the composer's field takes it, always.
-        #expect(!ClipboardAttachment.prefersAttachment(
-            hasFileURL: false, hasAttachableData: true, hasText: true))
+        // Text on the clipboard: the words go in the field, always.
+        #expect(ClipboardAttachment.decide(
+            hasFileURL: false, hasAttachableData: true, hasText: true) == .text)
         // ...but every Finder copy puts the file's NAME on the clipboard as
         // text too, so words cannot be the test there.
-        #expect(ClipboardAttachment.prefersAttachment(
-            hasFileURL: true, hasAttachableData: false, hasText: true))
+        #expect(ClipboardAttachment.decide(
+            hasFileURL: true, hasAttachableData: false, hasText: true) == .attachment)
         // An image and nothing else.
-        #expect(ClipboardAttachment.prefersAttachment(
-            hasFileURL: false, hasAttachableData: true, hasText: false))
-        // Nothing at all.
-        #expect(!ClipboardAttachment.prefersAttachment(
-            hasFileURL: false, hasAttachableData: false, hasText: false))
+        #expect(ClipboardAttachment.decide(
+            hasFileURL: false, hasAttachableData: true, hasText: false) == .attachment)
+        // Nothing at all is its own answer, and not the same as "words":
+        // one door has to say so, the other has to type.
+        #expect(ClipboardAttachment.decide(
+            hasFileURL: false, hasAttachableData: false, hasText: false) == .nothing)
+    }
+
+    /// The three clipboards every door is judged on.
+    @Test("The three clipboards, decided once")
+    func theThreeClipboards() {
+        // Text only.
+        #expect(ClipboardAttachment.decide(
+            hasFileURL: false, hasAttachableData: false, hasText: true) == .text)
+        // Image only.
+        #expect(ClipboardAttachment.decide(
+            hasFileURL: false, hasAttachableData: true, hasText: false) == .attachment)
+        // File only — a copied file always brings its name along as text,
+        // so this is the mixed case in disguise and the one that must not
+        // be decided by "are there words".
+        #expect(ClipboardAttachment.decide(
+            hasFileURL: true, hasAttachableData: true, hasText: true) == .attachment)
+    }
+
+    // MARK: - Whether every DOOR honours it
+
+    /// The routing table every paste door on this platform runs, and the
+    /// whole of what any of them does: the attach menu's Paste item, the
+    /// iPad's ⌘V shortcut, and the Mac's `.onPasteCommand`. A door that
+    /// decided anything for itself is what this replaces — the menu item
+    /// used to call `prepare` directly, which answers "nothing to paste" to
+    /// a clipboard of words and attaches the picture out of a clipboard
+    /// holding both.
+    @Test("Every door does one of four things, and the rule picks which")
+    func doorRouting() {
+        #expect(ClipboardAttachment.action(for: .attachment, composerIsBusy: false) == .attach)
+        #expect(ClipboardAttachment.action(for: .text, composerIsBusy: false) == .type)
+        #expect(ClipboardAttachment.action(for: .nothing, composerIsBusy: false) == .nothing)
+    }
+
+    /// A busy composer refuses the ATTACHMENT and says so — it never
+    /// silently eats a paste, which is what `.disabled` on the iPad's ⌘V
+    /// used to do.
+    @Test("A busy composer answers, rather than going quiet")
+    func busyDoorSpeaks() {
+        #expect(ClipboardAttachment.action(for: .attachment, composerIsBusy: true) == .busy)
+        // An empty clipboard is still empty; being busy does not change
+        // what is on it.
+        #expect(ClipboardAttachment.action(for: .nothing, composerIsBusy: true) == .nothing)
+    }
+
+    /// Words are never busy. The draft being edited is still a draft, and
+    /// ⌘V of a sentence into it is exactly what was meant — gating this
+    /// would make an upload swallow every ordinary text paste.
+    @Test("A text paste lands even while the composer is busy")
+    func textIsNeverBusy() {
+        #expect(ClipboardAttachment.action(for: .text, composerIsBusy: true) == .type)
+    }
+
+    /// `prepare` must never be the arbiter. It takes the best
+    /// representation it can find, so on a clipboard holding both words and
+    /// a picture it takes the picture — the opposite of what the rule says,
+    /// which is why it is reached only after the rule has said
+    /// `.attachment`.
+    @Test("The preparation function encodes a different policy, and is gated behind the rule")
+    func preparationIsNotThePolicy() {
+        // What `prepare` would choose out of a mixed clipboard...
+        #expect(ClipboardAttachment.chosenType(from: [.utf8PlainText, .png]) == .png)
+        // ...and what the rule says that clipboard means.
+        #expect(ClipboardAttachment.decide(
+            hasFileURL: false, hasAttachableData: true, hasText: true) == .text)
+        #expect(ClipboardAttachment.action(for: .text, composerIsBusy: false) == .type)
     }
 
     // MARK: - What to call it

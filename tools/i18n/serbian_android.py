@@ -71,7 +71,6 @@ ANDROID_ONLY = {
 "s_rotating_invalidates_the_current_code_immediately": "Тренутни код одмах престаје да важи",
 "s_save_anyway": "Ипак сачувај",
 "s_save_to_gallery": "Сачувај у галерију",
-"s_scroll_to_newest": "Иди на најновије",
 "s_share_invite_code": "Подели позивни код",
 "s_share_it_to_invite_family_members": "Подели га да позовеш чланове породице",
 "s_share_the_invite_code_below_to_add_someone": "Подели позивни код испод да додаш некога.",
@@ -126,6 +125,16 @@ ANDROID_ONLY = {
 # Pasting: the only word Android has that iOS does not. An image and a file
 # are found by the English match.
 "s_pasted_sound": "Налепљени звук",
+
+# The composer's 4000-character ceiling. The two sentences are word for word
+# the iOS ones, but the English cannot match: Android writes %1$d where the
+# catalogue writes %lld, the same reason the statistics strings above are
+# here. e_finish_editing_first is genuinely different — Android names the
+# message ("this message"), because its refusal replaces the media strip's
+# own text rather than sitting under the edit banner.
+"e_message_at_limit": "Порука је већ на ограничењу од %1$d знакова.",
+"e_paste_truncated": "Порука може имати највише %1$d знакова. Остатак није налепљен.",
+"e_finish_editing_first": "Прво заврши измену ове поруке.",
 
 # Deleting your own account. Android says in one paragraph what iOS says in
 # three separate lines, so the wording cannot be shared — but it must say the

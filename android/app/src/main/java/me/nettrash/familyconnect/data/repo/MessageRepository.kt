@@ -34,6 +34,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import me.nettrash.familyconnect.data.db.AnchorRow
 import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.db.MessageEntity
@@ -99,7 +100,7 @@ class MessageRepository @Inject constructor(
                         // there — a partial answer beats a bubble that never
                         // resolves.
                         _streamingMessageIds.update { it - frame.messageId }
-                    is ServerFrame.Read -> onPeerRead(frame)
+                    is ServerFrame.Read -> onRead(frame)
                     is ServerFrame.Reaction -> onReaction(frame)
                     is ServerFrame.Poll -> onPoll(frame)
                     is ServerFrame.Error -> onSendError(frame)
@@ -111,6 +112,14 @@ class MessageRepository @Inject constructor(
 
     fun observeMessages(chatId: Long, limit: Int): Flow<List<MessageEntity>> =
         messageDao.observeMessages(chatId, limit)
+
+    /**
+     * (serverId, senderId) for the newest [limit] rows of a chat, in
+     * [observeMessages]'s order — what the opening anchor reasons over.
+     * See MessageDao.anchorRows for why it is its own narrow query.
+     */
+    suspend fun anchorRows(chatId: Long, limit: Int): List<AnchorRow> =
+        messageDao.anchorRows(chatId, limit)
 
     // -- Outbound -----------------------------------------------------------------
 
@@ -649,10 +658,38 @@ class MessageRepository @Inject constructor(
         }
     }
 
-    private suspend fun onPeerRead(frame: ServerFrame.Read) {
-        // peerLastReadId drives the ✓✓ glyph, which only direct chats
-        // show — and there the only other reader is the peer.
+    /**
+     * A `read` frame, which is two different facts wearing one shape.
+     *
+     * From SOMEBODY ELSE it is a receipt: peerLastReadId drives the ✓✓
+     * glyph, which only direct chats show — and there the only other
+     * reader is the peer.
+     *
+     * From THIS user it is the same person reading on another of their
+     * devices. The marker is theirs and not the device's
+     * (docs/protocol.md, `GET /chats` → `last_read_message_id`), so this
+     * device's badge is stale the moment the frame lands.
+     *
+     * That second branch does not fire against today's server:
+     * `deliver_read` fans the frame out to `others(...)`, so a reader's
+     * own connections are excluded and this frame is always somebody
+     * else's (server/src/events.rs). It is written anyway, because the
+     * marker's meaning is what makes it right — a client that treats its
+     * own user's read as somebody else's receipt is wrong on its own
+     * terms — and because the resync path that DOES fire today
+     * (ChatRepository.refreshChats) is the same operation arriving a
+     * reconnect later. The wire was not changed for it; see the report.
+     */
+    private suspend fun onRead(frame: ServerFrame.Read) {
         val chat = chatDao.getById(frame.chatId) ?: return
+        if (frame.userId == settings.state.first().myUserId) {
+            chatRepository.applyMyReadMarker(
+                chatId = frame.chatId,
+                lastReadMessageId = frame.lastReadMessageId,
+                myUserId = frame.userId,
+            )
+            return
+        }
         if (chat.kind == "direct" && chat.peerUserId == frame.userId) {
             chatDao.setPeerLastRead(frame.chatId, frame.lastReadMessageId)
         }

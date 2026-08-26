@@ -358,6 +358,31 @@ SR = {
 # the reader, which is why the counts above are a noun. Same shape as
 # "Види ко је реаговао", because it is the same gesture for the same reason.
 "See who voted": "Види ко је гласао",
+
+# The composer's 4000-character ceiling (docs/protocol.md, "Limits"), said
+# out loud where the text arrives instead of at Send. "знакова" is the
+# genitive plural the repo already uses for a character count ("бар 8
+# знакова") and the number here is always the constant 4000, so no other
+# form can come up. Nothing describes the reader, so nothing is gendered:
+# it is the message that is at the limit, and it is "остатак" — masculine
+# by its own noun — that was not pasted.
+"A message can be at most %lld characters.": "Порука може имати највише %lld знакова.",
+"A message can be at most %lld characters. The rest wasn't pasted.":
+  "Порука може имати највише %lld знакова. Остатак није налепљен.",
+"The message is already at the %lld-character limit.":
+  "Порука је већ на ограничењу од %lld знакова.",
+# The two refusals a paste can hit while the composer is busy. Both are
+# imperatives, which carry no gender in Serbian — unlike anything that
+# would describe the person doing the pasting.
+"Finish editing before attaching something.": "Заврши измену пре него што нешто приложиш.",
+"Wait until the current attachment is done.": "Сачекај да се тренутни прилог заврши.",
+
+# Opening a chat at its oldest unread message. The button was Android's
+# first (s_scroll_to_newest) and the Apple clients ported its wording, so
+# this moved here OUT of serbian_android.py — the rule that file exists for
+# is that one sentence is worded once. The divider's count is a plural and
+# lives in SR_COUNTS below.
+"Scroll to newest": "Иди на најновије",
 }
 
 # The members count is a plural, and Serbian's CLDR categories are one/few/other
@@ -388,6 +413,15 @@ SR_COUNTS = {
         "one": "{n} глас од {total}",
         "few": "{n} гласа од {total}",
         "other": "{n} гласова од {total}",
+    },
+    # The unread divider. A feminine noun, so 2–4 take the nominative
+    # plural ("2 нове поруке") and everything else the genitive plural
+    # ("5 нових порука"). A noun phrase again rather than a sentence, so
+    # there is no participle to gender.
+    "new_messages": {
+        "one": "{n} нова порука",
+        "few": "{n} нове поруке",
+        "other": "{n} нових порука",
     },
 }
 

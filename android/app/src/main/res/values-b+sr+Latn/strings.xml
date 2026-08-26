@@ -69,6 +69,7 @@
     <string name="s_take_photo">Slikaj</string>
     <string name="s_statistics">Statistika</string>
     <string name="s_messages">Poruke</string>
+    <string name="s_new_message">Nova poruka</string>
     <string name="s_the_family">Porodica</string>
     <string name="s_board_notes">Beleške na tabli</string>
     <string name="s_attachments">Prilozi</string>
@@ -152,16 +153,19 @@
     <string name="e_download_to_save_failed">Preuzimanje radi čuvanja nije uspelo.</string>
     <string name="e_enter_invite_code">Unesi pozivni kod</string>
     <string name="e_file_too_large">Ta datoteka prelazi ograničenje od 100 MB.</string>
+    <string name="e_finish_editing_first">Prvo završi izmenu ove poruke.</string>
     <string name="e_gallery_permission">Family treba dozvolu da čuva u tvoju galeriju.</string>
     <string name="e_image_unreadable">Ta slika ne može da se pročita.</string>
     <string name="e_invalid_address">To ne liči na ispravnu adresu</string>
     <string name="e_invalid_invite_code">Neispravan pozivni kod</string>
     <string name="e_join_failed">Pridruživanje nije uspelo</string>
     <string name="e_load_requests_failed">Zahtevi za pristup nisu učitani</string>
+    <string name="e_message_at_limit">Poruka je već na ograničenju od %1$d znakova.</string>
     <string name="e_no_app_for_file">Nijedna aplikacija na ovom telefonu ne može da otvori tu datoteku.</string>
     <string name="e_nothing_to_paste">Nema šta da se nalepi.</string>
     <string name="e_open_chat_failed">Razgovor ne može da se otvori</string>
     <string name="e_password_too_short">Najmanje 8 znakova</string>
+    <string name="e_paste_truncated">Poruka može imati najviše %1$d znakova. Ostatak nije nalepljen.</string>
     <string name="e_prepare_failed">Ta stavka nije pripremljena.</string>
     <string name="e_read_file_failed">Ta datoteka ne može da se pročita.</string>
     <string name="e_rotate_failed">Promena koda nije uspela</string>
@@ -223,5 +227,10 @@
         <item quantity="one">%1$d glas</item>
         <item quantity="few">%1$d glasa</item>
         <item quantity="other">%1$d glasova</item>
+    </plurals>
+    <plurals name="s_n_new_messages">
+        <item quantity="one">%1$d nova poruka</item>
+        <item quantity="few">%1$d nove poruke</item>
+        <item quantity="other">%1$d novih poruka</item>
     </plurals>
 </resources>

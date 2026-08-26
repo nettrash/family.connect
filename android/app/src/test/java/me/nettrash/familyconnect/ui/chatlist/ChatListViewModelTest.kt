@@ -46,6 +46,7 @@ import me.nettrash.familyconnect.testutil.FakeFamilyApi
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
+import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import org.junit.After
 import org.junit.Before
@@ -95,7 +96,7 @@ class ChatListViewModelTest {
     }
 
     private fun TestScope.newViewModel(): ChatListViewModel {
-        chatRepository = ChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
+        chatRepository = testChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
         val sessionRepository = SessionRepository(
             authApi = FakeAuthApi(),
             tokenStore = FakeTokenStore("tok"),

@@ -753,6 +753,26 @@ data class ChatListItemDto(
     val chat: ChatDto,
     @SerialName("last_message") val lastMessage: MessageDto? = null,
     @SerialName("unread_count") val unreadCount: Int,
+    /**
+     * The CALLER'S OWN read marker for this chat — what `POST
+     * /chats/{id}/read` and the `read` frame maintain, monotonic and
+     * shared across every device this person owns. The other half of
+     * [unreadCount], off the same row of the same query, so the two
+     * always describe one instant.
+     *
+     * Unlike the three `max_*_seq` cursors below, the protocol says it is
+     * ALWAYS present and that `0` is a real answer — "has never reported
+     * reading anything here" — rather than an absent one. Nullable here
+     * for exactly one reason: a server binary older than the field omits
+     * it and this client must go on reading its chat list. Nothing else
+     * has to care, because the marker is applied monotonically
+     * (`max(stored, received)`), so absent lands in the same place as 0 —
+     * on the stored value, unchanged.
+     *
+     * An id THRESHOLD and never a reference: retention may already have
+     * swept the message it names, so nothing may try to fetch it.
+     */
+    @SerialName("last_read_message_id") val lastReadMessageId: Long? = null,
     // Absent while no message in the chat has ever been reacted to.
     @SerialName("max_reaction_seq") val maxReactionSeq: Long? = null,
     // Absent while nothing in the chat has been edited.

@@ -54,12 +54,14 @@ APPLE_COUNTS = [
     ('%lld of %lld voted', 'votes_of', '%#@arg1@', 1,
      {'n': '%arg', 'total': '%2$lld'}),
     ('%@. %lld votes', 'votes', '%1$@. %#@arg2@', 2, {'n': '%arg'}),
+    ('%lld new messages', 'new_messages', None, None, {'n': '%lld'}),
 ]
 
 # Android: <plurals>, and the quantity is always the first argument.
 ANDROID_COUNTS = {
     's_voted_total': ('votes', {'n': '%1$d'}),
     's_voted_of_family': ('votes_of', {'n': '%1$d', 'total': '%2$d'}),
+    's_n_new_messages': ('new_messages', {'n': '%1$d'}),
 }
 
 

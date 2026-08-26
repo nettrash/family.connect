@@ -40,6 +40,7 @@ import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
+import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.util.Clock
 import org.junit.After
@@ -99,7 +100,7 @@ class AttachmentSendTest {
             chatDao = chatDao,
             socket = socket,
             settings = settings,
-            chatRepository = ChatRepository(chatApi, chatDao, messageDao, socket, repoScope),
+            chatRepository = testChatRepository(chatApi, chatDao, messageDao, socket, repoScope),
             scope = repoScope,
             clock = Clock { NOW },
         )

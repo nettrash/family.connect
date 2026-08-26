@@ -255,15 +255,17 @@ async fn push_message_to(
     let family_name: String = row.get("family_name");
     let sender_name: String = row.get("sender_name");
 
-    // One notification per recipient user: the badge is that user's total
-    // unread, so it differs between recipients of the same message.
+    // One notification per recipient user: both counts are that user's, so
+    // they differ between recipients of the same message. Per USER and not
+    // per device — a second phone belonging to the same person is the same
+    // two numbers, and this loop is what keeps them one query each.
     let mut by_user: BTreeMap<i64, Vec<DevicePush>> = BTreeMap::new();
     for device in devices {
         by_user.entry(device.user_id).or_default().push(device);
     }
     let mut batch = Vec::with_capacity(by_user.len());
     for (user_id, user_devices) in by_user {
-        let badge = unread_badge(&state.pool, user_id).await?;
+        let (badge, chat_unread) = unread_counts(&state.pool, user_id, message.chat_id).await?;
         let note = push_payload::message_notification(
             state.cfg.push.include_message_body,
             &chat_kind,
@@ -271,6 +273,7 @@ async fn push_message_to(
             &sender_name,
             message,
             badge,
+            chat_unread,
         );
         batch.push((user_devices, note));
     }
@@ -446,6 +449,19 @@ async fn unread_badge(pool: &PgPool, user_id: i64) -> Result<i64, ApiError> {
         .fetch_one(pool)
         .await?;
     Ok(badge)
+}
+
+/// Both numbers a message push carries, in one round trip:
+/// `(total across chats, unread in this chat)` — the APNs `badge` and FCM's
+/// `notification_count`. Counting them together is what guarantees they
+/// agree: the per-chat number is a FILTER over the rows the total counts.
+async fn unread_counts(pool: &PgPool, user_id: i64, chat_id: i64) -> Result<(i64, i64), ApiError> {
+    let row = sqlx::query(push_payload::build_message_unread_query())
+        .bind(user_id)
+        .bind(chat_id)
+        .fetch_one(pool)
+        .await?;
+    Ok((row.get("badge"), row.get("chat_unread")))
 }
 
 /// Fire-and-forget delivery of composed notifications: push is best-effort

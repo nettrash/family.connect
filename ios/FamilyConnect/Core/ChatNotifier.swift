@@ -18,7 +18,14 @@
 //  2. On BOTH platforms, reading a chat has to take that chat's banners
 //     out of Notification Center with it. Otherwise the icon says nothing
 //     and the notification list still says three — the same contradiction
-//     as a stale badge, from the other side.
+//     as a stale badge, from the other side. Reading is not only something
+//     that happens HERE, either: the read marker belongs to the PERSON and
+//     not to the device, so a resync that finds `last_read_message_id`
+//     further along than this device had recorded has learned that the
+//     banners sitting here below it are stale, whichever device did the
+//     reading. That is the only way this device ever finds out — the live
+//     `read` frame is relayed to the OTHER members of the chat, so a
+//     reader's own devices never see their own read go past.
 //
 //  WORDING IS NOT INVENTED HERE. `server/src/push_payload.rs` composes
 //  what a phone is told about a message, and a Mac saying something
@@ -129,28 +136,116 @@ nonisolated enum ChatNotifier {
 
     // MARK: - Taking them back
 
-    /// Drop every delivered notification belonging to `chatID`.
+    /// The inverse of `threadIdentifier(chatID:)`, kept beside it so the
+    /// spelling of that key exists in exactly one place.
+    static func chatID(threadIdentifier: String) -> Int64? {
+        let prefix = "chat-"
+        guard threadIdentifier.hasPrefix(prefix) else { return nil }
+        return Int64(threadIdentifier.dropFirst(prefix.count))
+    }
+
+    /// Has the reader already passed the message this delivered
+    /// notification is about?
     ///
-    /// Called when a chat becomes read, so the badge and Notification
-    /// Center never contradict each other. Matched two ways because the
+    /// `readMarkers` is chatID → that chat's `last_read_message_id`, used
+    /// exactly as protocol.md defines the field: an id THRESHOLD, compared
+    /// against and never fetched (retention may already have swept the
+    /// message it names). A message at or below it has been read on SOME
+    /// device this person owns, so its banner states something that is no
+    /// longer true; a message above it has not been read anywhere, and its
+    /// banner stays.
+    ///
+    /// Per MESSAGE rather than per chat, because a read is partial far more
+    /// often than it is total. A marker at 53 with 54 already delivered is
+    /// the ordinary case on a Mac — which raises its own banners off the
+    /// socket the whole time it runs — and taking that chat's notifications
+    /// down wholesale would destroy the announcement of a message nobody
+    /// has seen. That is the one failure this file exists to prevent.
+    ///
+    /// The chat is read out of the payload two ways because the
     /// notifications come from two places: this app's own carry the thread
     /// key, and APNs-delivered ones carry the chat id among their custom
     /// keys — which PushRoute already knows how to read, so there is no
     /// second parser here.
     ///
+    /// A notification with no message id is never dismissed by this rule.
+    /// Nothing this app raises and nothing this server sends for a chat
+    /// lacks one, so it is not a case that arises; if it ever did, leaving
+    /// the banner up costs a glance and taking it down costs the message,
+    /// which is the bias ChatPresence sets for everything on this side.
+    ///
+    /// Pure and separate from the removal below so the rule can be asserted
+    /// without a notification centre to put anything in.
+    static func isRead(
+        by readMarkers: [Int64: Int64],
+        threadIdentifier thread: String,
+        userInfo: [AnyHashable: Any]
+    ) -> Bool {
+        guard !readMarkers.isEmpty else { return false }
+        let chatID: Int64?
+        if case .chat(let id) = PushRoute.parse(userInfo: userInfo) {
+            chatID = id
+        } else {
+            chatID = Self.chatID(threadIdentifier: thread)
+        }
+        guard let chatID,
+              let marker = readMarkers[chatID],
+              let messageID = PushRoute.messageID(userInfo: userInfo)
+        else { return false }
+        return messageID <= marker
+    }
+
+    /// Drop every delivered notification belonging to `chatID`.
+    ///
+    /// `markRead`'s door, and the one case where a whole chat goes at once:
+    /// the person is looking at its newest message with the app in front of
+    /// them (ChatPresence), so there is nothing left in it to announce.
+    static func dismissDelivered(chatID: Int64) {
+        let thread = threadIdentifier(chatID: chatID)
+        dismissDelivered { userInfo, threadIdentifier in
+            threadIdentifier == thread || PushRoute.parse(userInfo: userInfo) == .chat(chatID)
+        }
+    }
+
+    /// Drop every delivered notification the read markers have passed.
+    ///
+    /// The resync's door, and the reason it takes a threshold per chat
+    /// rather than a chat id: "becomes read" is not only this device's
+    /// doing. The marker belongs to the person and not to the device — one
+    /// value, shared across every device they own — so a resync that finds
+    /// it further along than this device had recorded has learned that the
+    /// chat was read somewhere else, and that the banners sitting here for
+    /// the messages below it are stale. Nothing else ever tells this device
+    /// that: the live `read` frame is relayed only to OTHER members, so a
+    /// reader's own devices never see their own read go past.
+    ///
+    /// A whole map rather than a chat at a time because a resync answers
+    /// for the entire list at once, and one pass over the delivered
+    /// notifications settles all of it.
+    static func dismissDelivered(readMarkers: [Int64: Int64]) {
+        guard !readMarkers.isEmpty else { return }
+        dismissDelivered { userInfo, threadIdentifier in
+            isRead(by: readMarkers, threadIdentifier: threadIdentifier, userInfo: userInfo)
+        }
+    }
+
+    /// The single pass over Notification Center, shared by both doors.
+    ///
     /// The completion-handler API rather than the async one on purpose: the
     /// notifications never leave the callback (only their identifier
     /// strings do), so nothing non-Sendable has to cross an isolation
-    /// boundary to get this done.
-    static func dismissDelivered(chatID: Int64) {
-        let thread = threadIdentifier(chatID: chatID)
+    /// boundary to get this done. The predicate is handed the two pieces
+    /// the doors judge on rather than the notification itself, for the same
+    /// reason.
+    private static func dismissDelivered(
+        where isStale: @escaping @Sendable ([AnyHashable: Any], String) -> Bool
+    ) {
         // `current()` is re-read inside the callback rather than captured:
         // the centre is not Sendable, and it is a singleton accessor, so
         // there is nothing to carry across.
         UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
             let identifiers = delivered.filter { note in
-                note.request.content.threadIdentifier == thread
-                    || PushRoute.parse(userInfo: note.request.content.userInfo) == .chat(chatID)
+                isStale(note.request.content.userInfo, note.request.content.threadIdentifier)
             }.map(\.request.identifier)
             guard !identifiers.isEmpty else { return }
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: identifiers)
