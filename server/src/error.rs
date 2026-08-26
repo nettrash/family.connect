@@ -41,6 +41,8 @@ pub mod codes {
     pub const MESSAGE_TOO_LONG: &str = "message_too_long";
     pub const MESSAGE_NOT_FOUND: &str = "message_not_found";
     pub const NOT_MESSAGE_AUTHOR: &str = "not_message_author";
+    pub const INVALID_POLL: &str = "invalid_poll";
+    pub const POLL_CLOSED: &str = "poll_closed";
     pub const ATTACHMENT_TOO_LARGE: &str = "attachment_too_large";
     pub const INVALID_ATTACHMENT: &str = "invalid_attachment";
     pub const ATTACHMENT_NOT_FOUND: &str = "attachment_not_found";

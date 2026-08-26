@@ -17,7 +17,8 @@ use tracing::{info, warn};
 
 use crate::error::ApiError;
 use crate::handlers_chat::ReactionState;
-use crate::models::{Message, Note, UserBrief};
+use crate::handlers_poll::PollState;
+use crate::models::{Member, Message, Note, UserBrief};
 use crate::push::DevicePush;
 use crate::push_payload::{self, Notification};
 use crate::state::AppState;
@@ -513,6 +514,23 @@ pub async fn deliver_reaction(state: &AppState, reaction: &ReactionState) -> Res
     Ok(())
 }
 
+/// Fan a poll's full current state out to every chat member — the voter's
+/// connections included: the acting request is answered by its HTTP
+/// response, but the voter's *other* devices learn about the change only
+/// from this frame. A poll frame never reaches the push seam and never
+/// touches an unread count — a vote is not a message (protocol.md,
+/// "Polls") — so `send_to_users` discards the offline list.
+pub async fn deliver_poll(state: &AppState, poll: &PollState) -> Result<(), ApiError> {
+    let members = chat_member_ids(&state.pool, poll.chat_id).await?;
+    let frame = ServerFrame::Poll {
+        chat_id: poll.chat_id,
+        message_id: poll.message_id,
+        poll: poll.poll.clone(),
+    };
+    state.registry.send_to_users(&members, &frame).await;
+    Ok(())
+}
+
 /// Relay a typing notification to the other members of the chat.
 pub async fn deliver_typing(
     state: &AppState,
@@ -557,6 +575,52 @@ pub async fn deliver_member_left(
         family_id,
         user_id: left_user_id,
     };
+    state.registry.send_to_users(&recipients, &frame).await;
+    Ok(())
+}
+
+/// Hand the tombstone of a deleted account to everyone holding their name.
+///
+/// `recipients` is collected by the CALLER, before the write, and that is
+/// the whole reason it is a parameter rather than another query here: by
+/// the time this runs the family roster no longer names the departing
+/// member, their `chat_members` rows are gone and their direct chats are
+/// deleted, so nothing left in the database can say who used to be able to
+/// see them. The list is the family's members plus anyone who was in a
+/// direct chat with them — a peer can be outside the family, and their
+/// conversation has just disappeared (protocol.md, "Deleting an account").
+///
+/// `family_id` is optional for the same reason: an account that belonged to
+/// no family still has direct chats, and its peers are still told — the
+/// frame then carries no family at all, because there is none to name
+/// (protocol.md, "Deleting an account").
+///
+/// It never pushes: a client applies it to what it already stores, and the
+/// account it concerns has no devices left to wake.
+pub async fn deliver_member_deleted(
+    state: &AppState,
+    family_id: Option<i64>,
+    member: Member,
+    recipients: &[i64],
+) -> Result<(), ApiError> {
+    let frame = ServerFrame::MemberDeleted { family_id, member };
+    state.registry.send_to_users(recipients, &frame).await;
+    Ok(())
+}
+
+/// Announce the family's new owner to every member of the family.
+///
+/// Read AFTER the handover has committed, so the successor is in the roster
+/// this queries and hears about their own promotion. Like `member_joined`
+/// it never pushes — a client that was asleep learns the same thing from
+/// its next `GET /me`.
+pub async fn deliver_family_owner(
+    state: &AppState,
+    family_id: i64,
+    user_id: i64,
+) -> Result<(), ApiError> {
+    let recipients = family_member_ids(&state.pool, family_id).await?;
+    let frame = ServerFrame::FamilyOwner { family_id, user_id };
     state.registry.send_to_users(&recipients, &frame).await;
     Ok(())
 }

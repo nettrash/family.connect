@@ -99,7 +99,7 @@ struct MacBoardView: View {
 
     private func displayName(for userID: Int64) -> String {
         if userID == coordinator.currentUserID { return String(localized: "You") }
-        return members.first { $0.userID == userID }?.displayName
+        return members.first { $0.userID == userID }?.resolvedDisplayName
             ?? String(localized: "Someone")
     }
 }

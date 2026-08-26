@@ -32,6 +32,8 @@ disagree, this document wins; fix the code.
   hygiene: changing your own password ends every OTHER session you have, and an owner resetting a
   member's password ends ALL of theirs. Those devices find out the ordinary way — their next call
   answers `401` and they return to login.
+- Deleting the account ends every session it has, the calling one included, and takes the device
+  rows with them. See "Deleting an account".
 
 ## Error shape
 
@@ -49,7 +51,7 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `user_not_found`, `chat_not_found`, `not_chat_member`, `message_empty`, `message_too_long`,
 `message_not_found`, `not_message_author`, `invalid_emoji`, `note_not_found`,
 `not_note_author`, `invalid_note_color`, `invalid_language`, `board_full`, `invalid_pagination`,
-`device_not_found`,
+`device_not_found`, `invalid_poll`, `poll_closed`,
 `avatar_too_large`, `invalid_image`, `attachment_too_large`, `invalid_attachment`,
 `attachment_not_found`, `attachment_already_used`, `internal`.
 
@@ -59,9 +61,18 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 User      {"id": 7, "username": "anna", "display_name": "Anna", "created_at": "…",
            "avatar_version": 3}
           — plus "birthday": {"month": 3, "day": 14} when (and only when) one is set
+          — plus "deleted": true when (and only when) that account has been deleted. Such
+            a user has no usable username, no picture and no birthday, and their
+            "display_name" is the English placeholder "Deleted account" — a client that
+            knows the flag SHOULD draw its own translation instead of that text; see
+            "Deleting an account"
 Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|member",
            "avatar_version": 3}
           — plus "birthday": {"month": 3, "day": 14} when (and only when) one is set
+          — plus "deleted": true likewise. A deleted account is never in "members"; it
+            appears in "former_members" (see GET /families/mine) and exists there for one
+            reason — so a client can still put a name to the messages, notes and reactions
+            it left behind
 Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval", "created_at": "…",
            "ai_history": true}
           — plus "invite_code": "ABCD2345" when (and only when) the caller is the owner
@@ -86,6 +97,9 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
             edited. Both absent on a message still in its original form.
           — plus "attachment": {Attachment} when the message carries a photo, video,
             piece of audio, file or location.
+          — plus "poll": {Poll} when (and only when) the message is a poll. A poll's
+            QUESTION is the message body, so a client that knows nothing of polls shows it
+            as an ordinary message and loses only the options — see "Polls".
 ReplyTo   {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
 Reaction  {"user_id": 9, "emoji": "❤️"}
 Attachment {"id": 34, "kind": "photo|video|audio|file|location", "mime": "image/jpeg",
@@ -100,6 +114,16 @@ Attachment {"id": 34, "kind": "photo|video|audio|file|location", "mime": "image/
              "latitude"/"longitude" on a location only, and always both — a location
              IS its coordinates; "accuracy_m" additionally when the sending device
              reported one
+Poll      {"poll_seq": 88, "closed": false,
+           "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
+                       {"id": 6, "text": "Pasta", "votes": []}]}
+          — the poll's QUESTION is the message body and is deliberately not a field here.
+            "options" is 2–10 of them in creation order and never changes for the life of
+            the poll; "votes" is the full current list of user ids that chose that option,
+            so a Poll is complete state and never a delta. "poll_seq" and "closed" are
+            ALWAYS present, unlike "reaction_seq": a poll has a sequence from the moment
+            it exists, and "closed" is a boolean with a real default, so there is no
+            "unset" for a missing key to mean
 Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow",
            "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88}
           — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
@@ -214,6 +238,66 @@ restores the old text, and the two devices in a family disagree about what was s
 A quote is a snapshot of the body at read time (see "Replies"), so editing a quoted message changes
 what later readers see quoted. Clients that hold the quoting message locally should refresh its
 excerpt when they apply the edit, cutting it the same way the server does.
+
+### Polls
+
+A poll is an ordinary message that happens to be votable. Any member may start one **in the family
+chat**, and it behaves like every other message everywhere else in this protocol: it counts as
+unread, it pushes once when it arrives, it can be replied to, edited and reacted to, and the
+retention sweep takes it away with everything else of its age.
+
+**The question is the message body.** The `Poll` object carries the options and the votes and
+nothing else. That is the whole reason a poll costs so little: a chat-list preview, a push alert,
+a reply excerpt and the assistant's transcript all read the question already, without one new case
+between them, and a client that has never heard of polls draws "Pizza or pasta?" as a plain message
+and loses only the buttons. The price is that a poll cannot have a caption separate from its
+question, and that a poll's body — unlike a message carrying an attachment — may **not** be empty:
+`message_empty` applies to a poll with no question.
+
+Polls are refused in a direct chat and in the assistant's. A poll is a family deciding something
+together; between two people it is a question, and the answer is the next message. Anywhere but the
+family chat is `invalid_poll`.
+
+Options are fixed at creation: 2–10 of them, each trimmed, non-empty, at most 100 characters, and
+no two the same ignoring case. A poll can never gain, lose or rename an option — the votes already
+cast were cast against the list as it was read, and there is no honest way to re-point them.
+Editing the message edits the QUESTION, through the ordinary author-only edit path, and that is as
+far as changing a poll goes.
+
+**One choice, and you may change it.** `PUT …/vote` names the option the caller now holds and
+`DELETE …/vote` retracts it. Like a reaction it is an idempotent state-set rather than a toggle:
+re-PUTting the option already held is a no-op that burns no sequence value and fans nothing out, and
+whether tapping your current choice means "keep it" or "clear it" is a decision each client makes
+locally. Multiple choice is not part of this; a poll asks one question and takes one answer.
+
+**Votes are attributed.** Every option carries the full list of user ids that chose it, so a client
+draws who voted for what and, more usefully in a family, who has not voted at all. This is not only
+a product choice: one frame is serialised once and sent to every connection, so a field whose value
+depends on who is reading it — "did I vote" — cannot exist. Clients derive that from the list.
+
+Closing a poll is the author's, and one-way. It is an authorship act exactly as editing is, and the
+family owner does not outrank an author here for the same reason they cannot edit or delete anybody
+else's message anywhere else in this protocol. A closed poll keeps its result and refuses further
+votes with `poll_closed`; closing a closed poll is a no-op.
+
+Voting has the same catch-up problem reactions and edits have, and takes the same shape for the same
+reason: `after_id` is `WHERE id > cursor` and can never see a change to an older row. Every change
+to a poll — a vote, a retraction, a close — takes the next value of a fourth server-wide sequence
+and stamps it on the poll as `poll_seq`, with each chat exposing its maximum as `max_poll_seq` in
+`GET /chats` and `GET /chats/{id}/polls?after_seq=` replaying what changed. A separate sequence
+again, deliberately: folding it into an existing one would change the shape of an endpoint deployed
+clients already speak.
+
+The `poll` frame and the catch-up feed both carry a poll's **full current state**, never a delta, so
+ordering races resolve locally: a client applies one only when its `poll_seq` is greater than the
+value it holds for that message. Sequence values are assigned before commit, so a catch-up read can
+skip a not-yet-committed lower value on a *different* poll — the same accepted gap `after_id` has
+for message ids, and self-healing here for the same reason it is for reactions, because any later
+vote on the same poll re-delivers the whole thing.
+
+A poll dies with its message and nothing has to remember to take it: the retention sweep, a direct
+chat going, and a member deleting their account all remove messages, and the poll, its options and
+its votes go with them.
 
 ### Board
 
@@ -786,6 +870,65 @@ buffering 100 MB in memory on every read and write, and a `pg_dump` that grows w
 **This means a database dump is no longer a complete backup**; the attachments directory has to be
 backed up alongside it.
 
+### Deleting an account
+
+Anyone may delete their own account, from inside the app, without asking anybody — which is what
+Apple's App Store guideline 5.1.1(v) requires of an app that lets people sign up, and what a
+self-hosted family server should offer regardless. It is `POST /me/delete`, it takes the account
+password, and it cannot be undone.
+
+**The person is erased; the words stay.** Everything that identifies the account is destroyed —
+the username (which becomes available for somebody else to register), the password, the profile
+picture, the birthday, every session and every device row, and with them every push token. What
+survives is what the family said to each other: the member's messages in the family chat, the notes
+they pinned to the board, and the reactions they left, all of them still attributed to a row that
+now reads "Deleted account" and can never be signed into again.
+
+That asymmetry is the whole design, and the alternative is worse. A family chat is a shared record,
+and destroying one member's half of it punches holes in everybody else's: replies answer messages
+that are no longer there, a photo everybody remembers is gone, and a conversation reads as a
+monologue. Nobody else consented to losing that, and the guideline does not ask for it — what has
+to go is the *account*.
+
+**Direct chats do go**, both halves. A one-to-one chat has no meaning with one side removed, it was
+private to the two of them rather than shared with the family, and it is the only history the
+departing member can take with them without taking somebody else's. The other person's messages in
+it go too; that is the honest reading of a private conversation ending. The member's private
+assistant thread goes the same way.
+
+Attachments the member uploaded are removed from the server's disk, subject to the one rule
+attachment deletion always obeys: a file is removed only once no row still names those bytes (see
+"One copy per family"). Their votes are retracted from any poll still open, which re-stamps that
+poll and fans out its new state — a tally must not go on counting somebody who no longer exists.
+
+**A deleted account is still resolvable, and that is what `former_members` is for.** Their messages
+are still in the family chat and a client has to put a name to them, so `GET /families/mine`
+returns them in a second array alongside the live roster. They are not members: they hold no role,
+they are not offered as somebody to start a chat with, they receive nothing, and the family's
+statistics and its member count do not include them. A client stores both arrays in one place and
+draws only `members`.
+
+**An owner may delete too, and the family survives.** If they are the last member, the family is
+deleted with them — its chat, its board, its attachments and its invite code. If anybody else is
+still there, **ownership passes to the longest-standing remaining member** and everything else stays
+exactly as it was. This is the one place this protocol changes `families.owner_user_id` without the
+owner naming a successor, and it is deliberate: the alternative is an endpoint that can refuse, and
+an account somebody cannot delete because of who else is in their family is exactly the dead end the
+guideline exists to forbid. Longest-standing means the earliest to join the family chat, ties broken
+by the lower user id, so the answer is the same on every read. The new owner is told by a
+`family_owner` frame and finds out the ordinary way on their next `GET /me` regardless.
+
+Every device the account was signed in on is signed out: the sessions are deleted, their sockets
+close with `4401`, and their device rows go with them, so nothing is pushed to a phone whose account
+no longer exists. Other members are told by `member_left` and `member_deleted` — and so is anybody
+who only ever shared a direct chat, including somebody in another family entirely, because their
+chat is about to vanish and nothing else would ever say why. An account with no family at all still
+sends `member_deleted` to those peers, without a `family_id`.
+
+Nothing is scheduled and nothing is reversible. There is no grace period, no "deactivated" state and
+no way to cancel: a deletion that has not happened yet is a deletion an operator has to be trusted
+to carry out, and this server would rather be believed.
+
 ## REST endpoints
 
 ### Auth
@@ -796,6 +939,7 @@ backed up alongside it.
 | `POST /auth/login` | `{username, password}` → `200 {token, user: User}`. Error: `invalid_credentials` (401). |
 | `POST /auth/logout` | (auth) → `204`. Revokes the calling session and closes its sockets. |
 | `POST /me/password` | (auth) `{current_password, new_password}` → `204`. Changing your own password requires proving you know the current one — a live session is not proof, because an unattended unlocked phone is exactly what this protects against. Every OTHER session of yours is revoked and its sockets closed; the calling session survives, so the device making the change stays signed in. Errors: `invalid_credentials` (401, wrong current password), `validation` (new password under 8 characters). |
+| `POST /me/delete` | (auth) `{password}` → `204`. **Permanently deletes the calling account** (see "Deleting an account"). The password is required for the same reason `POST /me/password` requires it — a live session is not proof, and an unattended unlocked phone is exactly what this protects against. A `POST` rather than a `DELETE /me`, because the request carries a body and RFC 9110 gives content on a DELETE no defined semantics; this is a self-hosted product behind whatever proxy an operator runs, and `POST /families/leave` already sets the house precedent for a destructive self-service action with a body. Always succeeds for an authenticated caller who knows their password: an owner with other members hands ownership on rather than being refused. Errors: `invalid_credentials` (401, wrong password), `validation` (no password given). |
 | `PUT /me/birthday` | (auth) `{month, day}` → `200 {user: User}`. Your own birthday: a day and a month, no year (see "Birthdays"). Replaces whatever was there. Errors: `validation` (a month outside 1–12, or a day that month does not have). |
 | `DELETE /me/birthday` | (auth) → `204`. Clears it. Idempotent — clearing a birthday nobody set is still `204`. |
 | `POST /families/members/{id}/password` | (owner) `{new_password}` → `204`. The owner resets a member's password WITHOUT knowing the current one — the whole point is that the member has forgotten it. ALL of that member's sessions are revoked and their sockets closed, so every device they are signed in on returns to login; that is what makes a reset a recovery rather than a convenience. The owner cannot target themselves here (`POST /me/password` is for that), and a user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
@@ -822,7 +966,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 |---|---|
 | `POST /families` | `{name}` (1–64 chars) → `201 {family: Family}`. Caller becomes owner; the family chat is created automatically. Error: `already_in_family`. |
 | `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`. |
-| `GET /families/mine` | → `200 {family: Family, members: [Member], max_board_seq: 88, assistant: {user_id, display_name, mention}}`. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. `family.invite_code` present for the owner only. Error: `not_in_family`. |
+| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, assistant: {user_id, display_name, mention}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. `family.invite_code` present for the owner only. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
 | `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval", language?: "ru"\|null, ai_history?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language, while leaving the key out entirely leaves it alone — the one place in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is neither), `invalid_language`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
@@ -856,12 +1000,16 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, and `max_edit_seq` likewise while nothing in it has been edited; `last_message` previews never carry `reactions` or the quote, but DO carry `attachment` — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. |
+| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachment` — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self`, `not_same_family`, `user_not_found`. |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_id` claims an attachment this caller uploaded; a message carrying one may have an empty body. Errors: `message_empty` (no body AND no attachment), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`. |
+| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_id` claims an attachment this caller uploaded; a message carrying one may have an empty body. `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. Errors: `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
 | `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/edits` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {messages: [Message]}` ordered by `edit_seq` ascending — the edit catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
+| `PUT /chats/{id}/messages/{mid}/vote` | `{option_id: 5}` → `200 {message_id, poll: {Poll}}`. Sets the caller's choice on a poll — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or clear). One choice per member; there is no multiple choice. Re-PUT of the option already held is a no-op: no seq bump, no fan-out. Errors: `invalid_poll` (400 — no such option on this poll), `poll_closed` (409), `message_not_found` (404 — no such poll *in this chat*), `not_chat_member`, `chat_not_found`. |
+| `DELETE /chats/{id}/messages/{mid}/vote` | → `200 {message_id, poll: {Poll}}`. Retracts the caller's vote; idempotent (retracting nothing returns the current state unchanged and burns no seq). Errors: `poll_closed` (409), `message_not_found`, `not_chat_member`, `chat_not_found`. |
+| `POST /chats/{id}/messages/{mid}/poll/close` | → `200 {message_id, poll: {Poll}}`. Author only, one-way. Closing a closed poll is a no-op with no seq bump. Errors: `not_message_author` (403), `message_not_found`, `not_chat_member`, `chat_not_found`. |
+| `GET /chats/{id}/polls` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {polls: [{message_id, poll: {Poll}}]}` ordered by `poll_seq` ascending — the poll catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `POST /chats/{id}/read` | `{last_read_message_id}` → `204`. Monotonic — the server keeps the max ever reported. |
 | `PUT /chats/{id}/messages/{mid}/reaction` | `{emoji}` → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Sets or replaces the caller's reaction on the message — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or remove). One reaction per user per message. Emoji: trimmed, non-empty, ≤ 32 bytes UTF-8. Re-PUT of the current emoji is a no-op: no seq bump, no fan-out. Errors: `invalid_emoji`, `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/reaction` | → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Removes the caller's reaction; idempotent (deleting nothing returns the current state unchanged). Same errors minus `invalid_emoji`. |
@@ -895,6 +1043,8 @@ Frames are JSON text messages tagged by `"type"`.
                    "reply_to_message_id": 1337}
 {"type": "send",   "chat_id": 42, "client_msg_id": "9d3f1e77-…", "body": "",
                    "attachment_id": 34}
+{"type": "send",   "chat_id": 42, "client_msg_id": "5b2e0c14-…", "body": "Pizza or pasta?",
+                   "poll": {"options": ["Pizza", "Pasta"]}}
 {"type": "read",   "chat_id": 42, "last_read_message_id": 1337}
 {"type": "typing", "chat_id": 42}
 {"type": "ping"}
@@ -909,9 +1059,16 @@ Frames are JSON text messages tagged by `"type"`.
 {"type": "typing",  "chat_id": 42, "user_id": 9}
 {"type": "member_joined", "family_id": 3, "user": {"id": 11, "username": "junior", "display_name": "Junior", "avatar_version": 0}}
 {"type": "member_left",   "family_id": 3, "user_id": 11}
+{"type": "member_deleted", "family_id": 3, "member": {Member with "deleted": true}}
+                          — "family_id" absent when the account belonged to no family
+{"type": "family_owner",  "family_id": 3, "user_id": 9}
 {"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
                      "reactions": [{"user_id": 9, "emoji": "❤️"}]}
 {"type": "message_edited", "message": {Message}}
+{"type": "poll", "chat_id": 42, "message_id": 1340,
+                 "poll": {"poll_seq": 89, "closed": false,
+                          "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
+                                      {"id": 6, "text": "Pasta", "votes": []}]}}
 {"type": "board_note", "note": {Note}}
 {"type": "ai_delta", "chat_id": 42, "message_id": 1339, "text": "…"}   — assistant, mid-reply
 {"type": "ai_error", "chat_id": 42, "message_id": 1339}                — it stopped early
@@ -924,6 +1081,30 @@ Frames are JSON text messages tagged by `"type"`.
 `message_edited` carries the whole message, exactly as `message` does, and is a SEPARATE frame
 type on purpose: `message` is what bumps unread counts and raises a notification, and an edit must
 do neither. Clients apply it under the `edit_seq` guard described under "Editing".
+
+`member_deleted` reaches every member of the deleted account's family AND every member of any chat
+it was part of — a direct chat can outlive the family that created it, and its peer has to be told
+too. `family_id` is therefore absent when the account belonged to no family, and a client keys the
+frame on the `member`, never on the family: a peer outside the family receives a tombstone tagged
+with a family they are not in, and in the sole-owner case with a family that no longer exists at all.
+
+`member_deleted` says a member deleted their account, and it carries the whole tombstone `Member`
+— `deleted: true`, the placeholder display name, `avatar_version: 0`, no birthday — because that is
+exactly what a client has to overwrite. It is the one frame in this protocol whose job is to WIPE
+stored fields, so a client applies it by writing the tombstone deliberately rather than by feeding
+it through the ordinary member upsert, which everywhere else must never let an absent field clear a
+stored one. A `member_left` frame is sent alongside it, so a client that predates this frame at
+least fixes its roster and merely goes on showing the old name against old messages.
+
+`family_owner` names the family's new owner and reaches every member of the family. It is sent when
+an owner deletes their account and ownership passes on (see "Deleting an account"); a client that
+receives it for itself gains the owner's screens immediately rather than at its next `GET /me`.
+
+`poll` carries a poll's full current state to every member of the chat, the voter's own connections
+included — the voter's own request is answered by its HTTP response. It never notifies and never
+counts as unread. Clients apply it under the rule the reaction frame uses: only when the incoming
+`poll_seq` is greater than the one held for that message, so an out-of-order frame cannot undo a
+newer vote.
 
 `board_note` carries one note in whatever state it now has — created, edited, moved, or a
 tombstone — to every member of the family. It never notifies and never counts as unread. Clients
@@ -955,6 +1136,14 @@ apply it under the same rule the board catch-up uses: a note is written only whe
   not-yet-committed lower seq on a *different* message — the same accepted gap `after_id` has
   for message ids, and self-healing here because any later reaction to the same message
   re-delivers its full state.
+- **Polls**: the `poll` frame carries the poll's **full current state** (never a delta), so it
+  is idempotent and ordering races resolve locally: a client applies it only when `poll_seq` is
+  greater than the last value it stored for that message. It goes to every connection of every
+  chat member, the voter's own included (the voter's originating request is answered by its HTTP
+  response). It never pushes and never touches an unread count — a vote is not a message. Poll
+  mutations are REST-only in v1; a client-to-server vote frame may be added later under the
+  unknown-frame rule. Sequence values are assigned before commit, with the same accepted gap
+  reactions have and the same self-healing.
 - **Keepalive**: the server pings (WS protocol level) every 30 s and drops sockets idle for
   75 s. Clients should send `{"type":"ping"}` every ~25 s if their WS library hides protocol
   pings, and treat a missing `pong` as a dead connection.
@@ -963,12 +1152,31 @@ apply it under the same rule the board catch-up uses: a note is written only whe
   1. `GET /me` — reconcile membership.
   2. `GET /chats` — chat list, previews, authoritative unread counts.
   3. Per chat: `GET /chats/{id}/messages?after_id=<max known message id>` looped until a short
-     page — message ids are globally monotonic, so `max(id)` is the sync cursor.
+     page — message ids are globally monotonic, so `max(id)` is the sync cursor. That cursor
+     belongs to the LOOP: it is read once, before the first page, and then advanced by the
+     largest id each page actually returned. Re-reading `max(id)` from the store between pages
+     instead lets a live message arriving mid-loop jump the cursor to its id, and every message
+     between the last page and it is skipped — permanently, because `after_id` can never look
+     back and history paging only ever goes older than the OLDEST row held.
      Then, when the chat's `max_reaction_seq` from step 2 exceeds the locally stored reaction
      cursor: `GET /chats/{id}/reactions?after_seq=<stored cursor>` looped until a short page,
      applied per message under the `reaction_seq` guard. The stored cursor advances with every
      page **even for messages the client does not hold** (states for unknown messages are
      dropped; history paging re-delivers them embedded on the `Message` objects).
+     Then, when the chat's `max_poll_seq` from step 2 exceeds the locally stored poll cursor:
+     `GET /chats/{id}/polls?after_seq=<stored cursor>` looped until a short page, applied per
+     message under the `poll_seq` guard, with the cursor advancing exactly as the reaction one
+     does.
+     **Only a live frame and a catch-up page may move either chat cursor.** A reaction or poll
+     state that reaches a client by any other route — embedded on a fetched `Message`, or in the
+     HTTP response to that client's own reaction, vote, retraction or close — is applied under
+     the per-message guard and must NOT advance the chat cursor. Such a state is evidence about
+     one message and none at all about another message's lower value, and REST goes on working
+     while the socket is down, which is precisely when the frames carrying those lower values
+     were missed: a vote answered with `poll_seq` 100 would push the cursor past somebody else's
+     99, step 2's `max_poll_seq > cursor` test would then ask for nothing, and that state would
+     be lost until the poll holding it next changed. One redundant catch-up page is the cheaper
+     mistake.
   4. Re-send any locally pending outbound messages (safe: `client_msg_id` dedups).
 
 ## Push notifications
@@ -1023,6 +1231,12 @@ Four events push: a **new message** (to every chat member but the sender), a **n
 every family member but the author), a **join request created** (to the family owner), and a **join
 request approved** (to the requester) — each of them narrowed device by device by the rule above.
 Typing, reads, reactions, note moves and edits, and other frames never push.
+
+A poll is a message and pushes exactly once, as one, with its question for a body — there is no
+"Anna started a poll" alert, because the question is more useful than the fact. Votes, retractions
+and closes never push, for the same reason reactions do not. An account being deleted never pushes
+either: `member_deleted` and `family_owner` are corrections to what a client already holds, not
+news.
 
 Device lifecycle: `POST /devices {platform, push_token}` upserts by token (re-login moves the
 token to the new account); the response `device_id` should be stored so `DELETE /devices/{id}`
@@ -1085,4 +1299,6 @@ join-requests screen for `join_request`, the chat list for `joined`).
 | Profile picture | 256 KiB |
 | Per-socket outbound queue | 64 frames |
 | Session TTL | 180 days, sliding |
+| Poll options | 2 minimum (fixed), 10 maximum |
+| Poll option text | 100 chars |
 | Family-chat history sent with a mention | 30 days / 200 messages / 40 000 chars, whichever binds first (fixed) |

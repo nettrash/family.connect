@@ -472,3 +472,169 @@ async fn a_reaction_fans_out_full_state_to_every_member_connection_and_never_pus
         "reactions must never reach the push seam"
     );
 }
+
+/// A poll is created over the socket like any other message, and every
+/// change to it afterwards reaches every member connection — the voter's own
+/// devices included — as a `poll` frame that never wakes anybody.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_poll_fans_out_full_state_to_every_member_connection_and_never_pushes() {
+    let ts = spawn_server().await;
+    let (owner, _, member, member_id, _) = family_of_two(&ts).await;
+    let chat_id = ts.family_chat_id(&owner).await;
+
+    // Give the owner a push token so a wrongly-pushing implementation would
+    // be caught by the quiet check at the bottom.
+    let response = ts
+        .post(
+            &owner,
+            "/devices",
+            json!({"platform": "ios", "push_token": "tok-owner"}),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+
+    let mut owner_ws = connect_ws(&ts, &owner).await;
+    let mut member_ws = connect_ws(&ts, &member).await;
+
+    // The poll rides the ordinary `send` frame, and the ack carries it.
+    send_frame(
+        &mut owner_ws,
+        json!({
+            "type": "send",
+            "chat_id": chat_id,
+            "client_msg_id": Uuid::new_v4().to_string(),
+            "body": "Pizza or pasta?",
+            "poll": {"options": ["Pizza", "Pasta"]},
+        }),
+    )
+    .await;
+    let ack = next_frame_of_type(&mut owner_ws, "ack").await;
+    let message_id = ack["message"]["id"].as_i64().expect("message id");
+    let options = ack["message"]["poll"]["options"]
+        .as_array()
+        .expect("the ack carries the poll")
+        .clone();
+    assert_eq!(options.len(), 2);
+    let pizza = options[0]["id"].as_i64().expect("option id");
+
+    // ...and it arrives at the other member as an ordinary `message`.
+    let delivered = next_frame_of_type(&mut member_ws, "message").await;
+    assert_eq!(delivered["message"]["id"].as_i64(), Some(message_id));
+    assert_eq!(delivered["message"]["poll"]["closed"], json!(false));
+
+    // A vote reaches BOTH sockets: the voter's own request is answered over
+    // HTTP, but the author's connection learns of it only from the frame.
+    let response = ts
+        .put(
+            &member,
+            &format!("/chats/{chat_id}/messages/{message_id}/vote"),
+            json!({"option_id": pizza}),
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+    for ws in [&mut owner_ws, &mut member_ws] {
+        let frame = next_frame_of_type(ws, "poll").await;
+        assert_eq!(frame["chat_id"], chat_id);
+        assert_eq!(frame["message_id"], message_id);
+        assert_eq!(frame["poll"]["options"][0]["votes"], json!([member_id]));
+        assert_eq!(frame["poll"]["options"][1]["votes"], json!([]));
+        assert!(frame["poll"]["poll_seq"].as_i64().expect("seq") > 0);
+    }
+
+    // A no-op re-PUT changes nothing and fans nothing out.
+    let response = ts
+        .put(
+            &member,
+            &format!("/chats/{chat_id}/messages/{message_id}/vote"),
+            json!({"option_id": pizza}),
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+    assert_no_frame_of_type(&mut owner_ws, "poll", Duration::from_millis(1200)).await;
+
+    // Votes never push: take the owner (who has a registered push token)
+    // fully offline and close the poll. The member's live socket proves
+    // delivery happened; the push log must stay empty.
+    drop(owner_ws);
+    let response = ts
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages/{message_id}/poll/close"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(response.status(), 200);
+    let frame = next_frame_of_type(&mut member_ws, "poll").await;
+    assert_eq!(frame["poll"]["closed"], json!(true));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        ts.push.calls().is_empty(),
+        "poll changes must never reach the push seam"
+    );
+}
+
+/// Deleting an account tells the family three things at once — the roster
+/// change, the tombstone to overwrite the stored name with, and the new
+/// owner — and signs every device of the departing account out
+/// (protocol.md, "Deleting an account").
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn deleting_an_account_fans_out_the_tombstone_and_closes_its_sockets() {
+    let ts = spawn_server().await;
+    let (owner, owner_id, member, member_id, _) = family_of_two(&ts).await;
+    let mut owner_ws = connect_ws(&ts, &owner).await;
+    let mut member_ws = connect_ws(&ts, &member).await;
+
+    // The OWNER deletes, so ownership passes to the only other member.
+    let response = ts
+        .post(&owner, "/me/delete", json!({"password": "password123"}))
+        .await;
+    assert_eq!(response.status(), 204);
+
+    // `member_left` first, so a client that predates the tombstone frame
+    // still fixes its roster.
+    let left = next_frame_of_type(&mut member_ws, "member_left").await;
+    assert_eq!(left["user_id"], owner_id);
+
+    // The tombstone carries the WHOLE member, because that is exactly what
+    // a client has to overwrite.
+    let deleted = next_frame_of_type(&mut member_ws, "member_deleted").await;
+    assert_eq!(deleted["member"]["id"], owner_id);
+    assert_eq!(deleted["member"]["deleted"], json!(true));
+    assert_eq!(deleted["member"]["display_name"], "Deleted account");
+    assert_eq!(deleted["member"]["username"], format!("deleted-{owner_id}"));
+    assert_eq!(deleted["member"]["avatar_version"], json!(0));
+    assert!(deleted["member"]["role"].is_null());
+
+    // And the successor learns they own the family without asking.
+    let new_owner = next_frame_of_type(&mut member_ws, "family_owner").await;
+    assert_eq!(new_owner["user_id"], member_id);
+    assert_eq!(new_owner["family_id"], left["family_id"]);
+
+    // The deleted account's own socket is closed with the session-gone code
+    // — its sessions are gone, so there is nothing left to reconnect with.
+    let deadline = tokio::time::Instant::now() + FRAME_WAIT;
+    loop {
+        match tokio::time::timeout_at(deadline, owner_ws.next())
+            .await
+            .expect("the socket must close once the account is deleted")
+        {
+            Some(Ok(Message::Close(frame))) => {
+                let frame = frame.expect("close frame carries a code");
+                assert_eq!(u16::from(frame.code), 4401);
+                break;
+            }
+            Some(Ok(_)) => continue,
+            None => break,
+            Some(Err(err)) => panic!("expected a clean close, got: {err}"),
+        }
+    }
+
+    // None of it pushes: a deletion is not mail.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        ts.push.calls().is_empty(),
+        "account deletion must never reach the push seam"
+    );
+}

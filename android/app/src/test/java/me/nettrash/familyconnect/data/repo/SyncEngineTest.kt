@@ -34,6 +34,8 @@ import me.nettrash.familyconnect.data.net.dto.MemberDto
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCatchUpResponse
+import me.nettrash.familyconnect.data.net.dto.PollCodec
+import me.nettrash.familyconnect.data.net.dto.PollsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.settings.SettingsState
@@ -47,6 +49,8 @@ import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
+import me.nettrash.familyconnect.testutil.pollDto
+import me.nettrash.familyconnect.testutil.pollState
 import me.nettrash.familyconnect.testutil.reactionState
 import me.nettrash.familyconnect.testutil.userDto
 import me.nettrash.familyconnect.util.Clock
@@ -120,7 +124,7 @@ class SyncEngineTest {
             unauthorizedEvents = MutableSharedFlow(),
             scope = repoScope,
         )
-        val chatRepository = ChatRepository(chatApi, db.chatDao(), socket)
+        val chatRepository = ChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
         val familyRepository = FamilyRepository(
             familyApi = familyApi,
             authApi = authApi,
@@ -152,7 +156,11 @@ class SyncEngineTest {
         )
     }
 
-    private fun scriptChats(unread: Int = 3, maxReactionSeq: Long? = null) {
+    private fun scriptChats(
+        unread: Int = 3,
+        maxReactionSeq: Long? = null,
+        maxPollSeq: Long? = null,
+    ) {
         chatApi.chatsResult = ApiResult.Ok(
             ChatsResponse(
                 listOf(
@@ -161,6 +169,7 @@ class SyncEngineTest {
                         lastMessage = messageDto(id = 5, chatId = FAMILY_CHAT, senderId = PEER),
                         unreadCount = unread,
                         maxReactionSeq = maxReactionSeq,
+                        maxPollSeq = maxPollSeq,
                     ),
                 ),
             ),
@@ -200,6 +209,52 @@ class SyncEngineTest {
         // Catch-up looped: full page then short page.
         assertThat(chatApi.messagesCalls).isEqualTo(2)
         assertThat(db.messageDao().maxServerId(FAMILY_CHAT)).isEqualTo(999L)
+    }
+
+    @Test
+    fun aLiveMessageArrivingMidCatchUpDoesNotSkipTheBacklog() = runTest(dispatcher) {
+        // The loss this pins: the page loop used to re-read max(serverId)
+        // from the store before every request. A live `message` frame
+        // landing between two pages writes a far higher id, the next
+        // request asks for everything after THAT, and the whole backlog in
+        // between is skipped for good — `after_id` never looks back, and
+        // loadOlder only pages older than the OLDEST row held.
+        val engine = newEngine()
+        scriptChats()
+        db.messageDao().insertIgnore(
+            listOf(MessageEntity("s5", 5, FAMILY_CHAT, PEER, "old", 1L, MessageStatus.SENT)),
+        )
+        val asked = mutableListOf<Long?>()
+        chatApi.messagesHandler = { _, _, afterId, limit ->
+            asked += afterId
+            when (afterId) {
+                5L -> {
+                    // The family is chatting: a brand-new message arrives
+                    // on the socket while this page is in flight.
+                    db.messageDao().insertIgnore(
+                        listOf(
+                            MessageEntity(
+                                "s5000", 5000, FAMILY_CHAT, PEER, "live", 2L, MessageStatus.SENT,
+                            ),
+                        ),
+                    )
+                    ApiResult.Ok(
+                        MessagesResponse(
+                            (6L until 6L + limit).map {
+                                messageDto(id = it, chatId = FAMILY_CHAT, senderId = PEER)
+                            },
+                        ),
+                    )
+                }
+                else -> ApiResult.Ok(MessagesResponse(emptyList()))
+            }
+        }
+
+        engine.resync()
+
+        // The second request continued from where the FIRST PAGE ended
+        // (id 205), not from the 5000 the live frame put in the store.
+        assertThat(asked).containsExactly(5L, 205L).inOrder()
     }
 
     @Test
@@ -311,6 +366,7 @@ class SyncEngineTest {
         db.chatDao().setMyLastRead(FAMILY_CHAT, 4)
         db.chatDao().setPeerLastRead(FAMILY_CHAT, 2)
         db.chatDao().advanceMaxReactionSeq(FAMILY_CHAT, 9)
+        db.chatDao().advanceMaxPollSeq(FAMILY_CHAT, 11)
 
         scriptChats(unread = 0)
         engine.resync()
@@ -320,5 +376,69 @@ class SyncEngineTest {
         assertThat(chat.myLastReadId).isEqualTo(4L) // local survives
         assertThat(chat.peerLastReadId).isEqualTo(2L)
         assertThat(chat.maxReactionSeq).isEqualTo(9L) // reaction cursor too
+        // And the poll cursor — NEVER the server's value, which says
+        // what exists rather than what this device has applied.
+        assertThat(chat.maxPollSeq).isEqualTo(11L)
+    }
+
+    // -- Polls --------------------------------------------------------------
+
+    @Test
+    fun resyncRepairsVotesMissedWhileOffline() = runTest(dispatcher) {
+        // The gap this step closes: somebody voted while this device was
+        // offline — no frame ever arrived, and the message itself is
+        // already held, so `after_id` message catch-up cannot re-deliver
+        // it. A vote is nothing but a change to an older row.
+        val engine = newEngine()
+        scriptChats(maxPollSeq = 90L)
+        db.messageDao().insertIgnore(
+            listOf(
+                MessageEntity(
+                    "s5",
+                    5,
+                    FAMILY_CHAT,
+                    PEER,
+                    "Pizza or pasta?",
+                    1L,
+                    MessageStatus.SENT,
+                    pollJson = PollCodec.encode(
+                        pollDto(88, "Pizza" to emptyList(), "Pasta" to emptyList()),
+                    ),
+                    pollSeq = 88,
+                ),
+            ),
+        )
+        chatApi.pollsHandler = { chatId, afterSeq, _ ->
+            assertThat(chatId).isEqualTo(FAMILY_CHAT)
+            assertThat(afterSeq).isEqualTo(0L) // the stored cursor, not the server's
+            ApiResult.Ok(
+                PollsCatchUpResponse(
+                    listOf(pollState(5L, pollDto(90, "Pizza" to listOf(PEER), "Pasta" to emptyList()))),
+                ),
+            )
+        }
+
+        engine.resync()
+
+        val row = db.messageDao().findByServerId(5L)!!
+        assertThat(PollCodec.decode(row.pollJson)!!.options[0].votes).containsExactly(PEER)
+        assertThat(row.pollSeq).isEqualTo(90L)
+        assertThat(db.chatDao().maxPollSeq(FAMILY_CHAT)).isEqualTo(90L)
+        assertThat(chatApi.pollsCalls).isEqualTo(1) // short page — one fetch
+
+        // A second resync with the server no further ahead skips the
+        // poll fetch entirely.
+        engine.resync()
+        assertThat(chatApi.pollsCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun resyncSkipsPollCatchUpWhenTheChatHoldsNoPoll() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats() // max_poll_seq absent — the family has never held one
+
+        engine.resync()
+
+        assertThat(chatApi.pollsCalls).isEqualTo(0)
     }
 }

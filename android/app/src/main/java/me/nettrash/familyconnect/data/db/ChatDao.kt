@@ -42,6 +42,39 @@ interface ChatDao {
     suspend fun allChatIds(): List<Long>
 
     /**
+     * The direct chats this device holds.
+     *
+     * Scoped to `direct` because that is the only kind that can
+     * DISAPPEAR: a deleted account takes its direct chats with it, both
+     * halves, and its private assistant thread with them
+     * (docs/protocol.md, "Deleting an account"). The family chat lives as
+     * long as the family and MY assistant chat as long as my account, so
+     * neither is ever missing from a `GET /chats` this client made — and
+     * pruning on their absence would only ever be a bug destroying
+     * history.
+     */
+    @Query("SELECT id FROM chats WHERE kind = 'direct'")
+    suspend fun directChatIds(): List<Long>
+
+    /**
+     * The direct chat(s) with one peer. A list, not a single id: the
+     * server is get-or-create so there should be exactly one, and if a
+     * device ever ended up holding two, a deleted account takes both.
+     */
+    @Query("SELECT id FROM chats WHERE kind = 'direct' AND peerUserId = :userId")
+    suspend fun directChatIdsWith(userId: Long): List<Long>
+
+    /**
+     * Drop one chat row, and with it everything keyed to a chat that
+     * lives ON the row — the unread badge, both read markers and all
+     * three catch-up cursors. Its messages go through
+     * [MessageDao.deleteByChat]; see ChatRepository.deleteDirectChat,
+     * which is the only caller of either.
+     */
+    @Query("DELETE FROM chats WHERE id = :chatId")
+    suspend fun deleteById(chatId: Long)
+
+    /**
      * Monotonic preview update — the guard keeps an out-of-order ack
      * (server timestamp older than a message that already landed) from
      * regressing the chat list preview.
@@ -94,6 +127,13 @@ interface ChatDao {
 
     @Query("SELECT maxEditSeq FROM chats WHERE id = :chatId")
     suspend fun maxEditSeq(chatId: Long): Long?
+
+    /** The poll cursor's twin of the four above. */
+    @Query("UPDATE chats SET maxPollSeq = MAX(maxPollSeq, :seq) WHERE id = :chatId")
+    suspend fun advanceMaxPollSeq(chatId: Long, seq: Long)
+
+    @Query("SELECT maxPollSeq FROM chats WHERE id = :chatId")
+    suspend fun maxPollSeq(chatId: Long): Long?
 
     @Query("DELETE FROM chats")
     suspend fun deleteAll()

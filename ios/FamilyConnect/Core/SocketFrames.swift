@@ -21,7 +21,20 @@ import Foundation
 // MARK: - Client → server
 
 nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
-    case send(chatID: Int64, clientMsgID: String, body: String, replyToMessageID: Int64?, attachmentID: Int64?)
+    /// `pollOptions` is what makes the message a poll (docs/protocol.md,
+    /// "Polls"): the body is then the QUESTION and the options ride
+    /// beside it as `{"poll": {"options": [...]}}`. nil on every ordinary
+    /// message, where the key is absent rather than null.
+    ///
+    /// No default value — Swift does not permit one on an enum case's
+    /// associated value — so every construction site spells it out.
+    case send(
+        chatID: Int64,
+        clientMsgID: String,
+        body: String,
+        replyToMessageID: Int64?,
+        attachmentID: Int64?,
+        pollOptions: [String]?)
     case read(chatID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64)
     case ping
@@ -34,12 +47,20 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         case replyToMessageID = "reply_to_message_id"
         case attachmentID = "attachment_id"
         case lastReadMessageID = "last_read_message_id"
+        case poll
+    }
+
+    /// The keys of the nested `poll` object on a `send`. Its only member
+    /// is `options`: ids, votes and the sequence are the server's, and the
+    /// question is the body.
+    private enum NewPollKeys: String, CodingKey {
+        case options
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .send(let chatID, let clientMsgID, let body, let replyToMessageID, let attachmentID):
+        case .send(let chatID, let clientMsgID, let body, let replyToMessageID, let attachmentID, let pollOptions):
             try container.encode("send", forKey: .type)
             try container.encode(chatID, forKey: .chatID)
             try container.encode(clientMsgID, forKey: .clientMsgID)
@@ -49,6 +70,10 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
             // field as absent.
             try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
             try container.encodeIfPresent(attachmentID, forKey: .attachmentID)
+            if let pollOptions {
+                var poll = container.nestedContainer(keyedBy: NewPollKeys.self, forKey: .poll)
+                try poll.encode(pollOptions, forKey: .options)
+            }
         case .read(let chatID, let lastReadMessageID):
             try container.encode("read", forKey: .type)
             try container.encode(chatID, forKey: .chatID)
@@ -106,6 +131,44 @@ nonisolated struct MemberJoinedPayload: Decodable, Equatable, Sendable {
     }
 }
 
+/// Payload of `member_deleted`: the WHOLE tombstone `Member`, because
+/// that is exactly what a client has to overwrite — `deleted: true`, the
+/// placeholder display name, `avatar_version: 0` and no birthday.
+///
+/// This is the one frame in the protocol whose job is to WIPE stored
+/// fields, so the coordinator applies it by writing the tombstone
+/// deliberately rather than through the ordinary member upsert, which
+/// everywhere else must never let an absent field clear a stored one
+/// (docs/protocol.md, "Server → client").
+/// `familyID` is OPTIONAL, and that is load-bearing: the frame reaches
+/// every member of any chat the account was part of, so a direct-chat peer
+/// in another family — or in none — gets it too, and the protocol says
+/// outright that `family_id` is ABSENT when the deleted account belonged
+/// to no family. Decoding it as required threw on exactly those frames,
+/// and an undecodable frame is skipped: the peer never learned, and went
+/// on drawing the old name against a chat about to vanish. A client keys
+/// this frame on the `member`, never on the family — which is why nothing
+/// below reads the id at all.
+nonisolated struct MemberDeletedPayload: Decodable, Equatable, Sendable {
+    let familyID: Int64?
+    let member: MemberDTO
+    enum CodingKeys: String, CodingKey {
+        case familyID = "family_id"
+        case member
+    }
+
+    /// Hand-written for the reason every other optional on this wire is:
+    /// `decodeIfPresent`, so an absent key is absence rather than a
+    /// throw. The synthesised initialiser would do the same for an
+    /// Optional — this spells it out so it cannot be lost to a later
+    /// tidy-up that makes the field non-optional again.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        familyID = try container.decodeIfPresent(Int64.self, forKey: .familyID)
+        member = try container.decode(MemberDTO.self, forKey: .member)
+    }
+}
+
 /// Payload of `reaction`: one message's FULL current reaction state —
 /// never a delta — so re-delivery is idempotent and ordering races
 /// resolve locally under the reaction_seq guard (the coordinator applies
@@ -120,6 +183,23 @@ nonisolated struct ReactionPayload: Decodable, Equatable, Sendable {
         case messageID = "message_id"
         case reactionSeq = "reaction_seq"
         case reactions
+    }
+}
+
+/// Payload of `poll`: one message's FULL current poll state — never a
+/// delta — so re-delivery is idempotent and ordering races resolve locally
+/// under the poll_seq guard (the coordinator applies it only when
+/// `poll.pollSeq` exceeds what the message row already holds).
+///
+/// It never notifies and never counts as unread: a vote is not a message.
+nonisolated struct PollPayload: Decodable, Equatable, Sendable {
+    let chatID: Int64
+    let messageID: Int64
+    let poll: PollDTO
+    enum CodingKeys: String, CodingKey {
+        case chatID = "chat_id"
+        case messageID = "message_id"
+        case poll
     }
 }
 
@@ -146,7 +226,18 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     case typing(chatID: Int64, userID: Int64)
     case memberJoined(MemberJoinedPayload)
     case memberLeft(userID: Int64)
+    /// A member deleted their account. Carries the tombstone to write; a
+    /// `member_left` for the same person is sent alongside it.
+    case memberDeleted(MemberDeletedPayload)
+    /// The family has a new owner — sent to every member when an owner
+    /// deletes their account and ownership passes on. A client that
+    /// receives it for ITSELF gains the owner-only screens immediately
+    /// rather than at its next `GET /me`.
+    case familyOwner(familyID: Int64, userID: Int64)
     case reaction(ReactionPayload)
+    /// A poll's full current state after a vote, a retraction or a close.
+    /// Dispatched exactly like `reaction`, under its own seq guard.
+    case poll(PollPayload)
     case pong
     /// `clientMsgID` is present when the error answers a `send` frame.
     case error(code: String, message: String, clientMsgID: String?)
@@ -162,12 +253,14 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case lastReadMessageID = "last_read_message_id"
         case code
         case user
+        case member
         case familyID = "family_id"
         case messageID = "message_id"
         case reactionSeq = "reaction_seq"
         case reactions
         case note
         case text
+        case poll
     }
 
     init(from decoder: Decoder) throws {
@@ -207,9 +300,19 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
             self = .memberJoined(try MemberJoinedPayload(from: decoder))
         case "member_left":
             self = .memberLeft(userID: try container.decode(Int64.self, forKey: .userID))
+        case "member_deleted":
+            // Re-decode from the top so MemberDeletedPayload owns its keys.
+            self = .memberDeleted(try MemberDeletedPayload(from: decoder))
+        case "family_owner":
+            self = .familyOwner(
+                familyID: try container.decode(Int64.self, forKey: .familyID),
+                userID: try container.decode(Int64.self, forKey: .userID))
         case "reaction":
             // Re-decode from the top so ReactionPayload owns its keys.
             self = .reaction(try ReactionPayload(from: decoder))
+        case "poll":
+            // Re-decode from the top so PollPayload owns its keys.
+            self = .poll(try PollPayload(from: decoder))
         case "pong":
             self = .pong
         case "error":

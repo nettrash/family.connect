@@ -30,7 +30,9 @@ struct MacFamilyView: View {
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(\.dismiss) private var dismiss
 
-    @Query(filter: #Predicate<MemberEntity> { !$0.hasLeft },
+    // Live members only: a deleted account is in the store so old
+    // messages can still be given a sender, and is a member of nothing.
+    @Query(filter: #Predicate<MemberEntity> { !$0.hasLeft && !$0.accountDeleted },
            sort: [SortDescriptor(\MemberEntity.displayName)])
     private var members: [MemberEntity]
 

@@ -35,6 +35,11 @@ import me.nettrash.familyconnect.data.net.dto.BirthdayResponse
 import me.nettrash.familyconnect.data.net.dto.ChatResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.DeviceResponse
+import me.nettrash.familyconnect.data.net.dto.MessagePollStateDto
+import me.nettrash.familyconnect.data.net.dto.NewPollDto
+import me.nettrash.familyconnect.data.net.dto.PollDto
+import me.nettrash.familyconnect.data.net.dto.PollOptionDto
+import me.nettrash.familyconnect.data.net.dto.PollsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
@@ -182,6 +187,15 @@ class FakeChatSocket : ChatSocket {
     private val _state = MutableStateFlow(SocketState.Disconnected)
     override val state: StateFlow<SocketState> = _state
 
+    private val _sessionExpired = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    override val sessionExpired: SharedFlow<Unit> = _sessionExpired
+
+    /** What a 4401 close (or a 401 upgrade) looks like to a collector. */
+    fun expireSession() {
+        _sessionExpired.tryEmit(Unit)
+        _state.value = SocketState.Disconnected
+    }
+
     val sent = mutableListOf<ClientFrame>()
 
     /** When false, trySend reports failure even while Open. */
@@ -250,6 +264,15 @@ class FakeAuthApi : AuthApi {
         return loginResult
     }
 
+    /** Every password handed to POST /me/delete, in call order. */
+    val accountDeletions = mutableListOf<String>()
+    var deleteAccountResult: ApiResult<Unit> = ApiResult.Ok(Unit)
+
+    override suspend fun deleteAccount(password: String): ApiResult<Unit> {
+        accountDeletions += password
+        return deleteAccountResult
+    }
+
     /** Every password change this fake saw: (current, new). */
     val passwordChanges = mutableListOf<Pair<String, String>>()
     var changePasswordHandler: (String, String) -> ApiResult<Unit> = { _, _ -> ApiResult.Ok(Unit) }
@@ -309,7 +332,10 @@ class FakeAuthApi : AuthApi {
 class FakeChatApi : ChatApi {
     var chatsResult: ApiResult<ChatsResponse> = ApiResult.Ok(ChatsResponse(emptyList()))
     var createDirectResult: ApiResult<ChatResponse> = ApiResult.NetworkError(IllegalStateException("unscripted"))
-    var messagesHandler: (chatId: Long, beforeId: Long?, afterId: Long?, limit: Int) -> ApiResult<MessagesResponse> =
+    // Suspend-typed, like the reaction handlers below: a test needs to be
+    // able to write to the store from inside a page, which is what a live
+    // `message` frame landing mid-catch-up does.
+    var messagesHandler: suspend (chatId: Long, beforeId: Long?, afterId: Long?, limit: Int) -> ApiResult<MessagesResponse> =
         { _, _, _, _ -> ApiResult.Ok(MessagesResponse(emptyList())) }
     var postMessageHandler: (chatId: Long, clientMsgId: String, body: String) -> ApiResult<MessageResponse> =
         { _, _, _ -> ApiResult.NetworkError(IllegalStateException("unscripted")) }
@@ -322,6 +348,22 @@ class FakeChatApi : ChatApi {
         { _, _ -> ApiResult.NetworkError(IllegalStateException("unscripted")) }
     var reactionsHandler: (chatId: Long, afterSeq: Long, limit: Int) -> ApiResult<ReactionsCatchUpResponse> =
         { _, _, _ -> ApiResult.Ok(ReactionsCatchUpResponse(emptyList())) }
+
+    // Suspend-typed like the reaction handlers above, so a test can park
+    // a vote on a gate and look at the optimistic state mid-flight.
+    var putVoteHandler: suspend (chatId: Long, messageId: Long, optionId: Long) -> ApiResult<MessagePollStateDto> =
+        { _, _, _ -> ApiResult.NetworkError(IllegalStateException("unscripted")) }
+    var deleteVoteHandler: suspend (chatId: Long, messageId: Long) -> ApiResult<MessagePollStateDto> =
+        { _, _ -> ApiResult.NetworkError(IllegalStateException("unscripted")) }
+    var closePollHandler: suspend (chatId: Long, messageId: Long) -> ApiResult<MessagePollStateDto> =
+        { _, _ -> ApiResult.NetworkError(IllegalStateException("unscripted")) }
+    var pollsHandler: (chatId: Long, afterSeq: Long, limit: Int) -> ApiResult<PollsCatchUpResponse> =
+        { _, _, _ -> ApiResult.Ok(PollsCatchUpResponse(emptyList())) }
+
+    val putVotes = mutableListOf<Triple<Long, Long, Long>>()
+    val deletedVotes = mutableListOf<Pair<Long, Long>>()
+    val closedPolls = mutableListOf<Pair<Long, Long>>()
+    var pollsCalls = 0
 
     val postedMessages = mutableListOf<Triple<Long, String, String>>()
     val postedReads = mutableListOf<Pair<Long, Long>>()
@@ -360,16 +402,21 @@ class FakeChatApi : ChatApi {
     /** Every attachment id a REST send carried, in order. */
     val postedAttachmentIds = mutableListOf<Long?>()
 
+    /** Every poll a REST send carried, in order (null for an ordinary message). */
+    val postedPolls = mutableListOf<NewPollDto?>()
+
     override suspend fun postMessage(
         chatId: Long,
         clientMsgId: String,
         body: String,
         replyToMessageId: Long?,
         attachmentId: Long?,
+        poll: NewPollDto?,
     ): ApiResult<MessageResponse> {
         postedMessages += Triple(chatId, clientMsgId, body)
         postedReplyTargets += replyToMessageId
         postedAttachmentIds += attachmentId
+        postedPolls += poll
         return postMessageHandler(chatId, clientMsgId, body)
     }
 
@@ -430,6 +477,40 @@ class FakeChatApi : ChatApi {
     ): ApiResult<ReactionsCatchUpResponse> {
         reactionsCalls += 1
         return reactionsHandler(chatId, afterSeq, limit)
+    }
+
+    override suspend fun putVote(
+        chatId: Long,
+        messageId: Long,
+        optionId: Long,
+    ): ApiResult<MessagePollStateDto> {
+        putVotes += Triple(chatId, messageId, optionId)
+        return putVoteHandler(chatId, messageId, optionId)
+    }
+
+    override suspend fun deleteVote(
+        chatId: Long,
+        messageId: Long,
+    ): ApiResult<MessagePollStateDto> {
+        deletedVotes += chatId to messageId
+        return deleteVoteHandler(chatId, messageId)
+    }
+
+    override suspend fun closePoll(
+        chatId: Long,
+        messageId: Long,
+    ): ApiResult<MessagePollStateDto> {
+        closedPolls += chatId to messageId
+        return closePollHandler(chatId, messageId)
+    }
+
+    override suspend fun getPolls(
+        chatId: Long,
+        afterSeq: Long,
+        limit: Int,
+    ): ApiResult<PollsCatchUpResponse> {
+        pollsCalls += 1
+        return pollsHandler(chatId, afterSeq, limit)
     }
 }
 
@@ -674,6 +755,7 @@ fun messageDto(
     replyTo: ReplyToDto? = null,
     editSeq: Long? = null,
     editedAt: String? = null,
+    poll: PollDto? = null,
 ) = MessageDto(
     id = id,
     chatId = chatId,
@@ -686,6 +768,7 @@ fun messageDto(
     replyTo = replyTo,
     editSeq = editSeq,
     editedAt = editedAt,
+    poll = poll,
 )
 
 fun reactionState(
@@ -697,6 +780,29 @@ fun reactionState(
     reactionSeq = reactionSeq,
     reactions = reactions,
 )
+
+/**
+ * A poll as the wire carries it: options in creation order, each with the
+ * FULL list of user ids that hold it.
+ *
+ * `("Pizza" to listOf(7L))` reads as the thing being asserted, where a
+ * PollOptionDto per option reads as scaffolding.
+ */
+fun pollDto(
+    pollSeq: Long,
+    vararg options: Pair<String, List<Long>>,
+    closed: Boolean = false,
+    firstOptionId: Long = 5L,
+) = PollDto(
+    pollSeq = pollSeq,
+    closed = closed,
+    options = options.mapIndexed { index, (text, votes) ->
+        PollOptionDto(id = firstOptionId + index, text = text, votes = votes)
+    },
+)
+
+fun pollState(messageId: Long, poll: PollDto) =
+    MessagePollStateDto(messageId = messageId, poll = poll)
 
 /**
  * Scriptable AttachmentApi. Records what was uploaded, in order, so the

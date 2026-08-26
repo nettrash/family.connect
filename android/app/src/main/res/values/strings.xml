@@ -112,6 +112,10 @@
     <string name="s_add_a_message_or_send_it_on_its_own">Add a message, or send it on its own.</string>
     <string name="s_remove_attachment">Remove attachment</string>
     <string name="s_photo_or_video">Photo or video</string>
+    <string name="s_paste">Paste</string>
+    <string name="s_pasted_image">Pasted image</string>
+    <string name="s_pasted_sound">Pasted sound</string>
+    <string name="s_pasted_file">Pasted file</string>
     <string name="s_privacy">Privacy</string>
     <string name="s_react">React</string>
     <string name="s_register">Register</string>
@@ -168,6 +172,7 @@
     <string name="e_join_failed">Couldn\'t join</string>
     <string name="e_load_requests_failed">Couldn\'t load join requests</string>
     <string name="e_no_app_for_file">No app on this phone can open that file.</string>
+    <string name="e_nothing_to_paste">There\'s nothing to paste.</string>
     <string name="e_open_chat_failed">Couldn\'t open the chat</string>
     <string name="e_password_too_short">At least 8 characters</string>
     <string name="e_prepare_failed">Couldn\'t prepare that item.</string>
@@ -205,4 +210,35 @@
     <string name="e_birthday_failed">Couldn\'t save that birthday</string>
     <string name="e_change_language_failed">Couldn\'t change the family language</string>
     <string name="e_change_assistant_history_failed">Couldn\'t change that setting</string>
+    <!-- Account deletion (App Store guideline 5.1.1(v)); see docs/protocol.md, "Deleting an account". -->
+    <string name="s_delete_account">Delete account</string>
+    <string name="s_delete_your_account">Delete your account?</string>
+    <string name="s_delete_account_explanation">Your account, your password, your profile picture and your birthday are deleted, and every device you are signed in on is signed out. Your direct chats go too, for the other person as well. What stays is what the family said to each other: your messages in the family chat, your board notes and your reactions, shown from then on as \"Deleted account\". This cannot be undone.</string>
+    <string name="s_delete_account_owner_note">You own this family, so it passes to whoever has been in it longest. If you are its last member, the family is deleted with you — its chat, its board and its invite code.</string>
+    <string name="s_deleted_account">Deleted account</string>
+    <string name="e_wrong_password">That password is not right.</string>
+    <string name="e_delete_account_failed">Couldn\'t delete your account.</string>
+    <!-- Polls (docs/protocol.md, "Polls"). The QUESTION is the message body,
+         so nothing here names it twice. -->
+    <string name="s_poll">Poll</string>
+    <string name="s_new_poll">New poll</string>
+    <string name="s_question">Question</string>
+    <string name="s_option">Option</string>
+    <string name="s_add_option">Add option</string>
+    <string name="s_remove_option">Remove option</string>
+    <string name="s_close_poll">Close poll</string>
+    <string name="s_poll_closed">Poll closed</string>
+    <string name="s_who_voted">Who voted</string>
+    <!-- Both counts are plurals, because most of the eight languages inflect on
+         the number even where English does not. The quantity is the FIRST
+         argument in both: how many people have voted. -->
+    <plurals name="s_voted_of_family">
+        <item quantity="one">%1$d of %2$d voted</item>
+        <item quantity="other">%1$d of %2$d voted</item>
+    </plurals>
+    <plurals name="s_voted_total">
+        <item quantity="one">%1$d voted</item>
+        <item quantity="other">%1$d voted</item>
+    </plurals>
+    <string name="e_close_poll_failed">Couldn\'t close that poll.</string>
 </resources>

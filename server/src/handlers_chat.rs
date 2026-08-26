@@ -14,7 +14,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
@@ -22,7 +22,10 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
-use crate::models::{Attachment, Chat, ChatListEntry, Message, QuotedParent, Reaction, ReplyTo};
+use crate::handlers_poll::attach_polls;
+use crate::models::{
+    Attachment, Chat, ChatListEntry, Message, Poll, QuotedParent, Reaction, ReplyTo,
+};
 use crate::state::AppState;
 
 /// Upper bound on a reaction emoji, in UTF-8 bytes. Fixed by protocol.md's
@@ -51,6 +54,22 @@ pub struct PostMessageRequest {
     /// message. A message carrying one may have an empty body.
     #[serde(default)]
     pub attachment_id: Option<i64>,
+    /// Optional: makes this message a poll. The body is then the QUESTION
+    /// and may NOT be empty, and a poll excludes an attachment.
+    #[serde(default)]
+    pub poll: Option<NewPoll>,
+}
+
+/// The poll half of a `POST /chats/{id}/messages` body, and of a `send`
+/// frame: `{"options": ["Pizza", "Pasta"]}`.
+///
+/// Options only. The question is the message body (protocol.md, "Polls"),
+/// and there is no `multiple_choice` — a v1 poll asks one question and takes
+/// one answer, which the primary key of `poll_votes` enforces rather than a
+/// field here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NewPoll {
+    pub options: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,12 +280,57 @@ fn validate_body(state: &AppState, body: &str) -> Result<String, ApiError> {
     Ok(body.to_string())
 }
 
+/// Trim and bounds-check a poll's options (protocol.md, "Polls").
+///
+/// Options are fixed at creation — a poll can never gain, lose or rename
+/// one, because the votes already cast were cast against the list as it was
+/// read — so this is the only place they are ever checked.
+///
+/// Characters, not bytes, exactly as `max_message_chars` is counted: a
+/// family that writes in Cyrillic gets the same ten options everyone else
+/// does. The case-insensitive duplicate check is what stops "Pizza" and
+/// "pizza" sitting on the same poll as two things to choose between.
+fn validate_poll_options(state: &AppState, options: &[String]) -> Result<Vec<String>, ApiError> {
+    let trimmed: Vec<String> = options.iter().map(|o| o.trim().to_string()).collect();
+    if trimmed.iter().any(|option| option.is_empty()) {
+        return Err(ApiError::bad_request(
+            codes::INVALID_POLL,
+            "a poll option cannot be empty",
+        ));
+    }
+    let max_options = state.cfg.limits.max_poll_options;
+    if trimmed.len() < Poll::MIN_OPTIONS || trimmed.len() > max_options {
+        return Err(ApiError::bad_request(
+            codes::INVALID_POLL,
+            format!(
+                "a poll needs between {} and {max_options} options",
+                Poll::MIN_OPTIONS
+            ),
+        ));
+    }
+    let max_chars = state.cfg.limits.max_poll_option_chars;
+    if trimmed.iter().any(|o| o.chars().count() > max_chars) {
+        return Err(ApiError::bad_request(
+            codes::INVALID_POLL,
+            format!("a poll option exceeds {max_chars} characters"),
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    if !trimmed.iter().all(|o| seen.insert(o.to_lowercase())) {
+        return Err(ApiError::bad_request(
+            codes::INVALID_POLL,
+            "two poll options are the same",
+        ));
+    }
+    Ok(trimmed)
+}
+
 /// Insert a message, idempotently.
 ///
 /// Returns `(message, created)`: `created == false` means the
 /// `(chat, sender, client_msg_id)` triple already existed and the original
 /// message is returned — the caller must not fan out again.
-// Eight arguments, one over clippy's threshold. Grouping them into a struct
+// Nine arguments, two over clippy's threshold. Grouping them into a struct
 // would be a parameter object nothing else ever constructs — the call sites
 // are two, both in this crate, and each argument is a distinct thing the
 // caller genuinely has.
@@ -279,6 +343,11 @@ pub async fn create_message(
     body: &str,
     reply_to_message_id: Option<i64>,
     attachment_id: Option<i64>,
+    // Optional: makes this message a poll (protocol.md, "Polls"). A poll is
+    // created HERE, inside the message transaction, rather than by a second
+    // endpoint — a poll IS a message, and a second write path is exactly
+    // what would let the two drift apart.
+    poll: Option<&NewPoll>,
     // Which language to answer an assistant question in, from the sending
     // device (docs/protocol.md, "The assistant"). None outside an assistant
     // chat, and harmless there too.
@@ -294,14 +363,43 @@ pub async fn create_message(
         .await?
         .unwrap_or_default();
 
+    // Where a poll may live, checked before anything else about it: a poll
+    // is a family deciding something together, and between two people it is
+    // a question whose answer is the next message (protocol.md, "Polls").
+    // The assistant's chat refuses one for the same reason.
+    if poll.is_some() {
+        if chat_kind != "family" {
+            return Err(ApiError::bad_request(
+                codes::INVALID_POLL,
+                "polls are only allowed in the family chat",
+            ));
+        }
+        if attachment_id.is_some() {
+            return Err(ApiError::bad_request(
+                codes::INVALID_POLL,
+                "a message carries a poll or an attachment, not both",
+            ));
+        }
+    }
+
     // A photo needs no caption: an empty body is allowed when — and only
-    // when — the message carries an attachment.
-    let body = if attachment_id.is_some() && body.trim().is_empty() {
+    // when — the message carries an attachment. A poll gets NO such
+    // relaxation — its body is the question, and a poll with no question is
+    // `message_empty` — and the exclusion just above means the two
+    // conditions can never both hold anyway.
+    let body = if attachment_id.is_some() && poll.is_none() && body.trim().is_empty() {
         String::new()
     } else {
         validate_body(state, body)?
     };
     let body = body.as_str();
+
+    // Last, so an empty question is answered `message_empty` rather than
+    // `invalid_poll`: the body is the more basic thing to have got wrong.
+    let poll_options = match poll {
+        None => None,
+        Some(poll) => Some(validate_poll_options(state, &poll.options)?),
+    };
 
     // The quote is resolved BEFORE the insert, both to reject a bad target
     // without writing anything and because the row we read here is exactly
@@ -391,6 +489,17 @@ pub async fn create_message(
             message.attachment =
                 Some(claim_attachment(&mut tx, attachment_id, sender_id, message.id).await?);
         }
+        if let Some(options) = &poll_options {
+            // Same transaction, same reason: a poll written after an
+            // autocommitted message could fail and leave a permanent
+            // options-less bubble that is also the chat's newest message.
+            // `chat_id` is taken from the row just inserted, not from the
+            // request — nothing in the schema ties the two together.
+            message.poll = Some(
+                crate::handlers_poll::create_poll(&mut tx, message.chat_id, message.id, options)
+                    .await?,
+            );
+        }
         tx.commit().await?;
 
         // An assistant chat answers back, and this lives HERE rather than in
@@ -449,7 +558,24 @@ pub async fn create_message(
     .bind(client_msg_id)
     .fetch_one(&state.pool)
     .await?;
-    Ok((Message::from_row(&row), false))
+    let mut message = Message::from_row(&row);
+    // A retry re-acks the ORIGINAL message, which is a `Message` like any
+    // other and must be hydrated like one. Both of these are load-bearing
+    // rather than tidy:
+    //
+    //   * reactions, because `reaction_seq` is read from the row and is
+    //     therefore already on the wire — answering with a seq and no
+    //     `reactions` key is the one state protocol.md's Objects block does
+    //     not define, since the two are named together and an empty list is
+    //     how "cleared" is said. Dedup exists so an offline client can
+    //     replay its outbound queue, and a message sitting in that queue is
+    //     exactly the one somebody has had time to react to;
+    //   * the poll, because a retry does NOT create a second one — the
+    //     first write won, poll and all — and a client that retried would
+    //     otherwise draw the question with no options.
+    attach_reactions(state, std::slice::from_mut(&mut message)).await?;
+    attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    Ok((message, false))
 }
 
 /// The outcome of an edit: the message as it now stands, plus whether
@@ -549,6 +675,7 @@ pub async fn fetch_message(
     let Some(row) = row else { return Ok(None) };
     let mut message = Message::from_row(&row);
     attach_reactions(state, std::slice::from_mut(&mut message)).await?;
+    attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
 
@@ -792,7 +919,8 @@ pub async fn list_chats(
                 lm.att_has_preview, lm.att_name,
                 uc.unread AS unread_count,
                 c.last_reaction_seq,
-                c.last_edit_seq
+                c.last_edit_seq,
+                c.last_poll_seq
          FROM chat_members m
          JOIN chats c ON c.id = m.chat_id
          JOIN families f ON f.id = c.family_id
@@ -876,9 +1004,14 @@ pub async fn list_chats(
                     longitude: None,
                     accuracy_m: None,
                 }),
+                // Nor the poll. A poll's QUESTION is the body, which the
+                // preview already carries — the options are a bubble's
+                // business and three tables' worth of reads per chat.
+                poll: None,
             });
             let last_reaction_seq: i64 = row.get("last_reaction_seq");
             let last_edit_seq: i64 = row.get("last_edit_seq");
+            let last_poll_seq: i64 = row.get("last_poll_seq");
             ChatListEntry {
                 chat: Chat {
                     id: chat_id,
@@ -890,6 +1023,7 @@ pub async fn list_chats(
                 unread_count: row.get("unread_count"),
                 max_reaction_seq: (last_reaction_seq > 0).then_some(last_reaction_seq),
                 max_edit_seq: (last_edit_seq > 0).then_some(last_edit_seq),
+                max_poll_seq: (last_poll_seq > 0).then_some(last_poll_seq),
             }
         })
         .collect();
@@ -1025,6 +1159,7 @@ pub async fn get_messages(
 
     let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
     attach_reactions(&state, &mut messages).await?;
+    attach_polls(&state.pool, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }
@@ -1054,6 +1189,7 @@ pub async fn post_message(
         &req.body,
         req.reply_to_message_id,
         req.attachment_id,
+        req.poll.as_ref(),
         language.as_deref(),
     )
     .await?;
@@ -1195,6 +1331,7 @@ pub async fn get_edits(
 
     let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
     attach_reactions(&state, &mut messages).await?;
+    attach_polls(&state.pool, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }

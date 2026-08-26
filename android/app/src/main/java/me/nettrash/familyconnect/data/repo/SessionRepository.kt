@@ -19,6 +19,8 @@
  *                   PushTokenRepository) → persist.
  *   logout        — best-effort DELETE /devices/{id} + POST /auth/logout,
  *                   then clearSession.
+ *   deleteAccount — POST /me/delete, then clearSession DIRECTLY: the
+ *                   session it would log out of is already gone.
  *   clearSession  — token + Room wipe + settings reset EXCEPT serverUrl
  *                   (protocol: on 401 "the client wipes local state,
  *                   keeping the server URL").
@@ -147,6 +149,27 @@ class SessionRepository @Inject constructor(
     }
 
     /**
+     * The SOCKET says the session is gone — closed with `4401`, or an
+     * upgrade refused with `401` (docs/protocol.md, "WebSocket protocol").
+     *
+     * It has to land in the same place a REST 401 does. Without this the
+     * socket merely reconnected forever behind a "Connecting…" banner: a
+     * device whose account was deleted, or whose session an owner's
+     * password reset revoked, sat on the chat list looking signed in
+     * until something happened to make a REST call.
+     *
+     * Guarded on a token still being stored so the reconnect loop's
+     * repeated failures reroute once rather than once per attempt.
+     */
+    fun onSessionExpired() {
+        scope.launch {
+            if (tokenStore.load() == null) return@launch
+            clearSession()
+            _sessionEvents.emit(SessionEvent.Expired)
+        }
+    }
+
+    /**
      * Boot read. When nothing is stored yet and the build compiled a
      * default server in, adopt it through the same normalize-and-persist
      * path a typed URL takes — from then on it IS the stored URL (kept by
@@ -220,6 +243,33 @@ class SessionRepository @Inject constructor(
         // Best-effort revoke; local teardown happens regardless.
         authApi.logout()
         clearSession()
+    }
+
+    /**
+     * Delete this account, permanently (protocol.md, "Deleting an
+     * account") — App Store guideline 5.1.1(v)'s in-app, self-service
+     * deletion.
+     *
+     * The teardown deliberately does NOT go through [logout]: that calls
+     * `DELETE /devices/{id}` and `POST /auth/logout`, and by the time the
+     * 204 comes back this session no longer exists, so both would answer
+     * 401 — which would fire the unauthorized broadcast and race a second
+     * teardown against this one. The server has already deleted every
+     * session and every device row of this account; there is nothing left
+     * to be polite about, so this goes straight to [clearSession], which
+     * is the app's "wipe local state and return to sign-in" primitive:
+     * token, the whole Room cache (messages, chats, roster, board notes,
+     * and with them every per-chat reaction and edit cursor) and every
+     * stored preference except the server URL and the two device-scoped
+     * privacy switches — the board cursor included.
+     *
+     * A failure changes nothing locally: a wrong password comes back as
+     * `invalid_credentials` (401) and the account is still there.
+     */
+    suspend fun deleteAccount(password: String): ApiResult<Unit> {
+        val result = authApi.deleteAccount(password)
+        if (result is ApiResult.Ok) clearSession()
+        return result
     }
 
     suspend fun clearSession() {

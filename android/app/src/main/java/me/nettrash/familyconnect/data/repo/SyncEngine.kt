@@ -10,6 +10,8 @@
  *   2. GET /chats             — chat list, previews, authoritative unread.
  *   3. Per chat: after_id=<max known id> pages (limit 200) until short —
  *      message ids are globally monotonic, so max(serverId) is the cursor.
+ *      Read ONCE per chat and advanced by each page's largest id, never
+ *      re-read from the store between pages (see the loop below).
  *      Then, when the server's max_reaction_seq (step 2) beats the
  *      locally stored reaction cursor: after_seq pages until short —
  *      this is what repairs reactions missed while offline.
@@ -50,11 +52,21 @@ class SyncEngine @Inject constructor(
         val serverCursors = chatRepository.refreshChats().okOrNull() ?: emptyMap()
 
         // 3. Catch-up per chat, looped while pages come back full.
+        //
+        // The cursor belongs to the LOOP: read once here, then advanced by
+        // the largest id each page actually returned. Re-reading
+        // `maxServerId` per page instead let a live `message` frame landing
+        // mid-loop (the socket is open — that is what started this resync)
+        // move the cursor to its own much higher id, and everything between
+        // the last page and it was skipped for good: `after_id` never looks
+        // back, and `loadOlder` only pages older than the OLDEST row held.
+        // protocol.md, "Best-effort delivery", step 3.
         for (chatId in chatDao.allChatIds()) {
+            var after = messageDao.maxServerId(chatId) ?: 0L
             while (true) {
-                val after = messageDao.maxServerId(chatId) ?: 0L
-                val pageSize = messageRepository.catchUp(chatId, after, CATCH_UP_PAGE) ?: break
-                if (pageSize < CATCH_UP_PAGE) break
+                val page = messageRepository.catchUp(chatId, after, CATCH_UP_PAGE) ?: break
+                page.maxServerId?.let { after = maxOf(after, it) }
+                if (page.size < CATCH_UP_PAGE) break
             }
             // 3b. Reactions missed while offline: the server's cursor
             // beats ours → page /reactions from the stored cursor.
@@ -70,9 +82,19 @@ class SyncEngine @Inject constructor(
             if ((serverCursors[chatId]?.edits ?: 0L) > localEditSeq) {
                 messageRepository.catchUpEdits(chatId, localEditSeq)
             }
+            // 3d. Votes missed while offline, for the same reason again:
+            // a vote is a change to an OLDER row, which `after_id` can
+            // never see. Gated on the chat's max_poll_seq beating the
+            // stored cursor, so a family that has never held a poll — or
+            // one whose polls this device is level with — makes no
+            // request at all.
+            val localPollSeq = chatDao.maxPollSeq(chatId) ?: 0L
+            if ((serverCursors[chatId]?.polls ?: 0L) > localPollSeq) {
+                messageRepository.catchUpPolls(chatId, localPollSeq)
+            }
         }
 
-        // 3d. Repair any location stored without its coordinates. Same
+        // 3e. Repair any location stored without its coordinates. Same
         // reason as edits above: `after_id` can never see an older row, so
         // nothing else would ever fix one.
         messageRepository.repairLocationsMissingCoordinates()

@@ -745,6 +745,24 @@ pub(crate) async fn remove_if_unreferenced(
     Ok(())
 }
 
+/// Remove every file in a collected key list that no row names any more.
+///
+/// The shape every bulk delete in this server follows: collect the keys
+/// BEFORE the rows go (afterwards nothing can name the files), delete, and
+/// sweep AFTER the commit — never before, because a rollback would leave
+/// rows pointing at bytes that are gone. Each key is still checked one at a
+/// time rather than removed outright: since 0011 several rows may name one
+/// file.
+pub(crate) async fn remove_all_if_unreferenced(
+    state: &AppState,
+    storage_keys: &[String],
+) -> Result<(), ApiError> {
+    for key in storage_keys {
+        remove_if_unreferenced(state, key).await?;
+    }
+    Ok(())
+}
+
 /// Delete unclaimed uploads past the grace period.
 ///
 /// A send the user abandoned — picked a video, changed their mind — leaves

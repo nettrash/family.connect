@@ -24,6 +24,7 @@ pub mod handlers_board;
 pub mod handlers_chat;
 pub mod handlers_device;
 pub mod handlers_family;
+pub mod handlers_poll;
 pub mod handlers_stats;
 pub mod mentions;
 pub mod migrate;

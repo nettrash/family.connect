@@ -151,6 +151,9 @@ struct ConversationView: View {
     @State private var mediaState: MediaSendState = .idle
     /// One fix, on demand — never a running location service.
     @State private var locationProvider = LocationProvider()
+    /// True while the poll form is up. A sheet rather than a banner over
+    /// the field: a question plus up to ten options is a form, not a line.
+    @State private var showPollComposer = false
     /// The attachment being viewed full-screen.
     @State private var viewingAttachment: AttachmentDTO?
     /// A downloaded file on its way to Quick Look.
@@ -188,30 +191,8 @@ struct ConversationView: View {
     @State private var sharePayload: SharePayload?
 
     /// Media that is prepared and waiting for the user to press Send.
-    ///
-    /// Picking used to send immediately, which meant a caption had to be
-    /// typed BEFORE choosing the photo — and once picked there was no way
-    /// out. Staging separates "what to send" from "when", so the caption can
-    /// be written while looking at the thumbnail.
-    private struct StagedAttachment: Identifiable {
-        let id = UUID()
-        let prepared: MediaPrep.Prepared
-
-        /// The composer's thumbnail: the same JPEG the bubble will draw.
-        /// Files have none — a document is drawn as a row, not a tile.
-        var thumbnail: Image? {
-            guard let data = prepared.previewJPEG,
-                  let image = PlatformImage.decode(data, maxPixels: 240)
-            else { return nil }
-            return PlatformImage.view(image)
-        }
-
-        var label: String {
-            if let name = prepared.name, !name.isEmpty { return name }
-            return prepared.kind == AttachmentDTO.Kind.video ? "Video" : "Photo"
-        }
-    }
-
+    /// The type and its chip are shared with the Mac composer — see
+    /// Views/StagedAttachment.swift.
     @State private var staged: StagedAttachment?
 
     init(chatID: Int64) {
@@ -366,6 +347,13 @@ struct ConversationView: View {
                 guard isPinnedToBottom else { return }
                 pinToBottom(proxy, animated: false)
             }
+            .onChange(of: chats.first?.maxPollSeq) {
+                // Poll catch-up landed, and it grows bubbles for the same
+                // reason: an option gaining its FIRST vote adds a row of
+                // faces under it. Same repair as the reaction cursor above.
+                guard isPinnedToBottom else { return }
+                pinToBottom(proxy, animated: false)
+            }
             .onChange(of: inputFocused) {
                 // The keyboard rising is an inset change, and the system's
                 // own avoidance is best-effort — deterministically pin the
@@ -405,6 +393,14 @@ struct ConversationView: View {
         }
         .sheet(item: $sharePayload) { payload in
             ShareSheet(items: payload.items)
+        }
+        .sheet(isPresented: $showPollComposer) {
+            PollComposerView(
+                onCreate: { question, options in
+                    showPollComposer = false
+                    sendPoll(question: question, options: options)
+                },
+                onCancel: { showPollComposer = false })
         }
         .sheet(item: $fullPickerTarget) { target in
             EmojiPickerView { emoji in
@@ -511,6 +507,16 @@ struct ConversationView: View {
                                         viewingAttachment = attachment
                                     }
                                 },
+                                onVote: { optionID in
+                                    Task {
+                                        await coordinator.vote(
+                                            localID: message.localID, optionID: optionID)
+                                    }
+                                },
+                                onClosePoll: {
+                                    Task { await coordinator.closePoll(localID: message.localID) }
+                                },
+                                memberCount: familyMemberCount,
                                 onRetry: { coordinator.retry(localID: message.localID) },
                                 onDelete: { coordinator.deleteLocalMessage(localID: message.localID) },
                                 onToggleReaction: { emoji in
@@ -632,6 +638,16 @@ struct ConversationView: View {
                     } label: {
                         Label("File", systemImage: "doc")
                     }
+                    // Inside the menu on purpose: the guard below disables
+                    // attaching while an edit or an upload is in flight, and
+                    // an item here inherits it for free. It is also the door
+                    // that works when the field is NOT focused, which is
+                    // where a keyboard ⌘V cannot reach.
+                    Button {
+                        pasteAttachment()
+                    } label: {
+                        Label("Paste", systemImage: "doc.on.clipboard")
+                    }
                     // Hidden rather than disabled where there is no camera
                     // (Simulator, camera-less device): presenting the picker
                     // there shows an empty black sheet.
@@ -651,6 +667,18 @@ struct ConversationView: View {
                         shareLocation()
                     } label: {
                         Label("Location", systemImage: "mappin.and.ellipse")
+                    }
+                    // The family chat only, and the server agrees: a poll
+                    // anywhere else is `invalid_poll` (docs/protocol.md,
+                    // "Polls"). A poll is a family deciding something
+                    // together; between two people it is a question, and
+                    // the answer is the next message.
+                    if isFamilyChat {
+                        Button {
+                            showPollComposer = true
+                        } label: {
+                            Label("Poll", systemImage: "chart.bar")
+                        }
                     }
                 } label: {
                     Image(systemName: "paperclip")
@@ -706,11 +734,46 @@ struct ConversationView: View {
             .padding(.vertical, 8)
         }
         .background(.bar)
+        .background { pasteShortcut }
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.height
         } action: { height in
             inputBarHeight = height
         }
+    }
+
+    /// ⌘V from a hardware keyboard, for the pastes a text field will not
+    /// take.
+    ///
+    /// Zero-sized and unlabelled: the DISCOVERABLE door is the Paste item
+    /// in the attach menu, and this exists only so the gesture people
+    /// already have in their fingers does the obvious thing on an iPad.
+    ///
+    /// It is written to be correct under BOTH possible orders of the
+    /// responder chain, because which one UIKit picks is not something this
+    /// side can assert. If the focused field claims ⌘V — which is what a
+    /// standard edit action does against a key command that has not asked
+    /// to override it — this never runs and an ordinary text paste is
+    /// untouched. If it runs instead, `pasteFromKeyboard` puts the
+    /// clipboard's WORDS in the draft, so a text paste is not swallowed
+    /// either way. It carries the attach menu's guard, so during an edit or
+    /// an upload it is not registered at all and the field keeps ⌘V.
+    private var pasteShortcut: some View {
+        Button {
+            pasteFromKeyboard()
+        } label: {
+            // A real title, clipped to nothing: iPadOS reads the label when
+            // it draws the ⌘-held shortcut list, and a blank row there
+            // would be worse than no row.
+            Text("Paste")
+                .frame(width: 0, height: 0)
+                .clipped()
+                .opacity(0)
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("v", modifiers: .command)
+        .disabled(mediaState == .preparing || mediaState == .uploading || editTarget != nil)
+        .accessibilityHidden(true)
     }
 
     /// "Replying to X" above the field, with the way out. Its appearance
@@ -903,7 +966,7 @@ struct ConversationView: View {
 
     private func finishRecording() {
         guard let url = recorder.stop() else {
-            mediaState = .failed("That recording was too short.")
+            mediaState = .failed(String(localized: "That recording was too short."))
             return
         }
         mediaState = .preparing
@@ -911,10 +974,10 @@ struct ConversationView: View {
             do {
                 stage(try await MediaPrep.prepareAudio(from: url, limit: MediaPrep.sizeLimit))
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                mediaState = .failed("That file is over the 100 MB limit.")
+                mediaState = .failed(String(localized: "That file is over the 100 MB limit."))
                 try? FileManager.default.removeItem(at: url)
             } catch {
-                mediaState = .failed("Couldn't prepare that item.")
+                mediaState = .failed(String(localized: "Couldn't prepare that item."))
                 try? FileManager.default.removeItem(at: url)
             }
         }
@@ -929,47 +992,8 @@ struct ConversationView: View {
     /// The staged attachment sitting above the field, with the way out.
     @ViewBuilder
     private func stagedChip(_ item: StagedAttachment) -> some View {
-        HStack(spacing: 10) {
-            ZStack {
-                if let thumbnail = item.thumbnail {
-                    thumbnail
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Color.appSecondaryFill
-                    Image(systemName: "doc")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                }
-                if item.prepared.kind == AttachmentDTO.Kind.video {
-                    Image(systemName: "play.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(.white, .black.opacity(0.35))
-                }
-            }
-            .frame(width: 44, height: 44)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.label)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("Add a message, or send it on its own.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            Button {
-                withAnimation(.spring(duration: 0.25)) { discardStaged() }
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove attachment")
+        StagedAttachmentChip(item: item) {
+            withAnimation(.spring(duration: 0.25)) { discardStaged() }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -1024,7 +1048,7 @@ struct ConversationView: View {
             onPickedFile: stagePickedFile,
             onCapturedPhoto: stageCapturedPhoto,
             onCapturedVideo: stageCapturedVideo,
-            onImportFailed: { mediaState = .failed("Couldn't read that file.") },
+            onImportFailed: { mediaState = .failed(String(localized: "Couldn't read that file.")) },
             onShareAttachment: { shareAttachment($0, caption: "") })
     }
 
@@ -1036,9 +1060,9 @@ struct ConversationView: View {
     /// bytes rather than re-encoding them on the way out.
     func shareAttachment(_ attachment: AttachmentDTO, caption: String) {
         Task {
-            mediaState = .working("Preparing…")
+            mediaState = .working(String(localized: "Preparing…"))
             guard let url = await coordinator.localFileURL(for: attachment) else {
-                mediaState = .failed("Couldn't download that to share.")
+                mediaState = .failed(String(localized: "Couldn't download that to share."))
                 return
             }
             mediaState = .idle
@@ -1074,6 +1098,47 @@ struct ConversationView: View {
         if replyDraft == nil { replyDraft = handoff.replyTo }
     }
 
+    /// ⌘V: attach when that is plainly what was meant, and otherwise put
+    /// the words where they were going.
+    ///
+    /// The text branch only ever runs if the composer's field did NOT take
+    /// the keystroke, so nothing is being intercepted from it. It appends
+    /// rather than inserting at the caret, for the reason
+    /// `insertAssistantMention` does: SwiftUI's TextField publishes no
+    /// selection, so "at the caret" is not knowable from here.
+    private func pasteFromKeyboard() {
+        guard ClipboardAttachment.offersAttachment else {
+            if let text = ClipboardAttachment.pendingText, !text.isEmpty {
+                model.draft += text
+                inputFocused = true
+            }
+            return
+        }
+        pasteAttachment()
+    }
+
+    /// Attach whatever is on the clipboard.
+    ///
+    /// Through `stage`, like every other door: one attachment per message,
+    /// nothing is sent until Send is pressed, and the caption can be
+    /// written while looking at the chip.
+    private func pasteAttachment() {
+        mediaState = .preparing
+        Task {
+            do {
+                stage(try await ClipboardAttachment.prepare(limit: MediaPrep.sizeLimit))
+            } catch ClipboardAttachment.Failure.nothingToPaste {
+                mediaState = .failed(String(localized: "There's nothing to paste."))
+            } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                // The same ceiling and the same wording every other door
+                // uses; a pasted item is not a special kind of too big.
+                mediaState = .failed(String(localized: "That file is over the 100 MB limit."))
+            } catch {
+                mediaState = .failed(String(localized: "Couldn't prepare that item."))
+            }
+        }
+    }
+
     /// Stage a picked document. Nothing is re-encoded — a file goes as it is.
     private func stagePickedFile(_ url: URL) {
         mediaState = .preparing
@@ -1083,9 +1148,9 @@ struct ConversationView: View {
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
                 // A document cannot be compressed the way a video can, so
                 // the advice is different: there is nothing to try.
-                mediaState = .failed("That file is over the 100 MB limit.")
+                mediaState = .failed(String(localized: "That file is over the 100 MB limit."))
             } catch {
-                mediaState = .failed("Couldn't read that file.")
+                mediaState = .failed(String(localized: "Couldn't read that file."))
             }
         }
     }
@@ -1099,9 +1164,9 @@ struct ConversationView: View {
             do {
                 stage(try await MediaPrep.preparePhoto(from: data, limit: MediaPrep.sizeLimit))
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                mediaState = .failed("Still too large after compressing — try a shorter clip.")
+                mediaState = .failed(String(localized: "Still too large after compressing — try a shorter clip."))
             } catch {
-                mediaState = .failed("Couldn't prepare that item.")
+                mediaState = .failed(String(localized: "Couldn't prepare that item."))
             }
         }
     }
@@ -1119,10 +1184,10 @@ struct ConversationView: View {
                 }
                 stage(prepared)
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                mediaState = .failed("Still too large after compressing — try a shorter clip.")
+                mediaState = .failed(String(localized: "Still too large after compressing — try a shorter clip."))
                 try? FileManager.default.removeItem(at: url)
             } catch {
-                mediaState = .failed("Couldn't prepare that item.")
+                mediaState = .failed(String(localized: "Couldn't prepare that item."))
                 try? FileManager.default.removeItem(at: url)
             }
         }
@@ -1156,7 +1221,7 @@ struct ConversationView: View {
             {
                 mediaState = .idle
             } else {
-                mediaState = .failed("Couldn't send that — try again.")
+                mediaState = .failed(String(localized: "Couldn't send that — try again."))
                 restore(handoff)
                 // Put the attachment back too: `sendMedia` deletes the temp
                 // file only on the paths that consumed it, and a failed send
@@ -1184,7 +1249,7 @@ struct ConversationView: View {
     private func openFile(_ attachment: AttachmentDTO) {
         Task {
             guard let url = await coordinator.localFileURL(for: attachment) else {
-                mediaState = .failed("Couldn't download that file.")
+                mediaState = .failed(String(localized: "Couldn't download that file."))
                 return
             }
             previewedFile = url
@@ -1210,7 +1275,7 @@ struct ConversationView: View {
             do {
                 if isVideo {
                     guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
-                        mediaState = .failed("Couldn't read that video.")
+                        mediaState = .failed(String(localized: "Couldn't read that video."))
                         return
                     }
                     prepared = try await MediaPrep.prepareVideo(from: movie.url, limit: limit)
@@ -1222,16 +1287,16 @@ struct ConversationView: View {
                 } else if let data = try await item.loadTransferable(type: Data.self) {
                     prepared = try await MediaPrep.preparePhoto(from: data, limit: limit)
                 } else {
-                    mediaState = .failed("Couldn't read that item.")
+                    mediaState = .failed(String(localized: "Couldn't read that item."))
                     return
                 }
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
                 // The one case the user has to act on: compression was not
                 // enough, so say what would help rather than just refusing.
-                mediaState = .failed("Still too large after compressing — try a shorter clip.")
+                mediaState = .failed(String(localized: "Still too large after compressing — try a shorter clip."))
                 return
             } catch {
-                mediaState = .failed("Couldn't prepare that item.")
+                mediaState = .failed(String(localized: "Couldn't prepare that item."))
                 return
             }
 
@@ -1498,6 +1563,24 @@ struct ConversationView: View {
         }
     }
 
+    /// The poll door, and a send door like any other — so it reads the
+    /// quote and clears it together.
+    ///
+    /// A poll may be a reply (the server takes `reply_to_message_id` beside
+    /// `poll`), and leaving the banner armed is the failure `takeComposer`
+    /// exists to prevent: the quote was dropped on the floor and the next
+    /// ordinary message silently became that reply. The draft is NOT
+    /// touched — the question came from the sheet, and anything typed in
+    /// the composer is still going somewhere else.
+    private func sendPoll(question: String, options: [String]) {
+        let quote = replyDraft
+        coordinator.sendPoll(question: question, options: options, in: chatID, replyTo: quote)
+        withAnimation(.spring(duration: 0.25)) {
+            replyDraft = nil
+        }
+        replyStartedFromHistory = false
+    }
+
     private func toggleReaction(localID: String, emoji: String) {
         Task { await coordinator.toggleReaction(localID: localID, emoji: emoji) }
     }
@@ -1586,13 +1669,14 @@ struct ConversationView: View {
                     mediaState = .idle
                 } else {
                     restore(composer)
-                    mediaState = .failed("Could not share your location.")
+                    mediaState = .failed(String(localized: "Could not share your location."))
                 }
             } catch LocationProvider.Failure.denied {
-                mediaState = .failed(
-                    "Family needs permission to use your location. Turn it on in Settings.")
+                mediaState = .failed(String(
+                    localized:
+                        "Family needs permission to use your location. Turn it on in Settings."))
             } catch {
-                mediaState = .failed("Could not find your location.")
+                mediaState = .failed(String(localized: "Could not find your location."))
             }
         }
     }
@@ -1650,7 +1734,10 @@ struct ConversationView: View {
         if let assistantID = AppSettings.assistantUserID, userID == assistantID {
             return AppSettings.assistantName
         }
-        return members.first(where: { $0.userID == userID })?.displayName
+        // resolvedDisplayName, not displayName: a deleted account's
+        // stored name is the server's English placeholder, and this is
+        // where the translated one is drawn instead.
+        return members.first(where: { $0.userID == userID })?.resolvedDisplayName
     }
 
     /// 0 when the sender has no picture — or has left the family, so the
@@ -1665,11 +1752,19 @@ struct ConversationView: View {
         Dictionary(members.map { ($0.userID, $0.avatarVersion) }, uniquingKeysWith: { first, _ in first })
     }
 
+    /// How many people a poll could hear from: the live roster, which is
+    /// neither the people who have left nor the accounts that were
+    /// deleted — a tally must not go on counting somebody who no longer
+    /// exists (docs/protocol.md, "Deleting an account").
+    private var familyMemberCount: Int {
+        members.filter { !$0.hasLeft && !$0.accountDeleted }.count
+    }
+
     /// userID → display name for every known member, feeding the "who
     /// reacted" rows. Tolerates duplicate rows (first wins) rather than
     /// trusting the store never to produce one.
     private var memberNames: [Int64: String] {
-        Dictionary(members.map { ($0.userID, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+        Dictionary(members.map { ($0.userID, $0.resolvedDisplayName) }, uniquingKeysWith: { first, _ in first })
     }
 }
 

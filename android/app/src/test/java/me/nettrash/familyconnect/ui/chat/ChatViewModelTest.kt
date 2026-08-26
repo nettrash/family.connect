@@ -15,6 +15,8 @@
 package me.nettrash.familyconnect.ui.chat
 
 import android.app.NotificationManager
+import android.content.ClipData
+import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
@@ -35,15 +37,20 @@ import java.io.File
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.filterNotNull
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import kotlinx.coroutines.test.setMain
+import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
+import me.nettrash.familyconnect.data.net.dto.PollCodec
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
+import me.nettrash.familyconnect.data.net.dto.ReplyToDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.push.PushNotifications
@@ -63,6 +70,8 @@ import me.nettrash.familyconnect.testutil.FakeConnectivityObserver
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
+import me.nettrash.familyconnect.testutil.pollDto
+import me.nettrash.familyconnect.testutil.pollState
 import me.nettrash.familyconnect.util.Clock
 import org.junit.After
 import org.junit.Before
@@ -70,6 +79,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import java.time.ZoneOffset
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -124,7 +134,7 @@ class ChatViewModelTest {
     }
 
     private fun TestScope.newViewModel(kind: String = "direct"): ChatViewModel {
-        chatRepository = ChatRepository(chatApi, db.chatDao(), socket)
+        chatRepository = ChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
         messageRepository = MessageRepository(
             chatApi = chatApi,
             attachmentApi = attachmentApi,
@@ -718,5 +728,453 @@ class ChatViewModelTest {
 
         assertThat(manager.activeNotifications).isEmpty()
         itemsSubscription.cancel()
+    }
+
+    // -- Pasting --------------------------------------------------------------
+    //
+    // A pasted item takes the same road a picked one does: prepare, stage,
+    // and wait for Send. What is new is that nobody chose it from a picker,
+    // so the kind, the media type and the NAME all have to be worked out
+    // from what the clipboard says — and a clipboard also holds things that
+    // are not attachments at all.
+
+    /**
+     * Wait for the staged item, rather than for the virtual clock.
+     *
+     * MediaPrep copies and decodes on `Dispatchers.IO` — a real thread the
+     * test scheduler does not own — so `advanceUntilIdle()` returns while
+     * the prepare is still running. runTest keeps pumping the scheduler
+     * while the body is suspended, so awaiting the value is both correct
+     * and deterministic.
+     */
+    private suspend fun ChatViewModel.awaitStaged(
+        predicate: (MediaPrep.Prepared) -> Boolean = { true },
+    ): MediaPrep.Prepared = staged.filterNotNull().first(predicate)
+
+    /** The same wait, for the paths that end in the composer's error strip. */
+    private suspend fun ChatViewModel.awaitFailure(): ChatViewModel.MediaSendState.Failed =
+        mediaState.first { it is ChatViewModel.MediaSendState.Failed }
+            as ChatViewModel.MediaSendState.Failed
+
+    /** A real 1x1 PNG: the decoder here is the platform's, not a fake. */
+    private val ONE_PIXEL_PNG: ByteArray = android.util.Base64.decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        android.util.Base64.DEFAULT,
+    )
+
+    /** Put bytes behind a content Uri, the way a provider would. */
+    private fun clipboardItem(name: String, bytes: ByteArray = ByteArray(32) { 7 }): Uri {
+        val uri = Uri.parse("content://me.nettrash.test/$name")
+        shadowOf(RuntimeEnvironment.getApplication().contentResolver)
+            .registerInputStreamSupplier(uri) { bytes.inputStream() }
+        return uri
+    }
+
+    /**
+     * The rule an animated GIF depends on: re-encoding it as a photo would
+     * turn it into one still frame, and the server refuses `image/gif` as a
+     * photo anyway. It goes as a file, bytes untouched.
+     */
+    @Test
+    fun pastedGifIsStagedAsAFileWithAName() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val uri = clipboardItem("opaque-id-1000000042")
+
+        val result = viewModel.pasteAttachment(uri, "image/gif")
+        val staged = viewModel.awaitStaged()
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.STAGING)
+        assertThat(staged.kind).isEqualTo(AttachmentDto.KIND_FILE)
+        assertThat(staged.mime).isEqualTo("image/gif")
+        // NOT the Uri's opaque tail, and not the cache file's name either.
+        assertThat(staged.name).isEqualTo("Pasted image.gif")
+        assertThat(staged.file.name).doesNotContain("Pasted")
+        assertThat(staged.file.readBytes()).hasLength(32)
+        assertThat(viewModel.mediaState.value).isEqualTo(ChatViewModel.MediaSendState.Idle)
+    }
+
+    /**
+     * The ordinary case: a copied photo. It takes the picker's own
+     * preparation — re-encoded to the one type the server magic-checks,
+     * with the thumbnail the bubble draws — and needs no name, because a
+     * photo's is ignored on the wire (docs/protocol.md, "Files").
+     */
+    @Test
+    fun aPastedPhotoIsPreparedLikeAPickedOne() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+
+        viewModel.pasteAttachment(clipboardItem("blob", ONE_PIXEL_PNG), "image/png")
+
+        val staged = viewModel.awaitStaged()
+        assertThat(staged.kind).isEqualTo(AttachmentDto.KIND_PHOTO)
+        assertThat(staged.mime).isEqualTo("image/jpeg")
+        assertThat(staged.name).isNull()
+        assertThat(staged.previewJpeg).isNotNull()
+    }
+
+    /** `kind=file` is refused outright without a name of 1–255 characters. */
+    @Test
+    fun aPastedDocumentIsNamedAfterItsType() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+
+        viewModel.pasteAttachment(clipboardItem("blob"), "application/pdf")
+
+        val staged = viewModel.awaitStaged()
+        assertThat(staged.name).isEqualTo("Pasted file.pdf")
+        assertThat(staged.mime).isEqualTo("application/pdf")
+    }
+
+    /** Audio the server can magic-check keeps its player, and its name. */
+    @Test
+    fun pastedAudioIsStagedAsAudio() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+
+        viewModel.pasteAttachment(clipboardItem("blob"), "audio/mpeg")
+
+        val staged = viewModel.awaitStaged()
+        assertThat(staged.kind).isEqualTo(AttachmentDto.KIND_AUDIO)
+        assertThat(staged.mime).isEqualTo("audio/mpeg")
+        assertThat(staged.name).isEqualTo("Pasted sound.mp3")
+    }
+
+    /**
+     * A copied link is a Uri too. Attaching one would mean downloading
+     * somebody's web page — the address belongs in the composer.
+     */
+    @Test
+    fun aCopiedLinkIsNotAnAttachment() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+
+        val result = viewModel.pasteAttachment(
+            Uri.parse("https://example.com/holiday.jpg"),
+            "image/jpeg",
+        )
+        advanceUntilIdle()
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.NOTHING)
+        assertThat(viewModel.staged.value).isNull()
+        assertThat(viewModel.mediaState.value).isEqualTo(ChatViewModel.MediaSendState.Idle)
+    }
+
+    /**
+     * One attachment per message: a paste goes through the same staging
+     * the picker does, so it REPLACES what was staged (and deletes the
+     * file nothing else would clean up) rather than queueing behind it.
+     */
+    @Test
+    fun aPasteReplacesWhateverWasAlreadyStaged() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val first = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 3 }) }
+        viewModel.stagePrepared(
+            MediaPrep.Prepared(
+                file = first,
+                mime = "image/jpeg",
+                kind = AttachmentDto.KIND_PHOTO,
+                width = 10,
+                height = 10,
+                durationMs = null,
+                previewJpeg = null,
+            ),
+        )
+        runCurrent()
+
+        viewModel.pasteAttachment(clipboardItem("blob"), "application/pdf")
+
+        val staged = viewModel.awaitStaged { it.mime == "application/pdf" }
+        assertThat(staged.kind).isEqualTo(AttachmentDto.KIND_FILE)
+        assertThat(first.exists()).isFalse()
+    }
+
+    /**
+     * The guard the attach menu carries, repeated for the door that is not
+     * behind it: the composer is borrowed for an edit, which has no second
+     * attachment to add.
+     */
+    @Test
+    fun aPasteIsRefusedWhileEditingAMessage() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        viewModel.beginEdit(messageId = 5, body = "old text")
+        runCurrent()
+
+        val result = viewModel.pasteAttachment(clipboardItem("blob"), "application/pdf")
+        advanceUntilIdle()
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.BUSY)
+        assertThat(viewModel.staged.value).isNull()
+    }
+
+    /** And the other half of that guard: one upload at a time. */
+    @Test
+    fun aPasteIsRefusedWhileAnUploadIsRunning() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 4 }) }
+        viewModel.stagePrepared(
+            MediaPrep.Prepared(
+                file = file,
+                mime = "image/jpeg",
+                kind = AttachmentDto.KIND_PHOTO,
+                width = 10,
+                height = 10,
+                durationMs = null,
+                previewJpeg = null,
+            ),
+        )
+        runCurrent()
+        // send() marks the composer Uploading before it launches anything,
+        // so nothing has to be advanced to be in flight.
+        viewModel.send()
+
+        val result = viewModel.pasteAttachment(clipboardItem("blob"), "application/pdf")
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.BUSY)
+        advanceUntilIdle()
+    }
+
+    // -- The attach menu's Paste ----------------------------------------------
+
+    @Test
+    fun theMenuPasteStagesAnAttachableItem() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val uri = clipboardItem("blob")
+        val clip = ClipData("image", arrayOf("image/gif"), ClipData.Item(uri))
+
+        val result = viewModel.pasteFromClipboard(clip)
+        val staged = viewModel.awaitStaged()
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.STAGING)
+        assertThat(staged.kind).isEqualTo(AttachmentDto.KIND_FILE)
+        // The words that came with it were not swallowed into the caption.
+        assertThat(viewModel.inputState.text.toString()).isEmpty()
+    }
+
+    /** Words on the clipboard still land in the composer, as words. */
+    @Test
+    fun theMenuPastePutsTextInTheComposer() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+
+        val result = viewModel.pasteFromClipboard(ClipData.newPlainText("l", "dinner at 7"))
+        advanceUntilIdle()
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.TEXT)
+        assertThat(viewModel.inputState.text.toString()).isEqualTo("dinner at 7")
+        assertThat(viewModel.staged.value).isNull()
+    }
+
+    /** Appended to what was being written, with a separator, never over it. */
+    @Test
+    fun pastedTextIsAppendedToWhatWasAlreadyTyped() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        viewModel.inputState.setTextAndPlaceCursorAtEnd("see you at")
+
+        viewModel.pasteFromClipboard(ClipData.newPlainText("l", "7"))
+        advanceUntilIdle()
+
+        assertThat(viewModel.inputState.text.toString()).isEqualTo("see you at 7")
+    }
+
+    /**
+     * A clip carrying both — the shape a browser copy has. The picture is
+     * the attachment; the words stay words.
+     */
+    @Test
+    fun theMenuPastePrefersTheAttachableItem() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val clip = ClipData.newPlainText("l", "look at this")
+        clip.addItem(ClipData.Item(clipboardItem("blob")))
+
+        viewModel.pasteFromClipboard(clip)
+
+        assertThat(viewModel.awaitStaged().kind).isEqualTo(AttachmentDto.KIND_FILE)
+        assertThat(viewModel.inputState.text.toString()).isEmpty()
+    }
+
+    /** An empty clipboard says so rather than looking broken. */
+    @Test
+    fun theMenuPasteSaysWhenThereIsNothingToPaste() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+
+        val result = viewModel.pasteFromClipboard(null)
+
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.NOTHING)
+        assertThat(viewModel.awaitFailure().reason)
+            .isEqualTo(
+                RuntimeEnvironment.getApplication().getString(R.string.e_nothing_to_paste),
+            )
+    }
+
+    // -- Polls -----------------------------------------------------------------
+
+    @Test
+    fun aPollCanOnlyBeStartedInTheFamilyChat() = runTest(dispatcher) {
+        // Anywhere else the server answers `invalid_poll`, so the menu
+        // hides the item rather than offering an affordance that fails.
+        val direct = newViewModel(kind = "direct")
+        runCurrent()
+
+        assertThat(direct.canCreatePoll.value).isFalse()
+        direct.beginPoll()
+        assertThat(direct.pollDraft.value).isNull()
+    }
+
+    @Test
+    fun theFamilyChatOpensAPollSheetOnAFreshDraft() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        runCurrent()
+
+        assertThat(viewModel.canCreatePoll.value).isTrue()
+        viewModel.beginPoll()
+
+        val draft = viewModel.pollDraft.value!!
+        assertThat(draft.question).isEmpty()
+        assertThat(draft.options).hasSize(2)
+        assertThat(draft.isValid).isFalse()
+    }
+
+    @Test
+    fun theSheetEditsTheDraftItHolds() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        runCurrent()
+        viewModel.beginPoll()
+
+        viewModel.setPollQuestion("Pizza or pasta?")
+        viewModel.setPollOption(0, "Pizza")
+        viewModel.setPollOption(1, "Pasta")
+        viewModel.addPollOption()
+        viewModel.setPollOption(2, "Sushi")
+        viewModel.removePollOption(1)
+
+        val draft = viewModel.pollDraft.value!!
+        assertThat(draft.question).isEqualTo("Pizza or pasta?")
+        assertThat(draft.options).containsExactly("Pizza", "Sushi").inOrder()
+        assertThat(draft.isValid).isTrue()
+
+        viewModel.cancelPoll()
+        assertThat(viewModel.pollDraft.value).isNull()
+    }
+
+    @Test
+    fun sendingAPollPostsTheQuestionAsTheBodyAndClosesTheSheet() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        runCurrent()
+        chatApi.postMessageHandler = { _, clientMsgId, body ->
+            ApiResult.Ok(
+                MessageResponse(
+                    messageDto(
+                        id = 1340,
+                        chatId = CHAT,
+                        senderId = ME,
+                        clientMsgId = clientMsgId,
+                        body = body,
+                        poll = pollDto(88, "Pizza" to emptyList(), "Pasta" to emptyList()),
+                    ),
+                ),
+            )
+        }
+        viewModel.beginPoll()
+        viewModel.setPollQuestion("Pizza or pasta?")
+        viewModel.setPollOption(0, "Pizza")
+        viewModel.setPollOption(1, "Pasta")
+
+        viewModel.sendPoll()
+        advanceUntilIdle()
+
+        assertThat(viewModel.pollDraft.value).isNull()
+        assertThat(chatApi.postedMessages.single().third).isEqualTo("Pizza or pasta?")
+        assertThat(chatApi.postedPolls.single()?.options)
+            .containsExactly("Pizza", "Pasta").inOrder()
+        // And the bubble is a poll, drawn off the stored row.
+        val row = db.messageDao().findByServerId(1340L)!!
+        assertThat(row.pollSeq).isEqualTo(88L)
+    }
+
+    @Test
+    fun aPollTakesThePrimedReplyWithIt() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        runCurrent()
+        chatApi.postMessageHandler = { _, clientMsgId, body ->
+            ApiResult.Ok(
+                MessageResponse(
+                    messageDto(id = 1341, chatId = CHAT, senderId = ME, clientMsgId = clientMsgId, body = body),
+                ),
+            )
+        }
+        viewModel.beginReply(
+            ReplyToDto(messageId = 1337, senderId = PEER, excerpt = "What shall we eat?"),
+        )
+        viewModel.beginPoll()
+        viewModel.setPollQuestion("Pizza or pasta?")
+        viewModel.setPollOption(0, "Pizza")
+        viewModel.setPollOption(1, "Pasta")
+
+        viewModel.sendPoll()
+        advanceUntilIdle()
+
+        assertThat(chatApi.postedReplyTargets.single()).isEqualTo(1337L)
+        // Cleared, so the next message does not quote it too.
+        assertThat(viewModel.replyDraft.value).isNull()
+    }
+
+    @Test
+    fun anInvalidDraftIsNotSent() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        runCurrent()
+        viewModel.beginPoll()
+        viewModel.setPollQuestion("Pizza or pasta?")
+        viewModel.setPollOption(0, "Pizza")
+
+        viewModel.sendPoll()
+        advanceUntilIdle()
+
+        assertThat(chatApi.postedMessages).isEmpty()
+        // The sheet stays open on what was typed, rather than throwing it away.
+        assertThat(viewModel.pollDraft.value).isNotNull()
+    }
+
+    @Test
+    fun aTapOnAnOptionVotes() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        runCurrent()
+        db.messageDao().insertIgnore(
+            listOf(
+                MessageEntity(
+                    clientMsgId = "s100",
+                    serverId = 100,
+                    chatId = CHAT,
+                    senderId = PEER,
+                    body = "Pizza or pasta?",
+                    createdAt = NOON,
+                    status = MessageStatus.SENT,
+                    pollJson = PollCodec.encode(
+                        pollDto(88, "Pizza" to emptyList(), "Pasta" to emptyList()),
+                    ),
+                    pollSeq = 88,
+                ),
+            ),
+        )
+        chatApi.putVoteHandler = { _, _, _ ->
+            ApiResult.Ok(pollState(100L, pollDto(89, "Pizza" to listOf(ME), "Pasta" to emptyList())))
+        }
+
+        viewModel.vote(messageServerId = 100L, optionId = 5L)
+        advanceUntilIdle()
+
+        assertThat(chatApi.putVotes).containsExactly(Triple(CHAT, 100L, 5L))
+        val stored = PollCodec.decode(db.messageDao().findByServerId(100L)!!.pollJson)!!
+        assertThat(stored.options[0].votes).containsExactly(ME)
+    }
+
+    @Test
+    fun aRefusedCloseSaysSoInTheComposersStrip() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        runCurrent()
+        chatApi.closePollHandler = { _, _ ->
+            ApiResult.HttpError(403, "not_message_author", "not yours")
+        }
+
+        viewModel.closePoll(messageServerId = 100L)
+        advanceUntilIdle()
+
+        assertThat(viewModel.awaitFailure().reason)
+            .isEqualTo(RuntimeEnvironment.getApplication().getString(R.string.e_close_poll_failed))
     }
 }

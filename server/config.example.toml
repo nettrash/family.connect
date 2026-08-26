@@ -40,6 +40,19 @@ session_touch_interval_mins = 15
 # Maximum message body length in characters (Unicode scalar values, not
 # bytes) — protocol.md fixes the default at 4000.
 max_message_chars = 4000
+# A poll's options: how many one poll may offer, and how long each may be.
+#
+# The QUESTION is the message body and is bounded by max_message_chars above
+# — a poll adds no second place for prose. These two bound the BUTTONS, which
+# is why 100 characters is generous rather than stingy.
+#
+# The FEWEST options is not a setting: two, always. A poll with one option is
+# a statement, not a question, and nothing good comes of an operator being
+# able to turn that on. Raising max_poll_options past 10 is safe as far as
+# this server is concerned, but the clients lay a poll out as a list of
+# tappable rows in a chat bubble — protocol.md fixes the default at 10.
+max_poll_options = 10
+max_poll_option_chars = 100
 # Largest photo or video accepted, in bytes (100 MB). The clients re-encode
 # a video past this rather than refusing outright, so raising it mostly
 # changes how much of the family's disk a single message can take. Keep the

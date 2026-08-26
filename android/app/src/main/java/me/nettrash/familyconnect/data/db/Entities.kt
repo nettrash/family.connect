@@ -69,6 +69,15 @@ data class ChatEntity(
     @ColumnInfo(defaultValue = "0") val maxReactionSeq: Long = 0,
     /** The edit resync cursor — the edit twin of [maxReactionSeq]. */
     @ColumnInfo(defaultValue = "0") val maxEditSeq: Long = 0,
+    /**
+     * The poll resync cursor — the fourth of the same shape.
+     *
+     * Advanced by catch-up pages and live `poll` frames only. A poll
+     * riding on a fetched Message must NOT move it: a history page
+     * proves nothing about OTHER polls' lower values, and a cursor that
+     * jumped ahead of them would skip changes this device never saw.
+     */
+    @ColumnInfo(defaultValue = "0") val maxPollSeq: Long = 0,
 )
 
 @Entity(
@@ -152,6 +161,26 @@ data class MessageEntity(
     val attachmentLatitude: Double? = null,
     val attachmentLongitude: Double? = null,
     val attachmentAccuracyM: Int? = null,
+    /**
+     * The poll on this message, stored as the wire-shape JSON object
+     * (see PollCodec). Null = not a poll, which is the only thing
+     * absence ever means here: a poll dies with its message, so nothing
+     * on the wire can take one off a message that has one.
+     *
+     * Verbatim rather than flattened into columns, exactly like
+     * [reactionsJson] and for the same reasons: it is a nested list of
+     * lists, it is replaced whole (never patched), and the shape is the
+     * server's.
+     */
+    val pollJson: String? = null,
+    /**
+     * The poll_seq stamped on the state in [pollJson]. Guards
+     * out-of-order applies: a poll only lands when its seq is greater
+     * (see MessageDao.applyPollState). 0 = no server state applied yet,
+     * which is also what an optimistic just-sent poll carries so the
+     * ack's authoritative copy still passes the guard.
+     */
+    @ColumnInfo(defaultValue = "0") val pollSeq: Long = 0,
 ) {
     /** The wire shape back out of the flat columns, or null for no media. */
     val attachment: AttachmentDto?
@@ -228,6 +257,25 @@ data class MemberEntity(
      * out of name resolution.
      */
     @ColumnInfo(defaultValue = "0") val hasLeft: Boolean = false,
+    /**
+     * The account itself is GONE (docs/protocol.md, "Deleting an
+     * account") — not merely out of this family.
+     *
+     * A second flag rather than a state of [hasLeft], because the two
+     * answer different questions and both have to keep their answer: a
+     * deleted account has also left, but somebody who left can come back
+     * and a deleted one never can. This row survives for exactly one
+     * reason — their messages, notes and reactions are still in the
+     * family's history and have to be given a name.
+     *
+     * What it costs every reader: the display name is the server's
+     * ENGLISH placeholder, so a screen draws its own translation instead
+     * (see ChatViewModel.memberNames); there is no picture, because
+     * [avatarVersion] is 0 on a tombstone; and no roster, picker, admin
+     * list or statistic may include them. NOT NULL with a DEFAULT because
+     * every row already in the table has an answer: they are not deleted.
+     */
+    @ColumnInfo(defaultValue = "0") val deleted: Boolean = false,
     /**
      * A day and a month, flattened into two nullable columns — the same
      * treatment the reply quote and the attachment get, and for the same

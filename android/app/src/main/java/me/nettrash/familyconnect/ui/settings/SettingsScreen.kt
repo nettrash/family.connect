@@ -4,8 +4,9 @@
  *
  * Profile block (picture + name + birthday), family block (invite code + share sheet
  * + manage entry for owners), leave family (confirmed), logout
- * (confirmed). The share action goes through a plain ACTION_SEND chooser
- * — the invite code is short text, every messenger can carry it.
+ * (confirmed) and delete account (confirmed, with the password). The
+ * share action goes through a plain ACTION_SEND chooser — the invite
+ * code is short text, every messenger can carry it.
  *
  * The photo picker is PickVisualMedia: the system picker, so the app
  * never asks for a storage permission and only ever sees the one image
@@ -29,6 +30,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -50,6 +52,7 @@ import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.AddAPhoto
 import androidx.compose.material.icons.outlined.ManageAccounts
+import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -59,6 +62,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.OutlinedTextField
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.familyadmin.BirthdayDialog
 import me.nettrash.familyconnect.ui.familyadmin.SetPasswordDialog
@@ -81,7 +85,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.toClipEntry
@@ -116,6 +123,7 @@ fun SettingsScreen(
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     var confirmLeave by remember { mutableStateOf(false) }
     var confirmLogout by remember { mutableStateOf(false) }
+    var confirmDeleteAccount by remember { mutableStateOf(false) }
     var changingPassword by remember { mutableStateOf(false) }
     var editingBirthday by remember { mutableStateOf(false) }
     /// Held here rather than inside the dialog: the dialog is rebuilt on
@@ -497,6 +505,37 @@ fun SettingsScreen(
                 },
                 modifier = Modifier.clickable { confirmLogout = true },
             )
+            HorizontalDivider(
+                modifier = Modifier.padding(start = 16.dp),
+                color = MaterialTheme.colorScheme.outlineVariant,
+            )
+            // Beside "Log out" on purpose: the in-app, self-service
+            // deletion App Store guideline 5.1.1(v) asks for is only
+            // self-service if somebody can find it (protocol.md,
+            // "Deleting an account").
+            ListItem(
+                headlineContent = {
+                    Text(
+                        stringResource(R.string.s_delete_account),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        Icons.Outlined.PersonRemove,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                },
+                modifier = Modifier.clickable {
+                    // Clear any older failure first: the dialog closes
+                    // itself when one appears, and a stale one would shut
+                    // it the moment it opened.
+                    viewModel.dismissError()
+                    confirmDeleteAccount = true
+                },
+            )
 
             Spacer(Modifier.height(24.dp))
             Text(
@@ -598,4 +637,92 @@ fun SettingsScreen(
             },
         )
     }
+
+    if (confirmDeleteAccount) {
+        // The dialog stays up while the request is in flight — closing it
+        // on tap would throw away a password the person may have to type
+        // again. Success navigates away (loggedOut); a failure closes it
+        // over the ErrorCard, which is where every other family action
+        // reports.
+        LaunchedEffect(state.error) {
+            if (state.error != null) confirmDeleteAccount = false
+        }
+        DeleteAccountDialog(
+            isOwner = state.isOwner,
+            busy = state.busy,
+            onDismiss = { confirmDeleteAccount = false },
+            onConfirm = viewModel::deleteAccount,
+        )
+    }
+}
+
+/**
+ * The confirmation for a deletion that cannot be undone.
+ *
+ * It says exactly what happens before it asks for anything — what is
+ * destroyed, what SURVIVES and under whose name, and where the family
+ * ends up if the person leaving owns it. The copy is the protocol's
+ * ("Deleting an account") in the app's own words, because the one thing
+ * a screen like this must not do is surprise somebody afterwards.
+ *
+ * The password is asked for here rather than trusted from the live
+ * session, for the reason the protocol gives: an unattended unlocked
+ * phone is exactly what this protects against.
+ */
+@Composable
+private fun DeleteAccountDialog(
+    isOwner: Boolean,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var password by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(stringResource(R.string.s_delete_your_account)) },
+        text = {
+            // Scrollable: this is the longest copy in the app, and on a
+            // short screen an AlertDialog that cannot scroll pushes its
+            // own buttons out of reach — including Cancel.
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    stringResource(R.string.s_delete_account_explanation),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                // Only an owner's family can change hands, so only an
+                // owner is told about it.
+                if (isOwner) {
+                    Text(
+                        stringResource(R.string.s_delete_account_owner_note),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text(stringResource(R.string.s_password)) },
+                    singleLine = true,
+                    enabled = !busy,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+            }
+        },
+        confirmButton = {
+            DestructiveTextButton(
+                label = stringResource(R.string.s_delete_account),
+                enabled = !busy && password.isNotEmpty(),
+                onClick = { onConfirm(password) },
+            )
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text(stringResource(R.string.s_cancel))
+            }
+        },
+    )
 }

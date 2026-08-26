@@ -99,6 +99,10 @@
     <string name="s_add_a_message_or_send_it_on_its_own">Dodaj poruku ili pošalji ovako.</string>
     <string name="s_remove_attachment">Ukloni prilog</string>
     <string name="s_photo_or_video">Fotografija ili video</string>
+    <string name="s_paste">Nalepi</string>
+    <string name="s_pasted_image">Nalepljena slika</string>
+    <string name="s_pasted_sound">Nalepljeni zvuk</string>
+    <string name="s_pasted_file">Nalepljena datoteka</string>
     <string name="s_privacy">Privatnost</string>
     <string name="s_react">Reaguj</string>
     <string name="s_register">Registruj se</string>
@@ -155,6 +159,7 @@
     <string name="e_join_failed">Pridruživanje nije uspelo</string>
     <string name="e_load_requests_failed">Zahtevi za pristup nisu učitani</string>
     <string name="e_no_app_for_file">Nijedna aplikacija na ovom telefonu ne može da otvori tu datoteku.</string>
+    <string name="e_nothing_to_paste">Nema šta da se nalepi.</string>
     <string name="e_open_chat_failed">Razgovor ne može da se otvori</string>
     <string name="e_password_too_short">Najmanje 8 znakova</string>
     <string name="e_prepare_failed">Ta stavka nije pripremljena.</string>
@@ -192,4 +197,31 @@
     <string name="e_birthday_failed">Rođendan nije sačuvan</string>
     <string name="e_change_language_failed">Jezik porodice nije promenjen</string>
     <string name="e_change_assistant_history_failed">Podešavanje nije promenjeno</string>
+    <string name="s_delete_account">Obriši nalog</string>
+    <string name="s_delete_your_account">Obrisati tvoj nalog?</string>
+    <string name="s_delete_account_explanation">Tvoj nalog, lozinka, slika profila i rođendan se brišu, a sve sesije na svim uređajima se zatvaraju. Brišu se i lični razgovori — i kod druge osobe. Ostaje ono što ste jedni drugima rekli: tvoje poruke u porodičnom razgovoru, beleške na tabli i reakcije, koje od tada stoje kao „Obrisan nalog“. To ne može da se poništi.</string>
+    <string name="s_delete_account_owner_note">Ova porodica je tvoja, pa prelazi na onoga ko je u njoj najduže. Ako si njen poslednji član, porodica se briše zajedno sa tobom — njen razgovor, njena tabla i njen pozivni kod.</string>
+    <string name="s_deleted_account">Obrisan nalog</string>
+    <string name="e_wrong_password">Ta lozinka nije tačna.</string>
+    <string name="e_delete_account_failed">Nalog nije obrisan.</string>
+    <string name="s_poll">Anketa</string>
+    <string name="s_new_poll">Nova anketa</string>
+    <string name="s_question">Pitanje</string>
+    <string name="s_option">Odgovor</string>
+    <string name="s_add_option">Dodaj odgovor</string>
+    <string name="s_remove_option">Ukloni odgovor</string>
+    <string name="s_close_poll">Završi anketu</string>
+    <string name="s_poll_closed">Anketa završena</string>
+    <string name="s_who_voted">Ko je glasao</string>
+    <string name="e_close_poll_failed">Anketa nije završena.</string>
+    <plurals name="s_voted_of_family">
+        <item quantity="one">%1$d glas od %2$d</item>
+        <item quantity="few">%1$d glasa od %2$d</item>
+        <item quantity="other">%1$d glasova od %2$d</item>
+    </plurals>
+    <plurals name="s_voted_total">
+        <item quantity="one">%1$d glas</item>
+        <item quantity="few">%1$d glasa</item>
+        <item quantity="other">%1$d glasova</item>
+    </plurals>
 </resources>

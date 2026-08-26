@@ -137,6 +137,20 @@ struct ChatListView: View {
         .onChange(of: session.pendingPushRoute) { _, _ in
             consumePendingRoute() // arrived while the list is up (warm tap)
         }
+        // A chat can now genuinely vanish under a reader: a direct chat
+        // whose peer deleted their account goes, both halves (protocol.md,
+        // "Deleting an account"). Standing in the pushed thread afterwards
+        // means an empty view where every request answers 404, so it is
+        // popped — the Mac already does this with its selection.
+        //
+        // Only what DISAPPEARED. A pushed id that was never in the list is
+        // a push-routed chat this device has not cached yet, and popping
+        // that is the bug consumePendingRoute deliberately avoids.
+        .onChange(of: chats.map(\.chatID)) { old, new in
+            let vanished = Set(old).subtracting(new)
+            guard !vanished.isEmpty else { return }
+            path.removeAll { vanished.contains($0) }
+        }
     }
 
     /// Notes pinned since this device last had the board on screen.

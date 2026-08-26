@@ -26,9 +26,14 @@ interface MemberDao {
      * EVERY member ever seen, including those who have left.
      *
      * This is the name-resolution feed: a bubble from somebody who left
-     * last year still has to say who wrote it. Screens that offer an
-     * ACTION on a member — the picker, the admin list — want
+     * last year still has to say who wrote it, and so does one from
+     * somebody whose account no longer exists at all. Screens that offer
+     * an ACTION on a member — the picker, the admin list — want
      * [observeActiveMembers] instead.
+     *
+     * A DELETED row is in here, and its `displayName` is the server's
+     * English placeholder: a reader draws its own translation off
+     * [MemberEntity.deleted] rather than that text.
      */
     @Query(
         """
@@ -38,10 +43,21 @@ interface MemberDao {
     )
     fun observeMembers(): Flow<List<MemberEntity>>
 
-    /** Only members still in the family. */
+    /**
+     * Only members still in the family — and still in EXISTENCE.
+     *
+     * Both flags, not just `hasLeft`: a deleted account is never a member
+     * (docs/protocol.md, "Deleting an account"), and the two facts arrive
+     * from different places — `former_members` on a roster refresh, a
+     * `member_deleted` frame on the wire — so a roster that filtered on
+     * one of them would show a tombstone whenever the other had not
+     * landed yet. This is the query every screen that OFFERS something
+     * about a person reads: the member picker, the admin list, the
+     * remove-member list, the birthday admin.
+     */
     @Query(
         """
-        SELECT * FROM members WHERE hasLeft = 0
+        SELECT * FROM members WHERE hasLeft = 0 AND deleted = 0
         ORDER BY (role = 'owner') DESC, displayName COLLATE NOCASE ASC
         """,
     )
@@ -49,6 +65,37 @@ interface MemberDao {
 
     @Upsert
     suspend fun upsertAll(members: List<MemberEntity>)
+
+    /** Everybody this device holds a tombstone for. See [upsertRoster]. */
+    @Query("SELECT userId FROM members WHERE deleted = 1")
+    suspend fun deletedMemberIds(): List<Long>
+
+    /**
+     * `GET /families/mine` applied whole: the live roster, plus the
+     * `former_members` tombstones beside it.
+     *
+     * A live roster entry NEVER overwrites a stored tombstone. Deletion is
+     * one-way and ids are never reused (docs/protocol.md, "Deleting an
+     * account"), so a response naming a deleted account under `members`
+     * can only be one the server computed before the deletion landed — and
+     * a request in flight while a `member_deleted` frame arrives is
+     * exactly that. Applying it would put the person's real name, real
+     * picture and `deleted = 0` back on a row whose whole job is that they
+     * are gone, and [observeActiveMembers] would offer them in the new-chat
+     * picker, in the admin list and in every poll's "3 of 5 voted"
+     * denominator until some later refresh happened to list them under
+     * `former_members`. iOS carries the same guard in
+     * ChatSyncCoordinator.upsertMember.
+     *
+     * The whole-row [upsertAll] is what makes the guard necessary: the
+     * entity built from `members` leaves `deleted` and `hasLeft` at their
+     * defaults, so the write is a resurrection rather than an update.
+     */
+    @Transaction
+    suspend fun upsertRoster(roster: List<MemberEntity>, tombstones: List<MemberEntity>) {
+        val tombstoned = deletedMemberIds().toSet()
+        upsertAll(roster.filterNot { it.userId in tombstoned } + tombstones)
+    }
 
     /**
      * Upsert one member from a frame that says NOTHING about a birthday,
@@ -123,6 +170,88 @@ interface MemberDao {
      */
     @Query("UPDATE members SET birthdayMonth = :month, birthdayDay = :day WHERE userId = :userId")
     suspend fun setBirthday(userId: Long, month: Int?, day: Int?)
+
+    /**
+     * They deleted their ACCOUNT: write the tombstone deliberately.
+     *
+     * This is the one write in the app whose job is to WIPE stored
+     * fields, and that is why it is spelled out here rather than sent
+     * through [upsertAll] or [upsertLeavingBirthday]. Everywhere else an
+     * absent field must never clear a stored one — a `member_joined`
+     * frame carrying no birthday must leave the birthday alone. Here the
+     * server is not staying silent about the picture and the birthday: it
+     * is telling us they are gone (docs/protocol.md, "Deleting an
+     * account"), and going through the ordinary upsert would make the
+     * distinction impossible to see at the call site.
+     *
+     * `hasLeft` is set alongside `deleted`: a `member_left` frame is sent
+     * with the `member_deleted` one, but frames are best-effort and the
+     * roster must not depend on both arriving. The role goes back to
+     * "member" because a tombstone holds none — an ex-owner who deleted
+     * their account must not still sort and read as the owner while
+     * [setOwner] hands the family to somebody else.
+     *
+     * Insert-if-absent first: this device may never have seen them (they
+     * joined and deleted between two of its resyncs) and their messages
+     * still need a name.
+     */
+    @Transaction
+    suspend fun writeTombstone(
+        userId: Long,
+        username: String,
+        displayName: String,
+    ) {
+        insertIfAbsent(
+            MemberEntity(
+                userId = userId,
+                username = username,
+                displayName = displayName,
+                role = "member",
+                avatarVersion = 0,
+                hasLeft = true,
+                deleted = true,
+            ),
+        )
+        markDeleted(userId = userId, username = username, displayName = displayName)
+    }
+
+    /**
+     * Every column a tombstone means, and not one more. The two birthday
+     * columns ARE in the SET list, unlike [updateLeavingBirthday]'s — see
+     * [writeTombstone] for why that is the difference between the two.
+     */
+    @Query(
+        """
+        UPDATE members
+        SET username = :username, displayName = :displayName, role = 'member',
+            avatarVersion = 0, hasLeft = 1, deleted = 1,
+            birthdayMonth = NULL, birthdayDay = NULL
+        WHERE userId = :userId
+        """,
+    )
+    suspend fun markDeleted(userId: Long, username: String, displayName: String)
+
+    /**
+     * The family has a new owner (docs/protocol.md, "Deleting an
+     * account": ownership passes to the longest-standing member when an
+     * owner deletes their account).
+     *
+     * Two statements rather than one so the table can never hold two
+     * owners: demote whoever held it, then promote the named member. A
+     * promote that matches no row is a no-op — this device may not have
+     * that member yet, and the next roster refresh puts it right.
+     */
+    @Transaction
+    suspend fun setOwner(userId: Long) {
+        demoteOtherOwners(userId)
+        promoteToOwner(userId)
+    }
+
+    @Query("UPDATE members SET role = 'member' WHERE role = 'owner' AND userId != :userId")
+    suspend fun demoteOtherOwners(userId: Long)
+
+    @Query("UPDATE members SET role = 'owner' WHERE userId = :userId")
+    suspend fun promoteToOwner(userId: Long)
 
     /**
      * They left; the row stays so their old messages keep a name and a

@@ -19,7 +19,10 @@ package me.nettrash.familyconnect.data.repo
 
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runCurrent
@@ -27,6 +30,7 @@ import kotlinx.coroutines.test.runTest
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.ChatEntity
+import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.dto.ChatDto
 import me.nettrash.familyconnect.data.net.dto.ChatListItemDto
@@ -52,8 +56,10 @@ class ChatRepositoryTest {
     }
 
     private val dispatcher = StandardTestDispatcher()
+    private val repoScope = CoroutineScope(dispatcher + SupervisorJob())
     private lateinit var db: AppDatabase
     private lateinit var chatDao: ChatDao
+    private lateinit var messageDao: MessageDao
     private lateinit var chatApi: FakeChatApi
     private lateinit var socket: FakeChatSocket
     private lateinit var repository: ChatRepository
@@ -62,13 +68,15 @@ class ChatRepositoryTest {
     fun setUp() {
         db = createTestDb(dispatcher)
         chatDao = db.chatDao()
+        messageDao = db.messageDao()
         chatApi = FakeChatApi()
         socket = FakeChatSocket()
-        repository = ChatRepository(chatApi, chatDao, socket)
+        repository = ChatRepository(chatApi, chatDao, messageDao, socket, repoScope)
     }
 
     @After
     fun tearDown() {
+        repoScope.cancel()
         db.close()
     }
 

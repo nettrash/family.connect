@@ -29,11 +29,15 @@
 //    1. GET /me           — membership reconcile (kicked → AppSession),
 //    2. GET /families/mine — roster upsert for name resolution,
 //    3. GET /chats        — chat upsert; server unread_count wins; local
-//                           chats the server no longer lists are dropped,
+//                           DIRECT chats the response does not list are
+//                           dropped with their messages (the general
+//                           repair for an account deletion this device
+//                           was offline for),
 //    4. SyncPlan after_id  — per-chat catch-up loops (limit 100) until a
 //                           short page,
-//    5. SyncPlan after_seq — per-chat reaction catch-up loops where the
-//                           server's max_reaction_seq is ahead of ours,
+//    5. SyncPlan after_seq — per-chat reaction, edit and poll catch-up
+//                           loops, each where the server's max_*_seq is
+//                           ahead of the cursor we hold for it,
 //    6. outbox sweep      — pending rows older than 30 s re-delivered.
 //
 //  UNREAD: a chat is read when — and only when — someone is looking at
@@ -349,6 +353,13 @@ final class ChatSyncCoordinator {
             // The socket's own loop is retrying; "offline" is reserved for
             // deliberate suspension.
             if connectionState == .connected { connectionState = .connecting }
+        case .unauthorized:
+            // The token is dead (deleted account, revoked session): the
+            // same 401 handling every REST call gets, so this device
+            // returns to the sign-in screen instead of reconnecting
+            // forever against a session that no longer exists.
+            AppLog.sync.info("Socket reports the session is gone; signing out")
+            session?.handleUnauthorized()
         case .frame(let frame):
             // A frame in hand is proof the connection is live, so this is
             // what makes a stuck banner self-heal whatever caused it.
@@ -441,6 +452,38 @@ final class ChatSyncCoordinator {
                 chat.maxReactionSeq = payload.reactionSeq
                 saveContext()
             }
+
+        case .poll(let payload):
+            // The reaction case's twin, and deliberately identical: full
+            // state under the per-message seq guard, and the chat cursor
+            // MAX-advances whether or not the row is held, so a resync
+            // does not re-fetch a seq this client has already seen. A
+            // dropped state comes back embedded on the Message when
+            // history pages there.
+            applyPollState(messageServerID: payload.messageID, poll: payload.poll)
+            advancePollCursor(chatID: payload.chatID, seq: payload.poll.pollSeq)
+
+        case .memberDeleted(let payload):
+            // The one frame whose job is to WIPE stored fields, so it is
+            // applied deliberately and NOT through upsertMember — that
+            // path exists to make sure an absent field never clears a
+            // stored one, which is the opposite of what is wanted here.
+            applyMemberTombstone(payload.member)
+            // Their direct chat with us went with the account, both halves
+            // (protocol.md, "Deleting an account"), so it goes here too —
+            // now, rather than at the next resync. Left standing it is a
+            // row in the list under the peer's OLD name that answers 404
+            // to everything, including the message somebody types into it.
+            // The tombstone is written FIRST and survives this: their
+            // messages are still in the family chat and still need a name.
+            dropDirectChat(peerUserID: payload.member.id)
+
+        case .familyOwner(let familyID, let userID):
+            // An owner deleted their account and ownership passed on. The
+            // roster row moves first, then the session — a client that has
+            // just become the owner gains the owner-only screens now
+            // rather than at its next GET /me.
+            applyFamilyOwner(familyID: familyID, userID: userID)
 
         case .memberLeft(let userID):
             if userID == currentUserID {
@@ -746,6 +789,8 @@ final class ChatSyncCoordinator {
                 body: dto.body,
                 createdAt: dto.createdAt,
                 status: .sent,
+                pollJSON: Self.pollJSON(dto.poll),
+                pollSeq: dto.poll?.pollSeq ?? 0,
                 replyToMessageID: dto.replyTo?.messageID,
                 replySenderID: dto.replyTo?.senderID,
                 replyExcerpt: dto.replyTo?.excerpt,
@@ -760,6 +805,16 @@ final class ChatSyncCoordinator {
         if let seq = dto.reactionSeq, seq > entity.reactionSeq {
             entity.reactionSeq = seq
             entity.reactionList = Self.reactionSnapshots(dto.reactions ?? [])
+        }
+        // An embedded POLL gets the same guard and one extra rule: it must
+        // NOT advance the chat's poll cursor. A history page proves
+        // nothing about other polls' lower seqs, and a cursor moved on
+        // that evidence would skip states the catch-up feed still owes us.
+        // An absent poll is silence, never an erasure — a poll dies only
+        // with its message.
+        if let poll = dto.poll, poll.pollSeq > entity.pollSeq {
+            entity.pollSeq = poll.pollSeq
+            entity.pollJSON = Self.pollJSON(poll)
         }
         updateChat(after: dto, bumpUnread: bumpUnread)
         saveContext()
@@ -833,7 +888,7 @@ final class ChatSyncCoordinator {
         if let assistantID = AppSettings.assistantUserID, userID == assistantID {
             return AppSettings.assistantName ?? String(localized: "Assistant")
         }
-        return fetchMember(userID)?.displayName ?? String(localized: "Someone")
+        return fetchMember(userID)?.resolvedDisplayName ?? String(localized: "Someone")
     }
 
     // MARK: - Reactions
@@ -905,6 +960,229 @@ final class ChatSyncCoordinator {
                 current.reactionsJSON = previousJSON
                 saveContext()
             }
+        }
+    }
+
+    // MARK: - Polls
+
+    /// A poll as the store holds it: the wire object, verbatim.
+    ///
+    /// Re-encoded rather than passed through as the received bytes,
+    /// because the same function has to serve a poll this device made up
+    /// optimistically — but the KEYS are the wire's (PollSnapshot spells
+    /// them out), so a stored poll still diffs against protocol.md.
+    private static func pollJSON(_ poll: PollDTO?) -> String? {
+        guard let poll else { return nil }
+        return pollJSON(pollSnapshot(poll))
+    }
+
+    private static func pollJSON(_ poll: PollSnapshot) -> String? {
+        guard let data = try? pollEncoder.encode(poll) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// One encoder, not one per apply — the rule MessageEntity's reaction
+    /// coders already record, for the same measured reason.
+    private static let pollEncoder = JSONEncoder()
+
+    /// PollDTO → the entity's stored value shape.
+    private static func pollSnapshot(_ poll: PollDTO) -> PollSnapshot {
+        PollSnapshot(
+            pollSeq: poll.pollSeq,
+            closed: poll.closed,
+            options: poll.options.map {
+                PollOptionSnapshot(id: $0.id, text: $0.text, votes: $0.votes)
+            })
+    }
+
+    /// THE seq-guarded apply path for one message's full poll state —
+    /// live `poll` frames, catch-up pages and the vote/close responses all
+    /// land here (a poll embedded on a fetched Message gets the same guard
+    /// inside `upsert`). The state is full, never a delta, so applying is
+    /// a plain rewrite; a seq at or below what the row holds is a stale
+    /// re-delivery and a no-op. Returns false when the message isn't held
+    /// locally — the state is dropped silently, exactly as a reaction
+    /// state is (history paging re-delivers it embedded on the Message).
+    @discardableResult
+    func applyPollState(messageServerID: Int64, poll: PollDTO) -> Bool {
+        guard let row = fetchMessage(serverID: messageServerID) else { return false }
+        if poll.pollSeq > row.pollSeq {
+            row.pollSeq = poll.pollSeq
+            row.pollJSON = Self.pollJSON(poll)
+            saveContext()
+        }
+        return true
+    }
+
+    /// MAX-advance a chat's poll cursor. Live frames and catch-up pages
+    /// only: never an embedded poll (see `upsert`).
+    private func advancePollCursor(chatID: Int64, seq: Int64) {
+        guard let chat = fetchChat(chatID), seq > chat.maxPollSeq else { return }
+        chat.maxPollSeq = seq
+        saveContext()
+    }
+
+    /// A tap on an option: the one this user already holds retracts,
+    /// anything else sets.
+    ///
+    /// The protocol's vote is an idempotent state-set rather than a toggle
+    /// and says outright that whether tapping your current choice means
+    /// "keep it" or "clear it" is each client's decision — this one
+    /// clears, because the bubble has no other way to un-vote.
+    ///
+    /// Optimistic, the exact shape `toggleReaction` has: the local poll is
+    /// rewritten before the REST call but `pollSeq` is NOT touched — only
+    /// the server mints sequences, so the authoritative response (a
+    /// greater seq) still applies through the guarded path, where a
+    /// bumped one would have been dropped as stale. On failure the
+    /// pre-vote state is restored unless a newer authoritative state
+    /// landed meanwhile, which the revert must not clobber. No retry:
+    /// a vote is cheap to re-tap.
+    func vote(localID: String, optionID: Int64) async {
+        guard let row = fetchMessage(localID: localID),
+              let serverID = row.serverID,
+              let poll = row.poll
+        else { return }
+        // A closed poll refuses votes server-side (`poll_closed`), so
+        // there is nothing to be optimistic about.
+        guard !poll.closed, poll.options.contains(where: { $0.id == optionID }) else { return }
+
+        let chatID = row.chatID
+        let userID = currentUserID
+        let previousJSON = row.pollJSON
+        let seqAtVote = row.pollSeq
+        let retracting = PollPresentation.tapRetracts(
+            optionID: optionID, in: poll, currentUserID: userID)
+
+        row.poll = PollPresentation.applyingVote(
+            poll, optionID: optionID, userID: userID, retracting: retracting)
+        saveContext()
+
+        do {
+            let state = retracting
+                ? try await api.retractVote(chatID: chatID, messageID: serverID)
+                : try await api.vote(chatID: chatID, messageID: serverID, optionID: optionID)
+            // The ROW moves; the CHAT CURSOR deliberately does not — the
+            // rule the reaction reply follows, and the one the protocol
+            // asks for ("the cursor advancing exactly as the reaction one
+            // does"). A cursor is a chat-wide watermark, and one poll's
+            // seq is no evidence about another's: REST works while the
+            // socket is down, so a vote answered with seq 100 would push
+            // the cursor past somebody else's seq 99 whose frame was
+            // never delivered, and the next resync — comparing
+            // max_poll_seq against a cursor already at 100 — would ask
+            // for nothing. That state would then be lost until the poll
+            // holding it next changed. One redundant catch-up page is the
+            // cheaper mistake.
+            applyPollState(messageServerID: state.messageID, poll: state.poll)
+        } catch APIError.unauthorized {
+            session?.handleUnauthorized()
+        } catch {
+            AppLog.sync.info("Vote failed for \(localID, privacy: .public): \(String(describing: error))")
+            if let current = fetchMessage(localID: localID), current.pollSeq == seqAtVote {
+                current.pollJSON = previousJSON
+                saveContext()
+            }
+        }
+    }
+
+    /// Close a poll: the author's act, and one-way. The family owner does
+    /// not outrank them here, exactly as with editing — the UI hides the
+    /// action for everybody else, and this is the author's own device.
+    ///
+    /// Deliberately NOT optimistic: a refusal (not the author, message
+    /// gone) would otherwise leave a poll on screen refusing votes it
+    /// would in fact still take. Returns false so the caller can say so.
+    @discardableResult
+    func closePoll(localID: String) async -> Bool {
+        guard let row = fetchMessage(localID: localID), let serverID = row.serverID else {
+            return false
+        }
+        let chatID = row.chatID
+        do {
+            let state = try await api.closePoll(chatID: chatID, messageID: serverID)
+            // The row only — see `vote` for why a REST reply must not move
+            // the chat-wide cursor.
+            applyPollState(messageServerID: state.messageID, poll: state.poll)
+            return true
+        } catch APIError.unauthorized {
+            session?.handleUnauthorized()
+            return false
+        } catch {
+            AppLog.sync.info("Close poll failed for \(localID, privacy: .public): \(String(describing: error))")
+            return false
+        }
+    }
+
+    /// Start a poll: an ordinary message whose BODY is the question, with
+    /// the options riding beside it (docs/protocol.md, "Polls").
+    ///
+    /// Optimistic like `send` and unlike `sendMedia`, because there is
+    /// nothing to upload first — and the pending row carries a poll of its
+    /// own, so the bubble draws as a poll straight away rather than as a
+    /// bare question that turns into one. That local copy uses NEGATIVE
+    /// option ids (the server's are positive, so the two can never be
+    /// confused) and `pollSeq: 0`: nothing may be voted on before the
+    /// message has a server id anyway, and a zero seq is exactly what lets
+    /// the ack's authoritative poll pass the guard.
+    ///
+    /// The question is the body, so the chat-list preview, the push and a
+    /// reply excerpt all need no new case.
+    ///
+    /// It takes a quote like every other send door, because a poll may be
+    /// a reply: `POST /chats/{id}/messages` accepts `reply_to_message_id`
+    /// beside `poll` (only `poll` and `attachment_id` are mutually
+    /// exclusive). Without it a poll started while a reply was primed
+    /// dropped the quote AND left the banner armed, so the next ordinary
+    /// message silently became that reply — the pair of bugs the media and
+    /// location doors were fixed for.
+    @discardableResult
+    func sendPoll(
+        question: String,
+        options: [String],
+        in chatID: Int64,
+        replyTo: ReplyToDTO? = nil
+    ) -> String? {
+        // A poll's body may NOT be empty, unlike a message carrying an
+        // attachment: `message_empty` applies to a poll with no question.
+        guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let sanitized = PollPresentation.sanitizedOptions(options)
+        else { return nil }
+        guard let localID = enqueue(
+            body: question, in: chatID, replyTo: replyTo, pollOptions: sanitized)
+        else {
+            return nil
+        }
+        pendingDelivery = Task { await self.deliver(localID: localID) }
+        return localID
+    }
+
+    /// The options a not-yet-acked poll must be re-sent with — read back
+    /// off the row, so a retry after a relaunch still carries them.
+    private func pendingPollOptions(of row: MessageEntity) -> [String]? {
+        guard row.serverID == nil, let poll = row.poll, !poll.options.isEmpty else { return nil }
+        return poll.options.map(\.text)
+    }
+
+    /// One poll catch-up loop: after_seq pages until a short page, each
+    /// state applied under the per-message seq guard. Byte for byte the
+    /// shape the reaction and edit loops have — the cursor advances to
+    /// every page's max seq EVEN when the message it names is not held
+    /// (those states are dropped; history paging re-delivers them embedded
+    /// on the Message objects), because the cursor is what we have
+    /// PROCESSED, never what we have kept.
+    private func runPollCatchUp(_ step: SyncPlan.ReactionFetchStep) async {
+        let limit = 100
+        var afterSeq = step.afterSeq
+        while true {
+            guard let page = try? await api.polls(chatID: step.chatID, afterSeq: afterSeq, limit: limit)
+            else { return }
+            for state in page {
+                applyPollState(messageServerID: state.messageID, poll: state.poll)
+            }
+            if let last = page.last { afterSeq = max(afterSeq, last.poll.pollSeq) }
+            advancePollCursor(chatID: step.chatID, seq: afterSeq)
+            if page.count < limit { return }
         }
     }
 
@@ -1222,7 +1500,12 @@ final class ChatSyncCoordinator {
         body: String,
         in chatID: Int64,
         replyTo: ReplyToDTO? = nil,
-        allowEmpty: Bool = false
+        allowEmpty: Bool = false,
+        /// The options that make this message a poll. The row gets a
+        /// provisional poll built from them — negative ids, no votes,
+        /// `pollSeq: 0` — so the bubble draws as a poll immediately and
+        /// the ack's real one still passes the guard. See `sendPoll`.
+        pollOptions: [String]? = nil
     ) -> String? {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         // A photo needs no caption (docs/protocol.md) — but only an
@@ -1230,6 +1513,14 @@ final class ChatSyncCoordinator {
         guard !trimmed.isEmpty || allowEmpty else { return nil }
         let uuid = UUID().uuidString.lowercased()
         let now = Date()
+        let provisionalPoll = pollOptions.map { options in
+            PollSnapshot(
+                pollSeq: 0,
+                closed: false,
+                options: options.enumerated().map { index, text in
+                    PollOptionSnapshot(id: -Int64(index + 1), text: text)
+                })
+        }
         let entity = MessageEntity(
             localID: "c:\(uuid)",
             serverID: nil,
@@ -1239,6 +1530,7 @@ final class ChatSyncCoordinator {
             body: trimmed,
             createdAt: now,
             status: .pending,
+            pollJSON: provisionalPoll.flatMap(Self.pollJSON),
             // Held on the pending row so the bubble shows its quote the
             // instant it appears, not once the server answers.
             replyToMessageID: replyTo?.messageID,
@@ -1269,6 +1561,10 @@ final class ChatSyncCoordinator {
         let body = row.body
         let replyToMessageID = row.replyToMessageID
         let attachmentID = row.attachmentID
+        // Read off the row rather than passed in, so a retry — a sweep, a
+        // tap on a failed bubble, a relaunch — still carries the options a
+        // poll cannot be created without.
+        let pollOptions = pendingPollOptions(of: row)
         row.state = .pending
         saveContext()
 
@@ -1280,7 +1576,8 @@ final class ChatSyncCoordinator {
                 clientMsgID: clientMsgID,
                 body: body,
                 replyToMessageID: replyToMessageID,
-                attachmentID: attachmentID))
+                attachmentID: attachmentID,
+                pollOptions: pollOptions))
             if await waitForAck(clientMsgID: clientMsgID, timeout: ackTimeout) { return }
         } catch {
             // fall through to REST
@@ -1297,7 +1594,8 @@ final class ChatSyncCoordinator {
                 clientMsgID: clientMsgID,
                 body: body,
                 replyToMessageID: replyToMessageID,
-                attachmentID: attachmentID)
+                attachmentID: attachmentID,
+                pollOptions: pollOptions)
             _ = upsert(dto, bumpUnread: false)
         } catch APIError.unauthorized {
             session?.handleUnauthorized()
@@ -1403,7 +1701,10 @@ final class ChatSyncCoordinator {
 
         // 2. Roster, for sender-name resolution and the member picker.
         if let mine = try? await api.myFamily() {
-            upsertMembers(mine.members)
+            // Both arrays, one store: the tombstones are what let a stored
+            // message still name its sender. Only `members` is a roster
+            // (protocol.md, "Deleting an account").
+            upsertMembers(mine.members, formerMembers: mine.formerMembers)
             // The assistant is NOT a member and is not upserted as one —
             // it belongs to no family, so it appears in no roster. It is
             // kept aside purely so the family chat can put a name on its
@@ -1412,7 +1713,9 @@ final class ChatSyncCoordinator {
             AppSettings.assistantName = mine.assistant?.displayName
         }
 
-        // 3. Chat list: server unread wins; chats the server dropped go.
+        // 3. Chat list: server unread wins; direct chats the server
+        // dropped go — with their messages and everything else keyed by
+        // their id (see `dropChats`, and `deleteChat` under it).
         //
         // "Wins" with one correction. `unread_count` is computed on the
         // server BEFORE the response is sent, so a live `message` frame
@@ -1433,7 +1736,8 @@ final class ChatSyncCoordinator {
                 chatID: $0.chat.id,
                 serverLatestMessageID: $0.lastMessage?.id,
                 serverMaxReactionSeq: $0.maxReactionSeq ?? 0,
-                serverMaxEditSeq: $0.maxEditSeq ?? 0)
+                serverMaxEditSeq: $0.maxEditSeq ?? 0,
+                serverMaxPollSeq: $0.maxPollSeq ?? 0)
         }
         for step in SyncPlan.make(chats: cursors, localCursors: localCursors()) {
             await runCatchUp(step)
@@ -1453,6 +1757,15 @@ final class ChatSyncCoordinator {
         // holds was rewritten.
         for step in SyncPlan.makeEditSteps(chats: cursors, localCursors: localEditCursors()) {
             await runEditCatchUp(step)
+        }
+
+        // 6a. Poll catch-up, on the fourth cursor and for the same reason
+        // the other two exist: `after_id` is WHERE id > cursor and can
+        // never see a vote cast on an older message. Gated on the chat's
+        // max_poll_seq from step 2, so a family that has never run a poll
+        // costs no request at all.
+        for step in SyncPlan.makePollSteps(chats: cursors, localCursors: localPollCursors()) {
+            await runPollCatchUp(step)
         }
 
         // 7. Board catch-up, on the third cursor. The family read already
@@ -1758,29 +2071,96 @@ final class ChatSyncCoordinator {
         }
     }
 
-    /// Delete local chats (and their messages) the server no longer
-    /// lists — e.g. a direct-chat peer left the family.
+    /// THE local delete-by-chat, and the only one: everything this device
+    /// holds that is keyed by a chat id goes here, in one place, so the two
+    /// callers below cannot prune half of it each.
+    ///
+    /// Nothing in this protocol needed it until account deletion. A member
+    /// leaving does NOT take a chat away — that history is retained and
+    /// resurfaces if they rejoin — so the only chat that can genuinely
+    /// vanish is a direct one whose peer deleted their account, and it
+    /// vanishes in BOTH halves (docs/protocol.md, "Deleting an account").
+    ///
+    /// The messages go first and by hand: nothing here is a SwiftData
+    /// relationship, so deleting the chat row alone would leave every one
+    /// of its messages orphaned in the store — invisible, unreachable and
+    /// still counted by anything that fetches messages without a chat
+    /// predicate. The in-memory state keyed by the same id goes too, or
+    /// the id comes back the moment somebody reuses it.
+    private func deleteChat(_ chat: ChatEntity) {
+        let chatID = chat.chatID
+        let messages = (try? modelContext.fetch(
+            FetchDescriptor<MessageEntity>(predicate: #Predicate { $0.chatID == chatID }))) ?? []
+        // The cached bytes are keyed by attachment id, not chat id, so
+        // they can only be found through the rows that are about to go.
+        attachmentStore?.forget(attachmentIDs: messages.compactMap(\.attachmentID))
+        for message in messages { modelContext.delete(message) }
+        modelContext.delete(chat)
+        // Everything else this object keys by chat id. The read markers
+        // and the sync cursors are columns ON the row, so they go with it.
+        releasePresence(chatID: chatID)
+        typingByChat[chatID] = nil
+        lastTypingSentAt[chatID] = nil
+        liveBumpedMessageIDs[chatID] = nil
+        readPostsInFlight.remove(chatID)
+        pendingReadTargets[chatID] = nil
+    }
+
+    /// The GENERAL REPAIR: prune the direct chats a full `GET /chats` did
+    /// not list. This is what heals a device that was asleep when a peer
+    /// deleted their account — the frame that says so was never delivered
+    /// (the socket is a live wire, not a queue), and nothing else would
+    /// ever tell it.
+    ///
+    /// ONLY DIRECT CHATS, and that is deliberate rather than defensive: a
+    /// direct chat is the only kind that can disappear. The family chat is
+    /// in every response of every member of a family, the assistant thread
+    /// is returned to its owner, and a client that pruned either because a
+    /// response looked thin would be throwing away history the server still
+    /// holds. An unknown future kind is left alone for the same reason.
+    ///
+    /// The caller runs this ONLY on a response that actually arrived and
+    /// was complete — `GET /chats` is unpaginated, so "complete" is the
+    /// same thing as "succeeded". On a network failure resync returns
+    /// before reaching here, because pruning on a flaky connection would
+    /// wipe somebody's history.
     private func dropChats(absentFrom items: [ChatListItemDTO]) {
         let serverIDs = Set(items.map { $0.chat.id })
         guard let locals = try? modelContext.fetch(FetchDescriptor<ChatEntity>()) else { return }
-        for chat in locals where !serverIDs.contains(chat.chatID) {
-            let chatID = chat.chatID
-            let messages = (try? modelContext.fetch(
-                FetchDescriptor<MessageEntity>(predicate: #Predicate { $0.chatID == chatID }))) ?? []
-            for message in messages { modelContext.delete(message) }
-            modelContext.delete(chat)
-            releasePresence(chatID: chatID)
+        for chat in locals where chat.kind == "direct" && !serverIDs.contains(chat.chatID) {
+            deleteChat(chat)
         }
     }
 
-    private func upsertMembers(_ members: [MemberDTO]) {
+    /// The IMMEDIATE half: a peer deleted their account, so the direct
+    /// chat with them is already gone on the server — every request from
+    /// inside it now answers 404 — and the member watching their chat list
+    /// should see it go now rather than at the next resync.
+    ///
+    /// Keyed on the peer, because that is all `member_deleted` carries: a
+    /// direct chat can outlive the family that created it, so the frame
+    /// reaches people who share no family with the deleted account and
+    /// carries a `family_id` that means nothing to them (protocol.md,
+    /// "Server → client").
+    private func dropDirectChat(peerUserID: Int64) {
+        let peer: Int64? = peerUserID
+        let descriptor = FetchDescriptor<ChatEntity>(
+            predicate: #Predicate { $0.kind == "direct" && $0.peerUserID == peer })
+        guard let chats = try? modelContext.fetch(descriptor), !chats.isEmpty else { return }
+        for chat in chats { deleteChat(chat) }
+        saveContext()
+    }
+
+    private func upsertMembers(_ members: [MemberDTO], formerMembers: [MemberDTO] = []) {
         let present = Set(members.map(\.id))
         for member in members {
             upsertMember(
                 userID: member.id,
                 username: member.username,
                 displayName: member.displayName,
-                role: member.role,
+                // Every LIVE member carries a role; only a tombstone
+                // does not, and tombstones do not come through here.
+                role: member.role ?? "member",
                 avatarVersion: member.avatarVersion,
                 birthday: .some(member.birthday))
         }
@@ -1791,7 +2171,81 @@ final class ChatSyncCoordinator {
                 local.hasLeft = true
             }
         }
+        // The tombstones last. The sweep above has just flagged every
+        // local row the roster omits as having left, and a former member
+        // is one of those — but a tombstone says a great deal more than
+        // `hasLeft`, so it is written over the top rather than under it.
+        for former in formerMembers {
+            applyMemberTombstone(former)
+        }
         saveContext()
+    }
+
+    /// Write a deleted account's tombstone, DELIBERATELY.
+    ///
+    /// Not `upsertMember`, and that is the whole point: that path exists
+    /// so an absent field can never clear a stored one, and this is the
+    /// one place in the protocol where fields must be cleared — the
+    /// picture, the birthday, the role and the name all go, and what is
+    /// left is a row that can still put "Deleted account" against a
+    /// message somebody still has (protocol.md, "Deleting an account").
+    ///
+    /// The row is INSERTED when this device never knew the person: their
+    /// messages may well be in the family chat regardless, and a missing
+    /// row draws them as "Someone".
+    ///
+    /// `displayName` is stored exactly as the server sent it (the English
+    /// placeholder); every screen draws `resolvedDisplayName`, which is
+    /// the translated one.
+    func applyMemberTombstone(_ dto: MemberDTO) {
+        let member = fetchMember(dto.id) ?? {
+            let inserted = MemberEntity(
+                userID: dto.id,
+                username: dto.username,
+                displayName: dto.displayName,
+                role: "",
+                isCurrentUser: false)
+            modelContext.insert(inserted)
+            return inserted
+        }()
+        member.username = dto.username
+        member.displayName = dto.displayName
+        member.accountDeleted = true
+        // Not a member of anything any more: no role, and out of every
+        // roster, picker and count.
+        member.role = ""
+        member.hasLeft = true
+        member.isCurrentUser = false
+        // Nothing to fetch — the server reports 0 and answers 404 for the
+        // bytes, so a request would only cache a miss.
+        member.avatarVersion = 0
+        member.birthdayMonth = nil
+        member.birthdayDay = nil
+        saveContext()
+    }
+
+    /// Apply a `family_owner` frame: the named user is the family's owner
+    /// from now on.
+    ///
+    /// Both halves matter. The roster row is what the members list draws
+    /// its "Owner" badge from, and the session's `role` is what unlocks
+    /// the owner-only screens — a client that has just been handed the
+    /// family would otherwise wait for its next `GET /me` to find out.
+    private func applyFamilyOwner(familyID: Int64, userID: Int64) {
+        // A frame about a family this device is not in is not ours to
+        // apply; ignore it rather than rewriting a roster with it.
+        if let known = session?.family?.id, known != familyID { return }
+        if let locals = try? modelContext.fetch(FetchDescriptor<MemberEntity>()) {
+            for local in locals where !local.accountDeleted {
+                if local.userID == userID {
+                    local.role = "owner"
+                } else if local.role == "owner" {
+                    local.role = "member"
+                }
+            }
+        }
+        saveContext()
+        session?.applyFamilyOwner(userID: userID)
     }
 
     private func upsertMember(
@@ -1811,6 +2265,12 @@ final class ChatSyncCoordinator {
         birthday: BirthdayDTO?? = .none
     ) {
         if let existing = fetchMember(userID) {
+            // Deletion is one-way and ids are never reused, so a live
+            // roster entry for a tombstoned row can only be a response
+            // that was already in flight when the account went. Applying
+            // it would put the person's real name and picture back on a
+            // row whose whole job is that they are gone.
+            guard !existing.accountDeleted else { return }
             existing.username = username
             existing.displayName = displayName
             existing.role = role
@@ -1907,6 +2367,12 @@ final class ChatSyncCoordinator {
     private func localEditCursors() -> [Int64: Int64] {
         let chats = (try? modelContext.fetch(FetchDescriptor<ChatEntity>())) ?? []
         return Dictionary(uniqueKeysWithValues: chats.map { ($0.chatID, $0.maxEditSeq) })
+    }
+
+    /// chatID → stored maxPollSeq, for planning the poll catch-up.
+    private func localPollCursors() -> [Int64: Int64] {
+        let chats = (try? modelContext.fetch(FetchDescriptor<ChatEntity>())) ?? []
+        return Dictionary(uniqueKeysWithValues: chats.map { ($0.chatID, $0.maxPollSeq) })
     }
 
     private func saveContext() {

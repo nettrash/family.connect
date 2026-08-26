@@ -71,6 +71,12 @@ final class ChatEntity {
     var maxReactionSeq: Int64 = 0
     /// The edit resync cursor — the edit twin of `maxReactionSeq`.
     var maxEditSeq: Int64 = 0
+    /// The poll resync cursor — the third of the same shape, compared
+    /// against the server's `max_poll_seq` from GET /chats. Advanced by
+    /// catch-up pages and by live `poll` frames, INCLUDING for messages
+    /// this device does not hold; never by a poll embedded on a fetched
+    /// Message, which proves nothing about other polls' lower values.
+    var maxPollSeq: Int64 = 0
 
     init(
         chatID: Int64,
@@ -88,7 +94,8 @@ final class ChatEntity {
         myLastReadID: Int64 = 0,
         othersReadUpTo: Int64 = 0,
         maxReactionSeq: Int64 = 0,
-        maxEditSeq: Int64 = 0
+        maxEditSeq: Int64 = 0,
+        maxPollSeq: Int64 = 0
     ) {
         self.chatID = chatID
         self.kind = kind
@@ -106,5 +113,6 @@ final class ChatEntity {
         self.othersReadUpTo = othersReadUpTo
         self.maxReactionSeq = maxReactionSeq
         self.maxEditSeq = maxEditSeq
+        self.maxPollSeq = maxPollSeq
     }
 }

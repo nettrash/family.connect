@@ -192,4 +192,35 @@
     <string name="e_birthday_failed">无法保存这个生日</string>
     <string name="e_change_language_failed">无法更改家庭语言</string>
     <string name="e_change_assistant_history_failed">无法更改该设置</string>
+    <string name="s_paste">粘贴</string>
+    <string name="s_pasted_image">粘贴的图片</string>
+    <string name="s_pasted_sound">粘贴的音频</string>
+    <string name="s_pasted_file">粘贴的文件</string>
+    <string name="e_nothing_to_paste">剪贴板里没有可粘贴的内容。</string>
+    <!-- Account deletion (App Store guideline 5.1.1(v)); see docs/protocol.md, "Deleting an account". -->
+    <string name="s_delete_account">删除账户</string>
+    <string name="s_delete_your_account">要删除你的账户吗？</string>
+    <string name="s_delete_account_explanation">你的账户、密码、头像和生日都会被删除，所有已登录的设备都会退出登录。你的单独对话也会一起删除，对方那边也一样。留下来的是家人之间说过的话：你在家庭对话里的消息、留言板便签和回应，此后显示为“已删除的账户”。这无法撤销。</string>
+    <string name="s_delete_account_owner_note">这个家庭是你的，所以它会转给待得最久的成员。如果你是最后一位成员，家庭会随你一起被删除——它的对话、留言板和邀请码。</string>
+    <string name="s_deleted_account">已删除的账户</string>
+    <string name="e_wrong_password">密码不正确。</string>
+    <string name="e_delete_account_failed">无法删除你的账户。</string>
+    <!-- Polls (docs/protocol.md, "Polls"). The QUESTION is the message body,
+         so nothing here names it twice. -->
+    <string name="s_poll">投票</string>
+    <string name="s_new_poll">新建投票</string>
+    <string name="s_question">问题</string>
+    <string name="s_option">选项</string>
+    <string name="s_add_option">添加选项</string>
+    <string name="s_remove_option">移除选项</string>
+    <string name="s_close_poll">结束投票</string>
+    <string name="s_poll_closed">投票已结束</string>
+    <string name="s_who_voted">谁投票了</string>
+    <string name="e_close_poll_failed">无法结束这个投票。</string>
+    <plurals name="s_voted_of_family">
+        <item quantity="other">%2$d 人中 %1$d 人已投票</item>
+    </plurals>
+    <plurals name="s_voted_total">
+        <item quantity="other">%1$d 人已投票</item>
+    </plurals>
 </resources>

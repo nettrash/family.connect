@@ -136,6 +136,27 @@ actor APIClient {
         try await requestVoid("POST", "/auth/logout")
     }
 
+    private struct DeleteAccountRequest: Encodable {
+        let password: String
+    }
+
+    /// `POST /me/delete` — permanently deletes the calling account
+    /// (protocol.md, "Deleting an account"). A POST rather than a
+    /// `DELETE /me` because the request carries a body.
+    ///
+    /// The password is required for the same reason `POST /me/password`
+    /// requires it: a live session is not proof, and an unattended
+    /// unlocked phone is exactly what this protects against. A wrong one
+    /// answers 401 `invalid_credentials`, which the caller must NOT treat
+    /// as a dead session — see `ChangePasswordView` for the same trap.
+    ///
+    /// Succeeding takes every session of the account with it, this one
+    /// included, so no further call on this token can succeed: the caller
+    /// wipes local state directly rather than going through logout.
+    func deleteAccount(password: String) async throws {
+        try await requestVoid("POST", "/me/delete", body: DeleteAccountRequest(password: password))
+    }
+
     func me() async throws -> MeResponse {
         try await request("GET", "/me")
     }
@@ -392,12 +413,27 @@ actor APIClient {
         /// nil optional, which is exactly what the protocol writes.
         let replyToMessageID: Int64?
         let attachmentID: Int64?
+        /// What makes the message a poll; the body is then the QUESTION.
+        /// Mutually exclusive with `attachmentID` server-side.
+        let poll: NewPollRequest?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
             case replyToMessageID = "reply_to_message_id"
             case attachmentID = "attachment_id"
+            case poll
         }
+    }
+
+    /// The only thing a client may say about a poll at creation: its
+    /// options. Ids, votes and the sequence are all the server's, and the
+    /// question is the message body (docs/protocol.md, "Polls").
+    ///
+    /// Not `nonisolated`/shared with the socket by accident: `ClientFrame`
+    /// spells the same object out itself, because a frame is encoded
+    /// through a hand-written `encode(to:)` rather than a request struct.
+    struct NewPollRequest: Encodable {
+        let options: [String]
     }
 
     /// Idempotent by `clientMsgID`: the server answers a retry with the
@@ -407,7 +443,8 @@ actor APIClient {
         clientMsgID: String,
         body: String,
         replyToMessageID: Int64? = nil,
-        attachmentID: Int64? = nil
+        attachmentID: Int64? = nil,
+        pollOptions: [String]? = nil
     ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
             "POST", "/chats/\(chatID)/messages",
@@ -415,7 +452,8 @@ actor APIClient {
                 clientMsgID: clientMsgID,
                 body: body,
                 replyToMessageID: replyToMessageID,
-                attachmentID: attachmentID))
+                attachmentID: attachmentID,
+                poll: pollOptions.map { NewPollRequest(options: $0) }))
         return response.message
     }
 
@@ -687,6 +725,44 @@ actor APIClient {
         ]
         let response: MessageReactionsResponse = try await request("GET", "/chats/\(chatID)/reactions", query: query)
         return response.messageReactions
+    }
+
+    // MARK: - Polls
+
+    private struct VoteRequest: Encodable {
+        let optionID: Int64
+        enum CodingKeys: String, CodingKey { case optionID = "option_id" }
+    }
+
+    /// Set the caller's choice — an idempotent state-set, not a toggle
+    /// (the coordinator decides set vs retract locally, exactly as it does
+    /// for a reaction). Returns the poll's full authoritative state.
+    func vote(chatID: Int64, messageID: Int64, optionID: Int64) async throws -> PollStateDTO {
+        try await request("PUT", "/chats/\(chatID)/messages/\(messageID)/vote",
+                          body: VoteRequest(optionID: optionID))
+    }
+
+    /// Retract the caller's vote; idempotent (retracting nothing returns
+    /// the current state unchanged and burns no sequence value).
+    func retractVote(chatID: Int64, messageID: Int64) async throws -> PollStateDTO {
+        try await request("DELETE", "/chats/\(chatID)/messages/\(messageID)/vote")
+    }
+
+    /// Close a poll. Author only and ONE-WAY; closing a closed poll is a
+    /// no-op. A non-author gets 403 `not_message_author`.
+    func closePoll(chatID: Int64, messageID: Int64) async throws -> PollStateDTO {
+        try await request("POST", "/chats/\(chatID)/messages/\(messageID)/poll/close")
+    }
+
+    /// Poll catch-up pages, ascending by poll_seq; the caller loops
+    /// (advancing afterSeq) until a short page, like `after_id`.
+    func polls(chatID: Int64, afterSeq: Int64, limit: Int = 50) async throws -> [PollStateDTO] {
+        let query = [
+            URLQueryItem(name: "after_seq", value: String(afterSeq)),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        let response: ChatPollsResponse = try await request("GET", "/chats/\(chatID)/polls", query: query)
+        return response.polls
     }
 
     // MARK: - Devices

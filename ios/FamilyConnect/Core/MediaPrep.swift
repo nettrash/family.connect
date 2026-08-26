@@ -222,11 +222,18 @@ nonisolated enum MediaPrep {
     /// `async` for the same reason as `preparePhoto`: copying a file the
     /// picker handed over can block for seconds when it is an iCloud Drive
     /// item that has to be downloaded first.
-    static func prepareFile(from sourceURL: URL, limit: Int) async throws -> Prepared {
+    static func prepareFile(
+        from sourceURL: URL, name: String? = nil, limit: Int
+    ) async throws -> Prepared {
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
 
-        let name = sourceURL.lastPathComponent
+        // `name` overrides the file's own, and the clipboard is why it
+        // exists: a pasted item is written into a scratch file called
+        // `fc-upload-<UUID>.pdf`, and that must never be what the recipient
+        // sees. Cleaned either way — a name travels in a header the server
+        // parses and ends up on somebody else's disk.
+        let name = sanitizedName(name ?? sourceURL.lastPathComponent) ?? "file"
         let destination = temporaryURL(extension: sourceURL.pathExtension)
         do {
             try FileManager.default.copyItem(at: sourceURL, to: destination)
@@ -246,7 +253,7 @@ nonisolated enum MediaPrep {
             fileURL: destination,
             mime: mimeType(for: sourceURL),
             kind: "file",
-            name: name.isEmpty ? "file" : name)
+            name: name)
     }
 
     /// Prepare a piece of audio — a recording, or a track off a disk.
@@ -257,7 +264,9 @@ nonisolated enum MediaPrep {
     /// refusing it. There is no preview: audio has nothing to look at, so a
     /// bubble draws a play control, the duration and a scrubber
     /// (docs/protocol.md, "Audio").
-    static func prepareAudio(from sourceURL: URL, limit: Int) async throws -> Prepared {
+    static func prepareAudio(
+        from sourceURL: URL, name: String? = nil, limit: Int
+    ) async throws -> Prepared {
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
 
@@ -282,13 +291,17 @@ nonisolated enum MediaPrep {
         // A name only when there is one worth showing: a recording's
         // identity is its length, a track's is its title. The server takes
         // `name` as optional for audio, unlike a file.
-        let name = sourceURL.lastPathComponent
+        //
+        // Passed IN rather than read off the URL, and that is the fix for a
+        // real one: a voice note is recorded into `fc-voice-<UUID>.m4a`, so
+        // reading the file name here put a scratch file name on the wire
+        // and in the composer's chip. A recorder passes nothing.
         return Prepared(
             fileURL: destination,
             mime: audioMIME(for: destination),
             kind: "audio",
             durationMS: duration,
-            name: name.isEmpty ? nil : name)
+            name: sanitizedName(name))
     }
 
     /// The type the SERVER will accept, which is narrower than what the
@@ -328,9 +341,21 @@ nonisolated enum MediaPrep {
     /// pressed: an image goes through the photo path (downscaled, with a
     /// preview), a movie through the video path (re-encoded only if it has
     /// to be), and everything else is a file, sent as it is.
-    static func prepare(fileAt url: URL, limit: Int) async throws -> Prepared {
-        let type = UTType(filenameExtension: url.pathExtension)
+    static func prepare(
+        fileAt url: URL,
+        type explicitType: UTType? = nil,
+        name: String? = nil,
+        limit: Int
+    ) async throws -> Prepared {
+        // The clipboard KNOWS the type; a picked file only has an
+        // extension to go on. Trust the caller when it has something
+        // better.
+        let type = explicitType ?? UTType(filenameExtension: url.pathExtension)
         if type?.conforms(to: .image) == true {
+            // An animated image is not a photo, whatever it conforms to.
+            if sendsAsFile(imageType: type) {
+                return try await prepareFile(from: url, name: name, limit: limit)
+            }
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             guard let data = try? Data(contentsOf: url) else { throw PrepError.unreadable }
@@ -344,10 +369,98 @@ nonisolated enum MediaPrep {
         // audio (a codec the magic-number check does not know) falls
         // through to the file path rather than earning a 400.
         if type?.conforms(to: .audio) == true, isSupportedAudio(url) {
-            return try await prepareAudio(from: url, limit: limit)
+            return try await prepareAudio(
+                from: url, name: name ?? url.lastPathComponent, limit: limit)
         }
-        return try await prepareFile(from: url, limit: limit)
+        return try await prepareFile(from: url, name: name, limit: limit)
     }
+
+    /// Prepare bytes we already hold, deciding the kind from `type`.
+    ///
+    /// The clipboard hands over DATA, not a file, and everything below here
+    /// works on files — so this writes one and then goes down the ordinary
+    /// path. Deliberately NOT a second preparation path: a pasted photo is
+    /// still downscaled by `preparePhoto`, a pasted clip still gets its
+    /// poster frame from `prepareVideo`.
+    static func prepare(
+        data: Data, type: UTType, name: String? = nil, limit: Int
+    ) async throws -> Prepared {
+        // Never "dat" for something we could name: the extension is what
+        // `prepareFile` turns into the MIME type the recipient's app opens.
+        let scratch = temporaryURL(extension: type.preferredFilenameExtension ?? "dat")
+        do {
+            try data.write(to: scratch, options: .atomic)
+        } catch {
+            throw PrepError.unreadable
+        }
+        do {
+            let prepared = try await prepare(
+                fileAt: scratch, type: type, name: name, limit: limit)
+            // Every path but one copies or re-encodes; `prepareVideo` hands
+            // back the source itself when it already fits, so only delete
+            // the scratch file when it is not the thing being uploaded.
+            if prepared.fileURL != scratch {
+                try? FileManager.default.removeItem(at: scratch)
+            }
+            return prepared
+        } catch {
+            try? FileManager.default.removeItem(at: scratch)
+            throw error
+        }
+    }
+
+    /// Image types that must go as `kind=file` rather than as a photo.
+    ///
+    /// An ANIMATED GIF loses its animation the instant it goes through
+    /// `preparePhoto`: CGImageSource hands back frame zero and JPEG has
+    /// nowhere to put the rest — the picture still arrives, and it is the
+    /// wrong picture. The server will not take `image/gif` as a photo
+    /// either (docs/protocol.md, "Photos, videos and files"). WebP animates
+    /// for the same reason, and BMP is here because neither is one of the
+    /// four types the photo endpoint magic-checks. All three go as files,
+    /// where the ORIGINAL BYTES travel and nothing is verified or thrown
+    /// away.
+    ///
+    /// This is the rule the Mac's own picker was missing: dropping a GIF on
+    /// `prepare(fileAt:)` quietly posted a still of it.
+    static func sendsAsFile(imageType type: UTType?) -> Bool {
+        guard let type else { return false }
+        return [UTType.gif, .webP, .bmp].contains { type.conforms(to: $0) }
+    }
+
+    /// A name the server will take and a recipient will recognise.
+    ///
+    /// `kind=file` REQUIRES 1–255 characters (docs/protocol.md, "Photos,
+    /// videos and files"), and the name also lands on somebody else's disk,
+    /// so it is cleaned on the way out the way an incoming one is cleaned
+    /// on the way in: no path separators, no control characters, nothing
+    /// that is only whitespace. Nil in, nil out — audio is allowed to have
+    /// no name at all.
+    static func sanitizedName(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let stripped = String(raw.map { (character: Character) -> Character in
+            if character == "/" || character == ":" { return "_" }
+            if character.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+                return "_"
+            }
+            return character
+        })
+        let name = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        guard name.count > maxNameLength else { return name }
+        // Truncate the STEM, so ".pdf" survives and the recipient's system
+        // still knows what it is holding.
+        let url = URL(fileURLWithPath: name)
+        let ext = url.pathExtension
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard !ext.isEmpty, ext.count + 1 < maxNameLength else {
+            return String(name.prefix(maxNameLength))
+        }
+        return String(stem.prefix(maxNameLength - ext.count - 1)) + "." + ext
+    }
+
+    /// The protocol's ceiling for an attachment name.
+    static let maxNameLength = 255
 
     // MARK: - Shared
 

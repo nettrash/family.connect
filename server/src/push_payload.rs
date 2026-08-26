@@ -297,6 +297,7 @@ mod tests {
             edit_seq: None,
             attachment: None,
             reaction_seq: None,
+            poll: None,
         }
     }
 

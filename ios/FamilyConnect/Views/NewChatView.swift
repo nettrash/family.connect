@@ -3,7 +3,8 @@
 //  FamilyConnect
 //
 //  Member picker for starting (or reopening — POST /chats/direct is
-//  get-or-create) a direct chat. Excludes self and members who left.
+//  get-or-create) a direct chat. Excludes self, members who left, and
+//  deleted accounts (which are not people to chat with any more).
 //  On success the sheet dismisses and hands the chatID to the caller,
 //  which pushes the conversation onto the navigation path.
 //
@@ -20,7 +21,10 @@ struct NewChatView: View {
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(\.dismiss) private var dismiss
-    @Query(filter: #Predicate<MemberEntity> { !$0.isCurrentUser && !$0.hasLeft },
+    // A deleted account is nobody to start a chat with: it receives
+    // nothing and can never be signed into again (protocol.md, "Deleting
+    // an account").
+    @Query(filter: #Predicate<MemberEntity> { !$0.isCurrentUser && !$0.hasLeft && !$0.accountDeleted },
            sort: [SortDescriptor(\MemberEntity.displayName)])
     private var members: [MemberEntity]
 

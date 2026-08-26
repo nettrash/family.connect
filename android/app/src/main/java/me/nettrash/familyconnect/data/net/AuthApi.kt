@@ -15,6 +15,7 @@ import me.nettrash.familyconnect.data.net.dto.AuthResponse
 import me.nettrash.familyconnect.data.net.dto.BirthdayRequest
 import me.nettrash.familyconnect.data.net.dto.BirthdayResponse
 import me.nettrash.familyconnect.data.net.dto.ChangePasswordRequest
+import me.nettrash.familyconnect.data.net.dto.DeleteAccountRequest
 import me.nettrash.familyconnect.data.net.dto.DeviceRequest
 import me.nettrash.familyconnect.data.net.dto.DeviceResponse
 import me.nettrash.familyconnect.data.net.dto.LoginRequest
@@ -35,6 +36,21 @@ interface AuthApi {
      * my OTHER sessions server-side; this one survives.
      */
     suspend fun changePassword(current: String, new: String): ApiResult<Unit>
+
+    /**
+     * Delete my own account, permanently and immediately — the in-app,
+     * self-service deletion App Store guideline 5.1.1(v) requires
+     * (protocol.md, "Deleting an account").
+     *
+     * `POST /me/delete`, not `DELETE /me`: the request carries a body.
+     * The password proves who is holding the phone, exactly as
+     * [changePassword] does; a wrong one is `invalid_credentials` (401)
+     * and is NOT a dead session. On success (204) every session of this
+     * account is gone, this one included — so nothing may be called
+     * afterwards, and the caller tears down locally instead (see
+     * SessionRepository.deleteAccount).
+     */
+    suspend fun deleteAccount(password: String): ApiResult<Unit>
 
     /**
      * My own birthday: a day and a month, no year (protocol.md,
@@ -86,6 +102,9 @@ class DefaultAuthApi @Inject constructor(
 
     override suspend fun changePassword(current: String, new: String): ApiResult<Unit> =
         client.post("/me/password", ChangePasswordRequest(current, new))
+
+    override suspend fun deleteAccount(password: String): ApiResult<Unit> =
+        client.post("/me/delete", DeleteAccountRequest(password))
 
     override suspend fun setMyBirthday(month: Int, day: Int): ApiResult<BirthdayResponse> =
         client.put("/me/birthday", BirthdayRequest(month, day))

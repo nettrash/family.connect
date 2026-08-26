@@ -29,7 +29,9 @@ enum MacFilePicker {
         // Anything at all — the protocol's file kind accepts any type, and
         // telling a family what they may send is exactly what it avoids.
         panel.allowedContentTypes = []
-        panel.prompt = "Send"
+        // "Attach", not "Send": the panel puts the file in the composer as
+        // a staged chip, so a caption can be typed before anything goes.
+        panel.prompt = String(localized: "Attach")
         return panel.runModal() == .OK ? panel.url : nil
     }
 }

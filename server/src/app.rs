@@ -11,7 +11,7 @@ use axum::routing::{delete, get, patch, post, put};
 use crate::state::AppState;
 use crate::{
     handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_chat,
-    handlers_device, handlers_family, handlers_stats, ws,
+    handlers_device, handlers_family, handlers_poll, handlers_stats, ws,
 };
 
 /// Build the full application router for the given state. Used identically
@@ -35,6 +35,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(handlers_auth::logout))
         .route("/api/v1/me", get(handlers_auth::me))
         .route("/api/v1/me/password", post(handlers_auth::change_password))
+        // A POST rather than a DELETE /me: the request carries a body, and
+        // RFC 9110 gives content on a DELETE no defined semantics
+        // (protocol.md, "Deleting an account").
+        .route("/api/v1/me/delete", post(handlers_auth::delete_account))
         // A birthday is a day and a month, so it is set and cleared rather
         // than edited — the same PUT/DELETE pair the avatar uses.
         .route(
@@ -121,6 +125,17 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers_chat::get_reactions),
         )
         .route("/api/v1/chats/{id}/edits", get(handlers_chat::get_edits))
+        // Polls. A vote is set and retracted like a reaction; closing is the
+        // author's, and one-way (protocol.md, "Polls").
+        .route(
+            "/api/v1/chats/{id}/messages/{message_id}/vote",
+            put(handlers_poll::put_vote).delete(handlers_poll::delete_vote),
+        )
+        .route(
+            "/api/v1/chats/{id}/messages/{message_id}/poll/close",
+            post(handlers_poll::close_poll_handler),
+        )
+        .route("/api/v1/chats/{id}/polls", get(handlers_poll::get_polls))
         // Attachments
         .route(
             "/api/v1/attachments",

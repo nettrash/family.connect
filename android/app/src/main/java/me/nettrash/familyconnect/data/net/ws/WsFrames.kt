@@ -8,7 +8,8 @@
  *
  *   ClientFrame — send / read / typing / ping
  *   ServerFrame — ack / message / read / typing / member_joined /
- *                 member_left / reaction / pong / error
+ *                 member_left / member_deleted / family_owner /
+ *                 reaction / poll / pong / error
  *
  * Compatibility rule: unknown `type` values must be *dropped*, not crash
  * the socket — that is how call_offer / call_answer signaling arrives for
@@ -25,8 +26,11 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonClassDiscriminator
+import me.nettrash.familyconnect.data.net.dto.MemberDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
+import me.nettrash.familyconnect.data.net.dto.NewPollDto
 import me.nettrash.familyconnect.data.net.dto.NoteDto
+import me.nettrash.familyconnect.data.net.dto.PollDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.UserDto
 
@@ -56,6 +60,13 @@ sealed interface ClientFrame {
          * the same reason.
          */
         @SerialName("attachment_id") val attachmentId: Long? = null,
+        /**
+         * Optional: the options that make this message a poll
+         * (protocol.md, "Polls"). The body is then the QUESTION. Omitted
+         * the same way, for the same reason — and mutually exclusive
+         * with [attachmentId], which the server enforces.
+         */
+        val poll: NewPollDto? = null,
     ) : ClientFrame
 
     @Serializable
@@ -126,6 +137,52 @@ sealed interface ServerFrame {
     ) : ServerFrame
 
     /**
+     * A member DELETED their account (docs/protocol.md, "Deleting an
+     * account"). It carries the whole tombstone `Member` — `deleted:
+     * true`, the placeholder display name, `avatar_version: 0`, no
+     * birthday — because that is exactly what has to be overwritten.
+     *
+     * The one frame in this protocol whose job is to WIPE stored fields,
+     * so it is applied by writing the tombstone deliberately
+     * ([me.nettrash.familyconnect.data.db.MemberDao.writeTombstone])
+     * rather than through the ordinary member upsert, which everywhere
+     * else must never let an absent field clear a stored one. It never
+     * notifies and never counts as unread: it is a correction to what
+     * this client already holds, not news.
+     */
+    @Serializable
+    @SerialName("member_deleted")
+    data class MemberDeleted(
+        /**
+         * ABSENT when the account belonged to no family, so nullable with
+         * a default — a required field here dropped the whole frame as
+         * unparseable for exactly the peer who needs it most: somebody
+         * this account only ever shared a direct chat with, whose chat is
+         * about to vanish and for whom nothing else says why. A client
+         * keys this frame on the `member` and never on the family: a peer
+         * outside the family receives a tombstone tagged with a family
+         * they are not in, and in the sole-owner case with one that no
+         * longer exists at all.
+         */
+        @SerialName("family_id") val familyId: Long? = null,
+        val member: MemberDto,
+    ) : ServerFrame
+
+    /**
+     * The family has a new owner — sent when an owner deletes their
+     * account and ownership passes to the longest-standing remaining
+     * member. It reaches every member of the family; the one it NAMES
+     * gains the owner-only screens immediately rather than at its next
+     * `GET /me`.
+     */
+    @Serializable
+    @SerialName("family_owner")
+    data class FamilyOwner(
+        @SerialName("family_id") val familyId: Long,
+        @SerialName("user_id") val userId: Long,
+    ) : ServerFrame
+
+    /**
      * One board note in whatever state it now has — created, edited, moved,
      * or a tombstone. Never notifies and never counts as unread.
      */
@@ -177,6 +234,24 @@ sealed interface ServerFrame {
         @SerialName("message_id") val messageId: Long,
         @SerialName("reaction_seq") val reactionSeq: Long,
         val reactions: List<ReactionDto>,
+    ) : ServerFrame
+
+    /**
+     * A poll's FULL current state (protocol: never a delta), to every
+     * member of the chat — the voter's own connections included, since
+     * their own request is answered by its HTTP response.
+     *
+     * Applied only when [PollDto.pollSeq] beats the one stored for that
+     * message, so an out-of-order frame cannot undo a newer vote. It
+     * never notifies and never touches an unread count: a vote is not a
+     * message.
+     */
+    @Serializable
+    @SerialName("poll")
+    data class Poll(
+        @SerialName("chat_id") val chatId: Long,
+        @SerialName("message_id") val messageId: Long,
+        val poll: PollDto,
     ) : ServerFrame
 
     @Serializable

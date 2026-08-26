@@ -32,17 +32,22 @@ nonisolated enum SyncPlan {
         /// max_edit_seq from GET /chats; 0 when the server omitted it
         /// (nothing in the chat has been edited).
         let serverMaxEditSeq: Int64
+        /// max_poll_seq from GET /chats; 0 when the server omitted it
+        /// (the chat holds no poll at all).
+        let serverMaxPollSeq: Int64
 
         init(
             chatID: Int64,
             serverLatestMessageID: Int64?,
             serverMaxReactionSeq: Int64 = 0,
-            serverMaxEditSeq: Int64 = 0
+            serverMaxEditSeq: Int64 = 0,
+            serverMaxPollSeq: Int64 = 0
         ) {
             self.chatID = chatID
             self.serverLatestMessageID = serverLatestMessageID
             self.serverMaxReactionSeq = serverMaxReactionSeq
             self.serverMaxEditSeq = serverMaxEditSeq
+            self.serverMaxPollSeq = serverMaxPollSeq
         }
     }
 
@@ -96,6 +101,20 @@ nonisolated enum SyncPlan {
         chats.compactMap { chat in
             let local = localCursors[chat.chatID] ?? 0
             guard chat.serverMaxEditSeq > local else { return nil }
+            return ReactionFetchStep(chatID: chat.chatID, afterSeq: local)
+        }
+    }
+
+    /// Plan the poll catch-ups — the reaction plan's shape again, against
+    /// the third cursor. A chat that holds no poll (server 0) or is
+    /// already caught up costs no request.
+    static func makePollSteps(
+        chats: [ChatCursor],
+        localCursors: [Int64: Int64]
+    ) -> [ReactionFetchStep] {
+        chats.compactMap { chat in
+            let local = localCursors[chat.chatID] ?? 0
+            guard chat.serverMaxPollSeq > local else { return nil }
             return ReactionFetchStep(chatID: chat.chatID, afterSeq: local)
         }
     }

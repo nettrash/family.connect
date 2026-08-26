@@ -12,11 +12,13 @@
  *                                      docs/protocol.md ("Error shape")
  *   NetworkError(cause)              — transport / decode failure
  *
- * A 401 on any *authenticated* call means the session is gone (protocol:
- * "A 401 means the session is gone") — it is broadcast on `unauthorized`
+ * A 401 on an *authenticated* call means the session is gone (protocol:
+ * "A 401 means the session is gone"). It is broadcast on `unauthorized`
  * so SessionRepository can wipe local state exactly once, no matter which
  * request tripped it. Unauthenticated calls (login/register/probe) 401
- * routinely and must not trigger the wipe.
+ * routinely and must not trigger the wipe — nor must the one 401 that is
+ * a wrong PASSWORD rather than a dead session, `invalid_credentials` on
+ * /me/password and /me/delete. See `isSessionGone`.
  *
  * OkHttp directly, no Retrofit/Ktor: the house convention (see
  * exchange-android / Scan.Android) is one HTTP stack, and OkHttp already
@@ -296,7 +298,9 @@ class ApiClient @Inject constructor(
                     } catch (_: Exception) {
                         null
                     }
-                    if (response.code == 401 && auth) unauthorized.tryEmit(Unit)
+                    if (isSessionGone(response.code, parsed?.code, auth)) {
+                        unauthorized.tryEmit(Unit)
+                    }
                     ApiResult.HttpError(response.code, parsed?.code, parsed?.message)
                 }
             }
@@ -308,6 +312,37 @@ class ApiClient @Inject constructor(
     }
 
     companion object {
+        /**
+         * The one 401 that is NOT a dead session: the caller proved they
+         * are signed in and then got their PASSWORD wrong.
+         */
+        const val INVALID_CREDENTIALS = "invalid_credentials"
+
+        /**
+         * Does this response mean the SESSION is gone — the signal that
+         * wipes local state and returns the app to sign-in?
+         *
+         * A 401 on an authenticated call almost always does (protocol.md,
+         * "Auth": "A 401 means the session is gone"), and that is how
+         * every other device of a deleted account, or one whose session an
+         * owner's password reset revoked, finds out on its next call.
+         *
+         * The exception is `invalid_credentials`, which the server sends
+         * for a WRONG PASSWORD on `POST /me/password` and
+         * `POST /me/delete` — the caller's session is perfectly alive and
+         * they mistyped. Broadcasting that signed the user out over a
+         * typo: the screens turn it into a sentence, and the wipe
+         * underneath them threw the session away anyway. Everything else
+         * at 401 — `unauthorized`, or no parseable body at all — still
+         * counts, because "the server would not say" is not a reason to
+         * keep believing in a session.
+         *
+         * Unauthenticated calls (login, register, the server-setup probe)
+         * 401 routinely and never count.
+         */
+        fun isSessionGone(status: Int, errorCode: String?, auth: Boolean): Boolean =
+            auth && status == 401 && errorCode != INVALID_CREDENTIALS
+
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
         /** Long enough for a 100 MB video on a slow upstream link. */

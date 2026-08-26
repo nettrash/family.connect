@@ -99,7 +99,7 @@ class AttachmentSendTest {
             chatDao = chatDao,
             socket = socket,
             settings = settings,
-            chatRepository = ChatRepository(chatApi, chatDao, socket),
+            chatRepository = ChatRepository(chatApi, chatDao, messageDao, socket, repoScope),
             scope = repoScope,
             clock = Clock { NOW },
         )

@@ -192,4 +192,35 @@
     <string name="e_birthday_failed">誕生日を保存できませんでした</string>
     <string name="e_change_language_failed">ファミリーの言語を変更できませんでした</string>
     <string name="e_change_assistant_history_failed">設定を変更できませんでした</string>
+    <string name="s_paste">貼り付け</string>
+    <string name="s_pasted_image">貼り付けた画像</string>
+    <string name="s_pasted_sound">貼り付けた音声</string>
+    <string name="s_pasted_file">貼り付けたファイル</string>
+    <string name="e_nothing_to_paste">貼り付けるものがありません。</string>
+    <!-- Account deletion (App Store guideline 5.1.1(v)); see docs/protocol.md, "Deleting an account". -->
+    <string name="s_delete_account">アカウントを削除</string>
+    <string name="s_delete_your_account">アカウントを削除しますか？</string>
+    <string name="s_delete_account_explanation">アカウント、パスワード、プロフィール写真、誕生日が削除され、サインインしているすべての端末がサインアウトされます。個別チャットも削除され、相手の側からも消えます。残るのは家族が交わした言葉です。ファミリーチャットのメッセージ、ボードのメモ、リアクションはそのまま残り、以後は「削除されたアカウント」として表示されます。元には戻せません。</string>
+    <string name="s_delete_account_owner_note">このファミリーはあなたのものなので、いちばん長くいるメンバーに引き継がれます。あなたが最後のメンバーなら、ファミリーもいっしょに削除されます。チャットも、ボードも、招待コードも。</string>
+    <string name="s_deleted_account">削除されたアカウント</string>
+    <string name="e_wrong_password">パスワードが違います。</string>
+    <string name="e_delete_account_failed">アカウントを削除できませんでした。</string>
+    <!-- Polls (docs/protocol.md, "Polls"). The QUESTION is the message body,
+         so nothing here names it twice. -->
+    <string name="s_poll">アンケート</string>
+    <string name="s_new_poll">新しいアンケート</string>
+    <string name="s_question">質問</string>
+    <string name="s_option">選択肢</string>
+    <string name="s_add_option">選択肢を追加</string>
+    <string name="s_remove_option">選択肢を削除</string>
+    <string name="s_close_poll">アンケートを終了</string>
+    <string name="s_poll_closed">アンケート終了</string>
+    <string name="s_who_voted">投票した人</string>
+    <string name="e_close_poll_failed">アンケートを終了できませんでした。</string>
+    <plurals name="s_voted_of_family">
+        <item quantity="other">%2$d人中%1$d人が投票</item>
+    </plurals>
+    <plurals name="s_voted_total">
+        <item quantity="other">%1$d人が投票</item>
+    </plurals>
 </resources>

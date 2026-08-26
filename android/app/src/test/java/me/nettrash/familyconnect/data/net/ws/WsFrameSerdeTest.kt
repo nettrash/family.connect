@@ -212,6 +212,50 @@ class WsFrameSerdeTest {
         )
     }
 
+    /**
+     * The tombstone `Member`, exactly as protocol.md writes it: the flag,
+     * the placeholder name, `avatar_version: 0` — and NO `role`, which is
+     * why that field had to become optional on MemberDto.
+     */
+    @Test
+    fun memberDeletedFrameDecodes() {
+        // Decode-only rather than a round trip: `avatar_version` is 0 on a
+        // tombstone and the house Json omits defaults on the way out, so
+        // re-encoding this literal cannot reproduce it byte for byte. The
+        // direction that matters is the inbound one.
+        val decoded = parseServerFrame(
+            json,
+            """{"type": "member_deleted", "family_id": 3,
+                "member": {"id": 11, "username": "junior",
+                           "display_name": "Deleted account",
+                           "avatar_version": 0, "deleted": true}}""",
+        )
+        assertThat(decoded).isEqualTo(
+            ServerFrame.MemberDeleted(
+                familyId = 3,
+                member = me.nettrash.familyconnect.data.net.dto.MemberDto(
+                    id = 11,
+                    username = "junior",
+                    displayName = "Deleted account",
+                    deleted = true,
+                ),
+            ),
+        )
+        // No role on the wire, and none invented on the way in — the
+        // roster maps that to a stored value deliberately, it is not the
+        // decoder's to guess.
+        assertThat((decoded as ServerFrame.MemberDeleted).member.role).isNull()
+        assertThat(decoded.member.isDeleted).isTrue()
+    }
+
+    @Test
+    fun familyOwnerFrameRoundTrips() {
+        assertRoundTrips(
+            """{"type": "family_owner", "family_id": 3, "user_id": 9}""",
+            ServerFrame.FamilyOwner(familyId = 3, userId = 9),
+        )
+    }
+
     @Test
     fun reactionFrameRoundTrips() {
         // protocol.md, "Server → client" — the frame carries the FULL
@@ -242,6 +286,125 @@ class WsFrameSerdeTest {
                 reactionSeq = 125,
                 reactions = emptyList(),
             ),
+        )
+    }
+
+    @Test
+    fun pollFrameRoundTrips() {
+        // protocol.md, "Server -> client", transcribed verbatim: the frame
+        // carries a poll's FULL current state, never a delta.
+        assertRoundTrips(
+            """{"type": "poll", "chat_id": 42, "message_id": 1340,
+                "poll": {"poll_seq": 89, "closed": false,
+                         "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
+                                     {"id": 6, "text": "Pasta", "votes": []}]}}""",
+            ServerFrame.Poll(
+                chatId = 42,
+                messageId = 1340,
+                poll = me.nettrash.familyconnect.data.net.dto.PollDto(
+                    pollSeq = 89,
+                    closed = false,
+                    options = listOf(
+                        me.nettrash.familyconnect.data.net.dto.PollOptionDto(
+                            id = 5,
+                            text = "Pizza",
+                            votes = listOf(7, 9),
+                        ),
+                        me.nettrash.familyconnect.data.net.dto.PollOptionDto(
+                            id = 6,
+                            text = "Pasta",
+                            votes = emptyList(),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun aClosedPollRoundTripsWithItsResult() {
+        // `closed` is ALWAYS on the wire, and it survives the re-encode:
+        // it carries no Kotlin default, so encodeDefaults=false has
+        // nothing to drop. Without that a closed poll would come back out
+        // of this client looking open.
+        assertRoundTrips(
+            """{"type": "poll", "chat_id": 42, "message_id": 1340,
+                "poll": {"poll_seq": 91, "closed": true,
+                         "options": [{"id": 5, "text": "Pizza", "votes": [7]}]}}""",
+            ServerFrame.Poll(
+                chatId = 42,
+                messageId = 1340,
+                poll = me.nettrash.familyconnect.data.net.dto.PollDto(
+                    pollSeq = 91,
+                    closed = true,
+                    options = listOf(
+                        me.nettrash.familyconnect.data.net.dto.PollOptionDto(
+                            id = 5,
+                            text = "Pizza",
+                            votes = listOf(7),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun messageFrameWithAnEmbeddedPollRoundTrips() {
+        // A poll IS an ordinary message — its question is the body — so
+        // it arrives on the `message` frame like everything else, and a
+        // client that knows nothing of polls loses only the buttons.
+        val polledJson =
+            """{"id": 1340, "chat_id": 42, "sender_id": 7,
+               "client_msg_id": "5b2e0c14-ceea-4e17-a91c-0d9f8e7b2a01",
+               "body": "Pizza or pasta?", "created_at": "2026-08-19T17:03:12Z",
+               "poll": {"poll_seq": 88, "closed": false,
+                        "options": [{"id": 5, "text": "Pizza", "votes": []},
+                                    {"id": 6, "text": "Pasta", "votes": []}]}}"""
+        assertRoundTrips(
+            """{"type": "message", "message": $polledJson}""",
+            ServerFrame.Message(
+                message = me.nettrash.familyconnect.data.net.dto.MessageDto(
+                    id = 1340,
+                    chatId = 42,
+                    senderId = 7,
+                    clientMsgId = "5b2e0c14-ceea-4e17-a91c-0d9f8e7b2a01",
+                    body = "Pizza or pasta?",
+                    createdAt = "2026-08-19T17:03:12Z",
+                    poll = me.nettrash.familyconnect.data.net.dto.PollDto(
+                        pollSeq = 88,
+                        closed = false,
+                        options = listOf(
+                            me.nettrash.familyconnect.data.net.dto.PollOptionDto(
+                                id = 5,
+                                text = "Pizza",
+                                votes = emptyList(),
+                            ),
+                            me.nettrash.familyconnect.data.net.dto.PollOptionDto(
+                                id = 6,
+                                text = "Pasta",
+                                votes = emptyList(),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun sendFrameWithAPollEncodesExactlyAsProtocol() {
+        assertEncodesTo(
+            ClientFrame.Send(
+                chatId = 42,
+                clientMsgId = "5b2e0c14-ceea-4e17-a91c-0d9f8e7b2a01",
+                body = "Pizza or pasta?",
+                poll = me.nettrash.familyconnect.data.net.dto.NewPollDto(
+                    options = listOf("Pizza", "Pasta"),
+                ),
+            ),
+            """{"type": "send", "chat_id": 42, "client_msg_id": "5b2e0c14-ceea-4e17-a91c-0d9f8e7b2a01",
+                "body": "Pizza or pasta?", "poll": {"options": ["Pizza", "Pasta"]}}""",
         )
     }
 

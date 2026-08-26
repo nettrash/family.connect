@@ -434,6 +434,26 @@ pub async fn my_family(
         .iter()
         .map(|row| member_from_row(row, family.owner_user_id))
         .collect();
+    // The accounts that were deleted while in THIS family, which is what
+    // `deleted_family_id` remembers and its only reader. They are not
+    // members — no role, offered to nobody, counted by nothing — and they
+    // are here for one reason: their messages, notes and reactions are
+    // still in the family chat and a client has to put a name to them
+    // (protocol.md, "Deleting an account"). Nothing else in this server
+    // needs excluding them, because their `family_id` is NULL and every
+    // membership question is `family_id = $1`.
+    let former_rows = sqlx::query(
+        "SELECT id, username, display_name, avatar_version, birthday_month, birthday_day,
+                deleted_at
+         FROM users WHERE deleted_family_id = $1 AND deleted_at IS NOT NULL ORDER BY id",
+    )
+    .bind(family_id)
+    .fetch_all(&state.pool)
+    .await?;
+    let former_members: Vec<Member> = former_rows
+        .iter()
+        .map(|row| member_from_row(row, family.owner_user_id))
+        .collect();
     let is_owner = family.owner_user_id == auth.user_id;
     // The board cursor rides along: this is the call every client already
     // makes on resync, so learning whether a board catch-up is needed
@@ -445,6 +465,11 @@ pub async fn my_family(
             .fetch_one(&state.pool)
             .await?;
     let mut body = json!({"family": family.to_api(is_owner), "members": members});
+    // Absent rather than `[]` for a family nobody has left, the wire rule
+    // every optional key here follows.
+    if !former_members.is_empty() {
+        body["former_members"] = json!(former_members);
+    }
     if last_board_seq > 0 {
         body["max_board_seq"] = json!(last_board_seq);
     }
@@ -595,6 +620,12 @@ pub async fn list_join_requests(
                 created_at: row.get("user_created_at"),
                 avatar_version: row.get("avatar_version"),
                 birthday: Birthday::from_row(row),
+                // A scrubbed account keeps no family and no sessions, so it
+                // cannot have a live join request. Read from the row all the
+                // same rather than hard-coded: this is the one place a
+                // `User` is assembled by hand, and a literal `false` here is
+                // a claim the row is entitled to make instead.
+                deleted: crate::models::deleted_from_row(row),
             },
             created_at: row.get("created_at"),
         })
@@ -673,12 +704,15 @@ pub async fn approve_join_request(
         id: joined.id,
         username: joined.username.clone(),
         display_name: joined.display_name.clone(),
-        role: "member".to_string(),
+        role: Some("member".to_string()),
         avatar_version: joined.avatar_version,
         // Read on its own rather than carried by `user_brief`: that brief
         // IS the `member_joined` frame payload, whose shape is pinned, and
         // a birthday has no business travelling in a WS frame.
         birthday: member_birthday(&state, applicant_id).await?,
+        // An account that has just been approved into a family is live by
+        // construction — a tombstone holds no family and makes no requests.
+        deleted: false,
     };
     events::log_fanout_error(
         "member_joined",
@@ -736,13 +770,36 @@ pub async fn leave_family(
             "you do not belong to a family",
         ));
     };
-    let family = fetch_family(&state, family_id).await?;
 
-    if family.owner_user_id == auth.user_id {
+    // The ownership question, the head count and the delete are ONE
+    // decision, so they are one transaction with the family row locked.
+    // They used to be two pool round-trips with nothing between them, and
+    // under `join_policy = 'open'` somebody could join in that gap and find
+    // their new family deleted underneath them. `FOR UPDATE` is what closes
+    // it rather than the transaction alone: `grant_membership`'s
+    // `UPDATE users SET family_id` takes a FOR KEY SHARE lock on this same
+    // families row to check its foreign key, and FOR UPDATE conflicts with
+    // it — so a join in flight either lands before the count sees it, or
+    // waits and then fails against a family that is gone.
+    let mut tx = state.pool.begin().await?;
+    let owner_user_id: Option<i64> =
+        sqlx::query_scalar("SELECT owner_user_id FROM families WHERE id = $1 FOR UPDATE")
+            .bind(family_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(owner_user_id) = owner_user_id else {
+        // The family was deleted while this request was in flight.
+        return Err(ApiError::conflict(
+            codes::NOT_IN_FAMILY,
+            "you do not belong to a family",
+        ));
+    };
+
+    if owner_user_id == auth.user_id {
         let member_count: i64 =
             sqlx::query_scalar("SELECT count(*) FROM users WHERE family_id = $1")
                 .bind(family_id)
-                .fetch_one(&state.pool)
+                .fetch_one(&mut *tx)
                 .await?;
         if member_count > 1 {
             return Err(ApiError::conflict(
@@ -753,14 +810,34 @@ pub async fn leave_family(
         // Sole member: delete the family. Cascades remove chats, messages,
         // members, and join requests; users.family_id resets via
         // ON DELETE SET NULL. Nobody is left to notify.
-        sqlx::query("DELETE FROM families WHERE id = $1")
-            .bind(family_id)
-            .execute(&state.pool)
-            .await?;
+        let storage_keys = delete_family_in_tx(&mut tx, family_id).await?;
+        tx.commit().await?;
+        // After the commit, never inside it — and so this may not fail the
+        // request. The family is already gone: a `?` here would answer a
+        // leave that HAS happened with a 500, and the client's retry would
+        // then get a 409 `not_in_family`, because the membership it would
+        // retry against is among the rows that went. The sweep is logged
+        // and swallowed for exactly the reason fan-out is
+        // (`log_fanout_error`): the worst a lost sweep costs is a file
+        // nothing names, which the unclaimed-attachment sweeper and the
+        // next deletion both walk past harmlessly; the worst a propagated
+        // error costs is a family the user believes is still there.
+        if let Err(err) =
+            crate::handlers_attachment::remove_all_if_unreferenced(&state, &storage_keys).await
+        {
+            tracing::warn!(error = ?err, "sweeping a deleted family's attachments failed");
+        }
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
+    // The membership write happens under the lock taken above, in this same
+    // transaction. It used to roll back here and let `remove_membership`
+    // open a transaction of its own, which left a window with no lock on
+    // the family at all: `delete_account` could take the family row in it,
+    // read a roster that still listed this member, and hand them the family
+    // they were in the middle of leaving. See `remove_membership`.
+    remove_membership(&mut tx, family_id, auth.user_id).await?;
+    tx.commit().await?;
 
-    remove_membership(&state, family_id, auth.user_id).await?;
     events::log_fanout_error(
         "member_left",
         events::deliver_member_left(&state, family_id, auth.user_id).await,
@@ -782,10 +859,20 @@ pub async fn remove_member(
             "the owner cannot be removed from the family",
         ));
     }
+    // The family row's lock, then the check, then the write — one
+    // transaction, the same shape `leave_family` has. Every membership
+    // change in a family is serialized on this row so that
+    // `delete_account`, which holds it while it chooses a successor, can
+    // never read a roster somebody is half way out of.
+    let mut tx = state.pool.begin().await?;
+    sqlx::query_scalar::<_, i64>("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+        .bind(family.id)
+        .fetch_optional(&mut *tx)
+        .await?;
     let target_family: Option<i64> =
         sqlx::query_scalar("SELECT family_id FROM users WHERE id = $1")
             .bind(target_user_id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&mut *tx)
             .await?
             .flatten();
     if target_family != Some(family.id) {
@@ -795,7 +882,9 @@ pub async fn remove_member(
         ));
     }
 
-    remove_membership(&state, family.id, target_user_id).await?;
+    remove_membership(&mut tx, family.id, target_user_id).await?;
+    tx.commit().await?;
+
     events::log_fanout_error(
         "member_left",
         events::deliver_member_left(&state, family.id, target_user_id).await,
@@ -936,24 +1025,92 @@ async fn require_same_family(
 }
 
 /// Build a `Member` from a row exposing `id, username, display_name,
-/// avatar_version, birthday_month, birthday_day`.
-fn member_from_row(row: &PgRow, owner_user_id: i64) -> Member {
+/// avatar_version, birthday_month, birthday_day`, and optionally
+/// `deleted_at` — a SELECT that omits the last reads as a live member.
+///
+/// `pub(crate)` so the account deletion can build the tombstone its
+/// `member_deleted` frame carries out of the row it has just scrubbed,
+/// rather than assembling the same placeholder by hand in a second place.
+pub(crate) fn member_from_row(row: &PgRow, owner_user_id: i64) -> Member {
     let id: i64 = row.get("id");
+    let deleted = crate::models::deleted_from_row(row);
     Member {
         id,
         username: row.get("username"),
         display_name: row.get("display_name"),
-        role: member_role(id, owner_user_id).to_string(),
+        // A former member holds no role — they are in `former_members`
+        // precisely because they are in nothing else (protocol.md,
+        // "Deleting an account"). Every live row gets one.
+        role: (!deleted).then(|| member_role(id, owner_user_id).to_string()),
         avatar_version: row.get("avatar_version"),
         birthday: Birthday::from_row(row),
+        deleted,
     }
+}
+
+/// Delete a family inside the caller's transaction, and hand back the
+/// storage keys its rows named so the caller can sweep the files after the
+/// commit.
+///
+/// The two callers are the sole member leaving and the sole member deleting
+/// their account, and both need the same three steps in the same order:
+/// COLLECT the keys, DELETE, then `remove_if_unreferenced` per key once the
+/// transaction has committed.
+///
+/// The collection is the part that was missing, and its absence was a
+/// permanent leak: `DELETE FROM families` cascades to its chats, to their
+/// messages and on to the attachment ROWS, so every file the family ever
+/// sent stayed on disk with nothing in the database naming it. Neither
+/// sweeper can find those bytes again — `sweep_unclaimed` only matches rows
+/// with no message, and `sweep_expired_messages` works from messages that
+/// are gone.
+///
+/// The second half of the union is the uploads no message ever claimed:
+/// their rows SURVIVE the family (`attachments.family_id` is ON DELETE SET
+/// NULL), so `remove_if_unreferenced` deliberately keeps their files and
+/// `sweep_unclaimed` takes both together when the grace period is up.
+/// Collecting them costs nothing and means this list is "every file this
+/// family could name", which is the question worth asking here.
+pub(crate) async fn delete_family_in_tx(
+    tx: &mut PgConnection,
+    family_id: i64,
+) -> Result<Vec<String>, ApiError> {
+    let storage_keys: Vec<String> = sqlx::query_scalar(
+        "SELECT a.storage_key
+           FROM attachments a
+           JOIN messages m ON m.id = a.message_id
+           JOIN chats c ON c.id = m.chat_id
+          WHERE c.family_id = $1
+         UNION
+         SELECT a.storage_key FROM attachments a WHERE a.family_id = $1",
+    )
+    .bind(family_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM families WHERE id = $1")
+        .bind(family_id)
+        .execute(&mut *tx)
+        .await?;
+    Ok(storage_keys)
 }
 
 /// Shared leave/remove write: detach the user and drop them from every chat
 /// of the family (family chat + their direct chats). Chat and message rows
 /// stay — history is retained and resurfaces on rejoin per protocol.md.
-async fn remove_membership(state: &AppState, family_id: i64, user_id: i64) -> Result<(), ApiError> {
-    let mut tx = state.pool.begin().await?;
+///
+/// Runs INSIDE the caller's transaction, and both callers open that
+/// transaction by taking `FOR UPDATE` on the family row. It used to open a
+/// transaction of its own, which meant the leave landed with no lock on the
+/// family held at all — and `delete_account`, choosing a successor at that
+/// exact moment, still saw the departing member as `family_id = F` and
+/// handed them the family on their way out of it. A family owned by
+/// somebody who is not in it has no working owner endpoint and nothing
+/// repairs it, so the write and the lock have to be the same transaction.
+async fn remove_membership(
+    tx: &mut PgConnection,
+    family_id: i64,
+    user_id: i64,
+) -> Result<(), ApiError> {
     let updated = sqlx::query("UPDATE users SET family_id = NULL WHERE id = $1 AND family_id = $2")
         .bind(user_id)
         .bind(family_id)
@@ -976,7 +1133,6 @@ async fn remove_membership(state: &AppState, family_id: i64, user_id: i64) -> Re
     .bind(user_id)
     .execute(&mut *tx)
     .await?;
-    tx.commit().await?;
     Ok(())
 }
 

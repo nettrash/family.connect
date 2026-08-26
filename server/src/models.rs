@@ -28,11 +28,17 @@ pub struct User {
     /// Present when (and only when) this member has set one.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub birthday: Option<Birthday>,
+    /// Present and true ONLY on a scrubbed account, so a live user never
+    /// carries `"deleted": false` (protocol.md, "Deleting an account").
+    /// Same idiom as [`Note::deleted`].
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub deleted: bool,
 }
 
 impl User {
     /// Map a row exposing `id, username, display_name, created_at,
-    /// avatar_version, birthday_month, birthday_day`.
+    /// avatar_version, birthday_month, birthday_day`, and optionally
+    /// `deleted_at`.
     pub fn from_row(row: &PgRow) -> Self {
         Self {
             id: row.get("id"),
@@ -41,8 +47,34 @@ impl User {
             created_at: row.get("created_at"),
             avatar_version: row.get("avatar_version"),
             birthday: Birthday::from_row(row),
+            deleted: deleted_from_row(row),
         }
     }
+}
+
+/// Whether the row describes a scrubbed account: `users.deleted_at IS NOT
+/// NULL`, and nothing else (protocol.md, "Deleting an account").
+///
+/// `try_get`, deliberately, exactly as the attachment columns are read. The
+/// column arrived with migration 0023 and every SELECT written before it
+/// simply does not name it; an absent column reads as a LIVE account, which
+/// is what all of those queries were already saying. `.get` would panic
+/// instead, and a panic inside a handler surfaces as a dropped connection
+/// with no error body.
+///
+/// THE COLUMN NAME IS BARE, AND `notes` HAS A `deleted_at` TOO (0008, where
+/// it marks a note's tombstone). sqlx resolves by OUTPUT-column name, not by
+/// table, so a SELECT that joined `users` with `notes` and named both would
+/// hand this whichever one the planner put first — and a live member would
+/// read as deleted the moment their note was. No query in the server joins
+/// those two tables today; any future one MUST alias
+/// (`u.deleted_at AS deleted_at`, or rename the note's), because nothing
+/// here can tell the two apart.
+pub fn deleted_from_row(row: &PgRow) -> bool {
+    row.try_get::<Option<OffsetDateTime>, _>("deleted_at")
+        .ok()
+        .flatten()
+        .is_some()
 }
 
 /// `Birthday` object: a day and a month, and no year (protocol.md,
@@ -98,12 +130,21 @@ pub struct Member {
     pub id: i64,
     pub username: String,
     pub display_name: String,
-    /// `"owner"` or `"member"`.
-    pub role: String,
+    /// `"owner"` or `"member"` — and ABSENT on a former member, who holds no
+    /// role at all (protocol.md, "Deleting an account"). A live member always
+    /// carries one; the `Option` exists for the tombstone in
+    /// `former_members`, which is not a member of anything.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub role: Option<String>,
     pub avatar_version: i64,
     /// Present when (and only when) this member has set one.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub birthday: Option<Birthday>,
+    /// Present and true ONLY on a former member — an account that was
+    /// deleted while in this family. Absent otherwise, so a live member never
+    /// carries `"deleted": false`.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub deleted: bool,
 }
 
 /// `Family` object. `invite_code` is present when (and only when) the caller
@@ -164,6 +205,52 @@ pub struct Reaction {
     pub emoji: String,
 }
 
+/// One option of a poll, with the full list of who chose it.
+///
+/// `votes` is ALWAYS present and is never a delta — an empty list means
+/// nobody has chosen this option, which is a different statement from "no
+/// data" and the only one this type can make. Attributed votes are a product
+/// decision (a family wants to see who has not voted yet) and a transport
+/// one: one `poll` frame is serialised once and sent to every connection, so
+/// a field whose value depends on who is reading it — "did I vote" — cannot
+/// exist. Clients derive that from the list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PollOption {
+    pub id: i64,
+    pub text: String,
+    pub votes: Vec<i64>,
+}
+
+/// `Poll` object: what makes a message votable (protocol.md, "Polls").
+///
+/// The QUESTION is deliberately not here — it is the message body, which is
+/// what lets a chat-list preview, a push alert, a reply excerpt and the
+/// assistant's transcript all read a poll without one new case between them,
+/// and what lets a client that has never heard of polls draw it as an
+/// ordinary message and lose only the buttons.
+///
+/// `poll_seq` and `closed` are ALWAYS serialised, unlike `Message`'s
+/// `reaction_seq`: a poll has a sequence from the moment it exists, and
+/// `closed` is a boolean with a real default, so there is no "unset" state
+/// for an absent key to mean.
+///
+/// **There is no `multiple_choice` field, and adding one is not a small
+/// change.** A poll takes exactly one answer, and that is enforced by the
+/// primary key of `poll_votes` (migration 0022), not by a validation rule
+/// this struct could relax.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Poll {
+    pub poll_seq: i64,
+    pub closed: bool,
+    pub options: Vec<PollOption>,
+}
+
+impl Poll {
+    /// Fewest options a poll may be created with. One option is not a
+    /// question, it is a statement.
+    pub const MIN_OPTIONS: usize = 2;
+}
+
 /// `Message` object — identical over REST and WS.
 ///
 /// `reactions`/`reaction_seq` are present iff the message has ever been
@@ -202,6 +289,13 @@ pub struct Message {
     /// Present when the message carries a photo or video.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub attachment: Option<Attachment>,
+    /// Present when (and only when) the message is a poll. Hydrated AFTER
+    /// the fact by an `attach_*` helper, exactly as `reactions` is — a poll
+    /// is three tables and cannot be joined onto a message row without
+    /// multiplying it, so `from_row` leaves this `None` and never reads a
+    /// column for it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub poll: Option<Poll>,
 }
 
 /// RFC3339 for an OPTIONAL timestamp. `time::serde::rfc3339::option` exists
@@ -391,6 +485,10 @@ impl Message {
             edited_at,
             edit_seq,
             attachment,
+            // Not read from a column, by design: see the field's doc. The
+            // paths that expose a poll enrich afterwards, as they do for
+            // reactions.
+            poll: None,
         }
     }
 }
@@ -408,6 +506,10 @@ pub struct ChatListEntry {
     /// Omitted while nothing in the chat has ever been edited.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_edit_seq: Option<i64>,
+    /// Omitted while the chat holds no poll — the fourth cursor, read
+    /// exactly as the two above (protocol.md, "Polls").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_poll_seq: Option<i64>,
 }
 
 /// Something a message carries: a photo, a video, a piece of audio, a file,
@@ -723,9 +825,10 @@ mod tests {
             id: 7,
             username: "anna".to_string(),
             display_name: "Anna".to_string(),
-            role: "owner".to_string(),
+            role: Some("owner".to_string()),
             avatar_version: 3,
             birthday: Some(Birthday { month: 3, day: 14 }),
+            deleted: false,
         };
         assert_eq!(
             serde_json::to_value(&member).expect("serialize"),
@@ -742,9 +845,10 @@ mod tests {
             id: 7,
             username: "anna".to_string(),
             display_name: "Anna".to_string(),
-            role: "member".to_string(),
+            role: Some("member".to_string()),
             avatar_version: 0,
             birthday: None,
+            deleted: false,
         };
         assert_eq!(
             serde_json::to_value(&member).expect("serialize"),
@@ -764,6 +868,7 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             avatar_version: 3,
             birthday: Some(Birthday { month: 2, day: 29 }),
+            deleted: false,
         };
         assert_eq!(
             serde_json::to_value(&user).expect("serialize"),
@@ -771,6 +876,64 @@ mod tests {
                 "id": 7, "username": "anna", "display_name": "Anna",
                 "created_at": "2026-08-19T17:03:12Z", "avatar_version": 3,
                 "birthday": {"month": 2, "day": 29}
+            })
+        );
+    }
+
+    /// A former member holds no role and says so by carrying no `role` key
+    /// at all — they are in `former_members` precisely because they are in
+    /// nothing else (protocol.md, "Deleting an account").
+    #[test]
+    fn a_former_member_carries_no_role_and_says_deleted() {
+        let tombstone = Member {
+            id: 7,
+            username: String::new(),
+            display_name: "Deleted account".to_string(),
+            role: None,
+            avatar_version: 0,
+            birthday: None,
+            deleted: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&tombstone).expect("serialize"),
+            serde_json::json!({
+                "id": 7, "username": "", "display_name": "Deleted account",
+                "avatar_version": 0, "deleted": true
+            })
+        );
+    }
+
+    /// `poll_seq` and `closed` are ALWAYS present, unlike `reaction_seq`: a
+    /// poll has a sequence from the moment it exists, and `closed` is a
+    /// boolean with a real default, so there is no "unset" for a missing key
+    /// to mean. `votes` is always present too — empty means nobody chose it,
+    /// which is a different statement from "no data".
+    #[test]
+    fn a_poll_matches_the_protocol_shape() {
+        let poll = Poll {
+            poll_seq: 88,
+            closed: false,
+            options: vec![
+                PollOption {
+                    id: 5,
+                    text: "Pizza".to_string(),
+                    votes: vec![7, 9],
+                },
+                PollOption {
+                    id: 6,
+                    text: "Pasta".to_string(),
+                    votes: vec![],
+                },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_value(&poll).expect("serialize"),
+            serde_json::json!({
+                "poll_seq": 88, "closed": false,
+                "options": [
+                    {"id": 5, "text": "Pizza", "votes": [7, 9]},
+                    {"id": 6, "text": "Pasta", "votes": []}
+                ]
             })
         );
     }
@@ -796,6 +959,7 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             avatar_version: 0,
             birthday: None,
+            deleted: false,
         };
         let json = serde_json::to_value(&user).expect("serialize");
         assert_eq!(json["created_at"], "2026-08-19T17:03:12Z");

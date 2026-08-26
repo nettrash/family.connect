@@ -52,6 +52,9 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.content.ReceiveContentListener
+import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Image
 import android.content.Context
@@ -59,6 +62,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -75,6 +79,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -94,6 +99,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.TextFieldLineLimits
@@ -110,6 +116,10 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Poll
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.HowToVote
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.automirrored.outlined.Reply
@@ -124,6 +134,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -131,6 +142,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
@@ -142,6 +154,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -292,6 +305,30 @@ fun ChatScreen(
 
     var failedActionTarget by remember { mutableStateOf<String?>(null) }
 
+    // Leave when the chat itself goes.
+    //
+    // A direct chat can vanish under the reader: the peer deletes their
+    // account, `member_deleted` lands, and ChatRepository drops the chat
+    // and every message in it (docs/protocol.md, "Deleting an account" —
+    // the frame reaches the peer precisely "because their chat is about to
+    // vanish and nothing else would ever say why"). Nothing here reacted:
+    // the title went blank, the thread emptied, and the composer stayed
+    // live, so a message typed into it was stored against a chat that no
+    // longer existed and came back FAILED with `chat_not_found` and no
+    // explanation. Both Apple clients already step out of a chat that
+    // disappears (ChatListView pops the pushed thread, MacChatView moves
+    // the selection).
+    //
+    // Non-null → null, never plain null: `chat` is a StateFlow started
+    // Eagerly with an initial null, so a first-frame `chat == null` is
+    // Room not having answered yet and popping on it would close the
+    // screen every time it opened.
+    val currentOnBack by rememberUpdatedState(onBack)
+    var chatWasSeen by remember { mutableStateOf(false) }
+    LaunchedEffect(chat != null) {
+        if (chat != null) chatWasSeen = true else if (chatWasSeen) currentOnBack()
+    }
+
     // The attachment open full screen, and the picker that starts a send.
     var viewingAttachment by remember { mutableStateOf<AttachmentDto?>(null) }
 
@@ -315,6 +352,10 @@ fun ChatScreen(
     val focusRequester = remember { FocusRequester() }
     val replyDraft by viewModel.replyDraft.collectAsStateWithLifecycle()
     val editTarget by viewModel.editTarget.collectAsStateWithLifecycle()
+    // The poll being written, and whether this chat may hold one at all
+    // (the family chat only — anywhere else the server says invalid_poll).
+    val pollDraft by viewModel.pollDraft.collectAsStateWithLifecycle()
+    val canCreatePoll by viewModel.canCreatePoll.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     // Copy and share from the message context menu.
     val clipboard = LocalClipboard.current
@@ -329,7 +370,12 @@ fun ChatScreen(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
         if (uri != null) {
-            val type = context.contentResolver.getType(uri).orEmpty()
+            // Guarded: `getType` reaches into the picker's provider and
+            // throws for a Uri it does not recognise — on the main thread,
+            // where that is a crash rather than a failed pick.
+            val type = runCatching { context.contentResolver.getType(uri) }
+                .getOrNull()
+                .orEmpty()
             viewModel.stageMedia(uri, isVideo = type.startsWith("video/"))
         }
     }
@@ -340,6 +386,20 @@ fun ChatScreen(
     val pickFile = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> if (uri != null) viewModel.stageFile(uri) }
+
+    // Pasting. Two doors into the same staging: the attach menu's Paste,
+    // which reads the clipboard itself and works with the field unfocused,
+    // and the field's own paste gesture (below, via contentReceiver),
+    // which hands over one item at a time.
+    //
+    // Reading the clipboard is a suspend call — deliberately, since it can
+    // reach across to another app's provider — hence the scope.
+    val pasteFromClipboard: () -> Unit = {
+        scope.launch { viewModel.pasteFromClipboard(clipboard.getClipEntry()?.clipData) }
+    }
+    val pasteItem: (Uri, String?) -> Boolean = { uri, declaredMime ->
+        viewModel.pasteAttachment(uri, declaredMime) == ChatViewModel.PasteResult.STAGING
+    }
 
     // The camera. MediaStore's capture intents hand the picture back into a
     // Uri WE provide, via the FileProvider the app already declares for
@@ -768,6 +828,10 @@ fun ChatScreen(
                                     streamUrl = viewModel::attachmentStreamUrl,
                                     onFailedTap = { failedActionTarget = it },
                                     onToggleReaction = applyToggle,
+                                    onVote = { serverId, optionId ->
+                                        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                                        viewModel.vote(serverId, optionId)
+                                    },
                                     onTapQuote = { pendingJumpId = it },
                                     onOpenAttachment = { attachment ->
                                         if (attachment.isFile) {
@@ -890,6 +954,10 @@ fun ChatScreen(
                     )
                 },
                 onPickFile = { pickFile.launch(arrayOf("*/*")) },
+                onPasteFromClipboard = pasteFromClipboard,
+                onPasteItem = pasteItem,
+                showsPoll = canCreatePoll,
+                onStartPoll = viewModel::beginPoll,
                 staged = staged,
                 onTakePhoto = { startCapture(false) },
                 onTakeVideo = { startCapture(true) },
@@ -943,6 +1011,11 @@ fun ChatScreen(
                     )
                     focusRequester.requestFocus()
                 }
+            },
+            onClosePoll = {
+                val entity = target.item.entity
+                pickerTarget = null
+                entity.serverId?.let { viewModel.closePoll(it) }
             },
             onCopy = {
                 val body = target.item.entity.body
@@ -1007,6 +1080,18 @@ fun ChatScreen(
         }
     }
 
+    pollDraft?.let { draft ->
+        PollComposerSheet(
+            draft = draft,
+            onQuestionChange = viewModel::setPollQuestion,
+            onOptionChange = viewModel::setPollOption,
+            onAddOption = viewModel::addPollOption,
+            onRemoveOption = viewModel::removePollOption,
+            onSend = viewModel::sendPoll,
+            onDismiss = viewModel::cancelPoll,
+        )
+    }
+
     failedActionTarget?.let { clientMsgId ->
         AlertDialog(
             onDismissRequest = { failedActionTarget = null },
@@ -1053,6 +1138,7 @@ private fun ReactionPickerPopup(
     onMore: () -> Unit,
     onReply: () -> Unit,
     onEdit: () -> Unit,
+    onClosePoll: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onSave: () -> Unit,
@@ -1177,6 +1263,7 @@ private fun ReactionPickerPopup(
                 MessageContextMenu(
                     onReply = { exitThen(onReply) },
                     onEdit = { exitThen(onEdit) },
+                    onClosePoll = { exitThen(onClosePoll) },
                     onCopy = { exitThen(onCopy) },
                     onShare = { exitThen(onShare) },
                     onSave = { exitThen(onSave) },
@@ -1184,6 +1271,14 @@ private fun ReactionPickerPopup(
                     canSave = target.item.entity.attachment?.isFile == false,
                     canReply = target.item.entity.serverId != null,
                     canEdit = target.item.entity.serverId != null &&
+                        target.item.entity.senderId == myUserId,
+                    // Closing is the AUTHOR's, and one-way — the family
+                    // owner does not outrank them here, exactly as with
+                    // editing. Hidden once the poll is already closed:
+                    // the server would no-op it, and an action that does
+                    // nothing is worse than no action.
+                    canClosePoll = target.item.poll?.closed == false &&
+                        target.item.entity.serverId != null &&
                         target.item.entity.senderId == myUserId,
                     canCopy = target.item.entity.body.isNotEmpty(),
                 )
@@ -1286,6 +1381,7 @@ private fun EditBanner(onCancel: () -> Unit) {
 private fun MessageContextMenu(
     onReply: () -> Unit,
     onEdit: () -> Unit,
+    onClosePoll: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onSave: () -> Unit,
@@ -1297,6 +1393,8 @@ private fun MessageContextMenu(
     canReply: Boolean = true,
     /** Only the author may edit, and only once the message has an id. */
     canEdit: Boolean = false,
+    /** Only the author may close their poll, and only while it is open. */
+    canClosePoll: Boolean = false,
     /** A photo sent without a caption has nothing to copy. */
     canCopy: Boolean = true,
     /** Photos and videos only — what the gallery will take. */
@@ -1322,6 +1420,13 @@ private fun MessageContextMenu(
                     label = stringResource(R.string.s_edit),
                     icon = Icons.Outlined.Edit,
                     onClick = onEdit,
+                )
+            }
+            if (canClosePoll) {
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_close_poll),
+                    icon = Icons.Outlined.HowToVote,
+                    onClick = onClosePoll,
                 )
             }
             if (canCopy) {
@@ -1561,6 +1666,8 @@ private fun MessageBubble(
     streamUrl: suspend (Long) -> Pair<String, Map<String, String>>?,
     onFailedTap: (String) -> Unit,
     onToggleReaction: (Long, String) -> Unit,
+    /** (message server id, option id) — a tap on a poll option. */
+    onVote: (Long, Long) -> Unit,
     onLongPress: (ChatListItem.MessageItem, Rect) -> Unit,
     onPositioned: (ChatListItem.MessageItem, Rect) -> Unit,
     onTapQuote: (Long) -> Unit,
@@ -1782,6 +1889,9 @@ private fun MessageBubble(
                     onFailedTap = onFailedTap,
                     onToggleReaction = { emoji ->
                         entity.serverId?.let { onToggleReaction(it, emoji) }
+                    },
+                    onVote = { optionId ->
+                        entity.serverId?.let { onVote(it, optionId) }
                     },
                     onDoubleTap = {
                         entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
@@ -2153,6 +2263,372 @@ private data class BodyBlock(
     val links: List<LinkSpan> = emptyList(),
 )
 
+/**
+ * The poll inside a bubble: one row per option, each with the share of
+ * the vote it holds drawn behind it, the faces of the people who chose
+ * it, and its count — then a footer saying how much of the family has
+ * answered.
+ *
+ * Colours are derived from the balloon's own content colour rather than
+ * from a theme role, the same rule the reaction chips follow: one set of
+ * alphas then works on both tones, where a fixed role loses contrast on
+ * one of them under dynamic colour.
+ *
+ * The gestures are the load-bearing part. A child that only handles taps
+ * still CONSUMES the press, so an option row that took `clickable` would
+ * silently kill the bubble's double-tap heart and its long-press capsule
+ * over the whole poll — which is most of the balloon. It takes
+ * `combinedClickable` and hands both of them straight back, exactly as
+ * QuoteBlock does.
+ *
+ * iOS counterpart: the shared poll bubble in
+ * ios/FamilyConnect/Views/ConversationView.swift.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PollBlock(
+    poll: PollView,
+    memberAvatars: Map<Long, Long>,
+    /** Acked and still open — a closed poll shows its result and refuses taps. */
+    canVote: Boolean,
+    onVote: (Long) -> Unit,
+    onDoubleTap: () -> Unit,
+    onLongPress: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(10.dp)
+    val onBubble = LocalContentColor.current
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        poll.options.forEach { option ->
+            // The bar grows into its new share rather than jumping, so a
+            // vote landing from another phone reads as something that
+            // happened rather than as a redraw.
+            val fraction by animateFloatAsState(
+                targetValue = option.fraction,
+                animationSpec = tween(250),
+                label = "poll-bar",
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(shape)
+                    .background(onBubble.copy(alpha = 0.10f))
+                    .then(
+                        // Full strength, never a wash: this hairline is
+                        // the only thing saying which option is MINE, and
+                        // the tap rule diverges on exactly that.
+                        if (option.isMine) {
+                            Modifier.border(BorderStroke(1.dp, onBubble), shape)
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .combinedClickable(
+                        onClick = { if (canVote) onVote(option.id) },
+                        onDoubleClick = onDoubleTap,
+                        onLongClick = onLongPress,
+                    )
+                    // A closed poll's row is not a button: it still
+                    // takes a long press for the capsule, but a tap on it
+                    // does nothing and must not announce that it does.
+                    .then(
+                        if (canVote) Modifier.semantics { role = Role.Button } else Modifier,
+                    ),
+            ) {
+                if (fraction > 0f) {
+                    // matchParentSize, so the fill takes the height the
+                    // CONTENT settled on without contributing to it —
+                    // fillMaxHeight alone in a wrap-content Box measures
+                    // against the incoming max and blows the row open.
+                    Box(modifier = Modifier.matchParentSize()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(fraction)
+                                .background(onBubble.copy(alpha = 0.18f)),
+                        )
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                ) {
+                    if (option.isMine) {
+                        Icon(
+                            imageVector = Icons.Outlined.CheckCircle,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        text = option.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        // fill = true, so the faces and the count are
+                        // pushed to the row's far edge instead of
+                        // trailing whatever length the text happened to be.
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    // Who voted, by their face — bounded, because an
+                    // option every one of nine members chose must not
+                    // push the count off the row. Mine leads
+                    // (buildPollView), and everybody the row has no space
+                    // for is behind the "+N" that ends the strip.
+                    if (option.voters.isNotEmpty()) {
+                        VoterFaces(
+                            voters = option.voters,
+                            memberAvatars = memberAvatars,
+                            onDoubleTap = onDoubleTap,
+                            onLongPress = onLongPress,
+                        )
+                    }
+                    if (option.count > 0) {
+                        Text(
+                            text = "${option.count}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = onBubble.copy(alpha = 0.72f),
+                        )
+                    }
+                }
+            }
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 2.dp),
+        ) {
+            Text(
+                // Who has NOT answered is the useful number in a family,
+                // and it needs a denominator — so the roster's size, and
+                // only the plain count until the roster has answered.
+                // Plurals, not format strings: German, Spanish, French,
+                // Russian and both Serbian scripts inflect on the count even
+                // though English does not. The quantity is the vote count in
+                // both, and it is passed twice — once to pick the form, once
+                // to fill the %1$d.
+                text = if (poll.familySize > 0) {
+                    pluralStringResource(
+                        R.plurals.s_voted_of_family,
+                        poll.votedCount,
+                        poll.votedCount,
+                        poll.familySize)
+                } else {
+                    pluralStringResource(
+                        R.plurals.s_voted_total, poll.votedCount, poll.votedCount)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = onBubble.copy(alpha = 0.72f),
+            )
+            if (poll.closed) {
+                Text(
+                    text = " · " + stringResource(R.string.s_poll_closed),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = onBubble.copy(alpha = 0.72f),
+                )
+            }
+        }
+    }
+}
+
+/** Faces drawn beside one option before the count takes over. */
+private const val MAX_POLL_VOTER_FACES = 4
+
+/**
+ * The faces beside one poll option — and the list of everybody behind
+ * them.
+ *
+ * Four faces fit on a row that also has to hold the option's own text.
+ * On an option nine members chose, the fifth voter onward used to exist
+ * only inside the count, which quietly undoes the decision this feature
+ * was built on: in a family, WHO voted is the interesting half. So the
+ * strip ends in a "+5" and opens the full list.
+ *
+ * The list is the same surface the reaction chips already use — a
+ * DropdownMenu anchored under what was pressed, one row per person, face
+ * first — rather than a second kind of answer to the same question. No
+ * header: the menu hangs off the option it belongs to.
+ *
+ * The gestures are the load-bearing part, exactly as in [PollBlock].
+ * This strip sits INSIDE the option row, and a child that handles a tap
+ * still CONSUMES the press, so it takes `combinedClickable` and hands
+ * the double-tap and the long-press straight back to the balloon — the
+ * quick heart and the reaction capsule survive over the faces too. Only
+ * the plain tap is claimed, and it deliberately does NOT vote: an
+ * affordance that exists to show you something must not also cast a
+ * ballot, and the rest of the row is still there for voting.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun VoterFaces(
+    voters: List<PollVoter>,
+    memberAvatars: Map<Long, Long>,
+    onDoubleTap: () -> Unit,
+    onLongPress: () -> Unit,
+) {
+    var showVoters by remember { mutableStateOf(false) }
+    val onBubble = LocalContentColor.current
+    val hidden = voters.size - MAX_POLL_VOTER_FACES
+    // One announcement for the whole strip: a merged node reading five
+    // sets of initials tells a screen reader nothing.
+    val label = stringResource(R.string.s_who_voted)
+    Box {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .combinedClickable(
+                    onClick = { showVoters = true },
+                    onDoubleClick = onDoubleTap,
+                    onLongClick = onLongPress,
+                )
+                .semantics(mergeDescendants = true) {
+                    contentDescription = label
+                    role = Role.Button
+                },
+        ) {
+            voters.take(MAX_POLL_VOTER_FACES).forEach { voter ->
+                Avatar(
+                    name = voter.name,
+                    userId = voter.userId,
+                    size = 18,
+                    avatarVersion = memberAvatars[voter.userId] ?: 0L,
+                )
+                Spacer(Modifier.width(2.dp))
+            }
+            if (hidden > 0) {
+                // A bare count, like the option's own total beside it —
+                // nothing to translate, and it inflects in no language.
+                Text(
+                    text = "+$hidden",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = onBubble.copy(alpha = 0.72f),
+                )
+                Spacer(Modifier.width(4.dp))
+            }
+        }
+        DropdownMenu(
+            expanded = showVoters,
+            onDismissRequest = { showVoters = false },
+            shape = MaterialTheme.shapes.medium,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            // Everybody, in the order the option holds them — mine first
+            // (buildPollView), the same order the faces are drawn in.
+            voters.forEach { voter ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                ) {
+                    Avatar(
+                        name = voter.name,
+                        userId = voter.userId,
+                        size = 24,
+                        avatarVersion = memberAvatars[voter.userId] ?: 0L,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(text = voter.name, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The poll composer: a question and two to ten options.
+ *
+ * A sheet rather than a screen because it is one message being written —
+ * the composer is still behind it, and the reply it was primed with
+ * travels with the poll. Everything it refuses is what the SERVER would
+ * refuse (see PollDraft), so Send is dark until the poll is one the
+ * family could actually answer, rather than lighting up and failing.
+ *
+ * The draft lives in the ViewModel, so a rotation with a half-written
+ * poll in it loses nothing.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PollComposerSheet(
+    draft: PollDraft,
+    onQuestionChange: (String) -> Unit,
+    onOptionChange: (Int, String) -> Unit,
+    onAddOption: () -> Unit,
+    onRemoveOption: (Int) -> Unit,
+    onSend: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 24.dp)
+                // The option list can outgrow the sheet on a small screen
+                // with ten of them and the keyboard up.
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.s_new_poll),
+                style = MaterialTheme.typography.titleLarge,
+            )
+            OutlinedTextField(
+                value = draft.question,
+                onValueChange = onQuestionChange,
+                label = { Text(stringResource(R.string.s_question)) },
+                singleLine = false,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            draft.options.forEachIndexed { index, option ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    OutlinedTextField(
+                        value = option,
+                        onValueChange = { onOptionChange(index, it) },
+                        placeholder = { Text(stringResource(R.string.s_option)) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // Never below two: one option is not a question.
+                    if (draft.canRemoveOption) {
+                        IconButton(onClick = { onRemoveOption(index) }) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = stringResource(R.string.s_remove_option),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+            if (draft.canAddOption) {
+                TextButton(onClick = onAddOption) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.s_add_option))
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.End,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.s_cancel))
+                }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = onSend, enabled = draft.isValid) {
+                    Text(stringResource(R.string.s_send))
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun BubbleContent(
     entity: MessageEntity,
@@ -2188,6 +2664,8 @@ private fun BubbleContent(
     onFailedTap: (String) -> Unit,
     /** Toggle one emoji for me on this message (no-op until the message is acked). */
     onToggleReaction: (String) -> Unit,
+    /** Cast or clear my vote on one poll option (no-op until acked). */
+    onVote: (Long) -> Unit,
     /** Double-tap over link text — the quick heart, same as the bubble's own gesture. */
     onDoubleTap: () -> Unit,
     /** Long-press over link text — opens the reaction capsule, same as the bubble's own gesture. */
@@ -2343,6 +2821,22 @@ private fun BubbleContent(
                 Spacer(Modifier.height(6.dp))
                 StreamingCursor()
             }
+        }
+        // The poll, under its own question — which IS the body above,
+        // so there is nothing to draw twice. A poll with no acked message
+        // yet (the optimistic row of one just sent) draws its options and
+        // refuses taps: there is no message id to vote against.
+        item.poll?.let { poll ->
+            if (entity.body.isNotEmpty()) Spacer(Modifier.height(8.dp))
+            PollBlock(
+                poll = poll,
+                memberAvatars = memberAvatars,
+                canVote = acked && !poll.closed,
+                onVote = onVote,
+                onDoubleTap = onDoubleTap,
+                onLongPress = onTextLongPress,
+                modifier = measureBlock.fillMaxWidth(),
+            )
         }
         // The first web link's preview, once it has landed. Asking for
         // it is what starts the fetch — gated on the setting, so a
@@ -2940,6 +3434,7 @@ private fun StagedAttachmentChip(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun InputBar(
     state: TextFieldState,
@@ -2954,9 +3449,24 @@ private fun InputBar(
     staged: MediaPrep.Prepared?,
     onPickMedia: () -> Unit,
     onPickFile: () -> Unit,
+    /** The attach menu's Paste: whatever is on the clipboard, right now. */
+    onPasteFromClipboard: () -> Unit,
+    /**
+     * One item arriving through the field's own paste (or a drop, or a
+     * keyboard that inserts images). True when it was taken as an
+     * attachment, which is what tells the field not to paste it as text.
+     */
+    onPasteItem: (Uri, String?) -> Boolean,
     onTakePhoto: () -> Unit,
     onTakeVideo: () -> Unit,
     onRecordAudio: () -> Unit,
+    /**
+     * Offer to start a poll. The FAMILY CHAT only — a poll is a family
+     * deciding something together, and anywhere else the server answers
+     * `invalid_poll` (docs/protocol.md, "Polls").
+     */
+    showsPoll: Boolean,
+    onStartPoll: () -> Unit,
     recordingMs: Long?,
     onStopRecording: () -> Unit,
     onCancelRecording: () -> Unit,
@@ -3049,6 +3559,20 @@ private fun InputBar(
                                 onPickFile()
                             },
                         )
+                        // Inside the menu on purpose: it inherits the
+                        // button's guard (no attaching mid-edit or mid-
+                        // upload) for free, and it is the door that works
+                        // when the text field has no focus at all.
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.s_paste)) },
+                            leadingIcon = {
+                                Icon(Icons.Filled.ContentPaste, contentDescription = null)
+                            },
+                            onClick = {
+                                attachMenuOpen = false
+                                onPasteFromClipboard()
+                            },
+                        )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.s_take_photo)) },
                             leadingIcon = {
@@ -3067,6 +3591,23 @@ private fun InputBar(
                                 onRecordAudio()
                             },
                         )
+                        if (showsPoll) {
+                            // Inside the attach menu rather than beside
+                            // the field: a poll is one more thing a
+                            // message can carry, and it inherits that
+                            // button's guard (nothing attaches mid-edit
+                            // or mid-upload) for free.
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.s_poll)) },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Poll, contentDescription = null)
+                                },
+                                onClick = {
+                                    attachMenuOpen = false
+                                    onStartPoll()
+                                },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.s_share_your_location)) },
                             leadingIcon = { Icon(Icons.Filled.Place, contentDescription = null) },
@@ -3116,6 +3657,45 @@ private fun InputBar(
                         )
                     }
                 }
+                // The field's OWN paste — the long-press menu, a keyboard
+                // that inserts images, and a drop onto the composer, which
+                // all arrive here. It takes the first item it can attach
+                // and CONSUMES only that one, so anything else in the clip
+                // (the text half of a copied photo-and-caption, say) still
+                // pastes into the field the ordinary way. Nothing is
+                // consumed while attaching is blocked — the same guard the
+                // attach menu carries, repeated because this door is not
+                // behind that button.
+                val canAttach = !isEditing && mediaState == ChatViewModel.MediaSendState.Idle
+                // Through an updated state, so the listener survives a
+                // recomposition that only produced a new lambda instance.
+                val pasteHandler by rememberUpdatedState(onPasteItem)
+                val pasteReceiver = remember(canAttach) {
+                    ReceiveContentListener { transferable ->
+                        if (!canAttach) {
+                            transferable
+                        } else {
+                            val description = transferable.clipMetadata.clipDescription
+                            val declared = if (description.mimeTypeCount > 0) {
+                                description.getMimeType(0)
+                            } else {
+                                null
+                            }
+                            // One attachment per message, so at most one
+                            // item is taken however many the clip holds.
+                            var taken = false
+                            transferable.consume { item ->
+                                val uri = item.uri
+                                if (taken || uri == null) {
+                                    false
+                                } else {
+                                    taken = pasteHandler(uri, declared)
+                                    taken
+                                }
+                            }
+                        }
+                    }
+                }
                 TextField(
                     state = state,
                     // heightIn beats the field's 56.dp defaultMinSize, which
@@ -3123,7 +3703,8 @@ private fun InputBar(
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 44.dp)
-                        .focusRequester(focusRequester),
+                        .focusRequester(focusRequester)
+                        .contentReceiver(pasteReceiver),
                     // M3's default content padding for an unlabelled field is
                     // 16.dp top and bottom, which is taller than the 44.dp
                     // buttons' own centring — so both icons sat visibly below

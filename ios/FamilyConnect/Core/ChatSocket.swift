@@ -39,6 +39,16 @@ import os
 nonisolated enum SocketEvent: Sendable {
     case connected
     case disconnected
+    /// The session this socket authenticates with is GONE — the upgrade
+    /// was refused with `401`, or the server closed the connection with
+    /// `4401` (protocol.md, "WebSocket protocol"). Reconnecting cannot
+    /// help: the token is dead, and the same token is all this socket has.
+    /// The coordinator turns it into the ordinary 401 handling, which is
+    /// what returns the app to the sign-in screen — the case that makes
+    /// this exist is an account deleted from another device, where a Mac
+    /// holding its socket open all day would otherwise sit at
+    /// "Connecting…" forever, never making a REST call to be refused.
+    case unauthorized
     case frame(ServerFrame)
 }
 
@@ -176,17 +186,42 @@ actor ChatSocket {
             }
 
             stopHeartbeat()
+            // Read BEFORE cancelling: cancel(with:) overwrites closeCode.
+            let sessionIsGone = Self.isUnauthorized(task)
             task.cancel(with: .goingAway, reason: nil)
             self.task = nil
             let wasConnected = isConnected
             isConnected = false
             if wasConnected { continuation.yield(.disconnected) }
 
+            if sessionIsGone {
+                AppLog.socket.info("Socket refused: the session is gone")
+                continuation.yield(.unauthorized)
+                // No backoff and no retry: every attempt would carry the
+                // same dead token. The coordinator tears this socket down
+                // as part of returning to the sign-in screen.
+                break
+            }
+
             guard !Task.isCancelled && !suspended else { break }
             let delay = backoff.nextDelay()
             AppLog.socket.info("Reconnecting in \(delay, format: .fixed(precision: 1), privacy: .public)s")
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
+    }
+
+    /// Whether the connection ended because the SESSION is gone rather
+    /// than because the network is.
+    ///
+    /// Two shapes of the same fact: a socket that was already open is
+    /// closed by the server with `4401`, and a socket that has yet to open
+    /// has its upgrade refused with HTTP `401`. Both are checked because
+    /// both happen in the one case this matters for — a deleted account or
+    /// a revoked session closes the live socket, and the reconnect that
+    /// follows is the attempt that gets the 401.
+    private static func isUnauthorized(_ task: URLSessionWebSocketTask) -> Bool {
+        if let http = task.response as? HTTPURLResponse, http.statusCode == 401 { return true }
+        return task.closeCode.rawValue == 4401
     }
 
     private func receiveLoop(

@@ -192,4 +192,39 @@
     <string name="e_birthday_failed">Impossible d’enregistrer cet anniversaire</string>
     <string name="e_change_language_failed">Impossible de changer la langue de la famille</string>
     <string name="e_change_assistant_history_failed">Impossible de changer ce réglage</string>
+    <string name="s_paste">Coller</string>
+    <string name="s_pasted_image">Image collée</string>
+    <string name="s_pasted_sound">Son collé</string>
+    <string name="s_pasted_file">Fichier collé</string>
+    <string name="e_nothing_to_paste">Il n’y a rien à coller.</string>
+    <!-- Account deletion (App Store guideline 5.1.1(v)); see docs/protocol.md, "Deleting an account". -->
+    <string name="s_delete_account">Supprimer le compte</string>
+    <string name="s_delete_your_account">Supprimer ton compte ?</string>
+    <string name="s_delete_account_explanation">Ton compte, ton mot de passe, ta photo de profil et ton anniversaire sont supprimés, et tous les appareils où tu es connecté sont déconnectés. Tes conversations directes partent aussi, pour l’autre personne également. Ce qui reste, c’est ce que la famille s’est dit : tes messages dans la conversation familiale, tes notes du tableau et tes réactions, qui apparaissent ensuite sous « Compte supprimé ». C’est définitif.</string>
+    <string name="s_delete_account_owner_note">Cette famille est la tienne, elle passe donc à la personne qui en fait partie depuis le plus longtemps. Si tu en es le dernier membre, la famille est supprimée avec toi — sa conversation, son tableau et son code d’invitation.</string>
+    <string name="s_deleted_account">Compte supprimé</string>
+    <string name="e_wrong_password">Ce mot de passe n’est pas le bon.</string>
+    <string name="e_delete_account_failed">Impossible de supprimer ton compte.</string>
+    <!-- Polls (docs/protocol.md, "Polls"). The QUESTION is the message body,
+         so nothing here names it twice. -->
+    <string name="s_poll">Sondage</string>
+    <string name="s_new_poll">Nouveau sondage</string>
+    <string name="s_question">Question</string>
+    <string name="s_option">Réponse</string>
+    <string name="s_add_option">Ajouter une réponse</string>
+    <string name="s_remove_option">Retirer la réponse</string>
+    <string name="s_close_poll">Clore le sondage</string>
+    <string name="s_poll_closed">Sondage clos</string>
+    <string name="s_who_voted">Qui a voté</string>
+    <string name="e_close_poll_failed">Impossible de clore ce sondage.</string>
+    <plurals name="s_voted_of_family">
+        <item quantity="one">%1$d sur %2$d a voté</item>
+        <item quantity="many">%1$d sur %2$d ont voté</item>
+        <item quantity="other">%1$d sur %2$d ont voté</item>
+    </plurals>
+    <plurals name="s_voted_total">
+        <item quantity="one">%1$d a voté</item>
+        <item quantity="many">%1$d ont voté</item>
+        <item quantity="other">%1$d ont voté</item>
+    </plurals>
 </resources>

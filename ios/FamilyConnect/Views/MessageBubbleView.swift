@@ -72,6 +72,13 @@ struct MessageBubbleView: View {
     var onTapQuote: (Int64) -> Void = { _ in }
     /// Tapping a photo or video asks to open it full-screen.
     var onOpenAttachment: (AttachmentDTO) -> Void = { _ in }
+    /// Tapping a poll option: cast this vote, or clear it when it is the
+    /// one already held (the coordinator decides which).
+    var onVote: (Int64) -> Void = { _ in }
+    /// The author's one-way close.
+    var onClosePoll: () -> Void = {}
+    /// How many people could vote, for the poll's footer.
+    var memberCount: Int = 0
     var onRetry: () -> Void = {}
     var onDelete: () -> Void = {}
     var onToggleReaction: (String) -> Void = { _ in }
@@ -144,7 +151,12 @@ struct MessageBubbleView: View {
     /// table — has already set how wide it is, and the text should wrap
     /// against that width rather than its own.
     private var fillsBalloonWidth: Bool {
-        linkPreview != nil || message.attachment != nil || bodyBlocks.contains { $0.isTable }
+        linkPreview != nil
+            || message.attachment != nil
+            // A poll sets the balloon's width, so the question wraps
+            // against the bars rather than floating narrow above them.
+            || message.poll != nil
+            || bodyBlocks.contains { $0.isTable }
     }
 
     var body: some View {
@@ -571,6 +583,26 @@ struct MessageBubbleView: View {
                     onLongPress: { onLongPress() },
                     onDoubleTap: { toggleQuickHeart() })
                     .padding(.top, 4)
+            }
+
+            // Under the question, which IS the body above (docs/
+            // protocol.md, "Polls"). Shared with the Mac.
+            if let poll = message.poll {
+                PollBubbleView(
+                    poll: poll,
+                    currentUserID: currentUserID,
+                    isAuthor: isMine,
+                    // A vote needs a server message id to PUT against —
+                    // the same gate a reaction has.
+                    isVotable: message.serverID != nil,
+                    memberCount: memberCount,
+                    memberNames: memberNames,
+                    avatarVersions: avatarVersions,
+                    isMine: isMine && !isEmojiOnly,
+                    onVote: onVote,
+                    onClose: onClosePoll,
+                    onDoubleTap: { toggleQuickHeart() },
+                    onLongPress: { onLongPress() })
             }
 
             }

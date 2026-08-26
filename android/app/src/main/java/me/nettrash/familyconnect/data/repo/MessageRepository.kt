@@ -43,6 +43,11 @@ import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
+import me.nettrash.familyconnect.data.net.dto.MessagePollStateDto
+import me.nettrash.familyconnect.data.net.dto.NewPollDto
+import me.nettrash.familyconnect.data.net.dto.PollCodec
+import me.nettrash.familyconnect.data.net.dto.PollDto
+import me.nettrash.familyconnect.data.net.dto.PollOptionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
@@ -96,6 +101,7 @@ class MessageRepository @Inject constructor(
                         _streamingMessageIds.update { it - frame.messageId }
                     is ServerFrame.Read -> onPeerRead(frame)
                     is ServerFrame.Reaction -> onReaction(frame)
+                    is ServerFrame.Poll -> onPoll(frame)
                     is ServerFrame.Error -> onSendError(frame)
                     else -> Unit
                 }
@@ -133,6 +139,69 @@ class MessageRepository @Inject constructor(
         )
         chatDao.updateLastMessage(chatId, trimmed, now, me)
         dispatch(clientMsgId, chatId, trimmed, replyTo?.messageId, attachmentId = null)
+    }
+
+    /**
+     * Start a poll: an ordinary message whose BODY is the question, with
+     * the options riding beside it (docs/protocol.md, "Polls").
+     *
+     * Optimistic like [send] and unlike [sendMedia], because there is
+     * nothing to upload first — and the optimistic row carries a poll of
+     * its own so the bubble draws as a poll immediately rather than as a
+     * bare question that turns into one. That local copy uses NEGATIVE
+     * option ids (the server's are positive) and `pollSeq = 0`: nothing
+     * may be voted on before the message has a server id anyway, and a
+     * zero seq is what lets the ack's authoritative poll — real ids and
+     * a real seq — pass the guard rather than be dropped as stale.
+     *
+     * The question is the body, so the chat-list preview, the push and a
+     * reply excerpt all need no new case.
+     */
+    suspend fun sendPoll(
+        chatId: Long,
+        question: String,
+        options: List<String>,
+        replyTo: ReplyToDto? = null,
+    ) {
+        val trimmedQuestion = question.trim()
+        val trimmedOptions = options.map { it.trim() }.filter { it.isNotEmpty() }
+        // A poll's body may NOT be empty, unlike a message carrying an
+        // attachment: `message_empty` applies to a poll with no question.
+        if (trimmedQuestion.isEmpty() || trimmedOptions.size < MIN_POLL_OPTIONS) return
+        val me = settings.state.first().myUserId ?: return
+        val clientMsgId = UUID.randomUUID().toString()
+        val now = clock.now()
+        val optimistic = PollDto(
+            pollSeq = 0L,
+            closed = false,
+            options = trimmedOptions.mapIndexed { index, text ->
+                PollOptionDto(id = -(index + 1).toLong(), text = text, votes = emptyList())
+            },
+        )
+        messageDao.insert(
+            MessageEntity(
+                clientMsgId = clientMsgId,
+                serverId = null,
+                chatId = chatId,
+                senderId = me,
+                body = trimmedQuestion,
+                createdAt = now,
+                status = MessageStatus.SENDING,
+                pollJson = PollCodec.encode(optimistic),
+                replyToMessageId = replyTo?.messageId,
+                replySenderId = replyTo?.senderId,
+                replyExcerpt = replyTo?.excerpt,
+            ),
+        )
+        chatDao.updateLastMessage(chatId, trimmedQuestion, now, me)
+        dispatch(
+            clientMsgId,
+            chatId,
+            trimmedQuestion,
+            replyTo?.messageId,
+            attachmentId = null,
+            poll = NewPollDto(trimmedOptions),
+        )
     }
 
     /**
@@ -312,7 +381,28 @@ class MessageRepository @Inject constructor(
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // already landed
         messageDao.setStatus(clientMsgId, MessageStatus.SENDING)
-        dispatch(clientMsgId, row.chatId, row.body, row.replyToMessageId, row.attachmentId)
+        dispatch(
+            clientMsgId,
+            row.chatId,
+            row.body,
+            row.replyToMessageId,
+            row.attachmentId,
+            pendingPollOf(row),
+        )
+    }
+
+    /**
+     * The options a not-yet-acked poll must be re-sent with.
+     *
+     * Read back off the row rather than held in memory, so a retry after
+     * the process died still carries them — without this a re-sent poll
+     * would land as a plain question with no options at all, and the
+     * server would have no way to know one was meant.
+     */
+    private fun pendingPollOf(row: MessageEntity): NewPollDto? {
+        if (row.serverId != null) return null
+        val options = PollCodec.decode(row.pollJson)?.options ?: return null
+        return options.takeIf { it.isNotEmpty() }?.let { NewPollDto(it.map(PollOptionDto::text)) }
     }
 
     /** Discard a FAILED draft the user gave up on. */
@@ -327,7 +417,14 @@ class MessageRepository @Inject constructor(
     suspend fun flushPending() {
         messageDao.pendingSending().forEach { row ->
             if (!pendingAcks.containsKey(row.clientMsgId)) {
-                dispatch(row.clientMsgId, row.chatId, row.body, row.replyToMessageId, row.attachmentId)
+                dispatch(
+                    row.clientMsgId,
+                    row.chatId,
+                    row.body,
+                    row.replyToMessageId,
+                    row.attachmentId,
+                    pendingPollOf(row),
+                )
             }
         }
     }
@@ -338,10 +435,11 @@ class MessageRepository @Inject constructor(
         body: String,
         replyToMessageId: Long?,
         attachmentId: Long?,
+        poll: NewPollDto? = null,
     ) {
         val overSocket = socket.state.value == SocketState.Open &&
             socket.trySend(
-                ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId, attachmentId),
+                ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId, attachmentId, poll),
             )
         if (overSocket) {
             pendingAcks[clientMsgId] = scope.launch {
@@ -349,10 +447,12 @@ class MessageRepository @Inject constructor(
                 pendingAcks.remove(clientMsgId)
                 // No ack in time — the frame may or may not have landed.
                 // REST with the same client_msg_id is safe either way.
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentId)
+                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentId, poll)
             }
         } else {
-            scope.launch { restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentId) }
+            scope.launch {
+                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentId, poll)
+            }
         }
     }
 
@@ -362,10 +462,12 @@ class MessageRepository @Inject constructor(
         body: String,
         replyToMessageId: Long?,
         attachmentId: Long?,
+        poll: NewPollDto? = null,
     ) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // ack won the race
-        val result = chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentId)
+        val result =
+            chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentId, poll)
         when (result) {
             is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message)
             else -> messageDao.setStatus(clientMsgId, MessageStatus.FAILED)
@@ -419,6 +521,10 @@ class MessageRepository @Inject constructor(
             message.attachment?.longitude,
             message.attachment?.accuracyM,
         )
+        // The server's poll — real option ids and a real seq — replacing
+        // the local copy the optimistic row drew with. Guarded like every
+        // other apply, and a no-op for a message that is not a poll.
+        applyEmbeddedPoll(message)
         chatDao.updateLastMessage(
             message.chatId,
             previewText(message.body, message.attachment),
@@ -458,6 +564,7 @@ class MessageRepository @Inject constructor(
             // newer BODY. Both applies are seq-guarded, so an older copy
             // is a no-op rather than a revert.
             applyEmbeddedReactions(message)
+            applyEmbeddedPoll(message)
             if (message.editSeq != null) applyEdit(message)
             return
         }
@@ -510,6 +617,13 @@ class MessageRepository @Inject constructor(
                     attachmentLatitude = message.attachment?.latitude,
                     attachmentLongitude = message.attachment?.longitude,
                     attachmentAccuracyM = message.attachment?.accuracyM,
+                    // The THIRD write site a new field on a message needs,
+                    // after the send path and the frame-apply path below.
+                    // Missing it drops every poll this device sees for the
+                    // first time in a history page — silently, since the
+                    // bubble still draws the question.
+                    pollJson = message.poll?.let(PollCodec::encode),
+                    pollSeq = message.poll?.pollSeq ?: 0L,
                 ),
             ),
         )
@@ -612,13 +726,18 @@ class MessageRepository @Inject constructor(
             is ApiResult.Ok -> {
                 val state = result.value
                 // Authoritative — through the guarded path, so a newer
-                // WS frame that raced us is never overwritten.
+                // WS frame that raced us is never overwritten. The ROW
+                // only: an HTTP reply is not a live frame and not a
+                // catch-up page, so it may not advance the chat-wide
+                // cursor (protocol.md, "Best-effort delivery"). See
+                // applyPollState for the failure that rule prevents; it
+                // is the same one here, with reaction_seq in place of
+                // poll_seq.
                 messageDao.applyReactionState(
                     serverId = state.messageId,
                     json = ReactionsCodec.encode(state.reactions),
                     seq = state.reactionSeq,
                 )
-                chatDao.advanceMaxReactionSeq(chatId, state.reactionSeq)
             }
             else -> messageDao.setReactionsJson(
                 messageServerId,
@@ -676,6 +795,174 @@ class MessageRepository @Inject constructor(
         }
     }
 
+    // -- Polls --------------------------------------------------------------------
+
+    /**
+     * Live `poll` frame: the poll's FULL current state, applied under the
+     * seq guard (an unknown message matches zero rows — dropped
+     * silently, and history paging re-delivers the state embedded on the
+     * Message). The chat cursor advances REGARDLESS: frames arrive in
+     * order on a live socket, so this seq is proof everything below it
+     * was delivered, and a cursor that stayed put would make the next
+     * resync re-read a page it already has.
+     */
+    private suspend fun onPoll(frame: ServerFrame.Poll) {
+        messageDao.applyPollState(
+            serverId = frame.messageId,
+            json = PollCodec.encode(frame.poll),
+            seq = frame.poll.pollSeq,
+        )
+        chatDao.advanceMaxPollSeq(frame.chatId, frame.poll.pollSeq)
+    }
+
+    /**
+     * A poll riding on a fetched/re-delivered Message.
+     *
+     * Two rules, both load-bearing. It does NOT advance the chat cursor:
+     * a history page proves nothing about OTHER polls' lower seqs, and
+     * only catch-up pages and live frames may move it. And an ABSENT
+     * poll returns early rather than clearing what is stored: a poll
+     * dies only with its message, so silence is silence — a Message
+     * fetched by a path that omits it must never wipe a poll this device
+     * already holds.
+     */
+    private suspend fun applyEmbeddedPoll(message: MessageDto) {
+        val poll = message.poll ?: return
+        messageDao.applyPollState(
+            serverId = message.id,
+            json = PollCodec.encode(poll),
+            seq = poll.pollSeq,
+        )
+    }
+
+    /**
+     * A tap on an option: the one I already hold → retract, else set.
+     *
+     * The protocol's vote is an idempotent state-set rather than a
+     * toggle, and says outright that whether tapping your current choice
+     * means "keep it" or "clear it" is each client's decision — this one
+     * clears, which is the only way to un-vote from the bubble.
+     *
+     * Optimistic rewrite of pollJson first and NEVER of pollSeq (the
+     * authoritative state must still pass the guard), then REST; failure
+     * reverts. Same shape as [toggleReaction], including the
+     * compare-and-set on the seq read a moment ago, so a frame that
+     * lands mid-vote is never clobbered by a stale local write.
+     */
+    suspend fun toggleVote(chatId: Long, messageServerId: Long, optionId: Long) {
+        val me = settings.state.first().myUserId ?: return
+        val row = messageDao.findByServerId(messageServerId) ?: return
+        val current = PollCodec.decode(row.pollJson) ?: return
+        // A closed poll refuses votes server-side (`poll_closed`), so
+        // there is nothing to be optimistic about.
+        if (current.closed) return
+        if (current.options.none { it.id == optionId }) return
+        val retracting = current.optionHeldBy(me)?.id == optionId
+        val optimistic = current.copy(
+            options = current.options.map { option ->
+                val without = option.votes.filterNot { it == me }
+                when {
+                    retracting || option.id != optionId -> option.copy(votes = without)
+                    // Appended, not inserted: the server orders votes by
+                    // when they were cast, and mine has just been.
+                    else -> option.copy(votes = without + me)
+                }
+            },
+        )
+        messageDao.setPollJson(
+            messageServerId,
+            PollCodec.encode(optimistic),
+            expectedSeq = row.pollSeq,
+        )
+
+        val result = if (retracting) {
+            chatApi.deleteVote(chatId, messageServerId)
+        } else {
+            chatApi.putVote(chatId, messageServerId, optionId)
+        }
+        when (result) {
+            is ApiResult.Ok -> applyPollState(result.value)
+            // Wholesale rollback, no retry — mirrors toggleReaction: the
+            // bars are visible state, and a vote nobody took must not
+            // stay on screen.
+            else -> messageDao.setPollJson(
+                messageServerId,
+                row.pollJson,
+                expectedSeq = row.pollSeq,
+            )
+        }
+    }
+
+    /**
+     * Close a poll. The author's, and one-way — the family owner does not
+     * outrank them here, exactly as with editing. Returns false when the
+     * server refuses (403 `not_message_author`), which the caller says
+     * rather than pretending it worked.
+     */
+    suspend fun closePoll(chatId: Long, messageServerId: Long): Boolean =
+        when (val result = chatApi.closePoll(chatId, messageServerId)) {
+            is ApiResult.Ok -> {
+                applyPollState(result.value)
+                true
+            }
+            else -> false
+        }
+
+    /**
+     * The authoritative state from a vote / retract / close response,
+     * through the guarded path so a newer frame that raced us is never
+     * overwritten.
+     *
+     * The ROW moves and the CHAT CURSOR deliberately does not — the rule
+     * protocol.md states for every route that is neither a live frame nor
+     * a catch-up page ("Best-effort delivery"), and the one the embedded
+     * poll above already followed. A cursor is a chat-wide watermark and
+     * one poll's seq is no evidence about another's: REST answers while
+     * the socket is down, so a vote answered with seq 100 would push the
+     * cursor past somebody else's seq 99 whose frame was never delivered,
+     * and the next resync — comparing max_poll_seq against a cursor
+     * already at 100 — would ask for nothing. That state would then be
+     * lost until the poll holding it next changed. One redundant catch-up
+     * page is the cheaper mistake. iOS spells the same rule in
+     * ChatSyncCoordinator.vote.
+     */
+    private suspend fun applyPollState(state: MessagePollStateDto) {
+        messageDao.applyPollState(
+            serverId = state.messageId,
+            json = PollCodec.encode(state.poll),
+            seq = state.poll.pollSeq,
+        )
+    }
+
+    /**
+     * Poll catch-up (resync step 3d): pages strictly after [afterSeq]
+     * until a short page, byte for byte the shape the edit and reaction
+     * loops have. Each state applies under the seq guard; the stored
+     * cursor advances to every page's max EVEN when the message it names
+     * is not held locally — dropped states come back embedded on Message
+     * objects when history pages there, and a cursor that refused to move
+     * would re-read the same page on every reconnect for ever.
+     */
+    suspend fun catchUpPolls(chatId: Long, afterSeq: Long) {
+        var cursor = afterSeq
+        while (true) {
+            val page = chatApi.getPolls(chatId, cursor, POLL_PAGE).okOrNull()?.polls ?: return
+            page.forEach { state ->
+                messageDao.applyPollState(
+                    serverId = state.messageId,
+                    json = PollCodec.encode(state.poll),
+                    seq = state.poll.pollSeq,
+                )
+            }
+            val pageMax = page.maxOfOrNull { it.poll.pollSeq }
+            if (pageMax != null) {
+                chatDao.advanceMaxPollSeq(chatId, pageMax)
+                cursor = pageMax
+            }
+            if (page.size < POLL_PAGE) return
+        }
+    }
+
     /** PATCH the body. Author-only server-side; returns false on refusal. */
     suspend fun edit(chatId: Long, messageId: Long, body: String): Boolean {
         val trimmed = body.trim()
@@ -693,14 +980,23 @@ class MessageRepository @Inject constructor(
 
     /**
      * One reconnect catch-up page: strictly newer than [afterId],
-     * oldest-first. Returns the page size, or null on failure (caller
+     * oldest-first. Returns what the page held, or null on failure (caller
      * stops looping — the next reconnect resumes from the same cursor).
+     *
+     * [CatchUpPage.maxServerId] is what the loop advances its cursor with.
+     * The alternative — re-reading `max(serverId)` from the store between
+     * pages — is what protocol.md forbids: a live `message` frame landing
+     * mid-loop writes a much higher id, the next request asks for
+     * everything after THAT, and the whole backlog in between is skipped
+     * for good (`after_id` never looks back, and `loadOlder` only pages
+     * older than the OLDEST row held). iOS's runCatchUp carries the
+     * cursor in a local for the same reason.
      */
-    suspend fun catchUp(chatId: Long, afterId: Long, limit: Int): Int? {
+    suspend fun catchUp(chatId: Long, afterId: Long, limit: Int): CatchUpPage? {
         val result = chatApi.messages(chatId, afterId = afterId, limit = limit)
         val page = result.okOrNull()?.messages ?: return null
         page.forEach { applyServerMessage(it, live = false) }
-        return page.size
+        return CatchUpPage(size = page.size, maxServerId = page.maxOfOrNull { it.id })
     }
 
     /**
@@ -770,5 +1066,32 @@ class MessageRepository @Inject constructor(
         private const val HISTORY_PAGE = 50
         private const val EDIT_PAGE = 200
         private const val REACTION_PAGE = 200
+        private const val POLL_PAGE = 200
+
+        /**
+         * Fewest options a poll may be created with, mirroring the
+         * server's `Poll::MIN_OPTIONS`. One option is not a question.
+         */
+        const val MIN_POLL_OPTIONS = 2
+
+        /** Most options a poll may be created with (protocol "Limits"). */
+        const val MAX_POLL_OPTIONS = 10
+
+        /** Longest one option's text may be (protocol "Limits"). */
+        const val MAX_POLL_OPTION_CHARS = 100
     }
 }
+
+/**
+ * One page of [MessageRepository.catchUp]: how many messages came back,
+ * and the largest server id among them.
+ *
+ * The id is the half that matters. It is what the resync loop advances
+ * its cursor with, so that a live message arriving while the loop runs
+ * cannot jump the cursor past the backlog still being paged.
+ */
+data class CatchUpPage(
+    val size: Int,
+    /** Null on an empty page — the cursor then stays where it is. */
+    val maxServerId: Long?,
+)

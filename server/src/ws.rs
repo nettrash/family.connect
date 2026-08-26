@@ -29,7 +29,8 @@ use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::events;
 use crate::handlers_chat;
-use crate::models::{Message, Note, Reaction, UserBrief};
+use crate::handlers_chat::NewPoll;
+use crate::models::{Member, Message, Note, Poll, Reaction, UserBrief};
 use crate::registry::{CLOSE_GOING_AWAY, CLOSE_SESSION_GONE};
 use crate::state::AppState;
 
@@ -52,6 +53,10 @@ pub enum ClientFrame {
         /// "Photos, videos and files"). The bytes never travel in a frame.
         #[serde(default)]
         attachment_id: Option<i64>,
+        /// Optional: makes this message a poll (protocol.md, "Polls"). The
+        /// body is then the QUESTION, and a poll excludes an attachment.
+        #[serde(default)]
+        poll: Option<NewPoll>,
     },
     Read {
         chat_id: i64,
@@ -91,11 +96,56 @@ pub enum ServerFrame {
         family_id: i64,
         user_id: i64,
     },
+    /// A member deleted their account, carrying the WHOLE tombstone
+    /// `Member` — `deleted: true`, the placeholder display name,
+    /// `avatar_version: 0`, no role and no birthday.
+    ///
+    /// The whole object, and not just an id, because that is exactly what a
+    /// client has to overwrite: protocol.md calls this "the one frame in
+    /// this protocol whose job is to WIPE stored fields", so a client
+    /// applies it by writing the tombstone deliberately rather than by
+    /// feeding it through the ordinary member upsert — which everywhere
+    /// else must never let an absent field clear a stored one. A
+    /// `member_left` frame is sent alongside it, so a client that predates
+    /// this frame still fixes its roster (protocol.md, "Deleting an
+    /// account").
+    ///
+    /// It reaches every member of the deleted account's family AND every
+    /// member of any chat it was part of — a direct chat can outlive the
+    /// family that created it, and its peer has to be told too. So
+    /// `family_id` is OPTIONAL, and absent when the account belonged to no
+    /// family at all: a client keys this frame on the `member`, never on
+    /// the family. Absent rather than null, like every other optional
+    /// field on this wire.
+    MemberDeleted {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        family_id: Option<i64>,
+        member: Member,
+    },
+    /// The family's new owner. Sent when an owner deletes their account and
+    /// ownership passes to the longest-standing remaining member — the one
+    /// place this protocol moves `owner_user_id` without the owner naming a
+    /// successor. It reaches every member of the family, so the new owner
+    /// gains the owner's screens immediately rather than at their next
+    /// `GET /me` (protocol.md, "Deleting an account").
+    FamilyOwner {
+        family_id: i64,
+        user_id: i64,
+    },
     /// A message's full current reaction state — state transfer, never a
     /// delta, so delivery order races resolve client-side by comparing
     /// `reaction_seq`.
     MessageEdited {
         message: Message,
+    },
+    /// A poll's full current state — state transfer, never a delta, so
+    /// delivery-order races resolve client-side by comparing `poll_seq`.
+    /// It never notifies and never counts as unread: a vote is not a
+    /// message (protocol.md, "Polls").
+    Poll {
+        chat_id: i64,
+        message_id: i64,
+        poll: Poll,
     },
     BoardNote {
         note: Note,
@@ -345,6 +395,7 @@ async fn handle_client_text(
                 body,
                 reply_to_message_id,
                 attachment_id,
+                poll,
             } = frame
             else {
                 unreachable!("type tag was \"send\"");
@@ -357,6 +408,7 @@ async fn handle_client_text(
                 &body,
                 reply_to_message_id,
                 attachment_id,
+                poll.as_ref(),
                 language,
             )
             .await
@@ -501,6 +553,23 @@ mod tests {
             edited_at: None,
             edit_seq: None,
             attachment: None,
+            poll: None,
+        }
+    }
+
+    /// The tombstone `Member` a `member_deleted` frame carries: no role, no
+    /// birthday, no picture, the placeholder name — and `"deleted": true`,
+    /// which is the only field a live member never carries (protocol.md,
+    /// "Deleting an account").
+    fn tombstone() -> Member {
+        Member {
+            id: 11,
+            username: "deleted-11".to_string(),
+            display_name: "Deleted account".to_string(),
+            role: None,
+            avatar_version: 0,
+            birthday: None,
+            deleted: true,
         }
     }
 
@@ -524,6 +593,7 @@ mod tests {
                 body: "Dinner at 7?".to_string(),
                 reply_to_message_id: None,
                 attachment_id: None,
+                poll: None,
             }
         );
     }
@@ -544,6 +614,30 @@ mod tests {
                 body: "Six works".to_string(),
                 reply_to_message_id: Some(1337),
                 attachment_id: None,
+                poll: None,
+            }
+        );
+    }
+
+    /// protocol.md's fourth `send` example. A poll rides the ordinary send
+    /// frame — there is no "create poll" frame — because a poll IS a
+    /// message and its question IS the body.
+    #[test]
+    fn client_send_frame_carries_a_poll() {
+        let json = r#"{"type": "send", "chat_id": 42, "client_msg_id": "5b2e0c14-0000-4000-8000-000000000001", "body": "Pizza or pasta?", "poll": {"options": ["Pizza", "Pasta"]}}"#;
+        let frame: ClientFrame = serde_json::from_str(json).expect("parses");
+        assert_eq!(
+            frame,
+            ClientFrame::Send {
+                chat_id: 42,
+                client_msg_id: Uuid::parse_str("5b2e0c14-0000-4000-8000-000000000001")
+                    .expect("valid uuid"),
+                body: "Pizza or pasta?".to_string(),
+                reply_to_message_id: None,
+                attachment_id: None,
+                poll: Some(NewPoll {
+                    options: vec!["Pizza".to_string(), "Pasta".to_string()],
+                }),
             }
         );
     }
@@ -740,6 +834,63 @@ mod tests {
         );
     }
 
+    /// The tombstone `Member` the frame carries: no role, no birthday, no
+    /// picture, the placeholder name — and `"deleted": true`, which is the
+    /// only field a live member never carries (protocol.md, "Deleting an
+    /// account").
+    #[test]
+    fn member_deleted_frame_carries_the_whole_tombstone_member() {
+        let frame = ServerFrame::MemberDeleted {
+            family_id: Some(3),
+            member: tombstone(),
+        };
+        assert_serializes_to(
+            &frame,
+            r#"{"type": "member_deleted", "family_id": 3,
+                "member": {"id": 11, "username": "deleted-11",
+                           "display_name": "Deleted account",
+                           "avatar_version": 0, "deleted": true}}"#,
+        );
+    }
+
+    /// An account that belonged to NO family still sends this frame — to
+    /// the peers of its direct chats, which are about to vanish from under
+    /// them. There is no family to name, so the key is ABSENT rather than
+    /// null: the same rule every other optional field on this wire follows,
+    /// and here also the only honest answer (protocol.md, "Deleting an
+    /// account").
+    #[test]
+    fn member_deleted_omits_the_family_id_when_there_was_no_family() {
+        let frame = ServerFrame::MemberDeleted {
+            family_id: None,
+            member: tombstone(),
+        };
+        assert_serializes_to(
+            &frame,
+            r#"{"type": "member_deleted",
+                "member": {"id": 11, "username": "deleted-11",
+                           "display_name": "Deleted account",
+                           "avatar_version": 0, "deleted": true}}"#,
+        );
+        let json = serde_json::to_value(&frame).expect("serializes");
+        assert!(
+            json.get("family_id").is_none(),
+            "family_id must be absent, not null: {json}"
+        );
+    }
+
+    #[test]
+    fn family_owner_frame_matches_the_protocol_shape() {
+        let frame = ServerFrame::FamilyOwner {
+            family_id: 3,
+            user_id: 9,
+        };
+        assert_serializes_to(
+            &frame,
+            r#"{"type": "family_owner", "family_id": 3, "user_id": 9}"#,
+        );
+    }
+
     #[test]
     fn reaction_frame_matches_the_protocol_shape() {
         let frame = ServerFrame::Reaction {
@@ -755,6 +906,37 @@ mod tests {
             &frame,
             r#"{"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
                 "reactions": [{"user_id": 9, "emoji": "❤️"}]}"#,
+        );
+    }
+
+    #[test]
+    fn poll_frame_matches_the_protocol_shape() {
+        let frame = ServerFrame::Poll {
+            chat_id: 42,
+            message_id: 1340,
+            poll: Poll {
+                poll_seq: 89,
+                closed: false,
+                options: vec![
+                    crate::models::PollOption {
+                        id: 5,
+                        text: "Pizza".to_string(),
+                        votes: vec![7, 9],
+                    },
+                    crate::models::PollOption {
+                        id: 6,
+                        text: "Pasta".to_string(),
+                        votes: vec![],
+                    },
+                ],
+            },
+        };
+        assert_serializes_to(
+            &frame,
+            r#"{"type": "poll", "chat_id": 42, "message_id": 1340,
+                "poll": {"poll_seq": 89, "closed": false,
+                         "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
+                                     {"id": 6, "text": "Pasta", "votes": []}]}}"#,
         );
     }
 
@@ -777,6 +959,51 @@ mod tests {
         assert!(
             bare.get("reactions").is_none() && bare.get("reaction_seq").is_none(),
             "reaction fields must be absent, not null: {bare}"
+        );
+    }
+
+    /// A poll rides the ORDINARY `message` frame — there is no separate
+    /// "poll created" frame — and the whole object goes with it, so a client
+    /// draws the buttons from the frame that delivered the question. The key
+    /// is absent, never null, on a message that is not a poll: a client that
+    /// has never heard of polls sees a plain message and loses only the
+    /// buttons (protocol.md, "Polls").
+    #[test]
+    fn a_message_frame_carries_a_whole_poll_and_a_bare_message_omits_it() {
+        let mut message = sample_message();
+        message.body = "Pizza or pasta?".to_string();
+        message.poll = Some(Poll {
+            poll_seq: 88,
+            closed: false,
+            options: vec![
+                crate::models::PollOption {
+                    id: 5,
+                    text: "Pizza".to_string(),
+                    votes: vec![7, 9],
+                },
+                crate::models::PollOption {
+                    id: 6,
+                    text: "Pasta".to_string(),
+                    votes: vec![],
+                },
+            ],
+        });
+        assert_serializes_to(
+            &ServerFrame::Message { message },
+            r#"{"type": "message",
+                "message": {"id": 1338, "chat_id": 42, "sender_id": 7,
+                            "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
+                            "body": "Pizza or pasta?",
+                            "created_at": "2026-08-19T17:03:12Z",
+                            "poll": {"poll_seq": 88, "closed": false,
+                                     "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
+                                                 {"id": 6, "text": "Pasta", "votes": []}]}}}"#,
+        );
+
+        let bare = serde_json::to_value(sample_message()).expect("serializes");
+        assert!(
+            bare.get("poll").is_none(),
+            "the poll key must be absent, not null, on an ordinary message: {bare}"
         );
     }
 

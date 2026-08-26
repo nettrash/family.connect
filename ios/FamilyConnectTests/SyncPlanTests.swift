@@ -114,4 +114,50 @@ struct SyncPlanTests {
             localCursors: [1: 45, 3: 8])
         #expect(steps == [.init(chatID: 1, afterSeq: 45)])
     }
+
+    // MARK: - Polls
+
+    @Test("a chat whose server max_poll_seq is ahead yields a step from the stored cursor")
+    func plansBehindPollCursor() {
+        let steps = SyncPlan.makePollSteps(
+            chats: [.init(chatID: 42, serverLatestMessageID: 1338, serverMaxPollSeq: 90)],
+            localCursors: [42: 88])
+        #expect(steps == [.init(chatID: 42, afterSeq: 88)])
+    }
+
+    @Test("an up-to-date poll cursor yields no step")
+    func skipsCurrentPollCursor() {
+        let steps = SyncPlan.makePollSteps(
+            chats: [.init(chatID: 42, serverLatestMessageID: 1338, serverMaxPollSeq: 88)],
+            localCursors: [42: 88])
+        #expect(steps.isEmpty)
+    }
+
+    @Test("a chat holding no poll (server omits max_poll_seq → 0) costs no request")
+    func skipsPolllessChat() {
+        let steps = SyncPlan.makePollSteps(
+            chats: [.init(chatID: 42, serverLatestMessageID: 1338)],
+            localCursors: [42: 0])
+        #expect(steps.isEmpty)
+    }
+
+    @Test("the three cursors are planned independently of each other")
+    func cursorsAreIndependent() {
+        // One chat, current on reactions and edits, behind on polls: only
+        // the poll step is planned. Folding the sequences together is
+        // exactly what the protocol refused to do, and this is the
+        // client-side shape of that refusal.
+        let chat = SyncPlan.ChatCursor(
+            chatID: 42,
+            serverLatestMessageID: 1338,
+            serverMaxReactionSeq: 12,
+            serverMaxEditSeq: 5,
+            serverMaxPollSeq: 90)
+        let local: [Int64: Int64] = [42: 12]
+        #expect(SyncPlan.makeReactionSteps(chats: [chat], localCursors: local).isEmpty)
+        #expect(SyncPlan.makeEditSteps(chats: [chat], localCursors: [42: 5]).isEmpty)
+        #expect(
+            SyncPlan.makePollSteps(chats: [chat], localCursors: [42: 88])
+                == [.init(chatID: 42, afterSeq: 88)])
+    }
 }

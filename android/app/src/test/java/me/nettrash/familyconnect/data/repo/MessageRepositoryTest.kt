@@ -32,8 +32,11 @@ import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.dto.MessagePollStateDto
 import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
+import me.nettrash.familyconnect.data.net.dto.PollCodec
+import me.nettrash.familyconnect.data.net.dto.PollsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
@@ -46,6 +49,8 @@ import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
+import me.nettrash.familyconnect.testutil.pollDto
+import me.nettrash.familyconnect.testutil.pollState
 import me.nettrash.familyconnect.testutil.reactionState
 import me.nettrash.familyconnect.util.Clock
 import org.junit.After
@@ -107,7 +112,7 @@ class MessageRepositoryTest {
 
     /** Builds the repository on the foreground repoScope and lets its frame collector subscribe. */
     private fun TestScope.newRepository(): MessageRepository {
-        chatRepository = ChatRepository(chatApi, chatDao, socket)
+        chatRepository = ChatRepository(chatApi, chatDao, messageDao, socket, repoScope)
         val repository = MessageRepository(
             chatApi = chatApi,
             attachmentApi = attachmentApi,
@@ -929,7 +934,12 @@ class MessageRepositoryTest {
         val row = messageDao.findByServerId(100L)!!
         assertThat(ReactionsCodec.decode(row.reactionsJson)).containsExactly(ReactionDto(ME, "❤️"))
         assertThat(row.reactionSeq).isEqualTo(7L)
-        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(7L)
+        // The ROW moved and the chat-wide cursor did NOT: an HTTP reply is
+        // neither a live frame nor a catch-up page, and seq 7 on THIS
+        // message says nothing about a seq 6 on another whose frame was
+        // missed while the socket was down (protocol.md, "Best-effort
+        // delivery").
+        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(0L)
         assertThat(toggle.isCompleted).isTrue()
     }
 
@@ -954,7 +964,8 @@ class MessageRepositoryTest {
         val row = messageDao.findByServerId(100L)!!
         assertThat(ReactionsCodec.decode(row.reactionsJson)).containsExactly(ReactionDto(PEER, "👍"))
         assertThat(row.reactionSeq).isEqualTo(8L)
-        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(8L)
+        // The reply moved the row only — see the test above.
+        assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(0L)
     }
 
     @Test
@@ -1004,6 +1015,497 @@ class MessageRepositoryTest {
         assertThat(messageDao.findByServerId(999L)).isNull() // dropped silently
         assertThat(chatDao.maxReactionSeq(CHAT)).isEqualTo(12L) // cursor advanced anyway
         assertThat(chatApi.reactionsCalls).isEqualTo(1) // short page ended the loop
+    }
+
+    // -- Polls --------------------------------------------------------------------------
+
+    private fun pollFrame(
+        messageId: Long,
+        pollSeq: Long,
+        vararg options: Pair<String, List<Long>>,
+        closed: Boolean = false,
+        chatId: Long = CHAT,
+    ) = ServerFrame.Poll(
+        chatId = chatId,
+        messageId = messageId,
+        poll = pollDto(pollSeq, *options, closed = closed),
+    )
+
+    @Test
+    fun pollFrameAppliesStateAndAdvancesTheChatCursor() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+
+        socket.emit(pollFrame(100, 88, "Pizza" to listOf(PEER), "Pasta" to emptyList()))
+        advanceUntilIdle()
+
+        val stored = PollCodec.decode(messageDao.findByServerId(100L)!!.pollJson)!!
+        assertThat(stored.options.map { it.text }).containsExactly("Pizza", "Pasta").inOrder()
+        assertThat(stored.options[0].votes).containsExactly(PEER)
+        assertThat(messageDao.findByServerId(100L)!!.pollSeq).isEqualTo(88L)
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(88L)
+    }
+
+    @Test
+    fun stalePollFrameIsIgnored() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+
+        socket.emit(pollFrame(100, 88, "Pizza" to listOf(PEER), "Pasta" to emptyList()))
+        advanceUntilIdle()
+        // Out-of-order OLDER state — full-state semantics plus the seq
+        // guard mean it must not undo the newer vote.
+        socket.emit(pollFrame(100, 86, "Pizza" to emptyList(), "Pasta" to emptyList()))
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(PollCodec.decode(row.pollJson)!!.options[0].votes).containsExactly(PEER)
+        assertThat(row.pollSeq).isEqualTo(88L)
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(88L) // MAX guard held too
+    }
+
+    @Test
+    fun pollFrameForUnknownMessageIsDroppedButStillAdvancesTheCursor() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+
+        socket.emit(pollFrame(999, 90, "Pizza" to listOf(PEER)))
+        advanceUntilIdle()
+
+        // No row conjured up — the state comes back embedded on the
+        // Message when history pages there.
+        assertThat(messageDao.findByServerId(999L)).isNull()
+        // But the cursor moved: a live socket delivers in order, so seq
+        // 90 is proof nothing below it is missing.
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(90L)
+    }
+
+    @Test
+    fun anEmbeddedPollAppliesUnderTheGuardWithoutMovingTheChatCursor() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+
+        // First sight of the message, in a history page.
+        repository.applyServerMessage(
+            messageDto(
+                id = 100,
+                chatId = CHAT,
+                senderId = PEER,
+                body = "Pizza or pasta?",
+                poll = pollDto(88, "Pizza" to emptyList(), "Pasta" to emptyList()),
+            ),
+            live = false,
+        )
+        assertThat(messageDao.findByServerId(100L)!!.pollSeq).isEqualTo(88L)
+
+        // Re-delivered with a NEWER embedded state (page overlap).
+        repository.applyServerMessage(
+            messageDto(
+                id = 100,
+                chatId = CHAT,
+                senderId = PEER,
+                body = "Pizza or pasta?",
+                poll = pollDto(90, "Pizza" to listOf(PEER), "Pasta" to emptyList()),
+            ),
+            live = false,
+        )
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(PollCodec.decode(row.pollJson)!!.options[0].votes).containsExactly(PEER)
+        assertThat(row.pollSeq).isEqualTo(90L)
+
+        // A STALE embedded state on yet another re-delivery is dropped.
+        repository.applyServerMessage(
+            messageDto(
+                id = 100,
+                chatId = CHAT,
+                senderId = PEER,
+                body = "Pizza or pasta?",
+                poll = pollDto(89, "Pizza" to emptyList(), "Pasta" to emptyList()),
+            ),
+            live = false,
+        )
+        assertThat(messageDao.findByServerId(100L)!!.pollSeq).isEqualTo(90L)
+
+        // And through all of it the chat cursor never moved: a history
+        // page proves nothing about OTHER polls' lower seqs.
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(0L)
+    }
+
+    @Test
+    fun aMessageWithNoPollNeverWipesTheStoredOne() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        socket.emit(pollFrame(100, 88, "Pizza" to listOf(PEER), "Pasta" to emptyList()))
+        advanceUntilIdle()
+
+        // The same message re-delivered by a path that carries no poll —
+        // an edit, or a server that answers without one. Silence is
+        // silence: a poll dies only with its message.
+        repository.applyServerMessage(
+            messageDto(id = 100, chatId = CHAT, senderId = PEER, body = "Pizza or pasta?"),
+            live = false,
+        )
+
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(PollCodec.decode(row.pollJson)!!.options[0].votes).containsExactly(PEER)
+        assertThat(row.pollSeq).isEqualTo(88L)
+    }
+
+    @Test
+    fun votingAppliesOptimisticallyThenTheAuthoritativeState() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        socket.emit(pollFrame(100, 88, "Pizza" to emptyList(), "Pasta" to emptyList()))
+        advanceUntilIdle()
+        val gate = CompletableDeferred<ApiResult<MessagePollStateDto>>()
+        chatApi.putVoteHandler = { _, _, _ -> gate.await() }
+
+        val vote = repoScope.launch { repository.toggleVote(CHAT, 100L, 5L) }
+        runCurrent()
+
+        // REST still in flight — the bar has already moved, and the guard
+        // seq is untouched so the authoritative reply can still land.
+        val optimistic = messageDao.findByServerId(100L)!!
+        assertThat(PollCodec.decode(optimistic.pollJson)!!.options[0].votes).containsExactly(ME)
+        assertThat(optimistic.pollSeq).isEqualTo(88L)
+        assertThat(chatApi.putVotes).containsExactly(Triple(CHAT, 100L, 5L))
+
+        gate.complete(
+            ApiResult.Ok(
+                pollState(100L, pollDto(89, "Pizza" to listOf(ME), "Pasta" to emptyList())),
+            ),
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(PollCodec.decode(row.pollJson)!!.options[0].votes).containsExactly(ME)
+        assertThat(row.pollSeq).isEqualTo(89L)
+        // The ROW moved to 89 and the chat-wide cursor stayed at the 88
+        // the frame put there. See
+        // aVoteReplyNeverAdvancesTheChatWidePollCursor for the loss that
+        // prevents.
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(88L)
+        assertThat(vote.isCompleted).isTrue()
+    }
+
+    @Test
+    fun theOptimisticVoteNeverBumpsTheStoredSeq() = runTest(dispatcher) {
+        // The failure this pins: an optimistic write that ALSO advanced
+        // the seq would make the server's own answer look stale, and the
+        // guard would drop the only authoritative copy there is.
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        socket.emit(pollFrame(100, 88, "Pizza" to emptyList(), "Pasta" to emptyList()))
+        advanceUntilIdle()
+        chatApi.putVoteHandler = { _, _, _ ->
+            ApiResult.Ok(pollState(100L, pollDto(89, "Pizza" to listOf(ME), "Pasta" to emptyList())))
+        }
+
+        repository.toggleVote(CHAT, 100L, 5L)
+
+        assertThat(messageDao.findByServerId(100L)!!.pollSeq).isEqualTo(89L)
+    }
+
+    @Test
+    fun tappingTheOptionIAlreadyHoldRetractsIt() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        socket.emit(pollFrame(100, 88, "Pizza" to listOf(ME), "Pasta" to listOf(PEER)))
+        advanceUntilIdle()
+        chatApi.deleteVoteHandler = { _, _ ->
+            ApiResult.Ok(pollState(100L, pollDto(90, "Pizza" to emptyList(), "Pasta" to listOf(PEER))))
+        }
+
+        repository.toggleVote(CHAT, 100L, 5L)
+
+        assertThat(chatApi.deletedVotes).containsExactly(CHAT to 100L)
+        assertThat(chatApi.putVotes).isEmpty()
+        val stored = PollCodec.decode(messageDao.findByServerId(100L)!!.pollJson)!!
+        assertThat(stored.options[0].votes).isEmpty()
+        assertThat(stored.options[1].votes).containsExactly(PEER)
+        // The retraction reply is an HTTP reply like any other: the row
+        // moves, the chat cursor does not.
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(88L)
+    }
+
+    @Test
+    fun changingMyVoteMovesItRatherThanAddingASecond() = runTest(dispatcher) {
+        // One choice per member, and there is no multiple choice: my vote
+        // must leave the option it was on.
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        socket.emit(pollFrame(100, 88, "Pizza" to listOf(ME, PEER), "Pasta" to emptyList()))
+        advanceUntilIdle()
+        val gate = CompletableDeferred<ApiResult<MessagePollStateDto>>()
+        chatApi.putVoteHandler = { _, _, _ -> gate.await() }
+
+        val vote = repoScope.launch { repository.toggleVote(CHAT, 100L, 6L) }
+        runCurrent()
+
+        val optimistic = PollCodec.decode(messageDao.findByServerId(100L)!!.pollJson)!!
+        assertThat(optimistic.options[0].votes).containsExactly(PEER)
+        assertThat(optimistic.options[1].votes).containsExactly(ME)
+        gate.complete(
+            ApiResult.Ok(
+                pollState(100L, pollDto(89, "Pizza" to listOf(PEER), "Pasta" to listOf(ME))),
+            ),
+        )
+        advanceUntilIdle()
+        assertThat(vote.isCompleted).isTrue()
+    }
+
+    @Test
+    fun aFailedVoteRollsBackWholesale() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        socket.emit(pollFrame(100, 88, "Pizza" to listOf(PEER), "Pasta" to emptyList()))
+        advanceUntilIdle()
+        val before = messageDao.findByServerId(100L)!!.pollJson
+        val gate = CompletableDeferred<ApiResult<MessagePollStateDto>>()
+        chatApi.putVoteHandler = { _, _, _ -> gate.await() }
+
+        val vote = repoScope.launch { repository.toggleVote(CHAT, 100L, 6L) }
+        runCurrent()
+        // The optimistic state really was applied…
+        assertThat(PollCodec.decode(messageDao.findByServerId(100L)!!.pollJson)!!.options[1].votes)
+            .containsExactly(ME)
+
+        gate.complete(ApiResult.HttpError(409, "poll_closed", "closed"))
+        advanceUntilIdle()
+
+        // …and rolled back wholesale; no retry, mirroring a reaction.
+        val row = messageDao.findByServerId(100L)!!
+        assertThat(row.pollJson).isEqualTo(before)
+        assertThat(row.pollSeq).isEqualTo(88L)
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(88L) // cursor untouched by the failure
+        assertThat(vote.isCompleted).isTrue()
+        assertThat(chatApi.putVotes).hasSize(1)
+    }
+
+    @Test
+    fun aClosedPollRefusesAVoteWithoutAskingTheServer() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        socket.emit(
+            pollFrame(100, 91, "Pizza" to listOf(PEER), "Pasta" to emptyList(), closed = true),
+        )
+        advanceUntilIdle()
+        val before = messageDao.findByServerId(100L)!!.pollJson
+
+        repository.toggleVote(CHAT, 100L, 6L)
+
+        assertThat(chatApi.putVotes).isEmpty()
+        assertThat(messageDao.findByServerId(100L)!!.pollJson).isEqualTo(before)
+    }
+
+    @Test
+    fun closingAPollAppliesTheServersFinalState() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        socket.emit(pollFrame(100, 88, "Pizza" to listOf(ME), "Pasta" to emptyList()))
+        advanceUntilIdle()
+        chatApi.closePollHandler = { _, _ ->
+            ApiResult.Ok(
+                pollState(
+                    100L,
+                    pollDto(92, "Pizza" to listOf(ME), "Pasta" to emptyList(), closed = true),
+                ),
+            )
+        }
+
+        assertThat(repository.closePoll(CHAT, 100L)).isTrue()
+
+        val stored = PollCodec.decode(messageDao.findByServerId(100L)!!.pollJson)!!
+        assertThat(stored.closed).isTrue()
+        // A closed poll keeps its result.
+        assertThat(stored.options[0].votes).containsExactly(ME)
+        // And a close reply, for the same reason.
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(88L)
+    }
+
+    @Test
+    fun closingSomebodyElsesPollIsRefusedAndChangesNothing() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100)
+        socket.emit(pollFrame(100, 88, "Pizza" to listOf(ME), "Pasta" to emptyList()))
+        advanceUntilIdle()
+        chatApi.closePollHandler = { _, _ ->
+            ApiResult.HttpError(403, "not_message_author", "not yours")
+        }
+
+        assertThat(repository.closePoll(CHAT, 100L)).isFalse()
+
+        assertThat(PollCodec.decode(messageDao.findByServerId(100L)!!.pollJson)!!.closed).isFalse()
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(88L)
+    }
+
+    @Test
+    fun aVoteReplyNeverAdvancesTheChatWidePollCursor() = runTest(dispatcher) {
+        // The loss this pins, end to end. Two polls; the device misses P1's
+        // seq 99 frame (backgrounded socket, REST still working), then
+        // votes on P2 and is answered with seq 100. Advancing the chat
+        // cursor to 100 would make the next resync's
+        // `max_poll_seq > cursor` test false and P1's state would never be
+        // fetched again — `after_id` cannot see a change to an older row.
+        val repository = newRepository()
+        insertChat()
+        insertServerMessage(100) // P1
+        insertServerMessage(200) // P2
+        socket.emit(pollFrame(200, 50, "Pizza" to emptyList(), "Pasta" to emptyList()))
+        advanceUntilIdle()
+        chatApi.putVoteHandler = { _, _, _ ->
+            ApiResult.Ok(pollState(200L, pollDto(100, "Pizza" to listOf(ME), "Pasta" to emptyList())))
+        }
+
+        repository.toggleVote(CHAT, 200L, 5L)
+
+        // The row took the authoritative state…
+        assertThat(messageDao.findByServerId(200L)!!.pollSeq).isEqualTo(100L)
+        // …and the cursor stayed where the last live frame left it, so the
+        // catch-up that repairs P1 is still asked for.
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(50L)
+
+        // Proof it self-heals: the catch-up page P1's state rides on is
+        // still reachable from the cursor that was left alone.
+        chatApi.pollsHandler = { _, afterSeq, _ ->
+            assertThat(afterSeq).isEqualTo(50L)
+            ApiResult.Ok(
+                PollsCatchUpResponse(
+                    listOf(pollState(100L, pollDto(99, "Yes" to listOf(PEER)))),
+                ),
+            )
+        }
+        repository.catchUpPolls(CHAT, chatDao.maxPollSeq(CHAT)!!)
+        assertThat(messageDao.findByServerId(100L)!!.pollSeq).isEqualTo(99L)
+    }
+
+    @Test
+    fun catchUpPollsAdvancesTheCursorEvenWhenNoMessageIsHeld() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        chatApi.pollsHandler = { _, afterSeq, _ ->
+            assertThat(afterSeq).isEqualTo(0L)
+            ApiResult.Ok(
+                PollsCatchUpResponse(
+                    listOf(pollState(999L, pollDto(12, "Pizza" to listOf(PEER)))),
+                ),
+            )
+        }
+
+        repository.catchUpPolls(CHAT, 0L)
+
+        assertThat(messageDao.findByServerId(999L)).isNull() // dropped silently
+        assertThat(chatDao.maxPollSeq(CHAT)).isEqualTo(12L) // cursor advanced anyway
+        assertThat(chatApi.pollsCalls).isEqualTo(1) // short page ended the loop
+    }
+
+    @Test
+    fun sendingAPollPostsTheOptionsAndDrawsItImmediately() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        repository.sendPoll(CHAT, "  Pizza or pasta?  ", listOf("Pizza", " Pasta ", ""))
+        runCurrent()
+
+        // The optimistic row IS a poll: the bubble draws options from the
+        // first frame, rather than a bare question that becomes one.
+        val row = messageDao.pendingSending().single()
+        assertThat(row.body).isEqualTo("Pizza or pasta?")
+        val optimistic = PollCodec.decode(row.pollJson)!!
+        assertThat(optimistic.options.map { it.text }).containsExactly("Pizza", "Pasta").inOrder()
+        // Zero, so the ack's authoritative poll still passes the guard —
+        // and the ids are negative, so they can never collide with the
+        // server's.
+        assertThat(optimistic.pollSeq).isEqualTo(0L)
+        assertThat(optimistic.options.map { it.id }).containsExactly(-1L, -2L).inOrder()
+        // The chat-list preview is the QUESTION — no new case for a poll.
+        assertThat(chatDao.getById(CHAT)!!.lastMessageBody).isEqualTo("Pizza or pasta?")
+
+        val frame = socket.sent.filterIsInstance<ClientFrame.Send>().single()
+        assertThat(frame.body).isEqualTo("Pizza or pasta?")
+        assertThat(frame.poll?.options).containsExactly("Pizza", "Pasta").inOrder()
+    }
+
+    @Test
+    fun theAckReplacesTheLocalPollWithTheServers() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+        repository.sendPoll(CHAT, "Pizza or pasta?", listOf("Pizza", "Pasta"))
+        runCurrent()
+        val clientMsgId = messageDao.pendingSending().single().clientMsgId
+
+        socket.emit(
+            ServerFrame.Ack(
+                clientMsgId = clientMsgId,
+                message = messageDto(
+                    id = 1340,
+                    chatId = CHAT,
+                    senderId = ME,
+                    clientMsgId = clientMsgId,
+                    body = "Pizza or pasta?",
+                    poll = pollDto(88, "Pizza" to emptyList(), "Pasta" to emptyList()),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(1340L)!!
+        assertThat(row.status).isEqualTo(MessageStatus.SENT)
+        val stored = PollCodec.decode(row.pollJson)!!
+        // Real ids now, and a real seq — the local copy is gone.
+        assertThat(stored.options.map { it.id }).containsExactly(5L, 6L).inOrder()
+        assertThat(row.pollSeq).isEqualTo(88L)
+    }
+
+    @Test
+    fun aPollRetriedAfterAFailedSendStillCarriesItsOptions() = runTest(dispatcher) {
+        // Read back off the ROW rather than held in memory: without that
+        // a re-sent poll lands as a plain question with no options, and
+        // the server has no way to know one was meant.
+        val repository = newRepository()
+        insertChat()
+        chatApi.postMessageHandler = { _, _, _ -> ApiResult.NetworkError(IllegalStateException("down")) }
+
+        repository.sendPoll(CHAT, "Pizza or pasta?", listOf("Pizza", "Pasta"))
+        advanceUntilIdle()
+        val failed = messageDao.findByClientMsgId(
+            chatApi.postedMessages.single().second,
+        )!!
+        assertThat(failed.status).isEqualTo(MessageStatus.FAILED)
+
+        chatApi.postMessageHandler = { _, clientMsgId, body ->
+            ApiResult.Ok(
+                MessageResponse(
+                    messageDto(
+                        id = 1340,
+                        chatId = CHAT,
+                        senderId = ME,
+                        clientMsgId = clientMsgId,
+                        body = body,
+                        poll = pollDto(88, "Pizza" to emptyList(), "Pasta" to emptyList()),
+                    ),
+                ),
+            )
+        }
+        repository.retry(failed.clientMsgId)
+        advanceUntilIdle()
+
+        assertThat(chatApi.postedPolls.last()?.options)
+            .containsExactly("Pizza", "Pasta").inOrder()
+        assertThat(messageDao.findByServerId(1340L)!!.pollSeq).isEqualTo(88L)
     }
 
     @Test

@@ -16,6 +16,10 @@
 //    - server change → wipe EVERYTHING including the old server URL; chats
 //                      from server A are meaningless — and misleading —
 //                      against server B's ids.
+//    - accountDeleted→ same as logout, and deliberately NOT logout(): the
+//                      server has already destroyed the session, so
+//                      /auth/logout and DELETE /devices would both answer
+//                      401 against it.
 //    - kicked/left   → wipe chat data only; the account (token) and server
 //                      are still valid, the user just has no family now.
 //
@@ -53,6 +57,10 @@ nonisolated enum SessionLogic {
         case logout
         case serverChange
         case unauthorized
+        /// The account itself is gone (POST /me/delete succeeded). The
+        /// same scope as a logout — there is simply nothing left on the
+        /// server to keep a token for.
+        case accountDeleted
         case kicked
         case leftFamily
     }
@@ -71,7 +79,7 @@ nonisolated enum SessionLogic {
             PurgeScope(wipesToken: true, wipesServerURL: false, wipesChatData: true, wipesDefaults: true)
         case .serverChange:
             PurgeScope(wipesToken: true, wipesServerURL: true, wipesChatData: true, wipesDefaults: true)
-        case .unauthorized:
+        case .unauthorized, .accountDeleted:
             PurgeScope(wipesToken: true, wipesServerURL: false, wipesChatData: true, wipesDefaults: true)
         case .kicked, .leftFamily:
             // The session survives; only family-scoped data goes.
@@ -366,20 +374,58 @@ final class AppSession {
         // best-effort revoke; local state goes regardless.
         await deregisterDevice()
         try? await api.logout()
-        purge(.logout)
+        resetToSignIn(.logout)
+    }
+
+    /// Delete this account for good (protocol.md, "Deleting an account").
+    ///
+    /// Deliberately NOT the logout path. By the time this returns, the
+    /// server has destroyed every session the account had — this one
+    /// included — and the device rows with them, so `DELETE /devices/{id}`
+    /// and `POST /auth/logout` would each answer 401 against a session
+    /// that no longer exists. There is nothing to deregister and nothing
+    /// to revoke; what is left is local, and all of it goes: the token,
+    /// the chats and their per-chat cursors, the members, the board and
+    /// its cursor, the cached faces and files, and every default this app
+    /// owns except the server URL (which is the family's, not the
+    /// account's, and retyping it is pure friction).
+    ///
+    /// Throws whatever the call threw — `.unauthorized` for a WRONG
+    /// PASSWORD, which the caller must show as such rather than treating
+    /// as a dead session.
+    func deleteAccount(password: String) async throws {
+        try await api.deleteAccount(password: password)
+        AppLog.app.info("Account deleted; returning to sign-in")
+        resetToSignIn(.accountDeleted)
+    }
+
+    /// Any 401 outside login: the session is gone server-side.
+    func handleUnauthorized() {
+        resetToSignIn(.unauthorized)
+    }
+
+    /// Wipe to the given scope and land on the sign-in screen. The one
+    /// primitive behind logout, a 401 and a deleted account — they differ
+    /// only in what they had to do on the server first.
+    private func resetToSignIn(_ reason: SessionLogic.PurgeReason) {
+        purge(reason)
         currentUser = nil
         family = nil
         role = nil
         phase = .needsAuth
     }
 
-    /// Any 401 outside login: the session is gone server-side.
-    func handleUnauthorized() {
-        purge(.unauthorized)
-        currentUser = nil
-        family = nil
-        role = nil
-        phase = .needsAuth
+    /// A `family_owner` frame: the family has a new owner.
+    ///
+    /// Sent to every member when an owner deletes their account and
+    /// ownership passes to the longest-standing remaining member. The
+    /// client that has just become the owner gains the owner-only screens
+    /// immediately instead of at its next `GET /me`; everybody else's
+    /// `role` is corrected to "member" for the same reason.
+    func applyFamilyOwner(userID: Int64) {
+        guard family != nil else { return }
+        let me = currentUser?.id ?? AppSettings.currentUserID
+        role = (userID == me) ? "owner" : "member"
     }
 
     // MARK: - Purge

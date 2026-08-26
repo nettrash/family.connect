@@ -4,9 +4,15 @@
  *
  * Family membership: roster (Room `members` table), invite code, join
  * policy, join requests, leave/remove. Also the sink for the
- * member_joined / member_left WebSocket frames — applied to the roster
- * live, and a member_left carrying *my* user id escalates to
- * SessionRepository (we've been kicked).
+ * member_joined / member_left / member_deleted / family_owner WebSocket
+ * frames — applied to the roster live, and a member_left carrying *my*
+ * user id escalates to SessionRepository (we've been kicked).
+ *
+ * The roster holds BOTH arrays `GET /families/mine` answers with:
+ * `members` and `former_members`, the second flagged deleted. One table,
+ * because a stored message has to be able to name a sender whose account
+ * is gone; one filter (MemberDao.observeActiveMembers), because nothing
+ * that offers an action on a person may include them.
  *
  * iOS counterpart: ios/FamilyConnect/Data/Repo/FamilyRepository.swift
  */
@@ -77,6 +83,41 @@ class FamilyRepository @Inject constructor(
                         val myId = settings.state.first().myUserId
                         if (frame.userId == myId) sessionRepository.onRemovedFromFamily()
                     }
+                    // The ONE frame whose job is to wipe stored fields, so
+                    // it is written deliberately rather than upserted —
+                    // see MemberDao.writeTombstone. The row STAYS: their
+                    // messages, notes and reactions are still in the
+                    // family's history and still have to be named.
+                    //
+                    // This is the ROSTER half of the frame only. The same
+                    // frame also takes the direct chat with them away —
+                    // that half is ChatRepository's, because the chat
+                    // store is not this repository's to write.
+                    is ServerFrame.MemberDeleted -> memberDao.writeTombstone(
+                        userId = frame.member.id,
+                        username = frame.member.username,
+                        displayName = frame.member.displayName,
+                    )
+                    // Ownership moved because the owner deleted their
+                    // account. The roster row moves with it, and if the
+                    // new owner is US the stored status flips now rather
+                    // than at the next GET /me — that is the whole point
+                    // of the frame (protocol.md, "Server → client").
+                    is ServerFrame.FamilyOwner -> {
+                        memberDao.setOwner(frame.userId)
+                        val state = settings.state.first()
+                        if (state.familyStatus == FamilyStatus.MEMBER ||
+                            state.familyStatus == FamilyStatus.OWNER
+                        ) {
+                            settings.setFamilyStatus(
+                                if (frame.userId == state.myUserId) {
+                                    FamilyStatus.OWNER
+                                } else {
+                                    FamilyStatus.MEMBER
+                                },
+                            )
+                        }
+                    }
                     else -> Unit
                 }
             }
@@ -104,7 +145,10 @@ class FamilyRepository @Inject constructor(
                     userId = it.id,
                     username = it.username,
                     displayName = it.displayName,
-                    role = it.role,
+                    // Always present on a LIVE member; the fallback is
+                    // only here because the field is optional on the wire
+                    // for the tombstones below.
+                    role = it.role ?: "member",
                     avatarVersion = it.avatarVersion,
                     // A birthday change raises no frame and no push
                     // (protocol.md, "Birthdays"), so this refresh is where
@@ -114,7 +158,32 @@ class FamilyRepository @Inject constructor(
                     birthdayDay = it.birthday?.day,
                 )
             }
-            memberDao.upsertAll(roster)
+            // `former_members` goes into the SAME table, flagged — that
+            // is what lets a stored message still name its sender
+            // (protocol.md, "Deleting an account"). They are NOT members:
+            // `deleted = 1` keeps them out of observeActiveMembers, which
+            // is what every picker, admin list and roster reads.
+            //
+            // A tombstone carries no role, no picture and no birthday, and
+            // the entity is written whole here on purpose: unlike a frame
+            // that merely omits a field, the server is stating that those
+            // values are gone.
+            val tombstones = result.value.formerMembers.map {
+                MemberEntity(
+                    userId = it.id,
+                    username = it.username,
+                    displayName = it.displayName,
+                    role = "member",
+                    avatarVersion = 0,
+                    hasLeft = true,
+                    deleted = true,
+                )
+            }
+            // Through upsertRoster rather than upsertAll: a live entry
+            // for somebody this device already holds a tombstone for is a
+            // response the server computed before the deletion landed, and
+            // writing it would resurrect them. See MemberDao.upsertRoster.
+            memberDao.upsertRoster(roster, tombstones)
             if (roster.isNotEmpty()) {
                 // Guarded: `NOT IN ()` is a syntax error in SQLite, and an
                 // empty roster cannot happen anyway — the caller is in the
@@ -238,7 +307,10 @@ class FamilyRepository @Inject constructor(
                             userId = result.value.member.id,
                             username = result.value.member.username,
                             displayName = result.value.member.displayName,
-                            role = result.value.member.role,
+                            // An approved join request always names a
+                            // live member; the fallback only exists
+                            // because the field is optional on the wire.
+                            role = result.value.member.role ?: "member",
                             avatarVersion = result.value.member.avatarVersion,
                             birthdayMonth = result.value.member.birthday?.month,
                             birthdayDay = result.value.member.birthday?.day,

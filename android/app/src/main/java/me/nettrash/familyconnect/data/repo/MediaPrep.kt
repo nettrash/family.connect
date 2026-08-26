@@ -143,7 +143,16 @@ class MediaPrep @Inject constructor(
 
     // -- Videos ------------------------------------------------------------
 
-    suspend fun prepareVideo(uri: Uri, limit: Long = SIZE_LIMIT): Prepared {
+    /**
+     * @param declaredMime what the SOURCE said this is, for a Uri whose
+     *   provider will not answer `getType` — a clipboard item, typically.
+     *   Ignored when the provider does answer, which is the picker's case.
+     */
+    suspend fun prepareVideo(
+        uri: Uri,
+        limit: Long = SIZE_LIMIT,
+        declaredMime: String? = null,
+    ): Prepared {
         val declared = declaredSize(uri)
         // The protocol accepts exactly two video types, and the server
         // verifies the bytes against the type declared. A .webm or .mkv is
@@ -151,7 +160,7 @@ class MediaPrep @Inject constructor(
         // it can be sent at all. Sending it as-is under the limit meant
         // labelling it video/mp4 and being refused, forever, with a message
         // that said "try again".
-        val sourceMime = contentResolver.getType(uri).orEmpty()
+        val sourceMime = providerType(uri) ?: declaredMime.orEmpty()
         val mustTranscode = sourceMime !in SENDABLE_VIDEO_TYPES
         val file = if (mustTranscode || (declared != null && declared > limit)) {
             compress(uri, limit)
@@ -326,9 +335,14 @@ class MediaPrep @Inject constructor(
      * draws a play control, the duration and a scrubber (protocol.md,
      * "Audio").
      */
-    suspend fun prepareAudio(uri: Uri, limit: Long = SIZE_LIMIT): Prepared =
+    suspend fun prepareAudio(
+        uri: Uri,
+        limit: Long = SIZE_LIMIT,
+        declaredMime: String? = null,
+        fallbackName: String? = null,
+    ): Prepared =
         withContext(Dispatchers.IO) {
-            val name = displayName(uri)
+            val name = displayName(uri, fallbackName)
             val destination = cacheFile(name.substringAfterLast('.', "m4a"))
             val copied = runCatching {
                 contentResolver.openInputStream(uri)?.use { input ->
@@ -364,7 +378,7 @@ class MediaPrep @Inject constructor(
 
             Prepared(
                 file = destination,
-                mime = audioMime(uri, destination),
+                mime = audioMime(uri, destination, declaredMime),
                 kind = AttachmentDto.KIND_AUDIO,
                 width = null,
                 height = null,
@@ -381,18 +395,33 @@ class MediaPrep @Inject constructor(
      * provider might name. Anything unrecognised is left to the file path,
      * where nothing is verified.
      */
-    private fun audioMime(uri: Uri, file: File): String =
+    private fun audioMime(uri: Uri, file: File, declaredMime: String? = null): String =
         when (file.extension.lowercase()) {
             "m4a", "mp4", "aac" -> "audio/mp4"
             "mp3" -> "audio/mpeg"
             "wav", "wave" -> "audio/wav"
             "ogg", "oga" -> "audio/ogg"
-            else -> contentResolver.getType(uri) ?: DEFAULT_FILE_MIME
+            else -> providerType(uri) ?: declaredMime ?: DEFAULT_FILE_MIME
         }
 
-    suspend fun prepareFile(uri: Uri, limit: Long = SIZE_LIMIT): Prepared =
+    /**
+     * @param declaredMime what the source called it, used only when the
+     *   provider will not say — a clipboard item's type comes from the
+     *   clip, and calling somebody's PDF `application/octet-stream`
+     *   because a provider answered null is a worse guess than the one
+     *   the clipboard already made.
+     * @param fallbackName the name to use when the provider has no
+     *   DISPLAY_NAME. `kind=file` requires one, and a pasted item usually
+     *   arrives without.
+     */
+    suspend fun prepareFile(
+        uri: Uri,
+        limit: Long = SIZE_LIMIT,
+        declaredMime: String? = null,
+        fallbackName: String? = null,
+    ): Prepared =
         withContext(Dispatchers.IO) {
-            val name = displayName(uri)
+            val name = displayName(uri, fallbackName)
             val destination = cacheFile(name.substringAfterLast('.', "bin"))
             val copied = runCatching {
                 contentResolver.openInputStream(uri)?.use { input ->
@@ -414,7 +443,7 @@ class MediaPrep @Inject constructor(
 
             Prepared(
                 file = destination,
-                mime = contentResolver.getType(uri) ?: DEFAULT_FILE_MIME,
+                mime = providerType(uri) ?: declaredMime ?: DEFAULT_FILE_MIME,
                 kind = AttachmentDto.KIND_FILE,
                 width = null,
                 height = null,
@@ -430,8 +459,16 @@ class MediaPrep @Inject constructor(
      * DISPLAY_NAME from the provider, never the Uri's last path segment —
      * for a `content://` Uri that is an opaque id ("msf:1000000042"), which
      * is exactly the useless label a file must not arrive with.
+     *
+     * [fallback] — a name the caller synthesised from the media type,
+     * "Pasted image.gif" — is for the pasted item whose provider has no
+     * DISPLAY_NAME at all. It is preferred to the Uri's tail only when
+     * that tail is an opaque id; a tail that IS a filename ("Report.pdf",
+     * which is what a FileProvider Uri and a `file://` one end in) is the
+     * item's own name and wins. The picker passes no fallback and keeps
+     * exactly the chain it had.
      */
-    private fun displayName(uri: Uri): String {
+    private fun displayName(uri: Uri, fallback: String? = null): String {
         val fromProvider = runCatching {
             contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
                 ?.use { cursor ->
@@ -439,13 +476,44 @@ class MediaPrep @Inject constructor(
                     if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
                 }
         }.getOrNull()
+        val tail = uri.lastPathSegment?.substringAfterLast('/')?.trim()?.takeIf { it.isNotEmpty() }
         val name = fromProvider?.trim()?.takeIf { it.isNotEmpty() }
-            ?: uri.lastPathSegment?.substringAfterLast('/')?.trim()?.takeIf { it.isNotEmpty() }
+            ?: tail?.takeIf { looksLikeFileName(it) }
+            ?: fallback?.trim()?.takeIf { it.isNotEmpty() }
+            ?: tail
             ?: "file"
         return name.take(MAX_NAME_LEN)
     }
 
+    /**
+     * Whether a Uri's tail is a name worth showing the family, or an id.
+     *
+     * "Report.pdf" is one; "msf:1000000042" and "1042" — what a MediaStore
+     * or DocumentsProvider Uri ends in — are not. The test is an extension
+     * on the end, which an id does not have.
+     */
+    private fun looksLikeFileName(candidate: String): Boolean {
+        if (!candidate.contains('.') || candidate.startsWith('.')) return false
+        val extension = candidate.substringAfterLast('.')
+        return extension.length in 1..8 && extension.all { it.isLetterOrDigit() }
+    }
+
     // -- Shared ------------------------------------------------------------
+
+    /**
+     * The media type the item's own provider gives it, or null.
+     *
+     * Guarded, because `getType` reaches into ANOTHER app's provider and
+     * that call can THROW: a SecurityException for a Uri whose read grant
+     * has lapsed (which is exactly what a clipboard Uri does once its
+     * owner moves on), an IllegalArgumentException from a provider that
+     * does not recognise the Uri shape. Unguarded it took the whole
+     * prepare with it — and in the document picker's case the throw was
+     * outside the try, so it reached an app-scope coroutine with no
+     * handler.
+     */
+    private fun providerType(uri: Uri): String? =
+        runCatching { contentResolver.getType(uri) }.getOrNull()
 
     /** A file in the app's cache; the sender deletes it after uploading. */
     fun cacheFile(extension: String): File {

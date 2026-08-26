@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 12.
+ * Room database, version 14.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 12,
+    version = 14,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -185,6 +185,46 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE members ADD COLUMN birthdayMonth INTEGER")
                 db.execSQL("ALTER TABLE members ADD COLUMN birthdayDay INTEGER")
+            }
+        }
+
+        /**
+         * v13: an account that no longer exists.
+         *
+         * NOT NULL with a DEFAULT because every existing row has an
+         * answer — anybody already in the table is somebody whose account
+         * was still there — and the default byte-matches
+         * MemberEntity.deleted's @ColumnInfo so a migrated schema and a
+         * fresh one validate identically.
+         *
+         * Deliberately a column beside `hasLeft` rather than a new value
+         * of it: a deleted account has also left, but "left" is
+         * reversible and "deleted" never is (docs/protocol.md, "Deleting
+         * an account").
+         */
+        val MIGRATION_12_13: Migration = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE members ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v14: polls.
+         *
+         * `pollJson` is nullable with NO default, because absence IS the
+         * meaning: every message already in the table is not a poll, and
+         * "{}" would be a poll with no options. `pollSeq` and the chat's
+         * `maxPollSeq` are NOT NULL with a DEFAULT of 0, because an
+         * existing row has an answer for both — no poll state has ever
+         * been applied — and the defaults byte-match the entities'
+         * @ColumnInfo, without which Room's validation rejects every
+         * upgraded database on launch.
+         */
+        val MIGRATION_13_14: Migration = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN pollJson TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN pollSeq INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE chats ADD COLUMN maxPollSeq INTEGER NOT NULL DEFAULT 0")
             }
         }
 

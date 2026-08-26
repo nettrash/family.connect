@@ -18,14 +18,18 @@ package me.nettrash.familyconnect.data.net
 import me.nettrash.familyconnect.data.net.dto.ChatResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.CreateDirectChatRequest
+import me.nettrash.familyconnect.data.net.dto.MessagePollStateDto
 import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
 import me.nettrash.familyconnect.data.net.dto.EditMessageRequest
+import me.nettrash.familyconnect.data.net.dto.NewPollDto
+import me.nettrash.familyconnect.data.net.dto.PollsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.dto.ReactionRequest
 import me.nettrash.familyconnect.data.net.dto.ReactionsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.ReadRequest
 import me.nettrash.familyconnect.data.net.dto.SendMessageRequest
+import me.nettrash.familyconnect.data.net.dto.VoteRequest
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -46,6 +50,8 @@ interface ChatApi {
         replyToMessageId: Long? = null,
         /** An uploaded photo or video this message claims. */
         attachmentId: Long? = null,
+        /** The options that make this message a poll; the body is the question. */
+        poll: NewPollDto? = null,
     ): ApiResult<MessageResponse>
     suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit>
 
@@ -63,6 +69,23 @@ interface ChatApi {
 
     /** Reaction catch-up page: strictly after [afterSeq], ascending. */
     suspend fun getReactions(chatId: Long, afterSeq: Long, limit: Int = 50): ApiResult<ReactionsCatchUpResponse>
+
+    /**
+     * Sets MY choice on a poll — an idempotent state-set, not a toggle
+     * (whether tapping the option you already hold means "keep" or
+     * "clear" is a decision each client makes locally). Re-PUTting the
+     * same option is a server-side no-op that burns no seq.
+     */
+    suspend fun putVote(chatId: Long, messageId: Long, optionId: Long): ApiResult<MessagePollStateDto>
+
+    /** Retracts MY vote; idempotent (returns the current state either way). */
+    suspend fun deleteVote(chatId: Long, messageId: Long): ApiResult<MessagePollStateDto>
+
+    /** Closes a poll. Author only, one-way; closing a closed poll is a no-op. */
+    suspend fun closePoll(chatId: Long, messageId: Long): ApiResult<MessagePollStateDto>
+
+    /** Poll catch-up page: strictly after [afterSeq], ascending. */
+    suspend fun getPolls(chatId: Long, afterSeq: Long, limit: Int = 50): ApiResult<PollsCatchUpResponse>
 }
 
 @Singleton
@@ -99,12 +122,13 @@ class DefaultChatApi @Inject constructor(
         body: String,
         replyToMessageId: Long?,
         attachmentId: Long?,
+        poll: NewPollDto?,
     ): ApiResult<MessageResponse> =
         // 201 on first delivery, 200 when the same client_msg_id retries —
         // both are 2xx, both decode to the same message. Never a duplicate.
         client.post(
             "/chats/$chatId/messages",
-            SendMessageRequest(clientMsgId, body, replyToMessageId, attachmentId),
+            SendMessageRequest(clientMsgId, body, replyToMessageId, attachmentId, poll),
         )
 
     override suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit> =
@@ -143,4 +167,32 @@ class DefaultChatApi @Inject constructor(
         limit: Int,
     ): ApiResult<ReactionsCatchUpResponse> =
         client.get("/chats/$chatId/reactions?after_seq=$afterSeq&limit=$limit")
+
+    override suspend fun putVote(
+        chatId: Long,
+        messageId: Long,
+        optionId: Long,
+    ): ApiResult<MessagePollStateDto> =
+        client.put("/chats/$chatId/messages/$messageId/vote", VoteRequest(optionId))
+
+    override suspend fun deleteVote(
+        chatId: Long,
+        messageId: Long,
+    ): ApiResult<MessagePollStateDto> =
+        client.delete("/chats/$chatId/messages/$messageId/vote")
+
+    override suspend fun closePoll(
+        chatId: Long,
+        messageId: Long,
+    ): ApiResult<MessagePollStateDto> =
+        // POST with no body — postEmpty, not post(Unit), which would
+        // serialise "{}" into a request the server has no field for.
+        client.postEmpty("/chats/$chatId/messages/$messageId/poll/close")
+
+    override suspend fun getPolls(
+        chatId: Long,
+        afterSeq: Long,
+        limit: Int,
+    ): ApiResult<PollsCatchUpResponse> =
+        client.get("/chats/$chatId/polls?after_seq=$afterSeq&limit=$limit")
 }

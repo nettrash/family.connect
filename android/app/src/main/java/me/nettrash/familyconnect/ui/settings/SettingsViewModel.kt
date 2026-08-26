@@ -2,12 +2,14 @@
  * SettingsViewModel.kt
  * Family Connect (Android)
  *
- * Profile (picture + birthday) + family block + the two destructive
+ * Profile (picture + birthday) + family block + the three destructive
  * actions. Leave-family
  * surfaces the protocol's `owner_cannot_leave` 409 as a human message
  * (an owner with members must hand the family over — v1 has no
  * transfer, so: remove everyone or keep it). Logout is best-effort
- * server-side and unconditional locally.
+ * server-side and unconditional locally. Account deletion is neither
+ * best-effort nor reversible: the server erases the account and every
+ * session it has, and this side wipes and returns to sign-in.
  *
  * iOS counterpart: ios/FamilyConnect/UI/Settings/SettingsViewModel.swift
  */
@@ -26,6 +28,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import me.nettrash.familyconnect.data.net.ApiClient
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AuthApi
 import me.nettrash.familyconnect.data.net.AvatarApi
@@ -109,6 +112,13 @@ class SettingsViewModel @Inject constructor(
                         linkPreviewsEnabled = stored.linkPreviewsEnabled,
                         mapPreviewsEnabled = stored.mapPreviewsEnabled,
                         avatarVersion = stored.myAvatarVersion,
+                        // Followed rather than read once at [load]: a
+                        // `family_owner` frame can hand this device the
+                        // family while this screen is open (protocol.md,
+                        // "Deleting an account"), and the owner-only
+                        // entries have to appear then, not at the next
+                        // visit.
+                        isOwner = stored.familyStatus == FamilyStatus.OWNER,
                     )
                 }
             }
@@ -347,6 +357,50 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             sessionRepository.logout()
             _state.update { it.copy(loggedOut = true) }
+        }
+    }
+
+    /**
+     * Delete this account — permanently, immediately, and from inside the
+     * app, which is what App Store guideline 5.1.1(v) requires and what
+     * protocol.md's "Deleting an account" describes.
+     *
+     * The password is asked for by the dialog and proved by the server;
+     * a wrong one comes back as `invalid_credentials` (401) and must read
+     * as a typo rather than a dead session — the account is still there.
+     *
+     * On success the same [UiState.loggedOut] flag the logout path raises
+     * takes the app back to sign-in, because that is exactly what has
+     * happened: the local state is already wiped (see
+     * SessionRepository.deleteAccount) and there is no session left to
+     * log out of.
+     */
+    fun deleteAccount(password: String) {
+        if (_state.value.busy) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = sessionRepository.deleteAccount(password)) {
+                is ApiResult.Ok -> _state.update { it.copy(busy = false, loggedOut = true) }
+                is ApiResult.HttpError -> _state.update {
+                    it.copy(
+                        busy = false,
+                        // Matched on the CODE, not the status: 401 also
+                        // carries `unauthorized`, and that one is a dead
+                        // session already rerouting this screen to
+                        // sign-in — telling somebody their password was
+                        // wrong as the app signs them out explains
+                        // nothing.
+                        error = if (result.code == ApiClient.INVALID_CREDENTIALS) {
+                            appContext.getString(R.string.e_wrong_password)
+                        } else {
+                            result.message ?: appContext.getString(R.string.e_delete_account_failed)
+                        },
+                    )
+                }
+                is ApiResult.NetworkError -> _state.update {
+                    it.copy(busy = false, error = appContext.getString(R.string.e_unreachable))
+                }
+            }
         }
     }
 

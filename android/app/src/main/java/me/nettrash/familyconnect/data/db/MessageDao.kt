@@ -220,6 +220,24 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE clientMsgId = :clientMsgId")
     suspend fun deleteByClientMsgId(clientMsgId: String)
 
+    /**
+     * Every message in one chat, for a chat that is going.
+     *
+     * The only reason a chat is ever deleted is that the server no longer
+     * has it — a peer deleted their account, which takes the direct chat
+     * with them, both halves (docs/protocol.md, "Deleting an account").
+     * Nothing else in this protocol can make a chat vanish, and leaving a
+     * family explicitly does not: that history is retained and resurfaces
+     * on rejoin.
+     *
+     * Paired with [ChatDao.deleteById] and never called on its own — a
+     * chat row whose messages are gone is a chat that opens empty, and
+     * messages whose chat row is gone are rows nothing will ever read
+     * again. See ChatRepository.deleteDirectChat, which owns the order.
+     */
+    @Query("DELETE FROM messages WHERE chatId = :chatId")
+    suspend fun deleteByChat(chatId: Long)
+
     /** Outbound rows awaiting an ack — re-sent on every reconnect. */
     @Query("SELECT * FROM messages WHERE status = 'SENDING' ORDER BY createdAt ASC")
     suspend fun pendingSending(): List<MessageEntity>
@@ -255,6 +273,43 @@ interface MessageDao {
         """,
     )
     suspend fun setReactionsJson(serverId: Long, json: String?, expectedSeq: Long)
+
+    /**
+     * The one write path for server-authored poll state (WS frame,
+     * catch-up page, or a poll embedded on a fetched Message). The
+     * `pollSeq < :seq` guard makes the apply atomic AND idempotent: a
+     * stale or re-delivered state simply matches zero rows. Returns the
+     * number of rows updated (0 = stale, or the message is not held).
+     *
+     * Note what it CANNOT express: taking a poll off a message. Nothing
+     * on the wire ever does — a poll dies with its message — so an
+     * absent poll on an incoming Message is silence, never an erasure.
+     */
+    @Query(
+        """
+        UPDATE messages SET pollJson = :json, pollSeq = :seq
+        WHERE serverId = :serverId AND pollSeq < :seq
+        """,
+    )
+    suspend fun applyPollState(serverId: Long, json: String, seq: Long): Int
+
+    /**
+     * Optimistic local rewrite for the voting path — deliberately does
+     * NOT touch pollSeq, so the authoritative response (or any WS frame)
+     * still passes the seq guard afterwards. Also the revert.
+     * Compare-and-set on the seq observed at read time, exactly like
+     * [setReactionsJson]: a frame that lands mid-vote bumps the seq, and
+     * the stale optimistic write (or the revert after a failed call)
+     * then matches zero rows instead of clobbering the newer state —
+     * which nothing would re-deliver.
+     */
+    @Query(
+        """
+        UPDATE messages SET pollJson = :json
+        WHERE serverId = :serverId AND pollSeq = :expectedSeq
+        """,
+    )
+    suspend fun setPollJson(serverId: Long, json: String?, expectedSeq: Long)
 
     /** Resync cursor: message ids are globally monotonic (protocol). */
     @Query("SELECT MAX(serverId) FROM messages WHERE chatId = :chatId")

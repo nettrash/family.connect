@@ -47,6 +47,53 @@ nonisolated struct ReactionSnapshot: Equatable, Sendable, Codable {
     }
 }
 
+/// One option of a poll, as the store holds it and the bubble draws it.
+///
+/// Codable in the WIRE shape (`{"id":5,"text":"Pizza","votes":[7,9]}`)
+/// because MessageEntity persists a poll as exactly the JSON object the
+/// server sent — one spelling, no translation, and a stored poll that can
+/// be diffed against the protocol document.
+nonisolated struct PollOptionSnapshot: Equatable, Sendable, Codable, Identifiable {
+    let id: Int64
+    let text: String
+    /// The full current list of user ids that chose this option, in the
+    /// order the server holds them (which is the order they voted).
+    var votes: [Int64] = []
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case text
+        case votes
+    }
+
+    init(id: Int64, text: String, votes: [Int64] = []) {
+        self.id = id
+        self.text = text
+        self.votes = votes
+    }
+}
+
+/// A poll's full current state, in the wire shape. See PollOptionSnapshot.
+nonisolated struct PollSnapshot: Equatable, Sendable, Codable {
+    /// The sequence the state was stamped with — 0 on a poll this device
+    /// has only sent optimistically and the server has never confirmed.
+    var pollSeq: Int64
+    var closed: Bool
+    var options: [PollOptionSnapshot]
+
+    enum CodingKeys: String, CodingKey {
+        case pollSeq = "poll_seq"
+        case closed
+        case options
+    }
+
+    init(pollSeq: Int64, closed: Bool, options: [PollOptionSnapshot]) {
+        self.pollSeq = pollSeq
+        self.closed = closed
+        self.options = options
+    }
+}
+
 nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     var id: String { localID }
     let localID: String
@@ -65,6 +112,9 @@ nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     var isEdited: Bool = false
     /// The photo or video this message carries.
     var attachment: AttachmentDTO?
+    /// The poll this message IS, when it is one — the body being its
+    /// question (docs/protocol.md, "Polls"). nil for every other message.
+    var poll: PollSnapshot?
 }
 
 /// The quote a reply draws above its own text.
@@ -113,6 +163,15 @@ nonisolated struct MemberSnapshot: Equatable, Sendable, Identifiable {
     let isCurrentUser: Bool
     let hasLeft: Bool
     var avatarVersion: Int64 = 0
+    /// True for a deleted account's tombstone — see MemberEntity.
+    var accountDeleted: Bool = false
+
+    /// The name to draw: the translated placeholder for a deleted
+    /// account, the stored name for everybody else (MemberEntity's
+    /// `resolvedDisplayName`, in value form).
+    var resolvedDisplayName: String {
+        accountDeleted ? MemberDisplay.deletedAccountName : displayName
+    }
 }
 
 // MARK: - Entity → snapshot bridges (MainActor: entities live there)
@@ -130,7 +189,8 @@ extension MessageSnapshot {
             reactions: entity.reactionList,
             replyTo: entity.replySnapshot,
             isEdited: entity.editSeq > 0,
-            attachment: entity.attachmentSnapshot
+            attachment: entity.attachmentSnapshot,
+            poll: entity.poll
         )
     }
 }
@@ -157,7 +217,8 @@ extension MemberSnapshot {
             role: entity.role,
             isCurrentUser: entity.isCurrentUser,
             hasLeft: entity.hasLeft,
-            avatarVersion: entity.avatarVersion
+            avatarVersion: entity.avatarVersion,
+            accountDeleted: entity.accountDeleted
         )
     }
 }
@@ -201,6 +262,98 @@ nonisolated struct ReactionDetail: Equatable, Sendable, Identifiable {
         self.emoji = emoji
         self.names = names
         self.leadUserID = leadUserID
+    }
+}
+
+/// The pure rules a poll bubble and the poll composer both need, kept out
+/// of the views so they can be tested as a table (docs/protocol.md,
+/// "Polls" and "Limits").
+nonisolated enum PollPresentation {
+
+    /// The protocol's own bounds, so the composer refuses locally what the
+    /// server would refuse with `invalid_poll`.
+    static let minOptions = 2
+    static let maxOptions = 10
+    static let maxOptionCharacters = 100
+
+    /// The option this user currently holds, if any. One choice per
+    /// member — there is no multiple choice — so the first hit is it.
+    static func myOptionID(in poll: PollSnapshot, currentUserID: Int64) -> Int64? {
+        poll.options.first { $0.votes.contains(currentUserID) }?.id
+    }
+
+    /// Everyone who has voted, counted once. A member can only hold one
+    /// option, so this is normally just the sum — but a Set is what makes
+    /// the footer honest against a state that somehow said otherwise.
+    static func voterIDs(in poll: PollSnapshot) -> Set<Int64> {
+        Set(poll.options.flatMap(\.votes))
+    }
+
+    /// How full one option's bar is drawn: its share of the votes CAST,
+    /// not of the family. 0 while nobody has voted — a poll opens with
+    /// every bar empty rather than every bar full.
+    static func fraction(of option: PollOptionSnapshot, in poll: PollSnapshot) -> Double {
+        let total = poll.options.reduce(0) { $0 + $1.votes.count }
+        guard total > 0 else { return 0 }
+        return Double(option.votes.count) / Double(total)
+    }
+
+    /// What a tap on `optionID` means for this reader: the option they
+    /// already hold clears their vote, anything else casts it. The
+    /// protocol leaves this to each client deliberately — its own vote is
+    /// an idempotent state-set, not a toggle.
+    static func tapRetracts(optionID: Int64, in poll: PollSnapshot, currentUserID: Int64) -> Bool {
+        myOptionID(in: poll, currentUserID: currentUserID) == optionID
+    }
+
+    /// The optimistic local rewrite of a vote: one member holds one
+    /// option, so their id comes off every option first and goes back on
+    /// exactly one unless they are retracting.
+    ///
+    /// APPENDED, not inserted: the server orders votes by when they were
+    /// cast, and this one has just been.
+    ///
+    /// The caller must NOT bump `pollSeq` when storing this — only the
+    /// server mints sequences, and a bumped one would make the
+    /// authoritative reply fail the guard and be dropped.
+    static func applyingVote(
+        _ poll: PollSnapshot,
+        optionID: Int64,
+        userID: Int64,
+        retracting: Bool
+    ) -> PollSnapshot {
+        var updated = poll
+        updated.options = poll.options.map { option in
+            var option = option
+            option.votes.removeAll { $0 == userID }
+            if !retracting && option.id == optionID { option.votes.append(userID) }
+            return option
+        }
+        return updated
+    }
+
+    /// The options as the wire wants them, or nil when they are not a
+    /// legal poll: 2–10 of them, each trimmed and non-empty and at most
+    /// 100 characters, no two the same ignoring case.
+    ///
+    /// Returning the CLEANED list rather than a Bool is what stops the
+    /// composer validating one string and sending another.
+    static func sanitizedOptions(_ options: [String]) -> [String]? {
+        let trimmed = options
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard (minOptions...maxOptions).contains(trimmed.count) else { return nil }
+        guard trimmed.allSatisfy({ $0.count <= maxOptionCharacters }) else { return nil }
+        // Case-insensitively distinct, the server's rule — and folded the
+        // way the SERVER folds, not the way the reader's language would.
+        // `lowercased()` is Unicode's locale-independent mapping on
+        // purpose: `lowercased(with: .current)` would make "I" and "ı"
+        // collide for a Turkish reader and not for anybody else, so the
+        // same two options would be legal on one phone and refused on the
+        // next, and only the server's answer would ever be the real one.
+        let folded = Set(trimmed.map { $0.lowercased() })
+        guard folded.count == trimmed.count else { return nil }
+        return trimmed
     }
 }
 

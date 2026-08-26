@@ -58,6 +58,19 @@ interface ChatSocket {
     val frames: SharedFlow<ServerFrame>
     val state: StateFlow<SocketState>
 
+    /**
+     * The session this socket authenticated with is GONE — the server
+     * closed with [SESSION_GONE_CLOSE_CODE], or refused the upgrade with
+     * a `401` (docs/protocol.md, "WebSocket protocol").
+     *
+     * A separate signal from [state] because a disconnect is ordinary and
+     * this one is final: reconnecting cannot help, and the app has to
+     * return to sign-in. ChatSocketManager is the only collector; it
+     * hands it to SessionRepository.onSessionExpired, so a socket and a
+     * REST 401 end in the same place.
+     */
+    val sessionExpired: SharedFlow<Unit>
+
     fun connect(wsUrl: String, token: String)
     fun close(code: Int = 1000, reason: String = "bye")
 
@@ -87,6 +100,9 @@ class OkHttpChatSocket @Inject constructor(
 
     private val _state = MutableStateFlow(SocketState.Disconnected)
     override val state: StateFlow<SocketState> = _state
+
+    private val _sessionExpired = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    override val sessionExpired: SharedFlow<Unit> = _sessionExpired
 
     private var webSocket: WebSocket? = null
     private var pingJob: Job? = null
@@ -171,12 +187,21 @@ class OkHttpChatSocket @Inject constructor(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (!isCurrent(webSocket)) return
+            // The session died mid-connection — an expiry, a password
+            // reset, or this account being deleted. Reconnecting would
+            // only fail the upgrade, so say so instead.
+            if (code == SESSION_GONE_CLOSE_CODE) _sessionExpired.tryEmit(Unit)
             markDisconnected()
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             Log.d(TAG, "Socket failure: ${t.message}")
             if (!isCurrent(webSocket)) return
+            // A REFUSED UPGRADE, not a dropped wire: the token is no
+            // longer good for anything (protocol.md: "A bad token fails
+            // the upgrade with 401"). OkHttp reports it here rather than
+            // through onClosed, since no WebSocket was ever established.
+            if (response?.code == 401) _sessionExpired.tryEmit(Unit)
             markDisconnected()
         }
     }
@@ -217,3 +242,9 @@ class OkHttpChatSocket @Inject constructor(
         const val PING_INTERVAL_MS = 25_000L
     }
 }
+
+/**
+ * The close code the server uses when the session expires — or is
+ * deleted — mid-connection (docs/protocol.md, "WebSocket protocol").
+ */
+const val SESSION_GONE_CLOSE_CODE = 4401

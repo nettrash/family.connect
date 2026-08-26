@@ -378,3 +378,67 @@ async fn reaction_catchup_pages_by_seq_and_the_chat_list_exposes_the_cursor() {
     )
     .await;
 }
+
+/// A retried `send` re-acks the ORIGINAL message, and that message is a
+/// `Message` like any other — so if it has been reacted to since, it carries
+/// `reactions` AND `reaction_seq`, the pair the Objects block always names
+/// together.
+///
+/// The failure this pins is not theoretical: `client_msg_id` dedup exists
+/// precisely so an offline client can replay its outbound queue, and a
+/// message sitting in that queue is exactly the one somebody has had time to
+/// react to. Emitting `reaction_seq` with no `reactions` key hands that
+/// client a state protocol.md does not define — the seq says "reaction data
+/// has moved", the absent list says "no data" — and a client applying its
+/// `reaction_seq` guard would advance its cursor past reactions it was never
+/// shown.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_retried_send_re_acks_a_message_with_the_reactions_it_has_since_gained() {
+    let ts = spawn_server().await;
+    let (owner, _owner_id, member, member_id) = {
+        let (owner, owner_id) = ts.register("owner", "Olive").await;
+        let (member, member_id) = ts.register("junior", "Junior").await;
+        let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+        ts.set_open_policy(&owner).await;
+        ts.join(&member, &invite_code, "joined").await;
+        (owner, owner_id, member, member_id)
+    };
+    let chat_id = ts.family_chat_id(&owner).await;
+
+    let client_msg_id = Uuid::new_v4().to_string();
+    let first = ts
+        .post_message(&owner, chat_id, &client_msg_id, "Dinner at 7?")
+        .await;
+    assert_eq!(first.status(), 201);
+    let body: Value = first.json().await.expect("message response is JSON");
+    let message_id = body["message"]["id"].as_i64().expect("message id");
+    // An unreacted message carries NEITHER key.
+    assert!(body["message"].get("reactions").is_none());
+    assert!(body["message"].get("reaction_seq").is_none());
+
+    let (seq, _) = state_of(put_reaction(&ts, &member, chat_id, message_id, "❤️").await).await;
+
+    // The retry: same client_msg_id, so no second message is written.
+    let retry = ts
+        .post_message(&owner, chat_id, &client_msg_id, "Dinner at 7?")
+        .await;
+    assert_eq!(
+        retry.status(),
+        200,
+        "a retry re-acks rather than duplicating"
+    );
+    let body: Value = retry.json().await.expect("retry response is JSON");
+    let message = &body["message"];
+    assert_eq!(message["id"].as_i64(), Some(message_id));
+    assert_eq!(
+        message["reaction_seq"].as_i64(),
+        Some(seq),
+        "the re-ack reports the seq the reaction took"
+    );
+    assert_eq!(
+        message["reactions"],
+        json!([{"user_id": member_id, "emoji": "❤️"}]),
+        "a re-ack that reports a reaction_seq must carry the reactions with it"
+    );
+}

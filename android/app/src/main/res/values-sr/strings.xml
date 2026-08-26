@@ -99,6 +99,10 @@
     <string name="s_add_a_message_or_send_it_on_its_own">Додај поруку или пошаљи овако.</string>
     <string name="s_remove_attachment">Уклони прилог</string>
     <string name="s_photo_or_video">Фотографија или видео</string>
+    <string name="s_paste">Налепи</string>
+    <string name="s_pasted_image">Налепљена слика</string>
+    <string name="s_pasted_sound">Налепљени звук</string>
+    <string name="s_pasted_file">Налепљена датотека</string>
     <string name="s_privacy">Приватност</string>
     <string name="s_react">Реагуј</string>
     <string name="s_register">Региструј се</string>
@@ -155,6 +159,7 @@
     <string name="e_join_failed">Придруживање није успело</string>
     <string name="e_load_requests_failed">Захтеви за приступ нису учитани</string>
     <string name="e_no_app_for_file">Ниједна апликација на овом телефону не може да отвори ту датотеку.</string>
+    <string name="e_nothing_to_paste">Нема шта да се налепи.</string>
     <string name="e_open_chat_failed">Разговор не може да се отвори</string>
     <string name="e_password_too_short">Најмање 8 знакова</string>
     <string name="e_prepare_failed">Та ставка није припремљена.</string>
@@ -192,4 +197,31 @@
     <string name="e_birthday_failed">Рођендан није сачуван</string>
     <string name="e_change_language_failed">Језик породице није промењен</string>
     <string name="e_change_assistant_history_failed">Подешавање није промењено</string>
+    <string name="s_delete_account">Обриши налог</string>
+    <string name="s_delete_your_account">Обрисати твој налог?</string>
+    <string name="s_delete_account_explanation">Твој налог, лозинка, слика профила и рођендан се бришу, а све сесије на свим уређајима се затварају. Бришу се и лични разговори — и код друге особе. Остаје оно што сте једни другима рекли: твоје поруке у породичном разговору, белешке на табли и реакције, које од тада стоје као „Обрисан налог“. То не може да се поништи.</string>
+    <string name="s_delete_account_owner_note">Ова породица је твоја, па прелази на онога ко је у њој најдуже. Ако си њен последњи члан, породица се брише заједно са тобом — њен разговор, њена табла и њен позивни код.</string>
+    <string name="s_deleted_account">Обрисан налог</string>
+    <string name="e_wrong_password">Та лозинка није тачна.</string>
+    <string name="e_delete_account_failed">Налог није обрисан.</string>
+    <string name="s_poll">Анкета</string>
+    <string name="s_new_poll">Нова анкета</string>
+    <string name="s_question">Питање</string>
+    <string name="s_option">Одговор</string>
+    <string name="s_add_option">Додај одговор</string>
+    <string name="s_remove_option">Уклони одговор</string>
+    <string name="s_close_poll">Заврши анкету</string>
+    <string name="s_poll_closed">Анкета завршена</string>
+    <string name="s_who_voted">Ко је гласао</string>
+    <string name="e_close_poll_failed">Анкета није завршена.</string>
+    <plurals name="s_voted_of_family">
+        <item quantity="one">%1$d глас од %2$d</item>
+        <item quantity="few">%1$d гласа од %2$d</item>
+        <item quantity="other">%1$d гласова од %2$d</item>
+    </plurals>
+    <plurals name="s_voted_total">
+        <item quantity="one">%1$d глас</item>
+        <item quantity="few">%1$d гласа</item>
+        <item quantity="other">%1$d гласова</item>
+    </plurals>
 </resources>

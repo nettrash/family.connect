@@ -11,7 +11,14 @@
  *                  socket delivered WHILE the request was in flight are
  *                  added back on top, but only the ones newer than the
  *                  `last_message` the response carries — the rest the
- *                  server had already counted.
+ *                  server had already counted. A direct chat the
+ *                  response does NOT list is pruned — see below.
+ *   deleteDirectChat
+ *                — the one way a chat leaves this device, reached from
+ *                  the two paths a vanished chat is learned about: the
+ *                  `member_deleted` frame (immediate) and the prune in
+ *                  refreshChats (the repair for a device that was
+ *                  offline when it happened).
  *   openChatId   — which chat the user is looking at right now, and
  *                  whether its newest message is actually on screen; the
  *                  message pipeline consults both to decide whether an
@@ -26,29 +33,36 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.ChatEntity
+import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
+import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.net.ws.SocketState
+import me.nettrash.familyconnect.di.AppScope
 import me.nettrash.familyconnect.util.TimeFormat
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /** What the server reports a chat has, against which the local cursors are compared. */
-data class ServerCursors(val reactions: Long, val edits: Long)
+data class ServerCursors(val reactions: Long, val edits: Long, val polls: Long)
 
 @Singleton
 class ChatRepository @Inject constructor(
     private val chatApi: ChatApi,
     private val chatDao: ChatDao,
+    private val messageDao: MessageDao,
     private val socket: ChatSocket,
+    @param:AppScope private val scope: CoroutineScope,
 ) {
 
     private val _openChatId = MutableStateFlow<Long?>(null)
@@ -117,15 +131,43 @@ class ChatRepository @Inject constructor(
      */
     private val liveUnreadIds = ConcurrentHashMap<Long, MutableSet<Long>>()
 
+    // Declared AFTER the state it touches: the collector body may run on
+    // the very first dispatch after construction, and a lambda reading a
+    // property whose initializer has not run yet sees null.
+    init {
+        scope.launch {
+            socket.frames.collect { frame ->
+                // A peer deleted their account, so the direct chat with
+                // them no longer exists on the server — the immediate
+                // half of the repair, so a member watching the chat list
+                // sees the row go rather than finding out by tapping it
+                // and getting 404s out of every call. The ROSTER half of
+                // this same frame is FamilyRepository's: their tombstone
+                // row STAYS, because the family chat still holds messages
+                // that have to be given a name (docs/protocol.md,
+                // "Deleting an account").
+                //
+                // Keyed on the member, never on the frame's family: a
+                // peer this account only ever shared a direct chat with
+                // may be in another family altogether, or in none.
+                if (frame is ServerFrame.MemberDeleted) {
+                    for (chatId in chatDao.directChatIdsWith(frame.member.id)) {
+                        deleteDirectChat(chatId)
+                    }
+                }
+            }
+        }
+    }
+
     fun observeChats(): Flow<List<ChatEntity>> = chatDao.observeChats()
 
     fun observeChat(chatId: Long): Flow<ChatEntity?> = chatDao.observeById(chatId)
 
     /**
-     * On success, returns the server's `max_reaction_seq` and
-     * `max_edit_seq` per chat id (0 where the server omitted either) —
-     * SyncEngine compares each against the locally stored cursor to
-     * decide whether that catch-up is needed. The stored cursors are
+     * On success, returns the server's `max_reaction_seq`, `max_edit_seq`
+     * and `max_poll_seq` per chat id (0 where the server omitted any of
+     * them) — SyncEngine compares each against the locally stored cursor
+     * to decide whether that catch-up is needed. The stored cursors are
      * local-only and survive the merge exactly like the read markers.
      */
     suspend fun refreshChats(): ApiResult<Map<Long, ServerCursors>> {
@@ -135,6 +177,13 @@ class ChatRepository @Inject constructor(
         // not — permanently, because the catch-up path never bumps and
         // the server marker never goes backwards.
         val idsAtRequest = liveUnreadIds.mapValues { it.value.toSet() }
+        // Snapshotted before the await for the same reason, and it is the
+        // prune's whole safety margin: a direct chat this device started
+        // WHILE the request was in flight cannot be in a response the
+        // server computed before it existed, and pruning it would delete
+        // the conversation the user is at that moment typing into.
+        // Only chats that were already here when we asked are candidates.
+        val directAtRequest = chatDao.directChatIds()
         return when (val result = chatApi.chats()) {
             is ApiResult.Ok -> {
                 val merged = result.value.chats.map { item ->
@@ -184,14 +233,34 @@ class ChatRepository @Inject constructor(
                         // only applied states may advance them.
                         maxReactionSeq = existing?.maxReactionSeq ?: 0L,
                         maxEditSeq = existing?.maxEditSeq ?: 0L,
+                        maxPollSeq = existing?.maxPollSeq ?: 0L,
                     )
                 }
                 chatDao.upsertAll(merged)
+                // Anything DIRECT the server no longer lists is gone, so
+                // it goes here too — the repair that heals a device which
+                // was offline when the peer deleted their account and
+                // never saw the frame. Without it the row sits in the
+                // list under the peer's OLD name and answers 404 to
+                // everything.
+                //
+                // Only on a response that actually came back, and `GET
+                // /chats` has no cursor and no pages: one 200 is the
+                // whole list, which is what makes "not in the response"
+                // mean "gone" rather than "not on this page". A network
+                // failure or an error takes the two branches below and
+                // deletes nothing — a flaky connection must never wipe
+                // somebody's history.
+                val listed = result.value.chats.mapTo(HashSet()) { it.chat.id }
+                for (chatId in directAtRequest) {
+                    if (chatId !in listed) deleteDirectChat(chatId)
+                }
                 ApiResult.Ok(
                     result.value.chats.associate {
                         it.chat.id to ServerCursors(
                             reactions = it.maxReactionSeq ?: 0L,
                             edits = it.maxEditSeq ?: 0L,
+                            polls = it.maxPollSeq ?: 0L,
                         )
                     },
                 )
@@ -199,6 +268,32 @@ class ChatRepository @Inject constructor(
             is ApiResult.HttpError -> result
             is ApiResult.NetworkError -> result
         }
+    }
+
+    /**
+     * Drop one direct chat and everything this device keeps about it.
+     *
+     * The ONE way a chat leaves this device, shared by both halves of the
+     * repair — the `member_deleted` frame above and the prune in
+     * [refreshChats] — so the two can never disagree about what "gone"
+     * means. Deliberately takes a chat id that has already been proved
+     * direct: the family chat and the assistant chat cannot disappear
+     * server-side, so nothing may ever delete them here.
+     *
+     * Messages first, then the row: the reverse order would leave, for an
+     * instant, a chat list with no row to hang the messages off and a
+     * screen that could re-open an empty chat. Everything else keyed by
+     * chat id lives ON the row — the unread badge, both read markers and
+     * the three catch-up cursors — so it goes with it. The live-unread
+     * ledger is the only piece held in memory rather than in Room, and it
+     * is dropped here too; drafts are in the ViewModel and die with the
+     * screen, and an attachment is cached under its own id, never a
+     * chat's.
+     */
+    private suspend fun deleteDirectChat(chatId: Long) {
+        messageDao.deleteByChat(chatId)
+        chatDao.deleteById(chatId)
+        liveUnreadIds.remove(chatId)
     }
 
     /** POST /chats/direct — get-or-create, idempotent server-side. */

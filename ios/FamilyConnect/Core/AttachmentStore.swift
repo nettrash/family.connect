@@ -131,6 +131,33 @@ final class AttachmentStore {
         }
     }
 
+    /// Forget the bytes of attachments whose messages have just been
+    /// deleted locally.
+    ///
+    /// The narrow twin of `clear()`, and it exists for the one thing in
+    /// this protocol that can make a chat genuinely vanish: a direct chat
+    /// whose peer deleted their account goes, both halves (docs/
+    /// protocol.md, "Deleting an account"). The rows go with the chat, and
+    /// a cached file keyed by an attachment id nothing names any more can
+    /// never be drawn again — only found, by whoever goes looking through
+    /// the caches directory. The FILES are the part that would otherwise
+    /// survive, exactly as at logout.
+    ///
+    /// Both keys per id: a photo is cached twice, as its preview and at
+    /// display size.
+    func forget(attachmentIDs: [Int64]) {
+        guard !attachmentIDs.isEmpty else { return }
+        for id in attachmentIDs {
+            for key in [key(id, preview: true), key(id, preview: false)] {
+                hot[key] = nil
+                hotOrder.removeAll { $0 == key }
+                missing.remove(key)
+                try? FileManager.default.removeItem(at: fileURL(key))
+            }
+        }
+        generation &+= 1
+    }
+
     /// Logout: the next account must not see the previous one's photos.
     /// The FILES go too — they are the part that would otherwise survive.
     func clear() {

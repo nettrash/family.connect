@@ -62,6 +62,12 @@ struct MacConversationView: View {
     @State private var draft = ""
     @State private var isSending = false
     @State private var mediaNotice: String?
+    /// Prepared and waiting for Send. The Mac used to have no staging step
+    /// at all — every door sent the moment it had bytes — and paste forced
+    /// the question, because a paste that sent by itself would be a trap.
+    /// Now every attachment door lands here first, which is also what lets
+    /// a caption be written while looking at the thing.
+    @State private var staged: StagedAttachment?
     /// The message being answered, while the composer is primed.
     @State private var replyDraft: ReplyToDTO?
     /// Live height of the composer, watched for the same reason the phone
@@ -96,6 +102,9 @@ struct MacConversationView: View {
     @Environment(\.openWindow) private var openWindow
     @FocusState private var composerFocused: Bool
     @State private var recorder = AudioRecorder()
+    /// True while the poll form is up. A sheet, sized in the view itself:
+    /// a macOS sheet cannot be resized by the person using it.
+    @State private var showPollComposer = false
     /// One fix, on demand — never a running location service.
     @State private var locationProvider = LocationProvider()
 
@@ -178,8 +187,22 @@ struct MacConversationView: View {
         Dictionary(members.map { ($0.userID, $0.avatarVersion) }, uniquingKeysWith: { first, _ in first })
     }
 
+    /// uniquingKeysWith, like `avatarVersions` right above it and like the
+    /// phone's twin: `uniqueKeysWithValues` TRAPS on a duplicate key, so a
+    /// roster that somehow held two rows for one person would crash the
+    /// window rather than name a message twice. This map is read for every
+    /// quote author and, now, for every face beside a poll option.
     private var memberNames: [Int64: String] {
-        Dictionary(uniqueKeysWithValues: members.map { ($0.userID, $0.displayName) })
+        Dictionary(
+            members.map { ($0.userID, $0.resolvedDisplayName) },
+            uniquingKeysWith: { first, _ in first })
+    }
+
+    /// How many people a poll could hear from: the live roster, which is
+    /// neither the people who have left nor the accounts that were deleted
+    /// — a tally must not go on counting somebody who no longer exists.
+    private var familyMemberCount: Int {
+        members.filter { !$0.hasLeft && !$0.accountDeleted }.count
     }
 
     var body: some View {
@@ -191,6 +214,26 @@ struct MacConversationView: View {
         // Narrower than this and a balloon has nowhere to go; the split
         // view honours it too, so the sidebar cannot squeeze the thread.
         .frame(minWidth: 420, minHeight: 320)
+        // ⌘V, and deliberately NOT a ⌘V keyboard shortcut on a button: a
+        // shortcut would outrank the field editor and steal every ordinary
+        // text paste. This reaches the view only when the responder chain
+        // gets past the composer's field — so words typed into the field
+        // still paste as words, and ⌘V anywhere else in the window attaches.
+        // The attach menu's Paste is the door that always works.
+        .onPasteCommand(of: ClipboardAttachment.pasteCommandTypes) { _ in
+            // The same guard the attach menu carries. Any door outside the
+            // menu has to repeat it.
+            guard editTarget == nil, !isSending else { return }
+            pasteAttachment()
+        }
+        .sheet(isPresented: $showPollComposer) {
+            PollComposerView(
+                onCreate: { question, options in
+                    showPollComposer = false
+                    sendPoll(question: question, options: options)
+                },
+                onCancel: { showPollComposer = false })
+        }
         .navigationTitle(chat?.title ?? "")
         .navigationSubtitle(typingLine ?? "")
         // Through ChatPresenceOpening rather than inline, and that is the
@@ -350,7 +393,8 @@ struct MacConversationView: View {
                                             id: MacWindow.attachment,
                                             value: attachment)
                                     }
-                                })
+                                },
+                                memberCount: familyMemberCount)
                                 .id(row.message.localID)
                         }
                     }
@@ -605,12 +649,23 @@ struct MacConversationView: View {
                     text: "Editing message",
                     onCancel: { cancelEdit() })
             }
+            if let staged {
+                StagedAttachmentChip(item: staged) { discardStaged() }
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
                     Button {
                         pickAttachment()
                     } label: {
                         Label("Attach a File…", systemImage: "doc")
+                    }
+                    // Inside the menu on purpose: the guard below disables
+                    // attaching while an edit is in progress, and an item
+                    // here inherits it for free.
+                    Button {
+                        pasteAttachment()
+                    } label: {
+                        Label("Paste", systemImage: "doc.on.clipboard")
                     }
                     Button {
                         Task { await recorder.start() }
@@ -621,6 +676,16 @@ struct MacConversationView: View {
                         shareLocation()
                     } label: {
                         Label("Location", systemImage: "mappin.and.ellipse")
+                    }
+                    // The family chat only, and the server agrees: a poll
+                    // anywhere else is `invalid_poll` (docs/protocol.md,
+                    // "Polls").
+                    if chat?.kind == "family" {
+                        Button {
+                            showPollComposer = true
+                        } label: {
+                            Label("Poll", systemImage: "chart.bar")
+                        }
                     }
                 } label: {
                     Image(systemName: "paperclip")
@@ -692,7 +757,11 @@ struct MacConversationView: View {
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
+        guard !isSending else { return false }
+        // Something staged is enough on its own: an attachment does not
+        // need a caption, which is the phone's rule too.
+        if staged != nil { return true }
+        return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Send where this Mac is, once.
@@ -839,12 +908,12 @@ struct MacConversationView: View {
 
     private func send() {
         let body = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty else { return }
 
         // Edit mode borrows the composer. The field clears only once the
         // server takes it — a refused edit leaves the text there to fix,
         // which is the phone's rule too.
         if let target = editTarget {
+            guard !body.isEmpty else { return }
             Task {
                 if await coordinator.edit(
                     messageServerID: target.messageID, in: chatID, body: body)
@@ -856,6 +925,15 @@ struct MacConversationView: View {
             return
         }
 
+        // An attachment takes whatever is typed as its caption, so this
+        // comes BEFORE the empty-body guard: an attachment on its own is a
+        // perfectly good message.
+        if let item = staged {
+            sendStaged(item, caption: body)
+            return
+        }
+        guard !body.isEmpty else { return }
+
         // Read and clear together: the quote belongs to the message being
         // sent, and leaving it primed would silently quote the next one.
         let quote = replyDraft
@@ -865,6 +943,30 @@ struct MacConversationView: View {
         // this is knowable without guessing (see `owesSendPin`).
         owesSendPin = true
         coordinator.send(body: body, in: chatID, replyTo: quote)
+    }
+
+    /// The poll door, and a send door like any other.
+    ///
+    /// Two things every other door on this window already does. The quote
+    /// is read and cleared together, because a poll may be a reply and
+    /// leaving the banner armed would silently quote the next ordinary
+    /// message. And the pin is DECLARED here, not inferred later: the Mac
+    /// follows an arrival only for somebody who pressed Send
+    /// (`ThreadFollow.followsArrival`), so a poll created from up in
+    /// history would otherwise land off-screen and pressing Create would
+    /// look like nothing happened.
+    ///
+    /// Armed only on a localID: `sendPoll` refuses an empty question or a
+    /// bad option list and returns nil, and a pin left armed with no row
+    /// coming would spend itself on somebody else's next message — the
+    /// case `restoreComposer` exists for.
+    private func sendPoll(question: String, options: [String]) {
+        let quote = replyDraft
+        guard coordinator.sendPoll(
+            question: question, options: options, in: chatID, replyTo: quote) != nil
+        else { return }
+        replyDraft = nil
+        owesSendPin = true
     }
 
     private func beginReply(_ message: MessageSnapshot) {
@@ -908,7 +1010,7 @@ struct MacConversationView: View {
     /// A file has nothing to view: hand it to whatever opens it.
     private func openFile(_ attachment: AttachmentDTO) {
         Task {
-            mediaNotice = "Preparing…"
+            mediaNotice = String(localized: "Preparing…")
             defer { mediaNotice = nil }
             guard let url = await coordinator.localFileURL(for: attachment) else { return }
             NSWorkspace.shared.open(url)
@@ -920,68 +1022,124 @@ struct MacConversationView: View {
     /// videos and documents alike.
     private func pickAttachment() {
         guard let url = MacFilePicker.pickOne() else { return }
-        mediaNotice = "Preparing…"
-        // Taken NOW, before the await, and put back only if the send never
-        // happens — the phone's rule (ConversationView.takeComposer), and it
-        // fixes two Mac-only bugs at once. Reading `draft` AFTER prepare
-        // swallowed anything typed while it ran into the caption, and the
-        // primed reply was dropped entirely while its banner stayed armed,
-        // so the NEXT ordinary message silently became that reply.
-        let caption = draft
-        let quote = replyDraft
-        draft = ""
-        replyDraft = nil
-        owesSendPin = true
+        mediaNotice = String(localized: "Preparing…")
         Task {
-            defer { mediaNotice = nil }
             do {
-                let prepared = try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit)
-                mediaNotice = "Sending…"
-                if await coordinator.sendMedia(
-                    prepared, caption: caption, replyTo: quote, in: chatID) == false
-                {
-                    mediaNotice = "Couldn't send that."
-                    restoreComposer(caption: caption, quote: quote)
-                }
+                stage(try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit))
             } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                mediaNotice = "That file is over the 100 MB limit."
-                restoreComposer(caption: caption, quote: quote)
+                mediaNotice = String(localized: "That file is over the 100 MB limit.")
             } catch {
-                mediaNotice = "Couldn't read that file."
-                restoreComposer(caption: caption, quote: quote)
+                mediaNotice = String(localized: "Couldn't read that file.")
             }
         }
     }
 
-    /// Stop recording and send it. The Mac composer has no staging step
-    /// yet, so a voice note goes as its own message with whatever is typed
-    /// — the same shape `pickAttachment` uses.
+    /// Attach whatever is on the clipboard.
+    ///
+    /// Staged, never sent: a paste that posted a message by itself would be
+    /// a trap, because ⌘V is a reflex and the clipboard is not always what
+    /// its owner thinks it is.
+    private func pasteAttachment() {
+        mediaNotice = String(localized: "Preparing…")
+        Task {
+            do {
+                stage(try await ClipboardAttachment.prepare(limit: MediaPrep.sizeLimit))
+            } catch ClipboardAttachment.Failure.nothingToPaste {
+                mediaNotice = String(localized: "There's nothing to paste.")
+            } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                // The same ceiling and the same wording every other door
+                // uses; a pasted item is not a special kind of too big.
+                mediaNotice = String(localized: "That file is over the 100 MB limit.")
+            } catch {
+                mediaNotice = String(localized: "Couldn't prepare that item.")
+            }
+        }
+    }
+
+    /// Stop recording and stage it, so a caption can be added and so a
+    /// recording made by accident can still be discarded — the phone's
+    /// behaviour, which the Mac could not have until it had a staged slot.
     private func finishRecording() {
         guard let url = recorder.stop() else {
-            mediaNotice = "That recording was too short."
+            mediaNotice = String(localized: "That recording was too short.")
             return
         }
-        mediaNotice = "Sending…"
-        let caption = draft
+        mediaNotice = String(localized: "Preparing…")
+        Task {
+            do {
+                // No name: a voice note's identity is its length, and the
+                // scratch file it was recorded into is called
+                // `fc-voice-<UUID>.m4a`.
+                stage(try await MediaPrep.prepareAudio(from: url, limit: MediaPrep.sizeLimit))
+            } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                mediaNotice = String(localized: "That file is over the 100 MB limit.")
+                try? FileManager.default.removeItem(at: url)
+            } catch {
+                mediaNotice = String(localized: "Couldn't prepare that item.")
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    /// Hold prepared media in the composer, replacing anything already
+    /// there — one attachment per message, so a second pick supersedes the
+    /// first rather than queueing behind it.
+    private func stage(_ prepared: MediaPrep.Prepared) {
+        discardStaged()
+        mediaNotice = nil
+        staged = StagedAttachment(prepared: prepared)
+        composerFocused = true
+    }
+
+    /// Throw away the staged attachment and its temp file.
+    ///
+    /// The file is ours: MediaPrep wrote it into a temp directory and
+    /// nothing else will clean it up, because the `defer` that normally
+    /// deletes it lives in `sendMedia` — which never ran.
+    private func discardStaged() {
+        guard let staged else { return }
+        try? FileManager.default.removeItem(at: staged.prepared.fileURL)
+        self.staged = nil
+    }
+
+    /// Commit the staged attachment with whatever the composer holds.
+    ///
+    /// Caption and quote are taken NOW, before the await, and put back only
+    /// if the send never happens — the phone's rule
+    /// (ConversationView.takeComposer). It fixed two Mac-only bugs when it
+    /// lived at the picker, and both would come straight back if this read
+    /// `draft` after the upload: anything typed while it ran was swallowed
+    /// into the caption, and the primed reply was dropped entirely while
+    /// its banner stayed armed, so the NEXT ordinary message silently
+    /// became that reply.
+    private func sendStaged(_ item: StagedAttachment, caption: String) {
         let quote = replyDraft
         draft = ""
         replyDraft = nil
+        staged = nil
+        mediaNotice = String(localized: "Sending…")
+        // Declared at the door, because that is the only moment this is
+        // knowable without guessing (see `owesSendPin`).
         owesSendPin = true
         Task {
-            defer { mediaNotice = nil }
-            do {
-                let prepared = try await MediaPrep.prepareAudio(
-                    from: url, limit: MediaPrep.sizeLimit)
-                if await coordinator.sendMedia(
-                    prepared, caption: caption, replyTo: quote, in: chatID) == false
-                {
-                    mediaNotice = "Couldn't send that."
-                    restoreComposer(caption: caption, quote: quote)
-                }
-            } catch {
-                mediaNotice = "Couldn't prepare that item."
-                try? FileManager.default.removeItem(at: url)
+            if await coordinator.sendMedia(
+                item.prepared, caption: caption, replyTo: quote, in: chatID)
+            {
+                mediaNotice = nil
+            } else {
+                mediaNotice = String(localized: "Couldn't send that.")
+                // Through the guarded restore, which is also what disarms
+                // the pin: no row is coming, and one left armed would yank
+                // the next reader out of history for somebody else's
+                // message.
                 restoreComposer(caption: caption, quote: quote)
+                // Put the attachment back too: `sendMedia` deletes the temp
+                // file only on the paths that consumed it, and a failed
+                // send the user can retry is worth more than a tidy temp
+                // dir.
+                if FileManager.default.fileExists(atPath: item.prepared.fileURL.path) {
+                    staged = item
+                }
             }
         }
     }

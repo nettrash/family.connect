@@ -302,6 +302,19 @@ pub struct LimitsConfig {
     #[serde(default = "default_max_message_chars")]
     pub max_message_chars: usize,
 
+    /// Most options one poll may offer. The FEWEST is not configurable —
+    /// it is [`crate::models::Poll::MIN_OPTIONS`], because a poll with one
+    /// option is a statement rather than a question, and no operator wants
+    /// that to be a setting.
+    #[serde(default = "default_max_poll_options")]
+    pub max_poll_options: usize,
+
+    /// Longest poll option, in characters (not bytes). A button label, not
+    /// a message — the QUESTION is the message body and keeps
+    /// `max_message_chars`.
+    #[serde(default = "default_max_poll_option_chars")]
+    pub max_poll_option_chars: usize,
+
     /// Largest photo or video accepted, in bytes. 100 MB by default: a
     /// minute of phone video, and the clients re-encode past that rather
     /// than refusing outright.
@@ -570,6 +583,8 @@ impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             max_message_chars: default_max_message_chars(),
+            max_poll_options: default_max_poll_options(),
+            max_poll_option_chars: default_max_poll_option_chars(),
             max_board_notes: default_max_board_notes(),
             max_attachment_bytes: default_max_attachment_bytes(),
             max_preview_bytes: default_max_preview_bytes(),
@@ -637,6 +652,18 @@ impl Config {
         }
         if self.limits.max_message_chars == 0 {
             anyhow::bail!("limits.max_message_chars must be at least 1");
+        }
+        // Not "at least 1": a poll needs two options to be a poll at all,
+        // and the floor is the model's constant so the two cannot drift.
+        if self.limits.max_poll_options < crate::models::Poll::MIN_OPTIONS {
+            anyhow::bail!(
+                "limits.max_poll_options must be at least {} — a poll with fewer \
+                 options than that is not a question",
+                crate::models::Poll::MIN_OPTIONS
+            );
+        }
+        if self.limits.max_poll_option_chars == 0 {
+            anyhow::bail!("limits.max_poll_option_chars must be at least 1");
         }
         if self.limits.default_page_size < 1 {
             anyhow::bail!("limits.default_page_size must be at least 1");
@@ -739,6 +766,15 @@ fn default_session_touch_interval_mins() -> i64 {
 
 fn default_max_message_chars() -> usize {
     4000
+}
+
+/// protocol.md's Limits table: 2 minimum, 10 maximum.
+fn default_max_poll_options() -> usize {
+    10
+}
+
+fn default_max_poll_option_chars() -> usize {
+    100
 }
 
 fn default_max_attachment_bytes() -> usize {
@@ -1043,6 +1079,10 @@ mod tests {
             "[auth]\nsession_ttl_days = 0\n",
             "[limits]\nws_send_queue = 0\n",
             "[limits]\nmax_body_bytes = 100\n",
+            // A poll needs two options to be a poll: the floor here is not
+            // 1, unlike every other knob on this list.
+            "[limits]\nmax_poll_options = 1\n",
+            "[limits]\nmax_poll_option_chars = 0\n",
         ] {
             assert!(
                 Config::from_toml_str(body).is_err(),

@@ -56,7 +56,6 @@ ANDROID_ONLY = {
 "s_chat_example_com_or_http_192_168_1_10_8080": "chat.example.com или http://192.168.1.10:8080",
 "s_check_again": "Провери поново",
 "s_copy_invite_code": "Копирај позивни код",
-"s_create": "Направи",
 "s_failed_tap_to_retry": "Није успело — додирни да покушаш поново",
 "s_join_with_an_invite_code": "Придружи се позивним кодом",
 "s_leave": "Напусти",
@@ -106,10 +105,8 @@ ANDROID_ONLY = {
 "e_change_password_failed": "Лозинка није промењена.",
 "e_change_policy_failed": "Правило није промењено",
 "e_create_family_failed": "Породица није направљена",
-"e_download_failed": "Та датотека није преузета.",
 "e_download_to_save_failed": "Преузимање ради чувања није успело.",
 "e_enter_invite_code": "Унеси позивни код",
-"e_file_too_large": "Та датотека прелази ограничење од 100 MB.",
 "e_gallery_permission": "Family треба дозволу да чува у твоју галерију.",
 "e_image_unreadable": "Та слика не може да се прочита.",
 "e_invalid_address": "То не личи на исправну адресу",
@@ -118,15 +115,41 @@ ANDROID_ONLY = {
 "e_load_requests_failed": "Захтеви за приступ нису учитани",
 "e_no_app_for_file": "Ниједна апликација на овом телефону не може да отвори ту датотеку.",
 "e_password_too_short": "Најмање 8 знакова",
-"e_prepare_failed": "Та ставка није припремљена.",
-"e_read_file_failed": "Та датотека не може да се прочита.",
 "e_rotate_failed": "Промена кода није успела",
 "e_save_failed": "То није сачувано.",
-"e_send_failed": "То није послато — покушај поново.",
-"e_still_too_large": "И после компресије је превелико — пробај краћи снимак.",
 "e_unreachable": "Сервер није доступан",
 "e_unreachable_check_connection": "Сервер није доступан — провери везу",
 "e_username_taken": "Корисничко име је заузето",
 "e_wrong_credentials": "Погрешно корисничко име или лозинка",
 "e_wrong_current_password": "Тренутна лозинка није тачна.",
+
+# Pasting: the only word Android has that iOS does not. An image and a file
+# are found by the English match.
+"s_pasted_sound": "Налепљени звук",
+
+# Deleting your own account. Android says in one paragraph what iOS says in
+# three separate lines, so the wording cannot be shared — but it must say the
+# same things, in the same plain and GENDER-NEUTRAL Serbian.
+"s_delete_account_explanation":
+  "Твој налог, лозинка, слика профила и рођендан се бришу, а све сесије на свим уређајима "
+  "се затварају. Бришу се и лични разговори — и код друге особе. Остаје оно што сте једни "
+  "другима рекли: твоје поруке у породичном разговору, белешке на табли и реакције, које "
+  "од тада стоје као „Обрисан налог“. То не може да се поништи.",
+"s_delete_account_owner_note":
+  "Ова породица је твоја, па прелази на онога ко је у њој најдуже. Ако си њен последњи "
+  "члан, породица се брише заједно са тобом — њен разговор, њена табла и њен позивни код.",
+# e_wrong_password is NOT here: iOS now carries the same English sentence,
+# so the generator's English match resolves it — the rule this file exists
+# to keep. e_delete_account_failed stays, because Android's wording ends
+# there where iOS adds "Try again."
+"e_delete_account_failed": "Налог није обрисан.",
+
+# Polls. The words themselves come from the iOS catalogue by the English
+# match; only this refusal has no iOS counterpart.
+"e_close_poll_failed": "Анкета није завршена.",
+# The who-voted list behind an option's faces. Here rather than found by
+# the English match because iOS may word its own overflow differently; if
+# the catalogue ever gains this exact English, move it to serbian.SR and
+# delete this line, so the two platforms cannot drift apart.
+"s_who_voted": "Ко је гласао",
 }

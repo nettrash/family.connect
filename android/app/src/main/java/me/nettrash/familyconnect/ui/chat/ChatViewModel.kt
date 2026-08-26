@@ -57,6 +57,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
@@ -80,9 +81,12 @@ import kotlinx.coroutines.Job
 import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageRepository
+import me.nettrash.familyconnect.data.repo.PastedMedia
+import android.content.ClipData
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.di.AppScope
 import me.nettrash.familyconnect.util.Clock
+import me.nettrash.familyconnect.util.resolvedDisplayNames
 import java.io.File
 import javax.inject.Inject
 
@@ -154,8 +158,26 @@ class ChatViewModel @Inject constructor(
     // Eagerly shared: typing frames can arrive before the items flow has
     // any subscriber.
     val memberNames: StateFlow<Map<Long, String>> = memberDao.observeMembers()
-        .map { members -> members.associate { it.userId to it.displayName } }
+        // The FULL roster, tombstones included — a bubble from somebody
+        // whose account is gone still has to say who wrote it. Their
+        // stored name is the server's English placeholder, so the map is
+        // built through resolvedDisplayNames rather than off displayName
+        // (docs/protocol.md, "Deleting an account").
+        .map { members -> members.resolvedDisplayNames(appContext) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    /**
+     * How many people are actually in the family right now — the
+     * denominator of a poll's "3 of 5 voted" footer.
+     *
+     * The ACTIVE roster, so somebody who left and somebody whose account
+     * is gone are not counted among those who have yet to answer. Eager,
+     * like the name map it sits beside: `items` is built on it, and a
+     * lazily started flow would hand the first build a zero.
+     */
+    val familyMemberCount: StateFlow<Int> = memberDao.observeActiveMembers()
+        .map { it.size }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     /** userId → profile-picture version, for the avatars beside reactors. */
     val memberAvatars: StateFlow<Map<Long, Long>> = memberDao.observeMembers()
@@ -197,7 +219,8 @@ class ChatViewModel @Inject constructor(
         chat,
         settings.state,
         memberNames,
-    ) { messages, chatEntity, settingsState, members ->
+        familyMemberCount,
+    ) { messages, chatEntity, settingsState, members, memberCount ->
         buildChatItems(
             messagesNewestFirst = messages,
             isFamilyChat = chatEntity?.kind == "family",
@@ -206,6 +229,7 @@ class ChatViewModel @Inject constructor(
             nowMillis = clock.now(),
             assistantUserId = settingsState.assistantUserId,
             assistantName = settingsState.assistantName,
+            familyMemberCount = memberCount,
         )
     }
         .onEach { _initialLoadSettled.value = true }
@@ -258,6 +282,98 @@ class ChatViewModel @Inject constructor(
         val displaced = _editTarget.value?.displacedDraft.orEmpty()
         _editTarget.value = null
         inputState.setTextAndPlaceCursorAtEnd(displaced)
+    }
+
+    /**
+     * The poll being written, while the composer's poll sheet is open.
+     *
+     * Here rather than in the screen for the same reason [replyDraft] is:
+     * a rotation must not throw away a half-written poll. Null means the
+     * sheet is closed — there is no such thing as a draft with no sheet.
+     */
+    private val _pollDraft = MutableStateFlow<PollDraft?>(null)
+    val pollDraft: StateFlow<PollDraft?> = _pollDraft
+
+    /**
+     * Whether this chat may hold a poll at all.
+     *
+     * The family chat only: a poll is a family deciding something
+     * together, and anywhere else the server answers `invalid_poll`
+     * (docs/protocol.md, "Polls"). The attach menu hides the item rather
+     * than offering an affordance that can only fail.
+     */
+    val canCreatePoll: StateFlow<Boolean> = chat
+        .map { it?.kind == "family" }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** Open the poll sheet on a fresh draft — two empty options, no question. */
+    fun beginPoll() {
+        if (!canCreatePoll.value) return
+        _pollDraft.value = PollDraft()
+    }
+
+    /** Close the sheet and throw the draft away. */
+    fun cancelPoll() {
+        _pollDraft.value = null
+    }
+
+    fun setPollQuestion(text: String) {
+        _pollDraft.update { it?.withQuestion(text) }
+    }
+
+    fun setPollOption(index: Int, text: String) {
+        _pollDraft.update { it?.withOption(index, text) }
+    }
+
+    fun addPollOption() {
+        _pollDraft.update { it?.plusOption() }
+    }
+
+    fun removePollOption(index: Int) {
+        _pollDraft.update { it?.minusOption(index) }
+    }
+
+    /**
+     * Post the draft as an ordinary message whose body is the question.
+     *
+     * Takes the primed reply with it and clears it, exactly as [send]
+     * does — a quote belongs to the message being sent, and leaving it
+     * armed would silently quote the next one too. The sheet closes
+     * immediately: the send is optimistic, so the bubble is already
+     * there to look at.
+     */
+    fun sendPoll() {
+        val draft = _pollDraft.value ?: return
+        if (!draft.isValid) return
+        val quote = _replyDraft.value
+        _replyDraft.value = null
+        _pollDraft.value = null
+        viewModelScope.launch {
+            messageRepository.sendPoll(chatId, draft.question, draft.sendableOptions, quote)
+        }
+    }
+
+    /**
+     * Tap on a poll option: the repository decides set vs clear from the
+     * row's current state. Only acked messages (serverId != null) can be
+     * voted on — the UI gates on that, exactly as it does for reactions.
+     */
+    fun vote(messageServerId: Long, optionId: Long) {
+        viewModelScope.launch { messageRepository.toggleVote(chatId, messageServerId, optionId) }
+    }
+
+    /**
+     * Close a poll. The author's, and one-way. A refusal reports through
+     * the composer's strip — the one place this screen already says
+     * something did not work.
+     */
+    fun closePoll(messageServerId: Long) {
+        viewModelScope.launch {
+            if (!messageRepository.closePoll(chatId, messageServerId)) {
+                _mediaState.value =
+                    MediaSendState.Failed(appContext.getString(R.string.e_close_poll_failed))
+            }
+        }
     }
 
     private val _typingUser = MutableStateFlow<String?>(null)
@@ -704,7 +820,7 @@ class ChatViewModel @Inject constructor(
         _mediaState.value = MediaSendState.Preparing
         // App scope for the same reason as sendMedia.
         appScope.launch {
-            val declared = appContext.contentResolver.getType(uri).orEmpty()
+            val declared = providerType(uri).orEmpty()
             val prepared = try {
                 // Audio the server's magic check knows gets a player rather
                 // than a document row; anything else it would refuse falls
@@ -726,6 +842,196 @@ class ChatViewModel @Inject constructor(
 
             stage(prepared)
         }
+    }
+
+    // -- Pasting ---------------------------------------------------------
+
+    /** What a paste did with what it was given. */
+    enum class PasteResult {
+        /** Being prepared now; the strip shows it, then the chip appears. */
+        STAGING,
+
+        /** Words, and they went into the composer. */
+        TEXT,
+
+        /**
+         * Nothing was taken because attaching is not possible right now —
+         * an edit is in progress, or an upload is running. The composer
+         * already says so; this is not an error to report a second time.
+         */
+        BUSY,
+
+        /** Nothing in it this composer can take. */
+        NOTHING,
+    }
+
+    /**
+     * Attach one item somebody copied in another app.
+     *
+     * No protocol and no server change: a pasted item becomes an ordinary
+     * attachment upload followed by the existing claim-on-send, and it is
+     * STAGED rather than sent — so a caption can be added, and a paste by
+     * accident can be discarded. It goes through the same [stage] as the
+     * picker, so a previously staged item is replaced rather than queued
+     * behind (one attachment per message, docs/protocol.md).
+     *
+     * [declaredMime] is what the clipboard said the item is, used only
+     * when the provider will not answer for itself.
+     *
+     * Returns [PasteResult.NOTHING] for anything that is not an item to
+     * attach — a copied LINK, most of all — so the caller can let it paste
+     * as ordinary text instead.
+     */
+    fun pasteAttachment(uri: Uri, declaredMime: String? = null): PasteResult {
+        // The same guard the attach menu carries: the composer is borrowed
+        // for an edit (which has no attachment), or already busy with one
+        // upload. Repeated here because a paste can arrive from the text
+        // field's own menu, which the attach button does not gate.
+        if (_editTarget.value != null) return PasteResult.BUSY
+        if (_mediaState.value == MediaSendState.Preparing ||
+            _mediaState.value == MediaSendState.Uploading
+        ) {
+            return PasteResult.BUSY
+        }
+
+        // The provider's own answer first: it describes THIS item, while
+        // the clip's type describes the clip.
+        val mime = providerType(uri) ?: declaredMime
+        val kind = PastedMedia.kindFor(uri.scheme, mime) ?: return PasteResult.NOTHING
+
+        _mediaState.value = MediaSendState.Preparing
+        // App scope, like every other prepare-and-send here: leaving the
+        // screen must not take a 90 MB upload with it.
+        appScope.launch {
+            val prepared = try {
+                when (kind) {
+                    // The SAME preparation the picker uses — the downscaled
+                    // photo, the poster frame, the duration. A second path
+                    // would be a second set of bugs.
+                    AttachmentDto.KIND_PHOTO -> mediaPrep.preparePhoto(uri)
+                    AttachmentDto.KIND_VIDEO -> mediaPrep.prepareVideo(uri, declaredMime = mime)
+                    AttachmentDto.KIND_AUDIO -> mediaPrep.prepareAudio(
+                        uri,
+                        declaredMime = mime,
+                        fallbackName = pastedName(mime),
+                    )
+                    // `kind=file` REQUIRES a name of 1–255 characters and a
+                    // clipboard item usually has none: MediaPrep prefers the
+                    // provider's DISPLAY_NAME and falls back to this one.
+                    else -> mediaPrep.prepareFile(
+                        uri,
+                        declaredMime = mime,
+                        fallbackName = pastedName(mime),
+                    )
+                }
+            } catch (_: MediaPrep.TooLargeAfterCompression) {
+                // The existing two messages, already translated: a video
+                // can be shortened, a document cannot be made smaller.
+                _mediaState.value = MediaSendState.Failed(
+                    appContext.getString(
+                        if (kind == AttachmentDto.KIND_VIDEO) {
+                            R.string.e_still_too_large
+                        } else {
+                            R.string.e_file_too_large
+                        },
+                    ),
+                )
+                return@launch
+            } catch (_: Exception) {
+                _mediaState.value = MediaSendState.Failed(
+                    appContext.getString(
+                        if (kind == AttachmentDto.KIND_PHOTO || kind == AttachmentDto.KIND_VIDEO) {
+                            R.string.e_prepare_failed
+                        } else {
+                            R.string.e_read_file_failed
+                        },
+                    ),
+                )
+                return@launch
+            }
+
+            stage(prepared)
+        }
+        return PasteResult.STAGING
+    }
+
+    /**
+     * The attach menu's Paste: take whatever is on the clipboard, whether
+     * or not the text field has focus.
+     *
+     * An attachable item wins; failing that the words go into the composer,
+     * which is what "paste" means when there is nothing to attach; failing
+     * both, it says so rather than looking broken.
+     */
+    fun pasteFromClipboard(clip: ClipData?): PasteResult {
+        val count = clip?.itemCount ?: 0
+        for (index in 0 until count) {
+            val uri = clip!!.getItemAt(index).uri ?: continue
+            when (val result = pasteAttachment(uri, clipMime(clip, index))) {
+                PasteResult.STAGING, PasteResult.BUSY -> return result
+                // Not attachable — a copied link, typically. Keep looking,
+                // then fall through to the text below.
+                else -> Unit
+            }
+        }
+        val text = (0 until count)
+            .firstNotNullOfOrNull { clip!!.getItemAt(it).text?.toString()?.takeIf(String::isNotEmpty) }
+        if (text != null) {
+            // Appended, never inserted at the caret — the same rule the
+            // assistant-mention button follows: moving somebody's cursor
+            // is worse than adding to the end of what they were writing.
+            val current = inputState.text.toString()
+            val separator = when {
+                current.isEmpty() -> ""
+                current.last().isWhitespace() -> ""
+                else -> " "
+            }
+            inputState.setTextAndPlaceCursorAtEnd(current + separator + text)
+            return PasteResult.TEXT
+        }
+        _mediaState.value =
+            MediaSendState.Failed(appContext.getString(R.string.e_nothing_to_paste))
+        return PasteResult.NOTHING
+    }
+
+    /**
+     * What the clip says its item at [index] is.
+     *
+     * The mime list belongs to the DESCRIPTION rather than to the items,
+     * and is not guaranteed to be as long — so an item past the end falls
+     * back to the first type, which is what a single-type clip has anyway.
+     */
+    private fun clipMime(clip: ClipData, index: Int): String? {
+        val description = clip.description ?: return null
+        if (description.mimeTypeCount == 0) return null
+        return description.getMimeType(index.coerceAtMost(description.mimeTypeCount - 1))
+    }
+
+    /**
+     * The media type this item's provider gives it, or null.
+     *
+     * Guarded: `getType` reaches into another app's provider and throws
+     * for a Uri whose read grant has lapsed — which is what a clipboard
+     * Uri eventually does. It used to sit outside the try below, where a
+     * throw reached an app-scope coroutine that has no handler.
+     */
+    private fun providerType(uri: Uri): String? =
+        runCatching { appContext.contentResolver.getType(uri) }.getOrNull()
+
+    /**
+     * A name for a pasted item that arrived without one.
+     *
+     * Localised, because it is what the rest of the family will see on the
+     * bubble — never the cache file's `upload-<UUID>.bin`, which is this
+     * device's business and nobody else's.
+     */
+    private fun pastedName(mime: String?): String {
+        val base = when (PastedMedia.topLevelType(mime)) {
+            "image" -> R.string.s_pasted_image
+            "audio" -> R.string.s_pasted_sound
+            else -> R.string.s_pasted_file
+        }
+        return PastedMedia.nameFor(appContext.getString(base), mime)
     }
 
     /**

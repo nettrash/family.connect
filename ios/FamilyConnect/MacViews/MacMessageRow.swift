@@ -37,6 +37,8 @@ struct MacMessageRow: View {
     var onReply: () -> Void = {}
     var onEdit: () -> Void = {}
     var onOpenAttachment: (AttachmentDTO) -> Void = { _ in }
+    /// How many people could vote, for a poll's footer.
+    var memberCount: Int = 0
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     /// Shared preview cache — asking it for a link's state is what starts
@@ -352,7 +354,7 @@ struct MacMessageRow: View {
                         // the same edge. Gated on there BEING a table — the
                         // phone learned the hard way that doing this
                         // unconditionally makes every balloon full width.
-                        .frame(maxWidth: hasTable ? .infinity : nil, alignment: .leading)
+                        .frame(maxWidth: fillsBalloonWidth ? .infinity : nil, alignment: .leading)
                 }
             }
             if let preview = linkPreview {
@@ -361,6 +363,39 @@ struct MacMessageRow: View {
                     image: previewLoader.image(for: preview.url),
                     onOpen: { handleLinkClick($0) })
                     .padding(.top, 4)
+            }
+            // The question is the body above; this is the poll under it.
+            // The same view the phone draws — nothing about a poll is
+            // platform-specific, and two of them would be two subsets
+            // within a week.
+            if let poll = message.poll {
+                PollBubbleView(
+                    poll: poll,
+                    currentUserID: coordinator.currentUserID,
+                    isAuthor: isMine,
+                    // A vote needs a server message id to PUT against.
+                    isVotable: message.serverID != nil,
+                    memberCount: memberCount,
+                    // uniquingKeysWith, never uniqueKeysWithValues: one
+                    // member holds one option, but a state that somehow
+                    // said otherwise would TRAP the app rather than draw a
+                    // slightly wrong tally.
+                    memberNames: Dictionary(
+                        poll.options.flatMap(\.votes).map { ($0, nameFor($0)) },
+                        uniquingKeysWith: { first, _ in first }),
+                    avatarVersions: Dictionary(
+                        poll.options.flatMap(\.votes).map { ($0, avatarVersionFor($0)) },
+                        uniquingKeysWith: { first, _ in first }),
+                    isMine: isMine && !isEmojiOnly,
+                    onVote: { optionID in
+                        Task { await coordinator.vote(localID: message.localID, optionID: optionID) }
+                    },
+                    onClose: {
+                        Task { await coordinator.closePoll(localID: message.localID) }
+                    },
+                    // The balloon's double-click is the quick heart, and a
+                    // child must pass it up rather than swallow it.
+                    onDoubleTap: { quickHeart() })
             }
             let chips = MessagePresentation.reactionChips(
                 message.reactions, currentUserID: coordinator.currentUserID)
@@ -454,6 +489,12 @@ struct MacMessageRow: View {
     /// half of what the phone calls `fillsBalloonWidth`.
     private var hasTable: Bool {
         bodyBlocks.contains { $0.isTable }
+    }
+
+    /// A table or a POLL has already decided how wide the balloon is, so
+    /// the text wraps against it instead of floating narrow beside it.
+    private var fillsBalloonWidth: Bool {
+        hasTable || message.poll != nil
     }
 
     /// Open a clicked link — unless a second click arrives first, in which

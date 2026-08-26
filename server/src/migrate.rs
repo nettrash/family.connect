@@ -128,6 +128,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "device_session_revoked",
         sql: include_str!("../migrations/0021_device_session_revoked.sql"),
     },
+    Migration {
+        version: 22,
+        name: "polls",
+        sql: include_str!("../migrations/0022_polls.sql"),
+    },
+    Migration {
+        version: 23,
+        name: "account_deletion",
+        sql: include_str!("../migrations/0023_account_deletion.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

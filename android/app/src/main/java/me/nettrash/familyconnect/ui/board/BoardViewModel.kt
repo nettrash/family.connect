@@ -15,9 +15,11 @@
 
 package me.nettrash.familyconnect.ui.board
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -28,10 +30,13 @@ import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.repo.BoardRepository
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.util.resolvedDisplayNames
 import javax.inject.Inject
 
 @HiltViewModel
 class BoardViewModel @Inject constructor(
+    /** For `getString` only — see the note on SettingsViewModel. */
+    @param:ApplicationContext private val appContext: Context,
     private val boardRepository: BoardRepository,
     private val familyRepository: FamilyRepository,
     memberDao: MemberDao,
@@ -45,8 +50,12 @@ class BoardViewModel @Inject constructor(
         .map { it.myUserId }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    // The FULL roster, tombstones included: a note pinned by somebody
+    // whose account is gone still has to say who wrote it. Their stored
+    // name is the server's English placeholder, so this resolves the
+    // translated one (docs/protocol.md, "Deleting an account").
     val memberNames: StateFlow<Map<Long, String>> = memberDao.observeMembers()
-        .map { members -> members.associate { it.userId to it.displayName } }
+        .map { members -> members.resolvedDisplayNames(appContext) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     /**

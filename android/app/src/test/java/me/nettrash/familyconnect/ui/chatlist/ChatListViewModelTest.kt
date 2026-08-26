@@ -95,7 +95,7 @@ class ChatListViewModelTest {
     }
 
     private fun TestScope.newViewModel(): ChatListViewModel {
-        chatRepository = ChatRepository(chatApi, db.chatDao(), socket)
+        chatRepository = ChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
         val sessionRepository = SessionRepository(
             authApi = FakeAuthApi(),
             tokenStore = FakeTokenStore("tok"),

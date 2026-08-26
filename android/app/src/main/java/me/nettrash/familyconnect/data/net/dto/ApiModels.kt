@@ -57,19 +57,50 @@ data class UserDto(
     @SerialName("avatar_version") val avatarVersion: Long = 0,
     /** Present when (and only when) one is set; absent means unset. */
     val birthday: BirthdayDto? = null,
-)
+    /**
+     * True when (and only when) this account has been DELETED
+     * (docs/protocol.md, "Deleting an account"). Absent means false —
+     * the flag is never sent as `false`, so the nullable default is the
+     * whole of the compatibility story with a server that predates it.
+     *
+     * Such an account has no usable username, no picture (avatar_version
+     * is 0) and no birthday, and its `display_name` is the server's
+     * ENGLISH placeholder. A client that understands the flag draws its
+     * own translation instead — see [isDeleted] and its call sites.
+     */
+    val deleted: Boolean? = null,
+) {
+    val isDeleted: Boolean get() = deleted == true
+}
 
 @Serializable
 data class MemberDto(
     val id: Long,
     val username: String,
     @SerialName("display_name") val displayName: String,
-    val role: String,
+    /**
+     * "owner" | "member" — and NULL on a tombstone, which is the whole
+     * reason this is optional: a deleted account holds no role
+     * (docs/protocol.md, "Deleting an account"), so `former_members` and
+     * the `member_deleted` frame both omit the key. Live members always
+     * carry it.
+     */
+    val role: String? = null,
     /** See UserDto.avatarVersion. */
     @SerialName("avatar_version") val avatarVersion: Long = 0,
     /** See UserDto.birthday — the same field, on the roster shape. */
     val birthday: BirthdayDto? = null,
-)
+    /**
+     * See UserDto.deleted. A deleted account is NEVER in `members`; it
+     * appears in `former_members` (see [FamilyMineResponse]) and in the
+     * `member_deleted` frame, and it exists there for one reason — so a
+     * client can still put a name to the messages, notes and reactions it
+     * left behind.
+     */
+    val deleted: Boolean? = null,
+) {
+    val isDeleted: Boolean get() = deleted == true
+}
 
 @Serializable
 data class FamilyDto(
@@ -127,6 +158,72 @@ data class ReactionDto(
     @SerialName("user_id") val userId: Long,
     val emoji: String,
 )
+
+/**
+ * One option of a poll, with the FULL current list of user ids that
+ * chose it (docs/protocol.md, "Polls").
+ *
+ * Votes are attributed on purpose: one frame is serialised once and sent
+ * to every connection, so a field whose value depends on who is reading
+ * it — "did I vote" — cannot exist. Clients derive that from the list,
+ * which is also what lets a bubble draw who has NOT voted yet.
+ *
+ * [id] is the server's, and it is the only thing `PUT .../vote` names.
+ * Options are fixed at creation and never gain, lose or rename one.
+ */
+@Serializable
+data class PollOptionDto(
+    val id: Long,
+    val text: String,
+    /**
+     * Everyone who currently holds this option, in the order they voted.
+     *
+     * No default, like every field of [PollDto]: an empty list is a real
+     * answer ("nobody chose this") and is ALWAYS on the wire, and a
+     * default would be dropped on re-encode by encodeDefaults=false —
+     * turning a stored or forwarded poll into one whose options had no
+     * votes key at all.
+     */
+    val votes: List<Long>,
+)
+
+/**
+ * What makes a message votable (docs/protocol.md, "Polls").
+ *
+ * The QUESTION is deliberately not here: it is the message BODY, which
+ * is what lets a chat-list preview, a push alert and a reply excerpt all
+ * read a poll without one new case between them — and what lets a client
+ * that has never heard of polls draw it as an ordinary message and lose
+ * only the buttons.
+ *
+ * [pollSeq] and [closed] carry NO default, unlike every other field
+ * added to this file since v1: the protocol says both are ALWAYS present
+ * ("a poll has a sequence from the moment it exists, and `closed` is a
+ * boolean with a real default, so there is no unset for a missing key to
+ * mean"), and the server serialises them unconditionally. Defaults here
+ * would buy nothing and would cost the round-trip: `encodeDefaults=false`
+ * drops a defaulted value, so a stored or re-encoded poll would come out
+ * missing the two fields the protocol guarantees.
+ *
+ * There is no multiple choice. A poll takes exactly one answer per
+ * member, changeable — see [optionHeldBy].
+ */
+@Serializable
+data class PollDto(
+    @SerialName("poll_seq") val pollSeq: Long,
+    val closed: Boolean,
+    val options: List<PollOptionDto>,
+) {
+    /** The option this user currently holds, or null when they have not voted. */
+    fun optionHeldBy(userId: Long): PollOptionDto? =
+        options.firstOrNull { option -> option.votes.any { it == userId } }
+
+    /** Everybody who has voted, each counted once (a vote is one option). */
+    val voters: Set<Long> get() = options.flatMapTo(LinkedHashSet()) { it.votes }
+
+    /** Votes cast in total — the denominator of every option's share. */
+    val totalVotes: Int get() = options.sumOf { it.votes.size }
+}
 
 /**
  * The quoted message on a reply — as much of it as a bubble needs to draw
@@ -204,6 +301,16 @@ data class MessageDto(
     @SerialName("edit_seq") val editSeq: Long? = null,
     // Present when (and only when) the message carries a photo or video.
     val attachment: AttachmentDto? = null,
+    /**
+     * Present when (and only when) this message is a poll — and polls
+     * exist in the FAMILY CHAT only (docs/protocol.md, "Polls"). The
+     * question is [body]; this carries the options and the votes.
+     *
+     * An ABSENT poll never means "the poll went away": a poll dies only
+     * with its message. Every apply path guards on that — see
+     * MessageRepository.applyEmbeddedPoll.
+     */
+    val poll: PollDto? = null,
 )
 
 /**
@@ -327,6 +434,27 @@ object ReactionsCodec {
             .orEmpty()
 }
 
+/**
+ * Local persistence codec: the messages table stores a poll verbatim in
+ * its WIRE shape (`pollJson` column - null = not a poll), beside the
+ * `pollSeq` column that guards every apply.
+ *
+ * The Json instance is a static val, like [ReactionsCodec]'s, and for a
+ * measured reason: allocating one per read cost real time when reactions
+ * did it, and a poll is decoded for every visible bubble that has one.
+ * Private, so a change to the house Json can never silently re-shape
+ * stored rows.
+ */
+object PollCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(poll: PollDto): String = json.encodeToString(poll)
+
+    /** Null for a message that is not a poll, or for a row we cannot read. */
+    fun decode(raw: String?): PollDto? =
+        raw?.let { runCatching { json.decodeFromString<PollDto>(it) }.getOrNull() }
+}
+
 // -- Request bodies ----------------------------------------------------------
 
 @Serializable
@@ -399,7 +527,32 @@ data class SendMessageRequest(
     @SerialName("reply_to_message_id") val replyToMessageId: Long? = null,
     /** The uploaded attachment this message claims, if any. */
     @SerialName("attachment_id") val attachmentId: Long? = null,
+    /**
+     * Makes this message a poll: the body is then the QUESTION and must
+     * be non-empty, and `poll` and `attachment_id` are mutually
+     * exclusive (docs/protocol.md, "Polls"). Omitted for an ordinary
+     * message — encodeDefaults=false again.
+     */
+    val poll: NewPollDto? = null,
 )
+
+/**
+ * The options a new poll is created with — the ONLY poll shape a client
+ * ever sends.
+ *
+ * Deliberately not a [PollDto]: a client has no say over ids, votes,
+ * `closed` or the sequence, and a type that could express them would
+ * invite one to try. The server's rules (2-10 options, each trimmed,
+ * non-empty, at most 100 characters, no two the same ignoring case) are
+ * mirrored in [me.nettrash.familyconnect.ui.chat.PollDraft] so the
+ * composer can refuse before the round trip rather than after it.
+ */
+@Serializable
+data class NewPollDto(val options: List<String>)
+
+/** PUT /chats/{id}/messages/{mid}/vote — the option the caller now holds. */
+@Serializable
+data class VoteRequest(@SerialName("option_id") val optionId: Long)
 
 @Serializable
 data class EditMessageRequest(val body: String)
@@ -414,6 +567,17 @@ data class ChangePasswordRequest(
 data class ResetPasswordRequest(
     @SerialName("new_password") val newPassword: String,
 )
+
+/**
+ * POST /me/delete — the body of an account deletion.
+ *
+ * The password is required for the same reason [ChangePasswordRequest]
+ * carries one: a live session is not proof of who is holding the phone
+ * (docs/protocol.md, "Deleting an account"). A POST rather than a
+ * `DELETE /me` because the request carries a body.
+ */
+@Serializable
+data class DeleteAccountRequest(val password: String)
 
 /**
  * One sticker note on the family board.
@@ -533,6 +697,17 @@ data class FamilyResponse(val family: FamilyDto)
 data class FamilyMineResponse(
     val family: FamilyDto,
     val members: List<MemberDto>,
+    /**
+     * The accounts that were DELETED while in this family — each with
+     * `deleted: true` and no `role`, omitted entirely when there are none
+     * (docs/protocol.md, "Deleting an account").
+     *
+     * They are not members: nothing counts them, nothing offers them, and
+     * every roster on this client filters them out. They exist so a stored
+     * message, note or reaction can still be given a name. A client stores
+     * both arrays in ONE place and draws only [members].
+     */
+    @SerialName("former_members") val formerMembers: List<MemberDto> = emptyList(),
     // The board cursor, omitted while the board has never been written to.
     @SerialName("max_board_seq") val maxBoardSeq: Long? = null,
     // Absent when the server has no assistant configured, which is the
@@ -582,6 +757,11 @@ data class ChatListItemDto(
     @SerialName("max_reaction_seq") val maxReactionSeq: Long? = null,
     // Absent while nothing in the chat has been edited.
     @SerialName("max_edit_seq") val maxEditSeq: Long? = null,
+    // Absent while the chat holds no poll at all. The fourth cursor of
+    // the same shape as the two above, for the same reason: `after_id`
+    // can never see a change to an older row, and a vote is nothing but
+    // a change to an older row.
+    @SerialName("max_poll_seq") val maxPollSeq: Long? = null,
 )
 
 @Serializable
@@ -612,6 +792,21 @@ data class MessageReactionStateDto(
 data class ReactionsCatchUpResponse(
     @SerialName("message_reactions") val messageReactions: List<MessageReactionStateDto>,
 )
+
+/**
+ * One message's full poll state - the vote / retract / close response
+ * AND each entry of the `GET /chats/{id}/polls` catch-up. The same shape
+ * on purpose, exactly as the reaction pair above: frames carry it too,
+ * and never a delta.
+ */
+@Serializable
+data class MessagePollStateDto(
+    @SerialName("message_id") val messageId: Long,
+    val poll: PollDto,
+)
+
+@Serializable
+data class PollsCatchUpResponse(val polls: List<MessagePollStateDto>)
 
 @Serializable
 data class DeviceResponse(@SerialName("device_id") val deviceId: Long)

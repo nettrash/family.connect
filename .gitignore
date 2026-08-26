@@ -21,6 +21,10 @@ ios/**/xcuserdata/
 ios/build/
 ios/DerivedData/
 
+# Python (tools/)
+__pycache__/
+*.pyc
+
 # Editors
 .idea/
 .vscode/

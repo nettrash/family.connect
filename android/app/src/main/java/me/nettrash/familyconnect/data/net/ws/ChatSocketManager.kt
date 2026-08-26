@@ -12,6 +12,9 @@
  *   onStop   →  close(1000) + cancel the reconnect loop. Background
  *              delivery is v2 (push); holding a socket in the
  *              background just drains battery to be killed anyway.
+ *   4401     →  the session is gone (expired, revoked, or the account
+ *              deleted): SessionRepository.onSessionExpired, which wipes
+ *              and reroutes to sign-in. Reconnecting cannot help.
  *
  * Reconnect loop: full-jitter BackoffPolicy between attempts, reset on
  * every successful open; a ConnectivityObserver onAvailable edge
@@ -68,6 +71,14 @@ class ChatSocketManager @Inject constructor(
             }
                 .distinctUntilChanged()
                 .collect { desired -> if (desired) startLoop() else stopLoop() }
+        }
+        // A 4401 close (or a 401 upgrade) is not something to reconnect
+        // through — the session is gone, exactly as a REST 401 says it is,
+        // and both have to end at the sign-in screen. Without this the
+        // loop below just went on retrying behind a "Connecting…" banner
+        // while the device looked signed in.
+        scope.launch {
+            socket.sessionExpired.collect { sessionRepository.onSessionExpired() }
         }
     }
 

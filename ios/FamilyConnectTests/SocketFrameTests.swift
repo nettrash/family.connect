@@ -31,7 +31,8 @@ struct SocketFrameTests {
             clientMsgID: "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
             body: "Dinner at 7?",
             replyToMessageID: nil,
-            attachmentID: nil))
+            attachmentID: nil,
+            pollOptions: nil))
         #expect(json["type"] as? String == "send")
         #expect(json["chat_id"] as? Int == 42)
         #expect(json["client_msg_id"] as? String == "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01")
@@ -49,7 +50,8 @@ struct SocketFrameTests {
             clientMsgID: "1c4a9b02-0000-4000-8000-000000000001",
             body: "Six works",
             replyToMessageID: 1337,
-            attachmentID: nil))
+            attachmentID: nil,
+            pollOptions: nil))
         #expect(json["type"] as? String == "send")
         #expect(json["reply_to_message_id"] as? Int == 1337)
         #expect(json["body"] as? String == "Six works")
@@ -63,12 +65,37 @@ struct SocketFrameTests {
             clientMsgID: "1c4a9b02-0000-4000-8000-000000000002",
             body: "",
             replyToMessageID: nil,
-            attachmentID: 34))
+            attachmentID: 34,
+            pollOptions: nil))
         #expect(json["type"] as? String == "send")
         #expect(json["attachment_id"] as? Int == 34)
         // A photo needs no caption: the empty body is sent, not omitted.
         #expect(json["body"] as? String == "")
         #expect(json.count == 5)
+    }
+
+    @Test("a poll's send frame carries its options and the question as the body")
+    func encodeSendPoll() throws {
+        // The literal in protocol.md §Client → server:
+        // {"type": "send", "chat_id": 42, "client_msg_id": "5b2e0c14-…",
+        //  "body": "Pizza or pasta?", "poll": {"options": ["Pizza", "Pasta"]}}
+        let json = try fields(of: .send(
+            chatID: 42,
+            clientMsgID: "5b2e0c14-0000-4000-8000-000000000003",
+            body: "Pizza or pasta?",
+            replyToMessageID: nil,
+            attachmentID: nil,
+            pollOptions: ["Pizza", "Pasta"]))
+        #expect(json["type"] as? String == "send")
+        // The QUESTION is the body — there is no question field, which is
+        // the whole reason a poll costs no new case anywhere else.
+        #expect(json["body"] as? String == "Pizza or pasta?")
+        let poll = json["poll"] as? [String: Any]
+        #expect(poll?["options"] as? [String] == ["Pizza", "Pasta"])
+        // Five keys: the poll object and nothing else new, and still no
+        // "reply_to_message_id": null.
+        #expect(json.count == 5)
+        #expect(poll?.count == 1)
     }
 
     @Test("read frame encodes per protocol.md")
@@ -213,6 +240,82 @@ struct SocketFrameTests {
         }
         #expect(payload.reactions.isEmpty)
         #expect(payload.reactionSeq == 125)
+    }
+
+    @Test("poll decodes the protocol.md literal")
+    func decodePoll() throws {
+        // Verbatim from protocol.md §Server → client.
+        let frame = try decode("""
+        {"type": "poll", "chat_id": 42, "message_id": 1340,
+                         "poll": {"poll_seq": 89, "closed": false,
+                                  "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
+                                              {"id": 6, "text": "Pasta", "votes": []}]}}
+        """)
+        guard case .poll(let payload) = frame else {
+            Issue.record("expected .poll, got \(frame)")
+            return
+        }
+        #expect(payload.chatID == 42)
+        #expect(payload.messageID == 1340)
+        #expect(payload.poll.pollSeq == 89)
+        #expect(payload.poll.closed == false)
+        #expect(payload.poll.options.count == 2)
+        #expect(payload.poll.options[0] == PollOptionDTO(id: 5, text: "Pizza", votes: [7, 9]))
+        // Empty is NOT absent: a Poll is complete state, so an option
+        // nobody chose carries an empty list rather than no list.
+        #expect(payload.poll.options[1] == PollOptionDTO(id: 6, text: "Pasta", votes: []))
+        // One choice per member, derived from the lists — the wire cannot
+        // carry a "did I vote" field, because one frame is serialised once
+        // and sent to everybody.
+        #expect(payload.poll.optionHeld(by: 9)?.id == 5)
+        #expect(payload.poll.optionHeld(by: 11) == nil)
+    }
+
+    @Test("a closed poll decodes as closed")
+    func decodeClosedPoll() throws {
+        let frame = try decode("""
+        {"type": "poll", "chat_id": 42, "message_id": 1340,
+         "poll": {"poll_seq": 91, "closed": true,
+                  "options": [{"id": 5, "text": "Pizza", "votes": [7]}]}}
+        """)
+        guard case .poll(let payload) = frame else {
+            Issue.record("expected .poll, got \(frame)")
+            return
+        }
+        #expect(payload.poll.closed)
+        #expect(payload.poll.pollSeq == 91)
+    }
+
+    @Test("a message carrying a poll decodes it, and one without stays nil")
+    func decodeMessageWithPoll() throws {
+        let frame = try decode("""
+        {"type": "message",
+         "message": {"id": 1340, "chat_id": 42, "sender_id": 7, "client_msg_id": null,
+                     "body": "Pizza or pasta?", "created_at": "2026-08-19T17:05:00Z",
+                     "poll": {"poll_seq": 88, "closed": false,
+                              "options": [{"id": 5, "text": "Pizza", "votes": []},
+                                          {"id": 6, "text": "Pasta", "votes": []}]}}}
+        """)
+        guard case .message(let message) = frame else {
+            Issue.record("expected .message, got \(frame)")
+            return
+        }
+        // The question IS the body, so a client that knew nothing of polls
+        // would still show the message and lose only the buttons.
+        #expect(message.body == "Pizza or pasta?")
+        #expect(message.poll?.pollSeq == 88)
+        #expect(message.poll?.options.map(\.text) == ["Pizza", "Pasta"])
+
+        let plain = try decode("""
+        {"type": "message",
+         "message": {"id": 1341, "chat_id": 42, "sender_id": 7, "client_msg_id": null,
+                     "body": "Pasta then", "created_at": "2026-08-19T17:06:00Z"}}
+        """)
+        guard case .message(let ordinary) = plain else {
+            Issue.record("expected .message, got \(plain)")
+            return
+        }
+        #expect(ordinary.poll == nil)
     }
 
     @Test("pong decodes")

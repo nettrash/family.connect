@@ -19,6 +19,8 @@
  *     Drives the bubble corner tightening in ChatScreen.
  *   - reactionChips: the row's reactionsJson aggregated into
  *     (emoji, count, includesMe) chips in first-seen order.
+ *   - poll: the row's pollJson resolved into options with their share of
+ *     the vote and the people behind it (buildPollView).
  *   - buildReactionDetails: the same raw reactions resolved to display
  *     names for the who-reacted popup (chip long-press).
  *
@@ -28,6 +30,8 @@
 package me.nettrash.familyconnect.ui.chat
 
 import me.nettrash.familyconnect.data.db.MessageEntity
+import me.nettrash.familyconnect.data.net.dto.PollCodec
+import me.nettrash.familyconnect.data.net.dto.PollDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.util.TimeFormat
@@ -110,6 +114,88 @@ fun buildReactionDetails(
     }
 }
 
+/** One person who voted, as an option row draws them. */
+data class PollVoter(
+    val userId: Long,
+    /** Their display name — the initials on the avatar come from it. */
+    val name: String,
+)
+
+/** One option of a poll, resolved for drawing. */
+data class PollOptionView(
+    val id: Long,
+    val text: String,
+    val count: Int,
+    /**
+     * Share of all votes cast, 0..1 — the width of the bar. Of the TOTAL
+     * rather than of the leader, so two options at 50% draw half each
+     * and a poll nobody has answered draws no bar at all.
+     */
+    val fraction: Float,
+    /** I hold this option — the row is marked, and tapping it clears. */
+    val isMine: Boolean,
+    /** Who chose it, in vote order, except mine, which leads. */
+    val voters: List<PollVoter>,
+)
+
+/**
+ * A poll as a bubble draws it (docs/protocol.md, "Polls").
+ *
+ * The QUESTION is not here: it is the message body, which the bubble
+ * already renders.
+ */
+data class PollView(
+    val options: List<PollOptionView>,
+    val closed: Boolean,
+    /** People who have voted, each counted once — a vote is one option. */
+    val votedCount: Int,
+    /** Live members of the family, for the "3 of 5 voted" footer; 0 = unknown. */
+    val familySize: Int,
+    /** Whether I have voted at all. */
+    val hasVoted: Boolean,
+)
+
+/**
+ * Resolve a stored poll into what a bubble draws.
+ *
+ * Names come from the same roster map the sender line uses, so a deleted
+ * account's vote is still attributed (its name is already the client's
+ * own translation of the placeholder — see MemberNames), and an unknown
+ * id falls back to "Member <id>" exactly as a bubble's sender does.
+ */
+fun buildPollView(
+    poll: PollDto,
+    myUserId: Long,
+    names: Map<Long, String>,
+    familySize: Int = 0,
+): PollView {
+    val total = poll.totalVotes
+    return PollView(
+        options = poll.options.map { option ->
+            val mine = option.votes.any { it == myUserId }
+            // Mine first: on a busy option it is the one face the reader
+            // is looking for, and it must not fall off the end of the row.
+            val ordered = if (mine) {
+                listOf(myUserId) + option.votes.filterNot { it == myUserId }
+            } else {
+                option.votes
+            }
+            PollOptionView(
+                id = option.id,
+                text = option.text,
+                count = option.votes.size,
+                fraction = if (total > 0) option.votes.size.toFloat() / total else 0f,
+                isMine = mine,
+                voters = ordered.map { PollVoter(it, names[it] ?: "Member $it") },
+            )
+        },
+        closed = poll.closed,
+        votedCount = poll.voters.size,
+        familySize = familySize,
+        hasVoted = poll.optionHeldBy(myUserId) != null,
+    )
+}
+
 sealed interface ChatListItem {
     /** Stable LazyColumn key. */
     val key: String
@@ -120,6 +206,12 @@ sealed interface ChatListItem {
         val senderName: String?,
         val showTimestamp: Boolean,
         val reactionChips: List<ReactionChip> = emptyList(),
+        /**
+         * The poll on this message, resolved for drawing, or null when
+         * the message is not one. Absent is the ONLY thing null means —
+         * a poll dies with its message.
+         */
+        val poll: PollView? = null,
         /** Visually-top bubble of a same-sender same-day run. Defaults model a run of one. */
         val isRunStart: Boolean = true,
         /** Visually-bottom bubble of a same-sender same-day run. */
@@ -151,6 +243,12 @@ fun buildChatItems(
      */
     assistantUserId: Long? = null,
     assistantName: String? = null,
+    /**
+     * Live members of the family, for a poll's "3 of 5 voted" footer.
+     * 0 means the roster has not answered yet, and the footer then says
+     * only how many votes there are rather than inventing a denominator.
+     */
+    familyMemberCount: Int = 0,
 ): List<ChatListItem> {
     val items = ArrayList<ChatListItem>(messagesNewestFirst.size + 8)
     messagesNewestFirst.forEachIndexed { index, message ->
@@ -180,6 +278,14 @@ fun buildChatItems(
                 reactions = ReactionsCodec.decode(message.reactionsJson),
                 myUserId = myUserId,
             ),
+            poll = PollCodec.decode(message.pollJson)?.let { poll ->
+                buildPollView(
+                    poll = poll,
+                    myUserId = myUserId,
+                    names = memberNames,
+                    familySize = familyMemberCount,
+                )
+            },
             isRunStart = startsRun,
             isRunEnd = endsRun,
         )

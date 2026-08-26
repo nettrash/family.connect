@@ -59,6 +59,7 @@ struct SettingsView: View {
     @State private var uploadingAvatar = false
     @State private var changingPassword = false
     @State private var editingBirthday = false
+    @State private var deletingAccount = false
     @State private var avatarError: String?
 
     var body: some View {
@@ -82,6 +83,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $editingBirthday) {
                 MyBirthdayView()
+            }
+            .sheet(isPresented: $deletingAccount) {
+                DeleteAccountView()
             }
             .sheet(isPresented: Bindable(model).showsStatistics) {
                 NavigationStack { StatisticsView() }
@@ -334,6 +338,13 @@ struct SettingsView: View {
         Section {
             Button("Log Out", role: .destructive) {
                 model.confirmLogout = true
+            }
+            // Beside Log Out, because that is where somebody looks for
+            // "get me out of this app" — and App Store guideline
+            // 5.1.1(v) asks for it to be findable, not buried. The sheet
+            // is where the explaining happens; this is just the door.
+            Button("Delete Account", role: .destructive) {
+                deletingAccount = true
             }
         } footer: {
             // verbatim: a product name and two numbers have nothing to

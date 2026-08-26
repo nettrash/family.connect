@@ -73,6 +73,18 @@ final class MessageEntity {
     /// Highest reaction_seq applied to this row (0 = none). The
     /// per-message guard: a state only lands when its seq is greater.
     var reactionSeq: Int64 = 0
+    /// The poll on this message, JSON-encoded in the wire shape
+    /// (`{"poll_seq":88,"closed":false,"options":[…]}`). nil = not a
+    /// poll, which is the ONLY thing absence ever means here: a poll dies
+    /// with its message, so nothing on the wire ever takes one off, and
+    /// an incoming copy without one must never clear this.
+    var pollJSON: String?
+    /// Highest poll_seq applied to this row — the per-message guard, the
+    /// twin of `reactionSeq`. 0 = no server state applied yet, which is
+    /// also what an optimistic just-sent poll carries, so the ack's
+    /// authoritative copy (real option ids, a real seq) passes the guard
+    /// rather than being dropped as stale.
+    var pollSeq: Int64 = 0
     /// The quoted message, when this one is a reply. Held as three flat
     /// properties rather than a relationship: the quote is a SNAPSHOT the
     /// server recomputes on every read (docs/protocol.md, "Replies"), and
@@ -178,6 +190,24 @@ final class MessageEntity {
         }
     }
 
+    /// Typed view over the raw `pollJSON` blob, in the same idiom the
+    /// reaction list uses. nil for a message that is not a poll; writing
+    /// nil is how a *local* row gives one up (nothing on the wire does).
+    var poll: PollSnapshot? {
+        get {
+            guard let pollJSON, !pollJSON.isEmpty else { return nil }
+            return try? Self.pollDecoder.decode(PollSnapshot.self, from: Data(pollJSON.utf8))
+        }
+        set {
+            guard let newValue else {
+                pollJSON = nil
+                return
+            }
+            guard let data = try? Self.pollEncoder.encode(newValue) else { return }
+            pollJSON = String(decoding: data, as: UTF8.self)
+        }
+    }
+
     /// One decoder, not one per read. This is called once per message per
     /// view-body pass — building a fresh `JSONDecoder` there made a cheap
     /// property allocation-bound, which showed up as real cost on the Mac
@@ -185,6 +215,12 @@ final class MessageEntity {
     /// stateless and configured with nothing, so sharing them is safe.
     private static let reactionDecoder = JSONDecoder()
     private static let reactionEncoder = JSONEncoder()
+    /// The poll pair, cached for exactly the reason above — a poll bubble
+    /// decodes its state on every body pass, and a fresh coder per read
+    /// was the measured cost that made this a rule rather than a
+    /// preference.
+    private static let pollDecoder = JSONDecoder()
+    private static let pollEncoder = JSONEncoder()
 
     init(
         localID: String,
@@ -197,6 +233,8 @@ final class MessageEntity {
         status: MessageStatus,
         reactionsJSON: String? = nil,
         reactionSeq: Int64 = 0,
+        pollJSON: String? = nil,
+        pollSeq: Int64 = 0,
         replyToMessageID: Int64? = nil,
         replySenderID: Int64? = nil,
         replyExcerpt: String? = nil,
@@ -214,6 +252,13 @@ final class MessageEntity {
         self.status = status.rawValue
         self.reactionsJSON = reactionsJSON
         self.reactionSeq = reactionSeq
+        // The third of the three write sites a new message field has (the
+        // other two are the coordinator's first-sight insert and its
+        // apply-a-frame path). Missing this one drops the poll off every
+        // message this device sees for the FIRST time in a history page —
+        // silently, because the row is otherwise perfectly correct.
+        self.pollJSON = pollJSON
+        self.pollSeq = pollSeq
         self.replyToMessageID = replyToMessageID
         self.replySenderID = replySenderID
         self.replyExcerpt = replyExcerpt

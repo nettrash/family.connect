@@ -23,6 +23,7 @@ struct MacSettingsView: View {
     @State private var editingBirthday = false
     @State private var showingStatistics = false
     @State private var confirmLogout = false
+    @State private var deletingAccount = false
     /// Mirrors AppSettings — defaults are not observable, so the view
     /// holds its own copy and writes through on change.
     @State private var mapPreviewsEnabled = AppSettings.mapPreviewsEnabled
@@ -115,6 +116,10 @@ struct MacSettingsView: View {
                 }
                 Section {
                     Button("Log Out", role: .destructive) { confirmLogout = true }
+                    // The shared sheet does the explaining (see
+                    // DeleteAccountView); this is the door, next to Log
+                    // Out where somebody looks for it.
+                    Button("Delete Account…", role: .destructive) { deletingAccount = true }
                 } footer: {
                     Text(verbatim: AppVersion.settingsLine)
                         .font(.footnote)
@@ -132,11 +137,13 @@ struct MacSettingsView: View {
             }
             .padding(12)
         }
-        // Grown from 420 to make room for the two birthday rows. The Form
-        // would scroll rather than clip them, but a settings sheet that
-        // has to be scrolled to reach its second section is a settings
-        // sheet whose second section nobody finds.
-        .frame(width: 460, height: 490)
+        // Grown from 420 to make room for the two birthday rows, and
+        // again to 530 for the Delete Account row. The Form would scroll
+        // rather than clip them, but a settings sheet that has to be
+        // scrolled to reach its last section is a settings sheet whose
+        // last section nobody finds — and a Mac sheet cannot be resized
+        // by the person using it.
+        .frame(width: 460, height: 530)
         .background(Color.appGroupedBackground)
         .sheet(isPresented: $changingPassword) {
             ChangePasswordView()
@@ -148,6 +155,10 @@ struct MacSettingsView: View {
         }
         .sheet(isPresented: $showingStatistics) {
             StatisticsView()
+        }
+        .sheet(isPresented: $deletingAccount) {
+            DeleteAccountView()
+                .frame(width: 460)
         }
         .confirmationDialog(
             "Log out?",

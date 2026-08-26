@@ -278,6 +278,86 @@ SR = {
   "Остали твоји уређаји биће одјављени. Овај остаје пријављен.",
 "Your request to join was declined. You can ask for a new invite code and try again.":
   "Твој захтев за приступ је одбијен. Можеш да затражиш нови позивни код и покушаш поново.",
+
+# The composer's media notices. These are OLDER than the three features
+# below — they were never in the catalogue at all, so they shipped in English
+# in every language, in the same three functions as the paste strings. Six are
+# word for word an Android string that was already translated, and reuse its
+# Serbian exactly; the other four follow their nearest sibling.
+"Couldn't download that file.": "Та датотека није преузета.",
+"Couldn't download that to share.": "Преузимање ради дељења није успело.",
+"Couldn't prepare that item.": "Та ставка није припремљена.",
+"Couldn't read that file.": "Та датотека не може да се прочита.",
+"Couldn't read that item.": "Та ставка не може да се прочита.",
+"Couldn't read that video.": "Тај видео не може да се прочита.",
+"Couldn't send that.": "То није послато.",
+"Couldn't send that — try again.": "То није послато — покушај поново.",
+"Still too large after compressing — try a shorter clip.":
+  "И после компресије је превелико — пробај краћи снимак.",
+"That file is over the 100 MB limit.": "Та датотека прелази ограничење од 100 MB.",
+
+# Pasting into the composer. "Налепи" is the paste verb both platforms use;
+# the two file names are what a pasted item is called once it is staged.
+"Paste": "Налепи",
+"Pasted image": "Налепљена слика",
+"Pasted file": "Налепљена датотека",
+"There's nothing to paste.": "Нема шта да се налепи.",
+"Attach": "Приложи",
+
+# Deleting your own account. Every line is a warning about something
+# irreversible, so it stays plain — and GENDER-NEUTRAL, which is why none of
+# it says "пријављен(а)": a session is closed, a reader is not described.
+"Delete Account": "Обриши налог",
+"Delete Account…": "Обриши налог…",
+"Delete your account?": "Обрисати твој налог?",
+"This happens immediately and cannot be undone.": "То се дешава одмах и не може да се поништи.",
+"What happens": "Шта се дешава",
+"Your account, password, profile picture and birthday are deleted, and every device you are signed in on is signed out.":
+  "Твој налог, лозинка, слика профила и рођендан се бришу, а све сесије на свим уређајима се затварају.",
+"Your direct chats are deleted — for the other person too. So is your private chat with the assistant.":
+  "Твоји лични разговори се бришу — и код друге особе. Исто важи и за лични разговор са асистентом.",
+"Your messages in the family chat, your board notes and your reactions stay. They are shown from then on as “Deleted account”.":
+  "Твоје поруке у породичном разговору, белешке на табли и реакције остају. "
+  "Од тада стоје као „Обрисан налог“.",
+"You own this family: ownership passes to the longest-standing remaining member. If you are its last member, the family is deleted with you — its chat, its board and its invite code.":
+  "Ова породица је твоја: прелази на члана који је у њој најдуже. Ако си њен последњи члан, "
+  "породица се брише заједно са тобом — њен разговор, њена табла и њен позивни код.",
+"There is no grace period and no way to cancel afterwards.":
+  "Нема рока за предомишљање, нити начина да се то касније откаже.",
+"Type your password to confirm it is you. Being signed in is not proof.":
+  "Унеси своју лозинку да потврдиш да си то ти. Отворена сесија није доказ.",
+# The three errors the sheet can show. Same wording Android already ships
+# for e_wrong_password, so the two platforms word one sentence once —
+# which is also why e_wrong_password is no longer in serbian_android.py.
+"That password is not right.": "Та лозинка није тачна.",
+"Type your password to confirm.": "Унеси лозинку да потврдиш.",
+"Couldn't delete your account. Try again.": "Налог није обрисан. Покушај поново.",
+"Deleted account": "Обрисан налог",
+
+# Polls. "Одговор" for an option rather than "опција": these are the answers
+# people choose between, and "опција" in Serbian reads as a setting.
+"Poll": "Анкета",
+"New poll": "Нова анкета",
+"Create": "Направи",
+"Question": "Питање",
+"Ask the family something…": "Питај породицу нешто…",
+"The question is the message everyone sees.": "Питање је порука коју сви виде.",
+"Options": "Одговори",
+"Option": "Одговор",
+"Add option": "Додај одговор",
+"Remove option": "Уклони одговор",
+"Between 2 and 10 options. They can't be changed once the poll is sent.":
+  "Између 2 и 10 одговора. После слања се више не мењају.",
+# "Заврши", not "Затвори" — a poll ENDS, and "Затвори" is what a dialog does.
+"Close poll": "Заврши анкету",
+"Ends the poll. This cannot be undone.": "Завршава анкету. То не може да се поништи.",
+"Poll closed": "Анкета завршена",
+"Your choice": "Твој избор",
+# "ко" always takes the masculine singular in Serbian, whoever it turns out
+# to be, so this participle carries no gender — unlike "гласао/гласала" about
+# the reader, which is why the counts above are a noun. Same shape as
+# "Види ко је реаговао", because it is the same gesture for the same reason.
+"See who voted": "Види ко је гласао",
 }
 
 # The members count is a plural, and Serbian's CLDR categories are one/few/other
@@ -286,6 +366,29 @@ SR_PLURAL = {
     "one": "%lld члан",
     "few": "%lld члана",
     "other": "%lld чланова",
+}
+
+# A poll's counts, also one/few/other — and written ONCE here, with neutral
+# placeholders, because the same Serbian has to come out four ways: an Apple
+# plural variation, two Apple substitutions (the number is not the first
+# argument in either) and an Android <plurals>. {n} is the number that
+# inflects the noun; {total} is how many people could have voted.
+#
+# A NOUN ("3 гласа"), not the participle "гласало/гласао/гласала": the
+# participle is gendered in the singular, and this app has no idea who is
+# reading. One member casts one vote, so counting votes says exactly what
+# counting voters would.
+SR_COUNTS = {
+    "votes": {
+        "one": "{n} глас",
+        "few": "{n} гласа",
+        "other": "{n} гласова",
+    },
+    "votes_of": {
+        "one": "{n} глас од {total}",
+        "few": "{n} гласа од {total}",
+        "other": "{n} гласова од {total}",
+    },
 }
 
 # Serbian Cyrillic → Latin. A true 1:1 mapping, which is the whole reason the

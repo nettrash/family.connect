@@ -76,6 +76,13 @@ nonisolated struct UserDTO: Codable, Equatable, Sendable {
     var avatarVersion: Int64 = 0
     /// Present when (and only when) one is set — absence IS "unset".
     var birthday: BirthdayDTO?
+    /// True when this account has been deleted (protocol.md, "Deleting an
+    /// account"). ABSENT on the wire when false — never `false` — so this
+    /// is a defaulted Bool rather than an Optional. Such a user has no
+    /// usable username, no picture and no birthday, and `displayName` is
+    /// the server's ENGLISH placeholder, which a client that understands
+    /// this flag replaces with its own translation.
+    var deleted: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -84,6 +91,7 @@ nonisolated struct UserDTO: Codable, Equatable, Sendable {
         case createdAt = "created_at"
         case avatarVersion = "avatar_version"
         case birthday
+        case deleted
     }
 
     init(
@@ -92,7 +100,8 @@ nonisolated struct UserDTO: Codable, Equatable, Sendable {
         displayName: String,
         createdAt: Date?,
         avatarVersion: Int64 = 0,
-        birthday: BirthdayDTO? = nil
+        birthday: BirthdayDTO? = nil,
+        deleted: Bool = false
     ) {
         self.id = id
         self.username = username
@@ -100,6 +109,7 @@ nonisolated struct UserDTO: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.avatarVersion = avatarVersion
         self.birthday = birthday
+        self.deleted = deleted
     }
 
     /// Hand-written because a property default is NOT what Swift's
@@ -114,6 +124,7 @@ nonisolated struct UserDTO: Codable, Equatable, Sendable {
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
         avatarVersion = try container.decodeIfPresent(Int64.self, forKey: .avatarVersion) ?? 0
         birthday = try container.decodeIfPresent(BirthdayDTO.self, forKey: .birthday)
+        deleted = try container.decodeIfPresent(Bool.self, forKey: .deleted) ?? false
     }
 }
 
@@ -121,13 +132,20 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
     let id: Int64
     let username: String
     let displayName: String
-    /// "owner" | "member"
-    let role: String
+    /// "owner" | "member" — OPTIONAL, because a deleted account carries no
+    /// role at all (protocol.md, "Deleting an account"). Present on every
+    /// live member.
+    let role: String?
     /// `0` = no profile picture. Absent on a server older than the
     /// avatars release, hence the default rather than an Optional.
     var avatarVersion: Int64 = 0
     /// Present when (and only when) one is set — absence IS "unset".
     var birthday: BirthdayDTO?
+    /// True on a tombstone: an account deleted while in this family. Such
+    /// a member is never in `members`, only in `former_members`, and
+    /// exists there for one reason — so a stored message, note or reaction
+    /// can still be given a sender. Absent on the wire when false.
+    var deleted: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -136,15 +154,17 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
         case role
         case avatarVersion = "avatar_version"
         case birthday
+        case deleted
     }
 
     init(
         id: Int64,
         username: String,
         displayName: String,
-        role: String,
+        role: String?,
         avatarVersion: Int64 = 0,
-        birthday: BirthdayDTO? = nil
+        birthday: BirthdayDTO? = nil,
+        deleted: Bool = false
     ) {
         self.id = id
         self.username = username
@@ -152,6 +172,7 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
         self.role = role
         self.avatarVersion = avatarVersion
         self.birthday = birthday
+        self.deleted = deleted
     }
 
     /// See UserDTO.init(from:) — a defaulted property is not a decoding
@@ -161,9 +182,10 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
         id = try container.decode(Int64.self, forKey: .id)
         username = try container.decode(String.self, forKey: .username)
         displayName = try container.decode(String.self, forKey: .displayName)
-        role = try container.decode(String.self, forKey: .role)
+        role = try container.decodeIfPresent(String.self, forKey: .role)
         avatarVersion = try container.decodeIfPresent(Int64.self, forKey: .avatarVersion) ?? 0
         birthday = try container.decodeIfPresent(BirthdayDTO.self, forKey: .birthday)
+        deleted = try container.decodeIfPresent(Bool.self, forKey: .deleted) ?? false
     }
 
     /// The same member wearing a different birthday. The roster screens
@@ -178,7 +200,8 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
             displayName: displayName,
             role: role,
             avatarVersion: avatarVersion,
-            birthday: birthday)
+            birthday: birthday,
+            deleted: deleted)
     }
 }
 
@@ -291,6 +314,77 @@ nonisolated struct ReactionDTO: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
         case emoji
+    }
+}
+
+/// One option of a poll, carrying the FULL current list of user ids that
+/// chose it (docs/protocol.md, "Polls").
+///
+/// The list is complete state and never a delta, which is what lets a
+/// client draw who voted for what — and, more usefully in a family, who
+/// has not voted at all. It has to be a list rather than a "did I vote"
+/// flag because one frame is serialised once and sent to every
+/// connection: a field whose value depends on who is reading it cannot
+/// exist on this wire.
+nonisolated struct PollOptionDTO: Codable, Equatable, Sendable, Identifiable {
+    let id: Int64
+    let text: String
+    /// Empty is normal — nobody has chosen this one yet — and is NOT the
+    /// same as absent, which never happens: a Poll is complete state.
+    var votes: [Int64] = []
+
+    init(id: Int64, text: String, votes: [Int64] = []) {
+        self.id = id
+        self.text = text
+        self.votes = votes
+    }
+
+    /// Hand-written for the reason UserDTO's is: a property default is
+    /// not a decoding fallback, and an option nobody has voted for could
+    /// legitimately arrive with the key omitted by a future server.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int64.self, forKey: .id)
+        text = try container.decode(String.self, forKey: .text)
+        votes = try container.decodeIfPresent([Int64].self, forKey: .votes) ?? []
+    }
+}
+
+/// What makes a message votable (docs/protocol.md, "Polls").
+///
+/// The QUESTION is deliberately not in here: it is the message body, which
+/// is the whole reason a poll costs so little — a chat-list preview, a push
+/// alert and a reply excerpt all read it already, with no new case between
+/// them, and a client that has never heard of polls draws the question as
+/// an ordinary message and loses only the buttons.
+///
+/// `pollSeq` and `closed` are ALWAYS on the wire, unlike `reaction_seq`: a
+/// poll has a sequence from the moment it exists, and `closed` is a boolean
+/// with a real default, so there is no "unset" for a missing key to mean.
+/// They are therefore non-optional here.
+nonisolated struct PollDTO: Codable, Equatable, Sendable {
+    let pollSeq: Int64
+    let closed: Bool
+    /// 2–10, in creation order, and fixed for the life of the poll — the
+    /// votes already cast were cast against the list as it was read.
+    let options: [PollOptionDTO]
+
+    enum CodingKeys: String, CodingKey {
+        case pollSeq = "poll_seq"
+        case closed
+        case options
+    }
+
+    init(pollSeq: Int64, closed: Bool, options: [PollOptionDTO]) {
+        self.pollSeq = pollSeq
+        self.closed = closed
+        self.options = options
+    }
+
+    /// The option this user currently holds, if any. One choice per
+    /// member — there is no multiple choice — so the first hit is it.
+    func optionHeld(by userID: Int64) -> PollOptionDTO? {
+        options.first { $0.votes.contains(userID) }
     }
 }
 
@@ -467,6 +561,14 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     let editSeq: Int64?
     /// Present when the message carries a photo or video.
     let attachment: AttachmentDTO?
+    /// Present when (and only when) this message is a poll — and polls
+    /// exist in the FAMILY CHAT only (docs/protocol.md, "Polls"). The
+    /// body is then the question.
+    ///
+    /// ABSENCE never means "the poll went away": a poll dies only with
+    /// its message, so an incoming copy without one says nothing about a
+    /// poll already stored — exactly the rule the reaction fields follow.
+    let poll: PollDTO?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -481,6 +583,7 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         case editedAt = "edited_at"
         case editSeq = "edit_seq"
         case attachment
+        case poll
     }
 
     /// Explicit memberwise init so the reaction fields default to absent
@@ -497,7 +600,8 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         replyTo: ReplyToDTO? = nil,
         editedAt: Date? = nil,
         editSeq: Int64? = nil,
-        attachment: AttachmentDTO? = nil
+        attachment: AttachmentDTO? = nil,
+        poll: PollDTO? = nil
     ) {
         self.id = id
         self.chatID = chatID
@@ -511,6 +615,7 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         self.editedAt = editedAt
         self.editSeq = editSeq
         self.attachment = attachment
+        self.poll = poll
     }
 }
 
@@ -584,6 +689,16 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
 nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     let family: FamilyDTO
     let members: [MemberDTO]
+    /// The accounts deleted while in this family, each with `deleted: true`
+    /// and no role. Omitted by the server when there are none, hence the
+    /// hand-written decoder below rather than an Optional nobody wants to
+    /// unwrap at every call site.
+    ///
+    /// They are NOT members: they hold no role, are offered to nobody as
+    /// somebody to chat with, and count towards nothing. A client stores
+    /// both arrays in one place — that is what lets a stored message still
+    /// name its sender — and draws only `members`.
+    let formerMembers: [MemberDTO]
     /// Absent when the server has no assistant configured — which is the
     /// whole of the capability check.
     let assistant: AssistantDTO?
@@ -595,6 +710,7 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case family
         case members
+        case formerMembers = "former_members"
         case assistant
         case maxBoardSeq = "max_board_seq"
     }
@@ -602,13 +718,28 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     init(
         family: FamilyDTO,
         members: [MemberDTO],
+        formerMembers: [MemberDTO] = [],
         assistant: AssistantDTO? = nil,
         maxBoardSeq: Int64? = nil
     ) {
         self.family = family
         self.members = members
+        self.formerMembers = formerMembers
         self.assistant = assistant
         self.maxBoardSeq = maxBoardSeq
+    }
+
+    /// Hand-written for the reason UserDTO's is: a property default is not
+    /// a decoding fallback, and `former_members` is absent from every
+    /// response of a family that has never lost anybody — which is most of
+    /// them, and all of them on a server that predates account deletion.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        family = try container.decode(FamilyDTO.self, forKey: .family)
+        members = try container.decode([MemberDTO].self, forKey: .members)
+        formerMembers = try container.decodeIfPresent([MemberDTO].self, forKey: .formerMembers) ?? []
+        assistant = try container.decodeIfPresent(AssistantDTO.self, forKey: .assistant)
+        maxBoardSeq = try container.decodeIfPresent(Int64.self, forKey: .maxBoardSeq)
     }
 }
 
@@ -693,6 +824,11 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
     /// the reason a client knows whether an edit catch-up is worth a
     /// request at all.
     let maxEditSeq: Int64?
+    /// Max poll_seq over the chat's messages; omitted while the chat
+    /// holds no poll at all (treat as 0). The third of the same shape,
+    /// and what tells a client whether a poll catch-up is worth a
+    /// request — a family that has never run a poll costs none.
+    let maxPollSeq: Int64?
 
     enum CodingKeys: String, CodingKey {
         case chat
@@ -700,6 +836,7 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
         case unreadCount = "unread_count"
         case maxReactionSeq = "max_reaction_seq"
         case maxEditSeq = "max_edit_seq"
+        case maxPollSeq = "max_poll_seq"
     }
 
     /// Explicit memberwise init so the seq fields default to absent —
@@ -709,13 +846,15 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
         lastMessage: MessageDTO?,
         unreadCount: Int,
         maxReactionSeq: Int64? = nil,
-        maxEditSeq: Int64? = nil
+        maxEditSeq: Int64? = nil,
+        maxPollSeq: Int64? = nil
     ) {
         self.chat = chat
         self.lastMessage = lastMessage
         self.unreadCount = unreadCount
         self.maxReactionSeq = maxReactionSeq
         self.maxEditSeq = maxEditSeq
+        self.maxPollSeq = maxPollSeq
     }
 }
 
@@ -755,6 +894,26 @@ nonisolated struct MessageReactionsResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case messageReactions = "message_reactions"
     }
+}
+
+/// One message's full poll state: the body of the vote / retract / close
+/// endpoints and the page entry of GET /chats/{id}/polls.
+///
+/// The seq lives INSIDE the poll here, unlike the reaction shape where it
+/// is a sibling of the array — the protocol puts it there because a poll
+/// always has one, so there is no state without a sequence to guard it.
+nonisolated struct PollStateDTO: Codable, Equatable, Sendable {
+    let messageID: Int64
+    let poll: PollDTO
+
+    enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
+        case poll
+    }
+}
+
+nonisolated struct ChatPollsResponse: Codable, Equatable, Sendable {
+    let polls: [PollStateDTO]
 }
 
 nonisolated struct DeviceResponse: Codable, Equatable, Sendable {
