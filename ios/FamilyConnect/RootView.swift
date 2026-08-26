@@ -27,7 +27,19 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    @Environment(CallManager.self) private var calls
     @Environment(\.scenePhase) private var scenePhase
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+    #endif
+
+    /// The call screen is up whenever the manager is not idle — including
+    /// the moment the ended reason shows, so the screen does not vanish
+    /// under the person reading it.
+    private var callScreenShown: Binding<Bool> {
+        Binding(get: { calls.phase != .idle }, set: { _ in })
+    }
 
     var body: some View {
         Group {
@@ -77,6 +89,28 @@ struct RootView: View {
                 coordinator.deactivate()
             }
         }
+        #if os(iOS)
+        .fullScreenCover(isPresented: callScreenShown) {
+            CallView()
+                .environment(calls)
+        }
+        #else
+        // The call has a window of its own, opened and closed by the
+        // manager's phase — a sheet would pin it to whichever window
+        // happened to be in front, and cannot be moved aside.
+        .onChange(of: calls.phase) { _, newPhase in
+            if newPhase == .idle {
+                dismissWindow(id: MacWindow.call)
+            } else {
+                openWindow(id: MacWindow.call)
+            }
+        }
+        .onAppear {
+            // A window reopened onto a call that is already in progress —
+            // the app was activated by its notification, say.
+            if calls.phase != .idle { openWindow(id: MacWindow.call) }
+        }
+        #endif
         .onChange(of: scenePhase) { _, newPhase in
             // Nothing clears the badge here any more, on either platform.
             // iOS used to wipe it on every single foreground, on the theory

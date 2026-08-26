@@ -233,4 +233,30 @@
     <plurals name="s_n_new_messages">
         <item quantity="other">%1$d 条新消息</item>
     </plurals>
+    <!-- Voice calls -->
+    <string name="s_voice_call">语音通话</string>
+    <string name="s_incoming_voice_call">语音来电</string>
+    <string name="s_calling">正在呼叫…</string>
+    <string name="s_ringing">正在响铃…</string>
+    <string name="s_connecting">正在连接…</string>
+    <string name="s_answer">接听</string>
+    <string name="s_decline">拒绝</string>
+    <string name="s_hang_up">挂断</string>
+    <string name="s_mute">静音</string>
+    <string name="s_unmute">取消静音</string>
+    <string name="s_speaker">扬声器</string>
+    <string name="s_call_ended">通话已结束</string>
+    <string name="s_ongoing_voice_call">语音通话进行中</string>
+    <string name="s_missed_voice_call">未接语音通话</string>
+    <string name="s_no_answer">无人接听</string>
+    <string name="s_declined_voice_call">已拒绝的语音通话</string>
+    <string name="s_voice_call_declined">语音通话被拒绝</string>
+    <string name="s_call_failed">通话失败</string>
+    <string name="s_call_failed_with_duration">通话失败 · %1$s</string>
+    <string name="s_voice_call_with_duration">语音通话 · %1$s</string>
+    <string name="s_answered_on_another_device">已在其他设备接听</string>
+    <string name="s_busy">忙线</string>
+    <string name="s_not_reachable">无法接通</string>
+    <string name="s_calls_are_off_on_this_server">此服务器已关闭通话</string>
+    <string name="e_call_failed_to_start">无法发起通话。</string>
 </resources>

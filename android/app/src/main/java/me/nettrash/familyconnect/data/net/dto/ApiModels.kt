@@ -311,6 +311,69 @@ data class MessageDto(
      * MessageRepository.applyEmbeddedPoll.
      */
     val poll: PollDto? = null,
+    /**
+     * Present when (and only when) this message is the RECORD of a voice
+     * call (docs/protocol.md, "Voice calls"). The body is then the
+     * server's English placeholder — "Voice call" / "Missed voice call" —
+     * which a client that knows this object never shows: the bubble draws
+     * its own wording from the outcome, the duration and which side of
+     * the call it was on.
+     */
+    val call: CallDto? = null,
+)
+
+/**
+ * The record of a voice call, on the message that is its history entry
+ * (docs/protocol.md, `Call`).
+ *
+ * [durationSecs] is present when (and only when) the call was ever
+ * answered — the seconds from the answer to the end on the server's
+ * clock — so a "failed" call may carry one and a "missed" call never does.
+ */
+@Serializable
+data class CallDto(
+    /** "completed" | "missed" | "declined" | "failed". */
+    val outcome: String,
+    @SerialName("duration_secs") val durationSecs: Int? = null,
+) {
+    companion object {
+        const val COMPLETED = "completed"
+        const val MISSED = "missed"
+        const val DECLINED = "declined"
+        const val FAILED = "failed"
+    }
+}
+
+/**
+ * One ICE candidate, as the signalling frames carry it (docs/protocol.md,
+ * "Voice calls"). `sdp_mid` and `sdp_mline_index` are each optional — a
+ * WebRTC stack supplies one, the other, or both — and are OMITTED rather
+ * than null when absent, like every optional field on this wire.
+ */
+@Serializable
+data class IceCandidateDto(
+    val candidate: String,
+    @SerialName("sdp_mid") val sdpMid: String? = null,
+    @SerialName("sdp_mline_index") val sdpMlineIndex: Int? = null,
+)
+
+/**
+ * One STUN or TURN server from `GET /calls/ice` (docs/protocol.md,
+ * `IceServer`). Credentials on a TURN server only, and only when the
+ * operator configured them.
+ */
+@Serializable
+data class IceServerDto(
+    val urls: List<String>,
+    val username: String? = null,
+    val credential: String? = null,
+)
+
+/** `GET /calls/ice` — fetched at the start of every call, never cached. */
+@Serializable
+data class IceServersResponse(
+    @SerialName("ice_servers") val iceServers: List<IceServerDto> = emptyList(),
+    @SerialName("ttl_secs") val ttlSecs: Long = 0,
 )
 
 /**
@@ -667,6 +730,12 @@ data class MeResponse(
     val family: FamilyDto? = null,
     val role: String? = null,
     @SerialName("pending_join_request") val pendingJoinRequest: PendingJoinRequestDto? = null,
+    /**
+     * Whether this server signals voice calls at all (`[calls] enabled`).
+     * ALWAYS present on a current server; the default covers one that
+     * predates calls, which then — correctly — shows no call button.
+     */
+    @SerialName("calls_enabled") val callsEnabled: Boolean = false,
 )
 
 @Serializable

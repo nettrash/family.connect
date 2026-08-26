@@ -55,6 +55,12 @@ pub mod codes {
     pub const INVALID_EMOJI: &str = "invalid_emoji";
     pub const INVALID_PAGINATION: &str = "invalid_pagination";
     pub const DEVICE_NOT_FOUND: &str = "device_not_found";
+    pub const CALLS_DISABLED: &str = "calls_disabled";
+    pub const INVALID_CALL: &str = "invalid_call";
+    pub const CALL_NOT_FOUND: &str = "call_not_found";
+    pub const CALL_BUSY: &str = "call_busy";
+    pub const PEER_BUSY: &str = "peer_busy";
+    pub const PEER_UNREACHABLE: &str = "peer_unreachable";
     pub const AVATAR_TOO_LARGE: &str = "avatar_too_large";
     pub const INVALID_IMAGE: &str = "invalid_image";
     pub const INTERNAL: &str = "internal";

@@ -295,7 +295,7 @@ struct SendPipelineTests {
         let clientMsgID = try #require(harness.messages().first?.clientMsgID)
 
         harness.coordinator.handle(frame: .error(
-            code: "not_chat_member", message: "nope", clientMsgID: clientMsgID))
+            code: "not_chat_member", message: "nope", clientMsgID: clientMsgID, callID: nil))
 
         #expect(harness.messages().first?.state == .failed)
     }

@@ -27,6 +27,7 @@ import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.dto.ReactionRequest
 import me.nettrash.familyconnect.data.net.dto.ReactionsCatchUpResponse
+import me.nettrash.familyconnect.data.net.dto.IceServersResponse
 import me.nettrash.familyconnect.data.net.dto.ReadRequest
 import me.nettrash.familyconnect.data.net.dto.SendMessageRequest
 import me.nettrash.familyconnect.data.net.dto.VoteRequest
@@ -86,6 +87,15 @@ interface ChatApi {
 
     /** Poll catch-up page: strictly after [afterSeq], ascending. */
     suspend fun getPolls(chatId: Long, afterSeq: Long, limit: Int = 50): ApiResult<PollsCatchUpResponse>
+
+    /**
+     * `GET /calls/ice` — the STUN/TURN servers to hand a peer connection,
+     * with time-limited TURN credentials minted for the caller
+     * (docs/protocol.md, "Voice calls"). Fetched at the start of EVERY
+     * call and never cached across calls: a credential is cheap, and a
+     * stale one is a call that silently cannot relay.
+     */
+    suspend fun iceServers(): ApiResult<IceServersResponse>
 }
 
 @Singleton
@@ -195,4 +205,7 @@ class DefaultChatApi @Inject constructor(
         limit: Int,
     ): ApiResult<PollsCatchUpResponse> =
         client.get("/chats/$chatId/polls?after_seq=$afterSeq&limit=$limit")
+
+    override suspend fun iceServers(): ApiResult<IceServersResponse> =
+        client.get("/calls/ice")
 }

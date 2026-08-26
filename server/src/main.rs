@@ -17,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 
 use family_connect::config::Config;
 use family_connect::state::AppState;
-use family_connect::{app, db, handlers_attachment, handlers_chat, migrate, push};
+use family_connect::{app, calls, db, handlers_attachment, handlers_chat, migrate, push};
 
 #[derive(Parser, Debug)]
 #[command(name = "family-connect", about = "Self-hosted family chat server")]
@@ -105,6 +105,11 @@ async fn main() -> Result<()> {
             }
         });
     }
+
+    // The calls sweeper: ends calls that rang out and the answered ones
+    // nobody is connected to any more (docs/protocol.md, "Voice calls").
+    // A 1 s tick, cancelled on shutdown.
+    calls::spawn_sweeper(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&state.cfg.server.bind)
         .await

@@ -51,6 +51,7 @@ import me.nettrash.familyconnect.data.net.dto.MeResponse
 import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
+import me.nettrash.familyconnect.data.net.dto.IceServersResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.BoardApi
 import me.nettrash.familyconnect.data.net.dto.BoardChangesResponse
@@ -162,6 +163,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
             assistantUserId = userId,
             assistantName = displayName,
         )
+    }
+
+    override suspend fun setCallsEnabled(enabled: Boolean) {
+        _state.value = _state.value.copy(callsEnabled = enabled)
     }
 
     override suspend fun resetKeepingServerUrl() {
@@ -508,6 +513,15 @@ class FakeChatApi : ChatApi {
     ): ApiResult<MessagePollStateDto> {
         closedPolls += chatId to messageId
         return closePollHandler(chatId, messageId)
+    }
+
+    /** What `GET /calls/ice` answers; counted so a test can prove it is asked per call. */
+    var iceServersResult: ApiResult<IceServersResponse> = ApiResult.Ok(IceServersResponse())
+    var iceServersCalls = 0
+
+    override suspend fun iceServers(): ApiResult<IceServersResponse> {
+        iceServersCalls += 1
+        return iceServersResult
     }
 
     override suspend fun getPolls(

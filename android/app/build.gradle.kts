@@ -287,6 +287,11 @@ dependencies {
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
 
+    // WebRTC — peer-to-peer voice calls (docs/protocol.md, "Voice calls").
+    // The audio travels device to device; the family's server only
+    // relays the signalling frames over the socket it already holds.
+    implementation(libs.stream.webrtc.android)
+
     // Maps — the map drawn on a shared location. See the note in
     // libs.versions.toml: this is the second Google service and a
     // deliberate exception nettrash asked for, not a drift. Drawn in LITE

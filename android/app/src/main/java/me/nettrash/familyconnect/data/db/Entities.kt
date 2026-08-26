@@ -25,6 +25,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.CallDto
 import me.nettrash.familyconnect.data.net.dto.BirthdayDto
 
 /** Lifecycle of an outbound message; inbound rows are always SENT. */
@@ -181,7 +182,22 @@ data class MessageEntity(
      * ack's authoritative copy still passes the guard.
      */
     @ColumnInfo(defaultValue = "0") val pollSeq: Long = 0,
+    /**
+     * The record of a voice call, when this message is one
+     * (docs/protocol.md, "Voice calls"): "completed" | "missed" |
+     * "declined" | "failed", and the seconds the call lasted when it was
+     * ever answered. Null = not a call, which is the only thing absence
+     * ever means here — a record is written once and never changes.
+     * The body is the server's English placeholder, which the bubble
+     * never shows once it knows the outcome.
+     */
+    val callOutcome: String? = null,
+    val callDurationSecs: Int? = null,
 ) {
+    /** The wire shape back out of the two columns, or null for a message that is not a call. */
+    val call: CallDto?
+        get() = callOutcome?.let { CallDto(outcome = it, durationSecs = callDurationSecs) }
+
     /** The wire shape back out of the flat columns, or null for no media. */
     val attachment: AttachmentDto?
         get() = attachmentId?.let { id ->

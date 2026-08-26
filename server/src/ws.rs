@@ -28,9 +28,10 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::events;
+use crate::handlers_call;
 use crate::handlers_chat;
 use crate::handlers_chat::NewPoll;
-use crate::models::{Member, Message, Note, Poll, Reaction, UserBrief};
+use crate::models::{IceCandidate, Member, Message, Note, Poll, Reaction, UserBrief};
 use crate::registry::{CLOSE_GOING_AWAY, CLOSE_SESSION_GONE};
 use crate::state::AppState;
 
@@ -64,6 +65,30 @@ pub enum ClientFrame {
     },
     Typing {
         chat_id: i64,
+    },
+    /// Place a call (protocol.md, "Voice calls"). `call_id` is a UUID the
+    /// CALLER minted, exactly as `client_msg_id` is; the record written when
+    /// the call ends carries it as its `client_msg_id`.
+    CallOffer {
+        call_id: Uuid,
+        chat_id: i64,
+        sdp: String,
+    },
+    /// The callee takes the call.
+    CallAnswer {
+        call_id: Uuid,
+        sdp: String,
+    },
+    /// One ICE candidate, trickled after the offer/answer.
+    CallIce {
+        call_id: Uuid,
+        candidate: IceCandidate,
+    },
+    /// End a call. `reason` is one of `hangup`, `decline`, `cancel`,
+    /// `failed`; anything else is `invalid_call`.
+    CallEnd {
+        call_id: Uuid,
+        reason: String,
     },
     Ping,
 }
@@ -173,6 +198,37 @@ pub enum ServerFrame {
         reaction_seq: i64,
         reactions: Vec<Reaction>,
     },
+    /// An incoming call, delivered to every connection of the callee
+    /// (protocol.md, "Voice calls"). Replayed to a callee connection that
+    /// registers while the call still rings.
+    CallOffer {
+        call_id: Uuid,
+        chat_id: i64,
+        from_user_id: i64,
+        sdp: String,
+    },
+    /// The offer reached the callee: answered back on the CALLER's
+    /// originating connection.
+    CallRinging {
+        call_id: Uuid,
+    },
+    /// The callee answered — to the caller's connections.
+    CallAnswer {
+        call_id: Uuid,
+        sdp: String,
+    },
+    /// A relayed ICE candidate.
+    CallIce {
+        call_id: Uuid,
+        candidate: IceCandidate,
+    },
+    /// The call ended, with the reason. A client `reason` (`hangup`,
+    /// `decline`, `cancel`, `failed`) or a server one (`timeout`,
+    /// `answered_elsewhere`).
+    CallEnd {
+        call_id: Uuid,
+        reason: String,
+    },
     Pong,
     Error {
         code: String,
@@ -180,6 +236,10 @@ pub enum ServerFrame {
         /// Present when the error answers a `send` frame.
         #[serde(skip_serializing_if = "Option::is_none")]
         client_msg_id: Option<Uuid>,
+        /// Present when the error answers a call frame. Never both at once
+        /// (protocol.md, "Client → server").
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        call_id: Option<Uuid>,
     },
 }
 
@@ -190,6 +250,19 @@ impl ServerFrame {
             code,
             message,
             client_msg_id,
+            call_id: None,
+        }
+    }
+
+    /// An error frame that answers a call frame: carries the `call_id`, and
+    /// never a `client_msg_id`.
+    fn call_error(err: ApiError, call_id: Uuid) -> Self {
+        let (code, message) = err.into_ws_parts();
+        Self::Error {
+            code,
+            message,
+            client_msg_id: None,
+            call_id: Some(call_id),
         }
     }
 }
@@ -236,6 +309,22 @@ async fn run_connection(
     let registry = state.registry.clone();
     let mut registration = registry.register(auth.user_id, auth.session_id).await;
     let shutdown = registry.shutdown_token();
+
+    // Late arrivals (protocol.md, "Voice calls"): a connection is REGISTERED
+    // some seconds after the push that woke its device, and the frames that
+    // would have told it what to do were sent before it existed. Replay a
+    // ringing offer (with its buffered candidates) and any very recent
+    // `call_end` — so a phone woken for a call that has meanwhile been taken
+    // on another device stops ringing at once rather than at its own
+    // guard timeout.
+    for frame in call_replays(&state, auth.user_id) {
+        if send_frame(&mut socket, &frame).await.is_err() {
+            registry
+                .unregister(auth.user_id, registration.conn_id)
+                .await;
+            return;
+        }
+    }
 
     let mut ping_ticker =
         tokio::time::interval(Duration::from_secs(state.cfg.limits.ws_ping_interval_secs));
@@ -330,9 +419,46 @@ async fn run_connection(
         }
     }
 
+    // A connection that placed a call and then vanished while it still rang
+    // cancels that call: nothing should ring for somebody who is no longer
+    // there (protocol.md, "Voice calls"). Answered calls are untouched —
+    // their audio is peer to peer and survives a reconnect.
+    for ended in state.calls.connection_closed(registration.conn_id) {
+        handlers_call::finish_call(&state, ended).await;
+    }
+
     registry
         .unregister(auth.user_id, registration.conn_id)
         .await;
+}
+
+/// The frames to replay to a connection the moment it registers: a ringing
+/// offer it is the callee of, then the caller's buffered candidates, then a
+/// `call_end` for each call it was the callee of that ended in the last
+/// couple of minutes.
+fn call_replays(state: &AppState, user_id: i64) -> Vec<ServerFrame> {
+    let mut frames = Vec::new();
+    if let Some(pending) = state.calls.pending_offer_for(user_id) {
+        frames.push(ServerFrame::CallOffer {
+            call_id: pending.call_id,
+            chat_id: pending.chat_id,
+            from_user_id: pending.from_user_id,
+            sdp: pending.sdp,
+        });
+        for candidate in pending.candidates {
+            frames.push(ServerFrame::CallIce {
+                call_id: pending.call_id,
+                candidate,
+            });
+        }
+    }
+    for (call_id, reason) in state.calls.recent_ends_for(user_id) {
+        frames.push(ServerFrame::CallEnd {
+            call_id,
+            reason: reason.as_str().to_string(),
+        });
+    }
+    frames
 }
 
 async fn send_frame(socket: &mut WebSocket, frame: &ServerFrame) -> Result<(), axum::Error> {
@@ -520,6 +646,57 @@ async fn handle_client_text(
             None
         }
 
+        "call_offer" | "call_answer" | "call_ice" | "call_end" => {
+            // Salvage the call_id for the error frame even when the rest of
+            // the frame fails to parse — a client needs it to correlate.
+            let call_id = value
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok());
+            let frame: ClientFrame = match serde_json::from_value(value) {
+                Ok(frame) => frame,
+                Err(err) => {
+                    let error = ApiError::bad_request(
+                        crate::error::codes::INVALID_CALL,
+                        format!("malformed call frame: {err}"),
+                    );
+                    // With a call_id, answer on the call channel; without
+                    // one there is nothing to correlate, so stay silent.
+                    return call_id.map(|id| ServerFrame::call_error(error, id));
+                }
+            };
+            match frame {
+                ClientFrame::CallOffer {
+                    call_id,
+                    chat_id,
+                    sdp,
+                } => handlers_call::offer(state, auth, conn_id, call_id, chat_id, sdp)
+                    .await
+                    .err()
+                    .map(|err| ServerFrame::call_error(err, call_id)),
+                ClientFrame::CallAnswer { call_id, sdp } => {
+                    handlers_call::answer(state, auth, conn_id, call_id, sdp)
+                        .await
+                        .err()
+                        .map(|err| ServerFrame::call_error(err, call_id))
+                }
+                ClientFrame::CallIce { call_id, candidate } => {
+                    // A candidate for an unknown call is dropped in silence:
+                    // it is noise-level, and answering per candidate would be
+                    // a flood (protocol.md, "Semantics: Calls").
+                    handlers_call::ice(state, auth.user_id, call_id, candidate).await;
+                    None
+                }
+                ClientFrame::CallEnd { call_id, reason } => {
+                    handlers_call::end(state, auth, conn_id, call_id, reason)
+                        .await
+                        .err()
+                        .map(|err| ServerFrame::call_error(err, call_id))
+                }
+                _ => unreachable!("type tag was a call frame"),
+            }
+        }
+
         other => {
             // Forward compatibility: future frame types must not break us.
             debug!(frame_type = other, "ignoring unknown websocket frame type");
@@ -554,6 +731,7 @@ mod tests {
             edit_seq: None,
             attachment: None,
             poll: None,
+            call: None,
         }
     }
 
@@ -1008,6 +1186,170 @@ mod tests {
     }
 
     #[test]
+    fn client_call_frames_parse_the_protocol_examples() {
+        let offer: ClientFrame = serde_json::from_str(
+            r#"{"type": "call_offer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "chat_id": 42, "sdp": "v=0\r\n"}"#,
+        )
+        .expect("call_offer parses");
+        assert_eq!(
+            offer,
+            ClientFrame::CallOffer {
+                call_id: Uuid::parse_str("6a1f0c3e-0000-4000-8000-000000000001").unwrap(),
+                chat_id: 42,
+                sdp: "v=0\r\n".to_string(),
+            }
+        );
+        let answer: ClientFrame = serde_json::from_str(
+            r#"{"type": "call_answer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "sdp": "v=0\r\n"}"#,
+        )
+        .expect("call_answer parses");
+        assert_eq!(
+            answer,
+            ClientFrame::CallAnswer {
+                call_id: Uuid::parse_str("6a1f0c3e-0000-4000-8000-000000000001").unwrap(),
+                sdp: "v=0\r\n".to_string(),
+            }
+        );
+        let ice: ClientFrame = serde_json::from_str(
+            r#"{"type": "call_ice", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "candidate": {"candidate": "candidate:1", "sdp_mid": "0", "sdp_mline_index": 0}}"#,
+        )
+        .expect("call_ice parses");
+        assert_eq!(
+            ice,
+            ClientFrame::CallIce {
+                call_id: Uuid::parse_str("6a1f0c3e-0000-4000-8000-000000000001").unwrap(),
+                candidate: IceCandidate {
+                    candidate: "candidate:1".to_string(),
+                    sdp_mid: Some("0".to_string()),
+                    sdp_mline_index: Some(0),
+                },
+            }
+        );
+        let end: ClientFrame = serde_json::from_str(
+            r#"{"type": "call_end", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "reason": "hangup"}"#,
+        )
+        .expect("call_end parses");
+        assert_eq!(
+            end,
+            ClientFrame::CallEnd {
+                call_id: Uuid::parse_str("6a1f0c3e-0000-4000-8000-000000000001").unwrap(),
+                reason: "hangup".to_string(),
+            }
+        );
+    }
+
+    /// A candidate may carry only one of the two sdp locators — a WebRTC
+    /// stack supplies one, the other, or both — and the absent one is not
+    /// serialized as null.
+    #[test]
+    fn an_ice_candidate_omits_the_sdp_locators_it_was_not_given() {
+        let frame = ServerFrame::CallIce {
+            call_id: Uuid::parse_str("6a1f0c3e-0000-4000-8000-000000000001").unwrap(),
+            candidate: IceCandidate {
+                candidate: "candidate:1".to_string(),
+                sdp_mid: None,
+                sdp_mline_index: None,
+            },
+        };
+        let json = serde_json::to_value(&frame).expect("serializes");
+        assert!(
+            json["candidate"].get("sdp_mid").is_none()
+                && json["candidate"].get("sdp_mline_index").is_none(),
+            "the sdp locators must be absent, not null: {json}"
+        );
+    }
+
+    #[test]
+    fn server_call_frames_match_the_protocol_shape() {
+        let call_id = Uuid::parse_str("6a1f0c3e-0000-4000-8000-000000000001").unwrap();
+        assert_serializes_to(
+            &ServerFrame::CallOffer {
+                call_id,
+                chat_id: 42,
+                from_user_id: 7,
+                sdp: "v=0".to_string(),
+            },
+            r#"{"type": "call_offer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001",
+                "chat_id": 42, "from_user_id": 7, "sdp": "v=0"}"#,
+        );
+        assert_serializes_to(
+            &ServerFrame::CallRinging { call_id },
+            r#"{"type": "call_ringing", "call_id": "6a1f0c3e-0000-4000-8000-000000000001"}"#,
+        );
+        assert_serializes_to(
+            &ServerFrame::CallAnswer {
+                call_id,
+                sdp: "v=0".to_string(),
+            },
+            r#"{"type": "call_answer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "sdp": "v=0"}"#,
+        );
+        assert_serializes_to(
+            &ServerFrame::CallEnd {
+                call_id,
+                reason: "answered_elsewhere".to_string(),
+            },
+            r#"{"type": "call_end", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "reason": "answered_elsewhere"}"#,
+        );
+    }
+
+    /// An error answering a call frame carries the `call_id` and never a
+    /// `client_msg_id`; the two are mutually exclusive on the wire.
+    #[test]
+    fn a_call_error_carries_the_call_id_and_not_a_client_msg_id() {
+        let call_id = Uuid::parse_str("6a1f0c3e-0000-4000-8000-000000000001").unwrap();
+        let frame = ServerFrame::call_error(
+            ApiError::conflict(
+                crate::error::codes::PEER_BUSY,
+                "the person you called is on another call",
+            ),
+            call_id,
+        );
+        let json = serde_json::to_value(&frame).expect("serializes");
+        assert_eq!(json["type"], "error");
+        assert_eq!(json["code"], "peer_busy");
+        assert_eq!(json["call_id"], "6a1f0c3e-0000-4000-8000-000000000001");
+        assert!(
+            json.get("client_msg_id").is_none(),
+            "a call error must not carry a client_msg_id: {json}"
+        );
+    }
+
+    /// A message that is the record of a call carries the whole `call`
+    /// object; an ordinary message omits the key entirely.
+    #[test]
+    fn a_message_frame_carries_a_call_record_and_a_bare_message_omits_it() {
+        let mut message = sample_message();
+        message.body = "Voice call".to_string();
+        message.call = Some(crate::models::CallRecord {
+            outcome: "completed".to_string(),
+            duration_secs: Some(222),
+        });
+        let json = serde_json::to_value(ServerFrame::Message { message }).expect("serializes");
+        assert_eq!(
+            json["message"]["call"],
+            serde_json::json!({"outcome": "completed", "duration_secs": 222})
+        );
+
+        let bare = serde_json::to_value(sample_message()).expect("serializes");
+        assert!(
+            bare.get("call").is_none(),
+            "the call key must be absent, not null, on an ordinary message: {bare}"
+        );
+    }
+
+    /// A missed call's record carries no duration — the call was never
+    /// answered, and that absence is meaningful, so it is omitted not null.
+    #[test]
+    fn a_missed_call_record_omits_the_duration() {
+        let record = crate::models::CallRecord {
+            outcome: "missed".to_string(),
+            duration_secs: None,
+        };
+        let json = serde_json::to_value(&record).expect("serializes");
+        assert_eq!(json, serde_json::json!({"outcome": "missed"}));
+    }
+
+    #[test]
     fn pong_frame_matches_the_protocol_shape() {
         assert_serializes_to(&ServerFrame::Pong, r#"{"type": "pong"}"#);
     }
@@ -1018,6 +1360,7 @@ mod tests {
             code: "not_chat_member".to_string(),
             message: "you are not a member of this chat".to_string(),
             client_msg_id: Some(sample_message().client_msg_id),
+            call_id: None,
         };
         assert_serializes_to(
             &with_id,
@@ -1030,6 +1373,7 @@ mod tests {
             code: "not_chat_member".to_string(),
             message: "you are not a member of this chat".to_string(),
             client_msg_id: None,
+            call_id: None,
         };
         let json = serde_json::to_value(&without_id).expect("serializes");
         assert!(

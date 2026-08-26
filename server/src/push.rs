@@ -26,7 +26,9 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::config::{ApnsConfig, FcmConfig, PushConfig};
-use crate::push_payload::{Notification, apns_payload, fcm_message};
+use crate::push_payload::{
+    CallPush, Notification, apns_payload, apns_voip_payload, fcm_call_message, fcm_message,
+};
 
 /// A device that should be notified: a row of `devices` with a non-null
 /// token, which the per-device gate in `events` decided is not already
@@ -49,6 +51,20 @@ pub trait PushSender: Send + Sync {
     /// the caller can delete their rows; transport failures are logged and
     /// swallowed — push never blocks and never retries in v1.
     async fn notify(&self, devices: &[DevicePush], note: &Notification) -> Vec<i64>;
+
+    /// Ring `devices` for an incoming voice call (docs/protocol.md,
+    /// "Incoming calls"). A call is not a notification — it takes the VoIP
+    /// path on iOS and a data-only message on Android — so it is a separate
+    /// method. For an iOS/macOS device `push_token` holds the VoIP token.
+    /// Returns the device ids the platform reported permanently dead, the
+    /// same way `notify` does.
+    ///
+    /// Defaulted so a `PushSender` that does not care about calls (the log
+    /// fallback, a test recorder that only watches messages) keeps
+    /// compiling; the shipped `Dispatcher` overrides it.
+    async fn notify_call(&self, _devices: &[DevicePush], _call: &CallPush) -> Vec<i64> {
+        Vec::new()
+    }
 }
 
 /// Fallback sender: records the notification in the server log and does
@@ -67,6 +83,19 @@ impl PushSender for LogPushSender {
                 platform = %device.platform,
                 kind = note.event.kind(),
                 "push (log fallback): would deliver notification"
+            );
+        }
+        Vec::new()
+    }
+
+    async fn notify_call(&self, devices: &[DevicePush], call: &CallPush) -> Vec<i64> {
+        for device in devices {
+            info!(
+                device_id = device.device_id,
+                user_id = device.user_id,
+                platform = %device.platform,
+                call_id = %call.call_id,
+                "push (log fallback): would ring for an incoming call"
             );
         }
         Vec::new()
@@ -119,6 +148,37 @@ impl PushSender for Dispatcher {
                 Some(fcm) => dead.extend(fcm.send_all(&android, note).await),
                 None => {
                     self.log.notify(&android, note).await;
+                }
+            }
+        }
+        dead
+    }
+
+    async fn notify_call(&self, devices: &[DevicePush], call: &CallPush) -> Vec<i64> {
+        let ios: Vec<DevicePush> = devices
+            .iter()
+            .filter(|d| d.platform == "ios" || d.platform == "macos")
+            .cloned()
+            .collect();
+        let android: Vec<DevicePush> = devices
+            .iter()
+            .filter(|d| d.platform == "android")
+            .cloned()
+            .collect();
+        let mut dead = Vec::new();
+        if !ios.is_empty() {
+            match &self.apns {
+                Some(apns) => dead.extend(apns.send_voip_all(&ios, call).await),
+                None => {
+                    self.log.notify_call(&ios, call).await;
+                }
+            }
+        }
+        if !android.is_empty() {
+            match &self.fcm {
+                Some(fcm) => dead.extend(fcm.send_call_all(&android, call).await),
+                None => {
+                    self.log.notify_call(&android, call).await;
                 }
             }
         }
@@ -291,6 +351,89 @@ impl ApnsSender {
             status = %status,
             reason = reason.as_deref().unwrap_or("<none>"),
             "APNs rejected the notification; dropping it"
+        );
+        false
+    }
+
+    /// Ring every VoIP device; returns the device ids APNs reported as
+    /// unregistered so their VoIP token is cleared (protocol.md, "Incoming
+    /// calls" — a dead VoIP token does not condemn the whole device row).
+    async fn send_voip_all(&self, devices: &[DevicePush], call: &CallPush) -> Vec<i64> {
+        let jwt = match self.provider_jwt().await {
+            Ok(jwt) => jwt,
+            Err(err) => {
+                warn!(error = ?err, "APNs provider JWT unavailable; dropping call pushes");
+                return Vec::new();
+            }
+        };
+        let payload = apns_voip_payload(call);
+        // The push must not outlive the ring: an expiry the far side has
+        // passed is a phone ringing for a call that already ended.
+        let expiration =
+            time::OffsetDateTime::now_utc().unix_timestamp() + call.ring_timeout_secs as i64;
+        let mut dead = Vec::new();
+        for device in devices {
+            if self.send_voip_one(&jwt, &payload, expiration, device).await {
+                dead.push(device.device_id);
+            }
+        }
+        dead
+    }
+
+    /// One VoIP push to one device. The topic is the app's bundle id with a
+    /// `.voip` suffix, the push type is `voip`, and there is no `apns-topic`
+    /// collision with the alert channel. Returns `true` on a dead token.
+    async fn send_voip_one(
+        &self,
+        jwt: &str,
+        payload: &Value,
+        expiration: i64,
+        device: &DevicePush,
+    ) -> bool {
+        let url = format!("{}/3/device/{}", self.endpoint, device.push_token);
+        let response = self
+            .client
+            .post(&url)
+            .header("authorization", format!("bearer {jwt}"))
+            .header("apns-topic", format!("{}.voip", self.bundle_id))
+            .header("apns-push-type", "voip")
+            .header("apns-priority", "10")
+            .header("apns-expiration", expiration.to_string())
+            .json(payload)
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                warn!(
+                    device_id = device.device_id,
+                    error = %err,
+                    "APNs VoIP request failed; dropping the call push"
+                );
+                return false;
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            return false;
+        }
+        let reason: Option<String> = response.json::<Value>().await.ok().and_then(|body| {
+            body.get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+        if apns_unregistered(status, reason.as_deref()) {
+            info!(
+                device_id = device.device_id,
+                "APNs reports the VoIP token unregistered; it will be cleared"
+            );
+            return true;
+        }
+        warn!(
+            device_id = device.device_id,
+            status = %status,
+            reason = reason.as_deref().unwrap_or("<none>"),
+            "APNs rejected the call push; dropping it"
         );
         false
     }
@@ -473,6 +616,77 @@ impl FcmSender {
             status = %status,
             body = %body,
             "FCM rejected the notification; dropping it"
+        );
+        false
+    }
+
+    /// Ring every Android device for an incoming call (protocol.md,
+    /// "Incoming calls"): the same OAuth token and endpoint as a message,
+    /// a data-only body. Returns the dead device ids.
+    async fn send_call_all(&self, devices: &[DevicePush], call: &CallPush) -> Vec<i64> {
+        let token = match self.access_token().await {
+            Ok(token) => token,
+            Err(err) => {
+                warn!(error = ?err, "FCM access token unavailable; dropping call pushes");
+                return Vec::new();
+            }
+        };
+        let url = format!(
+            "{}/v1/projects/{}/messages:send",
+            self.endpoint, self.project_id
+        );
+        let mut dead = Vec::new();
+        for device in devices {
+            if self.send_call_one(&url, &token, call, device).await {
+                dead.push(device.device_id);
+            }
+        }
+        dead
+    }
+
+    /// One call push to one Android device. Returns `true` on a dead token.
+    async fn send_call_one(
+        &self,
+        url: &str,
+        token: &str,
+        call: &CallPush,
+        device: &DevicePush,
+    ) -> bool {
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(token)
+            .json(&fcm_call_message(call, &device.push_token))
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                warn!(
+                    device_id = device.device_id,
+                    error = %err,
+                    "FCM call request failed; dropping the call push"
+                );
+                return false;
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            return false;
+        }
+        let body = response.json::<Value>().await.unwrap_or(Value::Null);
+        if fcm_unregistered(status, &body) {
+            info!(
+                device_id = device.device_id,
+                "FCM reports the token unregistered; the device row will be deleted"
+            );
+            return true;
+        }
+        warn!(
+            device_id = device.device_id,
+            status = %status,
+            body = %body,
+            "FCM rejected the call push; dropping it"
         );
         false
     }

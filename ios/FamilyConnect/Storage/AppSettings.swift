@@ -24,6 +24,9 @@ nonisolated enum AppSettings {
         static let joinPending = "v1.joinPending"
         static let pushToken = "v1.push.token"
         static let pushDeviceID = "v1.push.deviceID"
+        /// The PushKit VoIP token the server has confirmed, beside the
+        /// APNs pair above — an incoming call is delivered to this one.
+        static let voipToken = "v1.push.voipToken"
         /// Stores the DISABLED flag, so a missing key reads as "on".
         static let linkPreviewsDisabled = "v1.linkPreviewsDisabled"
         /// Stored INVERTED, exactly like the link-preview key above and for
@@ -156,6 +159,20 @@ nonisolated enum AppSettings {
         }
     }
 
+    /// The PushKit VoIP token (lowercase hex) most recently accepted by
+    /// POST /devices, or nil when none has been. iOS only in practice — a
+    /// Mac never has one. Same home as `pushToken`, for the same reason.
+    static var voipToken: String? {
+        get { defaults.string(forKey: Key.voipToken) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.voipToken)
+            } else {
+                defaults.removeObject(forKey: Key.voipToken)
+            }
+        }
+    }
+
     /// The server's device row id for `pushToken` — what
     /// DELETE /devices/{id} takes on logout.
     static var pushDeviceID: Int64? {
@@ -237,6 +254,7 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.joinPending)
         defaults.removeObject(forKey: Key.pushToken)
         defaults.removeObject(forKey: Key.pushDeviceID)
+        defaults.removeObject(forKey: Key.voipToken)
         defaults.removeObject(forKey: Key.legacyDeviceRegistered)
         defaults.removeObject(forKey: Key.boardCursor)
         defaults.removeObject(forKey: Key.boardSeenNoteID)

@@ -128,6 +128,20 @@ final class MessageEntity {
     var attachmentLatitude: Double?
     var attachmentLongitude: Double?
     var attachmentAccuracyM: Int?
+    /// The voice call this message records, when it is one (docs/
+    /// protocol.md, "Voice calls"): `completed`, `missed`, `declined` or
+    /// `failed`, and the seconds it lasted when it was ever answered. Two
+    /// nil-defaulted columns, so a lightweight migration. nil = not a
+    /// call record, which is the ONLY thing absence means here — nothing
+    /// on the wire ever takes a record off a message.
+    var callOutcome: String?
+    var callDurationSecs: Int?
+
+    /// The call record as the views want it, or nil when this is not one.
+    var callSnapshot: CallDTO? {
+        guard let callOutcome else { return nil }
+        return CallDTO(outcome: callOutcome, durationSecs: callDurationSecs)
+    }
 
     /// The attachment as the views want it, or nil when there is none.
     var attachmentSnapshot: AttachmentDTO? {
@@ -240,7 +254,8 @@ final class MessageEntity {
         replyExcerpt: String? = nil,
         editSeq: Int64 = 0,
         editedAt: Date? = nil,
-        attachment: AttachmentDTO? = nil
+        attachment: AttachmentDTO? = nil,
+        call: CallDTO? = nil
     ) {
         self.localID = localID
         self.serverID = serverID
@@ -281,5 +296,9 @@ final class MessageEntity {
         self.attachmentLatitude = attachment?.latitude
         self.attachmentLongitude = attachment?.longitude
         self.attachmentAccuracyM = attachment?.accuracyM
+        // The first-sight path, same reason as the poll above: a record
+        // that arrives in a history page has no other way in.
+        self.callOutcome = call?.outcome
+        self.callDurationSecs = call?.durationSecs
     }
 }

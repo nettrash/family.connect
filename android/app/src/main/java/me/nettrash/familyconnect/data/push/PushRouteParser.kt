@@ -9,6 +9,11 @@
  *   {"kind": "board_note", "family_id": …, "note_id": …} → Board
  *   {"kind": "join_request", "family_id": …}  → JoinRequests (owner-only push)
  *   {"kind": "joined", "family_id": …}        → ChatList
+ *   {"kind": "call", "call_id": …, …}          → Call — the call screen
+ *                                                (docs/protocol.md,
+ *                                                "Incoming calls"); a tap
+ *                                                on the notification, or
+ *                                                its Answer button
  *
  * The same map shape arrives two ways — as RemoteMessage.data when the
  * app builds the notification itself (foreground race), and as launcher-
@@ -31,6 +36,9 @@ sealed interface PendingRoute {
     data object Board : PendingRoute
     data object JoinRequests : PendingRoute
     data object ChatList : PendingRoute
+
+    /** The call screen; [answer] when the tap was the notification's Answer button. */
+    data class Call(val answer: Boolean = false) : PendingRoute
 }
 
 object PushRouteParser {
@@ -38,6 +46,16 @@ object PushRouteParser {
     /** Payload keys, exactly as the server writes them into `data`. */
     const val KEY_KIND = "kind"
     const val KEY_CHAT_ID = "chat_id"
+    const val KEY_CALL_ID = "call_id"
+    const val KEY_FROM_USER_ID = "from_user_id"
+    const val KEY_CALLER_NAME = "caller_name"
+
+    /** The `kind` of an incoming-call data push, and of the notification it becomes. */
+    const val KIND_CALL = "call"
+
+    /** Intent extra a call notification's Answer button sets to [ACTION_ANSWER]. */
+    const val KEY_CALL_ACTION = "call_action"
+    const val ACTION_ANSWER = "answer"
 
     fun parse(data: Map<String, String>): PendingRoute? = when (data[KEY_KIND]) {
         // FCM data values are always strings — chat_id arrives as "42".
@@ -45,6 +63,7 @@ object PushRouteParser {
         "board_note" -> PendingRoute.Board
         "join_request" -> PendingRoute.JoinRequests
         "joined" -> PendingRoute.ChatList
+        KIND_CALL -> PendingRoute.Call(answer = data[KEY_CALL_ACTION] == ACTION_ANSWER)
         else -> null
     }
 }

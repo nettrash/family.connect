@@ -9,11 +9,12 @@
 //  encoding a frame the server never defined.
 //
 //  COMPATIBILITY RULE, load-bearing: an unknown server "type" decodes to
-//  `.unknown(type:)` and NEVER throws. This is how voice/video signaling
-//  frames (`call_offer`, …) get added server-side later without breaking
-//  deployed v1 clients — the coordinator logs and skips them. Only a frame
-//  that is missing "type" entirely, or malforms a *known* type's payload,
-//  throws; the socket's receive loop logs and continues on those too.
+//  `.unknown(type:)` and NEVER throws. This is how the voice-call
+//  signalling frames (`call_offer`, …) were added server-side without
+//  breaking deployed v1 clients — those logged and skipped them. Only a
+//  frame that is missing "type" entirely, or malforms a *known* type's
+//  payload, throws; the socket's receive loop logs and continues on those
+//  too.
 //
 
 import Foundation
@@ -38,6 +39,15 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
     case read(chatID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64)
     case ping
+    /// Voice-call signalling (docs/protocol.md, "Voice calls"). `callID`
+    /// is a UUID this client minted, exactly as `clientMsgID` is: it is
+    /// what lets every reply be correlated with the call it answers, and
+    /// what makes the server's record exactly-once.
+    case callOffer(callID: String, chatID: Int64, sdp: String)
+    case callAnswer(callID: String, sdp: String)
+    case callIce(callID: String, candidate: IceCandidatePayload)
+    /// `reason` is one of `hangup`, `decline`, `cancel`, `failed`.
+    case callEnd(callID: String, reason: String)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -48,6 +58,10 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         case attachmentID = "attachment_id"
         case lastReadMessageID = "last_read_message_id"
         case poll
+        case callID = "call_id"
+        case sdp
+        case candidate
+        case reason
     }
 
     /// The keys of the nested `poll` object on a `send`. Its only member
@@ -83,6 +97,23 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
             try container.encode(chatID, forKey: .chatID)
         case .ping:
             try container.encode("ping", forKey: .type)
+        case .callOffer(let callID, let chatID, let sdp):
+            try container.encode("call_offer", forKey: .type)
+            try container.encode(callID, forKey: .callID)
+            try container.encode(chatID, forKey: .chatID)
+            try container.encode(sdp, forKey: .sdp)
+        case .callAnswer(let callID, let sdp):
+            try container.encode("call_answer", forKey: .type)
+            try container.encode(callID, forKey: .callID)
+            try container.encode(sdp, forKey: .sdp)
+        case .callIce(let callID, let candidate):
+            try container.encode("call_ice", forKey: .type)
+            try container.encode(callID, forKey: .callID)
+            try container.encode(candidate, forKey: .candidate)
+        case .callEnd(let callID, let reason):
+            try container.encode("call_end", forKey: .type)
+            try container.encode(callID, forKey: .callID)
+            try container.encode(reason, forKey: .reason)
         }
     }
 
@@ -203,6 +234,61 @@ nonisolated struct PollPayload: Decodable, Equatable, Sendable {
     }
 }
 
+/// One ICE candidate, in both directions (docs/protocol.md, "Voice
+/// calls"). `sdpMid` and `sdpMLineIndex` are each OPTIONAL: a WebRTC stack
+/// supplies one, the other, or both, and the receiving stack accepts
+/// whichever it was given — so an absent one is absent on the wire, never
+/// null, exactly like every other optional field here.
+nonisolated struct IceCandidatePayload: Codable, Equatable, Sendable {
+    let candidate: String
+    let sdpMid: String?
+    let sdpMLineIndex: Int32?
+
+    enum CodingKeys: String, CodingKey {
+        case candidate
+        case sdpMid = "sdp_mid"
+        case sdpMLineIndex = "sdp_mline_index"
+    }
+
+    init(candidate: String, sdpMid: String?, sdpMLineIndex: Int32?) {
+        self.candidate = candidate
+        self.sdpMid = sdpMid
+        self.sdpMLineIndex = sdpMLineIndex
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        candidate = try container.decode(String.self, forKey: .candidate)
+        sdpMid = try container.decodeIfPresent(String.self, forKey: .sdpMid)
+        sdpMLineIndex = try container.decodeIfPresent(Int32.self, forKey: .sdpMLineIndex)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(candidate, forKey: .candidate)
+        try container.encodeIfPresent(sdpMid, forKey: .sdpMid)
+        try container.encodeIfPresent(sdpMLineIndex, forKey: .sdpMLineIndex)
+    }
+}
+
+/// Payload of an inbound `call_offer`: somebody is ringing this account.
+/// Reaches EVERY connection the callee has, and is replayed to a
+/// connection that registers while the call is still ringing — so a
+/// device that already holds `callID` treats a second copy as the
+/// duplicate it is (docs/protocol.md, "Late arrivals").
+nonisolated struct CallOfferPayload: Decodable, Equatable, Sendable {
+    let callID: String
+    let chatID: Int64
+    let fromUserID: Int64
+    let sdp: String
+    enum CodingKeys: String, CodingKey {
+        case callID = "call_id"
+        case chatID = "chat_id"
+        case fromUserID = "from_user_id"
+        case sdp
+    }
+}
+
 nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     case ack(clientMsgID: String, message: MessageDTO)
     case message(MessageDTO)
@@ -238,9 +324,22 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     /// A poll's full current state after a vote, a retraction or a close.
     /// Dispatched exactly like `reaction`, under its own seq guard.
     case poll(PollPayload)
+    /// Voice-call signalling (docs/protocol.md, "Voice calls"). Every one
+    /// of these carries the `callID`, and CallManager applies a frame only
+    /// to a call it holds — a frame for any other call is ignored in
+    /// silence, which is the one rule that makes the multi-device story
+    /// work without the server tracking which device is doing what.
+    case callOffer(CallOfferPayload)
+    case callRinging(callID: String)
+    case callAnswer(callID: String, sdp: String)
+    case callIce(callID: String, candidate: IceCandidatePayload)
+    /// `reason`: `hangup`, `decline`, `cancel`, `timeout`, `failed` or
+    /// `answered_elsewhere`.
+    case callEnd(callID: String, reason: String)
     case pong
-    /// `clientMsgID` is present when the error answers a `send` frame.
-    case error(code: String, message: String, clientMsgID: String?)
+    /// `clientMsgID` is present when the error answers a `send` frame;
+    /// `callID` when it answers a call frame. Never both.
+    case error(code: String, message: String, clientMsgID: String?, callID: String?)
     /// Any type this client does not know. See the file header.
     case unknown(type: String)
 
@@ -261,6 +360,10 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case note
         case text
         case poll
+        case callID = "call_id"
+        case sdp
+        case candidate
+        case reason
     }
 
     init(from decoder: Decoder) throws {
@@ -313,13 +416,31 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case "poll":
             // Re-decode from the top so PollPayload owns its keys.
             self = .poll(try PollPayload(from: decoder))
+        case "call_offer":
+            // Re-decode from the top so CallOfferPayload owns its keys.
+            self = .callOffer(try CallOfferPayload(from: decoder))
+        case "call_ringing":
+            self = .callRinging(callID: try container.decode(String.self, forKey: .callID))
+        case "call_answer":
+            self = .callAnswer(
+                callID: try container.decode(String.self, forKey: .callID),
+                sdp: try container.decode(String.self, forKey: .sdp))
+        case "call_ice":
+            self = .callIce(
+                callID: try container.decode(String.self, forKey: .callID),
+                candidate: try container.decode(IceCandidatePayload.self, forKey: .candidate))
+        case "call_end":
+            self = .callEnd(
+                callID: try container.decode(String.self, forKey: .callID),
+                reason: try container.decode(String.self, forKey: .reason))
         case "pong":
             self = .pong
         case "error":
             self = .error(
                 code: try container.decode(String.self, forKey: .code),
                 message: (try container.decodeIfPresent(String.self, forKey: .message)) ?? "",
-                clientMsgID: try container.decodeIfPresent(String.self, forKey: .clientMsgID))
+                clientMsgID: try container.decodeIfPresent(String.self, forKey: .clientMsgID),
+                callID: try container.decodeIfPresent(String.self, forKey: .callID))
         default:
             self = .unknown(type: type)
         }

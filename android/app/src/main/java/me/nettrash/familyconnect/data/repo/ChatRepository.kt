@@ -263,7 +263,7 @@ class ChatRepository @Inject constructor(
                         // caption-less photo has an EMPTY body, which is
                         // not null, so the row rendered blank.
                         lastMessageBody = item.lastMessage
-                            ?.let { MessageRepository.previewText(it.body, it.attachment) }
+                            ?.let { MessageRepository.previewText(it.body, it.attachment, it.call) }
                             ?: existing?.lastMessageBody,
                         lastMessageAt = item.lastMessage?.createdAt
                             ?.let(TimeFormat::parseTimestamp)

@@ -777,6 +777,12 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             "family": family,
             "role": role,
             "pending_join_request": pending,
+            // Whether this server signals voice calls at all. Always
+            // present, like the assistant/history switches: a client hides
+            // its call button on false rather than discovering
+            // `calls_disabled` when somebody wants to talk (protocol.md,
+            // "Voice calls").
+            "calls_enabled": state.cfg.calls.enabled,
         })),
     )
         .into_response())

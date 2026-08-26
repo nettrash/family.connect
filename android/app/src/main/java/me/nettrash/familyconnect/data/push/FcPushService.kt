@@ -10,9 +10,13 @@
  *                      /devices when a session exists and caches it
  *                      otherwise (protocol: "Clients re-POST whenever the
  *                      OS rotates the token").
- *   onMessageReceived— fires ONLY while the app is foregrounded for the
- *                      server's notification+data messages (backgrounded/
- *                      dead, the system tray renders them itself). The
+ *   onMessageReceived— for the server's notification+data messages, fires
+ *                      ONLY while the app is foregrounded (backgrounded/
+ *                      dead, the system tray renders them itself); for
+ *                      the data-only `kind: "call"` message it fires in
+ *                      EVERY state, which is the whole point of that
+ *                      message being data-only (docs/protocol.md,
+ *                      "Incoming calls"). The
  *                      server never pushes to a user with a live socket,
  *                      so a foreground delivery is a race — the push left
  *                      the server just as our socket came up. If the
@@ -35,6 +39,8 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.R
+import me.nettrash.familyconnect.calls.CallManager
+import me.nettrash.familyconnect.calls.CallService
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.SocketState
 import me.nettrash.familyconnect.di.AppScope
@@ -48,6 +54,9 @@ class FcPushService : FirebaseMessagingService() {
 
     @Inject
     lateinit var chatSocket: ChatSocket
+
+    @Inject
+    lateinit var callManager: CallManager
 
     @Inject
     @AppScope
@@ -78,11 +87,15 @@ class FcPushService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
+        val data = message.data
+        if (data[PushRouteParser.KEY_KIND] == PushRouteParser.KIND_CALL) {
+            onIncomingCall(data)
+            return
+        }
         // Foreground + live socket = the race described in the header;
         // the message frame renders in the open UI, a banner would dupe it.
         if (chatSocket.state.value == SocketState.Open) return
 
-        val data = message.data
         val chatId = data[PushRouteParser.KEY_CHAT_ID]?.toLongOrNull()
         PushNotifications.show(
             context = this,
@@ -105,5 +118,24 @@ class FcPushService : FirebaseMessagingService() {
             // every push that is not about a chat.
             unreadInChat = message.notification?.notificationCount,
         )
+    }
+
+    /**
+     * Somebody is calling (docs/protocol.md, "Incoming calls"). The
+     * payload says WHO and WHICH call; the offer itself arrives over the
+     * socket, replayed at registration — so the manager is told, which
+     * makes it want the socket, and CallService is started HERE,
+     * synchronously, while a high-priority push still allows a foreground
+     * service to start from the background. With the socket already open
+     * the offer frame is on its way (or here) and the manager holds the
+     * call already; telling it again is a no-op.
+     */
+    private fun onIncomingCall(data: Map<String, String>) {
+        val callId = data[PushRouteParser.KEY_CALL_ID] ?: return
+        val chatId = data[PushRouteParser.KEY_CHAT_ID]?.toLongOrNull() ?: return
+        val fromUserId = data[PushRouteParser.KEY_FROM_USER_ID]?.toLongOrNull() ?: return
+        val callerName = data[PushRouteParser.KEY_CALLER_NAME]?.takeIf { it.isNotBlank() }
+        callManager.onIncomingPush(callId, chatId, fromUserId, callerName)
+        runCatching { startForegroundService(CallService.intent(this)) }
     }
 }

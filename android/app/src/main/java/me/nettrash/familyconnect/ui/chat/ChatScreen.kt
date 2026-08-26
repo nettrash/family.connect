@@ -120,6 +120,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallMade
+import androidx.compose.material.icons.filled.CallMissed
+import androidx.compose.material.icons.filled.CallReceived
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
@@ -298,6 +302,7 @@ fun ChatScreen(
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
     val memberAvatars by viewModel.memberAvatars.collectAsStateWithLifecycle()
+    val callsEnabled by viewModel.callsEnabled.collectAsStateWithLifecycle()
     // Which rows the assistant is still writing into. In-memory only, so a
     // row that was mid-stream when the app was killed is not stuck looking
     // live after a relaunch.
@@ -488,6 +493,31 @@ fun ChatScreen(
             Manifest.permission.RECORD_AUDIO,
         ) == PackageManager.PERMISSION_GRANTED
         if (held) viewModel.startRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    // Placing a voice call: the same permission, asked the same way, and
+    // the grant places the call. A refused start means this device is on
+    // a call already (docs/protocol.md: one call per person).
+    val placeCall: () -> Unit = {
+        if (!viewModel.startCall()) {
+            Toast.makeText(context, R.string.e_call_failed_to_start, Toast.LENGTH_SHORT).show()
+        }
+    }
+    val callPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            placeCall()
+        } else {
+            Toast.makeText(context, R.string.e_microphone_permission, Toast.LENGTH_LONG).show()
+        }
+    }
+    val startCall: () -> Unit = {
+        val held = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (held) placeCall() else callPermission.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     // Sharing a location. Asked at the moment of use, and the grant
@@ -862,6 +892,17 @@ fun ChatScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.s_back))
                     }
                 },
+                actions = {
+                    // A direct chat is the one place a call can start from:
+                    // a call lives in a direct chat (docs/protocol.md,
+                    // "Voice calls"). Hidden, not disabled, on a server
+                    // that has calls off.
+                    if (callsEnabled && chat?.kind == "direct") {
+                        IconButton(onClick = startCall) {
+                            Icon(Icons.Filled.Call, contentDescription = stringResource(R.string.s_voice_call))
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = barColor),
             )
         },
@@ -956,6 +997,7 @@ fun ChatScreen(
                                         haptics.performHapticFeedback(HapticFeedbackType.Confirm)
                                         viewModel.vote(serverId, optionId)
                                     },
+                                    onCallBack = if (callsEnabled && chat?.kind == "direct") startCall else null,
                                     onTapQuote = {
                                         pendingJump = JumpRequest(serverId = it, anchor = false)
                                     },
@@ -1832,6 +1874,8 @@ private fun MessageBubble(
     onPositioned: (ChatListItem.MessageItem, Rect) -> Unit,
     onTapQuote: (Long) -> Unit,
     onOpenAttachment: (AttachmentDto) -> Unit,
+    /** Tapping a call record calls back; null where calling is not possible. */
+    onCallBack: (() -> Unit)? = null,
 ) {
     val entity = item.entity
     // 18dp corners, tightened to 4dp where a bubble meets a same-sender
@@ -2053,6 +2097,7 @@ private fun MessageBubble(
                     onVote = { optionId ->
                         entity.serverId?.let { onVote(it, optionId) }
                     },
+                    onCallBack = onCallBack,
                     onDoubleTap = {
                         entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
                     },
@@ -2472,6 +2517,64 @@ private data class BodyBlock(
 )
 
 /**
+ * The line a call record draws: an outbound / inbound / missed glyph and
+ * the wording for its outcome. A tap calls back where that is possible;
+ * the bubble's own double-tap and long-press are re-emitted so the heart
+ * and the capsule keep working over it, as they do over a poll.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun CallRecordRow(
+    line: CallRecordLine,
+    isMine: Boolean,
+    onCallBack: (() -> Unit)?,
+    onDoubleTap: () -> Unit,
+    onLongPress: () -> Unit,
+) {
+    val icon = when (line) {
+        is CallRecordLine.Missed, is CallRecordLine.DeclinedByMe -> Icons.Filled.CallMissed
+        is CallRecordLine.NoAnswer, is CallRecordLine.DeclinedByThem -> Icons.Filled.CallMade
+        is CallRecordLine.Completed, is CallRecordLine.Failed ->
+            if (isMine) Icons.Filled.CallMade else Icons.Filled.CallReceived
+    }
+    val text = when (line) {
+        is CallRecordLine.Completed ->
+            stringResource(R.string.s_voice_call_with_duration, CallRecordWording.duration(line.durationSecs))
+        CallRecordLine.NoAnswer -> stringResource(R.string.s_no_answer)
+        CallRecordLine.Missed -> stringResource(R.string.s_missed_voice_call)
+        CallRecordLine.DeclinedByThem -> stringResource(R.string.s_voice_call_declined)
+        CallRecordLine.DeclinedByMe -> stringResource(R.string.s_declined_voice_call)
+        is CallRecordLine.Failed -> line.durationSecs
+            ?.let { stringResource(R.string.s_call_failed_with_duration, CallRecordWording.duration(it)) }
+            ?: stringResource(R.string.s_call_failed)
+    }
+    val missed = line is CallRecordLine.Missed
+    Row(
+        modifier = Modifier
+            .combinedClickable(
+                onClick = { onCallBack?.invoke() },
+                onDoubleClick = onDoubleTap,
+                onLongClick = onLongPress,
+            )
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = if (missed) MaterialTheme.colorScheme.error else LocalContentColor.current,
+            modifier = Modifier.size(20.dp),
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (missed) MaterialTheme.colorScheme.error else LocalContentColor.current,
+        )
+    }
+}
+
+/**
  * The poll inside a bubble: one row per option, each with the share of
  * the vote it holds drawn behind it, the faces of the people who chose
  * it, and its count — then a footer saying how much of the family has
@@ -2874,6 +2977,8 @@ private fun BubbleContent(
     onToggleReaction: (String) -> Unit,
     /** Cast or clear my vote on one poll option (no-op until acked). */
     onVote: (Long) -> Unit,
+    /** Tapping a call record calls the other person back; null where that is not possible. */
+    onCallBack: (() -> Unit)? = null,
     /** Double-tap over link text — the quick heart, same as the bubble's own gesture. */
     onDoubleTap: () -> Unit,
     /** Long-press over link text — opens the reaction capsule, same as the bubble's own gesture. */
@@ -2988,9 +3093,22 @@ private fun BubbleContent(
         if (isStreaming && entity.body.isEmpty()) {
             StreamingCursor()
         }
+        // A call record draws its own wording from the outcome and the
+        // side, never the body — which is the server's English placeholder
+        // for clients that predate calls (docs/protocol.md, "Voice calls").
+        val callRecord = entity.call
+        if (callRecord != null) {
+            CallRecordRow(
+                line = CallRecordWording.line(callRecord, isMine = isMine),
+                isMine = isMine,
+                onCallBack = onCallBack,
+                onDoubleTap = onDoubleTap,
+                onLongPress = onTextLongPress,
+            )
+        }
         // A photo needs no caption, and an empty Text would still take a
         // line's height inside the balloon.
-        if (entity.body.isNotEmpty()) {
+        if (entity.body.isNotEmpty() && callRecord == null) {
             val minTextWidth = with(LocalDensity.current) { blockWidth.toDp() }
             blocks.forEachIndexed { index, bodyBlock ->
                 // Blocks stack, and the newline that separated them in the

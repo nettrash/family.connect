@@ -80,6 +80,7 @@ import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.ReplyToDto
+import me.nettrash.familyconnect.calls.CallStarter
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
@@ -141,6 +142,12 @@ class ChatViewModel @Inject constructor(
     @param:AppScope private val appScope: CoroutineScope,
     memberDao: MemberDao,
     connectivity: ConnectivityObserver,
+    /**
+     * Defaulted so the tests can build the ViewModel by hand; Dagger
+     * ignores the default and injects CallManager (the same trick
+     * SessionRepository plays with its push-token repository).
+     */
+    private val callStarter: CallStarter = CallStarter { _, _ -> false },
 ) : ViewModel() {
 
     val chatId: Long = checkNotNull(savedStateHandle["chatId"]) { "chatId nav arg missing" }
@@ -189,6 +196,26 @@ class ChatViewModel @Inject constructor(
 
     val myUserId: StateFlow<Long?> = settings.state.map { it.myUserId }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * Whether the server signals voice calls (`GET /me` → calls_enabled).
+     * The call button is drawn behind this rather than letting somebody
+     * find out at the moment they want to talk.
+     */
+    val callsEnabled: StateFlow<Boolean> = settings.state.map { it.callsEnabled }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /**
+     * Ring the other person in this direct chat. The screen has already
+     * secured the microphone permission. False when this device is on a
+     * call already, or this is not a direct chat.
+     */
+    fun startCall(): Boolean {
+        val current = chat.value ?: return false
+        val peer = current.peerUserId ?: return false
+        if (current.kind != "direct") return false
+        return callStarter.startCall(current.id, peer)
+    }
 
     // Roster snapshot — sender names in family bubbles, the typing
     // indicator, and the who-reacted popup all resolve through it.

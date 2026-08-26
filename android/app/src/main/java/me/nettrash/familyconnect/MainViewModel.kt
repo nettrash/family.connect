@@ -27,6 +27,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.push.PendingRoute
+import me.nettrash.familyconnect.calls.CallState
+import me.nettrash.familyconnect.calls.CallStateSource
 import me.nettrash.familyconnect.data.repo.SessionEvent
 import me.nettrash.familyconnect.data.repo.SessionRepository
 import me.nettrash.familyconnect.data.repo.SessionSnapshot
@@ -35,7 +37,15 @@ import javax.inject.Inject
 @HiltViewModel
 class MainViewModel @Inject constructor(
     sessionRepository: SessionRepository,
+    /** Defaulted for the tests; Dagger ignores the default and injects CallManager. */
+    private val calls: CallStateSource = CallStateSource.NONE,
 ) : ViewModel() {
+
+    /** The one voice call this device can be on — AppNavHost shows the call screen off it. */
+    val callState: StateFlow<CallState> = calls.state
+
+    /** The notification's Answer button: remembered until the call screen can act on it. */
+    fun requestAnswer() = calls.requestAnswer()
 
     private val _bootState = MutableStateFlow<SessionSnapshot?>(null)
 

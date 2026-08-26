@@ -569,6 +569,10 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     /// its message, so an incoming copy without one says nothing about a
     /// poll already stored — exactly the rule the reaction fields follow.
     let poll: PollDTO?
+    /// Present when (and only when) this message is the record of a voice
+    /// call (docs/protocol.md, "Voice calls"). The body is then an English
+    /// placeholder a client that knows this object never shows.
+    let call: CallDTO?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -584,6 +588,7 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         case editSeq = "edit_seq"
         case attachment
         case poll
+        case call
     }
 
     /// Explicit memberwise init so the reaction fields default to absent
@@ -601,7 +606,8 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         editedAt: Date? = nil,
         editSeq: Int64? = nil,
         attachment: AttachmentDTO? = nil,
-        poll: PollDTO? = nil
+        poll: PollDTO? = nil,
+        call: CallDTO? = nil
     ) {
         self.id = id
         self.chatID = chatID
@@ -616,6 +622,75 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         self.editSeq = editSeq
         self.attachment = attachment
         self.poll = poll
+        self.call = call
+    }
+}
+
+/// The record of a voice call, riding on the message the server writes
+/// into the direct chat afterwards (docs/protocol.md, "Voice calls").
+/// `outcome` is `completed`, `missed`, `declined` or `failed`;
+/// `durationSecs` is present when (and only when) the call was ever
+/// answered. The record's sender is the CALLER, so which side of the call
+/// the reader was on is `senderID == currentUserID`.
+nonisolated struct CallDTO: Codable, Equatable, Hashable, Sendable {
+    let outcome: String
+    let durationSecs: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case outcome
+        case durationSecs = "duration_secs"
+    }
+
+    init(outcome: String, durationSecs: Int? = nil) {
+        self.outcome = outcome
+        self.durationSecs = durationSecs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        outcome = try container.decode(String.self, forKey: .outcome)
+        durationSecs = try container.decodeIfPresent(Int.self, forKey: .durationSecs)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(outcome, forKey: .outcome)
+        try container.encodeIfPresent(durationSecs, forKey: .durationSecs)
+    }
+
+    enum Outcome {
+        static let completed = "completed"
+        static let missed = "missed"
+        static let declined = "declined"
+        static let failed = "failed"
+    }
+}
+
+/// One STUN or TURN server from `GET /calls/ice`. `username` and
+/// `credential` on a TURN server only, and only when the operator
+/// configured credentials.
+nonisolated struct IceServerDTO: Codable, Equatable, Sendable {
+    let urls: [String]
+    let username: String?
+    let credential: String?
+
+    init(urls: [String], username: String? = nil, credential: String? = nil) {
+        self.urls = urls
+        self.username = username
+        self.credential = credential
+    }
+}
+
+/// `GET /calls/ice` reply. Fetched at the start of every call, never
+/// cached across calls: a TURN credential is minted for the caller and
+/// expires, and a stale one is a call that silently cannot relay.
+nonisolated struct IceServersResponse: Codable, Equatable, Sendable {
+    let iceServers: [IceServerDTO]
+    let ttlSecs: Int
+
+    enum CodingKeys: String, CodingKey {
+        case iceServers = "ice_servers"
+        case ttlSecs = "ttl_secs"
     }
 }
 
@@ -645,12 +720,43 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// "owner" | "member" | nil
     let role: String?
     let pendingJoinRequest: PendingJoinRequestDTO?
+    /// Whether this server signals voice calls at all (docs/protocol.md,
+    /// "Voice calls"). ALWAYS present on a current server; defaulted to
+    /// false for one that predates calls, which is also the right answer
+    /// there — it has no `call_offer` to accept.
+    var callsEnabled: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case user
         case family
         case role
         case pendingJoinRequest = "pending_join_request"
+        case callsEnabled = "calls_enabled"
+    }
+
+    init(
+        user: UserDTO,
+        family: FamilyDTO?,
+        role: String?,
+        pendingJoinRequest: PendingJoinRequestDTO?,
+        callsEnabled: Bool = false
+    ) {
+        self.user = user
+        self.family = family
+        self.role = role
+        self.pendingJoinRequest = pendingJoinRequest
+        self.callsEnabled = callsEnabled
+    }
+
+    /// Hand-written for the reason every other defaulted field on this
+    /// wire is: a property default is not a decoding fallback.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        user = try container.decode(UserDTO.self, forKey: .user)
+        family = try container.decodeIfPresent(FamilyDTO.self, forKey: .family)
+        role = try container.decodeIfPresent(String.self, forKey: .role)
+        pendingJoinRequest = try container.decodeIfPresent(PendingJoinRequestDTO.self, forKey: .pendingJoinRequest)
+        callsEnabled = try container.decodeIfPresent(Bool.self, forKey: .callsEnabled) ?? false
     }
 }
 

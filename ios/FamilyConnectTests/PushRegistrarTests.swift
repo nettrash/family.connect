@@ -99,6 +99,48 @@ struct PushRegistrarTests {
         #expect(box.deviceID == 17)
     }
 
+    @Test("the VoIP token rides along when known, is absent when not, and re-POSTs when it changes")
+    func voipToken() async throws {
+        let host = "push-voip.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        let (registrar, box) = makeRegistrar(host: host, handler: Self.deviceHandler(counter: Counter()))
+        let voipBox = StoredBox()
+        registrar.loadStoredVoIP = { voipBox.token }
+        registrar.saveStoredVoIP = { voipBox.token = $0 }
+
+        // A launch where only the APNs token has arrived: the key must be
+        // ABSENT, so the server keeps whatever VoIP token it holds.
+        await registrar.register(tokenHex: "aaaa")
+        var requests = StubURLProtocol.requests(host: host)
+        #expect(requests.count == 1)
+        #expect(requests[0].bodyJSON()?.keys.contains("voip_token") == false)
+
+        // PushKit speaks: the pair is re-POSTed with the VoIP token beside
+        // the unchanged APNs one, and the confirmed VoIP token is stored.
+        registrar.handleVoIPToken("v0ip")
+        await registrar.pendingRegistration?.value
+        requests = StubURLProtocol.requests(host: host)
+        #expect(requests.count == 2)
+        #expect(requests[1].bodyJSON()?["push_token"] as? String == "aaaa")
+        #expect(requests[1].bodyJSON()?["voip_token"] as? String == "v0ip")
+        #expect(voipBox.token == "v0ip")
+        #expect(box.token == "aaaa")
+
+        // The same VoIP token again is not news.
+        registrar.handleVoIPToken("v0ip")
+        await registrar.pendingRegistration?.value
+        #expect(StubURLProtocol.requests(host: host).count == 2)
+
+        // Invalidated: an explicit null clears the server's copy.
+        registrar.handleVoIPToken(nil)
+        await registrar.pendingRegistration?.value
+        requests = StubURLProtocol.requests(host: host)
+        #expect(requests.count == 3)
+        #expect(requests[2].bodyJSON()?.keys.contains("voip_token") == true)
+        #expect(requests[2].bodyJSON()?["voip_token"] is NSNull)
+        #expect(voipBox.token == nil)
+    }
+
     @Test("same token again → no second POST; rotated token → re-POST")
     func rotation() async throws {
         let host = "push-rotate.test"

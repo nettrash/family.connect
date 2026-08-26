@@ -327,15 +327,87 @@ struct SocketFrameTests {
     @Test("error decodes with and without client_msg_id")
     func decodeError() throws {
         let withID = try decode(#"{"type": "error", "code": "not_chat_member", "message": "nope", "client_msg_id": "8f14e45f"}"#)
-        #expect(withID == .error(code: "not_chat_member", message: "nope", clientMsgID: "8f14e45f"))
+        #expect(withID == .error(code: "not_chat_member", message: "nope", clientMsgID: "8f14e45f", callID: nil))
 
         let withoutID = try decode(#"{"type": "error", "code": "internal", "message": "boom"}"#)
-        #expect(withoutID == .error(code: "internal", message: "boom", clientMsgID: nil))
+        #expect(withoutID == .error(code: "internal", message: "boom", clientMsgID: nil, callID: nil))
     }
 
     @Test("unknown type NEVER throws — forward compatibility")
     func decodeUnknown() throws {
-        let frame = try decode(#"{"type": "call_offer", "chat_id": 42, "sdp": "v=0..."}"#)
-        #expect(frame == .unknown(type: "call_offer"))
+        // `call_offer` used to be the example here; it is a known frame now,
+        // so the next thing that does not exist yet stands in for it.
+        let frame = try decode(#"{"type": "video_offer", "chat_id": 42, "sdp": "v=0..."}"#)
+        #expect(frame == .unknown(type: "video_offer"))
+    }
+
+    // MARK: - Voice calls (docs/protocol.md, "Voice calls")
+
+    @Test("call_offer / call_answer / call_end encode per protocol.md")
+    func encodeCallFrames() throws {
+        let offer = try fields(of: .callOffer(callID: "6a1f0c3e-0000-4000-8000-000000000001", chatID: 42, sdp: "v=0\r\n"))
+        #expect(offer["type"] as? String == "call_offer")
+        #expect(offer["call_id"] as? String == "6a1f0c3e-0000-4000-8000-000000000001")
+        #expect(offer["chat_id"] as? Int == 42)
+        #expect(offer["sdp"] as? String == "v=0\r\n")
+        #expect(offer.count == 4)
+
+        let answer = try fields(of: .callAnswer(callID: "6a1f0c3e-0000-4000-8000-000000000001", sdp: "v=0\r\n"))
+        #expect(answer["type"] as? String == "call_answer")
+        #expect(answer["sdp"] as? String == "v=0\r\n")
+        #expect(answer.count == 3)
+
+        let end = try fields(of: .callEnd(callID: "6a1f0c3e-0000-4000-8000-000000000001", reason: "hangup"))
+        #expect(end["type"] as? String == "call_end")
+        #expect(end["reason"] as? String == "hangup")
+        #expect(end.count == 3)
+    }
+
+    @Test("call_ice encodes a candidate, with sdp_mid / sdp_mline_index absent rather than null")
+    func encodeCallIce() throws {
+        let full = try fields(of: .callIce(
+            callID: "6a1f0c3e-0000-4000-8000-000000000001",
+            candidate: IceCandidatePayload(candidate: "candidate:1 1 udp 1 1.2.3.4 5 typ host", sdpMid: "0", sdpMLineIndex: 0)))
+        #expect(full["type"] as? String == "call_ice")
+        let candidate = full["candidate"] as? [String: Any]
+        #expect(candidate?["candidate"] as? String == "candidate:1 1 udp 1 1.2.3.4 5 typ host")
+        #expect(candidate?["sdp_mid"] as? String == "0")
+        #expect(candidate?["sdp_mline_index"] as? Int == 0)
+        #expect(candidate?.count == 3)
+
+        let bare = try fields(of: .callIce(
+            callID: "6a1f0c3e-0000-4000-8000-000000000001",
+            candidate: IceCandidatePayload(candidate: "candidate:…", sdpMid: nil, sdpMLineIndex: nil)))
+        let bareCandidate = bare["candidate"] as? [String: Any]
+        #expect(bareCandidate?.count == 1, "absent, not null: \(String(describing: bareCandidate))")
+    }
+
+    @Test("call_offer decodes the protocol example")
+    func decodeCallOffer() throws {
+        let frame = try decode(#"{"type": "call_offer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n"}"#)
+        #expect(frame == .callOffer(CallOfferPayload(
+            callID: "6a1f0c3e-0000-4000-8000-000000000001", chatID: 42, fromUserID: 7, sdp: "v=0\r\n")))
+    }
+
+    @Test("call_ringing / call_answer / call_end decode")
+    func decodeCallLifecycle() throws {
+        #expect(try decode(#"{"type": "call_ringing", "call_id": "abc"}"#) == .callRinging(callID: "abc"))
+        #expect(try decode(#"{"type": "call_answer", "call_id": "abc", "sdp": "v=0"}"#) == .callAnswer(callID: "abc", sdp: "v=0"))
+        #expect(try decode(#"{"type": "call_end", "call_id": "abc", "reason": "answered_elsewhere"}"#)
+                == .callEnd(callID: "abc", reason: "answered_elsewhere"))
+    }
+
+    @Test("call_ice decodes with and without the optional candidate fields")
+    func decodeCallIce() throws {
+        let full = try decode(#"{"type": "call_ice", "call_id": "abc", "candidate": {"candidate": "candidate:…", "sdp_mid": "0", "sdp_mline_index": 0}}"#)
+        #expect(full == .callIce(callID: "abc", candidate: IceCandidatePayload(candidate: "candidate:…", sdpMid: "0", sdpMLineIndex: 0)))
+        let bare = try decode(#"{"type": "call_ice", "call_id": "abc", "candidate": {"candidate": "candidate:…"}}"#)
+        #expect(bare == .callIce(callID: "abc", candidate: IceCandidatePayload(candidate: "candidate:…", sdpMid: nil, sdpMLineIndex: nil)))
+    }
+
+    @Test("an error answering a call frame carries call_id and no client_msg_id")
+    func decodeCallError() throws {
+        let frame = try decode(#"{"type": "error", "code": "peer_busy", "message": "…", "call_id": "abc"}"#)
+        #expect(frame == .error(code: "peer_busy", message: "…", clientMsgID: nil, callID: "abc"))
     }
 }

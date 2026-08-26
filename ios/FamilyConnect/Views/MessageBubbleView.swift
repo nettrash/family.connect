@@ -79,6 +79,9 @@ struct MessageBubbleView: View {
     var onClosePoll: () -> Void = {}
     /// How many people could vote, for the poll's footer.
     var memberCount: Int = 0
+    /// Tapping a call record rings the peer again. nil when there is
+    /// nobody to ring (calls off on this server).
+    var onCallBack: (() -> Void)? = nil
     var onRetry: () -> Void = {}
     var onDelete: () -> Void = {}
     var onToggleReaction: (String) -> Void = { _ in }
@@ -505,9 +508,21 @@ struct MessageBubbleView: View {
                     .foregroundStyle(bubbleContentColor.opacity(0.6))
                     .symbolEffect(.pulse)
             }
+            // A call record draws its outcome INSTEAD of the body, which
+            // is an English placeholder for clients that predate calls
+            // (docs/protocol.md, "Voice calls").
+            if let call = message.call {
+                CallRecordView(
+                    call: call,
+                    isMine: isMine,
+                    onCallBack: onCallBack,
+                    onDoubleTap: { toggleQuickHeart() },
+                    onLongPress: { onLongPress() })
+                    .foregroundStyle(bubbleContentColor)
+            }
             // A photo needs no caption, and an empty Text would still take
             // a line's height inside the balloon.
-            if !message.body.isEmpty {
+            else if !message.body.isEmpty {
                 // One text block — everything without a table — comes back
                 // as exactly this `Text` and nothing around it. A table
                 // stacks blocks instead, and only then.

@@ -24,6 +24,21 @@
          the first time the chat list is shown — see ChatListScreen). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Voice calls (docs/protocol.md, "Voice calls"). A call runs behind a
+         foreground service of the phoneCall type — which 14+ ties to
+         MANAGE_OWN_CALLS — plus the microphone type once the runtime
+         permission is held; the ringing notification's full-screen intent is
+         what lights up a locked phone; MODIFY_AUDIO_SETTINGS is the
+         communication audio mode and the speaker route; WAKE_LOCK is
+         libwebrtc's, for the audio threads while the screen is off. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- Saving a photo or video to the gallery. API 29+ writes through
          MediaStore with no permission at all; only 26–28 need this, hence
          the cap — it must never be requested on a modern device. -->
@@ -98,6 +113,16 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- The foreground service a voice call lives behind: ringing
+             (started from the call push, while the phone still may) and
+             then the call itself. Both types are declared; the microphone
+             one is only ever REQUESTED once RECORD_AUDIO is held — see
+             CallService.foregroundType. -->
+        <service
+            android:name=".calls.CallService"
+            android:exported="false"
+            android:foregroundServiceType="phoneCall|microphone" />
 
     </application>
 

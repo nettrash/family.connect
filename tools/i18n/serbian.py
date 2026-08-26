@@ -383,6 +383,36 @@ SR = {
 # is that one sentence is worded once. The divider's count is a plural and
 # lives in SR_COUNTS below.
 "Scroll to newest": "Иди на најновије",
+
+# --- voice calls (iOS + macOS; the Android twins are in serbian_android.py) ---
+"%@ is calling": "%@ зове",
+"Accept": "Прихвати",
+"Answer": "Јави се",
+"Answered on another device": "Прихваћен на другом уређају",
+"Busy": "Заузето",
+"Call back": "Позови назад",
+"Call ended": "Позив завршен",
+"Call failed · %@": "Позив није успео · %@",
+"Call failed": "Позив није успео",
+"Call": "Позови",
+"Call %@": "Позови %@",
+"Calling…": "Позивање…",
+"Declined voice call": "Одбијен гласовни позив",
+"Declined": "Одбијено",
+"Hang Up": "Прекини",
+"Incoming call": "Долазни позив",
+"Microphone access is needed for calls.": "За позиве је потребан приступ микрофону.",
+"Missed voice call": "Пропуштен гласовни позив",
+"Mute": "Утишај",
+"No answer": "Нема одговора",
+"Ringing…": "Звони…",
+"Speaker": "Звучник",
+"Unavailable": "Недоступно",
+"Unknown caller": "Непознат позивалац",
+"Unmute": "Укључи звук",
+"Voice call · %@": "Гласовни позив · %@",
+"Voice call declined": "Гласовни позив одбијен",
+"Voice call": "Гласовни позив",
 }
 
 # The members count is a plural, and Serbian's CLDR categories are one/few/other

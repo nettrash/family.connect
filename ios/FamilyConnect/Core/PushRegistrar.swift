@@ -47,6 +47,22 @@ nonisolated enum PushRegistrationLogic {
     static func needsRegistration(token: String, storedToken: String?, storedDeviceID: Int64?) -> Bool {
         token != storedToken || storedDeviceID == nil
     }
+
+    /// The same question with the VoIP token beside the APNs one: the pair
+    /// is re-POSTed when EITHER is news to the server. `voipToken` nil
+    /// means PushKit has not spoken yet this launch — which is not news,
+    /// so a stored one is left alone (protocol.md: an absent `voip_token`
+    /// leaves the row untouched).
+    static func needsRegistration(
+        token: String, storedToken: String?, storedDeviceID: Int64?,
+        voipToken: String?, storedVoIPToken: String?
+    ) -> Bool {
+        if needsRegistration(token: token, storedToken: storedToken, storedDeviceID: storedDeviceID) {
+            return true
+        }
+        guard let voipToken else { return false }
+        return voipToken != storedVoIPToken
+    }
 }
 
 // MARK: - The stateful shell
@@ -80,6 +96,14 @@ final class PushRegistrar {
         AppSettings.pushToken = token
         AppSettings.pushDeviceID = deviceID
     }
+    /// The VoIP token the server has confirmed, beside the pair above.
+    var loadStoredVoIP: () -> String? = { AppSettings.voipToken }
+    var saveStoredVoIP: (String?) -> Void = { AppSettings.voipToken = $0 }
+
+    /// What PushKit said this launch: nil until it speaks, and it speaks
+    /// on every launch. `.some(nil)` after it INVALIDATED the token — that
+    /// is news too, and clears the server's copy.
+    private var voipToken: String??
 
     init(api: APIClient) {
         self.api = api
@@ -134,13 +158,32 @@ final class PushRegistrar {
         AppLog.push.info("APNs registration failed: \(String(describing: error))")
     }
 
+    /// PushKit delivered (or invalidated) the VoIP token. Folded into the
+    /// same POST /devices as the APNs token — the row is one device — and
+    /// POSTed now when the APNs half is already known, otherwise when it
+    /// arrives (docs/protocol.md, "Incoming calls").
+    func handleVoIPToken(_ hex: String?) {
+        voipToken = .some(hex)
+        if let apnsToken = loadStored().token {
+            pendingRegistration = Task { await self.register(tokenHex: apnsToken) }
+        }
+    }
+
+    /// The re-POST started by the most recent `handleVoIPToken`. Test
+    /// seam, the `pendingDelivery` idiom: nothing in the app reads it.
+    private(set) var pendingRegistration: Task<Void, Never>?
+
     /// POST the token when it's news to the server (see the logic table
     /// above); persist the {token, device_id} pair only after a 2xx so a
     /// failed attempt naturally retries on the next token delivery.
     func register(tokenHex: String) async {
         let stored = loadStored()
+        let storedVoIP = loadStoredVoIP()
+        let voip = voipToken
         guard PushRegistrationLogic.needsRegistration(
-            token: tokenHex, storedToken: stored.token, storedDeviceID: stored.deviceID) else { return }
+            token: tokenHex, storedToken: stored.token, storedDeviceID: stored.deviceID,
+            voipToken: voip.flatMap { $0 }, storedVoIPToken: storedVoIP)
+            || (voip == .some(nil) && storedVoIP != nil) else { return }
         guard !registrationInFlight else { return }
         registrationInFlight = true
         defer { registrationInFlight = false }
@@ -150,9 +193,14 @@ final class PushRegistrar {
             // field, and a Mac claiming to be an iPhone is the kind of
             // small untruth that costs an hour the first time somebody
             // debugs "why did only one device get it".
+            //
+            // The VoIP token rides along only when PushKit has spoken —
+            // absent otherwise, so a launch that has only the APNs token
+            // does not wipe the server's copy (protocol.md, POST /devices).
             let deviceID = try await api.registerDevice(
-                platform: Self.platform, pushToken: tokenHex)
+                platform: Self.platform, pushToken: tokenHex, voipToken: voip)
             saveStored(tokenHex, deviceID)
+            if let voip { saveStoredVoIP(voip) }
             AppLog.push.info("Registered device \(deviceID, privacy: .public) for push")
         } catch {
             AppLog.push.info("Device registration failed: \(String(describing: error))")
@@ -172,5 +220,6 @@ final class PushRegistrar {
             try? await api.deleteDevice(id: deviceID)
         }
         saveStored(nil, nil)
+        saveStoredVoIP(nil)
     }
 }

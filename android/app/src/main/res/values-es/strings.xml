@@ -239,4 +239,30 @@
         <item quantity="many">%1$d mensajes nuevos</item>
         <item quantity="other">%1$d mensajes nuevos</item>
     </plurals>
+    <!-- Voice calls -->
+    <string name="s_voice_call">Llamada de voz</string>
+    <string name="s_incoming_voice_call">Llamada de voz entrante</string>
+    <string name="s_calling">Llamando…</string>
+    <string name="s_ringing">Sonando…</string>
+    <string name="s_connecting">Conectando…</string>
+    <string name="s_answer">Contestar</string>
+    <string name="s_decline">Rechazar</string>
+    <string name="s_hang_up">Colgar</string>
+    <string name="s_mute">Silenciar</string>
+    <string name="s_unmute">Activar micrófono</string>
+    <string name="s_speaker">Altavoz</string>
+    <string name="s_call_ended">Llamada terminada</string>
+    <string name="s_ongoing_voice_call">Llamada de voz en curso</string>
+    <string name="s_missed_voice_call">Llamada de voz perdida</string>
+    <string name="s_no_answer">Sin respuesta</string>
+    <string name="s_declined_voice_call">Llamada de voz rechazada</string>
+    <string name="s_voice_call_declined">Llamada de voz rechazada</string>
+    <string name="s_call_failed">Llamada fallida</string>
+    <string name="s_call_failed_with_duration">Llamada fallida · %1$s</string>
+    <string name="s_voice_call_with_duration">Llamada de voz · %1$s</string>
+    <string name="s_answered_on_another_device">Contestada en otro dispositivo</string>
+    <string name="s_busy">Ocupado</string>
+    <string name="s_not_reachable">No disponible</string>
+    <string name="s_calls_are_off_on_this_server">Las llamadas están desactivadas en este servidor</string>
+    <string name="e_call_failed_to_start">No se pudo iniciar la llamada.</string>
 </resources>

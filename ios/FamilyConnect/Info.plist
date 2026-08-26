@@ -20,6 +20,15 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!-- Voice calls (docs/protocol.md, "Voice calls"): `voip` is what lets a
+	     PushKit push wake the app to ring, and `audio` is what keeps a call's
+	     microphone running with the app behind another. Neither is used for
+	     anything else. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>voip</string>
+	</array>
 	<!--
 	  FCDefaultServerURL: the server this build is pre-pointed at, read
 	  by AppSettings.defaultServerURL. Expanded from the user-defined

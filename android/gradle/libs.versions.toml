@@ -22,6 +22,14 @@
 # back deliberately does NOT use it: android.widget.VideoView streams the
 # file with the auth header the protocol needs, so ExoPlayer and media3-ui
 # stay out of the build.
+#
+# stream-webrtc-android is the third, and the one nothing else could stand
+# in for: a voice call is peer-to-peer WebRTC (docs/protocol.md, "Voice
+# calls") — Opus over DTLS-SRTP with ICE for the NAT problem — and the
+# platform ships none of it. The artifact is Stream's current build of
+# Google's libwebrtc, published to Maven Central (Google's own
+# org.webrtc:google-webrtc has been unmaintained for years). Only the
+# org.webrtc.* classes are used; the app never touches Stream's service.
 
 [versions]
 agp = "9.3.2"
@@ -41,6 +49,7 @@ datastore = "1.2.1"
 exifinterface = "1.4.1"
 media3 = "1.11.0"
 firebaseBom = "34.18.0"
+streamWebrtc = "1.3.8"
 playServicesMaps = "19.2.0"
 mapsCompose = "6.7.0"
 googleServices = "4.5.0"
@@ -114,6 +123,8 @@ maps-compose = { group = "com.google.maps.android", name = "maps-compose", versi
 
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
+# WebRTC — see the header note. Audio only in this app.
+stream-webrtc-android = { group = "io.getstream", name = "stream-webrtc-android", version.ref = "streamWebrtc" }
 
 # Testing
 junit = { group = "junit", name = "junit", version.ref = "junit" }

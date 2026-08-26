@@ -132,6 +132,11 @@ final class ChatSyncCoordinator {
     private let socket: ChatSocket
     private let modelContext: ModelContext
     private(set) weak var session: AppSession?
+    private weak var callManager: CallManager?
+    /// Where the scene is, as `enterBackground`/`resumeForeground` last
+    /// said — consulted when a call ends to decide whether the socket it
+    /// kept alive should now go.
+    private var isInBackground = false
     private weak var attachmentStore: AttachmentStore?
 
     // MARK: - Internals
@@ -260,6 +265,40 @@ final class ChatSyncCoordinator {
         self.session = session
     }
 
+    /// The call state machine, so signalling frames reach it and so the
+    /// socket knows to stay up for the life of a call. Weak: the manager
+    /// is owned by the composition root, like the session.
+    func bind(callManager: CallManager) {
+        self.callManager = callManager
+    }
+
+    /// True while a call is ringing, being rung, or talking — the one
+    /// thing that keeps the socket open in the background.
+    var isCallInProgress: Bool { callManager.map { !$0.isIdle } ?? false }
+
+    /// Bring the socket up from wherever it is: never started (a launch
+    /// straight into the background — a VoIP push woke the process, and
+    /// no scene has asked for the connected world yet), suspended (the app
+    /// was backgrounded), or already live. The replayed `call_offer` only
+    /// arrives on a registered socket (docs/protocol.md, "Late arrivals"),
+    /// so the incoming-call path calls this before anything else.
+    func ensureConnected() async {
+        if socketTask == nil {
+            await activate()
+        } else {
+            resumeForeground()
+        }
+    }
+
+    /// The call ended: if the scene is in the background, do now what
+    /// `enterBackground` deliberately did not — suspend the socket.
+    func callDidEnd() {
+        guard isInBackground, socketTask != nil else { return }
+        connectionState = .offline
+        let socket = self.socket
+        Task { await socket.suspend() }
+    }
+
     /// The attachment cache, so a sent photo can be drawn from the bytes
     /// this device already made rather than fetched back. Weak: the store
     /// is built from `api`, which this object owns.
@@ -319,7 +358,15 @@ final class ChatSyncCoordinator {
             self.presence = ChatPresence(
                 chatID: presence.chatID, isAtNewest: presence.isAtNewest, isFrontmost: false)
         }
+        isInBackground = true
         guard socketTask != nil else { return }
+        // A call holds the socket open: its `call_end`, its candidates and
+        // an ICE restart all arrive over it, and the audio session (or the
+        // VoIP background mode) is what lets it stay up. `callDidEnd`
+        // suspends it afterwards if the scene is still in the background.
+        guard SocketHold.decide(isInBackground: true, isCallInProgress: isCallInProgress) == .suspend else {
+            return
+        }
         connectionState = .offline
         let socket = self.socket
         Task { await socket.suspend() }
@@ -328,6 +375,7 @@ final class ChatSyncCoordinator {
     /// Scene came back: reconnect and resync (the wire missed everything
     /// while suspended — REST is the source of truth).
     func resumeForeground() {
+        isInBackground = false
         guard socketTask != nil else { return }
         let socket = self.socket
         Task {
@@ -428,7 +476,8 @@ final class ChatSyncCoordinator {
             if let chat = fetchChat(message.chatID),
                chat.lastMessageDate == entity.createdAt {
                 chat.lastMessagePreview = Self.preview(
-                    body: message.body, attachment: message.attachment)
+                    body: message.body, attachment: message.attachment,
+                    call: message.call, isMine: message.senderID == currentUserID)
             }
             saveContext()
 
@@ -511,11 +560,21 @@ final class ChatSyncCoordinator {
                 saveContext()
             }
 
+        case .callOffer, .callRinging, .callAnswer, .callIce, .callEnd:
+            // Signalling never touches the store: the manager applies it to
+            // the one call it holds, or ignores it (docs/protocol.md,
+            // "Voice calls"). The record of the call arrives later as an
+            // ordinary `message`.
+            callManager?.handle(frame: frame)
+
         case .pong:
             break // liveness handled inside ChatSocket
 
-        case .error(let code, let message, let clientMsgID):
+        case .error(let code, let message, let clientMsgID, let callID):
             AppLog.socket.error("Server error frame: \(code, privacy: .public) \(message, privacy: .public)")
+            if callID != nil {
+                callManager?.handle(frame: frame)
+            }
             if let clientMsgID {
                 if let row = fetchMessage(clientMsgID: clientMsgID), row.state != .sent {
                     row.state = .failed
@@ -769,6 +828,16 @@ final class ChatSyncCoordinator {
         entity.attachmentAccuracyM = dto.attachment?.accuracyM
     }
 
+    /// A call record is written once by the server and never changes, and
+    /// an incoming copy WITHOUT one says nothing about a record already
+    /// stored — the absent-field rule, third time this project has been
+    /// bitten by it. So the record is only ever set, never cleared.
+    private func applyCall(_ dto: MessageDTO, to entity: MessageEntity) {
+        guard let call = dto.call else { return }
+        entity.callOutcome = call.outcome
+        entity.callDurationSecs = call.durationSecs
+    }
+
     /// Apply one server message. `bumpUnread` is true only for live
     /// `message` frames — resync trusts the server's unread_count from
     /// GET /chats instead of counting for itself.
@@ -786,6 +855,7 @@ final class ChatSyncCoordinator {
             entity = existing
             resolveAckWaiter(clientMsgID, delivered: true)
             applyReply(dto, to: existing)
+            applyCall(dto, to: existing)
         } else if let existing = fetchMessage(localID: "s:\(dto.id)") {
             // Case 2b: idempotent re-delivery of a server-keyed row.
             applyBody(dto, to: existing)
@@ -794,6 +864,7 @@ final class ChatSyncCoordinator {
             existing.state = .sent
             entity = existing
             applyReply(dto, to: existing)
+            applyCall(dto, to: existing)
         } else {
             // Case 3: first sight — insert under the server key.
             entity = MessageEntity(
@@ -812,7 +883,8 @@ final class ChatSyncCoordinator {
                 replyExcerpt: dto.replyTo?.excerpt,
                 editSeq: dto.editSeq ?? 0,
                 editedAt: dto.editedAt,
-                attachment: dto.attachment)
+                attachment: dto.attachment,
+                call: dto.call)
             modelContext.insert(entity)
         }
         // Embedded reaction state (history/resync pages): the same seq
@@ -844,7 +916,9 @@ final class ChatSyncCoordinator {
             chat.oldestLoadedMessageID = dto.id
         }
         if chat.lastMessageDate == nil || dto.createdAt >= (chat.lastMessageDate ?? .distantPast) {
-            chat.lastMessagePreview = Self.preview(body: dto.body, attachment: dto.attachment)
+            chat.lastMessagePreview = Self.preview(
+                body: dto.body, attachment: dto.attachment,
+                call: dto.call, isMine: dto.senderID == currentUserID)
             chat.lastMessageDate = dto.createdAt
             chat.lastMessageSenderID = dto.senderID
         }
@@ -893,7 +967,7 @@ final class ChatSyncCoordinator {
             messageID: dto.id,
             title: ChatNotifier.title(
                 chatKind: chat.kind, chatTitle: chat.title, senderName: displayName(of: dto.senderID)),
-            body: ChatNotifier.body(text: dto.body, attachment: dto.attachment))
+            body: ChatNotifier.body(text: dto.body, attachment: dto.attachment, call: dto.call))
         #endif
     }
 
@@ -1461,7 +1535,15 @@ final class ChatSyncCoordinator {
     /// A photo is normally sent with no caption, and an empty string is not
     /// nil — so the row rendered blank rather than falling back to "No
     /// messages yet". What arrived is the useful thing to say.
-    nonisolated static func preview(body: String, attachment: AttachmentDTO?) -> String {
+    nonisolated static func preview(
+        body: String,
+        attachment: AttachmentDTO?,
+        call: CallDTO? = nil,
+        isMine: Bool = false
+    ) -> String {
+        // A call record's body is an English placeholder for clients that
+        // predate calls; this one knows the object and never shows it.
+        if let call { return CallRecordText.label(call, isMine: isMine) }
         if !body.isEmpty { return body }
         guard let attachment else { return body }
         if attachment.isVideo { return String(localized: "Video") }
@@ -2133,7 +2215,9 @@ final class ChatSyncCoordinator {
             readMarkerAdvanced = marker
         }
         if let last = item.lastMessage {
-            chat.lastMessagePreview = Self.preview(body: last.body, attachment: last.attachment)
+            chat.lastMessagePreview = Self.preview(
+                body: last.body, attachment: last.attachment,
+                call: last.call, isMine: last.senderID == currentUserID)
             chat.lastMessageDate = last.createdAt
             chat.lastMessageSenderID = last.senderID
         } else if resetWhenNoLastMessage {
@@ -2487,4 +2571,16 @@ final class ChatSyncCoordinator {
         UnreadBadge.show(storedUnreadTotal())
     }
 
+}
+
+// MARK: - Call signalling
+
+extension ChatSyncCoordinator: CallSignaling {
+    /// The socket is private on purpose — nothing else in the app sends a
+    /// frame — so the call machine goes through this one door. Throws when
+    /// the socket is not connected: a call cannot be placed over REST, and
+    /// the manager shows that as a failure rather than waiting.
+    func sendCallFrame(_ frame: ClientFrame) async throws {
+        try await socket.send(frame)
+    }
 }

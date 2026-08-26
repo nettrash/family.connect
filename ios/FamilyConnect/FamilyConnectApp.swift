@@ -45,6 +45,14 @@ struct FamilyConnectApp: App {
     private let session: AppSession?
     private let coordinator: ChatSyncCoordinator?
     private let pushRegistrar: PushRegistrar?
+    /// The voice-call state machine, one per process like the session.
+    private let callManager: CallManager?
+    #if os(iOS)
+    /// CallKit and PushKit, iOS only: the Mac holds its socket and draws
+    /// its own window (docs/protocol.md, "Incoming calls").
+    private let callKit: CallKitController?
+    private let voipRegistrar: VoIPPushRegistrar?
+    #endif
 
     /// App-wide link-preview cache. Independent of the store, so it is
     /// built even when the container failed (the error view just never
@@ -118,6 +126,53 @@ struct FamilyConnectApp: App {
             MacAppDelegate.session = session
             #endif
 
+            // Calls. The manager talks to the world through closures and
+            // two protocols, wired here so it stays free of the store, the
+            // socket and every OS framework — see CallManager.
+            let calls = CallManager()
+            calls.signaling = coordinator
+            calls.iceServers = { try await coordinator.api.iceServers().iceServers }
+            calls.resolvePeer = { userID in
+                let descriptor = FetchDescriptor<MemberEntity>(predicate: #Predicate { $0.userID == userID })
+                if let member = try? container.mainContext.fetch(descriptor).first {
+                    return (member.resolvedDisplayName, member.avatarVersion)
+                }
+                return (String(localized: "Someone"), 0)
+            }
+            calls.ensureConnected = {
+                if session.phase == .booting { await session.bootstrap() }
+                await coordinator.ensureConnected()
+            }
+            calls.onEnded = { coordinator.callDidEnd() }
+            coordinator.bind(callManager: calls)
+            #if os(iOS)
+            let callKit = CallKitController()
+            callKit.manager = calls
+            calls.systemBridge = callKit
+            let voip = VoIPPushRegistrar()
+            voip.pushRegistrar = registrar
+            voip.callManager = calls
+            voip.callKit = callKit
+            voip.start()
+            self.callKit = callKit
+            self.voipRegistrar = voip
+            #elseif os(macOS)
+            // The Mac rings through Notification Center: a socket-delivered
+            // offer while the app is behind other windows — or has none
+            // open — is otherwise silent.
+            calls.onPhaseChange = { [weak calls] phase in
+                guard let calls, let callID = calls.callID else { return }
+                switch phase {
+                case .incoming:
+                    ChatNotifier.announceIncomingCall(callID: callID, callerName: calls.peerName)
+                default:
+                    ChatNotifier.dismissIncomingCall(callID: callID)
+                }
+            }
+            MacAppDelegate.callManager = calls
+            #endif
+            self.callManager = calls
+
             self.session = session
             self.coordinator = coordinator
             self.pushRegistrar = registrar
@@ -138,6 +193,11 @@ struct FamilyConnectApp: App {
             self.session = nil
             self.coordinator = nil
             self.pushRegistrar = nil
+            self.callManager = nil
+            #if os(iOS)
+            self.callKit = nil
+            self.voipRegistrar = nil
+            #endif
             self.avatars = nil
             self.attachments = nil
         }
@@ -153,11 +213,12 @@ struct FamilyConnectApp: App {
     private func windowContents(@ViewBuilder _ content: () -> some View) -> some View {
         switch containerResult {
         case .success(let container):
-            if let session, let coordinator {
+            if let session, let coordinator, let callManager {
                 content()
                     .modelContainer(container)
                     .environment(session)
                     .environment(coordinator)
+                    .environment(callManager)
                     // One preview cache for the app: a link posted in
                     // a busy chat is fetched once, not once per bubble.
                     .environment(previewLoader)
@@ -227,6 +288,15 @@ struct FamilyConnectApp: App {
         .defaultSize(width: 900, height: 620)
         .windowResizability(.contentMinSize)
 
+        // One call at a time, so one window: opened when the manager
+        // leaves idle and closed when it returns (RootView), never by the
+        // person — closing it does not hang up.
+        Window("Call", id: MacWindow.call) {
+            windowContents { CallView() }
+        }
+        .defaultSize(width: 360, height: 480)
+        .windowResizability(.contentSize)
+
         // Keyed BY ATTACHMENT, so two photos open as two windows and the
         // same photo twice raises the first.
         WindowGroup(id: MacWindow.attachment, for: AttachmentDTO.self) { $attachment in
@@ -251,6 +321,7 @@ enum MacWindow {
     static let conversation = "conversation"
     static let board = "board"
     static let attachment = "attachment"
+    static let call = "call"
 }
 #endif
 

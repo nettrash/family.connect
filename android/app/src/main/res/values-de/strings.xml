@@ -236,4 +236,30 @@
         <item quantity="one">%1$d neue Nachricht</item>
         <item quantity="other">%1$d neue Nachrichten</item>
     </plurals>
+    <!-- Voice calls -->
+    <string name="s_voice_call">Sprachanruf</string>
+    <string name="s_incoming_voice_call">Eingehender Sprachanruf</string>
+    <string name="s_calling">Anrufen…</string>
+    <string name="s_ringing">Es klingelt…</string>
+    <string name="s_connecting">Verbinden…</string>
+    <string name="s_answer">Annehmen</string>
+    <string name="s_decline">Ablehnen</string>
+    <string name="s_hang_up">Auflegen</string>
+    <string name="s_mute">Stumm</string>
+    <string name="s_unmute">Stumm aus</string>
+    <string name="s_speaker">Lautsprecher</string>
+    <string name="s_call_ended">Anruf beendet</string>
+    <string name="s_ongoing_voice_call">Sprachanruf läuft</string>
+    <string name="s_missed_voice_call">Verpasster Sprachanruf</string>
+    <string name="s_no_answer">Keine Antwort</string>
+    <string name="s_declined_voice_call">Abgelehnter Sprachanruf</string>
+    <string name="s_voice_call_declined">Sprachanruf abgelehnt</string>
+    <string name="s_call_failed">Anruf fehlgeschlagen</string>
+    <string name="s_call_failed_with_duration">Anruf fehlgeschlagen · %1$s</string>
+    <string name="s_voice_call_with_duration">Sprachanruf · %1$s</string>
+    <string name="s_answered_on_another_device">Auf einem anderen Gerät angenommen</string>
+    <string name="s_busy">Besetzt</string>
+    <string name="s_not_reachable">Nicht erreichbar</string>
+    <string name="s_calls_are_off_on_this_server">Anrufe sind auf diesem Server aus</string>
+    <string name="e_call_failed_to_start">Der Anruf konnte nicht gestartet werden.</string>
 </resources>

@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
+use crate::handlers_call::attach_calls;
 use crate::handlers_poll::attach_polls;
 use crate::models::{
     Attachment, Chat, ChatListEntry, Message, Poll, QuotedParent, Reaction, ReplyTo,
@@ -575,6 +576,7 @@ pub async fn create_message(
     //     otherwise draw the question with no options.
     attach_reactions(state, std::slice::from_mut(&mut message)).await?;
     attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
     Ok((message, false))
 }
 
@@ -597,6 +599,17 @@ pub async fn apply_edit(
     body: &str,
 ) -> Result<EditOutcome, ApiError> {
     ensure_chat_access(state, chat_id, user_id).await?;
+    // A call record's body is a placeholder other clients render as "Voice
+    // call"; the author-only edit path would otherwise let a caller write
+    // anything into that line (protocol.md, "The record").
+    let is_call: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM calls WHERE message_id = $1)")
+            .bind(message_id)
+            .fetch_one(&state.pool)
+            .await?;
+    if is_call {
+        return Err(ApiError::validation("a call record cannot be edited"));
+    }
     let body = validate_body(state, body)?;
 
     let mut tx = state.pool.begin().await?;
@@ -676,6 +689,34 @@ pub async fn fetch_message(
     let mut message = Message::from_row(&row);
     attach_reactions(state, std::slice::from_mut(&mut message)).await?;
     attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    Ok(Some(message))
+}
+
+/// One whole message found by its `(chat_id, sender_id, client_msg_id)` —
+/// the dedup key. Used when a call's record already exists (a call that
+/// ended twice) and the existing row must be returned rather than a second
+/// one written (docs/protocol.md, "The record").
+pub async fn fetch_message_by_client_id(
+    state: &AppState,
+    chat_id: i64,
+    sender_id: i64,
+    client_msg_id: Uuid,
+) -> Result<Option<Message>, ApiError> {
+    let row = sqlx::query(&format!(
+        "SELECT {MESSAGE_COLS} {MESSAGE_FROM}
+         WHERE m.chat_id = $1 AND m.sender_id = $2 AND m.client_msg_id = $3"
+    ))
+    .bind(chat_id)
+    .bind(sender_id)
+    .bind(client_msg_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(row) = row else { return Ok(None) };
+    let mut message = Message::from_row(&row);
+    attach_reactions(state, std::slice::from_mut(&mut message)).await?;
+    attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
 
@@ -917,6 +958,7 @@ pub async fn list_chats(
                 lm.created_at AS last_created_at,
                 lm.att_id, lm.att_kind, lm.att_mime, lm.att_size,
                 lm.att_has_preview, lm.att_name,
+                lm.call_outcome, lm.call_duration_secs,
                 uc.unread AS unread_count,
                 -- The caller's own marker, off the SAME chat_reads row the
                 -- unread count is measured against: it costs no extra join
@@ -940,9 +982,14 @@ pub async fn list_chats(
              SELECT m2.id, m2.sender_id, m2.client_msg_id, m2.body, m2.created_at,
                     att.id AS att_id, att.kind AS att_kind, att.mime AS att_mime,
                     att.size_bytes AS att_size, att.has_preview AS att_has_preview,
-                    att.name AS att_name
+                    att.name AS att_name,
+                    -- The call record's outcome comes with the preview: a
+                    -- client that knows the object draws its own wording
+                    -- rather than the English placeholder body.
+                    cl.outcome AS call_outcome, cl.duration_secs AS call_duration_secs
              FROM messages m2
              LEFT JOIN attachments att ON att.message_id = m2.id
+             LEFT JOIN calls cl ON cl.message_id = m2.id
              WHERE m2.chat_id = c.id ORDER BY m2.id DESC LIMIT 1
          ) lm ON TRUE
          LEFT JOIN LATERAL (
@@ -1013,6 +1060,15 @@ pub async fn list_chats(
                 // preview already carries — the options are a bubble's
                 // business and three tables' worth of reads per chat.
                 poll: None,
+                // The call record DOES come along: its placeholder body is
+                // not something a client should show, so a preview needs the
+                // outcome to draw its own line ("Missed voice call", "5:12").
+                call: row.get::<Option<String>, _>("call_outcome").map(|outcome| {
+                    crate::models::CallRecord {
+                        outcome,
+                        duration_secs: row.get("call_duration_secs"),
+                    }
+                }),
             });
             let last_reaction_seq: i64 = row.get("last_reaction_seq");
             let last_edit_seq: i64 = row.get("last_edit_seq");
@@ -1166,6 +1222,7 @@ pub async fn get_messages(
     let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
     attach_reactions(&state, &mut messages).await?;
     attach_polls(&state.pool, &mut messages).await?;
+    attach_calls(&state.pool, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }
@@ -1338,6 +1395,7 @@ pub async fn get_edits(
     let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
     attach_reactions(&state, &mut messages).await?;
     attach_polls(&state.pool, &mut messages).await?;
+    attach_calls(&state.pool, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }

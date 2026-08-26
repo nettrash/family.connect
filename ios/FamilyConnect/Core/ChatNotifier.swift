@@ -83,8 +83,10 @@ nonisolated enum ChatNotifier {
     /// `attachment_summary` (a file's name, a location's label or the word,
     /// never coordinates); the only difference is what an empty message
     /// with no attachment says, and the server says "New message".
-    static func body(text: String, attachment: AttachmentDTO?) -> String {
-        let summary = ChatSyncCoordinator.preview(body: text, attachment: attachment)
+    static func body(text: String, attachment: AttachmentDTO?, call: CallDTO? = nil) -> String {
+        // A call record is announced from the CALLEE's side — the caller
+        // is never told about their own call — so the wording is theirs.
+        let summary = ChatSyncCoordinator.preview(body: text, attachment: attachment, call: call, isMine: false)
         return summary.isEmpty ? String(localized: "New message") : summary
     }
 
@@ -107,7 +109,55 @@ nonisolated enum ChatNotifier {
         ]
     }
 
+    // MARK: - Incoming calls (macOS)
+
+    /// The category an incoming call's banner carries, and its two buttons.
+    static let incomingCallCategoryID = "me.nettrash.FamilyConnect.incomingCall"
+    static let answerActionID = "answer"
+    static let declineActionID = "decline"
+
+    static func incomingCallCategory() -> UNNotificationCategory {
+        UNNotificationCategory(
+            identifier: incomingCallCategoryID,
+            actions: [
+                UNNotificationAction(
+                    identifier: answerActionID,
+                    title: String(localized: "Answer"),
+                    options: [.foreground]),
+                UNNotificationAction(
+                    identifier: declineActionID,
+                    title: String(localized: "Decline"),
+                    options: [.destructive]),
+            ],
+            intentIdentifiers: [],
+            options: [])
+    }
+
     #if os(macOS)
+    /// Ring: a Mac has no CallKit, and the offer arrives over the socket
+    /// whether or not the app is in front. Answer and Decline are on the
+    /// banner itself, so somebody working in another app never has to find
+    /// the window (docs/protocol.md, "Voice calls").
+    static func announceIncomingCall(callID: String, callerName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = String(localized: "Incoming call")
+        content.body = String(localized: "\(callerName) is calling")
+        content.sound = .default
+        content.categoryIdentifier = incomingCallCategoryID
+        content.interruptionLevel = .timeSensitive
+        content.userInfo = ["kind": "call", "call_id": callID, localKey: true]
+        let request = UNNotificationRequest(identifier: "call-\(callID)", content: content, trigger: nil)
+        let center = UNUserNotificationCenter.current()
+        Task { try? await center.add(request) }
+    }
+
+    /// The call was answered, declined, or rang out — on any device.
+    static func dismissIncomingCall(callID: String) {
+        let center = UNUserNotificationCenter.current()
+        center.removeDeliveredNotifications(withIdentifiers: ["call-\(callID)"])
+        center.removePendingNotificationRequests(withIdentifiers: ["call-\(callID)"])
+    }
+
     /// Tell the person at the Mac that something arrived.
     ///
     /// The caller decides WHETHER — that is ChatPresence and nothing else

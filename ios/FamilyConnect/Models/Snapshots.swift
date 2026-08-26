@@ -115,6 +115,10 @@ nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     /// The poll this message IS, when it is one — the body being its
     /// question (docs/protocol.md, "Polls"). nil for every other message.
     var poll: PollSnapshot?
+    /// The voice call this message records, when it is one. The bubble
+    /// then draws the outcome and never the body (docs/protocol.md,
+    /// "Voice calls").
+    var call: CallDTO?
 }
 
 /// The quote a reply draws above its own text.
@@ -190,7 +194,8 @@ extension MessageSnapshot {
             replyTo: entity.replySnapshot,
             isEdited: entity.editSeq > 0,
             attachment: entity.attachmentSnapshot,
-            poll: entity.poll
+            poll: entity.poll,
+            call: entity.callSnapshot
         )
     }
 }

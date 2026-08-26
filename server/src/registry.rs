@@ -162,6 +162,21 @@ impl Registry {
         self.fan_out(user_ids, frame, None).await;
     }
 
+    /// Send one frame to a SINGLE connection of `user_id` — the one that
+    /// placed a call, which is the only one `call_ringing` is for. A no-op
+    /// if that connection has since gone (the call will ring out).
+    pub async fn send_to_conn(&self, user_id: i64, conn_id: u64, frame: &ServerFrame) {
+        let handle = {
+            let inner = self.inner.read().await;
+            inner
+                .get(&user_id)
+                .and_then(|conns| conns.iter().find(|c| c.conn_id == conn_id).cloned())
+        };
+        if let Some(conn) = handle {
+            let _ = conn.tx.try_send(frame.clone());
+        }
+    }
+
     /// Ask every connection authenticated by `session_id` to close (logout:
     /// the session is gone, so the code is 4401 — the client returns to
     /// login instead of reconnecting in a loop).

@@ -47,6 +47,9 @@ struct MacConversationView: View {
     let chatID: Int64
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    /// For `callsEnabled` — whether this server rings anybody at all.
+    @Environment(AppSession.self) private var session
+    @Environment(CallManager.self) private var calls
     /// Watched only for `generation`: a card landing grows a bubble, and a
     /// bubble growing above the viewport moves everything below it.
     @Environment(LinkPreviewLoader.self) private var previewLoader
@@ -243,6 +246,17 @@ struct MacConversationView: View {
 
     private var chat: ChatEntity? { chats.first }
 
+    /// Whether there is somebody to ring from here (docs/protocol.md,
+    /// "Voice calls"): a direct chat, on a server that has calls on.
+    private var canCall: Bool {
+        session.callsEnabled && chat?.kind == "direct" && chat?.peerUserID != nil
+    }
+
+    private func startCall() {
+        guard let chat, let peerUserID = chat.peerUserID else { return }
+        calls.startCall(chatID: chat.chatID, peerUserID: peerUserID)
+    }
+
     /// Is either banner up — a reply being answered or a message being
     /// rewritten? What the priming above lives and dies with.
     private var composerIsPrimed: Bool { replyDraft != nil || editTarget != nil }
@@ -304,6 +318,21 @@ struct MacConversationView: View {
         }
         .navigationTitle(chat?.title ?? "")
         .navigationSubtitle(typingLine ?? "")
+        .toolbar {
+            // This view's own item, so it rides with the conversation
+            // whether it is the split view's detail or a window of its own.
+            if canCall {
+                ToolbarItem {
+                    Button {
+                        startCall()
+                    } label: {
+                        Label("Call", systemImage: "phone.fill")
+                    }
+                    .help("Call \(chat?.title ?? "")")
+                    .disabled(!calls.isIdle)
+                }
+            }
+        }
         // Presence is ONE value and a Mac can have several conversation
         // windows, so ownership has to be explicit: the frontmost window
         // claims it, and a window only ever releases a claim it still
@@ -489,7 +518,8 @@ struct MacConversationView: View {
                                             value: attachment)
                                     }
                                 },
-                                memberCount: familyMemberCount)
+                                memberCount: familyMemberCount,
+                                onCallBack: canCall ? { startCall() } : nil)
                                 .id(row.message.localID)
                         }
                     }

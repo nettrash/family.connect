@@ -28,6 +28,12 @@
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- Voice calls are peer to peer: WebRTC binds a UDP socket and the
+	     other side's ICE checks arrive on it, which the sandbox counts as
+	     serving. Without this a call gathers host candidates and hears
+	     nothing on them. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 	<!--

@@ -1311,3 +1311,138 @@ async fn a_device_from_before_the_session_column_is_still_pushed() {
          revoked or has expired silences one"
     );
 }
+
+// --- Ringing an offline phone (docs/protocol.md, "Incoming calls").
+//
+// A call cannot ring a phone whose app is not running with an alert
+// notification. It takes the VoIP path on iOS and a data-only message on
+// Android, and the exact wire shape is what these two tests pin against the
+// mock.
+
+/// Get-or-create the caller's direct chat with `peer_id`; returns its id.
+async fn direct_chat(ts: &TestServer, token: &str, peer_id: i64) -> i64 {
+    let response = ts
+        .post(token, "/chats/direct", json!({"user_id": peer_id}))
+        .await;
+    assert_eq!(response.status(), 200, "creating a direct chat");
+    let body: Value = response.json().await.expect("direct chat JSON");
+    body["chat"]["id"].as_i64().expect("chat id")
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_offline_ios_member_is_rung_over_apns_voip() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, member, member_id) = family_of_two(&ts).await;
+    // The member is signed in on an iPhone with a VoIP token — but has no
+    // socket open, so the offer must reach it by push.
+    let response = ts
+        .post(
+            &member,
+            "/devices",
+            json!({"platform": "ios", "push_token": "apns-alert", "voip_token": "apns-voip"}),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    let chat_id = direct_chat(&ts, &owner, member_id).await;
+
+    let mut caller = connect_ws(&ts, &owner).await;
+    let call_id = Uuid::new_v4().to_string();
+    caller
+        .send(Message::text(
+            json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id, "sdp": "v=0"})
+                .to_string(),
+        ))
+        .await
+        .expect("sending the offer");
+
+    // The push goes to the VOIP token, at the voip topic and push type.
+    let requests = mock.wait_for(1, |path| path == "/3/device/apns-voip").await;
+    let request = &requests[0];
+    assert_eq!(
+        request.header("apns-topic"),
+        Some("me.nettrash.familyconnect.voip")
+    );
+    assert_eq!(request.header("apns-push-type"), Some("voip"));
+    assert_eq!(request.header("apns-priority"), Some("10"));
+    assert!(
+        request.header("apns-expiration").is_some(),
+        "a call push must expire when the ring does"
+    );
+    assert_eq!(
+        request.body,
+        json!({
+            "kind": "call",
+            "call_id": call_id,
+            "chat_id": chat_id,
+            "from_user_id": member_id_of(&ts, &owner).await,
+            "caller_name": "Olive",
+        })
+    );
+    // And nothing was sent to the ALERT token — a call is not a banner.
+    assert!(
+        mock.requests()
+            .iter()
+            .all(|r| r.path != "/3/device/apns-alert"),
+        "the alert token must not be used for a call"
+    );
+}
+
+/// The caller's own user id, read from /me — the `from_user_id` a call push
+/// carries is the caller's, not the callee's.
+async fn member_id_of(ts: &TestServer, token: &str) -> i64 {
+    let me: Value = ts.get(token, "/me").await.json().await.expect("me JSON");
+    me["user"]["id"].as_i64().expect("user id")
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_offline_android_member_is_rung_over_fcm_data_only() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let credentials = write_test_service_account(
+        dir.path(),
+        "test-project",
+        &format!("http://{mock_addr}/oauth/token"),
+    );
+    let ts = spawn_server_with_push(fcm_config(mock_addr, credentials)).await;
+
+    let (owner, member, member_id) = family_of_two(&ts).await;
+    register_device(&ts, &member, "android", "android-call-token").await;
+    let chat_id = direct_chat(&ts, &owner, member_id).await;
+    let owner_id = member_id_of(&ts, &owner).await;
+
+    let mut caller = connect_ws(&ts, &owner).await;
+    let call_id = Uuid::new_v4().to_string();
+    caller
+        .send(Message::text(
+            json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id, "sdp": "v=0"})
+                .to_string(),
+        ))
+        .await
+        .expect("sending the offer");
+
+    mock.wait_for(1, |path| path == "/oauth/token").await;
+    let sends = mock
+        .wait_for(1, |path| path.ends_with("messages:send"))
+        .await;
+    assert_eq!(
+        sends[0].body,
+        json!({"message": {
+            "token": "android-call-token",
+            "data": {
+                "kind": "call",
+                "call_id": call_id,
+                "chat_id": chat_id.to_string(),
+                "from_user_id": owner_id.to_string(),
+                "caller_name": "Olive",
+            },
+            "android": {"priority": "HIGH", "ttl": "45s"},
+        }}),
+        "a call push is data only — no notification block — so the app rings"
+    );
+}

@@ -87,6 +87,13 @@ data class SettingsState(
     val assistantUserId: Long? = null,
     /** What to call it — server-configured, not compiled in here. */
     val assistantName: String? = null,
+    /**
+     * Whether the server signals voice calls (`GET /me` → calls_enabled).
+     * Account-scoped like the assistant: a different server may have them
+     * off. False hides the call button rather than letting somebody
+     * discover `calls_disabled` at the moment they want to talk.
+     */
+    val callsEnabled: Boolean = false,
 )
 
 interface SettingsRepository {
@@ -134,6 +141,9 @@ interface SettingsRepository {
 
     suspend fun setAssistant(userId: Long?, displayName: String?)
 
+    /** Record what `GET /me` said about voice calls on this server. */
+    suspend fun setCallsEnabled(enabled: Boolean)
+
     suspend fun resetKeepingServerUrl()
 }
 
@@ -161,6 +171,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val MAP_PREVIEWS_DISABLED = booleanPreferencesKey("map_previews_disabled")
         val ASSISTANT_USER_ID = longPreferencesKey("assistant_user_id")
         val ASSISTANT_NAME = stringPreferencesKey("assistant_name")
+        val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -182,6 +193,7 @@ class DataStoreSettingsRepository @Inject constructor(
             mapPreviewsEnabled = prefs[Keys.MAP_PREVIEWS_DISABLED] != true,
             assistantUserId = prefs[Keys.ASSISTANT_USER_ID],
             assistantName = prefs[Keys.ASSISTANT_NAME],
+            callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
         )
     }
 
@@ -262,6 +274,10 @@ class DataStoreSettingsRepository @Inject constructor(
                 prefs.remove(Keys.ASSISTANT_NAME)
             }
         }
+    }
+
+    override suspend fun setCallsEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.CALLS_ENABLED] = enabled }
     }
 
     override suspend fun resetKeepingServerUrl() {

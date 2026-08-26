@@ -296,6 +296,57 @@ pub struct Message {
     /// column for it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub poll: Option<Poll>,
+    /// Present when (and only when) the message is the record of a voice
+    /// call (protocol.md, "Voice calls"). Hydrated after the fact by
+    /// `handlers_call::attach_calls`, exactly as `poll` is: the record is a
+    /// row in `calls` beside the message, and `from_row` never reads a
+    /// column for it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub call: Option<CallRecord>,
+}
+
+/// `Call` object: what a voice call left behind in the direct chat
+/// (protocol.md, "Voice calls").
+///
+/// The message it rides on is the record's identity — sender = the caller,
+/// `client_msg_id` = the call's id — and its body is the English placeholder
+/// a client that knows this object never shows. `duration_secs` is present
+/// when (and only when) the call was ever answered, so a `failed` call may
+/// carry one and a `missed` call never does.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CallRecord {
+    /// `"completed" | "missed" | "declined" | "failed"`.
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub duration_secs: Option<i64>,
+}
+
+/// One ICE candidate as a client's WebRTC stack produced it (protocol.md,
+/// "Voice calls"). Relayed verbatim; the server never parses `candidate`.
+///
+/// `sdp_mid` and `sdp_mline_index` are each optional: a stack supplies one,
+/// the other, or both, and the receiving stack accepts whichever it was
+/// given. Absent rather than null on the wire, like every optional field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IceCandidate {
+    pub candidate: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sdp_mid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sdp_mline_index: Option<u16>,
+}
+
+/// `IceServer` object: one entry of `GET /calls/ice` (protocol.md, "Voice
+/// calls"). A STUN server is `urls` alone; a TURN server carries the
+/// credentials the operator configured — minted per caller when there is a
+/// shared secret, static otherwise — and nothing when there are none.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub credential: Option<String>,
 }
 
 /// RFC3339 for an OPTIONAL timestamp. `time::serde::rfc3339::option` exists
@@ -489,6 +540,7 @@ impl Message {
             // paths that expose a poll enrich afterwards, as they do for
             // reactions.
             poll: None,
+            call: None,
         }
     }
 }

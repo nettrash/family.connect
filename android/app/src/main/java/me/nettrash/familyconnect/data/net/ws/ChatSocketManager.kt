@@ -4,14 +4,21 @@
  *
  * Owns the socket's lifetime. Policy:
  *
- *   connect  ⇔ app foregrounded (ProcessLifecycleOwner ON_START)
+ *   connect  ⇔ (app foregrounded (ProcessLifecycleOwner ON_START)
+ *              OR a voice call is in progress)
  *              AND session snapshot canChat (token present, status
  *              MEMBER/OWNER) — evaluated live off sessionFlow, so
  *              logging out disconnects and joining a family connects
- *              without anyone poking the manager.
- *   onStop   →  close(1000) + cancel the reconnect loop. Background
- *              delivery is v2 (push); holding a socket in the
- *              background just drains battery to be killed anyway.
+ *              without anyone poking the manager. The rule itself is
+ *              [socketDesired], pure and tested.
+ *   onStop   →  close(1000) + cancel the reconnect loop — unless a call
+ *              holds it. Background delivery is push; holding a socket
+ *              in the background just drains battery to be killed
+ *              anyway. A CALL is the exception the protocol spells out
+ *              ("a client keeps its socket open for the life of a
+ *              call"): its `call_end`, its candidates and — for a phone
+ *              woken by the push — the offer itself all arrive over it,
+ *              and CallService is the foreground work that lets it stay.
  *   4401     →  the session is gone (expired, revoked, or the account
  *              deleted): SessionRepository.onSessionExpired, which wipes
  *              and reroutes to sign-in. Reconnecting cannot help.
@@ -39,6 +46,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import me.nettrash.familyconnect.calls.CallManager
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.push.PushTokenRepository
 import me.nettrash.familyconnect.data.repo.SessionRepository
@@ -55,6 +63,7 @@ class ChatSocketManager @Inject constructor(
     private val connectivity: ConnectivityObserver,
     private val syncEngine: SyncEngine,
     private val pushTokenRepository: PushTokenRepository,
+    private val callManager: CallManager,
     @param:AppScope private val scope: CoroutineScope,
 ) : DefaultLifecycleObserver {
 
@@ -66,8 +75,8 @@ class ChatSocketManager @Inject constructor(
         // change in either direction starts/stops the loop. This is what
         // makes "connect after join" and "disconnect on logout" work.
         scope.launch {
-            combine(foregrounded, sessionRepository.sessionFlow) { fg, session ->
-                fg && session.canChat
+            combine(foregrounded, callManager.isInCall, sessionRepository.sessionFlow) { fg, inCall, session ->
+                socketDesired(foregrounded = fg, inCall = inCall, canChat = session.canChat)
             }
                 .distinctUntilChanged()
                 .collect { desired -> if (desired) startLoop() else stopLoop() }
@@ -134,5 +143,16 @@ class ChatSocketManager @Inject constructor(
         loopJob?.cancel()
         loopJob = null
         socket.close(1000, "backgrounded or session ended")
+    }
+
+    companion object {
+        /**
+         * Whether this device should hold a socket right now. The
+         * foreground OR a call, and in either case a session that can
+         * chat: a call cannot outlive a sign-out, and a phone in a pocket
+         * with nothing going on holds nothing.
+         */
+        fun socketDesired(foregrounded: Boolean, inCall: Boolean, canChat: Boolean): Boolean =
+            (foregrounded || inCall) && canChat
     }
 }

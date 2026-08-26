@@ -90,6 +90,9 @@ struct ConversationView: View {
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(LinkPreviewLoader.self) private var previewLoader
+    /// For `callsEnabled` — whether this server rings anybody at all.
+    @Environment(AppSession.self) private var session
+    @Environment(CallManager.self) private var calls
     /// The "app is frontmost" half of ChatPresence. Read here rather than
     /// taken from RootView because this is where the other two facts are,
     /// and all three have to be published together.
@@ -257,6 +260,16 @@ struct ConversationView: View {
 
     private var chat: ChatEntity? { chats.first }
     private var isFamilyChat: Bool { chat?.kind == "family" }
+
+    /// Whether there is somebody to ring from here.
+    private var canCall: Bool {
+        session.callsEnabled && chat?.kind == "direct" && chat?.peerUserID != nil
+    }
+
+    private func startCall() {
+        guard let chat, let peerUserID = chat.peerUserID else { return }
+        calls.startCall(chatID: chat.chatID, peerUserID: peerUserID)
+    }
 
     /// The assistant's own chat. Its replies come from a reserved account
     /// that is deliberately not in the roster, so the sender is named from
@@ -569,6 +582,20 @@ struct ConversationView: View {
                 }
                 .animation(.easeInOut(duration: 0.15), value: typingLine)
             }
+            // A direct chat's peer can be rung (docs/protocol.md, "Voice
+            // calls"); the family chat has no single person to ring, and
+            // the button hides behind the server's `calls_enabled`.
+            if canCall {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        startCall()
+                    } label: {
+                        Image(systemName: "phone.fill")
+                    }
+                    .accessibilityLabel("Call")
+                    .disabled(!calls.isIdle)
+                }
+            }
         }
         .onAppear {
             // Claims the chat, and claims NOTHING about having seen it:
@@ -668,6 +695,7 @@ struct ConversationView: View {
                                     Task { await coordinator.closePoll(localID: message.localID) }
                                 },
                                 memberCount: familyMemberCount,
+                                onCallBack: canCall ? { startCall() } : nil,
                                 onRetry: { coordinator.retry(localID: message.localID) },
                                 onDelete: { coordinator.deleteLocalMessage(localID: message.localID) },
                                 onToggleReaction: { emoji in

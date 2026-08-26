@@ -21,6 +21,7 @@
 package me.nettrash.familyconnect
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -43,6 +44,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
+import me.nettrash.familyconnect.calls.CallNotifications
+import me.nettrash.familyconnect.data.push.PendingRoute
 import me.nettrash.familyconnect.data.push.PushNotifications
 import me.nettrash.familyconnect.data.push.PushRouteParser
 import me.nettrash.familyconnect.navigation.AppNavHost
@@ -80,6 +83,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) {
             handlePushIntent(intent)
         }
+        showOverLockScreenForCall(intent)
         setContent {
             CompositionLocalProvider(
                 LocalAvatars provides avatars,
@@ -124,6 +128,7 @@ class MainActivity : ComponentActivity() {
                             pendingRoute = pendingRoute,
                             onPendingRouteConsumed = viewModel::consumePendingRoute,
                             isOwner = snapshot.isOwner,
+                            callState = viewModel.callState,
                         )
                     }
                 }
@@ -134,6 +139,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handlePushIntent(intent)
+        showOverLockScreenForCall(intent)
     }
 
     private fun handlePushIntent(intent: Intent?) {
@@ -143,7 +149,25 @@ class MainActivity : ComponentActivity() {
                 ?.let { put(PushNotifications.EXTRA_KIND, it) }
             intent.getStringExtra(PushNotifications.EXTRA_CHAT_ID)
                 ?.let { put(PushNotifications.EXTRA_CHAT_ID, it) }
+            intent.getStringExtra(PushRouteParser.KEY_CALL_ACTION)
+                ?.let { put(PushRouteParser.KEY_CALL_ACTION, it) }
         }
-        PushRouteParser.parse(data)?.let(viewModel::onPendingRoute)
+        val route = PushRouteParser.parse(data) ?: return
+        if (route is PendingRoute.Call && route.answer) viewModel.requestAnswer()
+        viewModel.onPendingRoute(route)
+    }
+
+    /**
+     * A ringing call's full-screen intent (or its tap) lands on a phone
+     * that may be locked and dark: show over the lock screen and wake it,
+     * the way the dialler does. Only for a call — a message tap on a
+     * locked phone should still ask for the unlock.
+     */
+    private fun showOverLockScreenForCall(intent: Intent?) {
+        if (!CallNotifications.isCallIntent(intent)) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
     }
 }

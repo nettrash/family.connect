@@ -770,21 +770,42 @@ actor APIClient {
     private struct DeviceRequest: Encodable {
         let platform: String
         let pushToken: String?
+        /// Three states, and all three are on the wire (docs/protocol.md,
+        /// POST /devices): `.none` = say nothing and the server keeps what
+        /// it holds; `.some(nil)` = clear it; `.some(token)` = set it. The
+        /// two tokens arrive from the OS at different moments, and a
+        /// launch that has only one of them must not wipe the other.
+        let voipToken: String??
         enum CodingKeys: String, CodingKey {
             case platform
             case pushToken = "push_token"
+            case voipToken = "voip_token"
         }
         // push_token must be an explicit JSON null, not an absent key.
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(platform, forKey: .platform)
             try container.encode(pushToken, forKey: .pushToken)
+            if let voipToken {
+                try container.encode(voipToken, forKey: .voipToken)
+            }
         }
     }
 
-    func registerDevice(platform: String, pushToken: String?) async throws -> Int64 {
-        let response: DeviceResponse = try await request("POST", "/devices", body: DeviceRequest(platform: platform, pushToken: pushToken))
+    func registerDevice(platform: String, pushToken: String?, voipToken: String?? = nil) async throws -> Int64 {
+        let response: DeviceResponse = try await request(
+            "POST", "/devices",
+            body: DeviceRequest(platform: platform, pushToken: pushToken, voipToken: voipToken))
         return response.deviceID
+    }
+
+    // MARK: - Calls
+
+    /// `GET /calls/ice` — the STUN/TURN servers for a peer connection,
+    /// with credentials minted for this caller (docs/protocol.md, "Voice
+    /// calls"). Fetched at the start of every call.
+    func iceServers() async throws -> IceServersResponse {
+        try await request("GET", "/calls/ice")
     }
 
     func deleteDevice(id: Int64) async throws {

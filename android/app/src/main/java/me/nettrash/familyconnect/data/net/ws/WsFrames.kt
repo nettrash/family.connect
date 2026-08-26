@@ -6,15 +6,18 @@
  * ("WebSocket protocol"). Two sealed hierarchies discriminated by the
  * "type" field:
  *
- *   ClientFrame — send / read / typing / ping
+ *   ClientFrame — send / read / typing / ping /
+ *                 call_offer / call_answer / call_ice / call_end
  *   ServerFrame — ack / message / read / typing / member_joined /
  *                 member_left / member_deleted / family_owner /
- *                 reaction / poll / pong / error
+ *                 reaction / poll / pong / error /
+ *                 call_offer / call_ringing / call_answer / call_ice / call_end
  *
  * Compatibility rule: unknown `type` values must be *dropped*, not crash
- * the socket — that is how call_offer / call_answer signaling arrives for
- * v2 clients without breaking v1. `parseServerFrame` below encodes that
- * rule (and is what WsFrameSerdeTest pins down).
+ * the socket — that is how the call signalling frames arrived for v2
+ * clients without breaking v1, and how whatever comes next will.
+ * `parseServerFrame` below encodes that rule (and is what
+ * WsFrameSerdeTest pins down).
  *
  * iOS counterpart: ios/FamilyConnect/Data/Net/WsFrames.swift
  */
@@ -26,6 +29,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonClassDiscriminator
+import me.nettrash.familyconnect.data.net.dto.IceCandidateDto
 import me.nettrash.familyconnect.data.net.dto.MemberDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.NewPollDto
@@ -85,6 +89,53 @@ sealed interface ClientFrame {
     @Serializable
     @SerialName("ping")
     data object Ping : ClientFrame
+
+    // -- Voice calls (docs/protocol.md, "Voice calls") ------------------------
+    //
+    // `call_id` is a UUID minted by the CALLER, the way `client_msg_id` is
+    // minted by a sender: the caller must correlate everything that comes
+    // back with the thing it started, and the record the server writes
+    // afterwards carries the same id as its client_msg_id.
+
+    @Serializable
+    @SerialName("call_offer")
+    data class CallOffer(
+        @SerialName("call_id") val callId: String,
+        @SerialName("chat_id") val chatId: Long,
+        val sdp: String,
+    ) : ClientFrame
+
+    @Serializable
+    @SerialName("call_answer")
+    data class CallAnswer(
+        @SerialName("call_id") val callId: String,
+        val sdp: String,
+    ) : ClientFrame
+
+    @Serializable
+    @SerialName("call_ice")
+    data class CallIce(
+        @SerialName("call_id") val callId: String,
+        val candidate: IceCandidateDto,
+    ) : ClientFrame
+
+    /** [reason] is one of hangup / decline / cancel / failed — see [CallEndReason]. */
+    @Serializable
+    @SerialName("call_end")
+    data class CallEnd(
+        @SerialName("call_id") val callId: String,
+        val reason: String,
+    ) : ClientFrame
+}
+
+/** The `reason` strings a `call_end` frame carries, both ways. */
+object CallEndReason {
+    const val HANGUP = "hangup"
+    const val DECLINE = "decline"
+    const val CANCEL = "cancel"
+    const val FAILED = "failed"
+    const val TIMEOUT = "timeout"
+    const val ANSWERED_ELSEWHERE = "answered_elsewhere"
 }
 
 // -- Server → client -----------------------------------------------------------
@@ -265,6 +316,56 @@ sealed interface ServerFrame {
         val message: String,
         // Present when the error answers a `send`.
         @SerialName("client_msg_id") val clientMsgId: String? = null,
+        // Present when the error answers a call frame. Never both.
+        @SerialName("call_id") val callId: String? = null,
+    ) : ServerFrame
+
+    // -- Voice calls (docs/protocol.md, "Voice calls") ------------------------
+
+    /**
+     * Somebody is calling. Delivered to EVERY connection the callee has,
+     * and replayed to a connection that registers while the call is still
+     * ringing — which is how a phone woken by a push gets the offer.
+     */
+    @Serializable
+    @SerialName("call_offer")
+    data class CallOffer(
+        @SerialName("call_id") val callId: String,
+        @SerialName("chat_id") val chatId: Long,
+        @SerialName("from_user_id") val fromUserId: Long,
+        val sdp: String,
+    ) : ServerFrame
+
+    /** The server accepted the caller's offer and is ringing the callee. */
+    @Serializable
+    @SerialName("call_ringing")
+    data class CallRinging(
+        @SerialName("call_id") val callId: String,
+    ) : ServerFrame
+
+    @Serializable
+    @SerialName("call_answer")
+    data class CallAnswer(
+        @SerialName("call_id") val callId: String,
+        val sdp: String,
+    ) : ServerFrame
+
+    @Serializable
+    @SerialName("call_ice")
+    data class CallIce(
+        @SerialName("call_id") val callId: String,
+        val candidate: IceCandidateDto,
+    ) : ServerFrame
+
+    /**
+     * The call is over. [reason] is one of hangup / decline / cancel /
+     * timeout / failed / answered_elsewhere — see [CallEndReason].
+     */
+    @Serializable
+    @SerialName("call_end")
+    data class CallEnd(
+        @SerialName("call_id") val callId: String,
+        val reason: String,
     ) : ServerFrame
 }
 

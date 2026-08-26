@@ -43,6 +43,7 @@ import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.CallDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.MessagePollStateDto
 import me.nettrash.familyconnect.data.net.dto.NewPollDto
@@ -358,8 +359,8 @@ class MessageRepository @Inject constructor(
      * null — so the row rendered blank rather than falling back. Mirrors
      * iOS's ChatSyncCoordinator.preview.
      */
-    fun previewText(body: String, attachment: AttachmentDto?): String =
-        Companion.previewText(body, attachment)
+    fun previewText(body: String, attachment: AttachmentDto?, call: CallDto? = null): String =
+        Companion.previewText(body, attachment, call)
 
     /**
      * Assistant replies still being written, by server id. Drives the
@@ -536,7 +537,7 @@ class MessageRepository @Inject constructor(
         applyEmbeddedPoll(message)
         chatDao.updateLastMessage(
             message.chatId,
-            previewText(message.body, message.attachment),
+            previewText(message.body, message.attachment, message.call),
             createdAt,
             message.senderId,
         )
@@ -633,12 +634,19 @@ class MessageRepository @Inject constructor(
                     // bubble still draws the question.
                     pollJson = message.poll?.let(PollCodec::encode),
                     pollSeq = message.poll?.pollSeq ?: 0L,
+                    // A call record arrives ONLY on this path: the server
+                    // writes it, nobody sends one, so there is no optimistic
+                    // row to fold into. insertIgnore never overwrites, so a
+                    // history page re-delivering the message without the
+                    // object cannot wipe it either.
+                    callOutcome = message.call?.outcome,
+                    callDurationSecs = message.call?.durationSecs,
                 ),
             ),
         )
         chatDao.updateLastMessage(
             message.chatId,
-            previewText(message.body, message.attachment),
+            previewText(message.body, message.attachment, message.call),
             createdAt,
             message.senderId,
         )
@@ -1083,7 +1091,14 @@ class MessageRepository @Inject constructor(
          * not null — so the row rendered blank rather than falling back.
          * Mirrors iOS's ChatSyncCoordinator.preview.
          */
-        fun previewText(body: String, attachment: AttachmentDto?): String {
+        fun previewText(body: String, attachment: AttachmentDto?, call: CallDto? = null): String {
+            // A call record's body is the server's English placeholder,
+            // and the preview says the same thing in the same words — the
+            // one line this list has for it. Checked FIRST, because the
+            // body is never empty on a record.
+            if (call != null) {
+                return if (call.outcome == CallDto.MISSED) "Missed voice call" else "Voice call"
+            }
             if (body.isNotEmpty()) return body
             if (attachment == null) return body
             return when {

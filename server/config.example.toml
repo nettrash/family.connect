@@ -145,6 +145,64 @@ include_message_body = true
 attachments_dir = "/var/lib/family-connect/attachments"
 
 # ---------------------------------------------------------------------------
+# Voice calls
+# ---------------------------------------------------------------------------
+# One-to-one, voice-only, PEER-TO-PEER calls between two family members. The
+# server only SIGNALS a call — it passes offers, answers and ICE candidates
+# between the two devices over the sockets they already hold, wakes a phone
+# that has none, and writes one message into the direct chat when the call
+# ends. The audio itself goes directly between the two devices and never
+# touches this server.
+#
+# What this section configures is therefore not the calls but the ICE
+# servers the clients are handed: STUN so two phones behind ordinary home
+# routers can find each other directly, and TURN as the relay of last resort
+# for the networks where they cannot.
+
+[calls]
+# Turn signalling off entirely. With this false, GET /calls/ice and every
+# call_offer answer `calls_disabled`, and GET /me reports calls_enabled:
+# false so the apps hide their call button.
+enabled = true
+
+# STUN servers, as stun:/stuns: URLs. The default names Google's public
+# STUN, because a voice feature that only works inside one Wi-Fi network is
+# not a voice feature. A STUN request carries no family data — it only asks
+# "what is my public address" — but it does reveal a device's address to
+# that server, so an operator who would rather not can point this at their
+# own coturn, or empty it.
+stun_urls = ["stun:stun.l.google.com:19302"]
+
+# TURN servers, as turn:/turns: URLs. Empty by default: calls that cannot
+# connect directly simply fail. A TURN relay carries the ENCRYPTED media (it
+# cannot read it) but it does carry it, which is why it is the operator's own
+# coturn rather than anything shipped here. Setting these REQUIRES
+# credentials below.
+# turn_urls = ["turn:turn.example.com:3478?transport=udp", "turns:turn.example.com:5349"]
+
+# The recommended credential scheme: coturn's `static-auth-secret`
+# (use-auth-secret). When set, every GET /calls/ice mints a time-limited
+# credential for the caller — username "<expiry>:<user_id>", credential
+# base64(HMAC-SHA1(secret, username)) — so a leaked credential expires on its
+# own. Put the SAME secret in coturn's turnserver.conf.
+# turn_secret = "the-same-static-auth-secret-as-coturn"
+
+# The static long-term alternative, used only when turn_secret is empty. A
+# single username/password every client shares — simpler, but a leak lasts
+# until you rotate it by hand.
+# turn_username = "family"
+# turn_password = "a-long-random-password"
+
+# How long a minted TURN credential is good for. A day: longer than any call,
+# short enough that a leaked one is not a relay forever. Ignored for the
+# static username/password.
+turn_credential_ttl_secs = 86400
+
+# How long a call rings before the server gives up and marks it missed. The
+# apps stop ringing at the same time.
+ring_timeout_secs = 45
+
+# ---------------------------------------------------------------------------
 # The assistant
 # ---------------------------------------------------------------------------
 # Each member gets one PRIVATE chat with an assistant. Private is the whole

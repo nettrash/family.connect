@@ -30,9 +30,13 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
     /// Wired by FamilyConnectApp.init, exactly as on iOS.
     static weak var registrar: PushRegistrar?
     static weak var session: AppSession?
+    /// For the Answer / Decline buttons on an incoming-call notification.
+    static weak var callManager: CallManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        UNUserNotificationCenter.current().delegate = self
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.setNotificationCategories([ChatNotifier.incomingCallCategory()])
     }
 
     // MARK: - APNs token
@@ -82,7 +86,26 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let route = PushRoute.parse(userInfo: response.notification.request.content.userInfo)
+        let content = response.notification.request.content
+        // An incoming call's banner: Answer and Decline are its buttons,
+        // and a plain click brings the call window forward — which RootView
+        // does on its own once the app is active.
+        if content.categoryIdentifier == ChatNotifier.incomingCallCategoryID {
+            let action = response.actionIdentifier
+            Task { @MainActor in
+                switch action {
+                case ChatNotifier.answerActionID:
+                    MacAppDelegate.callManager?.acceptIncoming()
+                case ChatNotifier.declineActionID:
+                    MacAppDelegate.callManager?.declineIncoming()
+                default:
+                    NSApp.activate()
+                }
+                completionHandler()
+            }
+            return
+        }
+        let route = PushRoute.parse(userInfo: content.userInfo)
         Task { @MainActor in
             MacAppDelegate.session?.pendingPushRoute = route
             completionHandler()

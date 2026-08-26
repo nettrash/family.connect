@@ -260,4 +260,33 @@
         <item quantity="one">%1$d new message</item>
         <item quantity="other">%1$d new messages</item>
     </plurals>
+    <!-- Voice calls (docs/protocol.md, "Voice calls"): the call screen, the
+         ringing and in-progress notifications, and the wording a call
+         record's bubble draws from its outcome and its side — the server's
+         English body is never shown. -->
+    <string name="s_voice_call">Voice call</string>
+    <string name="s_incoming_voice_call">Incoming voice call</string>
+    <string name="s_calling">Calling…</string>
+    <string name="s_ringing">Ringing…</string>
+    <string name="s_connecting">Connecting…</string>
+    <string name="s_answer">Answer</string>
+    <string name="s_decline">Decline</string>
+    <string name="s_hang_up">Hang up</string>
+    <string name="s_mute">Mute</string>
+    <string name="s_unmute">Unmute</string>
+    <string name="s_speaker">Speaker</string>
+    <string name="s_call_ended">Call ended</string>
+    <string name="s_ongoing_voice_call">Voice call in progress</string>
+    <string name="s_missed_voice_call">Missed voice call</string>
+    <string name="s_no_answer">No answer</string>
+    <string name="s_declined_voice_call">Declined voice call</string>
+    <string name="s_voice_call_declined">Voice call declined</string>
+    <string name="s_call_failed">Call failed</string>
+    <string name="s_call_failed_with_duration">Call failed · %1$s</string>
+    <string name="s_voice_call_with_duration">Voice call · %1$s</string>
+    <string name="s_answered_on_another_device">Answered on another device</string>
+    <string name="s_busy">Busy</string>
+    <string name="s_not_reachable">Not reachable</string>
+    <string name="s_calls_are_off_on_this_server">Calls are off on this server</string>
+    <string name="e_call_failed_to_start">Couldn\'t start the call.</string>
 </resources>

@@ -12,6 +12,7 @@
 pub mod ai;
 pub mod app;
 pub mod auth;
+pub mod calls;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -21,6 +22,7 @@ pub mod handlers_attachment;
 pub mod handlers_auth;
 pub mod handlers_avatar;
 pub mod handlers_board;
+pub mod handlers_call;
 pub mod handlers_chat;
 pub mod handlers_device;
 pub mod handlers_family;

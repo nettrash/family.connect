@@ -42,6 +42,9 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
 import me.nettrash.familyconnect.data.push.PendingRoute
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.repo.SessionEvent
@@ -52,6 +55,8 @@ import me.nettrash.familyconnect.ui.chat.ChatScreen
 import me.nettrash.familyconnect.ui.chatlist.ChatListScreen
 import me.nettrash.familyconnect.ui.familyadmin.FamilyAdminScreen
 import me.nettrash.familyconnect.ui.familygate.FamilyGateScreen
+import me.nettrash.familyconnect.calls.CallState
+import me.nettrash.familyconnect.ui.call.CallScreen
 import me.nettrash.familyconnect.ui.serversetup.ServerSetupScreen
 import me.nettrash.familyconnect.ui.settings.SettingsScreen
 import me.nettrash.familyconnect.ui.waiting.WaitingScreen
@@ -67,6 +72,7 @@ object Routes {
     const val FAMILY_ADMIN = "family_admin"
     const val BOARD = "board"
     const val STATISTICS = "statistics"
+    const val CALL = "call"
 
     fun chat(chatId: Long) = "chat/$chatId"
 }
@@ -137,8 +143,27 @@ fun AppNavHost(
     pendingRoute: PendingRoute? = null,
     onPendingRouteConsumed: () -> Unit = {},
     isOwner: Boolean = false,
+    /** The one voice call this device can be on; the call screen follows it. */
+    callState: StateFlow<CallState>? = null,
 ) {
     val navController = rememberNavController()
+
+    // The call screen is pushed whenever a call exists and popped when it
+    // is over — from wherever the person was, and only inside the family
+    // UI: a call cannot reach a signed-out device, and the start
+    // destination is what says whether this is that UI.
+    if (callState != null) {
+        val call by callState.collectAsStateWithLifecycle()
+        LaunchedEffect(call is CallState.Idle) {
+            if (startDestination != Routes.CHAT_LIST) return@LaunchedEffect
+            val onCallScreen = navController.currentBackStackEntry?.destination?.route == Routes.CALL
+            if (call !is CallState.Idle && !onCallScreen) {
+                navController.navigate(Routes.CALL) { launchSingleTop = true }
+            } else if (call is CallState.Idle && onCallScreen) {
+                navController.popBackStack(Routes.CALL, inclusive = true)
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         sessionEvents.collect { event ->
@@ -178,6 +203,12 @@ fun AppNavHost(
                 PendingRoute.ChatList ->
                     // Already the start destination — just unwind to it.
                     navController.popBackStack(Routes.CHAT_LIST, inclusive = false)
+                is PendingRoute.Call ->
+                    // The call state collector above shows the screen; a
+                    // tap on a call notification only needs the app up.
+                    if (navController.currentBackStackEntry?.destination?.route != Routes.CALL) {
+                        navController.navigate(Routes.CALL) { launchSingleTop = true }
+                    }
             }
         }
         onPendingRouteConsumed()
@@ -277,6 +308,10 @@ fun AppNavHost(
 
         composable(Routes.STATISTICS) {
             StatisticsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.CALL) {
+            CallScreen()
         }
 
         composable(Routes.SETTINGS) {

@@ -37,6 +37,84 @@ pub struct Config {
 
     #[serde(default)]
     pub ai: AiConfig,
+
+    #[serde(default)]
+    pub calls: CallsConfig,
+}
+
+/// `[calls]` — peer-to-peer voice calls (docs/protocol.md, "Voice calls").
+///
+/// The server only SIGNALS a call: it passes offers, answers and candidates
+/// between two members over the sockets they already hold, and the audio
+/// goes directly between the two devices. What this section configures is
+/// therefore not the calls but the ICE servers the clients are handed —
+/// STUN so two phones behind home routers can find each other, and TURN as
+/// the relay of last resort for the networks where they cannot.
+///
+/// ON by default with a public STUN list, because a voice feature that only
+/// works inside one Wi-Fi network is not a voice feature. A STUN binding
+/// request carries no family data, but an operator who would rather not
+/// name Google's servers points `stun_urls` at their own or empties it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallsConfig {
+    /// `false` turns signalling off entirely: `call_offer` answers
+    /// `calls_disabled`, `GET /calls/ice` does too, and `GET /me` reports
+    /// `calls_enabled: false` so clients hide their call button.
+    #[serde(default = "default_calls_enabled")]
+    pub enabled: bool,
+
+    /// STUN servers, as `stun:` / `stuns:` URLs.
+    #[serde(default = "default_stun_urls")]
+    pub stun_urls: Vec<String>,
+
+    /// TURN servers, as `turn:` / `turns:` URLs. Empty means no relay: calls
+    /// that cannot connect directly simply fail.
+    #[serde(default)]
+    pub turn_urls: Vec<String>,
+
+    /// coturn's `static-auth-secret`. When set, every `GET /calls/ice` mints
+    /// a time-limited credential for the caller: username
+    /// `<expiry>:<user_id>`, credential = base64(HMAC-SHA1(secret, username)).
+    #[serde(default)]
+    pub turn_secret: String,
+
+    /// The static long-term alternative, used when `turn_secret` is empty.
+    #[serde(default)]
+    pub turn_username: String,
+    #[serde(default)]
+    pub turn_password: String,
+
+    /// How long a minted TURN credential is good for.
+    #[serde(default = "default_turn_credential_ttl_secs")]
+    pub turn_credential_ttl_secs: u64,
+
+    /// How long a call rings before the server ends it as `timeout`
+    /// (protocol.md fixes the default at 45 s).
+    #[serde(default = "default_ring_timeout_secs")]
+    pub ring_timeout_secs: u64,
+}
+
+impl CallsConfig {
+    /// Whether a TURN entry will carry any credentials at all.
+    pub fn has_turn_credentials(&self) -> bool {
+        !self.turn_secret.is_empty()
+            || (!self.turn_username.is_empty() && !self.turn_password.is_empty())
+    }
+}
+
+impl Default for CallsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_calls_enabled(),
+            stun_urls: default_stun_urls(),
+            turn_urls: Vec::new(),
+            turn_secret: String::new(),
+            turn_username: String::new(),
+            turn_password: String::new(),
+            turn_credential_ttl_secs: default_turn_credential_ttl_secs(),
+            ring_timeout_secs: default_ring_timeout_secs(),
+        }
+    }
 }
 
 /// `[ai]` — the assistant each member can have a private chat with
@@ -724,6 +802,32 @@ impl Config {
         if let Some(fcm) = &self.push.fcm {
             fcm.read_service_account()?;
         }
+        // Calls. Validated whether or not they are enabled: a section that
+        // is wrong is wrong before somebody flips the switch.
+        if self.calls.ring_timeout_secs < 5 {
+            anyhow::bail!(
+                "calls.ring_timeout_secs must be at least 5 — a phone cannot be picked up faster"
+            );
+        }
+        if self.calls.turn_credential_ttl_secs < 60 {
+            anyhow::bail!("calls.turn_credential_ttl_secs must be at least 60");
+        }
+        for url in &self.calls.stun_urls {
+            if !(url.starts_with("stun:") || url.starts_with("stuns:")) {
+                anyhow::bail!("calls.stun_urls entry {url:?} must start with stun: or stuns:");
+            }
+        }
+        for url in &self.calls.turn_urls {
+            if !(url.starts_with("turn:") || url.starts_with("turns:")) {
+                anyhow::bail!("calls.turn_urls entry {url:?} must start with turn: or turns:");
+            }
+        }
+        if !self.calls.turn_urls.is_empty() && !self.calls.has_turn_credentials() {
+            anyhow::bail!(
+                "calls.turn_urls is set but no credentials are: set calls.turn_secret (coturn's \
+                 static-auth-secret) or both calls.turn_username and calls.turn_password"
+            );
+        }
         Ok(())
     }
 }
@@ -829,6 +933,25 @@ fn default_ws_idle_timeout_secs() -> u64 {
 
 fn default_include_message_body() -> bool {
     true
+}
+
+fn default_calls_enabled() -> bool {
+    true
+}
+
+fn default_stun_urls() -> Vec<String> {
+    vec!["stun:stun.l.google.com:19302".to_string()]
+}
+
+/// A day: long enough that a credential fetched at the start of a call
+/// outlives any call, short enough that a leaked one is not a relay forever.
+fn default_turn_credential_ttl_secs() -> u64 {
+    86_400
+}
+
+/// protocol.md's Limits table: 45 s.
+fn default_ring_timeout_secs() -> u64 {
+    45
 }
 
 fn default_apns_environment() -> String {
@@ -1070,6 +1193,52 @@ mod tests {
         assert_eq!(fcm.endpoint(), "https://fcm.googleapis.com");
         let account = fcm.read_service_account().expect("account parses");
         assert_eq!(account.project_id, "test-project");
+    }
+
+    #[test]
+    fn an_empty_calls_section_is_on_with_a_public_stun_list() {
+        let cfg = Config::from_toml_str("").expect("valid");
+        assert!(cfg.calls.enabled);
+        assert_eq!(cfg.calls.stun_urls, vec!["stun:stun.l.google.com:19302"]);
+        assert!(cfg.calls.turn_urls.is_empty());
+        assert_eq!(cfg.calls.ring_timeout_secs, 45);
+        assert_eq!(cfg.calls.turn_credential_ttl_secs, 86_400);
+        assert!(!cfg.calls.has_turn_credentials());
+    }
+
+    #[test]
+    fn a_turn_section_validates_with_either_kind_of_credential() {
+        let secret =
+            "[calls]\nturn_urls = [\"turn:turn.example.com:3478\"]\nturn_secret = \"s3cret\"\n";
+        let cfg = Config::from_toml_str(secret).expect("secret creds validate");
+        assert!(cfg.calls.has_turn_credentials());
+        let fixed = "[calls]\nturn_urls = [\"turns:turn.example.com:5349\"]\nturn_username = \"family\"\nturn_password = \"pw\"\n";
+        let cfg = Config::from_toml_str(fixed).expect("static creds validate");
+        assert!(cfg.calls.has_turn_credentials());
+    }
+
+    #[test]
+    fn validate_rejects_a_bad_calls_section() {
+        for body in [
+            // A relay with nothing to authenticate as is a relay nobody can use.
+            "[calls]\nturn_urls = [\"turn:turn.example.com:3478\"]\n",
+            // Half a static credential is no credential.
+            "[calls]\nturn_urls = [\"turn:turn.example.com:3478\"]\nturn_username = \"x\"\n",
+            "[calls]\nstun_urls = [\"turn:turn.example.com:3478\"]\n",
+            "[calls]\nturn_urls = [\"stun:stun.example.com:3478\"]\nturn_secret = \"s\"\n",
+            "[calls]\nstun_urls = [\"stun.l.google.com:19302\"]\n",
+            "[calls]\nring_timeout_secs = 4\n",
+            "[calls]\nturn_credential_ttl_secs = 59\n",
+        ] {
+            assert!(
+                Config::from_toml_str(body).is_err(),
+                "expected rejection for {body:?}"
+            );
+        }
+        // Disabled does not exempt the section from being right.
+        assert!(
+            Config::from_toml_str("[calls]\nenabled = false\nring_timeout_secs = 1\n").is_err()
+        );
     }
 
     #[test]

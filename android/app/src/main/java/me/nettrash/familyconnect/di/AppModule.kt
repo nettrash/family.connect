@@ -25,6 +25,14 @@ package me.nettrash.familyconnect.di
 
 import android.content.ContentResolver
 import android.content.Context
+import me.nettrash.familyconnect.calls.AndroidCallAudio
+import me.nettrash.familyconnect.calls.CallAudio
+import me.nettrash.familyconnect.calls.CallManager
+import me.nettrash.familyconnect.calls.CallMediaClient
+import me.nettrash.familyconnect.calls.CallStarter
+import me.nettrash.familyconnect.calls.CallStateSource
+import me.nettrash.familyconnect.calls.CallTimings
+import me.nettrash.familyconnect.calls.WebRtcClientFactory
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -124,6 +132,20 @@ abstract class AppModule {
     @Binds
     abstract fun bindChatSocket(impl: OkHttpChatSocket): ChatSocket
 
+    // Voice calls. The media seam is what keeps org.webrtc out of every
+    // test; the audio seam does the same for AudioManager.
+    @Binds
+    abstract fun bindCallMediaFactory(impl: WebRtcClientFactory): CallMediaClient.Factory
+
+    @Binds
+    abstract fun bindCallAudio(impl: AndroidCallAudio): CallAudio
+
+    @Binds
+    abstract fun bindCallStarter(impl: CallManager): CallStarter
+
+    @Binds
+    abstract fun bindCallStateSource(impl: CallManager): CallStateSource
+
     // The only Firebase touchpoint in the graph. Safely inert when the
     // build has no google-services.json — see PushTokenProvider.kt.
     @Binds
@@ -182,6 +204,7 @@ abstract class AppModule {
                     AppDatabase.MIGRATION_11_12,
                     AppDatabase.MIGRATION_12_13,
                     AppDatabase.MIGRATION_13_14,
+                    AppDatabase.MIGRATION_14_15,
                 )
                 .build()
 
@@ -221,6 +244,11 @@ abstract class AppModule {
         @Provides
         @Singleton
         fun provideClock(): Clock = Clock { System.currentTimeMillis() }
+
+        /** The protocol's ring timeout and the client's own guards. */
+        @Provides
+        @Singleton
+        fun provideCallTimings(): CallTimings = CallTimings()
 
         // The one place BuildConfig leaks into the object graph. Store
         // builds (the `nettrash` product flavor) compile the hosted instance in

@@ -289,6 +289,59 @@ pub fn fcm_message(note: &Notification, push_token: &str) -> Value {
     }})
 }
 
+/// A voice call to ring a phone with (docs/protocol.md, "Incoming calls").
+///
+/// This is NOT a `Notification`: a call does not draw a banner, it makes a
+/// device ring, so it carries no title/body/badge and takes its own path
+/// through the transports (APNs `voip` push type, FCM data-only). The device
+/// reports the call to CallKit / a full-screen intent from these fields and
+/// then connects its socket, over which the offer is replayed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallPush {
+    pub call_id: String,
+    pub chat_id: i64,
+    pub from_user_id: i64,
+    /// The caller's display name, shown while the phone rings. On the wire
+    /// even under `include_message_body = false`: a sender's name titles
+    /// every push under that setting too, and a phone that rings without
+    /// saying who is calling is worse than one that does not.
+    pub caller_name: String,
+    /// The ring timeout, as the push's own expiry: a call push FCM or APNs
+    /// could not deliver while it rang must not wake a phone into a call
+    /// that is already over.
+    pub ring_timeout_secs: u64,
+}
+
+/// The APNs VoIP push body (protocol.md, "Incoming calls"). No `aps`
+/// dictionary: a VoIP push has nothing for the system to draw, and the app
+/// reports the call to CallKit from these fields the moment it arrives.
+pub fn apns_voip_payload(call: &CallPush) -> Value {
+    json!({
+        "kind": "call",
+        "call_id": call.call_id,
+        "chat_id": call.chat_id,
+        "from_user_id": call.from_user_id,
+        "caller_name": call.caller_name,
+    })
+}
+
+/// The FCM call message (protocol.md, "Incoming calls"): data only and no
+/// `notification` block, so the app process is woken to ring rather than the
+/// tray asked to draw. `data` values are strings; `ttl` is `"<secs>s"`.
+pub fn fcm_call_message(call: &CallPush, push_token: &str) -> Value {
+    json!({"message": {
+        "token": push_token,
+        "data": {
+            "kind": "call",
+            "call_id": call.call_id,
+            "chat_id": call.chat_id.to_string(),
+            "from_user_id": call.from_user_id.to_string(),
+            "caller_name": call.caller_name,
+        },
+        "android": {"priority": "HIGH", "ttl": format!("{}s", call.ring_timeout_secs)},
+    }})
+}
+
 /// The one SQL statement behind the APNs badge: the recipient's total unread
 /// across all their chats — per-chat unread is "messages newer than my read
 /// marker, not sent by me" (the same rule `GET /chats` uses), and a flat
@@ -349,7 +402,50 @@ mod tests {
             attachment: None,
             reaction_seq: None,
             poll: None,
+            call: None,
         }
+    }
+
+    fn protocol_call() -> CallPush {
+        CallPush {
+            call_id: "6a1f0c3e-0000-4000-8000-000000000001".to_string(),
+            chat_id: 42,
+            from_user_id: 7,
+            caller_name: "Anna".to_string(),
+            ring_timeout_secs: 45,
+        }
+    }
+
+    #[test]
+    fn the_apns_voip_payload_has_no_aps_and_carries_the_call_fields() {
+        let payload = apns_voip_payload(&protocol_call());
+        assert_eq!(
+            payload,
+            json!({
+                "kind": "call",
+                "call_id": "6a1f0c3e-0000-4000-8000-000000000001",
+                "chat_id": 42, "from_user_id": 7, "caller_name": "Anna"
+            })
+        );
+        assert!(payload.get("aps").is_none(), "a VoIP push has no aps dict");
+    }
+
+    #[test]
+    fn the_fcm_call_message_is_data_only_with_a_string_ttl() {
+        let message = fcm_call_message(&protocol_call(), "token-1");
+        assert_eq!(
+            message,
+            json!({"message": {
+                "token": "token-1",
+                "data": {"kind": "call", "call_id": "6a1f0c3e-0000-4000-8000-000000000001",
+                         "chat_id": "42", "from_user_id": "7", "caller_name": "Anna"},
+                "android": {"priority": "HIGH", "ttl": "45s"}
+            }})
+        );
+        assert!(
+            message["message"].get("notification").is_none(),
+            "a call push must not carry a notification block — the app rings, the tray does not"
+        );
     }
 
     #[test]

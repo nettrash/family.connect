@@ -161,4 +161,37 @@ ANDROID_ONLY = {
 # the catalogue ever gains this exact English, move it to serbian.SR and
 # delete this line, so the two platforms cannot drift apart.
 "s_who_voted": "Ко је гласао",
+
+# --- voice calls ---
+# Every voice-call string, Android side (docs/protocol.md, "Voice calls").
+# Several of these — "Voice call", "Missed voice call", "Answer", "Decline",
+# "Hang up", "Mute", "Speaker", … — have the same English on iOS and would
+# be found by the English match; they are listed here anyway so this file
+# resolves on its own while the iOS catalogue is still being written. Once
+# both are in, the shared ones can move to serbian.SR.
+"s_voice_call": "Гласовни позив",
+"s_incoming_voice_call": "Долазни гласовни позив",
+"s_calling": "Позивам…",
+"s_ringing": "Звони…",
+"s_connecting": "Повезивање…",
+"s_answer": "Јави се",
+"s_decline": "Одбиј",
+"s_hang_up": "Прекини",
+"s_mute": "Искључи микрофон",
+"s_unmute": "Укључи микрофон",
+"s_speaker": "Звучник",
+"s_call_ended": "Позив је завршен",
+"s_ongoing_voice_call": "Гласовни позив у току",
+"s_missed_voice_call": "Пропуштен гласовни позив",
+"s_no_answer": "Нема одговора",
+"s_declined_voice_call": "Одбијен гласовни позив",
+"s_voice_call_declined": "Гласовни позив је одбијен",
+"s_call_failed": "Позив није успео",
+"s_call_failed_with_duration": "Позив није успео · %1$s",
+"s_voice_call_with_duration": "Гласовни позив · %1$s",
+"s_answered_on_another_device": "Јављено на другом уређају",
+"s_busy": "Заузето",
+"s_not_reachable": "Недоступно",
+"s_calls_are_off_on_this_server": "Позиви су искључени на овом серверу",
+"e_call_failed_to_start": "Позив није могао да почне.",
 }

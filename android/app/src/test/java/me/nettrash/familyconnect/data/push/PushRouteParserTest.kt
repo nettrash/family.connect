@@ -50,6 +50,27 @@ class PushRouteParserTest {
         assertThat(PushRouteParser.parse(data)).isEqualTo(PendingRoute.ChatList)
     }
 
+    @Test
+    fun callPayloadOpensTheCallScreen() {
+        // Verbatim from the protocol's FCM incoming-call example (data only).
+        val data = mapOf(
+            "kind" to "call",
+            "call_id" to "6a1f0c3e-0000-4000-8000-000000000001",
+            "chat_id" to "42",
+            "from_user_id" to "7",
+            "caller_name" to "Anna",
+        )
+
+        assertThat(PushRouteParser.parse(data)).isEqualTo(PendingRoute.Call(answer = false))
+    }
+
+    @Test
+    fun theNotificationsAnswerButtonSaysSo() {
+        val data = mapOf("kind" to "call", "call_action" to "answer")
+
+        assertThat(PushRouteParser.parse(data)).isEqualTo(PendingRoute.Call(answer = true))
+    }
+
     // -- Compatibility / malformed input -------------------------------------------
 
     @Test

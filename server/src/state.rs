@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
+use crate::calls::CallRegistry;
 use crate::config::Config;
 use crate::push::PushSender;
 use crate::registry::Registry;
@@ -20,6 +21,11 @@ use crate::storage::Storage;
 pub struct AppState {
     pub pool: PgPool,
     pub registry: Arc<Registry>,
+    /// The calls in flight — ringing or answered — and the last few that
+    /// ended. In memory only: a call does not survive a restart, and its
+    /// only durable trace is the record written when it ends
+    /// (docs/protocol.md, "Voice calls").
+    pub calls: Arc<CallRegistry>,
     pub push: Arc<dyn PushSender>,
     pub cfg: Arc<Config>,
     /// Where attachment bytes live. On disk, not in PostgreSQL — see
@@ -36,6 +42,7 @@ impl AppState {
     /// from `[limits] ws_send_queue`.
     pub fn new(pool: PgPool, cfg: Arc<Config>, push: Arc<dyn PushSender>) -> Self {
         let registry = Arc::new(Registry::new(cfg.limits.ws_send_queue));
+        let calls = Arc::new(CallRegistry::new());
         let storage = Storage::new(cfg.storage.attachments_dir.clone());
         // A generous timeout: a large model streaming a long answer is slow
         // by nature, and cutting it off mid-sentence is worse than waiting.
@@ -46,6 +53,7 @@ impl AppState {
         Self {
             pool,
             registry,
+            calls,
             push,
             cfg,
             http,

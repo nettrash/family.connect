@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 14.
+ * Room database, version 15.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -225,6 +225,21 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE messages ADD COLUMN pollJson TEXT")
                 db.execSQL("ALTER TABLE messages ADD COLUMN pollSeq INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE chats ADD COLUMN maxPollSeq INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v15: voice-call records.
+         *
+         * Two nullable columns with NO default, because absence IS the
+         * meaning: every message already in the table is not a call, and a
+         * call record is written once (outcome, duration) and never
+         * changes. Mirrors v14's `pollJson` reasoning.
+         */
+        val MIGRATION_14_15: Migration = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN callOutcome TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN callDurationSecs INTEGER")
             }
         }
 

@@ -16,8 +16,8 @@ disagree, this document wins; fix the code.
 
 - Clients MUST ignore unknown JSON fields in any response, and unknown `type` values in any
   WebSocket frame. The server likewise ignores unknown client frame types (logged at debug).
-  This is how voice/video signaling frames (`call_offer`, `call_answer`, …) will be added later
-  without breaking v1 clients.
+  This is how the voice-call signalling frames (`call_offer`, `call_answer`, …) were added
+  without breaking v1 clients — see "Voice calls".
 - All field names are `snake_case`. Timestamps are RFC 3339 UTC strings
   (e.g. `"2026-08-19T17:03:12Z"`). All ids are 64-bit integers.
 
@@ -52,6 +52,7 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `message_not_found`, `not_message_author`, `invalid_emoji`, `note_not_found`,
 `not_note_author`, `invalid_note_color`, `invalid_language`, `board_full`, `invalid_pagination`,
 `device_not_found`, `invalid_poll`, `poll_closed`,
+`calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`, `peer_busy`, `peer_unreachable`,
 `avatar_too_large`, `invalid_image`, `attachment_too_large`, `invalid_attachment`,
 `attachment_not_found`, `attachment_already_used`, `internal`.
 
@@ -100,6 +101,9 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
           — plus "poll": {Poll} when (and only when) the message is a poll. A poll's
             QUESTION is the message body, so a client that knows nothing of polls shows it
             as an ordinary message and loses only the options — see "Polls".
+          — plus "call": {Call} when (and only when) the message is the record of a voice
+            call. The body is then the English placeholder "Voice call" / "Missed voice
+            call", which a client that knows the object never shows — see "Voice calls".
 ReplyTo   {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"}
 Reaction  {"user_id": 9, "emoji": "❤️"}
 Attachment {"id": 34, "kind": "photo|video|audio|file|location", "mime": "image/jpeg",
@@ -124,6 +128,15 @@ Poll      {"poll_seq": 88, "closed": false,
             ALWAYS present, unlike "reaction_seq": a poll has a sequence from the moment
             it exists, and "closed" is a boolean with a real default, so there is no
             "unset" for a missing key to mean
+Call      {"outcome": "completed|missed|declined|failed", "duration_secs": 222}
+          — "duration_secs" when (and only when) the call was ever answered: the seconds
+            from the answer to the end on the server's clock, so a "failed" call may carry
+            one and a "missed" call never does. The record's sender is the CALLER and its
+            "client_msg_id" is the call's id — see "Voice calls"
+IceServer {"urls": ["turn:turn.example.com:3478?transport=udp"],
+           "username": "1756300000:7", "credential": "…"}
+          — "username"/"credential" on a TURN server only, and only when the operator
+            configured credentials; a STUN server is "urls" alone — see "Voice calls"
 Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow",
            "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88}
           — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
@@ -929,6 +942,163 @@ Nothing is scheduled and nothing is reversible. There is no grace period, no "de
 no way to cancel: a deletion that has not happened yet is a deletion an operator has to be trusted
 to carry out, and this server would rather be believed.
 
+### Voice calls
+
+Two members can talk. A call is **one to one, voice only, and peer to peer**: the audio travels
+directly between the two devices over WebRTC (Opus over DTLS-SRTP), and the server never carries,
+hears or stores a single frame of it. What the server does is what it already does for everything
+else — it passes small JSON frames between two people over the socket they already hold, wakes a
+phone that has no socket open, and writes one message into the direct chat afterwards so that a
+call is part of the history like anything else that happened between those two people.
+
+That division is the whole design, and it is worth stating what it buys and what it costs. It buys
+privacy of the strongest kind available: there is no media server to compromise, no recording to
+subpoena, and a family whose server sits on a Raspberry Pi behind a home router can call each
+other across the world without that box ever seeing more than a few kilobytes of signalling. It
+costs group calls — three people need either a mesh of three connections or a server that mixes,
+and neither is part of this — and it costs the ordinary NAT problem that every peer-to-peer
+protocol has, which is what the `GET /calls/ice` endpoint is for.
+
+**A call lives in a direct chat.** `call_offer` names a `chat_id`, and that chat must be a direct
+one — a family chat has no single person to ring, and the assistant has no ears. The callee is the
+chat's other member. Anchoring a call to the chat rather than to a user id is what gives the record
+somewhere to live, and it means a client rings somebody from exactly the screen where it would
+otherwise write to them; a client that wants to call from the member list does `POST /chats/direct`
+first, which it needed anyway to write.
+
+**One call per person.** A person who is ringing, being rung, or talking is busy. A second
+`call_offer` from them is `call_busy`; an offer TO them is `peer_busy`. Both are refused before
+anything is rung, and neither writes a record — nothing happened.
+
+#### Identity: the client names the call
+
+`call_id` is a UUID v4 **minted by the caller**, in exactly the way `client_msg_id` is minted by a
+sender. The reason is the same: the caller must be able to correlate everything that comes back —
+`call_ringing`, an `error`, the peer's `call_answer` — with the thing it started, and a server-issued
+id would arrive one round trip too late to be useful for the frames already in flight. It is also
+what makes the record exactly-once for free: the message the server writes afterwards carries the
+`call_id` as its `client_msg_id`, so the `(chat_id, sender, client_msg_id)` uniqueness that dedups
+retried sends dedups a call's record as well, and no code path has to remember to.
+
+Every frame about a call — inbound and outbound, and an `error` answering one — carries the
+`call_id`. **A client applies a call frame only to a call it holds and ignores every other one in
+silence.** That single rule is what makes the multi-device story below work without the server
+tracking which of a person's devices is doing what.
+
+#### The sequence
+
+1. The caller fetches `GET /calls/ice`, creates a peer connection with those servers, gathers an
+   offer, and sends `{"type": "call_offer", "call_id", "chat_id", "sdp"}`. The offer may — should —
+   be sent as soon as the local description exists; candidates trickle after it as `call_ice`.
+2. The server checks the chat, the membership, the kind, and that neither party is busy, then
+   answers the caller's connection with `call_ringing` and delivers
+   `{"type": "call_offer", "call_id", "chat_id", "from_user_id", "sdp"}` to **every connection the
+   callee has**. Callee devices that hold no socket are woken with a push — see "Push
+   notifications" — and the caller's OTHER devices are told nothing: a call is placed from one
+   device, and only that device is on it.
+3. The callee's devices ring. The first to send `{"type": "call_answer", "call_id", "sdp"}` takes
+   the call: the caller's connections receive `call_answer`, and every OTHER connection of the
+   callee receives `{"type": "call_end", "reason": "answered_elsewhere"}` and stops ringing. A
+   `call_decline` does not exist — declining is `call_end` with `reason: "decline"` from any one
+   device, and it ends the call for all of them: a family member who has said no on their watch
+   should not have their phone go on ringing.
+4. Candidates are relayed by `call_ice` for as long as the call lasts. The caller's candidates go
+   to every connection of the callee; the callee's, once it has answered, to every connection of
+   the caller. Devices not on the call ignore them by `call_id`. **While a call is ringing the
+   server BUFFERS the caller's candidates** (the most recent 64) and replays them, after the offer,
+   to any callee connection that arrives late — a phone woken by a push connects seconds after the
+   offer was delivered, and the caller's candidates were gathered in those seconds. A client MUST
+   buffer remote candidates it receives before it has set the remote description, because the
+   order in which a replay arrives is offer-then-candidates but nothing about a live relay
+   promises it.
+5. Either side ends the call with `{"type": "call_end", "call_id", "reason"}`, where a client's
+   reasons are `hangup` (a call that was answered), `decline` (the callee refusing), `cancel` (the
+   caller giving up while it rings) and `failed` (the media never came up, or died). The server
+   relays it, with the same reason, to every connection of both parties except the one it came
+   from, and writes the record.
+
+The server ends a call on its own in three cases, and each reaches both parties as a `call_end`
+with the reason named: **`timeout`** when nobody has answered within the ring timeout (45 s by
+default); **`cancel`** when the connection that placed the call closes while it is still ringing —
+the caller's app was killed, or its socket blipped, and nothing on the far side should ring for
+somebody who is no longer there; and **`failed`** when a call that was answered has had NEITHER
+party connected for 60 s. The last is a backstop, not the rule: an answered call's audio is peer to
+peer and outlives any number of socket reconnects, and the server deliberately does NOT end an
+active call when one socket drops, because a momentary network change would otherwise hang up a
+perfectly good conversation. Clients report a dead call themselves, from the peer connection's own
+failure, with `reason: "failed"`.
+
+**A client keeps its socket open for the life of a call**, ringing phase included. That is a change
+from the ordinary iOS and Android behaviour of suspending or closing the socket in the background:
+a call's `call_end`, its candidates and an ICE restart all arrive over it, and the platform
+permissions a call runs under (an active audio session; a foreground service of the call type) are
+exactly what allow a socket to stay up.
+
+#### Late arrivals: the replay on connect
+
+A connection is REGISTERED — authenticated and able to receive frames — some seconds after the push
+that woke its device, and the frames that would have told it what to do were sent before it
+existed. So the server replays, to a connection at the moment it registers:
+
+- `call_offer` (followed by the buffered `call_ice` frames) when its user is the callee of a call
+  that is still ringing;
+- `call_end` with the reason, when its user was the callee of a call that ended within the last
+  two minutes — answered on another device, cancelled, or rung out — so a phone that was woken for
+  a call that has meanwhile been taken on the Mac stops ringing at once instead of at its own
+  guard timeout.
+
+A client that receives a `call_offer` for a `call_id` it already holds treats it as the duplicate it
+is and does nothing. A device woken by a push that never receives an offer — the server is
+unreachable, or the call ended more than two minutes before it managed to connect — gives up on its
+own after the ring timeout.
+
+#### The record
+
+Every call that was rung writes ONE message into the direct chat: sender = the caller,
+`client_msg_id` = the `call_id`, and a `call` object with the outcome. `completed` is a call that
+was answered and hung up; `missed` is one that was never answered — rung out, cancelled, or the
+callee was nowhere to be reached; `declined` is one the callee refused; `failed` is one whose media
+never came up or died. `duration_secs` is present when — and only when — the call was ever
+answered, measured on the server's clock from the answer to the end, so `failed` may carry one and
+`missed` never does. A refused offer (`call_busy`, `peer_busy`, a chat of the wrong kind) writes
+nothing: nobody was rung.
+
+**The body is the English placeholder** `"Voice call"`, or `"Missed voice call"` for a `missed`
+one, in exactly the way a deleted account's `display_name` is the English placeholder "Deleted
+account": a client that knows the `call` object draws its OWN wording from the outcome, the
+duration and which side of the call it was on, and never shows the body; a client that predates
+calls shows a readable line rather than a blank bubble. The chat-list preview carries the `call`
+object for the same reason, so no client with the feature ever has to fall back to English there.
+The record is a message in every other respect — it counts as unread for the callee, it can be
+replied to and reacted to, retention takes it — with one exception: **it cannot be edited.**
+`PATCH` on it is `validation`. The author-only rule would otherwise let a caller write anything
+into a line that other clients render as "Voice call".
+
+A `missed` record pushes as the message it is (title = the caller's name, body = the placeholder,
+or "New message" under `include_message_body = false`), which is what a missed-call notification
+is. The other three outcomes are things both parties were present for and do not push.
+
+#### Where the servers come from
+
+`GET /calls/ice` answers with the STUN and TURN servers a client hands to its peer connection. The
+list is the operator's, from the `[calls]` section of the server config: STUN is what lets two
+phones behind ordinary home routers find each other directly, and TURN is the relay of last resort
+for the networks where they cannot (carrier-grade NAT, corporate Wi-Fi). A TURN relay carries the
+encrypted media and cannot read it, but it does carry it, which is why it is the operator's own
+coturn rather than anything this protocol provides. When the operator has set a TURN shared secret,
+the response carries time-limited credentials minted for the caller (coturn's `use-auth-secret`
+scheme: the username is `<expiry>:<user_id>`, the credential is base64 of HMAC-SHA1 over it), and
+`ttl_secs` says how long they are good for. Clients fetch this at the start of every call rather
+than caching it — a credential is cheap, and a stale one is a call that silently cannot relay.
+
+The default STUN list names Google's public STUN servers, because a voice feature that only works
+inside one Wi-Fi network is not a voice feature. A STUN binding request carries no family data —
+it asks "what is my public address" and nothing else — but it does tell that server a device's
+address, and an operator who would rather it did not sets `stun_urls` to their own or to nothing.
+
+`GET /me` says whether the server has calls on at all, as `calls_enabled`; a client hides the call
+button behind it rather than discovering `calls_disabled` at the moment somebody wants to talk.
+
 ## REST endpoints
 
 ### Auth
@@ -943,7 +1113,7 @@ to carry out, and this server would rather be believed.
 | `PUT /me/birthday` | (auth) `{month, day}` → `200 {user: User}`. Your own birthday: a day and a month, no year (see "Birthdays"). Replaces whatever was there. Errors: `validation` (a month outside 1–12, or a day that month does not have). |
 | `DELETE /me/birthday` | (auth) → `204`. Clears it. Idempotent — clearing a birthday nobody set is still `204`. |
 | `POST /families/members/{id}/password` | (owner) `{new_password}` → `204`. The owner resets a member's password WITHOUT knowing the current one — the whole point is that the member has forgotten it. ALL of that member's sessions are revoked and their sockets closed, so every device they are signed in on returns to login; that is what makes a reset a recovery rather than a convenience. The owner cannot target themselves here (`POST /me/password` is for that), and a user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
-| `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. |
+| `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null, calls_enabled: bool}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. `calls_enabled` is ALWAYS present and says whether this server signals voice calls at all (`[calls] enabled`); a client hides its call button when it is false — see "Voice calls". |
 
 ### Profile pictures
 
@@ -1019,8 +1189,14 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `POST /devices` | `{platform: "ios"\|"macos"\|"android", push_token: string\|null}` → `201 {device_id}`. Upserts by token when non-null. `macos` is delivered over APNs alongside `ios` — the macOS build shares the iOS bundle id, so it shares the APNs topic and the payload is identical; it is a distinct platform in the DATA because a Mac claiming to be an iPhone makes every future question about delivery harder to answer. The caller's SESSION is recorded on the row as well, which is what makes the push gate per-device — see "Push notifications"; re-POST on every launch so it stays true. |
+| `POST /devices` | `{platform: "ios"\|"macos"\|"android", push_token: string\|null, voip_token?: string\|null}` → `201 {device_id}`. Upserts by token when non-null. `voip_token` is the iOS PushKit VoIP token, the one an incoming call is delivered to (see "Push notifications"): ABSENT leaves whatever the row holds untouched, `null` or `""` clears it, a string sets it — the same absent-is-not-null rule every optional field on this wire follows, here because the two tokens arrive from the OS at different moments and a launch that has only one of them must not wipe the other. Only an `ios` device has one; a Mac never registers one and is never rung by push. `macos` is delivered over APNs alongside `ios` — the macOS build shares the iOS bundle id, so it shares the APNs topic and the payload is identical; it is a distinct platform in the DATA because a Mac claiming to be an iPhone makes every future question about delivery harder to answer. The caller's SESSION is recorded on the row as well, which is what makes the push gate per-device — see "Push notifications"; re-POST on every launch so it stays true. |
 | `DELETE /devices/{id}` | → `204`. Error: `device_not_found`. |
+
+### Calls
+
+| Method & path | Body → Response |
+|---|---|
+| `GET /calls/ice` | (auth) → `200 {ice_servers: [IceServer], ttl_secs: 86400}`. The STUN/TURN servers to hand a peer connection, with time-limited TURN credentials minted for the caller when the operator configured a shared secret (see "Voice calls"). Fetched at the start of every call, never cached across calls. Error: `calls_disabled` (403). |
 
 ### Ops
 
@@ -1048,7 +1224,15 @@ Frames are JSON text messages tagged by `"type"`.
 {"type": "read",   "chat_id": 42, "last_read_message_id": 1337}
 {"type": "typing", "chat_id": 42}
 {"type": "ping"}
+{"type": "call_offer",  "call_id": "6a1f0c3e-…", "chat_id": 42, "sdp": "v=0\r\n…"}
+{"type": "call_answer", "call_id": "6a1f0c3e-…", "sdp": "v=0\r\n…"}
+{"type": "call_ice",    "call_id": "6a1f0c3e-…",
+                        "candidate": {"candidate": "candidate:…", "sdp_mid": "0", "sdp_mline_index": 0}}
+{"type": "call_end",    "call_id": "6a1f0c3e-…", "reason": "hangup|decline|cancel|failed"}
 ```
+
+(`sdp_mid` and `sdp_mline_index` are each optional on a candidate — a WebRTC stack supplies one,
+the other, or both, and the receiving stack accepts whichever it was given.)
 
 ### Server → client
 
@@ -1072,11 +1256,20 @@ Frames are JSON text messages tagged by `"type"`.
 {"type": "board_note", "note": {Note}}
 {"type": "ai_delta", "chat_id": 42, "message_id": 1339, "text": "…"}   — assistant, mid-reply
 {"type": "ai_error", "chat_id": 42, "message_id": 1339}                — it stopped early
+{"type": "call_offer",   "call_id": "6a1f0c3e-…", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n…"}
+{"type": "call_ringing", "call_id": "6a1f0c3e-…"}
+{"type": "call_answer",  "call_id": "6a1f0c3e-…", "sdp": "v=0\r\n…"}
+{"type": "call_ice",     "call_id": "6a1f0c3e-…",
+                         "candidate": {"candidate": "candidate:…", "sdp_mid": "0", "sdp_mline_index": 0}}
+{"type": "call_end",     "call_id": "6a1f0c3e-…",
+                         "reason": "hangup|decline|cancel|timeout|failed|answered_elsewhere"}
 {"type": "pong"}
 {"type": "error",   "code": "not_chat_member", "message": "…", "client_msg_id": "8f14e45f-…"}
+{"type": "error",   "code": "peer_busy", "message": "…", "call_id": "6a1f0c3e-…"}
 ```
 
-(`client_msg_id` on `error` is present when the error answers a `send`.)
+(`client_msg_id` on `error` is present when the error answers a `send`; `call_id` when it answers a
+call frame. Never both.)
 
 `message_edited` carries the whole message, exactly as `message` does, and is a SEPARATE frame
 type on purpose: `message` is what bumps unread counts and raises a notification, and an edit must
@@ -1144,6 +1337,17 @@ apply it under the same rule the board catch-up uses: a note is written only whe
   mutations are REST-only in v1; a client-to-server vote frame may be added later under the
   unknown-frame rule. Sequence values are assigned before commit, with the same accepted gap
   reactions have and the same self-healing.
+- **Calls**: the whole signalling exchange is under "Voice calls"; the transport rules are
+  these. `call_offer` is answered on the ORIGINATING connection with `call_ringing` or an
+  `error` carrying the `call_id` (`calls_disabled`, `invalid_call` for a chat that is not
+  direct, `chat_not_found`, `not_chat_member`, `call_busy`, `peer_busy`, `peer_unreachable`
+  when the callee has neither a socket nor a device that can be woken). `call_answer` for a call
+  the server does not hold, or from someone who is not its callee, is `call_not_found` /
+  `invalid_call`. `call_ice` and `call_end` naming an unknown call are **dropped in silence**:
+  the first is noise-level and the second is a client tidying up after a restart, and neither
+  deserves an error per frame. Relays never go back to the connection they came from. The
+  registry replays `call_offer` (plus buffered candidates) and recent `call_end` frames to a
+  connection at registration, as described under "Late arrivals".
 - **Keepalive**: the server pings (WS protocol level) every 30 s and drops sockets idle for
   75 s. Clients should send `{"type":"ping"}` every ~25 s if their WS library hides protocol
   pings, and treat a missing `pong` as a dead connection.
@@ -1228,10 +1432,11 @@ Neither is a case of "the server cannot tell", which is why neither gets the ben
 A signed-out phone showing family message bodies on its lock screen is not a redundant banner; it
 is a leak, and it lasts until somebody notices.
 
-Four events push: a **new message** (to every chat member but the sender), a **new board note** (to
-every family member but the author), a **join request created** (to the family owner), and a **join
-request approved** (to the requester) — each of them narrowed device by device by the rule above.
-Typing, reads, reactions, note moves and edits, and other frames never push.
+Five events push: a **new message** (to every chat member but the sender), a **new board note** (to
+every family member but the author), a **join request created** (to the family owner), a **join
+request approved** (to the requester), and an **incoming call** (to the callee — see below) — each
+of them narrowed device by device by the rule above. Typing, reads, reactions, note moves and
+edits, and other frames never push.
 
 A poll is a message and pushes exactly once, as one, with its question for a body — there is no
 "Anna started a poll" alert, because the question is more useful than the fact. Votes, retractions
@@ -1307,6 +1512,52 @@ count, and that is a correct rendering of the same data.
 Tapping a notification opens the chat named by `chat_id` (or the board for `board_note`, the
 join-requests screen for `join_request`, the chat list for `joined`).
 
+### Incoming calls
+
+A call has to RING a phone whose app is not running, and an alert notification cannot do that: it
+draws a banner, and a banner is not a ringing phone. So an incoming call wakes a device through the
+one channel each platform provides for exactly this, and the payload is not a notification at all —
+it is the fact of the call, and the device does the ringing itself.
+
+Who is woken: the callee's devices that have no live socket of their own — the same per-device
+rule as everything above — that can present a call: an `ios` device with a `voip_token`, and an
+`android` device with a push token. An iOS device that never registered a VoIP token is not woken;
+a Mac is never woken, because a Mac that is not running is not a phone in a pocket. What a woken
+device does next is connect its socket, and the server's registration-time replay ("Late arrivals")
+hands it the offer — or the `call_end`, if the call is already over.
+
+APNs, to the VoIP token: headers `apns-topic` = `<bundle id>.voip`, `apns-push-type: voip`,
+`apns-priority: 10`, `apns-expiration` = now + the ring timeout; payload:
+
+```json
+{"kind": "call", "call_id": "6a1f0c3e-…", "chat_id": 42, "from_user_id": 7,
+ "caller_name": "Anna"}
+```
+
+No `aps` dictionary: a VoIP push has nothing for the system to draw, and iOS requires the app to
+report the call to CallKit the moment it arrives — which is what the app does with these fields.
+
+FCM, data only and no `notification` block, so the app process is woken to ring rather than the
+tray asked to draw:
+
+```json
+{"message": {"token": "…",
+  "data": {"kind": "call", "call_id": "6a1f0c3e-…", "chat_id": "42", "from_user_id": "7",
+           "caller_name": "Anna"},
+  "android": {"priority": "HIGH", "ttl": "45s"}}}
+```
+
+`ttl` is the ring timeout: a push FCM could not deliver while the call was ringing must not deliver
+once it is over and wake a phone into a call that no longer exists.
+
+`caller_name` is the display name a device shows while it rings, and it is on the wire even under
+`include_message_body = false` — a sender's name is the TITLE of every message push under that
+setting too, and a phone that rings without saying who is calling is worse than one that does not.
+
+A VoIP token APNs reports as unregistered is CLEARED from its device row rather than the row
+deleted — the alert token beside it may be perfectly good. An Android call push rejected as
+unregistered deletes the row, as an ordinary push would.
+
 ## Limits (server defaults, configurable)
 
 | Limit | Default |
@@ -1321,3 +1572,9 @@ join-requests screen for `join_request`, the chat list for `joined`).
 | Poll options | 2 minimum (fixed), 10 maximum |
 | Poll option text | 100 chars |
 | Family-chat history sent with a mention | 30 days / 200 messages / 40 000 chars, whichever binds first (fixed) |
+| Call ring timeout | 45 s |
+| Buffered caller candidates while ringing | 64 (fixed) |
+| Offer / answer SDP | 64 KiB (fixed) |
+| One ICE candidate | 2 KiB (fixed); larger or empty ones are dropped in silence |
+| Answered call with neither party connected | 60 s, then `failed` (fixed) |
+| TURN credential lifetime | 24 h |

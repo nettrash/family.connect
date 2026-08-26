@@ -242,4 +242,30 @@
         <item quantity="many">%1$d новых сообщений</item>
         <item quantity="other">%1$d новых сообщения</item>
     </plurals>
+    <!-- Voice calls -->
+    <string name="s_voice_call">Голосовой звонок</string>
+    <string name="s_incoming_voice_call">Входящий голосовой звонок</string>
+    <string name="s_calling">Вызов…</string>
+    <string name="s_ringing">Звоним…</string>
+    <string name="s_connecting">Подключение…</string>
+    <string name="s_answer">Ответить</string>
+    <string name="s_decline">Отклонить</string>
+    <string name="s_hang_up">Завершить</string>
+    <string name="s_mute">Выключить микрофон</string>
+    <string name="s_unmute">Включить микрофон</string>
+    <string name="s_speaker">Динамик</string>
+    <string name="s_call_ended">Звонок завершён</string>
+    <string name="s_ongoing_voice_call">Идёт голосовой звонок</string>
+    <string name="s_missed_voice_call">Пропущенный звонок</string>
+    <string name="s_no_answer">Нет ответа</string>
+    <string name="s_declined_voice_call">Отклонённый звонок</string>
+    <string name="s_voice_call_declined">Звонок отклонён</string>
+    <string name="s_call_failed">Звонок не удался</string>
+    <string name="s_call_failed_with_duration">Звонок не удался · %1$s</string>
+    <string name="s_voice_call_with_duration">Голосовой звонок · %1$s</string>
+    <string name="s_answered_on_another_device">Отвечено на другом устройстве</string>
+    <string name="s_busy">Занято</string>
+    <string name="s_not_reachable">Недоступен</string>
+    <string name="s_calls_are_off_on_this_server">Звонки отключены на этом сервере</string>
+    <string name="e_call_failed_to_start">Не удалось начать звонок.</string>
 </resources>

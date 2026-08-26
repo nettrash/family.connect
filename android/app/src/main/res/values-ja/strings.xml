@@ -233,4 +233,30 @@
     <plurals name="s_n_new_messages">
         <item quantity="other">新着メッセージ%1$d件</item>
     </plurals>
+    <!-- Voice calls -->
+    <string name="s_voice_call">音声通話</string>
+    <string name="s_incoming_voice_call">音声通話の着信</string>
+    <string name="s_calling">発信中…</string>
+    <string name="s_ringing">呼び出し中…</string>
+    <string name="s_connecting">接続中…</string>
+    <string name="s_answer">応答</string>
+    <string name="s_decline">拒否</string>
+    <string name="s_hang_up">通話終了</string>
+    <string name="s_mute">ミュート</string>
+    <string name="s_unmute">ミュート解除</string>
+    <string name="s_speaker">スピーカー</string>
+    <string name="s_call_ended">通話が終了しました</string>
+    <string name="s_ongoing_voice_call">音声通話中</string>
+    <string name="s_missed_voice_call">不在着信</string>
+    <string name="s_no_answer">応答なし</string>
+    <string name="s_declined_voice_call">拒否した音声通話</string>
+    <string name="s_voice_call_declined">音声通話は拒否されました</string>
+    <string name="s_call_failed">通話に失敗しました</string>
+    <string name="s_call_failed_with_duration">通話に失敗しました · %1$s</string>
+    <string name="s_voice_call_with_duration">音声通話 · %1$s</string>
+    <string name="s_answered_on_another_device">別の端末で応答しました</string>
+    <string name="s_busy">通話中</string>
+    <string name="s_not_reachable">接続できません</string>
+    <string name="s_calls_are_off_on_this_server">このサーバーでは通話は無効です</string>
+    <string name="e_call_failed_to_start">通話を開始できませんでした。</string>
 </resources>

@@ -10,8 +10,8 @@ use axum::routing::{delete, get, patch, post, put};
 
 use crate::state::AppState;
 use crate::{
-    handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_chat,
-    handlers_device, handlers_family, handlers_poll, handlers_stats, ws,
+    handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_call,
+    handlers_chat, handlers_device, handlers_family, handlers_poll, handlers_stats, ws,
 };
 
 /// Build the full application router for the given state. Used identically
@@ -175,6 +175,8 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/devices/{id}",
             delete(handlers_device::delete_device),
         )
+        // Calls
+        .route("/api/v1/calls/ice", get(handlers_call::get_ice_servers))
         // Ops
         .route("/api/v1/healthz", get(handlers_device::healthz))
         // Realtime

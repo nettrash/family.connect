@@ -67,6 +67,12 @@ hex = "0.4"
 # URL-safe base64 for the opaque session tokens handed to clients.
 base64 = "0.22"
 
+# HMAC-SHA1 for time-limited TURN credentials (coturn's `use-auth-secret`
+# scheme fixes the algorithm; SHA-1 is what the RFC 7635-style REST API
+# speaks). Both were already in the tree as transitive dependencies.
+hmac = "0.12"
+sha1 = "0.10"
+
 # client_msg_id is a UUID end to end; "v4" so tests and tools can mint them.
 uuid = { version = "1", features = ["serde", "v4"] }
 
@@ -113,6 +119,12 @@ clap = { version = "4", features = ["derive"] }
 [dev-dependencies]
 # (The REST test client for the integration suites is the main `reqwest`
 # dependency above — [dependencies] are visible to test targets too.)
+
+# `test-util` adds tokio's pausable clock (start_paused / time::advance),
+# which the call-registry unit tests drive their ring/answer timeouts with.
+# A dev-only feature bump on the existing tokio dependency — it never reaches
+# the shipped binary.
+tokio = { version = "1", features = ["test-util"] }
 
 # Throwaway P-256 keys for the push tests: the tests mint a fake APNs .p8 and
 # verify the ES256 provider JWT against its public half.

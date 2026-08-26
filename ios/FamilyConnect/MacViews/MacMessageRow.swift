@@ -39,6 +39,9 @@ struct MacMessageRow: View {
     var onOpenAttachment: (AttachmentDTO) -> Void = { _ in }
     /// How many people could vote, for a poll's footer.
     var memberCount: Int = 0
+    /// Clicking a call record rings the peer again; nil when calls are
+    /// off on this server.
+    var onCallBack: (() -> Void)? = nil
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     /// Shared preview cache — asking it for a link's state is what starts
@@ -328,7 +331,15 @@ struct MacMessageRow: View {
                 // balloon would look broken.
                 Text(verbatim: "▍").opacity(0.6)
             }
-            if !message.body.isEmpty {
+            if let call = message.call {
+                // The outcome, never the placeholder body — the same view
+                // the phone draws (docs/protocol.md, "Voice calls").
+                CallRecordView(
+                    call: call,
+                    isMine: isMine,
+                    onCallBack: onCallBack,
+                    onDoubleTap: { quickHeart() })
+            } else if !message.body.isEmpty {
                 // One text block — everything without a table — comes back
                 // as exactly this `Text` and nothing around it.
                 MessageBodyBlocks(

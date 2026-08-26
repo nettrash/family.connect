@@ -11,6 +11,8 @@
 package me.nettrash.familyconnect.data.net.ws
 
 import com.google.common.truth.Truth.assertThat
+import me.nettrash.familyconnect.data.net.dto.CallDto
+import me.nettrash.familyconnect.data.net.dto.IceCandidateDto
 import kotlinx.serialization.json.Json
 import org.junit.Test
 
@@ -435,12 +437,137 @@ class WsFrameSerdeTest {
 
     @Test
     fun unknownFrameTypeIsDroppedNotThrown() {
-        // A future voice/video signaling frame must not kill the socket.
+        // Whatever comes after voice calls must not kill the socket —
+        // exactly as call_offer did not, before this client knew it.
         val decoded = parseServerFrame(
             json,
-            """{"type": "call_offer", "chat_id": 42, "sdp": "v=0..."}""",
+            """{"type": "video_offer", "chat_id": 42, "sdp": "v=0..."}""",
         )
         assertThat(decoded).isNull()
+    }
+
+    // -- Voice calls (protocol.md, "Voice calls" — verbatim) -------------------
+
+    @Test
+    fun callOfferFrameEncodesExactlyAsProtocol() {
+        assertEncodesTo(
+            ClientFrame.CallOffer(callId = "6a1f0c3e-0000-4000-8000-000000000001", chatId = 42, sdp = "v=0\r\n…"),
+            """{"type": "call_offer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "chat_id": 42, "sdp": "v=0\r\n…"}""",
+        )
+    }
+
+    @Test
+    fun callAnswerFrameEncodesExactlyAsProtocol() {
+        assertEncodesTo(
+            ClientFrame.CallAnswer(callId = "6a1f0c3e-0000-4000-8000-000000000001", sdp = "v=0\r\n…"),
+            """{"type": "call_answer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "sdp": "v=0\r\n…"}""",
+        )
+    }
+
+    @Test
+    fun callIceFrameEncodesExactlyAsProtocol() {
+        assertEncodesTo(
+            ClientFrame.CallIce(
+                callId = "6a1f0c3e-0000-4000-8000-000000000001",
+                candidate = IceCandidateDto(candidate = "candidate:…", sdpMid = "0", sdpMlineIndex = 0),
+            ),
+            """{"type": "call_ice", "call_id": "6a1f0c3e-0000-4000-8000-000000000001",
+               "candidate": {"candidate": "candidate:…", "sdp_mid": "0", "sdp_mline_index": 0}}""",
+        )
+    }
+
+    @Test
+    fun aCandidateOmitsWhatTheStackDidNotSupply() {
+        // sdp_mid and sdp_mline_index are each optional and ABSENT — never
+        // null — when absent, like every optional field on this wire.
+        assertEncodesTo(
+            ClientFrame.CallIce(
+                callId = "6a1f0c3e-0000-4000-8000-000000000001",
+                candidate = IceCandidateDto(candidate = "candidate:…"),
+            ),
+            """{"type": "call_ice", "call_id": "6a1f0c3e-0000-4000-8000-000000000001",
+               "candidate": {"candidate": "candidate:…"}}""",
+        )
+    }
+
+    @Test
+    fun callEndFrameEncodesExactlyAsProtocol() {
+        assertEncodesTo(
+            ClientFrame.CallEnd(callId = "6a1f0c3e-0000-4000-8000-000000000001", reason = CallEndReason.HANGUP),
+            """{"type": "call_end", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "reason": "hangup"}""",
+        )
+    }
+
+    @Test
+    fun serverCallOfferFrameRoundTrips() {
+        assertRoundTrips(
+            """{"type": "call_offer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n…"}""",
+            ServerFrame.CallOffer(
+                callId = "6a1f0c3e-0000-4000-8000-000000000001",
+                chatId = 42,
+                fromUserId = 7,
+                sdp = "v=0\r\n…",
+            ),
+        )
+    }
+
+    @Test
+    fun serverCallRingingFrameRoundTrips() {
+        assertRoundTrips(
+            """{"type": "call_ringing", "call_id": "6a1f0c3e-0000-4000-8000-000000000001"}""",
+            ServerFrame.CallRinging(callId = "6a1f0c3e-0000-4000-8000-000000000001"),
+        )
+    }
+
+    @Test
+    fun serverCallAnswerFrameRoundTrips() {
+        assertRoundTrips(
+            """{"type": "call_answer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "sdp": "v=0\r\n…"}""",
+            ServerFrame.CallAnswer(callId = "6a1f0c3e-0000-4000-8000-000000000001", sdp = "v=0\r\n…"),
+        )
+    }
+
+    @Test
+    fun serverCallIceFrameRoundTrips() {
+        assertRoundTrips(
+            """{"type": "call_ice", "call_id": "6a1f0c3e-0000-4000-8000-000000000001",
+               "candidate": {"candidate": "candidate:…", "sdp_mid": "0", "sdp_mline_index": 0}}""",
+            ServerFrame.CallIce(
+                callId = "6a1f0c3e-0000-4000-8000-000000000001",
+                candidate = IceCandidateDto(candidate = "candidate:…", sdpMid = "0", sdpMlineIndex = 0),
+            ),
+        )
+    }
+
+    @Test
+    fun serverCallEndFrameRoundTrips() {
+        assertRoundTrips(
+            """{"type": "call_end", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "reason": "answered_elsewhere"}""",
+            ServerFrame.CallEnd(callId = "6a1f0c3e-0000-4000-8000-000000000001", reason = "answered_elsewhere"),
+        )
+    }
+
+    @Test
+    fun errorFrameAnsweringACallCarriesTheCallId() {
+        assertRoundTrips(
+            """{"type": "error", "code": "peer_busy", "message": "…", "call_id": "6a1f0c3e-0000-4000-8000-000000000001"}""",
+            ServerFrame.Error(code = "peer_busy", message = "…", callId = "6a1f0c3e-0000-4000-8000-000000000001"),
+        )
+    }
+
+    @Test
+    fun aMessageCarryingACallRecordDecodesIt() {
+        val decoded = parseServerFrame(
+            json,
+            """{"type": "message", "message": {"id": 1338, "chat_id": 42, "sender_id": 7,
+               "client_msg_id": "6a1f0c3e-0000-4000-8000-000000000001",
+               "body": "Voice call", "created_at": "2026-08-19T17:03:12Z",
+               "call": {"outcome": "completed", "duration_secs": 222}}}""",
+        ) as ServerFrame.Message
+        assertThat(decoded.message.call).isEqualTo(CallDto(outcome = "completed", durationSecs = 222))
+        // Absent on an ordinary message — and absent means "not a call".
+        val plain = parseServerFrame(json, """{"type": "message", "message": $messageJson}""") as ServerFrame.Message
+        assertThat(plain.message.call).isNull()
     }
 
     @Test

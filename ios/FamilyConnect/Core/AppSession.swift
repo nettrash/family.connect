@@ -124,6 +124,10 @@ final class AppSession {
     }
     /// "owner" | "member" | nil — from the last /me or family call.
     private(set) var role: String?
+    /// Whether the server signals voice calls (docs/protocol.md, "Voice
+    /// calls"). The call button hides behind it rather than discovering
+    /// `calls_disabled` at the moment somebody wants to talk.
+    private(set) var callsEnabled = false
     /// Set when a pending join request silently disappeared from /me:
     /// FamilyGateView surfaces "your request was declined" once.
     var joinDeclined = false
@@ -233,6 +237,7 @@ final class AppSession {
     func apply(me: MeResponse) {
         currentUser = me.user
         AppSettings.currentUserID = me.user.id
+        callsEnabled = me.callsEnabled
         let wasActive = phase == .active
         let wasAwaiting = phase == .pendingApproval || AppSettings.joinPending
 

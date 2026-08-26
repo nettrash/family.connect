@@ -18,6 +18,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
+use serde::Deserializer;
 use serde_json::json;
 use tokio::time::Duration;
 
@@ -29,6 +30,25 @@ use crate::state::AppState;
 pub struct RegisterDeviceRequest {
     pub platform: String,
     pub push_token: Option<String>,
+    /// The iOS PushKit VoIP token (docs/protocol.md, "Incoming calls"). A
+    /// DOUBLE option, the same idiom `PATCH /families/mine` uses for
+    /// `language`: the outer is "was the key sent", the inner is the value.
+    /// Absent leaves whatever the row holds alone; `null` or `""` clears it;
+    /// a string sets it. The two tokens arrive from the OS at different
+    /// moments, so a launch that has only one of them must not wipe the
+    /// other.
+    #[serde(default, deserialize_with = "present_option")]
+    pub voip_token: Option<Option<String>>,
+}
+
+/// Deserialize a present key into `Some(...)`, so `#[serde(default)]` keeps
+/// an ABSENT key as `None`. Same three lines as `handlers_family`.
+fn present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// `POST /devices`
@@ -49,6 +69,18 @@ pub async fn register_device(
         .map(str::trim)
         .filter(|t| !t.is_empty());
 
+    // The VoIP token's double option: `voip_set` is "was the key present",
+    // `voip_value` is the value to write (an empty string clears, exactly
+    // as a `null` does). Absent leaves the stored token untouched.
+    let voip_set = req.voip_token.is_some();
+    let voip_value: Option<String> = req
+        .voip_token
+        .as_ref()
+        .and_then(|inner| inner.as_deref())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+
     let device_id: i64 = match push_token {
         Some(token) => {
             // Upsert by token: if the token moved to another account (same
@@ -59,13 +91,17 @@ pub async fn register_device(
             // every launch, which is what keeps the link pointing at the
             // session that is actually opening sockets rather than at one
             // that was revoked at some previous login.
+            // The VoIP token rides the same upsert: set it only when the
+            // key was present, so a launch carrying only the push token
+            // does not wipe a VoIP token registered a moment before.
             sqlx::query_scalar(
-                "INSERT INTO devices (user_id, platform, push_token, session_id)
-                 VALUES ($1, $2, $3, $4)
+                "INSERT INTO devices (user_id, platform, push_token, session_id, voip_token)
+                 VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN $6 ELSE NULL END)
                  ON CONFLICT (push_token) WHERE push_token IS NOT NULL
                  DO UPDATE SET user_id = EXCLUDED.user_id,
                                platform = EXCLUDED.platform,
                                session_id = EXCLUDED.session_id,
+                               voip_token = CASE WHEN $5 THEN $6 ELSE devices.voip_token END,
                                updated_at = now()
                  RETURNING id",
             )
@@ -73,17 +109,21 @@ pub async fn register_device(
             .bind(&req.platform)
             .bind(token)
             .bind(auth.session_id)
+            .bind(voip_set)
+            .bind(&voip_value)
             .fetch_one(&state.pool)
             .await?
         }
         None => {
             sqlx::query_scalar(
-                "INSERT INTO devices (user_id, platform, session_id)
-                 VALUES ($1, $2, $3) RETURNING id",
+                "INSERT INTO devices (user_id, platform, session_id, voip_token)
+                 VALUES ($1, $2, $3, CASE WHEN $4 THEN $5 ELSE NULL END) RETURNING id",
             )
             .bind(auth.user_id)
             .bind(&req.platform)
             .bind(auth.session_id)
+            .bind(voip_set)
+            .bind(&voip_value)
             .fetch_one(&state.pool)
             .await?
         }

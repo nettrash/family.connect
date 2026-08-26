@@ -20,7 +20,7 @@ use crate::handlers_chat::ReactionState;
 use crate::handlers_poll::PollState;
 use crate::models::{Member, Message, Note, UserBrief};
 use crate::push::DevicePush;
-use crate::push_payload::{self, Notification};
+use crate::push_payload::{self, CallPush, Notification};
 use crate::state::AppState;
 use crate::ws::ServerFrame;
 
@@ -489,6 +489,120 @@ fn spawn_notify(state: &AppState, batch: Vec<(Vec<DevicePush>, Notification)>) {
                 "removed devices with unregistered push tokens"
             ),
             Err(err) => warn!(error = ?err, "failed to delete unregistered devices"),
+        }
+    });
+}
+
+/// Whether `user` has any device a call could ring right now: an `ios` /
+/// `macos` device with a VoIP token, or an `android` device with a push
+/// token, on a session that is not signed out. This is what tells an
+/// `offer` whether an unconnected callee is reachable at all, or
+/// `peer_unreachable` (protocol.md, "Voice calls").
+///
+/// It does NOT subtract live sockets — a callee reachable by a socket has
+/// already been sent the offer, and this is asked only when it has none.
+pub async fn has_wakeable_device(pool: &PgPool, user_id: i64) -> Result<bool, ApiError> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM devices d
+             LEFT JOIN sessions s ON s.id = d.session_id
+             WHERE d.user_id = $1
+               AND (d.session_id IS NULL OR s.expires_at > now())
+               AND ((d.platform IN ('ios', 'macos') AND d.voip_token IS NOT NULL)
+                    OR (d.platform = 'android' AND d.push_token IS NOT NULL)))",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(exists)
+}
+
+/// The callee's devices a call should ring — the wakeable ones (above) whose
+/// own session is not already carrying a socket. For an iOS/macOS row the
+/// VoIP token is what the transport addresses, so it is loaded into
+/// `DevicePush.push_token`; an Android row uses its ordinary push token.
+async fn wakeable_call_devices(pool: &PgPool, user_id: i64) -> Result<Vec<DeviceTarget>, ApiError> {
+    let rows = sqlx::query(
+        "SELECT d.id, d.user_id, d.platform, d.session_id,
+                CASE WHEN d.platform = 'android' THEN d.push_token ELSE d.voip_token END AS token
+         FROM devices d
+         LEFT JOIN sessions s ON s.id = d.session_id
+         WHERE d.user_id = $1
+           AND (d.session_id IS NULL OR s.expires_at > now())
+           AND ((d.platform IN ('ios', 'macos') AND d.voip_token IS NOT NULL)
+                OR (d.platform = 'android' AND d.push_token IS NOT NULL))",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|row| DeviceTarget {
+            push: DevicePush {
+                device_id: row.get("id"),
+                user_id: row.get("user_id"),
+                platform: row.get("platform"),
+                push_token: row.get("token"),
+            },
+            session_id: row.get("session_id"),
+        })
+        .collect())
+}
+
+/// Ring the callee's offline devices for an incoming call (protocol.md,
+/// "Incoming calls"). The per-device gate is the same as a message's — a
+/// device with a live socket of its own is already getting the offer over
+/// it — but the wakeable set is narrower (a VoIP token, not just any device)
+/// and the transport is the call path, not a notification. There is no
+/// sender to exclude: a call has one direction.
+pub async fn push_incoming_call(
+    state: &AppState,
+    callee_id: i64,
+    call: CallPush,
+) -> Result<(), ApiError> {
+    let live_sessions = state.registry.live_sessions(&[callee_id]).await;
+    let devices = wakeable_call_devices(&state.pool, callee_id).await?;
+    let devices = devices_to_wake(devices, &live_sessions, None);
+    if devices.is_empty() {
+        return Ok(());
+    }
+    spawn_notify_call(state, devices, call);
+    Ok(())
+}
+
+/// Fire-and-forget call delivery, mirroring `spawn_notify`. A dead VoIP
+/// token is CLEARED from its row rather than the row deleted — the alert
+/// token beside it may be fine — while a dead Android token deletes the
+/// row as an ordinary push would (protocol.md, "Incoming calls").
+fn spawn_notify_call(state: &AppState, devices: Vec<DevicePush>, call: CallPush) {
+    let push = state.push.clone();
+    let pool = state.pool.clone();
+    tokio::spawn(async move {
+        let dead = push.notify_call(&devices, &call).await;
+        if dead.is_empty() {
+            return;
+        }
+        if let Err(err) = sqlx::query(
+            "UPDATE devices SET voip_token = NULL
+             WHERE id = ANY($1) AND platform IN ('ios', 'macos')",
+        )
+        .bind(&dead)
+        .execute(&pool)
+        .await
+        {
+            warn!(error = ?err, "failed to clear dead VoIP tokens");
+        }
+        match sqlx::query("DELETE FROM devices WHERE id = ANY($1) AND platform = 'android'")
+            .bind(&dead)
+            .execute(&pool)
+            .await
+        {
+            Ok(result) if result.rows_affected() > 0 => info!(
+                deleted = result.rows_affected(),
+                "removed Android devices with unregistered call tokens"
+            ),
+            Ok(_) => {}
+            Err(err) => warn!(error = ?err, "failed to delete unregistered call devices"),
         }
     });
 }

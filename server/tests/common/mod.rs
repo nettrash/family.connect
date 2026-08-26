@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use family_connect::app::build_router;
 use family_connect::config::{Config, DatabaseConfig, PushConfig};
 use family_connect::push::{DevicePush, PushSender};
-use family_connect::push_payload::Notification;
+use family_connect::push_payload::{CallPush, Notification};
 use family_connect::state::AppState;
 use family_connect::{db, migrate, push};
 
@@ -37,15 +37,27 @@ pub struct PushCall {
     pub note: Notification,
 }
 
+/// One recorded incoming-call push (`notify_call`).
+#[derive(Debug, Clone)]
+pub struct CallPushCall {
+    pub devices: Vec<DevicePush>,
+    pub call: CallPush,
+}
+
 /// Test double for the push seam: records every call instead of delivering.
 #[derive(Default)]
 pub struct RecordingPushSender {
     calls: Mutex<Vec<PushCall>>,
+    call_pushes: Mutex<Vec<CallPushCall>>,
 }
 
 impl RecordingPushSender {
     pub fn calls(&self) -> Vec<PushCall> {
         self.calls.lock().expect("push call log lock").clone()
+    }
+
+    pub fn call_pushes(&self) -> Vec<CallPushCall> {
+        self.call_pushes.lock().expect("call push log lock").clone()
     }
 }
 
@@ -58,6 +70,17 @@ impl PushSender for RecordingPushSender {
             .push(PushCall {
                 devices: devices.to_vec(),
                 note: note.clone(),
+            });
+        Vec::new()
+    }
+
+    async fn notify_call(&self, devices: &[DevicePush], call: &CallPush) -> Vec<i64> {
+        self.call_pushes
+            .lock()
+            .expect("call push log lock")
+            .push(CallPushCall {
+                devices: devices.to_vec(),
+                call: call.clone(),
             });
         Vec::new()
     }
@@ -184,6 +207,10 @@ async fn spawn_server_inner_with(
         .ensure_root()
         .await
         .expect("creating the scratch attachments directory");
+    // The calls sweeper runs in the test server too, so ring-timeout and
+    // detached-backstop behaviour is exercised by the integration suite.
+    family_connect::calls::spawn_sweeper(state.clone());
+
     let router = build_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
