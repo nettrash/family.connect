@@ -288,6 +288,7 @@ class SessionRepository @Inject constructor(
                 val me = result.value
                 settings.setProfile(me.user.id, me.user.username, me.user.displayName, me.user.avatarVersion)
                 settings.setCallsEnabled(me.callsEnabled)
+                settings.setVideoCallsEnabled(me.videoCallsEnabled)
                 val next = when {
                     me.family != null ->
                         if (me.role == "owner") FamilyStatus.OWNER else FamilyStatus.MEMBER

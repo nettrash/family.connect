@@ -20,8 +20,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 interface CallAudio {
-    /** A call is starting: take the communication mode and audio focus. */
-    fun begin()
+    /**
+     * A call is starting: take the communication mode and audio focus.
+     * A VIDEO call starts on the SPEAKER — a screen watched at arm's
+     * length is not held to the ear; a voice call keeps the earpiece.
+     */
+    fun begin(video: Boolean)
 
     /** The call is over: give both back and return to the earpiece. */
     fun end()
@@ -38,7 +42,7 @@ class AndroidCallAudio @Inject constructor(
     private var focus: AudioFocusRequest? = null
     private var previousMode = AudioManager.MODE_NORMAL
 
-    override fun begin() {
+    override fun begin(video: Boolean) {
         val audio = manager
         previousMode = audio.mode
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -52,6 +56,7 @@ class AndroidCallAudio @Inject constructor(
             .build()
         focus = request
         audio.requestAudioFocus(request)
+        if (video) setSpeaker(true)
     }
 
     override fun end() {

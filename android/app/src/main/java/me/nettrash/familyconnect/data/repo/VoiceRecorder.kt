@@ -12,10 +12,12 @@
  * phone gesture with no desktop equivalent, and the three composers should
  * not diverge on something this basic.
  *
- * Unlike the CAMERA permission (which must NOT be declared — the capture
- * intents throw when an app declares it without holding it), RECORD_AUDIO
- * genuinely is required and genuinely must be granted at runtime: this app
- * owns the microphone while recording rather than handing off to another app.
+ * RECORD_AUDIO genuinely is required and genuinely must be granted at
+ * runtime: this app owns the microphone while recording rather than
+ * handing off to another app. CAMERA is now declared too (video calls) —
+ * which is exactly why the chat's capture hand-off needs the runtime
+ * grant these days: MediaStore's capture intents throw for an app that
+ * DECLARES the permission without holding it. See ui/chat/CaptureGate.kt.
  *
  * iOS/macOS counterpart: ios/FamilyConnect/Core/AudioRecorder.swift
  */

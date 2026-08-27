@@ -31,7 +31,7 @@ final class CallKitController: NSObject, CallSystemBridge {
 
     override init() {
         let configuration = CXProviderConfiguration()
-        configuration.supportsVideo = false
+        configuration.supportsVideo = true
         configuration.maximumCallGroups = 1
         configuration.maximumCallsPerCallGroup = 1
         configuration.supportedHandleTypes = [.generic]
@@ -44,9 +44,9 @@ final class CallKitController: NSObject, CallSystemBridge {
 
     // MARK: - CallSystemBridge
 
-    func reportOutgoing(callID: UUID, peerName: String) {
+    func reportOutgoing(callID: UUID, peerName: String, isVideo: Bool) {
         let action = CXStartCallAction(call: callID, handle: CXHandle(type: .generic, value: peerName))
-        action.isVideo = false
+        action.isVideo = isVideo
         request(action)
     }
 
@@ -58,18 +58,18 @@ final class CallKitController: NSObject, CallSystemBridge {
         provider.reportOutgoingCall(with: callID, connectedAt: nil)
     }
 
-    func reportIncoming(callID: UUID, peerName: String) {
-        reportIncoming(callID: callID, peerName: peerName) { _ in }
+    func reportIncoming(callID: UUID, peerName: String, hasVideo: Bool) {
+        reportIncoming(callID: callID, peerName: peerName, hasVideo: hasVideo) { _ in }
     }
 
     /// The push path's version, whose completion the PushKit delegate
     /// waits on. Never skipped on an error: iOS terminates an app that
     /// receives a VoIP push and reports no call.
-    func reportIncoming(callID: UUID, peerName: String, completion: @escaping @Sendable (Error?) -> Void) {
+    func reportIncoming(callID: UUID, peerName: String, hasVideo: Bool, completion: @escaping @Sendable (Error?) -> Void) {
         let update = CXCallUpdate()
         update.remoteHandle = CXHandle(type: .generic, value: peerName)
         update.localizedCallerName = peerName
-        update.hasVideo = false
+        update.hasVideo = hasVideo
         update.supportsGrouping = false
         update.supportsUngrouping = false
         update.supportsHolding = false
@@ -91,7 +91,7 @@ final class CallKitController: NSObject, CallSystemBridge {
             mapped = .unanswered
         case .answeredElsewhere:
             mapped = .answeredElsewhere
-        case .failed, .busy, .unreachable, .unavailable, .microphoneDenied:
+        case .failed, .busy, .unreachable, .unavailable, .videoUnavailable, .microphoneDenied:
             mapped = .failed
         }
         provider.reportCall(with: callID, endedAt: nil, reason: mapped)
@@ -125,14 +125,16 @@ extension CallKitController: CXProviderDelegate {
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
         Task { @MainActor in
-            WebRTCClient.configureAudioSessionForCall()
+            // The manager knows the call's kind; a video call's session is
+            // mode .videoChat (speaker by default).
+            WebRTCClient.configureAudioSessionForCall(video: self.manager?.isVideo ?? false)
             action.fulfill()
         }
     }
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         Task { @MainActor in
-            WebRTCClient.configureAudioSessionForCall()
+            WebRTCClient.configureAudioSessionForCall(video: self.manager?.isVideo ?? false)
             self.manager?.systemDidAnswer()
             action.fulfill()
         }

@@ -195,6 +195,26 @@ ANDROID_ONLY = {
 "s_calls_are_off_on_this_server": "Позиви су искључени на овом серверу",
 "e_call_failed_to_start": "Позив није могао да почне.",
 
+# --- video calls ---
+# Video calls (docs/protocol.md, "Video"): the Android-side wording — the
+# second call button, the camera controls, and the video variants of the
+# voice strings above. Cyrillic only, as always; the Latin set is
+# generated. Some of these may later match an iOS catalogue English — move
+# those to serbian.SR when both are in, per this file's rule.
+"s_video_call": "Видео позив",
+"s_incoming_video_call": "Долазни видео позив",
+"s_ongoing_video_call": "Видео позив у току",
+"s_video_call_with_duration": "Видео позив · %1$s",
+"s_missed_video_call": "Пропуштен видео позив",
+"s_declined_video_call": "Одбијен видео позив",
+"s_video_call_declined": "Видео позив је одбијен",
+"s_camera_on": "Укључи камеру",
+"s_camera_off": "Искључи камеру",
+"s_flip_camera": "Промени камеру",
+"e_camera_permission": "Family треба дозволу за коришћење камере.",
+"s_video_calls_are_off_on_this_server": "Видео позиви су искључени на овом серверу",
+# --- end video calls ---
+
 # --- multiple attachments per message + the OS share target (Android) ---
 # Added by the Android implementer for the plurality/share feature pair.
 # Cyrillic only, as always; the Latin set is generated. None of these have

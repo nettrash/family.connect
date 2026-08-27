@@ -171,6 +171,16 @@ attachments_dir = "/var/lib/family-connect/attachments"
 # false so the apps hide their call button.
 enabled = true
 
+# Video calls, meaningful only with calls enabled. A call placed with
+# "video": true rings with a camera UI and records as a video call; the
+# kind is decided when the call is placed and fixed for its life. With this
+# false, such an offer is refused with `video_calls_disabled` and voice
+# calls are untouched — a relay sized for voice carries ~10 kB/s per call,
+# video two orders of magnitude more, and a Raspberry Pi behind home
+# broadband is entitled to say no. GET /me reports it (ANDed with `enabled`)
+# as video_calls_enabled so the apps hide the video button alone.
+video_enabled = true
+
 # STUN servers, as stun:/stuns: URLs. The default names Google's public
 # STUN, because a voice feature that only works inside one Wi-Fi network is
 # not a voice feature. A STUN request carries no family data — it only asks

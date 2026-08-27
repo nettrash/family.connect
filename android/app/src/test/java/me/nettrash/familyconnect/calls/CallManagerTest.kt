@@ -39,6 +39,8 @@ import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.util.Clock
 import org.junit.After
+import org.webrtc.VideoFrame
+import org.webrtc.VideoSink
 import org.junit.Before
 import org.junit.Test
 
@@ -89,8 +91,10 @@ class CallManagerTest {
         scope.cancel()
     }
 
-    private fun TestScope.offer(callId: String = CALL) {
-        socket.emit(ServerFrame.CallOffer(callId = callId, chatId = CHAT, fromUserId = PEER, sdp = "their-offer"))
+    private fun TestScope.offer(callId: String = CALL, video: Boolean = false) {
+        socket.emit(
+            ServerFrame.CallOffer(callId = callId, chatId = CHAT, fromUserId = PEER, sdp = "their-offer", video = video),
+        )
         runCurrent()
     }
 
@@ -102,7 +106,7 @@ class CallManagerTest {
 
     @Test
     fun anOutgoingCallGoesOfferRingingAnswerActiveHangUp() = runTest(dispatcher) {
-        assertThat(manager.startCall(CHAT, PEER)).isTrue()
+        assertThat(manager.startCall(CHAT, PEER, video = false)).isTrue()
         runCurrent()
 
         val callId = outgoingCallId()
@@ -157,7 +161,7 @@ class CallManagerTest {
 
     @Test
     fun cancellingWhileItRingsSendsCancel() = runTest(dispatcher) {
-        manager.startCall(CHAT, PEER)
+        manager.startCall(CHAT, PEER, video = false)
         runCurrent()
         val callId = outgoingCallId()
 
@@ -171,7 +175,7 @@ class CallManagerTest {
 
     @Test
     fun thePeerBeingBusyEndsTheCallWithoutAnEndFrame() = runTest(dispatcher) {
-        manager.startCall(CHAT, PEER)
+        manager.startCall(CHAT, PEER, video = false)
         runCurrent()
         val callId = outgoingCallId()
 
@@ -185,7 +189,7 @@ class CallManagerTest {
 
     @Test
     fun anOutgoingCallNobodyAnswersGivesUpOnItsOwnGuard() = runTest(dispatcher) {
-        manager.startCall(CHAT, PEER)
+        manager.startCall(CHAT, PEER, video = false)
         runCurrent()
         val callId = outgoingCallId()
 
@@ -198,11 +202,11 @@ class CallManagerTest {
 
     @Test
     fun aSecondCallIsRefusedWhileOneIsLive() = runTest(dispatcher) {
-        assertThat(manager.startCall(CHAT, PEER)).isTrue()
+        assertThat(manager.startCall(CHAT, PEER, video = false)).isTrue()
         runCurrent()
 
         // One call per person — locally as well as on the server.
-        assertThat(manager.startCall(CHAT, PEER)).isFalse()
+        assertThat(manager.startCall(CHAT, PEER, video = false)).isFalse()
         runCurrent()
         assertThat(chatApi.iceServersCalls).isEqualTo(1)
         assertThat(media.created).hasSize(1)
@@ -210,14 +214,14 @@ class CallManagerTest {
 
     @Test
     fun iceServersAreFetchedAfreshForEveryCall() = runTest(dispatcher) {
-        manager.startCall(CHAT, PEER)
+        manager.startCall(CHAT, PEER, video = false)
         runCurrent()
         manager.hangUp()
         runCurrent()
         advanceTimeBy(timings.lingerMillis + 1)
         runCurrent()
 
-        manager.startCall(CHAT, PEER)
+        manager.startCall(CHAT, PEER, video = false)
         runCurrent()
 
         assertThat(chatApi.iceServersCalls).isEqualTo(2)
@@ -225,7 +229,7 @@ class CallManagerTest {
 
     @Test
     fun aDeadMediaConnectionIsReportedAsFailed() = runTest(dispatcher) {
-        manager.startCall(CHAT, PEER)
+        manager.startCall(CHAT, PEER, video = false)
         runCurrent()
         val callId = outgoingCallId()
         socket.emit(ServerFrame.CallAnswer(callId, "their-answer"))
@@ -373,7 +377,7 @@ class CallManagerTest {
 
     @Test
     fun framesForACallThisDeviceDoesNotHoldAreIgnored() = runTest(dispatcher) {
-        manager.startCall(CHAT, PEER)
+        manager.startCall(CHAT, PEER, video = false)
         runCurrent()
         val mine = outgoingCallId()
 
@@ -391,7 +395,7 @@ class CallManagerTest {
 
     @Test
     fun anOfferWhileOnACallIsIgnored() = runTest(dispatcher) {
-        manager.startCall(CHAT, PEER)
+        manager.startCall(CHAT, PEER, video = false)
         runCurrent()
         val mine = outgoingCallId()
 
@@ -404,7 +408,7 @@ class CallManagerTest {
     fun aClosedSocketFailsTheCallRatherThanRingingNobody() = runTest(dispatcher) {
         socket.setOpen(false)
 
-        manager.startCall(CHAT, PEER)
+        manager.startCall(CHAT, PEER, video = false)
         runCurrent()
 
         assertThat((manager.state.value as CallState.Ended).reason).isEqualTo(CallEnding.FAILED)
@@ -414,7 +418,7 @@ class CallManagerTest {
 
     @Test
     fun muteAndSpeakerReachTheMediaAndTheRouteAndResetAtTheEnd() = runTest(dispatcher) {
-        manager.startCall(CHAT, PEER)
+        manager.startCall(CHAT, PEER, video = false)
         runCurrent()
 
         manager.toggleMute()
@@ -430,25 +434,248 @@ class CallManagerTest {
         assertThat(manager.isSpeaker.value).isFalse()
         assertThat(audio.speakerOn).isFalse()
     }
+
+    // -- Video (docs/protocol.md, "Video") -----------------------------------------
+
+    @Test
+    fun aVideoCallThreadsItsKindToTheMediaTheFrameTheStateAndTheAudio() = runTest(dispatcher) {
+        assertThat(manager.startCall(CHAT, PEER, video = true)).isTrue()
+        runCurrent()
+
+        val callId = outgoingCallId()
+        assertThat(manager.state.value)
+            .isEqualTo(CallState.Outgoing(callId, CHAT, PEER, video = true, ringing = false))
+        // The media client is built AS a video one, and the offer frame
+        // says the kind — fixed here, for the call's life.
+        assertThat(media.created.single().video).isTrue()
+        assertThat(socket.sent).containsExactly(ClientFrame.CallOffer(callId, CHAT, "local-offer", video = true))
+        // Video defaults the SPEAKER on, and the camera comes up with it.
+        assertThat(audio.lastBeginVideo).isTrue()
+        assertThat(manager.isSpeaker.value).isTrue()
+        assertThat(manager.isCameraOn.value).isTrue()
+        assertThat(media.created.single().cameraEnabled).isTrue()
+    }
+
+    @Test
+    fun aVoiceCallLeavesTheSpeakerAndTheCameraAlone() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = false)
+        runCurrent()
+
+        // The voice path is byte-stable: the existing frame assertions in
+        // the tests above pin the offer WITHOUT a video key; here, none
+        // of the video machinery so much as twitches.
+        assertThat(audio.lastBeginVideo).isFalse()
+        assertThat(manager.isSpeaker.value).isFalse()
+        assertThat(manager.isCameraOn.value).isFalse()
+        assertThat(media.created.single().video).isFalse()
+        assertThat(media.created.single().cameraEnabled).isNull()
+    }
+
+    @Test
+    fun cameraAndFlipDelegateToTheMediaClientAndResetAtTheEnd() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = true)
+        runCurrent()
+
+        manager.toggleCamera()
+        assertThat(manager.isCameraOn.value).isFalse()
+        assertThat(media.created.single().cameraEnabled).isFalse()
+        manager.toggleCamera()
+        assertThat(manager.isCameraOn.value).isTrue()
+        assertThat(media.created.single().cameraEnabled).isTrue()
+
+        manager.flipCamera()
+        assertThat(manager.isFrontCamera.value).isFalse()
+        assertThat(media.created.single().flips).isEqualTo(1)
+
+        manager.hangUp()
+        runCurrent()
+        assertThat(manager.isCameraOn.value).isFalse()
+        assertThat(manager.isFrontCamera.value).isTrue()
+    }
+
+    @Test
+    fun aVideoPushRingsAVideoIncomingAndAnswersItEndToEnd() = runTest(dispatcher) {
+        manager.onIncomingPush(CALL, CHAT, PEER, callerName = "Anna", video = true)
+        runCurrent()
+        assertThat(manager.state.value)
+            .isEqualTo(CallState.Incoming(CALL, CHAT, PEER, video = true, callerName = "Anna", hasOffer = false))
+
+        offer(video = true)
+        manager.accept()
+        runCurrent()
+
+        assertThat(manager.state.value).isEqualTo(CallState.Connecting(CALL, CHAT, PEER, video = true, incoming = true))
+        assertThat(media.created.single().video).isTrue()
+        assertThat(audio.lastBeginVideo).isTrue()
+        assertThat(manager.isSpeaker.value).isTrue()
+    }
+
+    @Test
+    fun cameraOffBeforeAcceptAnswersWithTheCameraOff() = runTest(dispatcher) {
+        offer(video = true)
+        assertThat(manager.isCameraOn.value).isTrue()
+
+        // The screen's camera-permission-denied path: the call is still
+        // answered, the camera stays off (protocol.md, "Video").
+        manager.setCameraEnabled(false)
+        manager.accept()
+        runCurrent()
+
+        assertThat(manager.state.value).isEqualTo(CallState.Connecting(CALL, CHAT, PEER, video = true, incoming = true))
+        assertThat(media.created.single().cameraEnabled).isFalse()
+        assertThat(manager.isCameraOn.value).isFalse()
+    }
+
+    @Test
+    fun remoteVideoWaitsForTheFirstFrameNotTheTrack() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = true)
+        runCurrent()
+        val frames = mutableListOf<VideoFrame>()
+        manager.setRemoteVideoSink(VideoSink(frames::add))
+
+        // The track ARRIVING is not a picture — onAddTrack fires at connect
+        // time on every video call, frames or not (a far side with the
+        // camera off or denied never sends any). The avatar stays.
+        media.created.single().listener.onRemoteVideoActive(true)
+        runCurrent()
+        assertThat(manager.remoteVideoActive.value).isFalse()
+
+        // The first REAL frame flips it — and still reaches the UI's sink
+        // through the manager's forwarding wrapper.
+        media.created.single().remoteSink!!.onFrame(fakeVideoFrame())
+        runCurrent()
+        assertThat(manager.remoteVideoActive.value).isTrue()
+        assertThat(frames).hasSize(1)
+
+        // The track going away still clears it.
+        media.created.single().listener.onRemoteVideoActive(false)
+        runCurrent()
+        assertThat(manager.remoteVideoActive.value).isFalse()
+    }
+
+    @Test
+    fun remoteVideoActivityClearsAtTheEnd() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = true)
+        runCurrent()
+        manager.setRemoteVideoSink(VideoSink {})
+
+        media.created.single().remoteSink!!.onFrame(fakeVideoFrame())
+        runCurrent()
+        assertThat(manager.remoteVideoActive.value).isTrue()
+
+        manager.hangUp()
+        runCurrent()
+        assertThat(manager.remoteVideoActive.value).isFalse()
+    }
+
+    @Test
+    fun grantingTheCameraInTheAnswerDialogStartsTheCameraOn() = runTest(dispatcher) {
+        offer(video = true)
+        // The screen's no-grant-yet enforcement ran while the call rang…
+        manager.setCameraEnabled(false)
+
+        // …and the dialog's grant rides into the answer (parity with iOS).
+        manager.accept(cameraGranted = true)
+        runCurrent()
+
+        assertThat(manager.state.value).isEqualTo(CallState.Connecting(CALL, CHAT, PEER, video = true, incoming = true))
+        assertThat(manager.isCameraOn.value).isTrue()
+        assertThat(media.created.single().cameraEnabled).isTrue()
+    }
+
+    @Test
+    fun denyingTheCameraInTheAnswerDialogAnswersWithTheCameraOff() = runTest(dispatcher) {
+        offer(video = true)
+
+        manager.accept(cameraGranted = false)
+        runCurrent()
+
+        assertThat(manager.state.value).isEqualTo(CallState.Connecting(CALL, CHAT, PEER, video = true, incoming = true))
+        assertThat(manager.isCameraOn.value).isFalse()
+        assertThat(media.created.single().cameraEnabled).isFalse()
+    }
+
+    @Test
+    fun aPushWokenAnswerCarriesTheCameraGrantToTheLateOffer() = runTest(dispatcher) {
+        // The notification's Answer path: push first, dialog's grant next,
+        // the offer only then — the grant must survive the wait.
+        manager.onIncomingPush(CALL, CHAT, PEER, callerName = "Anna", video = true)
+        runCurrent()
+        manager.setCameraEnabled(false)
+        manager.accept(cameraGranted = true)
+        runCurrent()
+        assertThat(socket.sent).isEmpty()
+
+        offer(video = true)
+
+        assertThat(manager.state.value).isEqualTo(CallState.Connecting(CALL, CHAT, PEER, video = true, incoming = true))
+        assertThat(manager.isCameraOn.value).isTrue()
+        assertThat(media.created.single().cameraEnabled).isTrue()
+    }
+
+    @Test
+    fun videoCallsBeingDisabledEndsWithItsOwnReason() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = true)
+        runCurrent()
+        val callId = outgoingCallId()
+
+        socket.emit(ServerFrame.Error(code = "video_calls_disabled", message = "…", callId = callId))
+        runCurrent()
+
+        assertThat((manager.state.value as CallState.Ended).reason).isEqualTo(CallEnding.VIDEO_DISABLED)
+        // The server refused the offer; there is nothing to end.
+        assertThat(sentEnds()).isEmpty()
+    }
 }
+
+/** A 2×2 frame whose buffer does nothing — enough for the first-frame signal. */
+private fun fakeVideoFrame(): VideoFrame = VideoFrame(
+    object : VideoFrame.Buffer {
+        override fun getWidth(): Int = 2
+        override fun getHeight(): Int = 2
+        override fun toI420(): VideoFrame.I420Buffer? = null
+        override fun retain() = Unit
+        override fun release() = Unit
+        override fun cropAndScale(
+            cropX: Int,
+            cropY: Int,
+            cropWidth: Int,
+            cropHeight: Int,
+            scaleWidth: Int,
+            scaleHeight: Int,
+        ): VideoFrame.Buffer = this
+    },
+    0,
+    0L,
+)
 
 // -- Fakes ------------------------------------------------------------------------
 
 private class FakeMediaFactory : CallMediaClient.Factory {
     val created = mutableListOf<FakeMediaClient>()
 
-    override fun create(iceServers: List<IceServerDto>, listener: CallMediaClient.Listener): CallMediaClient =
-        FakeMediaClient(iceServers, listener).also(created::add)
+    override fun create(
+        iceServers: List<IceServerDto>,
+        video: Boolean,
+        listener: CallMediaClient.Listener,
+    ): CallMediaClient = FakeMediaClient(iceServers, video, listener).also(created::add)
 }
 
 private class FakeMediaClient(
     val iceServers: List<IceServerDto>,
+    val video: Boolean,
     val listener: CallMediaClient.Listener,
 ) : CallMediaClient {
     var remote: Pair<SdpType, String>? = null
     val remoteCandidates = mutableListOf<IceCandidateDto>()
     var mutedNow = false
     var closed = false
+
+    /** null until setCameraEnabled is ever called — a voice call never calls it. */
+    var cameraEnabled: Boolean? = null
+    var flips = 0
+    var localSink: VideoSink? = null
+    var remoteSink: VideoSink? = null
 
     override suspend fun createOffer(): String = "local-offer"
     override suspend fun createAnswer(): String = "local-answer"
@@ -465,6 +692,22 @@ private class FakeMediaClient(
         mutedNow = muted
     }
 
+    override fun setCameraEnabled(enabled: Boolean) {
+        cameraEnabled = enabled
+    }
+
+    override fun flipCamera() {
+        flips += 1
+    }
+
+    override fun setLocalVideoSink(sink: VideoSink?) {
+        localSink = sink
+    }
+
+    override fun setRemoteVideoSink(sink: VideoSink?) {
+        remoteSink = sink
+    }
+
     override fun close() {
         closed = true
     }
@@ -475,8 +718,12 @@ private class FakeCallAudio : CallAudio {
     var ended = 0
     var speakerOn = false
 
-    override fun begin() {
+    /** What the last begin() was told about the call's kind. */
+    var lastBeginVideo: Boolean? = null
+
+    override fun begin(video: Boolean) {
         begun += 1
+        lastBeginVideo = video
     }
 
     override fun end() {

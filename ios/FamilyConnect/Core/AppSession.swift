@@ -128,6 +128,10 @@ final class AppSession {
     /// calls"). The call button hides behind it rather than discovering
     /// `calls_disabled` at the moment somebody wants to talk.
     private(set) var callsEnabled = false
+    /// Whether the server accepts VIDEO calls (docs/protocol.md, "Video").
+    /// Gates the video-call button alone — voice calls sit behind
+    /// `callsEnabled` exactly as before.
+    private(set) var videoCallsEnabled = false
     /// Set when a pending join request silently disappeared from /me:
     /// FamilyGateView surfaces "your request was declined" once.
     var joinDeclined = false
@@ -346,6 +350,7 @@ final class AppSession {
         currentUser = me.user
         AppSettings.currentUserID = me.user.id
         callsEnabled = me.callsEnabled
+        videoCallsEnabled = me.videoCallsEnabled
         let wasActive = phase == .active
         let wasAwaiting = phase == .pendingApproval || AppSettings.joinPending
 

@@ -78,6 +78,11 @@ pub enum ClientFrame {
         call_id: Uuid,
         chat_id: i64,
         sdp: String,
+        /// Optional: `true` places a VIDEO call — decided here, fixed for
+        /// the call's life, never renegotiated (protocol.md, "Video").
+        /// Absent is a voice call.
+        #[serde(default)]
+        video: Option<bool>,
     },
     /// The callee takes the call.
     CallAnswer {
@@ -211,6 +216,11 @@ pub enum ServerFrame {
         chat_id: i64,
         from_user_id: i64,
         sdp: String,
+        /// `true` when (and only when) it is a VIDEO call — and on the wire
+        /// only then: absent, not false, on a voice offer, like every
+        /// optional field (protocol.md, "Video").
+        #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+        video: bool,
     },
     /// The offer reached the callee: answered back on the CALLER's
     /// originating connection.
@@ -449,6 +459,9 @@ fn call_replays(state: &AppState, user_id: i64) -> Vec<ServerFrame> {
             chat_id: pending.chat_id,
             from_user_id: pending.from_user_id,
             sdp: pending.sdp,
+            // A late device must ring as what the call IS — a camera UI for
+            // a video call, exactly as the live offer would have.
+            video: pending.video,
         });
         for candidate in pending.candidates {
             frames.push(ServerFrame::CallIce {
@@ -684,10 +697,19 @@ async fn handle_client_text(
                     call_id,
                     chat_id,
                     sdp,
-                } => handlers_call::offer(state, auth, conn_id, call_id, chat_id, sdp)
-                    .await
-                    .err()
-                    .map(|err| ServerFrame::call_error(err, call_id)),
+                    video,
+                } => handlers_call::offer(
+                    state,
+                    auth,
+                    conn_id,
+                    call_id,
+                    chat_id,
+                    sdp,
+                    video.unwrap_or(false),
+                )
+                .await
+                .err()
+                .map(|err| ServerFrame::call_error(err, call_id)),
                 ClientFrame::CallAnswer { call_id, sdp } => {
                     handlers_call::answer(state, auth, conn_id, call_id, sdp)
                         .await
@@ -1289,6 +1311,7 @@ mod tests {
                 call_id: Uuid::parse_str("6a1f0c3e-0000-4000-8000-000000000001").unwrap(),
                 chat_id: 42,
                 sdp: "v=0\r\n".to_string(),
+                video: None,
             }
         );
         let answer: ClientFrame = serde_json::from_str(
@@ -1354,15 +1377,22 @@ mod tests {
     #[test]
     fn server_call_frames_match_the_protocol_shape() {
         let call_id = Uuid::parse_str("6a1f0c3e-0000-4000-8000-000000000001").unwrap();
+        let voice_offer = ServerFrame::CallOffer {
+            call_id,
+            chat_id: 42,
+            from_user_id: 7,
+            sdp: "v=0".to_string(),
+            video: false,
+        };
         assert_serializes_to(
-            &ServerFrame::CallOffer {
-                call_id,
-                chat_id: 42,
-                from_user_id: 7,
-                sdp: "v=0".to_string(),
-            },
+            &voice_offer,
             r#"{"type": "call_offer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001",
                 "chat_id": 42, "from_user_id": 7, "sdp": "v=0"}"#,
+        );
+        let json = serde_json::to_value(&voice_offer).expect("serializes");
+        assert!(
+            json.get("video").is_none(),
+            "a voice offer must omit the video key entirely — absent, not false: {json}"
         );
         assert_serializes_to(
             &ServerFrame::CallRinging { call_id },
@@ -1382,6 +1412,43 @@ mod tests {
             },
             r#"{"type": "call_end", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "reason": "answered_elsewhere"}"#,
         );
+    }
+
+    /// protocol.md's SECOND `call_offer` example, both directions: the
+    /// video flag rides the SAME frame — a client sends `"video": true` to
+    /// place a video call, the callee's offer carries it back, and it is on
+    /// the wire when and only when it is true (protocol.md, "Video").
+    #[test]
+    fn a_video_call_offer_parses_and_serializes_the_protocol_examples() {
+        let client: ClientFrame = serde_json::from_str(
+            r#"{"type": "call_offer", "call_id": "7b2e1d4f-0000-4000-8000-000000000001", "chat_id": 42, "sdp": "v=0\r\n", "video": true}"#,
+        )
+        .expect("a video call_offer parses");
+        assert_eq!(
+            client,
+            ClientFrame::CallOffer {
+                call_id: Uuid::parse_str("7b2e1d4f-0000-4000-8000-000000000001").unwrap(),
+                chat_id: 42,
+                sdp: "v=0\r\n".to_string(),
+                video: Some(true),
+            }
+        );
+
+        let frame = ServerFrame::CallOffer {
+            call_id: Uuid::parse_str("7b2e1d4f-0000-4000-8000-000000000001").unwrap(),
+            chat_id: 42,
+            from_user_id: 7,
+            sdp: "v=0\r\n".to_string(),
+            video: true,
+        };
+        assert_serializes_to(
+            &frame,
+            r#"{"type": "call_offer", "call_id": "7b2e1d4f-0000-4000-8000-000000000001",
+                "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n", "video": true}"#,
+        );
+        let json = serde_json::to_string(&frame).expect("serializes");
+        let back: ServerFrame = serde_json::from_str(&json).expect("parses back");
+        assert_eq!(back, frame, "the video offer round-trips");
     }
 
     /// An error answering a call frame carries the `call_id` and never a
@@ -1415,6 +1482,7 @@ mod tests {
         message.call = Some(crate::models::CallRecord {
             outcome: "completed".to_string(),
             duration_secs: Some(222),
+            video: false,
         });
         let json = serde_json::to_value(ServerFrame::Message { message }).expect("serializes");
         assert_eq!(
@@ -1436,9 +1504,26 @@ mod tests {
         let record = crate::models::CallRecord {
             outcome: "missed".to_string(),
             duration_secs: None,
+            video: false,
         };
         let json = serde_json::to_value(&record).expect("serializes");
-        assert_eq!(json, serde_json::json!({"outcome": "missed"}));
+        assert_eq!(
+            json,
+            serde_json::json!({"outcome": "missed"}),
+            "no duration, and no video key on a voice call — absent, not false"
+        );
+
+        // A video call's record carries the flag; the wording rules are
+        // pinned in calls.rs, the wire shape here.
+        let video = crate::models::CallRecord {
+            outcome: "missed".to_string(),
+            duration_secs: None,
+            video: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&video).expect("serializes"),
+            serde_json::json!({"outcome": "missed", "video": true})
+        );
     }
 
     #[test]

@@ -107,6 +107,15 @@ sealed interface ClientFrame {
         @SerialName("call_id") val callId: String,
         @SerialName("chat_id") val chatId: Long,
         val sdp: String,
+        /**
+         * Present — and true — when (and only when) this places a VIDEO
+         * call (docs/protocol.md, "Video"): the call's kind is fixed
+         * here, for its whole life; cameras toggle mid-call, the kind
+         * never does. null on a voice call, and the house Json's
+         * encodeDefaults=false keeps a voice offer byte-identical to
+         * what it was before video existed.
+         */
+        val video: Boolean? = null,
     ) : ClientFrame
 
     @Serializable
@@ -338,6 +347,12 @@ sealed interface ServerFrame {
         @SerialName("chat_id") val chatId: Long,
         @SerialName("from_user_id") val fromUserId: Long,
         val sdp: String,
+        /**
+         * True when somebody is placing a VIDEO call (docs/protocol.md,
+         * "Video") — the woken device rings with a camera UI. Absent on
+         * a voice offer, so the default IS the voice call.
+         */
+        val video: Boolean = false,
     ) : ServerFrame
 
     /** The server accepted the caller's offer and is ringing the callee. */

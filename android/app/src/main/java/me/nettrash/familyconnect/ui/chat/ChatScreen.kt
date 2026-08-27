@@ -303,6 +303,7 @@ fun ChatScreen(
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
     val memberAvatars by viewModel.memberAvatars.collectAsStateWithLifecycle()
     val callsEnabled by viewModel.callsEnabled.collectAsStateWithLifecycle()
+    val videoCallsEnabled by viewModel.videoCallsEnabled.collectAsStateWithLifecycle()
     // Which rows the assistant is still writing into. In-memory only, so a
     // row that was mid-stream when the app was killed is not stuck looking
     // live after a relaunch.
@@ -456,11 +457,14 @@ fun ChatScreen(
     // Uri WE provide, via the FileProvider the app already declares for
     // opening downloaded files.
     //
-    // Note what is deliberately absent: android.permission.CAMERA. The
-    // intents are documented to throw SecurityException when an app DECLARES
-    // that permission without holding it — so declaring it "to be safe" is
-    // what breaks this, and not declaring it keeps the app's posture (no
-    // camera access of its own, only what the user hands over).
+    // Since video calls, the manifest DECLARES android.permission.CAMERA —
+    // and the capture intents are documented to throw SecurityException
+    // when an app declares that permission without HOLDING it. The old
+    // rule (never declare it; the hand-off needs no permission at all) has
+    // therefore inverted: the hand-off is now gated on the runtime grant,
+    // asked at the moment of use exactly like the microphone below, and
+    // the grant continues the capture. The rule itself is CaptureGate's,
+    // pinned on the JVM.
     var pendingCapture by remember { mutableStateOf<Uri?>(null) }
     var pendingCaptureIsVideo by remember { mutableStateOf(false) }
     val takePicture = rememberLauncherForActivityResult(
@@ -477,12 +481,33 @@ fun ChatScreen(
         pendingCapture = null
         if (ok && uri != null) viewModel.stageMedia(uri, isVideo = true)
     }
-    val startCapture: (Boolean) -> Unit = { isVideo ->
+    val launchCapture: (Boolean) -> Unit = { isVideo ->
         val uri = viewModel.newCaptureUri(context, isVideo)
         if (uri != null) {
             pendingCapture = uri
             pendingCaptureIsVideo = isVideo
             if (isVideo) captureVideo.launch(uri) else takePicture.launch(uri)
+        }
+    }
+    val capturePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            launchCapture(pendingCaptureIsVideo)
+        } else {
+            Toast.makeText(context, R.string.e_camera_permission, Toast.LENGTH_LONG).show()
+        }
+    }
+    val startCapture: (Boolean) -> Unit = { isVideo ->
+        val held = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (CaptureGate.mayLaunchCapture(held)) {
+            launchCapture(isVideo)
+        } else {
+            pendingCaptureIsVideo = isVideo
+            capturePermission.launch(Manifest.permission.CAMERA)
         }
     }
 
@@ -506,11 +531,15 @@ fun ChatScreen(
         if (held) viewModel.startRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
     }
 
-    // Placing a voice call: the same permission, asked the same way, and
+    // Placing a call: the microphone permission, asked the same way, and
     // the grant places the call. A refused start means this device is on
-    // a call already (docs/protocol.md: one call per person).
-    val placeCall: () -> Unit = {
-        if (!viewModel.startCall()) {
+    // a call already (docs/protocol.md: one call per person). A VIDEO
+    // call asks for the camera TOGETHER with the microphone — but only
+    // the microphone is required: a denied camera still places the call,
+    // camera off (protocol.md, "Video"), and the call screen keeps that
+    // state honest.
+    val placeCall: (Boolean) -> Unit = { video ->
+        if (!viewModel.startCall(video)) {
             Toast.makeText(context, R.string.e_call_failed_to_start, Toast.LENGTH_SHORT).show()
         }
     }
@@ -518,7 +547,7 @@ fun ChatScreen(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (granted) {
-            placeCall()
+            placeCall(false)
         } else {
             Toast.makeText(context, R.string.e_microphone_permission, Toast.LENGTH_LONG).show()
         }
@@ -528,7 +557,36 @@ fun ChatScreen(
             context,
             Manifest.permission.RECORD_AUDIO,
         ) == PackageManager.PERMISSION_GRANTED
-        if (held) placeCall() else callPermission.launch(Manifest.permission.RECORD_AUDIO)
+        if (held) placeCall(false) else callPermission.launch(Manifest.permission.RECORD_AUDIO)
+    }
+    val videoCallPermissions = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (grants[Manifest.permission.RECORD_AUDIO] == true) {
+            if (grants[Manifest.permission.CAMERA] != true) {
+                Toast.makeText(context, R.string.e_camera_permission, Toast.LENGTH_LONG).show()
+            }
+            placeCall(true)
+        } else {
+            Toast.makeText(context, R.string.e_microphone_permission, Toast.LENGTH_LONG).show()
+        }
+    }
+    val startVideoCall: () -> Unit = {
+        val micHeld = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        val camHeld = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (micHeld && camHeld) {
+            placeCall(true)
+        } else {
+            videoCallPermissions.launch(
+                arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA),
+            )
+        }
     }
 
     // Sharing a location. Asked at the moment of use, and the grant
@@ -909,6 +967,14 @@ fun ChatScreen(
                     // "Voice calls"). Hidden, not disabled, on a server
                     // that has calls off.
                     if (callsEnabled && chat?.kind == "direct") {
+                        // The KIND is chosen here, at placement, and fixed
+                        // for the call's life (docs/protocol.md, "Video")
+                        // — hence two buttons, never a mid-call switch.
+                        if (videoCallsEnabled) {
+                            IconButton(onClick = startVideoCall) {
+                                Icon(Icons.Filled.Videocam, contentDescription = stringResource(R.string.s_video_call))
+                            }
+                        }
                         IconButton(onClick = startCall) {
                             Icon(Icons.Filled.Call, contentDescription = stringResource(R.string.s_voice_call))
                         }
@@ -2560,6 +2626,7 @@ private data class BodyBlock(
 @Composable
 private fun CallRecordRow(
     line: CallRecordLine,
+    video: Boolean,
     isMine: Boolean,
     onCallBack: (() -> Unit)?,
     onDoubleTap: () -> Unit,
@@ -2572,12 +2639,17 @@ private fun CallRecordRow(
             if (isMine) Icons.Filled.CallMade else Icons.Filled.CallReceived
     }
     val text = when (line) {
-        is CallRecordLine.Completed ->
-            stringResource(R.string.s_voice_call_with_duration, CallRecordWording.duration(line.durationSecs))
+        is CallRecordLine.Completed -> stringResource(
+            if (video) R.string.s_video_call_with_duration else R.string.s_voice_call_with_duration,
+            CallRecordWording.duration(line.durationSecs),
+        )
         CallRecordLine.NoAnswer -> stringResource(R.string.s_no_answer)
-        CallRecordLine.Missed -> stringResource(R.string.s_missed_voice_call)
-        CallRecordLine.DeclinedByThem -> stringResource(R.string.s_voice_call_declined)
-        CallRecordLine.DeclinedByMe -> stringResource(R.string.s_declined_voice_call)
+        CallRecordLine.Missed ->
+            stringResource(if (video) R.string.s_missed_video_call else R.string.s_missed_voice_call)
+        CallRecordLine.DeclinedByThem ->
+            stringResource(if (video) R.string.s_video_call_declined else R.string.s_voice_call_declined)
+        CallRecordLine.DeclinedByMe ->
+            stringResource(if (video) R.string.s_declined_video_call else R.string.s_declined_voice_call)
         is CallRecordLine.Failed -> line.durationSecs
             ?.let { stringResource(R.string.s_call_failed_with_duration, CallRecordWording.duration(it)) }
             ?: stringResource(R.string.s_call_failed)
@@ -3139,6 +3211,7 @@ private fun BubbleContent(
         if (callRecord != null) {
             CallRecordRow(
                 line = CallRecordWording.line(callRecord, isMine = isMine),
+                video = callRecord.video,
                 isMine = isMine,
                 onCallBack = onCallBack,
                 onDoubleTap = onDoubleTap,

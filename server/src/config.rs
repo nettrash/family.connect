@@ -63,6 +63,15 @@ pub struct CallsConfig {
     #[serde(default = "default_calls_enabled")]
     pub enabled: bool,
 
+    /// Video calls (protocol.md, "Video"), meaningful only with calls
+    /// enabled. `false` refuses a `call_offer` carrying `"video": true`
+    /// with `video_calls_disabled` and leaves voice calls untouched;
+    /// `GET /me` reports the combined answer as `video_calls_enabled`. On
+    /// by default — the switch exists for the operator whose TURN relay is
+    /// sized for voice (~10 kB/s per call; video is two orders more).
+    #[serde(default = "default_video_calls_enabled")]
+    pub video_enabled: bool,
+
     /// STUN servers, as `stun:` / `stuns:` URLs.
     #[serde(default = "default_stun_urls")]
     pub stun_urls: Vec<String>,
@@ -106,6 +115,7 @@ impl Default for CallsConfig {
     fn default() -> Self {
         Self {
             enabled: default_calls_enabled(),
+            video_enabled: default_video_calls_enabled(),
             stun_urls: default_stun_urls(),
             turn_urls: Vec::new(),
             turn_secret: String::new(),
@@ -970,6 +980,10 @@ fn default_calls_enabled() -> bool {
     true
 }
 
+fn default_video_calls_enabled() -> bool {
+    true
+}
+
 fn default_stun_urls() -> Vec<String> {
     vec!["stun:stun.l.google.com:19302".to_string()]
 }
@@ -1230,6 +1244,7 @@ mod tests {
     fn an_empty_calls_section_is_on_with_a_public_stun_list() {
         let cfg = Config::from_toml_str("").expect("valid");
         assert!(cfg.calls.enabled);
+        assert!(cfg.calls.video_enabled, "video is on wherever calls are");
         assert_eq!(cfg.calls.stun_urls, vec!["stun:stun.l.google.com:19302"]);
         assert!(cfg.calls.turn_urls.is_empty());
         assert_eq!(cfg.calls.ring_timeout_secs, 45);

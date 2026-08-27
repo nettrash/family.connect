@@ -24,6 +24,17 @@ struct CallRecordView: View {
     var onLongPress: () -> Void = {}
 
     private var glyph: String {
+        // A video record gets the camera glyph family; SF has no
+        // video twin of phone.arrow.up.right, so direction is carried by
+        // the wording (and the missed tint) rather than the symbol.
+        if call.video {
+            switch call.outcome {
+            case CallDTO.Outcome.declined, CallDTO.Outcome.failed:
+                return "video.slash"
+            default:
+                return "video.fill"
+            }
+        }
         switch call.outcome {
         case CallDTO.Outcome.missed:
             return isMine ? "phone.arrow.up.right" : "phone.arrow.down.left"

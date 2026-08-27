@@ -164,7 +164,8 @@ struct FamilyConnectApp: App {
                 guard let calls, let callID = calls.callID else { return }
                 switch phase {
                 case .incoming:
-                    ChatNotifier.announceIncomingCall(callID: callID, callerName: calls.peerName)
+                    ChatNotifier.announceIncomingCall(
+                        callID: callID, callerName: calls.peerName, video: calls.isVideo)
                 default:
                     ChatNotifier.dismissIncomingCall(callID: callID)
                 }
@@ -292,10 +293,16 @@ struct FamilyConnectApp: App {
         // leaves idle and closed when it returns (RootView), never by the
         // person — closing it does not hang up.
         Window("Call", id: MacWindow.call) {
-            windowContents { CallView() }
+            // Video needs room; a voice call just centers in it. The
+            // window is resizable down to the minimum the frame sets —
+            // .contentSize would pin it at the default forever.
+            windowContents {
+                CallView()
+                    .frame(minWidth: 480, minHeight: 400)
+            }
         }
-        .defaultSize(width: 360, height: 480)
-        .windowResizability(.contentSize)
+        .defaultSize(width: 780, height: 560)
+        .windowResizability(.contentMinSize)
 
         // Keyed BY ATTACHMENT, so two photos open as two windows and the
         // same photo twice raises the first.

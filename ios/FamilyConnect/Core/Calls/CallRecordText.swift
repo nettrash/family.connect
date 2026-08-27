@@ -20,22 +20,30 @@ nonisolated enum CallRecordText {
     /// The one line a record is drawn with. `isMine` is whether the READER
     /// placed the call — the record's sender is the caller.
     static func label(_ call: CallDTO, isMine: Bool) -> String {
-        label(outcome: call.outcome, durationSecs: call.durationSecs, isMine: isMine)
+        label(outcome: call.outcome, durationSecs: call.durationSecs, video: call.video, isMine: isMine)
     }
 
-    static func label(outcome: String, durationSecs: Int?, isMine: Bool) -> String {
+    static func label(outcome: String, durationSecs: Int?, video: Bool = false, isMine: Bool) -> String {
         switch outcome {
         case CallDTO.Outcome.completed:
             if let durationSecs {
-                return String(localized: "Voice call · \(duration(durationSecs))")
+                return video
+                    ? String(localized: "Video call · \(duration(durationSecs))")
+                    : String(localized: "Voice call · \(duration(durationSecs))")
             }
-            return String(localized: "Voice call")
+            return video ? String(localized: "Video call") : String(localized: "Voice call")
         case CallDTO.Outcome.missed:
             // "No answer" is what the caller sees; the callee missed it.
-            return isMine ? String(localized: "No answer") : String(localized: "Missed voice call")
+            if isMine { return String(localized: "No answer") }
+            return video ? String(localized: "Missed video call") : String(localized: "Missed voice call")
         case CallDTO.Outcome.declined:
+            if video {
+                return isMine ? String(localized: "Video call declined") : String(localized: "Declined video call")
+            }
             return isMine ? String(localized: "Voice call declined") : String(localized: "Declined voice call")
         case CallDTO.Outcome.failed:
+            // Kind-neutral on purpose: a call that failed is a failure
+            // first, and "Video call failed" says nothing more useful.
             if let durationSecs {
                 return String(localized: "Call failed · \(duration(durationSecs))")
             }
@@ -43,7 +51,7 @@ nonisolated enum CallRecordText {
         default:
             // An outcome this build does not know: still a call, and the
             // render floor says never draw nothing.
-            return String(localized: "Voice call")
+            return video ? String(localized: "Video call") : String(localized: "Voice call")
         }
     }
 
@@ -64,31 +72,39 @@ nonisolated enum CallRecordText {
 /// The status line of the in-call screen — pure, so the wording is
 /// testable without a view.
 nonisolated enum CallStatusText {
-    static func line(phase: CallManager.Phase, direction: CallManager.Direction?, elapsed: Int) -> String {
+    static func line(phase: CallManager.Phase, direction: CallManager.Direction?, elapsed: Int, video: Bool = false) -> String {
         switch phase {
         case .idle:
             return ""
         case .outgoing(let ringing):
             return ringing ? String(localized: "Ringing…") : String(localized: "Calling…")
         case .incoming:
-            return String(localized: "Incoming call")
+            return video ? String(localized: "Incoming video call") : String(localized: "Incoming call")
         case .connecting:
             return String(localized: "Connecting…")
         case .active:
             return CallRecordText.duration(elapsed)
         case .ended(let reason):
-            return ended(reason, direction: direction)
+            return ended(reason, direction: direction, video: video)
         }
     }
 
-    static func ended(_ reason: CallEndReason, direction: CallManager.Direction?) -> String {
+    /// The camera was refused on a video call, which is a footnote and
+    /// never an end reason (docs/protocol.md, "Video"): the call goes on,
+    /// receive-only, and this line under the status says why.
+    static var cameraDeniedNote: String {
+        String(localized: "Camera access is off — the call is voice-only for you.")
+    }
+
+    static func ended(_ reason: CallEndReason, direction: CallManager.Direction?, video: Bool = false) -> String {
         switch reason {
         case .hangup, .cancel:
             return String(localized: "Call ended")
         case .decline:
             return direction == .outgoing ? String(localized: "Declined") : String(localized: "Call ended")
         case .timeout:
-            return direction == .outgoing ? String(localized: "No answer") : String(localized: "Missed voice call")
+            if direction == .outgoing { return String(localized: "No answer") }
+            return video ? String(localized: "Missed video call") : String(localized: "Missed voice call")
         case .failed:
             return String(localized: "Call failed")
         case .answeredElsewhere:
@@ -97,6 +113,10 @@ nonisolated enum CallStatusText {
             return String(localized: "Busy")
         case .unreachable, .unavailable:
             return String(localized: "Unavailable")
+        case .videoUnavailable:
+            // The operator turned video off; say so, or the person
+            // retries what looks like a failure.
+            return String(localized: "Video calls are off on this server.")
         case .microphoneDenied:
             return String(localized: "Microphone access is needed for calls.")
         }

@@ -3,10 +3,10 @@
 
     <!-- REST + WebSocket to the family's self-hosted server. -->
     <!--
-         Recording a voice note. Unlike CAMERA — which must NOT be declared,
-         because MediaStore's capture intents throw when an app declares it
-         without holding it — this one is genuinely required: the app opens
-         the microphone itself rather than handing off to another app.
+         Recording a voice note (and every call): the app opens the
+         microphone itself, so RECORD_AUDIO is genuinely required. CAMERA
+         is declared further down, since video calls — see that entry for
+         what declaring it changed elsewhere in the app.
     -->
     <!-- Sharing a location. Both, because either is enough: COARSE alone
          names a street, which is what "where are you?" asks, so a member
@@ -34,6 +34,21 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+
+    <!-- Video calls (docs/protocol.md, "Video") own the camera. DECLARING
+         CAMERA changes an old rule elsewhere in this app: MediaStore's
+         capture intents (the chat's take-photo / record-video hand-off)
+         throw a SecurityException when an app declares this permission
+         without HOLDING it — which is why that hand-off used to work with
+         no permission at all, and why ChatScreen now gates it on the
+         runtime grant (see CaptureGate). The camera itself is optional
+         hardware: voice calls and everything else work without one, and a
+         video call on a camera-less device negotiates receive-only. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -139,15 +154,15 @@
             </intent-filter>
         </service>
 
-        <!-- The foreground service a voice call lives behind: ringing
+        <!-- The foreground service a call lives behind: ringing
              (started from the call push, while the phone still may) and
-             then the call itself. Both types are declared; the microphone
-             one is only ever REQUESTED once RECORD_AUDIO is held — see
-             CallService.foregroundType. -->
+             then the call itself. All three types are declared; the
+             microphone and camera ones are only ever REQUESTED once their
+             runtime permissions are held — see CallService.foregroundType. -->
         <service
             android:name=".calls.CallService"
             android:exported="false"
-            android:foregroundServiceType="phoneCall|microphone" />
+            android:foregroundServiceType="phoneCall|microphone|camera" />
 
     </application>
 

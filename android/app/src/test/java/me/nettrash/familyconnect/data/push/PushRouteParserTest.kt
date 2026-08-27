@@ -105,4 +105,14 @@ class PushRouteParserTest {
 
         assertThat(PushRouteParser.parse(data)).isEqualTo(PendingRoute.Chat(42L))
     }
+
+    @Test
+    fun aCallPushSaysWhetherItIsAVideoCall() {
+        // docs/protocol.md, "Incoming calls": `"video": "true"` rides the
+        // data payload — a STRING, like every FCM data value; absent (any
+        // older server) reads as a voice call.
+        assertThat(PushRouteParser.isVideoCall(mapOf("kind" to "call", "video" to "true"))).isTrue()
+        assertThat(PushRouteParser.isVideoCall(mapOf("kind" to "call"))).isFalse()
+        assertThat(PushRouteParser.isVideoCall(mapOf("kind" to "call", "video" to "false"))).isFalse()
+    }
 }

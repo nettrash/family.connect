@@ -99,11 +99,15 @@ impl Outcome {
 
     /// The English placeholder body of the record — what a client that
     /// predates calls shows, and what a client that knows the `call`
-    /// object never does (protocol.md, "The record").
-    pub fn placeholder_body(self) -> &'static str {
-        match self {
-            Outcome::Missed => "Missed voice call",
-            _ => "Voice call",
+    /// object never does (protocol.md, "The record"). A video call's says
+    /// so, the same old-client courtesy the voice wording is
+    /// (protocol.md, "Video").
+    pub fn placeholder_body(self, video: bool) -> &'static str {
+        match (self, video) {
+            (Outcome::Missed, false) => "Missed voice call",
+            (Outcome::Missed, true) => "Missed video call",
+            (_, false) => "Voice call",
+            (_, true) => "Video call",
         }
     }
 }
@@ -121,6 +125,9 @@ pub struct Ended {
     /// Seconds from the answer to the end; present iff the call was ever
     /// answered.
     pub duration_secs: Option<i64>,
+    /// Whether it was a VIDEO call — fixed at `begin`, carried through so
+    /// the record says what kind of call it was (protocol.md, "Video").
+    pub video: bool,
 }
 
 /// Why an offer was refused: one call per person, on either side.
@@ -163,6 +170,10 @@ pub struct PendingOffer {
     pub chat_id: i64,
     pub from_user_id: i64,
     pub sdp: String,
+    /// A late callee device must ring as what the call IS — a video call's
+    /// replayed offer carries the flag exactly as the live one did
+    /// (protocol.md, "Video").
+    pub video: bool,
     pub candidates: Vec<IceCandidate>,
 }
 
@@ -192,6 +203,9 @@ struct Call {
     /// longer there. Irrelevant once answered: an answered call's frames are
     /// addressed to USERS, so a reconnect just works.
     caller_conn: u64,
+    /// A VIDEO call, decided at `begin` and never renegotiated: cameras
+    /// toggle mid-call, the call's kind does not (protocol.md, "Video").
+    video: bool,
     phase: Phase,
 }
 
@@ -238,6 +252,7 @@ impl CallRegistry {
 
     /// Start ringing. Refused when either party is on a call already —
     /// and a re-used `call_id` counts as the caller being on that call.
+    #[allow(clippy::too_many_arguments)] // the flag is part of the offer, not a config
     pub fn begin(
         &self,
         call_id: Uuid,
@@ -246,6 +261,7 @@ impl CallRegistry {
         callee_id: i64,
         caller_conn: u64,
         offer_sdp: String,
+        video: bool,
     ) -> Result<(), Busy> {
         let mut inner = self.lock();
         for call in inner.calls.values() {
@@ -268,6 +284,7 @@ impl CallRegistry {
                 caller_id,
                 callee_id,
                 caller_conn,
+                video,
                 phase: Phase::Ringing {
                     since: Instant::now(),
                     offer_sdp,
@@ -399,6 +416,7 @@ impl CallRegistry {
             reason,
             outcome,
             duration_secs,
+            video: call.video,
         }
     }
 
@@ -416,6 +434,7 @@ impl CallRegistry {
                 chat_id: call.chat_id,
                 from_user_id: call.caller_id,
                 sdp: offer_sdp.clone(),
+                video: call.video,
                 candidates: caller_candidates.clone(),
             }),
             _ => None,
@@ -573,8 +592,16 @@ mod tests {
     }
 
     fn ring(reg: &CallRegistry, call: u128, caller: i64, callee: i64, conn: u64) {
-        reg.begin(id(call), 42, caller, callee, conn, "offer".to_string())
-            .expect("begins");
+        reg.begin(
+            id(call),
+            42,
+            caller,
+            callee,
+            conn,
+            "offer".to_string(),
+            false,
+        )
+        .expect("begins");
     }
 
     #[test]
@@ -584,27 +611,27 @@ mod tests {
         assert!(reg.is_busy(7) && reg.is_busy(9) && !reg.is_busy(11));
         // The caller, from another device, is busy with their own call.
         assert_eq!(
-            reg.begin(id(2), 43, 7, 11, 101, "o".into()),
+            reg.begin(id(2), 43, 7, 11, 101, "o".into(), false),
             Err(Busy::Caller)
         );
         // Somebody ringing the callee is refused as peer busy.
         assert_eq!(
-            reg.begin(id(3), 44, 11, 9, 102, "o".into()),
+            reg.begin(id(3), 44, 11, 9, 102, "o".into(), false),
             Err(Busy::Callee)
         );
         // And somebody ringing the CALLER (who is a caller, not a callee)
         // is refused too: busy is about being on a call at all.
         assert_eq!(
-            reg.begin(id(4), 45, 11, 7, 102, "o".into()),
+            reg.begin(id(4), 45, 11, 7, 102, "o".into(), false),
             Err(Busy::Callee)
         );
         // A re-used id is the caller being on that call.
         assert_eq!(
-            reg.begin(id(1), 46, 13, 15, 103, "o".into()),
+            reg.begin(id(1), 46, 13, 15, 103, "o".into(), false),
             Err(Busy::Caller)
         );
         // Unrelated people call freely.
-        reg.begin(id(5), 47, 13, 15, 104, "o".into())
+        reg.begin(id(5), 47, 13, 15, 104, "o".into(), false)
             .expect("an unrelated pair may talk");
     }
 
@@ -834,8 +861,31 @@ mod tests {
         assert_eq!(EndReason::from_client("answered_elsewhere"), None);
         assert_eq!(EndReason::Timeout.as_str(), "timeout");
         assert_eq!(EndReason::AnsweredElsewhere.as_str(), "answered_elsewhere");
-        assert_eq!(Outcome::Missed.placeholder_body(), "Missed voice call");
-        assert_eq!(Outcome::Completed.placeholder_body(), "Voice call");
-        assert_eq!(Outcome::Declined.placeholder_body(), "Voice call");
+        assert_eq!(Outcome::Missed.placeholder_body(false), "Missed voice call");
+        assert_eq!(Outcome::Completed.placeholder_body(false), "Voice call");
+        assert_eq!(Outcome::Declined.placeholder_body(false), "Voice call");
+        // The video wording is the same old-client courtesy.
+        assert_eq!(Outcome::Missed.placeholder_body(true), "Missed video call");
+        assert_eq!(Outcome::Completed.placeholder_body(true), "Video call");
+        assert_eq!(Outcome::Declined.placeholder_body(true), "Video call");
+    }
+
+    /// The flag is fixed at `begin` and rides everything the registry hands
+    /// back: the replay to a late callee device (which must ring as a VIDEO
+    /// call) and the `Ended` the record is written from.
+    #[test]
+    fn a_video_call_carries_the_flag_through_replay_and_end() {
+        let reg = CallRegistry::new();
+        reg.begin(id(1), 42, 7, 9, 100, "offer".to_string(), true)
+            .expect("begins");
+        assert!(reg.pending_offer_for(9).expect("ringing").video);
+        let ended = reg.end(id(1), Some(7), EndReason::Cancel).expect("ended");
+        assert!(ended.video, "the record must say what kind of call it was");
+        // And a voice call stays a voice call.
+        reg.begin(id(2), 42, 7, 9, 100, "offer".to_string(), false)
+            .expect("begins");
+        assert!(!reg.pending_offer_for(9).expect("ringing").video);
+        let ended = reg.end(id(2), Some(7), EndReason::Cancel).expect("ended");
+        assert!(!ended.video);
     }
 }

@@ -354,6 +354,13 @@ data class CallDto(
     /** "completed" | "missed" | "declined" | "failed". */
     val outcome: String,
     @SerialName("duration_secs") val durationSecs: Int? = null,
+    /**
+     * True when it was a VIDEO call (docs/protocol.md, "Video") — present
+     * on the wire when and only when true, absent on a voice call like
+     * every optional field. The kind was fixed when the call was placed;
+     * the record simply reports it.
+     */
+    val video: Boolean = false,
 ) {
     companion object {
         const val COMPLETED = "completed"
@@ -787,6 +794,13 @@ data class MeResponse(
      * predates calls, which then — correctly — shows no call button.
      */
     @SerialName("calls_enabled") val callsEnabled: Boolean = false,
+    /**
+     * Whether this server allows VIDEO calls (`[calls] video_enabled`,
+     * docs/protocol.md, "Video"). Gates the video-call button ALONE —
+     * voice is untouched; the default covers a server that predates
+     * video, which then correctly offers voice only.
+     */
+    @SerialName("video_calls_enabled") val videoCallsEnabled: Boolean = false,
 )
 
 @Serializable

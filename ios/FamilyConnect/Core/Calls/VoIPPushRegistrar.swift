@@ -83,7 +83,7 @@ extension VoIPPushRegistrar: PKPushRegistryDelegate {
             // file header). Report one and end it in the same breath.
             AppLog.push.error("VoIP push with an unreadable payload")
             let uuid = UUID()
-            callKit.reportIncoming(callID: uuid, peerName: String(localized: "Unknown caller")) { _ in
+            callKit.reportIncoming(callID: uuid, peerName: String(localized: "Unknown caller"), hasVideo: false) { _ in
                 completion()
             }
             callKit.reportEnded(callID: uuid, reason: .failed)
@@ -93,7 +93,7 @@ extension VoIPPushRegistrar: PKPushRegistryDelegate {
         let peer = callManager?.resolvePeer(push.fromUserID)
         let name = peer.map { $0.name == String(localized: "Someone") && !push.callerName.isEmpty ? push.callerName : $0.name }
             ?? push.callerName
-        callKit.reportIncoming(callID: uuid, peerName: name) { _ in
+        callKit.reportIncoming(callID: uuid, peerName: name, hasVideo: push.video) { _ in
             completion()
         }
         if callManager?.handleIncomingPush(push) != true {

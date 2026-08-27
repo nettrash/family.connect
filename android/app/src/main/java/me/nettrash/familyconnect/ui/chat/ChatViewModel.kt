@@ -149,7 +149,7 @@ class ChatViewModel @Inject constructor(
      * ignores the default and injects CallManager (the same trick
      * SessionRepository plays with its push-token repository).
      */
-    private val callStarter: CallStarter = CallStarter { _, _ -> false },
+    private val callStarter: CallStarter = CallStarter { _, _, _ -> false },
     /**
      * Where an OS share parks what it prepared until this chat's
      * composer collects it. Defaulted with the same trick as
@@ -215,15 +215,24 @@ class ChatViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     /**
-     * Ring the other person in this direct chat. The screen has already
-     * secured the microphone permission. False when this device is on a
-     * call already, or this is not a direct chat.
+     * Whether it also allows VIDEO calls (`GET /me` → video_calls_enabled,
+     * docs/protocol.md, "Video") — gates the video-call button alone.
      */
-    fun startCall(): Boolean {
+    val videoCallsEnabled: StateFlow<Boolean> = settings.state.map { it.videoCallsEnabled }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /**
+     * Ring the other person in this direct chat. The screen has already
+     * secured the microphone permission (and asked for the camera when
+     * [video] — a denied camera still places the call, camera off;
+     * docs/protocol.md, "Video"). False when this device is on a call
+     * already, or this is not a direct chat.
+     */
+    fun startCall(video: Boolean): Boolean {
         val current = chat.value ?: return false
         val peer = current.peerUserId ?: return false
         if (current.kind != "direct") return false
-        return callStarter.startCall(current.id, peer)
+        return callStarter.startCall(current.id, peer, video)
     }
 
     // Roster snapshot — sender names in family bubbles, the typing
@@ -969,9 +978,12 @@ class ChatViewModel @Inject constructor(
     /**
      * A destination for the camera to write into, as a FileProvider Uri.
      *
-     * The capture intents write into a Uri the CALLER provides — which is
-     * what keeps this app off `android.permission.CAMERA` entirely: it never
-     * touches the camera, it hands over a file and gets a result back.
+     * The capture intents write into a Uri the CALLER provides — the
+     * capture itself still happens in the camera app. But the manifest now
+     * DECLARES `android.permission.CAMERA` (video calls), and the capture
+     * intents throw a SecurityException for an app that declares the
+     * permission without HOLDING it — so the screen gates the hand-off on
+     * the runtime grant first (see CaptureGate).
      *
      * Returns null if the directory cannot be made, which is the only
      * failure worth reporting here; the launcher simply does not start.

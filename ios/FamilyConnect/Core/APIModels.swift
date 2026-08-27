@@ -676,27 +676,35 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
 nonisolated struct CallDTO: Codable, Equatable, Hashable, Sendable {
     let outcome: String
     let durationSecs: Int?
+    /// True when the record is of a VIDEO call (docs/protocol.md,
+    /// "Video"). Present on the wire when (and only when) true — absent
+    /// means voice, like every optional field there.
+    let video: Bool
 
     enum CodingKeys: String, CodingKey {
         case outcome
         case durationSecs = "duration_secs"
+        case video
     }
 
-    init(outcome: String, durationSecs: Int? = nil) {
+    init(outcome: String, durationSecs: Int? = nil, video: Bool = false) {
         self.outcome = outcome
         self.durationSecs = durationSecs
+        self.video = video
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         outcome = try container.decode(String.self, forKey: .outcome)
         durationSecs = try container.decodeIfPresent(Int.self, forKey: .durationSecs)
+        video = try container.decodeIfPresent(Bool.self, forKey: .video) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(outcome, forKey: .outcome)
         try container.encodeIfPresent(durationSecs, forKey: .durationSecs)
+        if video { try container.encode(true, forKey: .video) }
     }
 
     enum Outcome {
@@ -766,6 +774,12 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// false for one that predates calls, which is also the right answer
     /// there — it has no `call_offer` to accept.
     var callsEnabled: Bool = false
+    /// Whether this server accepts VIDEO calls (`[calls] video_enabled`,
+    /// docs/protocol.md, "Video"). ALWAYS present on a current server,
+    /// like `calls_enabled`; defaulted to false for one that predates
+    /// video — which is also the right answer there, it would refuse the
+    /// offer with `video_calls_disabled`.
+    var videoCallsEnabled: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case user
@@ -773,6 +787,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         case role
         case pendingJoinRequest = "pending_join_request"
         case callsEnabled = "calls_enabled"
+        case videoCallsEnabled = "video_calls_enabled"
     }
 
     init(
@@ -780,13 +795,15 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         family: FamilyDTO?,
         role: String?,
         pendingJoinRequest: PendingJoinRequestDTO?,
-        callsEnabled: Bool = false
+        callsEnabled: Bool = false,
+        videoCallsEnabled: Bool = false
     ) {
         self.user = user
         self.family = family
         self.role = role
         self.pendingJoinRequest = pendingJoinRequest
         self.callsEnabled = callsEnabled
+        self.videoCallsEnabled = videoCallsEnabled
     }
 
     /// Hand-written for the reason every other defaulted field on this
@@ -798,6 +815,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         role = try container.decodeIfPresent(String.self, forKey: .role)
         pendingJoinRequest = try container.decodeIfPresent(PendingJoinRequestDTO.self, forKey: .pendingJoinRequest)
         callsEnabled = try container.decodeIfPresent(Bool.self, forKey: .callsEnabled) ?? false
+        videoCallsEnabled = try container.decodeIfPresent(Bool.self, forKey: .videoCallsEnabled) ?? false
     }
 }
 

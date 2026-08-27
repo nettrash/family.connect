@@ -9,6 +9,9 @@
 
 import Foundation
 import Testing
+// For RTCVideoRenderer alone — the renderer fake below is two empty
+// methods, no media stack involved.
+import WebRTC
 @testable import FamilyConnect
 
 @MainActor
@@ -65,11 +68,48 @@ struct CallManagerTests {
         func setSpeaker(_ enabled: Bool) {}
         func close() { closed = true }
 
+        // Video: every camera/renderer call recorded for assertions.
+        var cameraEnabled: [Bool] = []
+        var flips = 0
+        /// true = a renderer attached, false = detached (nil).
+        var localRenderers: [Bool] = []
+        var remoteRenderers: [Bool] = []
+        func setCameraEnabled(_ enabled: Bool) { cameraEnabled.append(enabled) }
+        func flipCamera() { flips += 1 }
+        func setLocalVideoRenderer(_ renderer: (any RTCVideoRenderer)?) { localRenderers.append(renderer != nil) }
+        func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?) { remoteRenderers.append(renderer != nil) }
+
         func emit(_ state: CallMediaConnectionState) {
             delegate?.mediaClient(self, connectionStateChanged: state)
         }
         func emitLocal(_ candidate: IceCandidatePayload) {
             delegate?.mediaClient(self, didGatherLocalCandidate: candidate)
+        }
+        func emitRemoteVideo(_ active: Bool) {
+            delegate?.mediaClient(self, remoteVideoActiveChanged: active)
+        }
+    }
+
+    /// The two-method RTCVideoRenderer, so renderer plumbing is testable
+    /// without a Metal view.
+    final class FakeRenderer: NSObject, RTCVideoRenderer {
+        func setSize(_ size: CGSize) {}
+        func renderFrame(_ frame: RTCVideoFrame?) {}
+    }
+
+    /// A camera prompt that hangs until the test answers it — the
+    /// undetermined-TCC alert, which on a locked phone may never resolve.
+    @MainActor
+    final class CameraGate {
+        private var continuation: CheckedContinuation<Bool, Never>?
+        private(set) var asked = false
+        func request() async -> Bool {
+            asked = true
+            return await withCheckedContinuation { continuation = $0 }
+        }
+        func resolve(_ granted: Bool) {
+            continuation?.resume(returning: granted)
+            continuation = nil
         }
     }
 
@@ -77,10 +117,14 @@ struct CallManagerTests {
     final class FakeBridge: CallSystemBridge {
         weak var manager: CallManager?
         var events: [String] = []
-        func reportOutgoing(callID: UUID, peerName: String) { events.append("outgoing:\(peerName)") }
+        func reportOutgoing(callID: UUID, peerName: String, isVideo: Bool) {
+            events.append(isVideo ? "outgoing:\(peerName):video" : "outgoing:\(peerName)")
+        }
         func reportOutgoingConnecting(callID: UUID) { events.append("connecting") }
         func reportOutgoingConnected(callID: UUID) { events.append("connected") }
-        func reportIncoming(callID: UUID, peerName: String) { events.append("incoming:\(peerName)") }
+        func reportIncoming(callID: UUID, peerName: String, hasVideo: Bool) {
+            events.append(hasVideo ? "incoming:\(peerName):video" : "incoming:\(peerName)")
+        }
         func reportEnded(callID: UUID, reason: CallEndReason) { events.append("ended:\(reason.rawValue)") }
         func requestAnswer(callID: UUID) {
             events.append("requestAnswer")
@@ -101,12 +145,21 @@ struct CallManagerTests {
         var ensureConnectedCalls = 0
         var endedCalls = 0
         var phases: [CallManager.Phase] = []
+        /// The `video` handed to makeMediaClient, per creation.
+        var mediaVideo: [Bool] = []
 
-        init(bridge: Bool = false, microphone: Bool = true) {
+        init(bridge: Bool = false, microphone: Bool = true, camera: Bool = true) {
             manager.signaling = signaling
-            manager.makeMediaClient = { [media] _ in media }
+            manager.makeMediaClient = { [weak self, media] _, video in
+                self?.mediaVideo.append(video)
+                return media
+            }
             manager.iceServers = { [IceServerDTO(urls: ["stun:stun.example.com:3478"])] }
             manager.requestMicrophone = { microphone }
+            manager.requestCamera = { camera }
+            // Determined either way by default; tests for the undecided
+            // grant override this with nil.
+            manager.cameraGrantState = { camera }
             manager.resolvePeer = { _ in ("Anna", 3) }
             // Long enough that no guard fires under a loaded parallel run;
             // the two guard tests lower it themselves.
@@ -173,7 +226,7 @@ struct CallManagerTests {
         // The offer FIRST, then the candidate gathered while it was being
         // built — buffered until the offer had gone out.
         #expect(h.signaling.sent.count == 2)
-        #expect(h.signaling.sent[0] == .callOffer(callID: id, chatID: 42, sdp: "v=0 offer"))
+        #expect(h.signaling.sent[0] == .callOffer(callID: id, chatID: 42, sdp: "v=0 offer", video: false))
         #expect(h.signaling.sent[1] == .callIce(callID: id, candidate: candidateA))
 
         h.manager.handle(frame: .callRinging(callID: id))
@@ -244,7 +297,7 @@ struct CallManagerTests {
 
     @Test("outgoing: the server's refusals end the call with their reason and write nothing")
     func serverRefusals() async throws {
-        for (code, reason) in [("peer_busy", CallEndReason.busy), ("call_busy", .busy), ("peer_unreachable", .unreachable), ("calls_disabled", .unavailable), ("invalid_call", .unavailable)] {
+        for (code, reason) in [("peer_busy", CallEndReason.busy), ("call_busy", .busy), ("peer_unreachable", .unreachable), ("calls_disabled", .unavailable), ("invalid_call", .unavailable), ("video_calls_disabled", .videoUnavailable)] {
             let h = Harness()
             h.manager.startCall(chatID: 42, peerUserID: 9)
             let id = try #require(h.manager.callID)
@@ -506,5 +559,300 @@ struct CallManagerTests {
         h.manager.systemDidSetMuted(true)
         #expect(h.manager.isMuted)
         #expect(h.media.muted == true)
+    }
+
+    // MARK: - Video calls (docs/protocol.md, "Video")
+
+    private func videoOffer(id: String, from: Int64 = 9) -> ServerFrame {
+        .callOffer(CallOfferPayload(callID: id, chatID: 42, fromUserID: from, sdp: "v=0 remote offer", video: true))
+    }
+
+    @Test("video outgoing: the flag threads to the bridge, the media client, the frame — and the camera starts on")
+    func videoOutgoing() async throws {
+        let h = Harness(bridge: true)
+        #expect(h.manager.startCall(chatID: 42, peerUserID: 9, video: true))
+        #expect(h.manager.isVideo)
+        #expect(h.bridge?.events == ["outgoing:Anna:video"])
+        let id = try #require(h.manager.callID)
+        await h.drain()
+        #expect(h.mediaVideo == [true])
+        #expect(h.manager.isCameraOn)
+        #expect(!h.manager.cameraDenied)
+        // The camera state reaches media before the offer goes out.
+        #expect(h.media.cameraEnabled == [true])
+        #expect(h.signaling.sent.first == .callOffer(callID: id, chatID: 42, sdp: "v=0 offer", video: true))
+    }
+
+    @Test("video outgoing: a denied camera still places the call, camera off, with the status note")
+    func videoCameraDenied() async throws {
+        let h = Harness(camera: false)
+        #expect(h.manager.startCall(chatID: 42, peerUserID: 9, video: true))
+        let id = try #require(h.manager.callID)
+        await h.drain()
+        // NOT .microphoneDenied, not ended at all: the call went out.
+        #expect(h.manager.phase == .outgoing(ringing: false))
+        #expect(!h.manager.isCameraOn)
+        #expect(h.manager.cameraDenied)
+        #expect(h.media.cameraEnabled == [false])
+        #expect(h.signaling.sent.first == .callOffer(callID: id, chatID: 42, sdp: "v=0 offer", video: true))
+    }
+
+    @Test("video: a refused microphone still ends the call, camera rules notwithstanding")
+    func videoMicrophoneDenied() async throws {
+        let h = Harness(microphone: false)
+        h.manager.startCall(chatID: 42, peerUserID: 9, video: true)
+        await h.drain()
+        #expect(h.phases.contains(.ended(.microphoneDenied)))
+        #expect(h.signaling.sent.isEmpty)
+    }
+
+    @Test("video: camera and flip toggles delegate to media, and are no-ops on a voice call")
+    func videoToggles() async throws {
+        let h = Harness()
+        h.manager.startCall(chatID: 42, peerUserID: 9, video: true)
+        await h.drain()
+        #expect(h.media.cameraEnabled == [true])
+
+        h.manager.toggleCamera()
+        #expect(!h.manager.isCameraOn)
+        #expect(h.media.cameraEnabled == [true, false])
+        // Flip is gated on the camera being on.
+        h.manager.flipCamera()
+        #expect(h.media.flips == 0)
+        h.manager.toggleCamera()
+        #expect(h.manager.isCameraOn)
+        h.manager.flipCamera()
+        #expect(h.media.flips == 1)
+        #expect(!h.manager.isFrontCamera)
+
+        let voice = Harness()
+        voice.manager.startCall(chatID: 42, peerUserID: 9)
+        await voice.drain()
+        voice.manager.toggleCamera()
+        voice.manager.flipCamera()
+        #expect(voice.media.cameraEnabled.isEmpty)
+        #expect(voice.media.flips == 0)
+        #expect(!voice.manager.isCameraOn)
+    }
+
+    @Test("video incoming over the socket: rings as video on the system UI, answers with video media")
+    func videoIncomingOffer() async throws {
+        let h = Harness(bridge: true)
+        h.manager.handle(frame: videoOffer(id: remoteID))
+        #expect(h.manager.isVideo)
+        #expect(h.bridge?.events == ["incoming:Anna:video"])
+        h.manager.acceptIncoming()
+        await h.drain()
+        #expect(h.mediaVideo == [true])
+        #expect(h.manager.isCameraOn)
+        #expect(h.signaling.sent.first == .callAnswer(callID: remoteID, sdp: "v=0 answer"))
+    }
+
+    @Test("video incoming via push: the push's flag rings video and survives to the answer")
+    func videoIncomingPush() async throws {
+        let h = Harness()
+        let push = IncomingCallPush(callID: remoteID, chatID: 42, fromUserID: 9, callerName: "Anna", video: true)
+        #expect(h.manager.handleIncomingPush(push))
+        #expect(h.manager.isVideo)
+        h.manager.acceptIncoming()
+        h.manager.handle(frame: videoOffer(id: remoteID))
+        await h.drain()
+        #expect(h.mediaVideo == [true])
+    }
+
+    @Test("video: renderers set before media exists are attached once it does, and remote video tracks the delegate")
+    func videoRenderers() async throws {
+        let h = Harness()
+        let local = FakeRenderer()
+        let remote = FakeRenderer()
+        h.manager.setLocalVideoRenderer(local)
+        h.manager.setRemoteVideoRenderer(remote)
+        h.manager.startCall(chatID: 42, peerUserID: 9, video: true)
+        await h.drain()
+        #expect(h.media.localRenderers == [true])
+        #expect(h.media.remoteRenderers == [true])
+
+        h.media.emitRemoteVideo(true)
+        #expect(h.manager.isRemoteVideoActive)
+        h.media.emitRemoteVideo(false)
+        #expect(!h.manager.isRemoteVideoActive)
+    }
+
+    @Test("the first-frame relay forwards everything, and reports once per attachment")
+    func firstFrameRelay() async throws {
+        final class Recorder: NSObject, RTCVideoRenderer {
+            var sizes: [CGSize] = []
+            var frames = 0
+            func setSize(_ size: CGSize) { sizes.append(size) }
+            func renderFrame(_ frame: RTCVideoFrame?) { frames += 1 }
+        }
+        let recorder = Recorder()
+        var fired = 0
+        let relay = RemoteFirstFrameRelay(wrapping: recorder) { fired += 1 }
+
+        var raw: CVPixelBuffer?
+        CVPixelBufferCreate(nil, 2, 2, kCVPixelFormatType_32BGRA, nil, &raw)
+        let frame = RTCVideoFrame(
+            buffer: RTCCVPixelBuffer(pixelBuffer: try #require(raw)),
+            rotation: ._0, timeStampNs: 0)
+
+        relay.setSize(CGSize(width: 2, height: 2))
+        relay.renderFrame(nil) // a renderer reset, not a picture
+        relay.renderFrame(frame)
+        relay.renderFrame(frame)
+        for _ in 0..<4 { await Task.yield() }
+        // Everything reached the wrapped renderer; the report came once,
+        // on the first REAL frame.
+        #expect(recorder.sizes == [CGSize(width: 2, height: 2)])
+        #expect(recorder.frames == 3)
+        #expect(fired == 1)
+
+        // A fresh attachment (window reopened mid-call) reports again.
+        let second = RemoteFirstFrameRelay(wrapping: recorder) { fired += 1 }
+        second.renderFrame(frame)
+        for _ in 0..<4 { await Task.yield() }
+        #expect(fired == 2)
+    }
+
+    @Test("video incoming: the system answer never awaits the camera prompt — answers camera-off, camera on when granted later")
+    func videoSystemAnswerDoesNotAwaitCamera() async throws {
+        let h = Harness()
+        let gate = CameraGate()
+        h.manager.cameraGrantState = { nil }
+        h.manager.requestCamera = { await gate.request() }
+        h.manager.handle(frame: videoOffer(id: remoteID))
+        // CallKit's CXAnswerCallAction path — no in-app pre-prompt.
+        h.manager.systemDidAnswer()
+        #expect(h.manager.phase == .connecting)
+        await h.drain()
+        // The answer went out while the (unshowable) prompt still hangs.
+        #expect(h.signaling.sent.first == .callAnswer(callID: remoteID, sdp: "v=0 answer"))
+        #expect(!h.manager.isCameraOn)
+        #expect(!h.manager.cameraDenied, "undecided is not denied")
+        #expect(h.media.cameraEnabled == [false])
+        #expect(gate.asked)
+
+        // The person grants it: the camera comes on like a manual toggle.
+        gate.resolve(true)
+        await h.waitUntil { h.manager.isCameraOn }
+        #expect(h.manager.isCameraOn)
+        #expect(!h.manager.cameraDenied)
+        #expect(h.media.cameraEnabled == [false, true])
+    }
+
+    @Test("video incoming: a late camera refusal keeps the camera off, with the denied note")
+    func videoSystemAnswerCameraDeniedLate() async throws {
+        let h = Harness()
+        let gate = CameraGate()
+        h.manager.cameraGrantState = { nil }
+        h.manager.requestCamera = { await gate.request() }
+        h.manager.handle(frame: videoOffer(id: remoteID))
+        h.manager.systemDidAnswer()
+        await h.drain()
+        #expect(h.signaling.sent.first == .callAnswer(callID: remoteID, sdp: "v=0 answer"))
+        gate.resolve(false)
+        await h.waitUntil { h.manager.cameraDenied }
+        #expect(!h.manager.isCameraOn)
+        #expect(h.manager.cameraDenied)
+        #expect(h.media.cameraEnabled == [false])
+    }
+
+    @Test("video incoming: the in-app accept prompts FIRST, then answers with the decided camera")
+    func videoInAppAcceptPromptsFirst() async throws {
+        let h = Harness()
+        let gate = CameraGate()
+        var determined: Bool?
+        h.manager.cameraGrantState = { determined }
+        h.manager.requestCamera = {
+            let granted = await gate.request()
+            determined = granted
+            return granted
+        }
+        h.manager.handle(frame: videoOffer(id: remoteID))
+        h.manager.acceptIncoming()
+        // Still ringing: nothing answered while the person reads the alert.
+        #expect(h.manager.phase == .incoming)
+        for _ in 0..<4 { await Task.yield() }
+        #expect(h.signaling.sent.isEmpty)
+
+        gate.resolve(true)
+        await h.waitUntil { !h.signaling.sent.isEmpty }
+        await h.drain()
+        #expect(h.manager.phase == .connecting)
+        #expect(h.manager.isCameraOn)
+        #expect(h.media.cameraEnabled == [true])
+        #expect(h.signaling.sent.first == .callAnswer(callID: remoteID, sdp: "v=0 answer"))
+    }
+
+    @Test("toggleCamera: turning on re-asks the grant — granted turns it on, refused keeps the note")
+    func toggleCameraReasksTheGrant() async throws {
+        // Denied at answer time, granted when the tap re-asks.
+        let h = Harness(camera: false)
+        h.manager.startCall(chatID: 42, peerUserID: 9, video: true)
+        await h.drain()
+        #expect(!h.manager.isCameraOn)
+        #expect(h.manager.cameraDenied)
+        h.manager.requestCamera = { true }
+        h.manager.toggleCamera()
+        await h.drain()
+        #expect(h.manager.isCameraOn)
+        #expect(!h.manager.cameraDenied)
+        #expect(h.media.cameraEnabled == [false, true])
+
+        // Still refused: the camera stays off and the note stays up —
+        // no black self-tile under a "voice-only" footnote.
+        let h2 = Harness(camera: false)
+        h2.manager.startCall(chatID: 42, peerUserID: 9, video: true)
+        await h2.drain()
+        h2.manager.toggleCamera()
+        await h2.drain()
+        #expect(!h2.manager.isCameraOn)
+        #expect(h2.manager.cameraDenied)
+        #expect(h2.media.cameraEnabled == [false])
+
+        // Granted meanwhile in Settings (the Mac's mid-call grant): the
+        // tap turns the camera on synchronously and clears the stale note.
+        let h3 = Harness(camera: false)
+        h3.manager.startCall(chatID: 42, peerUserID: 9, video: true)
+        await h3.drain()
+        #expect(h3.manager.cameraDenied)
+        h3.manager.cameraGrantState = { true }
+        h3.manager.toggleCamera()
+        #expect(h3.manager.isCameraOn)
+        #expect(!h3.manager.cameraDenied)
+    }
+
+    @Test("speaker: starts ON for a video call, OFF for voice, and resets between calls")
+    func speakerSeededByCallKind() async throws {
+        let h = Harness()
+        h.manager.startCall(chatID: 42, peerUserID: 9, video: true)
+        #expect(h.manager.isSpeaker, "the .videoChat session routes to the speaker; the toggle must say so")
+        h.manager.toggleSpeaker()
+        #expect(!h.manager.isSpeaker)
+        h.manager.hangUp()
+        await h.drain()
+
+        #expect(h.manager.startCall(chatID: 42, peerUserID: 9))
+        #expect(!h.manager.isSpeaker, "a voice call starts at the receiver")
+        h.manager.hangUp()
+        await h.drain()
+
+        let h2 = Harness()
+        h2.manager.handle(frame: videoOffer(id: remoteID))
+        #expect(h2.manager.isSpeaker, "an incoming video call rings speaker-first too")
+    }
+
+    @Test("voice: nothing changed — no video to media, no camera calls, the old byte-stable offer")
+    func voiceUnchanged() async throws {
+        let h = Harness(bridge: true)
+        h.manager.startCall(chatID: 42, peerUserID: 9)
+        let id = try #require(h.manager.callID)
+        #expect(!h.manager.isVideo)
+        #expect(h.bridge?.events == ["outgoing:Anna"])
+        await h.drain()
+        #expect(h.mediaVideo == [false])
+        #expect(h.media.cameraEnabled.isEmpty)
+        #expect(h.media.localRenderers.isEmpty)
+        #expect(h.signaling.sent.first == .callOffer(callID: id, chatID: 42, sdp: "v=0 offer", video: false))
     }
 }

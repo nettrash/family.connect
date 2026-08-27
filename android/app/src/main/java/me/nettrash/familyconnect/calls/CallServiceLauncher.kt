@@ -54,7 +54,7 @@ class CallServiceLauncher @Inject constructor(
             val name = incoming.callerName
                 ?: memberDao.observeMembers().first().resolvedDisplayNames(context)[incoming.peerUserId]
                 ?: ""
-            CallNotifications.showIncoming(context, name, incoming.peerUserId)
+            CallNotifications.showIncoming(context, name, incoming.peerUserId, incoming.video)
         }
     }
 }

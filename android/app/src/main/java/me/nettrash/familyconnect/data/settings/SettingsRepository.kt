@@ -94,6 +94,12 @@ data class SettingsState(
      * discover `calls_disabled` at the moment they want to talk.
      */
     val callsEnabled: Boolean = false,
+    /**
+     * Whether it also allows VIDEO calls (`GET /me` → video_calls_enabled,
+     * docs/protocol.md, "Video"). Gates the video-call button alone —
+     * false on an old server, which then correctly offers voice only.
+     */
+    val videoCallsEnabled: Boolean = false,
 )
 
 interface SettingsRepository {
@@ -144,6 +150,9 @@ interface SettingsRepository {
     /** Record what `GET /me` said about voice calls on this server. */
     suspend fun setCallsEnabled(enabled: Boolean)
 
+    /** Record what `GET /me` said about VIDEO calls on this server. */
+    suspend fun setVideoCallsEnabled(enabled: Boolean)
+
     suspend fun resetKeepingServerUrl()
 }
 
@@ -172,6 +181,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val ASSISTANT_USER_ID = longPreferencesKey("assistant_user_id")
         val ASSISTANT_NAME = stringPreferencesKey("assistant_name")
         val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
+        val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -194,6 +204,7 @@ class DataStoreSettingsRepository @Inject constructor(
             assistantUserId = prefs[Keys.ASSISTANT_USER_ID],
             assistantName = prefs[Keys.ASSISTANT_NAME],
             callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
+            videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
         )
     }
 
@@ -278,6 +289,10 @@ class DataStoreSettingsRepository @Inject constructor(
 
     override suspend fun setCallsEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.CALLS_ENABLED] = enabled }
+    }
+
+    override suspend fun setVideoCallsEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.VIDEO_CALLS_ENABLED] = enabled }
     }
 
     override suspend fun resetKeepingServerUrl() {

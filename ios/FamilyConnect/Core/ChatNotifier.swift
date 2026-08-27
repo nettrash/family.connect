@@ -153,9 +153,11 @@ nonisolated enum ChatNotifier {
     /// whether or not the app is in front. Answer and Decline are on the
     /// banner itself, so somebody working in another app never has to find
     /// the window (docs/protocol.md, "Voice calls").
-    static func announceIncomingCall(callID: String, callerName: String) {
+    static func announceIncomingCall(callID: String, callerName: String, video: Bool = false) {
         let content = UNMutableNotificationContent()
-        content.title = String(localized: "Incoming call")
+        content.title = video
+            ? String(localized: "Incoming video call")
+            : String(localized: "Incoming call")
         content.body = String(localized: "\(callerName) is calling")
         content.sound = .default
         content.categoryIdentifier = incomingCallCategoryID

@@ -9,6 +9,10 @@
 //
 
 import Foundation
+// WebRTC here is for RTCVideoRenderer alone — a two-method protocol
+// (setSize/renderFrame) a test fake conforms to trivially. The rest of
+// WebRTC stays behind WebRTCClient.
+import WebRTC
 
 /// Where the peer connection is, reduced to what the call machine acts on.
 nonisolated enum CallMediaConnectionState: Equatable, Sendable {
@@ -26,6 +30,14 @@ nonisolated enum CallMediaConnectionState: Equatable, Sendable {
 protocol CallMediaClientDelegate: AnyObject {
     func mediaClient(_ client: any CallMediaClient, didGatherLocalCandidate candidate: IceCandidatePayload)
     func mediaClient(_ client: any CallMediaClient, connectionStateChanged state: CallMediaConnectionState)
+    /// The far side's video appeared (or, best effort, went away). On a
+    /// video call this is what lets the UI swap the avatar for the
+    /// picture. Never fires on a voice call.
+    func mediaClient(_ client: any CallMediaClient, remoteVideoActiveChanged active: Bool)
+}
+
+extension CallMediaClientDelegate {
+    func mediaClient(_ client: any CallMediaClient, remoteVideoActiveChanged active: Bool) {}
 }
 
 @MainActor
@@ -50,9 +62,30 @@ protocol CallMediaClient: AnyObject {
     func ensureAudioRunning()
     /// iOS only; a no-op elsewhere.
     func setSpeaker(_ enabled: Bool)
+
+    // MARK: Video (docs/protocol.md, "Video") — all four have no-op
+    // defaults below, so an audio-only client (and the test fake) need
+    // not know video exists.
+
+    /// Turn the local camera on or off. The call's KIND never changes —
+    /// this toggles the track and the capture session, no renegotiation,
+    /// no frame on the wire.
+    func setCameraEnabled(_ enabled: Bool)
+    /// Front ↔ back. A no-op where there is only one camera (the Mac).
+    func flipCamera()
+    /// Where the local preview draws. nil detaches. Settable before or
+    /// after the track exists — the client attaches late.
+    func setLocalVideoRenderer(_ renderer: (any RTCVideoRenderer)?)
+    /// Where the far side's picture draws. Same rules.
+    func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?)
+
     func close()
 }
 
 extension CallMediaClient {
     func ensureAudioRunning() {}
+    func setCameraEnabled(_ enabled: Bool) {}
+    func flipCamera() {}
+    func setLocalVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {}
+    func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {}
 }

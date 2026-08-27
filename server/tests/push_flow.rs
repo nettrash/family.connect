@@ -1399,6 +1399,108 @@ async fn member_id_of(ts: &TestServer, token: &str) -> i64 {
     me["user"]["id"].as_i64().expect("user id")
 }
 
+/// A VIDEO call's VoIP push carries `"video": true` (a JSON boolean) beside
+/// the call fields — it is what makes the woken iPhone ring with a camera
+/// UI, `hasVideo` on CallKit included (docs/protocol.md, "Incoming calls").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_offline_ios_member_is_rung_with_the_video_flag_over_apns_voip() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, member, member_id) = family_of_two(&ts).await;
+    let response = ts
+        .post(
+            &member,
+            "/devices",
+            json!({"platform": "ios", "push_token": "apns-alert", "voip_token": "apns-voip"}),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    let chat_id = direct_chat(&ts, &owner, member_id).await;
+    let owner_id = member_id_of(&ts, &owner).await;
+
+    let mut caller = connect_ws(&ts, &owner).await;
+    let call_id = Uuid::new_v4().to_string();
+    caller
+        .send(Message::text(
+            json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id,
+                   "sdp": "v=0", "video": true})
+            .to_string(),
+        ))
+        .await
+        .expect("sending the offer");
+
+    let requests = mock.wait_for(1, |path| path == "/3/device/apns-voip").await;
+    assert_eq!(
+        requests[0].body,
+        json!({
+            "kind": "call",
+            "call_id": call_id,
+            "chat_id": chat_id,
+            "from_user_id": owner_id,
+            "caller_name": "Olive",
+            "video": true,
+        }),
+        "the VoIP payload carries the flag as a JSON boolean"
+    );
+}
+
+/// The FCM shape of the same thing: `data` gains `"video": "true"` — a
+/// STRING, because FCM `data` values are strings (docs/protocol.md,
+/// "Incoming calls").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_offline_android_member_is_rung_with_the_video_flag_over_fcm() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let credentials = write_test_service_account(
+        dir.path(),
+        "test-project",
+        &format!("http://{mock_addr}/oauth/token"),
+    );
+    let ts = spawn_server_with_push(fcm_config(mock_addr, credentials)).await;
+
+    let (owner, member, member_id) = family_of_two(&ts).await;
+    register_device(&ts, &member, "android", "android-video-token").await;
+    let chat_id = direct_chat(&ts, &owner, member_id).await;
+    let owner_id = member_id_of(&ts, &owner).await;
+
+    let mut caller = connect_ws(&ts, &owner).await;
+    let call_id = Uuid::new_v4().to_string();
+    caller
+        .send(Message::text(
+            json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id,
+                   "sdp": "v=0", "video": true})
+            .to_string(),
+        ))
+        .await
+        .expect("sending the offer");
+
+    mock.wait_for(1, |path| path == "/oauth/token").await;
+    let sends = mock
+        .wait_for(1, |path| path.ends_with("messages:send"))
+        .await;
+    assert_eq!(
+        sends[0].body,
+        json!({"message": {
+            "token": "android-video-token",
+            "data": {
+                "kind": "call",
+                "call_id": call_id,
+                "chat_id": chat_id.to_string(),
+                "from_user_id": owner_id.to_string(),
+                "caller_name": "Olive",
+                "video": "true",
+            },
+            "android": {"priority": "HIGH", "ttl": "45s"},
+        }}),
+        "data-only, and the video flag is the string \"true\" like every data value"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]
 async fn an_offline_android_member_is_rung_over_fcm_data_only() {

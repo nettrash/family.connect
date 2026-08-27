@@ -783,6 +783,12 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             // `calls_disabled` when somebody wants to talk (protocol.md,
             // "Voice calls").
             "calls_enabled": state.cfg.calls.enabled,
+            // And whether it signals VIDEO calls, gating the video button
+            // alone. ANDed with `enabled` because the flag is meaningful
+            // only with calls on — a server with calls off reports video
+            // off too. Always present, like `calls_enabled` (protocol.md,
+            // "Video").
+            "video_calls_enabled": state.cfg.calls.enabled && state.cfg.calls.video_enabled,
         })),
     )
         .into_response())

@@ -698,6 +698,7 @@ class MessageRepository @Inject constructor(
                     // object cannot wipe it either.
                     callOutcome = message.call?.outcome,
                     callDurationSecs = message.call?.durationSecs,
+                    callVideo = message.call?.video == true,
                 ),
             ),
         )
@@ -1158,7 +1159,15 @@ class MessageRepository @Inject constructor(
             // one line this list has for it. Checked FIRST, because the
             // body is never empty on a record.
             if (call != null) {
-                return if (call.outcome == CallDto.MISSED) "Missed voice call" else "Voice call"
+                // The video wording mirrors the server's own placeholder
+                // (protocol.md, "Video") — same English-in-the-DB
+                // convention as the attachment summaries below.
+                return when {
+                    call.video && call.outcome == CallDto.MISSED -> "Missed video call"
+                    call.video -> "Video call"
+                    call.outcome == CallDto.MISSED -> "Missed voice call"
+                    else -> "Voice call"
+                }
             }
             if (body.isNotEmpty()) return body
             val attachment = attachments.firstOrNull() ?: return body

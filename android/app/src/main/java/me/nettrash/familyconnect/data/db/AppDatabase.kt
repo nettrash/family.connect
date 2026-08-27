@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -256,6 +256,17 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_15_16: Migration = object : Migration(15, 16) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE messages ADD COLUMN attachmentsJson TEXT")
+            }
+        }
+
+        /**
+         * v17: video calls — one flag on the call record
+         * (docs/protocol.md, "Video"). NOT NULL DEFAULT 0, because
+         * absence means voice, which is what every existing record was.
+         */
+        val MIGRATION_16_17: Migration = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN callVideo INTEGER NOT NULL DEFAULT 0")
             }
         }
 

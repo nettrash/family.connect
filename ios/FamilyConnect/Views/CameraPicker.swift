@@ -15,8 +15,9 @@
 //  know, so the attach menu needs one "Camera" item rather than two.
 //
 //  iOS only. The Mac keeps its single open panel — a webcam is not how anyone
-//  sends a photo from a desktop, and adding capture there would mean a camera
-//  entitlement the sandboxed app deliberately does not have.
+//  sends a photo from a desktop. (The sandboxed Mac app DOES carry the camera
+//  entitlement now, but for video calls; capture-into-a-chat stays a phone
+//  thing.)
 //
 
 #if os(iOS)

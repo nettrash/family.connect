@@ -289,6 +289,22 @@
     <string name="s_not_reachable">Not reachable</string>
     <string name="s_calls_are_off_on_this_server">Calls are off on this server</string>
     <string name="e_call_failed_to_start">Couldn\'t start the call.</string>
+    <!-- Video calls (docs/protocol.md, "Video"): the second call button,
+         the camera controls, and the video wording for the same screens
+         and records the voice strings above serve. The kind is fixed when
+         the call is placed; only the camera toggles mid-call. -->
+    <string name="s_video_call">Video call</string>
+    <string name="s_incoming_video_call">Incoming video call</string>
+    <string name="s_ongoing_video_call">Video call in progress</string>
+    <string name="s_video_call_with_duration">Video call · %1$s</string>
+    <string name="s_missed_video_call">Missed video call</string>
+    <string name="s_declined_video_call">Declined video call</string>
+    <string name="s_video_call_declined">Video call declined</string>
+    <string name="s_camera_on">Camera on</string>
+    <string name="s_camera_off">Camera off</string>
+    <string name="s_flip_camera">Flip camera</string>
+    <string name="e_camera_permission">Family needs permission to use the camera.</string>
+    <string name="s_video_calls_are_off_on_this_server">Video calls are off on this server</string>
     <!-- Multiple attachments per message, and the OS share target
          (docs/protocol.md, "Photos, videos, audio, files and locations"). -->
     <string name="s_uploading_n_of_m">Uploading %1$d of %2$d…</string>

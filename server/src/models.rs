@@ -330,6 +330,11 @@ pub struct CallRecord {
     pub outcome: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub duration_secs: Option<i64>,
+    /// `true` when (and only when) it was a VIDEO call — and serialized
+    /// only then: absent, not false, on a voice call, like every optional
+    /// field on this wire (protocol.md, "Video").
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub video: bool,
 }
 
 /// One ICE candidate as a client's WebRTC stack produced it (protocol.md,

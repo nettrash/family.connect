@@ -47,7 +47,13 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
     /// is a UUID this client minted, exactly as `clientMsgID` is: it is
     /// what lets every reply be correlated with the call it answers, and
     /// what makes the server's record exactly-once.
-    case callOffer(callID: String, chatID: Int64, sdp: String)
+    ///
+    /// `video` is what makes the call a VIDEO call (docs/protocol.md,
+    /// "Video") — decided here, fixed for the call's life. Encoded ONLY
+    /// when true: a voice offer must stay byte-identical to what every
+    /// deployed client has always sent, absent-not-false like every other
+    /// optional field on this wire.
+    case callOffer(callID: String, chatID: Int64, sdp: String, video: Bool)
     case callAnswer(callID: String, sdp: String)
     case callIce(callID: String, candidate: IceCandidatePayload)
     /// `reason` is one of `hangup`, `decline`, `cancel`, `failed`.
@@ -66,6 +72,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         case sdp
         case candidate
         case reason
+        case video
     }
 
     /// The keys of the nested `poll` object on a `send`. Its only member
@@ -101,11 +108,14 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
             try container.encode(chatID, forKey: .chatID)
         case .ping:
             try container.encode("ping", forKey: .type)
-        case .callOffer(let callID, let chatID, let sdp):
+        case .callOffer(let callID, let chatID, let sdp, let video):
             try container.encode("call_offer", forKey: .type)
             try container.encode(callID, forKey: .callID)
             try container.encode(chatID, forKey: .chatID)
             try container.encode(sdp, forKey: .sdp)
+            // Only when true — see the case's doc comment. `encode(false)`
+            // here would change every voice offer's bytes.
+            if video { try container.encode(true, forKey: .video) }
         case .callAnswer(let callID, let sdp):
             try container.encode("call_answer", forKey: .type)
             try container.encode(callID, forKey: .callID)
@@ -285,11 +295,37 @@ nonisolated struct CallOfferPayload: Decodable, Equatable, Sendable {
     let chatID: Int64
     let fromUserID: Int64
     let sdp: String
+    /// True when this is a VIDEO call (docs/protocol.md, "Video"). The
+    /// flag is fixed at placement; absent on the wire means voice, so it
+    /// decodes with `decodeIfPresent` — a required decode would refuse
+    /// every voice offer from every deployed server.
+    let video: Bool
     enum CodingKeys: String, CodingKey {
         case callID = "call_id"
         case chatID = "chat_id"
         case fromUserID = "from_user_id"
         case sdp
+        case video
+    }
+
+    init(callID: String, chatID: Int64, fromUserID: Int64, sdp: String, video: Bool = false) {
+        self.callID = callID
+        self.chatID = chatID
+        self.fromUserID = fromUserID
+        self.sdp = sdp
+        self.video = video
+    }
+
+    /// Hand-written for the reason every defaulted field on this wire is:
+    /// a property default is not a decoding fallback, and a voice offer
+    /// carries no "video" key at all.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        callID = try container.decode(String.self, forKey: .callID)
+        chatID = try container.decode(Int64.self, forKey: .chatID)
+        fromUserID = try container.decode(Int64.self, forKey: .fromUserID)
+        sdp = try container.decode(String.self, forKey: .sdp)
+        video = try container.decodeIfPresent(Bool.self, forKey: .video) ?? false
     }
 }
 

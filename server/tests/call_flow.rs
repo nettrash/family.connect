@@ -661,6 +661,10 @@ async fn me_reports_calls_enabled_and_ice_serves_stun() {
 
     let me: Value = ts.get(&token, "/me").await.json().await.expect("me JSON");
     assert_eq!(me["calls_enabled"], true);
+    assert_eq!(
+        me["video_calls_enabled"], true,
+        "always present, and on by default beside calls_enabled"
+    );
 
     let ice: Value = ts
         .get(&token, "/calls/ice")
@@ -723,6 +727,11 @@ async fn calls_disabled_refuses_ice_and_offers() {
 
     let me: Value = ts.get(&owner, "/me").await.json().await.expect("me JSON");
     assert_eq!(me["calls_enabled"], false);
+    assert_eq!(
+        me["video_calls_enabled"], false,
+        "a server with calls off reports video off too — the flag is \
+         meaningful only with calls enabled"
+    );
 
     common::assert_error(ts.get(&owner, "/calls/ice").await, 403, "calls_disabled").await;
 
@@ -736,4 +745,289 @@ async fn calls_disabled_refuses_ice_and_offers() {
     let err = next_frame_of_type(&mut caller, "error").await;
     assert_eq!(err["code"], "calls_disabled");
     assert_eq!(err["call_id"], call_id.as_str());
+}
+
+/// A video call is a voice call with a flag (docs/protocol.md, "Video"):
+/// it rides the same pipeline, and everything the server says about the
+/// call — the live offer, the replay to a late device, the record — says
+/// what kind of call it is.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_video_offer_rings_replays_and_records_as_a_video_call() {
+    let ts = spawn_server().await;
+    let (owner, owner_id, member, member_id) = family_of_two(&ts).await;
+    let chat_id = direct_chat(&ts, &owner, member_id).await;
+
+    let mut caller = connect_ws(&ts, &owner).await;
+    let mut callee = connect_ws(&ts, &member).await;
+    let call_id = uuid();
+    send_frame(
+        &mut caller,
+        json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id,
+               "sdp": "v=0-video", "video": true}),
+    )
+    .await;
+    next_frame_of_type(&mut caller, "call_ringing").await;
+    let offer = next_frame_of_type(&mut callee, "call_offer").await;
+    assert_eq!(offer["call_id"], call_id.as_str());
+    assert_eq!(offer["from_user_id"], owner_id);
+    assert_eq!(
+        offer["video"], true,
+        "the callee must ring with a camera UI"
+    );
+
+    // A late callee device must ring as a VIDEO call too: the replayed
+    // offer carries the flag exactly as the live one did.
+    let mut late = connect_ws_raw(&ts, &member).await;
+    let replayed = next_frame_of_type(&mut late, "call_offer").await;
+    assert_eq!(replayed["call_id"], call_id.as_str());
+    assert_eq!(replayed["sdp"], "v=0-video");
+    assert_eq!(
+        replayed["video"], true,
+        "a late device rings as what the call IS"
+    );
+
+    // Answered and hung up: the record is a completed VIDEO call, and its
+    // placeholder body says so for clients that predate the object.
+    send_frame(
+        &mut callee,
+        json!({"type": "call_answer", "call_id": call_id, "sdp": "v=0-answer"}),
+    )
+    .await;
+    next_frame_of_type(&mut caller, "call_answer").await;
+    send_frame(
+        &mut caller,
+        json!({"type": "call_end", "call_id": call_id, "reason": "hangup"}),
+    )
+    .await;
+    let record = next_frame_of_type(&mut callee, "message").await;
+    assert_eq!(record["message"]["call"]["outcome"], "completed");
+    assert_eq!(record["message"]["call"]["video"], true);
+    assert_eq!(record["message"]["body"], "Video call");
+
+    // The chat-list preview and the message page both hydrate the flag.
+    let chats: Value = ts
+        .get(&member, "/chats")
+        .await
+        .json()
+        .await
+        .expect("chats JSON");
+    let direct = chats["chats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["chat"]["id"] == chat_id)
+        .expect("the direct chat is listed");
+    assert_eq!(direct["last_message"]["call"]["video"], true);
+    let page: Value = ts
+        .get(&member, &format!("/chats/{chat_id}/messages"))
+        .await
+        .json()
+        .await
+        .expect("messages JSON");
+    let listed = page["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["call"].is_object())
+        .expect("the record is on the page");
+    assert_eq!(listed["call"]["video"], true);
+}
+
+/// A missed VIDEO call: the CallPush that wakes the phone carries the flag,
+/// and the record pushes as the message it is with the video wording as its
+/// body — under the same include_message_body rules as any message.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_missed_video_call_records_and_pushes_missed_video_call() {
+    let ts = spawn_server().await;
+    let (owner, _owner_id, member, member_id) = family_of_two(&ts).await;
+    let chat_id = direct_chat(&ts, &owner, member_id).await;
+    register_device(&ts, &member, "android", "android-token-video").await;
+
+    let mut caller = connect_ws(&ts, &owner).await;
+    let call_id = uuid();
+    send_frame(
+        &mut caller,
+        json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id,
+               "sdp": "v=0", "video": true}),
+    )
+    .await;
+    next_frame_of_type(&mut caller, "call_ringing").await;
+
+    // The wake-up push says it is a video call, so the woken phone rings
+    // with a camera UI.
+    let deadline = tokio::time::Instant::now() + FRAME_WAIT;
+    while ts.push.call_pushes().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no call push was raised"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(ts.push.call_pushes()[0].call.video);
+
+    send_frame(
+        &mut caller,
+        json!({"type": "call_end", "call_id": call_id, "reason": "cancel"}),
+    )
+    .await;
+    let record = next_frame_of_type(&mut caller, "message").await;
+    assert_eq!(record["message"]["call"]["outcome"], "missed");
+    assert_eq!(record["message"]["call"]["video"], true);
+    assert_eq!(record["message"]["body"], "Missed video call");
+
+    // The missed record pushes with its placeholder as the body — the
+    // default include_message_body = true, like any message push.
+    let deadline = tokio::time::Instant::now() + FRAME_WAIT;
+    while ts.push.calls().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the missed record never pushed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(ts.push.calls()[0].note.body, "Missed video call");
+}
+
+/// …and under include_message_body = false the very same push is redacted
+/// to "New message", exactly as any message's would be.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_missed_video_call_push_is_redacted_without_include_message_body() {
+    let ts = spawn_server_with_config(|cfg| cfg.push.include_message_body = false).await;
+    let (owner, _owner_id, member, member_id) = family_of_two(&ts).await;
+    let chat_id = direct_chat(&ts, &owner, member_id).await;
+    register_device(&ts, &member, "android", "android-token-redacted").await;
+
+    let mut caller = connect_ws(&ts, &owner).await;
+    let call_id = uuid();
+    send_frame(
+        &mut caller,
+        json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id,
+               "sdp": "v=0", "video": true}),
+    )
+    .await;
+    next_frame_of_type(&mut caller, "call_ringing").await;
+    send_frame(
+        &mut caller,
+        json!({"type": "call_end", "call_id": call_id, "reason": "cancel"}),
+    )
+    .await;
+    // The record itself still says what it is…
+    let record = next_frame_of_type(&mut caller, "message").await;
+    assert_eq!(record["message"]["body"], "Missed video call");
+    // …but the lock screen does not.
+    let deadline = tokio::time::Instant::now() + FRAME_WAIT;
+    while ts.push.calls().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the missed record never pushed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(ts.push.calls()[0].note.body, "New message");
+}
+
+/// A voice call's record carries NO video key — absent, not false, pinned
+/// on the raw JSON of the frame, the preview, and the offer itself.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_voice_call_record_carries_no_video_key() {
+    let ts = spawn_server().await;
+    let (owner, _owner_id, member, member_id) = family_of_two(&ts).await;
+    let chat_id = direct_chat(&ts, &owner, member_id).await;
+
+    let mut caller = connect_ws(&ts, &owner).await;
+    let mut callee = connect_ws(&ts, &member).await;
+    let call_id = uuid();
+    send_frame(
+        &mut caller,
+        json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id, "sdp": "v=0"}),
+    )
+    .await;
+    next_frame_of_type(&mut caller, "call_ringing").await;
+    let offer = next_frame_of_type(&mut callee, "call_offer").await;
+    assert!(
+        offer.get("video").is_none(),
+        "a voice offer carries no video key: {offer}"
+    );
+
+    send_frame(
+        &mut caller,
+        json!({"type": "call_end", "call_id": call_id, "reason": "cancel"}),
+    )
+    .await;
+    let record = next_frame_of_type(&mut callee, "message").await;
+    assert_eq!(record["message"]["body"], "Missed voice call");
+    assert_eq!(record["message"]["call"]["outcome"], "missed");
+    assert!(
+        record["message"]["call"].get("video").is_none(),
+        "absent, not false, on a voice call's record: {record}"
+    );
+
+    let chats: Value = ts
+        .get(&member, "/chats")
+        .await
+        .json()
+        .await
+        .expect("chats JSON");
+    let direct = chats["chats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["chat"]["id"] == chat_id)
+        .expect("the direct chat is listed");
+    assert!(
+        direct["last_message"]["call"].get("video").is_none(),
+        "the preview follows the same rule: {direct}"
+    );
+}
+
+/// `[calls] video_enabled = false`: a video offer is refused with
+/// `video_calls_disabled` before anything begins — nothing rings, nothing
+/// is recorded, the caller is not left busy — and voice calls are
+/// untouched (docs/protocol.md, "Video").
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn video_disabled_refuses_video_offers_and_leaves_voice_alone() {
+    let ts = spawn_server_with_config(|cfg| cfg.calls.video_enabled = false).await;
+    let (owner, _owner_id, member, member_id) = family_of_two(&ts).await;
+    let chat_id = direct_chat(&ts, &owner, member_id).await;
+
+    // /me reports calls on, video off — both flags always present.
+    let me: Value = ts.get(&owner, "/me").await.json().await.expect("me JSON");
+    assert_eq!(me["calls_enabled"], true);
+    assert_eq!(me["video_calls_enabled"], false);
+
+    let mut caller = connect_ws(&ts, &owner).await;
+    let mut callee = connect_ws(&ts, &member).await;
+    let call_id = uuid();
+    send_frame(
+        &mut caller,
+        json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id,
+               "sdp": "v=0", "video": true}),
+    )
+    .await;
+    let err = next_frame_of_type(&mut caller, "error").await;
+    assert_eq!(err["code"], "video_calls_disabled");
+    assert_eq!(err["call_id"], call_id.as_str());
+    // Nothing rang and nothing was recorded.
+    assert_no_frame_of_type(&mut callee, "call_offer", Duration::from_millis(300)).await;
+    assert_no_frame_of_type(&mut caller, "message", Duration::from_millis(300)).await;
+
+    // The refusal left the caller free: a follow-up VOICE offer rings.
+    let call_id = uuid();
+    send_frame(
+        &mut caller,
+        json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id, "sdp": "v=0"}),
+    )
+    .await;
+    next_frame_of_type(&mut caller, "call_ringing").await;
+    let offer = next_frame_of_type(&mut callee, "call_offer").await;
+    assert_eq!(offer["call_id"], call_id.as_str());
+    assert!(
+        offer.get("video").is_none(),
+        "voice calls are untouched by the switch: {offer}"
+    );
 }

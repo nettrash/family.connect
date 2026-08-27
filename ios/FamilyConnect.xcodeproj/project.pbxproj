@@ -26,7 +26,7 @@
 			remoteGlobalIDString = FC0000102EAB0010013FC000;
 			remoteInfo = FamilyConnect;
 		};
-	FC0000822EAB0010013FC000 /* PBXContainerItemProxy */ = {
+		FC0000822EAB0010013FC000 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = FC0000022EAB0010013FC000 /* Project object */;
 			proxyType = 1;
@@ -65,7 +65,7 @@
 			);
 			target = FC0000102EAB0010013FC000 /* FamilyConnect */;
 		};
-	FC0000842EAB0010013FC000 /* Exceptions for "FamilyConnectShareExtension" folder in "FamilyConnectShareExtension" target */ = {
+		FC0000842EAB0010013FC000 /* Exceptions for "FamilyConnectShareExtension" folder in "FamilyConnectShareExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
@@ -93,7 +93,7 @@
 			path = FamilyConnectUITests;
 			sourceTree = "<group>";
 		};
-	FC0000852EAB0010013FC000 /* FamilyConnectShareExtension */ = {
+		FC0000852EAB0010013FC000 /* FamilyConnectShareExtension */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				FC0000842EAB0010013FC000 /* Exceptions for "FamilyConnectShareExtension" folder in "FamilyConnectShareExtension" target */,
@@ -126,7 +126,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-	FC0000882EAB0010013FC000 /* Frameworks */ = {
+		FC0000882EAB0010013FC000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -232,7 +232,7 @@
 			productReference = FC0000312EAB0010013FC000 /* FamilyConnectUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
-	FC0000862EAB0010013FC000 /* FamilyConnectShareExtension */ = {
+		FC0000862EAB0010013FC000 /* FamilyConnectShareExtension */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = FC00008E2EAB0010013FC000 /* Build configuration list for PBXNativeTarget "FamilyConnectShareExtension" */;
 			buildPhases = (
@@ -335,7 +335,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-	FC0000892EAB0010013FC000 /* Resources */ = {
+		FC0000892EAB0010013FC000 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -366,7 +366,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-	FC0000872EAB0010013FC000 /* Sources */ = {
+		FC0000872EAB0010013FC000 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -386,7 +386,7 @@
 			target = FC0000102EAB0010013FC000 /* FamilyConnect */;
 			targetProxy = FC00003A2EAB0010013FC000 /* PBXContainerItemProxy */;
 		};
-	FC00008A2EAB0010013FC000 /* PBXTargetDependency */ = {
+		FC00008A2EAB0010013FC000 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = FC0000862EAB0010013FC000 /* FamilyConnectShareExtension */;
 			targetProxy = FC0000822EAB0010013FC000 /* PBXContainerItemProxy */;
@@ -543,7 +543,7 @@
 				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Taking a photo or video sends it to your family, and nowhere else. Family never opens the camera on its own.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera.";
@@ -596,7 +596,7 @@
 				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Taking a photo or video sends it to your family, and nowhere else. Family never opens the camera on its own.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera.";
@@ -805,7 +805,7 @@
 				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Taking a photo or video sends it to your family, and nowhere else. Family never opens the camera on its own.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera.";
@@ -887,7 +887,7 @@
 			};
 			name = "Release-nettrash";
 		};
-	FC00008B2EAB0010013FC000 /* Debug */ = {
+		FC00008B2EAB0010013FC000 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FamilyConnectShareExtension/FamilyConnectShareExtension.entitlements;
@@ -989,7 +989,7 @@
 			};
 			name = "Release-nettrash";
 		};
-	/* End XCBuildConfiguration section */
+/* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
 		FC0000032EAB0010013FC000 /* Build configuration list for PBXProject "FamilyConnect" */ = {
@@ -1032,7 +1032,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-	FC00008E2EAB0010013FC000 /* Build configuration list for PBXNativeTarget "FamilyConnectShareExtension" */ = {
+		FC00008E2EAB0010013FC000 /* Build configuration list for PBXNativeTarget "FamilyConnectShareExtension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				FC00008B2EAB0010013FC000 /* Debug */,

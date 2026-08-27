@@ -1114,7 +1114,7 @@ pub async fn list_chats(
                 lm.id AS last_id, lm.sender_id AS last_sender_id,
                 lm.client_msg_id AS last_client_msg_id, lm.body AS last_body,
                 lm.created_at AS last_created_at,
-                lm.call_outcome, lm.call_duration_secs,
+                lm.call_outcome, lm.call_duration_secs, lm.call_video,
                 uc.unread AS unread_count,
                 -- The caller's own marker, off the SAME chat_reads row the
                 -- unread count is measured against: it costs no extra join
@@ -1140,7 +1140,8 @@ pub async fn list_chats(
                     -- The call record's outcome comes with the preview: a
                     -- client that knows the object draws its own wording
                     -- rather than the English placeholder body.
-                    cl.outcome AS call_outcome, cl.duration_secs AS call_duration_secs
+                    cl.outcome AS call_outcome, cl.duration_secs AS call_duration_secs,
+                    cl.video AS call_video
              FROM messages m2
              LEFT JOIN calls cl ON cl.message_id = m2.id
              WHERE m2.chat_id = c.id ORDER BY m2.id DESC LIMIT 1
@@ -1251,6 +1252,7 @@ pub async fn list_chats(
                         crate::models::CallRecord {
                             outcome,
                             duration_secs: row.get("call_duration_secs"),
+                            video: row.get::<Option<bool>, _>("call_video").unwrap_or(false),
                         }
                     }),
                 }

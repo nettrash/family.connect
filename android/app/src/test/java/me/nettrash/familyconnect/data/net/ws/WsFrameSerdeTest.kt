@@ -624,6 +624,62 @@ class WsFrameSerdeTest {
         assertThat(plain.message.call).isNull()
     }
 
+    // -- Video (protocol.md, "Video" — literals verbatim) --------------------
+
+    @Test
+    fun aVideoCallOfferEncodesItsKindExactlyAsProtocol() {
+        assertEncodesTo(
+            ClientFrame.CallOffer(
+                callId = "7b2e1d4f-0000-4000-8000-000000000002",
+                chatId = 42,
+                sdp = "v=0\r\n…",
+                video = true,
+            ),
+            """{"type": "call_offer", "call_id": "7b2e1d4f-0000-4000-8000-000000000002", "chat_id": 42, "sdp": "v=0\r\n…", "video": true}""",
+        )
+    }
+
+    @Test
+    fun aVoiceCallOfferStaysByteIdenticalCarryingNoVideoKey() {
+        // encodeDefaults=false is what PINS this: a voice offer is EXACTLY
+        // what it was before video existed — the key is ABSENT, not false.
+        val encoded = json.encodeToString<ClientFrame>(
+            ClientFrame.CallOffer(callId = "6a1f0c3e-0000-4000-8000-000000000001", chatId = 42, sdp = "v=0\r\n…"),
+        )
+        assertThat(encoded).doesNotContain("video")
+        assertThat(json.parseToJsonElement(encoded)).isEqualTo(
+            json.parseToJsonElement(
+                """{"type": "call_offer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "chat_id": 42, "sdp": "v=0\r\n…"}""",
+            ),
+        )
+    }
+
+    @Test
+    fun serverVideoCallOfferRoundTripsExactlyAsProtocol() {
+        assertRoundTrips(
+            """{"type": "call_offer", "call_id": "7b2e1d4f-0000-4000-8000-000000000002", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n…", "video": true}""",
+            ServerFrame.CallOffer(
+                callId = "7b2e1d4f-0000-4000-8000-000000000002",
+                chatId = 42,
+                fromUserId = 7,
+                sdp = "v=0\r\n…",
+                video = true,
+            ),
+        )
+    }
+
+    @Test
+    fun aMessageCarryingAVideoCallRecordDecodesItsKind() {
+        val decoded = parseServerFrame(
+            json,
+            """{"type": "message", "message": {"id": 1339, "chat_id": 42, "sender_id": 7,
+               "client_msg_id": "7b2e1d4f-0000-4000-8000-000000000002",
+               "body": "Video call", "created_at": "2026-08-26T17:03:12Z",
+               "call": {"outcome": "completed", "duration_secs": 222, "video": true}}}""",
+        ) as ServerFrame.Message
+        assertThat(decoded.message.call).isEqualTo(CallDto(outcome = "completed", durationSecs = 222, video = true))
+    }
+
     @Test
     fun malformedJsonIsDroppedNotThrown() {
         assertThat(parseServerFrame(json, "{not json")).isNull()

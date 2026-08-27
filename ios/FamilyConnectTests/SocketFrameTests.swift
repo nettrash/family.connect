@@ -405,11 +405,14 @@ struct SocketFrameTests {
 
     @Test("call_offer / call_answer / call_end encode per protocol.md")
     func encodeCallFrames() throws {
-        let offer = try fields(of: .callOffer(callID: "6a1f0c3e-0000-4000-8000-000000000001", chatID: 42, sdp: "v=0\r\n"))
+        let offer = try fields(of: .callOffer(callID: "6a1f0c3e-0000-4000-8000-000000000001", chatID: 42, sdp: "v=0\r\n", video: false))
         #expect(offer["type"] as? String == "call_offer")
         #expect(offer["call_id"] as? String == "6a1f0c3e-0000-4000-8000-000000000001")
         #expect(offer["chat_id"] as? Int == 42)
         #expect(offer["sdp"] as? String == "v=0\r\n")
+        // THE PIN: a voice offer has exactly the four keys it always had —
+        // no "video": false, no new key at all (docs/protocol.md, "Video").
+        #expect(offer["video"] == nil)
         #expect(offer.count == 4)
 
         let answer = try fields(of: .callAnswer(callID: "6a1f0c3e-0000-4000-8000-000000000001", sdp: "v=0\r\n"))
@@ -447,6 +450,27 @@ struct SocketFrameTests {
         let frame = try decode(#"{"type": "call_offer", "call_id": "6a1f0c3e-0000-4000-8000-000000000001", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n"}"#)
         #expect(frame == .callOffer(CallOfferPayload(
             callID: "6a1f0c3e-0000-4000-8000-000000000001", chatID: 42, fromUserID: 7, sdp: "v=0\r\n")))
+        // No "video" key means voice — the flag defaults off, never throws.
+        if case .callOffer(let payload) = frame {
+            #expect(!payload.video)
+        }
+    }
+
+    // MARK: - Video calls (docs/protocol.md, "Video")
+
+    @Test("call_offer with video encodes the doc's literal — the flag present only when true")
+    func encodeVideoCallOffer() throws {
+        let video = try fields(of: .callOffer(callID: "7b2e1d4f-0000-4000-8000-000000000001", chatID: 42, sdp: "v=0\r\n", video: true))
+        #expect(video["type"] as? String == "call_offer")
+        #expect(video["video"] as? Bool == true)
+        #expect(video.count == 5)
+    }
+
+    @Test("an inbound call_offer with video decodes the doc's literal, and its flag survives")
+    func decodeVideoCallOffer() throws {
+        let frame = try decode(#"{"type": "call_offer", "call_id": "7b2e1d4f-0000-4000-8000-000000000001", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n", "video": true}"#)
+        #expect(frame == .callOffer(CallOfferPayload(
+            callID: "7b2e1d4f-0000-4000-8000-000000000001", chatID: 42, fromUserID: 7, sdp: "v=0\r\n", video: true)))
     }
 
     @Test("call_ringing / call_answer / call_end decode")

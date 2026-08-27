@@ -341,6 +341,10 @@ pub struct CallPush {
     /// every push under that setting too, and a phone that rings without
     /// saying who is calling is worse than one that does not.
     pub caller_name: String,
+    /// A VIDEO call: what makes the woken device ring with a camera UI,
+    /// `hasVideo` on CallKit included. On the wire when and only when true
+    /// (protocol.md, "Incoming calls" and "Video").
+    pub video: bool,
     /// The ring timeout, as the push's own expiry: a call push FCM or APNs
     /// could not deliver while it rang must not wake a phone into a call
     /// that is already over.
@@ -351,28 +355,41 @@ pub struct CallPush {
 /// dictionary: a VoIP push has nothing for the system to draw, and the app
 /// reports the call to CallKit from these fields the moment it arrives.
 pub fn apns_voip_payload(call: &CallPush) -> Value {
-    json!({
+    let mut payload = json!({
         "kind": "call",
         "call_id": call.call_id,
         "chat_id": call.chat_id,
         "from_user_id": call.from_user_id,
         "caller_name": call.caller_name,
-    })
+    });
+    // Present when and only when it is a video call — absent, not false, on
+    // a voice call, so the voice payload stays byte-identical.
+    if call.video {
+        payload["video"] = json!(true);
+    }
+    payload
 }
 
 /// The FCM call message (protocol.md, "Incoming calls"): data only and no
 /// `notification` block, so the app process is woken to ring rather than the
 /// tray asked to draw. `data` values are strings; `ttl` is `"<secs>s"`.
 pub fn fcm_call_message(call: &CallPush, push_token: &str) -> Value {
+    let mut data = json!({
+        "kind": "call",
+        "call_id": call.call_id,
+        "chat_id": call.chat_id.to_string(),
+        "from_user_id": call.from_user_id.to_string(),
+        "caller_name": call.caller_name,
+    });
+    // The STRING "true", because FCM types `data` as map<string, string> —
+    // and present only on a video call, keeping the voice payload
+    // byte-identical.
+    if call.video {
+        data["video"] = json!("true");
+    }
     json!({"message": {
         "token": push_token,
-        "data": {
-            "kind": "call",
-            "call_id": call.call_id,
-            "chat_id": call.chat_id.to_string(),
-            "from_user_id": call.from_user_id.to_string(),
-            "caller_name": call.caller_name,
-        },
+        "data": data,
         "android": {"priority": "HIGH", "ttl": format!("{}s", call.ring_timeout_secs)},
     }})
 }
@@ -448,6 +465,7 @@ mod tests {
             chat_id: 42,
             from_user_id: 7,
             caller_name: "Anna".to_string(),
+            video: false,
             ring_timeout_secs: 45,
         }
     }
@@ -464,6 +482,51 @@ mod tests {
             })
         );
         assert!(payload.get("aps").is_none(), "a VoIP push has no aps dict");
+        assert!(
+            payload.get("video").is_none(),
+            "a voice call's payload stays byte-identical: no video key at all"
+        );
+    }
+
+    /// The video flag on both transports, per protocol.md "Incoming calls":
+    /// APNs carries `"video": true` (a JSON boolean — the VoIP payload is
+    /// not FCM `data`), FCM carries the STRING `"true"` because `data` is
+    /// map<string, string>. Present when and only when it is a video call —
+    /// the voice payloads above pin the absence.
+    #[test]
+    fn a_video_call_push_carries_the_flag_on_both_transports() {
+        let call = CallPush {
+            video: true,
+            ..protocol_call()
+        };
+        assert_eq!(
+            apns_voip_payload(&call),
+            json!({
+                "kind": "call",
+                "call_id": "6a1f0c3e-0000-4000-8000-000000000001",
+                "chat_id": 42, "from_user_id": 7, "caller_name": "Anna",
+                "video": true
+            })
+        );
+        let message = fcm_call_message(&call, "token-1");
+        assert_eq!(
+            message,
+            json!({"message": {
+                "token": "token-1",
+                "data": {"kind": "call", "call_id": "6a1f0c3e-0000-4000-8000-000000000001",
+                         "chat_id": "42", "from_user_id": "7", "caller_name": "Anna",
+                         "video": "true"},
+                "android": {"priority": "HIGH", "ttl": "45s"}
+            }})
+        );
+        assert!(
+            message["message"]["data"]
+                .as_object()
+                .expect("data is an object")
+                .values()
+                .all(Value::is_string),
+            "every value in FCM data is a string, the video flag included"
+        );
     }
 
     #[test]
@@ -481,6 +544,10 @@ mod tests {
         assert!(
             message["message"].get("notification").is_none(),
             "a call push must not carry a notification block — the app rings, the tray does not"
+        );
+        assert!(
+            message["message"]["data"].get("video").is_none(),
+            "a voice call's data stays byte-identical: no video key at all"
         );
     }
 

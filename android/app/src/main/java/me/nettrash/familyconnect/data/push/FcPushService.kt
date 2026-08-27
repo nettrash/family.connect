@@ -135,7 +135,9 @@ class FcPushService : FirebaseMessagingService() {
         val chatId = data[PushRouteParser.KEY_CHAT_ID]?.toLongOrNull() ?: return
         val fromUserId = data[PushRouteParser.KEY_FROM_USER_ID]?.toLongOrNull() ?: return
         val callerName = data[PushRouteParser.KEY_CALLER_NAME]?.takeIf { it.isNotBlank() }
-        callManager.onIncomingPush(callId, chatId, fromUserId, callerName)
+        // "video": "true" rings a camera UI (docs/protocol.md, "Video");
+        // absent — every older server — is a voice call.
+        callManager.onIncomingPush(callId, chatId, fromUserId, callerName, PushRouteParser.isVideoCall(data))
         runCatching { startForegroundService(CallService.intent(this)) }
     }
 }

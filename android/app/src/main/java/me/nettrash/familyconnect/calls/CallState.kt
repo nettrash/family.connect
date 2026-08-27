@@ -24,6 +24,13 @@ sealed interface CallState {
         val callId: String
         val chatId: Long
         val peerUserId: Long
+
+        /**
+         * Whether this is a VIDEO call — fixed the moment the call was
+         * placed (docs/protocol.md, "Video"): cameras toggle mid-call,
+         * the kind never does.
+         */
+        val video: Boolean
     }
 
     /**
@@ -34,6 +41,7 @@ sealed interface CallState {
         override val callId: String,
         override val chatId: Long,
         override val peerUserId: Long,
+        override val video: Boolean = false,
         val ringing: Boolean = false,
     ) : Live
 
@@ -48,6 +56,7 @@ sealed interface CallState {
         override val callId: String,
         override val chatId: Long,
         override val peerUserId: Long,
+        override val video: Boolean = false,
         val callerName: String? = null,
         val hasOffer: Boolean = false,
     ) : Live
@@ -57,13 +66,15 @@ sealed interface CallState {
         override val callId: String,
         override val chatId: Long,
         override val peerUserId: Long,
-        val incoming: Boolean,
+        override val video: Boolean = false,
+        val incoming: Boolean = false,
     ) : Live
 
     data class Active(
         override val callId: String,
         override val chatId: Long,
         override val peerUserId: Long,
+        override val video: Boolean = false,
         /** Epoch millis of the moment audio came up — the timer's zero. */
         val sinceMillis: Long,
     ) : Live
@@ -78,6 +89,8 @@ sealed interface CallState {
         val peerUserId: Long?,
         val reason: CallEnding,
         val durationSecs: Int? = null,
+        /** What kind of call it WAS — the linger line words itself with it. */
+        val video: Boolean = false,
     ) : CallState
 }
 
@@ -105,6 +118,8 @@ enum class CallEnding {
     NO_OFFER,
     /** The server would not signal calls at all (`calls_disabled`). */
     DISABLED,
+    /** The server refused the offer: VIDEO calls specifically are off (`video_calls_disabled`). */
+    VIDEO_DISABLED,
     ;
 
     companion object {
@@ -124,6 +139,7 @@ enum class CallEnding {
             "peer_busy" -> PEER_BUSY
             "peer_unreachable" -> PEER_UNREACHABLE
             "calls_disabled" -> DISABLED
+            "video_calls_disabled" -> VIDEO_DISABLED
             else -> FAILED
         }
     }

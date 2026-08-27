@@ -36,6 +36,27 @@ struct CallModelTests {
         #expect(CallRecordText.label(CallDTO(outcome: "hologram"), isMine: false) == "Voice call")
     }
 
+    @Test("the record's wording on a video call")
+    func videoRecordWording() {
+        let completed = CallDTO(outcome: "completed", durationSecs: 222, video: true)
+        #expect(CallRecordText.label(completed, isMine: true) == "Video call · 3:42")
+        #expect(CallRecordText.label(completed, isMine: false) == "Video call · 3:42")
+        #expect(CallRecordText.label(CallDTO(outcome: "completed", video: true), isMine: true) == "Video call")
+
+        let missed = CallDTO(outcome: "missed", video: true)
+        #expect(CallRecordText.label(missed, isMine: true) == "No answer")
+        #expect(CallRecordText.label(missed, isMine: false) == "Missed video call")
+
+        let declined = CallDTO(outcome: "declined", video: true)
+        #expect(CallRecordText.label(declined, isMine: true) == "Video call declined")
+        #expect(CallRecordText.label(declined, isMine: false) == "Declined video call")
+
+        // Failure wording is kind-neutral on purpose.
+        #expect(CallRecordText.label(CallDTO(outcome: "failed", video: true), isMine: true) == "Call failed")
+        // The render floor keeps the kind.
+        #expect(CallRecordText.label(CallDTO(outcome: "hologram", video: true), isMine: false) == "Video call")
+    }
+
     @Test("durations count in m:ss, and h:mm:ss past an hour")
     func durations() {
         #expect(CallRecordText.duration(0) == "0:00")
@@ -62,6 +83,21 @@ struct CallModelTests {
         #expect(CallStatusText.ended(.microphoneDenied, direction: .outgoing) == "Microphone access is needed for calls.")
     }
 
+    @Test("the status line's video variants, and the camera-denied note")
+    func videoStatusLine() {
+        #expect(CallStatusText.line(phase: .incoming, direction: .incoming, elapsed: 0, video: true) == "Incoming video call")
+        #expect(CallStatusText.line(phase: .incoming, direction: .incoming, elapsed: 0, video: false) == "Incoming call")
+        #expect(CallStatusText.ended(.timeout, direction: .incoming, video: true) == "Missed video call")
+        // The caller's side stays kind-neutral: nobody answered, that is the news.
+        #expect(CallStatusText.ended(.timeout, direction: .outgoing, video: true) == "No answer")
+        #expect(CallStatusText.cameraDeniedNote == "Camera access is off — the call is voice-only for you.")
+        // The server's video_calls_disabled refusal gets its own words —
+        // the generic "Unavailable" reads as a failure and invites
+        // retries against a deliberate operator setting.
+        #expect(CallEndReason(wire: "video_calls_disabled") == .videoUnavailable)
+        #expect(CallStatusText.ended(.videoUnavailable, direction: .outgoing) == "Video calls are off on this server.")
+    }
+
     @Test("the chat-list preview draws the record, never the placeholder body")
     func preview() {
         let missed = CallDTO(outcome: "missed")
@@ -71,6 +107,12 @@ struct CallModelTests {
         // Without a record the old rule is untouched.
         #expect(ChatSyncCoordinator.preview(body: "hello", attachment: nil) == "hello")
         #expect(ChatNotifier.body(text: "Missed voice call", attachment: nil, call: missed) == "Missed voice call")
+
+        // The video record flows through the same two doors.
+        let missedVideo = CallDTO(outcome: "missed", video: true)
+        #expect(ChatSyncCoordinator.preview(body: "Missed video call", attachment: nil, call: missedVideo, isMine: false) == "Missed video call")
+        #expect(ChatSyncCoordinator.preview(body: "Video call", attachment: nil, call: CallDTO(outcome: "completed", durationSecs: 9, video: true), isMine: true) == "Video call · 0:09")
+        #expect(ChatNotifier.body(text: "Missed video call", attachment: nil, call: missedVideo) == "Missed video call")
     }
 
     // MARK: - Socket hold
@@ -99,6 +141,24 @@ struct CallModelTests {
         #expect(IncomingCallPush.parse(["kind": "call", "call_id": "", "chat_id": 42, "from_user_id": 7]) == nil)
     }
 
+    @Test("the VoIP push's video flag: true as a bool or a string, absent means voice")
+    func voipVideoFlag() {
+        // The doc's literal: {"kind": "call", …, "video": true}.
+        let asBool: [AnyHashable: Any] = [
+            "kind": "call", "call_id": "6a1f", "chat_id": NSNumber(value: 42),
+            "from_user_id": NSNumber(value: 7), "caller_name": "Anna", "video": NSNumber(value: true),
+        ]
+        #expect(IncomingCallPush.parse(asBool)?.video == true)
+        let asString: [AnyHashable: Any] = [
+            "kind": "call", "call_id": "6a1f", "chat_id": "42", "from_user_id": "7", "video": "true",
+        ]
+        #expect(IncomingCallPush.parse(asString)?.video == true)
+        let absent: [AnyHashable: Any] = [
+            "kind": "call", "call_id": "6a1f", "chat_id": "42", "from_user_id": "7",
+        ]
+        #expect(IncomingCallPush.parse(absent)?.video == false)
+    }
+
     // MARK: - Wire shapes
 
     @Test("a message carries its call record, absent on an ordinary message")
@@ -115,6 +175,19 @@ struct CallModelTests {
         #expect(try APICoding.decoder().decode(MessageDTO.self, from: Data(plain.utf8)).call == nil)
     }
 
+    @Test("the record's video flag decodes, and absent means voice — per the doc's Call object")
+    func callRecordVideoFlag() throws {
+        // Doc literal: {"outcome": …, "duration_secs": …, "video": true}.
+        let video = #"{"id": 1341, "chat_id": 42, "sender_id": 7, "client_msg_id": "7b2e1d4f-0000-4000-8000-000000000001", "body": "Video call", "created_at": "2026-08-19T17:03:12Z", "call": {"outcome": "completed", "duration_secs": 222, "video": true}}"#
+        let message = try APICoding.decoder().decode(MessageDTO.self, from: Data(video.utf8))
+        #expect(message.call == CallDTO(outcome: "completed", durationSecs: 222, video: true))
+
+        // A voice record has no "video" key at all; the flag defaults off.
+        let voice = #"{"id": 1342, "chat_id": 42, "sender_id": 7, "client_msg_id": "7b2e1d4f-0000-4000-8000-000000000002", "body": "Voice call", "created_at": "2026-08-19T17:03:12Z", "call": {"outcome": "completed", "duration_secs": 9}}"#
+        let voiceMessage = try APICoding.decoder().decode(MessageDTO.self, from: Data(voice.utf8))
+        #expect(voiceMessage.call?.video == false)
+    }
+
     @Test("calls_enabled decodes, and defaults to false on an older server")
     func callsEnabled() throws {
         let user = #"{"id": 7, "username": "anna", "display_name": "Anna", "created_at": "2026-08-19T17:03:12Z", "avatar_version": 0}"#
@@ -122,6 +195,19 @@ struct CallModelTests {
         #expect(on.callsEnabled)
         let old = try APICoding.decoder().decode(MeResponse.self, from: Data(#"{"user": \#(user), "family": null, "role": null, "pending_join_request": null}"#.utf8))
         #expect(!old.callsEnabled)
+    }
+
+    @Test("video_calls_enabled decodes, and defaults to false on a server that predates video")
+    func videoCallsEnabled() throws {
+        let user = #"{"id": 7, "username": "anna", "display_name": "Anna", "created_at": "2026-08-19T17:03:12Z", "avatar_version": 0}"#
+        let on = try APICoding.decoder().decode(MeResponse.self, from: Data(#"{"user": \#(user), "family": null, "role": null, "pending_join_request": null, "calls_enabled": true, "video_calls_enabled": true}"#.utf8))
+        #expect(on.videoCallsEnabled)
+        // Voice on, video off — the operator's Raspberry Pi says no.
+        let voiceOnly = try APICoding.decoder().decode(MeResponse.self, from: Data(#"{"user": \#(user), "family": null, "role": null, "pending_join_request": null, "calls_enabled": true, "video_calls_enabled": false}"#.utf8))
+        #expect(voiceOnly.callsEnabled)
+        #expect(!voiceOnly.videoCallsEnabled)
+        let old = try APICoding.decoder().decode(MeResponse.self, from: Data(#"{"user": \#(user), "family": null, "role": null, "pending_join_request": null, "calls_enabled": true}"#.utf8))
+        #expect(!old.videoCallsEnabled)
     }
 
     @Test("the ICE servers reply decodes with optional TURN credentials")

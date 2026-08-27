@@ -53,9 +53,18 @@ object PushRouteParser {
     /** The `kind` of an incoming-call data push, and of the notification it becomes. */
     const val KIND_CALL = "call"
 
+    /** The call push's kind flag (docs/protocol.md, "Video") — a STRING, like every FCM data value. */
+    const val KEY_VIDEO = "video"
+
     /** Intent extra a call notification's Answer button sets to [ACTION_ANSWER]. */
     const val KEY_CALL_ACTION = "call_action"
     const val ACTION_ANSWER = "answer"
+
+    /**
+     * True when the call push announces a VIDEO call — `"video": "true"`
+     * on the wire; absent (every older server) reads as voice.
+     */
+    fun isVideoCall(data: Map<String, String>): Boolean = data[KEY_VIDEO] == "true"
 
     fun parse(data: Map<String, String>): PendingRoute? = when (data[KEY_KIND]) {
         // FCM data values are always strings — chat_id arrives as "42".

@@ -153,11 +153,22 @@ pub async fn offer(
     call_id: Uuid,
     chat_id: i64,
     sdp: String,
+    video: bool,
 ) -> Result<(), ApiError> {
     if !state.cfg.calls.enabled {
         return Err(ApiError::forbidden(
             codes::CALLS_DISABLED,
             "voice calls are disabled on this server",
+        ));
+    }
+    // A video offer against a voice-only server is refused BEFORE anything
+    // begins: nothing is rung, nothing is recorded, and the caller is left
+    // free for a follow-up voice offer — the same shape as `calls_disabled`
+    // (protocol.md, "Video").
+    if video && !state.cfg.calls.video_enabled {
+        return Err(ApiError::forbidden(
+            codes::VIDEO_CALLS_DISABLED,
+            "video calls are disabled on this server",
         ));
     }
     validate_sdp(&sdp)?;
@@ -193,6 +204,7 @@ pub async fn offer(
             callee_id,
             conn_id,
             sdp.clone(),
+            video,
         )
         .map_err(|busy| match busy {
             Busy::Caller => ApiError::conflict(codes::CALL_BUSY, "you are already on a call"),
@@ -207,7 +219,11 @@ pub async fn offer(
     // sweep notices. Undo it the way a caller giving up is undone: end the
     // call as a cancel, which also tells any callee connection that already
     // saw the offer, and writes the missed record the callee can act on.
-    match ring(state, auth, conn_id, call_id, chat_id, callee_id, sdp).await {
+    match ring(
+        state, auth, conn_id, call_id, chat_id, callee_id, sdp, video,
+    )
+    .await
+    {
         Ok(()) => Ok(()),
         Err(err) => {
             if let Some(ended) = state.calls.end(call_id, None, EndReason::Cancel) {
@@ -219,6 +235,7 @@ pub async fn offer(
 }
 
 /// The half of an offer that runs with the call already in the registry.
+#[allow(clippy::too_many_arguments)] // the flag is part of the offer, not a config
 async fn ring(
     state: &AppState,
     auth: &AuthUser,
@@ -227,6 +244,7 @@ async fn ring(
     chat_id: i64,
     callee_id: i64,
     sdp: String,
+    video: bool,
 ) -> Result<(), ApiError> {
     // Is the callee reachable at all — a socket, or a device that can be
     // woken? If neither, the offer cannot land: the caller is told, and the
@@ -249,6 +267,7 @@ async fn ring(
         chat_id,
         from_user_id: auth.user_id,
         sdp,
+        video,
     };
     state
         .registry
@@ -262,6 +281,7 @@ async fn ring(
             chat_id,
             from_user_id: auth.user_id,
             caller_name,
+            video,
             ring_timeout_secs: state.cfg.calls.ring_timeout_secs,
         },
     )
@@ -408,7 +428,7 @@ pub async fn finish_call(state: &AppState, ended: Ended) {
 /// A `missed` call pushes as the message it is; the other outcomes are
 /// things both parties were present for and do not.
 async fn record_call(state: &AppState, ended: &Ended) -> Result<Message, ApiError> {
-    let body = ended.outcome.placeholder_body();
+    let body = ended.outcome.placeholder_body(ended.video);
     let mut tx = state.pool.begin().await?;
     let inserted = sqlx::query(
         "INSERT INTO messages (chat_id, sender_id, client_msg_id, body)
@@ -440,18 +460,22 @@ async fn record_call(state: &AppState, ended: &Ended) -> Result<Message, ApiErro
     };
 
     let message_id: i64 = row.get("id");
-    sqlx::query("INSERT INTO calls (message_id, outcome, duration_secs) VALUES ($1, $2, $3)")
-        .bind(message_id)
-        .bind(ended.outcome.as_str())
-        .bind(ended.duration_secs)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO calls (message_id, outcome, duration_secs, video) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(message_id)
+    .bind(ended.outcome.as_str())
+    .bind(ended.duration_secs)
+    .bind(ended.video)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     let mut message = Message::from_row(&row);
     message.call = Some(CallRecord {
         outcome: ended.outcome.as_str().to_string(),
         duration_secs: ended.duration_secs,
+        video: ended.video,
     });
 
     // A missed call is mail; the rest are not. `deliver_new_message` fans
@@ -475,7 +499,7 @@ pub async fn attach_calls(pool: &PgPool, messages: &mut [Message]) -> Result<(),
     }
     let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
     let rows = sqlx::query(
-        "SELECT message_id, outcome, duration_secs FROM calls WHERE message_id = ANY($1)",
+        "SELECT message_id, outcome, duration_secs, video FROM calls WHERE message_id = ANY($1)",
     )
     .bind(&ids)
     .fetch_all(pool)
@@ -487,6 +511,7 @@ pub async fn attach_calls(pool: &PgPool, messages: &mut [Message]) -> Result<(),
             CallRecord {
                 outcome: row.get("outcome"),
                 duration_secs: row.get("duration_secs"),
+                video: row.get("video"),
             },
         );
     }

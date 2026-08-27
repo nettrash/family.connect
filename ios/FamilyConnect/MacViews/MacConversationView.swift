@@ -264,7 +264,12 @@ struct MacConversationView: View {
 
     private func startCall() {
         guard let chat, let peerUserID = chat.peerUserID else { return }
-        calls.startCall(chatID: chat.chatID, peerUserID: peerUserID)
+        calls.startCall(chatID: chat.chatID, peerUserID: peerUserID, video: false)
+    }
+
+    private func startVideoCall() {
+        guard let chat, let peerUserID = chat.peerUserID else { return }
+        calls.startCall(chatID: chat.chatID, peerUserID: peerUserID, video: true)
     }
 
     /// Is either banner up — a reply being answered or a message being
@@ -340,6 +345,20 @@ struct MacConversationView: View {
                     }
                     .help("Call \(chat?.title ?? "")")
                     .disabled(!calls.isIdle)
+                }
+                // Beside the phone button, behind its own server switch
+                // (`video_calls_enabled`, docs/protocol.md, "Video").
+                if session.videoCallsEnabled {
+                    ToolbarItem {
+                        Button {
+                            startVideoCall()
+                        } label: {
+                            Label("Video Call", systemImage: "video.fill")
+                        }
+                        .accessibilityLabel("Video Call")
+                        .help("Video call \(chat?.title ?? "")")
+                        .disabled(!calls.isIdle)
+                    }
                 }
             }
         }

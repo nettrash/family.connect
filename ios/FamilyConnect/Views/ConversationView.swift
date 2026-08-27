@@ -290,7 +290,12 @@ struct ConversationView: View {
 
     private func startCall() {
         guard let chat, let peerUserID = chat.peerUserID else { return }
-        calls.startCall(chatID: chat.chatID, peerUserID: peerUserID)
+        calls.startCall(chatID: chat.chatID, peerUserID: peerUserID, video: false)
+    }
+
+    private func startVideoCall() {
+        guard let chat, let peerUserID = chat.peerUserID else { return }
+        calls.startCall(chatID: chat.chatID, peerUserID: peerUserID, video: true)
     }
 
     /// The assistant's own chat. Its replies come from a reserved account
@@ -621,6 +626,21 @@ struct ConversationView: View {
             // calls"); the family chat has no single person to ring, and
             // the button hides behind the server's `calls_enabled`.
             if canCall {
+                // The video button sits beside the phone one and hides
+                // behind its OWN server switch (`video_calls_enabled`,
+                // docs/protocol.md, "Video") — an operator whose relay is
+                // sized for voice can say no to video alone.
+                if session.videoCallsEnabled {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            startVideoCall()
+                        } label: {
+                            Image(systemName: "video.fill")
+                        }
+                        .accessibilityLabel("Video Call")
+                        .disabled(!calls.isIdle)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         startCall()

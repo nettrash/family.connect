@@ -68,6 +68,12 @@ class CallRecordWordingTest {
             .isEqualTo("Missed voice call")
         assertThat(MessageRepository.previewText("whatever", null, CallDto("declined")))
             .isEqualTo("Voice call")
+        // The video record's wording mirrors the server's own placeholder
+        // (protocol.md, "Video") — same English-in-the-DB convention.
+        assertThat(MessageRepository.previewText("Video call", null, CallDto("completed", 222, video = true)))
+            .isEqualTo("Video call")
+        assertThat(MessageRepository.previewText("Missed video call", null, CallDto("missed", video = true)))
+            .isEqualTo("Missed video call")
         // Untouched without one.
         assertThat(MessageRepository.previewText("Dinner at 7?", null)).isEqualTo("Dinner at 7?")
     }

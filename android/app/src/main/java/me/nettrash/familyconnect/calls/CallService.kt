@@ -86,12 +86,12 @@ class CallService : Service() {
                 val name = state.callerName ?: nameOf(state.peerUserId)
                 promote(
                     CallNotifications.INCOMING_ID,
-                    CallNotifications.incoming(this, name, state.peerUserId),
+                    CallNotifications.incoming(this, name, state.peerUserId, state.video),
                 )
             }
             is CallState.Live -> {
                 val status = when (state) {
-                    is CallState.Active -> getString(R.string.s_ongoing_voice_call)
+                    is CallState.Active -> getString(CallNotifications.ongoingTextRes(state.video))
                     else -> getString(R.string.s_connecting)
                 }
                 promote(
@@ -126,8 +126,11 @@ class CallService : Service() {
     }
 
     /**
-     * phoneCall always; microphone only once the runtime permission is
-     * held — declaring the type without it is a SecurityException on 14+.
+     * phoneCall always; microphone and camera only once their runtime
+     * permissions are held — declaring a type without its permission is a
+     * SecurityException on 14+. The camera bit rides on the grant alone,
+     * exactly like the microphone bit: harmless on a voice call, and the
+     * one thing that lets a video call keep capturing in the background.
      */
     private fun foregroundType(): Int {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 0
@@ -136,6 +139,11 @@ class CallService : Service() {
             PackageManager.PERMISSION_GRANTED
         if (micHeld && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        }
+        val cameraHeld = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        if (cameraHeld && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
         }
         return type
     }

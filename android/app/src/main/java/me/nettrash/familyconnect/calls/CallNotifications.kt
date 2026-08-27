@@ -61,7 +61,7 @@ object CallNotifications {
             "Calls",
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
-            description = "Incoming voice calls"
+            description = "Incoming calls"
             setSound(
                 RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
                 AudioAttributes.Builder()
@@ -77,7 +77,7 @@ object CallNotifications {
             "Call in progress",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "The voice call you are on"
+            description = "The call you are on"
             setSound(null, null)
             enableVibration(false)
         }
@@ -85,8 +85,20 @@ object CallNotifications {
         manager.createNotificationChannel(ongoing)
     }
 
+    /**
+     * The ringing line — chosen by the call's KIND, which the offer fixed
+     * at placement (docs/protocol.md, "Video"). Pure, so the choice is
+     * pinned on the plain JVM (CallNotificationsWordingTest).
+     */
+    fun incomingTextRes(video: Boolean): Int =
+        if (video) R.string.s_incoming_video_call else R.string.s_incoming_voice_call
+
+    /** The ongoing notification's status line while the call is up. Pure, same reason. */
+    fun ongoingTextRes(video: Boolean): Int =
+        if (video) R.string.s_ongoing_video_call else R.string.s_ongoing_voice_call
+
     /** The full-screen ringing notification for [callerName]. */
-    fun incoming(context: Context, callerName: String, peerUserId: Long): Notification {
+    fun incoming(context: Context, callerName: String, peerUserId: Long, video: Boolean): Notification {
         val person = Person.Builder().setName(callerName).setKey(peerUserId.toString()).build()
         val open = activityIntent(context, action = null, requestCode = 10)
         val answer = activityIntent(context, action = ACTION_ANSWER, requestCode = 11)
@@ -95,7 +107,7 @@ object CallNotifications {
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(ContextCompat.getColor(context, R.color.ic_launcher_background))
             .setContentTitle(callerName)
-            .setContentText(context.getString(R.string.s_incoming_voice_call))
+            .setContentText(context.getString(incomingTextRes(video)))
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setOngoing(true)
@@ -144,7 +156,7 @@ object CallNotifications {
      * background and may not start one (Android 12+). The call still
      * rings; it just is not pinned to a service.
      */
-    fun showIncoming(context: Context, callerName: String, peerUserId: Long) {
+    fun showIncoming(context: Context, callerName: String, peerUserId: Long, video: Boolean) {
         // Inline rather than through canNotify: lint's MissingPermission
         // check only sees a permission check in the SAME method.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -154,7 +166,7 @@ object CallNotifications {
             return
         }
         NotificationManagerCompat.from(context)
-            .notify(INCOMING_ID, incoming(context, callerName, peerUserId))
+            .notify(INCOMING_ID, incoming(context, callerName, peerUserId, video))
     }
 
     fun cancelAll(context: Context) {

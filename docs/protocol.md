@@ -52,7 +52,7 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `message_not_found`, `not_message_author`, `invalid_emoji`, `note_not_found`,
 `not_note_author`, `invalid_note_color`, `invalid_language`, `board_full`, `invalid_pagination`,
 `device_not_found`, `invalid_poll`, `poll_closed`,
-`calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`, `peer_busy`, `peer_unreachable`,
+`calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`, `peer_busy`, `peer_unreachable`,
 `avatar_too_large`, `invalid_image`, `attachment_too_large`, `invalid_attachment`,
 `attachment_not_found`, `attachment_already_used`, `internal`.
 
@@ -132,7 +132,10 @@ Poll      {"poll_seq": 88, "closed": false,
             ALWAYS present, unlike "reaction_seq": a poll has a sequence from the moment
             it exists, and "closed" is a boolean with a real default, so there is no
             "unset" for a missing key to mean
-Call      {"outcome": "completed|missed|declined|failed", "duration_secs": 222}
+Call      {"outcome": "completed|missed|declined|failed", "duration_secs": 222,
+           "video": true}
+          — "video" present when (and only when) it was a VIDEO call; absent on a voice
+            call, like every optional field on this wire
           — "duration_secs" when (and only when) the call was ever answered: the seconds
             from the answer to the end on the server's clock, so a "failed" call may carry
             one and a "missed" call never does. The record's sender is the CALLER and its
@@ -1112,6 +1115,37 @@ address, and an operator who would rather it did not sets `stun_urls` to their o
 
 `GET /me` says whether the server has calls on at all, as `calls_enabled`; a client hides the call
 button behind it rather than discovering `calls_disabled` at the moment somebody wants to talk.
+`video_calls_enabled` sits beside it and gates the video button alone — see "Video".
+
+#### Video
+
+A call is a VIDEO call when its `call_offer` says `"video": true` — decided when it is placed,
+fixed for its life. The flag is what the SERVER needs to know (the ringing push and the record say
+what kind of call it was, and a woken phone shows a camera the moment it rings); the media itself
+is the SDP's business, which is where video actually lives: a video call's offer carries an audio
+and a video m-line, and both peers negotiate the usual WebRTC way.
+
+What the flag deliberately does NOT do is change mid-call. **Cameras toggle; the call's kind does
+not.** Both tracks exist from the answer onward, so turning a camera off is disabling a track — no
+renegotiation, no frame, the far side simply sees the stream stop — and turning it back on is the
+reverse. A VOICE call can never become a video call (and the other way round): that upgrade is a
+mid-call renegotiation this protocol does not carry yet, and when it does it will arrive as new
+frame types under the unknown-frame rule, exactly as calls themselves arrived.
+
+A callee whose camera permission is denied still answers a video call — with the camera off,
+microphone rules unchanged. Refusing the call outright over a camera would turn a privacy setting
+into missed calls; the SDP negotiates the video receive-only and the far side's picture still
+shows. The same holds for placing one.
+
+`[calls] video_enabled` (default true, meaningful only with calls enabled) lets an operator turn
+video off — a relay sized for voice carries ~10 kB/s per call, video two orders of magnitude more,
+and a Raspberry Pi behind home broadband is entitled to say no. With it off, a `call_offer` with
+`"video": true` is refused with `video_calls_disabled`, voice calls untouched. `GET /me` exposes it
+as `video_calls_enabled` (ALWAYS present, like `calls_enabled`).
+
+The record's `call` object carries `"video": true`, its placeholder body becomes `"Video call"` /
+`"Missed video call"` (the same old-client courtesy the voice wording is), and the ringing push
+carries the flag so the incoming UI is a camera one — see "Incoming calls".
 
 ## REST endpoints
 
@@ -1127,7 +1161,7 @@ button behind it rather than discovering `calls_disabled` at the moment somebody
 | `PUT /me/birthday` | (auth) `{month, day}` → `200 {user: User}`. Your own birthday: a day and a month, no year (see "Birthdays"). Replaces whatever was there. Errors: `validation` (a month outside 1–12, or a day that month does not have). |
 | `DELETE /me/birthday` | (auth) → `204`. Clears it. Idempotent — clearing a birthday nobody set is still `204`. |
 | `POST /families/members/{id}/password` | (owner) `{new_password}` → `204`. The owner resets a member's password WITHOUT knowing the current one — the whole point is that the member has forgotten it. ALL of that member's sessions are revoked and their sockets closed, so every device they are signed in on returns to login; that is what makes a reset a recovery rather than a convenience. The owner cannot target themselves here (`POST /me/password` is for that), and a user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
-| `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null, calls_enabled: bool}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. `calls_enabled` is ALWAYS present and says whether this server signals voice calls at all (`[calls] enabled`); a client hides its call button when it is false — see "Voice calls". |
+| `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null, calls_enabled: bool, video_calls_enabled: bool}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. `calls_enabled` is ALWAYS present and says whether this server signals calls at all (`[calls] enabled`); a client hides its call button when it is false — see "Voice calls". `video_calls_enabled` is ALWAYS present too and gates the video-call button alone (`[calls] video_enabled`) — see "Video". |
 
 ### Profile pictures
 
@@ -1239,6 +1273,8 @@ Frames are JSON text messages tagged by `"type"`.
 {"type": "typing", "chat_id": 42}
 {"type": "ping"}
 {"type": "call_offer",  "call_id": "6a1f0c3e-…", "chat_id": 42, "sdp": "v=0\r\n…"}
+{"type": "call_offer",  "call_id": "7b2e1d4f-…", "chat_id": 42, "sdp": "v=0\r\n…",
+                        "video": true}
 {"type": "call_answer", "call_id": "6a1f0c3e-…", "sdp": "v=0\r\n…"}
 {"type": "call_ice",    "call_id": "6a1f0c3e-…",
                         "candidate": {"candidate": "candidate:…", "sdp_mid": "0", "sdp_mline_index": 0}}
@@ -1271,6 +1307,8 @@ the other, or both, and the receiving stack accepts whichever it was given.)
 {"type": "ai_delta", "chat_id": 42, "message_id": 1339, "text": "…"}   — assistant, mid-reply
 {"type": "ai_error", "chat_id": 42, "message_id": 1339}                — it stopped early
 {"type": "call_offer",   "call_id": "6a1f0c3e-…", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n…"}
+{"type": "call_offer",   "call_id": "7b2e1d4f-…", "chat_id": 42, "from_user_id": 7, "sdp": "v=0\r\n…",
+                         "video": true}
 {"type": "call_ringing", "call_id": "6a1f0c3e-…"}
 {"type": "call_answer",  "call_id": "6a1f0c3e-…", "sdp": "v=0\r\n…"}
 {"type": "call_ice",     "call_id": "6a1f0c3e-…",
@@ -1547,6 +1585,15 @@ APNs, to the VoIP token: headers `apns-topic` = `<bundle id>.voip`, `apns-push-t
 
 ```json
 {"kind": "call", "call_id": "6a1f0c3e-…", "chat_id": 42, "from_user_id": 7,
+ "caller_name": "Anna", "video": true}
+```
+
+(`video` present when — and only when — it is a video call: it is what makes the woken device ring
+with a camera UI, `hasVideo` on CallKit included. A voice call's payload carries no `video` key at
+all:)
+
+```json
+{"kind": "call", "call_id": "6a1f0c3e-…", "chat_id": 42, "from_user_id": 7,
  "caller_name": "Anna"}
 ```
 
@@ -1559,7 +1606,7 @@ tray asked to draw:
 ```json
 {"message": {"token": "…",
   "data": {"kind": "call", "call_id": "6a1f0c3e-…", "chat_id": "42", "from_user_id": "7",
-           "caller_name": "Anna"},
+           "caller_name": "Anna", "video": "true"},
   "android": {"priority": "HIGH", "ttl": "45s"}}}
 ```
 

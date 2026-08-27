@@ -413,6 +413,24 @@ SR = {
 "Voice call · %@": "Гласовни позив · %@",
 "Voice call declined": "Гласовни позив одбијен",
 "Voice call": "Гласовни позив",
+
+# --- video calls, begin (iOS + macOS; the Android twins are in ---
+# --- serbian_android.py — do not add Android-only strings here) ---
+"Camera access is off — the call is voice-only for you.":
+  "Приступ камери је искључен — позив је за тебе само гласовни.",
+"Declined video call": "Одбијен видео позив",
+"Incoming video call": "Долазни видео позив",
+"Missed video call": "Пропуштен видео позив",
+"Switch camera": "Промени камеру",
+"Turn camera off": "Искључи камеру",
+"Turn camera on": "Укључи камеру",
+"Video Call": "Видео позив",
+"Video call": "Видео позив",
+"Video call %@": "Видео позив са %@",
+"Video call declined": "Видео позив одбијен",
+"Video call · %@": "Видео позив · %@",
+"Video calls are off on this server.": "Видео позиви су искључени на овом серверу.",
+# --- video calls, end ---
 # --- several attachments per message + share-into-the-app (iOS + macOS; ---
 # --- added with the plural-attachments feature; Android twins pending) ---
 # The plural chat-list/push summaries, mirroring the server's rules

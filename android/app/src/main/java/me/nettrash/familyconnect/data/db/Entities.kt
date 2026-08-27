@@ -206,6 +206,12 @@ data class MessageEntity(
     val callOutcome: String? = null,
     val callDurationSecs: Int? = null,
     /**
+     * True when the call above was a VIDEO call (docs/protocol.md,
+     * "Video") — meaningless while [callOutcome] is null. A real default
+     * rather than nullable, because absent-on-the-wire IS "voice".
+     */
+    @ColumnInfo(defaultValue = "0") val callVideo: Boolean = false,
+    /**
      * The message's attachments, stored as the wire-shape JSON array
      * (see AttachmentsCodec) — 1 to 10 of them, in the sender's order.
      * Null on a row that carries none, and on rows written before
@@ -214,9 +220,9 @@ data class MessageEntity(
      */
     val attachmentsJson: String? = null,
 ) {
-    /** The wire shape back out of the two columns, or null for a message that is not a call. */
+    /** The wire shape back out of the call columns, or null for a message that is not a call. */
     val call: CallDto?
-        get() = callOutcome?.let { CallDto(outcome = it, durationSecs = callDurationSecs) }
+        get() = callOutcome?.let { CallDto(outcome = it, durationSecs = callDurationSecs, video = callVideo) }
 
     /**
      * Every attachment on this message, in the sender's order: the JSON
