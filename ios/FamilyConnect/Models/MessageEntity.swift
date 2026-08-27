@@ -107,9 +107,19 @@ final class MessageEntity {
     /// (docs/protocol.md, "Editing"). 0 = never edited.
     var editSeq: Int64 = 0
     var editedAt: Date?
-    /// The photo or video this message carries. Flat columns rather than a
-    /// relationship: an attachment belongs to exactly one message and is
-    /// never queried on its own, and the bytes are not here at all.
+    /// The FULL attachment set this message carries, JSON-encoded in the
+    /// WIRE shape (`[{"id":34,"kind":"photo",…}]`) — the pollJSON
+    /// precedent, for the same reason: the stored value diffs against
+    /// protocol.md. nil on a message with no attachments AND on every row
+    /// written before plurality; the flat columns below are that older
+    /// row's single attachment, which is why `attachmentList` falls back
+    /// to them. A nil-defaulted column, so a lightweight migration.
+    var attachmentsJSON: String?
+    /// The FIRST attachment, as flat columns. Kept beside the JSON for
+    /// two reasons: every existing row predates `attachmentsJSON` and has
+    /// only these, and a downgrade to a build that predates plurality
+    /// still shows the first attachment instead of nothing. All three
+    /// write sites write BOTH (the JSON and the first item's columns).
     var attachmentID: Int64?
     var attachmentKind: String?
     var attachmentMIME: String?
@@ -143,7 +153,48 @@ final class MessageEntity {
         return CallDTO(outcome: callOutcome, durationSecs: callDurationSecs)
     }
 
-    /// The attachment as the views want it, or nil when there is none.
+    /// Every attachment on this message, in the sender's order.
+    ///
+    /// Prefers the JSON set; falls back to the flat single-attachment
+    /// snapshot for rows written before plurality. [] when the message
+    /// carries nothing — the reading twin of the wire's read rule
+    /// (MessageDTO.attachmentList).
+    var attachmentList: [AttachmentDTO] {
+        if let attachmentsJSON, !attachmentsJSON.isEmpty,
+           let list = try? Self.attachmentsDecoder.decode(
+               [AttachmentDTO].self, from: Data(attachmentsJSON.utf8)),
+           !list.isEmpty {
+            return list
+        }
+        return attachmentSnapshot.map { [$0] } ?? []
+    }
+
+    /// Write the whole attachment set: the JSON, and the first item into
+    /// the flat columns (existing callers keep working; a downgrade keeps
+    /// the first attachment). An EMPTY list is a caller bug rather than a
+    /// wipe — nothing on the wire ever takes an attachment off a message,
+    /// so this never clears (the absent-field rule, again).
+    func applyAttachmentList(_ list: [AttachmentDTO]) {
+        guard let first = list.first else { return }
+        if let data = try? Self.attachmentsEncoder.encode(list) {
+            attachmentsJSON = String(decoding: data, as: UTF8.self)
+        }
+        attachmentID = first.id
+        attachmentKind = first.kind
+        attachmentMIME = first.mime
+        attachmentSize = first.size
+        attachmentWidth = first.width
+        attachmentHeight = first.height
+        attachmentDurationMS = first.durationMS
+        attachmentHasPreview = first.hasPreview
+        attachmentName = first.name
+        attachmentLatitude = first.latitude
+        attachmentLongitude = first.longitude
+        attachmentAccuracyM = first.accuracyM
+    }
+
+    /// The FIRST attachment as the views that predate plurality want it,
+    /// or nil when there is none.
     var attachmentSnapshot: AttachmentDTO? {
         guard let attachmentID, let attachmentKind, let attachmentMIME else { return nil }
         return AttachmentDTO(
@@ -235,6 +286,10 @@ final class MessageEntity {
     /// preference.
     private static let pollDecoder = JSONDecoder()
     private static let pollEncoder = JSONEncoder()
+    /// The attachments pair, cached for exactly the same measured reason:
+    /// `attachmentList` runs once per message per view-body pass.
+    private static let attachmentsDecoder = JSONDecoder()
+    private static let attachmentsEncoder = JSONEncoder()
 
     init(
         localID: String,
@@ -255,6 +310,7 @@ final class MessageEntity {
         editSeq: Int64 = 0,
         editedAt: Date? = nil,
         attachment: AttachmentDTO? = nil,
+        attachments: [AttachmentDTO]? = nil,
         call: CallDTO? = nil
     ) {
         self.localID = localID
@@ -300,5 +356,16 @@ final class MessageEntity {
         // that arrives in a history page has no other way in.
         self.callOutcome = call?.outcome
         self.callDurationSecs = call?.durationSecs
+        // The FIRST-SIGHT write site for the plural set (the other two
+        // are the coordinator's apply-a-frame path and its own-send
+        // path). Written after the flat columns above so that a set
+        // handed in overrides the single `attachment` spelling — and a
+        // caller passing only the single still gets a JSON set of one,
+        // so new rows always carry both forms.
+        if let attachments, !attachments.isEmpty {
+            applyAttachmentList(attachments)
+        } else if let attachment {
+            applyAttachmentList([attachment])
+        }
     }
 }

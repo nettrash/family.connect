@@ -39,6 +39,9 @@ struct ChatListView: View {
     @State private var showsSettings = false
     @State private var showsJoinRequests = false
     @State private var showsBoard = false
+    /// Files were shared into the app and are waiting for a chat: the
+    /// picker sheet is up. See ShareImport.
+    @State private var showsShareTarget = false
 
     /// pinRank asc (family first), then recency desc, then stable id.
     private var sortedChats: [ChatEntity] {
@@ -59,10 +62,17 @@ struct ChatListView: View {
         NavigationStack(path: $path) {
             Group {
                 if chats.isEmpty {
-                    ContentUnavailableView(
-                        "No chats yet",
-                        systemImage: "bubble.left.and.bubble.right",
-                        description: Text("Pull down to sync with the family server."))
+                    // A ScrollView, not a bare view: the copy promises
+                    // pull-to-refresh, and .refreshable only works on
+                    // scrollable content. containerRelativeFrame keeps the
+                    // placeholder centered while the bounce exists.
+                    ScrollView {
+                        ContentUnavailableView(
+                            "No chats yet",
+                            systemImage: "bubble.left.and.bubble.right",
+                            description: Text("Pull down to sync with the family server."))
+                        .containerRelativeFrame([.horizontal, .vertical])
+                    }
                 } else {
                     List(sortedChats) { chat in
                         NavigationLink(value: chat.chatID) {
@@ -109,15 +119,35 @@ struct ChatListView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showsBoard = true
-                    } label: {
-                        Label("Board", systemImage: "square.grid.2x2")
-                    }
                     // A count of notes added since this device last showed
                     // the board — see AppSettings.boardSeenNoteID for why
                     // it is not the sync cursor.
-                    .badge(newNoteCount)
+                    //
+                    // .badge on a toolbar item renders only on iOS 26+ —
+                    // verified empirically: a silent no-op on an iOS 18.6
+                    // simulator, drawn on 26.5 — so earlier systems get the
+                    // chat row's badge capsule as an overlay instead. The
+                    // overlay takes no hits, so the button's tap area is
+                    // exactly what it always was.
+                    if #available(iOS 26, *) {
+                        boardButton
+                            .badge(newNoteCount)
+                    } else {
+                        boardButton
+                            .overlay(alignment: .topTrailing) {
+                                if newNoteCount > 0 {
+                                    Text("\(newNoteCount)")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(.tint, in: Capsule())
+                                        .offset(x: 8, y: -6)
+                                        .allowsHitTesting(false)
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                    }
                 }
             }
             .safeAreaInset(edge: .top) {
@@ -144,12 +174,36 @@ struct ChatListView: View {
             // opening clears what is already pinned, closing catches
             // anything that arrived while the board was up.
             .onChange(of: showsBoard) { _, _ in markBoardSeen() }
+            // Where a share INTO the app lands: pick a chat, and the files
+            // stage in its composer — nothing is sent until Send there.
+            // Dismissing without choosing discards the files (a no-op
+            // after a choice, so onDismiss can say it unconditionally).
+            .sheet(isPresented: $showsShareTarget, onDismiss: {
+                session.discardPendingShareImport()
+            }) {
+                ShareTargetPicker { chatID in
+                    session.chooseShareTarget(chatID: chatID)
+                    showsShareTarget = false
+                    path = [chatID]
+                }
+            }
         }
         .task {
             consumePendingRoute() // parked before this view existed (cold start)
+            if session.pendingShareImport != nil { showsShareTarget = true }
         }
         .onChange(of: session.pendingPushRoute) { _, _ in
             consumePendingRoute() // arrived while the list is up (warm tap)
+        }
+        .onChange(of: session.pendingShareImport) { _, pending in
+            // A share arrived while the app is up: everything else steps
+            // aside so the picker is what the person sees.
+            guard pending != nil else { return }
+            showsNewChat = false
+            showsSettings = false
+            showsJoinRequests = false
+            showsBoard = false
+            showsShareTarget = true
         }
         // A chat can now genuinely vanish under a reader: a direct chat
         // whose peer deleted their account goes, both halves (protocol.md,
@@ -168,6 +222,14 @@ struct ChatListView: View {
     }
 
     /// Notes pinned since this device last had the board on screen.
+    private var boardButton: some View {
+        Button {
+            showsBoard = true
+        } label: {
+            Label("Board", systemImage: "square.grid.2x2")
+        }
+    }
+
     private var newNoteCount: Int {
         let seen = AppSettings.boardSeenNoteID
         return notes.filter { $0.noteID > seen }.count

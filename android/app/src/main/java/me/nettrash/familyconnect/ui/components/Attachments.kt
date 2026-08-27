@@ -54,6 +54,7 @@ import androidx.compose.foundation.layout.Spacer
 import android.media.MediaPlayer
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -121,6 +122,149 @@ fun rememberAttachmentImage(attachment: AttachmentDto, preview: Boolean): ImageB
         attachments.load(attachment.id, preview)
     }
     return attachments.cached(attachment.id, preview)
+}
+
+/**
+ * Everything one message carries, laid out inside its bubble — up to ten
+ * attachments in the SENDER'S order (docs/protocol.md, "Photos, videos,
+ * audio, files and locations").
+ *
+ * Media (photos and videos) first: a message whose ONLY attachment is
+ * one photo or video renders exactly as it always has (the full
+ * [AttachmentBlock] thumbnail at its own aspect ratio); any other set
+ * puts its media in a two-column grid of square cells, in order, each
+ * opening ITS attachment — including a LONE media item riding with
+ * file/audio rows, which takes a single grid cell for parity with
+ * Apple, whose rule branches on the TOTAL attachment count
+ * (MessageBubbleView.attachmentBlock / MacMessageRow.attachmentBlock).
+ * Files, audio and a location keep their rows, stacked —
+ * and a location is always alone on a message (protocol), so it falls
+ * out of this naturally as a one-row group. Every piece re-emits the
+ * bubble's own long-press and double-tap, like every block does.
+ */
+@Composable
+fun AttachmentGroup(
+    attachments: List<AttachmentDto>,
+    onOpen: (AttachmentDto) -> Unit,
+    modifier: Modifier = Modifier,
+    streamUrl: suspend (Long) -> Pair<String, Map<String, String>>? = { null },
+    onLongPress: () -> Unit = {},
+    onDoubleTap: () -> Unit = {},
+    showMapPreviews: Boolean = true,
+) {
+    val media = attachments.filter { !it.isFile && !it.isAudio && !it.isLocation }
+    val rows = attachments.filter { it.isFile || it.isAudio || it.isLocation }
+    Column(
+        modifier = modifier.widthIn(max = MAX_WIDTH.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        when {
+            // Full free-aspect only when this media item is the message's
+            // ONLY attachment: Apple branches on attachments.count == 1,
+            // so one photo in a MIXED set draws as a square grid cell on
+            // iPhone/Mac — mirror that here rather than diverge.
+            media.size == 1 && rows.isEmpty() -> AttachmentBlock(
+                attachment = media[0],
+                onOpen = { onOpen(media[0]) },
+                streamUrl = streamUrl,
+                onLongPress = onLongPress,
+                onDoubleTap = onDoubleTap,
+                showMapPreviews = showMapPreviews,
+            )
+            media.isNotEmpty() -> media.chunked(GRID_COLUMNS).forEach { rowItems ->
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    rowItems.forEach { item ->
+                        MediaGridCell(
+                            attachment = item,
+                            onOpen = { onOpen(item) },
+                            onLongPress = onLongPress,
+                            onDoubleTap = onDoubleTap,
+                        )
+                    }
+                }
+            }
+        }
+        rows.forEach { item ->
+            AttachmentBlock(
+                attachment = item,
+                onOpen = { onOpen(item) },
+                streamUrl = streamUrl,
+                onLongPress = onLongPress,
+                onDoubleTap = onDoubleTap,
+                showMapPreviews = showMapPreviews,
+            )
+        }
+    }
+}
+
+/**
+ * One square of the album grid: the preview cropped to fill, a play badge
+ * and duration on a video. Square on purpose — an album's cells share one
+ * shape so the grid reads as a set, and each image's own aspect ratio
+ * still governs the full-screen viewer it opens.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MediaGridCell(
+    attachment: AttachmentDto,
+    onOpen: () -> Unit,
+    onLongPress: () -> Unit,
+    onDoubleTap: () -> Unit,
+) {
+    val image = rememberAttachmentImage(attachment, preview = true)
+        ?: rememberAttachmentImage(attachment, preview = false)
+    // Resolved out here: a semantics block is not a composable context.
+    val mediaDescription = stringResource(
+        if (attachment.isVideo) R.string.s_video else R.string.s_photo,
+    )
+    Box(
+        modifier = Modifier
+            .size(GRID_CELL.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        LocalContentColor.current.copy(alpha = 0.14f),
+                        LocalContentColor.current.copy(alpha = 0.06f),
+                    ),
+                ),
+            )
+            .border(1.dp, LocalContentColor.current.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+            .combinedClickable(
+                onClick = onOpen,
+                onLongClick = onLongPress,
+                onDoubleClick = onDoubleTap,
+            )
+            .semantics { contentDescription = mediaDescription },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        if (attachment.isVideo) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.45f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    tint = Color.White,
+                )
+            }
+            attachment.durationMs?.let { millis ->
+                DurationBadge(millis, Modifier.align(Alignment.BottomEnd))
+            }
+        }
+    }
 }
 
 /**
@@ -534,20 +678,30 @@ private fun MediaThumbnail(
                 )
             }
             attachment.durationMs?.let { millis ->
-                Text(
-                    text = formatDuration(millis),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(6.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(Color.Black.copy(alpha = 0.45f))
-                        .padding(horizontal = 5.dp, vertical = 2.dp),
-                )
+                DurationBadge(millis, Modifier.align(Alignment.BottomEnd))
             }
         }
     }
+}
+
+/**
+ * The duration chip on a video preview. One composable for the album grid
+ * cell and the single thumbnail, so the identical element cannot change
+ * weight between a one-video message and a two-video album (it briefly
+ * did: 4dp outer / 4×1dp inner against 6dp outer / 5×2dp inner).
+ */
+@Composable
+private fun DurationBadge(millis: Int, modifier: Modifier = Modifier) {
+    Text(
+        text = formatDuration(millis),
+        style = MaterialTheme.typography.labelSmall,
+        color = Color.White,
+        modifier = modifier
+            .padding(6.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color.Black.copy(alpha = 0.45f))
+            .padding(horizontal = 5.dp, vertical = 2.dp),
+    )
 }
 
 /** m:ss, as every video player shows it. */
@@ -559,6 +713,10 @@ fun formatDuration(millis: Int): String {
 }
 
 private const val MAX_WIDTH = 240
+
+/** The album grid: two columns of square cells inside [MAX_WIDTH]. */
+private const val GRID_COLUMNS = 2
+private const val GRID_CELL = (MAX_WIDTH - 4) / 2
 
 /**
  * Shape limits for the reserved box. A panorama or a very tall crop would
@@ -677,6 +835,14 @@ private fun AudioPlayerRow(
                     player?.seekTo(positionMs)
                 },
                 valueRange = 0f..totalMs.toFloat(),
+                // The row's ink rule (see above): with the default M3
+                // colors the primary track/thumb can sit near-invisible
+                // on the tinted own balloon under dynamic color.
+                colors = SliderDefaults.colors(
+                    thumbColor = ink,
+                    activeTrackColor = ink,
+                    inactiveTrackColor = ink.copy(alpha = 0.24f),
+                ),
             )
             Row(modifier = Modifier.fillMaxWidth()) {
                 Text(

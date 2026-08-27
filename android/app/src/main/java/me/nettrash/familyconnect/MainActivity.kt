@@ -21,8 +21,10 @@
 package me.nettrash.familyconnect
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -37,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -49,8 +52,10 @@ import me.nettrash.familyconnect.data.push.PendingRoute
 import me.nettrash.familyconnect.data.push.PushNotifications
 import me.nettrash.familyconnect.data.push.PushRouteParser
 import me.nettrash.familyconnect.navigation.AppNavHost
+import androidx.core.content.IntentCompat
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.AvatarRepository
+import me.nettrash.familyconnect.data.repo.ShareIn
 import me.nettrash.familyconnect.navigation.startDestinationFor
 import me.nettrash.familyconnect.ui.components.LocalAttachments
 import me.nettrash.familyconnect.ui.components.LocalAvatars
@@ -82,6 +87,7 @@ class MainActivity : ComponentActivity() {
         // must not re-fire an already-consumed deep link.
         if (savedInstanceState == null) {
             handlePushIntent(intent)
+            handleShareIntent(intent)
         }
         showOverLockScreenForCall(intent)
         setContent {
@@ -91,6 +97,19 @@ class MainActivity : ComponentActivity() {
             ) {
                 val boot by viewModel.bootState.collectAsStateWithLifecycle()
                 val pendingRoute by viewModel.pendingRoute.collectAsStateWithLifecycle()
+                // What the share flow has to say — one sentence, once. A
+                // toast rather than UI state: the share may be refused
+                // before there is any family UI to say it in.
+                val shareNotice by viewModel.shareNotice.collectAsStateWithLifecycle()
+                LaunchedEffect(shareNotice) {
+                    shareNotice?.let { notice ->
+                        val text = notice.arg
+                            ?.let { getString(notice.resId, it) }
+                            ?: getString(notice.resId)
+                        Toast.makeText(this@MainActivity, text, Toast.LENGTH_LONG).show()
+                        viewModel.consumeShareNotice()
+                    }
+                }
                 val snapshot = boot
                 if (snapshot == null) {
                     // Themed boot chrome: without FamilyConnectTheme the first
@@ -129,6 +148,10 @@ class MainActivity : ComponentActivity() {
                             onPendingRouteConsumed = viewModel::consumePendingRoute,
                             isOwner = snapshot.isOwner,
                             callState = viewModel.callState,
+                            shareFlow = viewModel.shareFlow,
+                            onShareChatChosen = viewModel::shareChatChosen,
+                            onShareCancelled = viewModel::cancelShare,
+                            sessionStatus = viewModel.sessionStatus,
                         )
                     }
                 }
@@ -139,6 +162,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handlePushIntent(intent)
+        handleShareIntent(intent)
         showOverLockScreenForCall(intent)
     }
 
@@ -155,6 +179,41 @@ class MainActivity : ComponentActivity() {
         val route = PushRouteParser.parse(data) ?: return
         if (route is PendingRoute.Call && route.answer) viewModel.requestAnswer()
         viewModel.onPendingRoute(route)
+    }
+
+    /**
+     * Another app shared something here (ACTION_SEND / ACTION_SEND_MULTIPLE).
+     *
+     * Only the DESCRIPTIONS are built on this thread — scheme and media
+     * type per stream, which is what ShareIn decides over. The bytes are
+     * copied off-main by the ViewModel, and immediately: the read grants
+     * on shared Uris are transient.
+     */
+    private fun handleShareIntent(intent: Intent?) {
+        intent ?: return
+        val action = intent.action
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+        val uris: List<Uri> = when (action) {
+            Intent.ACTION_SEND -> listOfNotNull(
+                IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java),
+            )
+            else -> IntentCompat.getParcelableArrayListExtra(
+                intent,
+                Intent.EXTRA_STREAM,
+                Uri::class.java,
+            ).orEmpty()
+        }
+        val streams = uris.map { uri ->
+            ShareIn.Stream(
+                scheme = uri.scheme,
+                // The provider's own answer first — it describes THIS item,
+                // where the intent's type describes the whole share.
+                // Guarded: `getType` reaches into another app's provider
+                // and throws for a Uri whose grant has lapsed.
+                mime = runCatching { contentResolver.getType(uri) }.getOrNull() ?: intent.type,
+            )
+        }
+        viewModel.onShared(uris, streams, intent.getStringExtra(Intent.EXTRA_TEXT))
     }
 
     /**

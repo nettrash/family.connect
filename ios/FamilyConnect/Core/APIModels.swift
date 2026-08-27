@@ -510,6 +510,26 @@ nonisolated struct AttachmentDTO: Codable, Hashable, Identifiable, Sendable {
         static let location = "location"
     }
 
+    /// The same attachment with `hasPreview` replaced — the one field a
+    /// client legitimately knows better than the upload response, which
+    /// was minted BEFORE the preview upload ran. Every other field is
+    /// fixed at upload time, so this is a copy rather than a mutation.
+    func withPreviewFlag(_ hasPreview: Bool) -> AttachmentDTO {
+        AttachmentDTO(
+            id: id,
+            kind: kind,
+            mime: mime,
+            size: size,
+            width: width,
+            height: height,
+            durationMS: durationMS,
+            hasPreview: hasPreview,
+            name: name,
+            latitude: latitude,
+            longitude: longitude,
+            accuracyM: accuracyM)
+    }
+
     /// What the bubble calls it: the name for a file, a word for the rest.
     var displayName: String {
         if let name, !name.isEmpty { return name }
@@ -559,7 +579,14 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     /// at least as new (docs/protocol.md, "Editing").
     let editedAt: Date?
     let editSeq: Int64?
-    /// Present when the message carries a photo or video.
+    /// Present when the message carries attachments — 1 to 10 of them, in
+    /// the order the sender chose, and absent (never an empty array) on a
+    /// message that carries none (docs/protocol.md, "Photos, videos,
+    /// audio, files and locations").
+    let attachments: [AttachmentDTO]?
+    /// The FIRST element of `attachments`, kept on the wire for clients
+    /// that predate plurality. A client that reads `attachments` ignores
+    /// it — see `attachmentList`, which is the one read rule everywhere.
     let attachment: AttachmentDTO?
     /// Present when (and only when) this message is a poll — and polls
     /// exist in the FAMILY CHAT only (docs/protocol.md, "Polls"). The
@@ -586,9 +613,21 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         case replyTo = "reply_to"
         case editedAt = "edited_at"
         case editSeq = "edit_seq"
+        case attachments
         case attachment
         case poll
         case call
+    }
+
+    /// THE read rule for what a message carries: prefer the plural field,
+    /// fall back to the legacy singular (a one-element list), and answer
+    /// [] when the message carries nothing. Every consumer goes through
+    /// this — reading `attachment` beside `attachments` would double the
+    /// first element somewhere eventually.
+    var attachmentList: [AttachmentDTO] {
+        if let attachments, !attachments.isEmpty { return attachments }
+        if let attachment { return [attachment] }
+        return []
     }
 
     /// Explicit memberwise init so the reaction fields default to absent
@@ -605,6 +644,7 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         replyTo: ReplyToDTO? = nil,
         editedAt: Date? = nil,
         editSeq: Int64? = nil,
+        attachments: [AttachmentDTO]? = nil,
         attachment: AttachmentDTO? = nil,
         poll: PollDTO? = nil,
         call: CallDTO? = nil
@@ -620,6 +660,7 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         self.replyTo = replyTo
         self.editedAt = editedAt
         self.editSeq = editSeq
+        self.attachments = attachments
         self.attachment = attachment
         self.poll = poll
         self.call = call

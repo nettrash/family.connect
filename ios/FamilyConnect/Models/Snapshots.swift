@@ -110,8 +110,13 @@ nonisolated struct MessageSnapshot: Equatable, Sendable, Identifiable {
     var replyTo: ReplyToSnapshot?
     /// True once the body has been edited — the bubble says so.
     var isEdited: Bool = false
-    /// The photo or video this message carries.
+    /// The FIRST attachment — kept because a dozen call sites (and the
+    /// share path, which shares one file) want "the" attachment. Always
+    /// `attachments.first` when the bridge built this snapshot.
     var attachment: AttachmentDTO?
+    /// EVERY attachment this message carries, in the sender's order —
+    /// 1 to 10 of them, [] for a message that carries none.
+    var attachments: [AttachmentDTO] = []
     /// The poll this message IS, when it is one — the body being its
     /// question (docs/protocol.md, "Polls"). nil for every other message.
     var poll: PollSnapshot?
@@ -194,6 +199,7 @@ extension MessageSnapshot {
             replyTo: entity.replySnapshot,
             isEdited: entity.editSeq > 0,
             attachment: entity.attachmentSnapshot,
+            attachments: entity.attachmentList,
             poll: entity.poll,
             call: entity.callSnapshot
         )

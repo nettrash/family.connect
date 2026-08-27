@@ -21,6 +21,7 @@
 package me.nettrash.familyconnect.ui.board
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -69,6 +70,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -91,6 +93,16 @@ object NoteColors {
         "orange" -> Color(0xFFFFD9B3)
         "purple" -> Color(0xFFE0D1FA)
         else -> Color(0xFFFFF2B3)
+    }
+
+    /** The swatch's TalkBack label — the raw palette key is not display text. */
+    fun label(name: String): Int = when (name) {
+        "pink" -> R.string.s_color_pink
+        "blue" -> R.string.s_color_blue
+        "green" -> R.string.s_color_green
+        "orange" -> R.string.s_color_orange
+        "purple" -> R.string.s_color_purple
+        else -> R.string.s_color_yellow
     }
 }
 
@@ -173,8 +185,9 @@ fun BoardScreen(
                 StickyNote(
                     note = note,
                     authorName = when (note.authorId) {
-                        myUserId -> "You"
-                        else -> memberNames[note.authorId] ?: "Someone"
+                        myUserId -> stringResource(R.string.s_you)
+                        else -> memberNames[note.authorId]
+                            ?: stringResource(R.string.s_someone)
                     },
                     boardWidthPx = boardWidthPx,
                     boardHeightPx = boardHeightPx,
@@ -200,8 +213,8 @@ fun BoardScreen(
             draft = draft,
             canEdit = draft.noteId == null || draft.authorId == myUserId,
             authorName = when (draft.authorId) {
-                myUserId -> "You"
-                else -> memberNames[draft.authorId] ?: "Someone"
+                myUserId -> stringResource(R.string.s_you)
+                else -> memberNames[draft.authorId] ?: stringResource(R.string.s_someone)
             },
             onDismiss = { editing = null },
             onSave = { text, color ->
@@ -239,6 +252,8 @@ private fun StickyNote(
 ) {
     var dragX by remember(note.id) { mutableFloatStateOf(0f) }
     var dragY by remember(note.id) { mutableFloatStateOf(0f) }
+    // Resolved out here: a semantics block is not a composable context.
+    val noteDescription = stringResource(R.string.s_note_from, authorName, note.text)
 
     // Reset the local offset only when the AUTHORITATIVE position arrives.
     // Zeroing it on drag-end instead would snap the note back to where it
@@ -286,7 +301,7 @@ private fun StickyNote(
             // this the note is invisible to TalkBack — the same trap the
             // link spans and the reply quote hit.
             .semantics {
-                contentDescription = "Note from $authorName: ${note.text}"
+                contentDescription = noteDescription
                 role = Role.Button
             }
             .padding(10.dp),
@@ -315,7 +330,7 @@ private fun StickyNote(
  * changed.
  */
 @Composable
-private fun NoteDialog(
+internal fun NoteDialog(
     draft: NoteDraft,
     canEdit: Boolean,
     authorName: String,
@@ -345,7 +360,13 @@ private fun NoteDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (draft.noteId == null) "New note" else stringResource(R.string.s_note)) },
+        title = {
+            Text(
+                stringResource(
+                    if (draft.noteId == null) R.string.s_new_note else R.string.s_note,
+                ),
+            )
+        },
         text = {
             Column {
                 if (canEdit) {
@@ -359,15 +380,23 @@ private fun NoteDialog(
                     Spacer(Modifier.size(16.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         NoteColors.palette.forEach { name ->
+                            // Resolved out here: a semantics block is not a
+                            // composable context.
+                            val colorLabel = stringResource(NoteColors.label(name))
                             Box(
                                 modifier = Modifier
                                     .size(30.dp)
                                     .clip(CircleShape)
                                     .background(NoteColors.compose(name))
-                                    .pointerInput(name) { detectTapGestures { color = name } }
+                                    // clickable, not a raw detectTapGestures:
+                                    // the same selection, plus ripple and the
+                                    // minimum-touch-target hit expansion a
+                                    // bare pointerInput never gets.
+                                    .clickable { color = name }
                                     .semantics {
-                                        contentDescription = name
+                                        contentDescription = colorLabel
                                         role = Role.Button
+                                        selected = color == name
                                     },
                                 contentAlignment = Alignment.Center,
                             ) {
@@ -386,7 +415,7 @@ private fun NoteDialog(
                     Text(draft.text)
                     Spacer(Modifier.size(8.dp))
                     Text(
-                        text = "Written by $authorName",
+                        text = stringResource(R.string.s_written_by, authorName),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

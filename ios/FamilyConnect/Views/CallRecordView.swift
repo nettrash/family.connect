@@ -65,5 +65,9 @@ struct CallRecordView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(CallRecordText.label(call, isMine: isMine))
         .accessibilityAddTraits(onCallBack != nil ? .isButton : [])
+        // The visible "Call back" caption is folded away by .combine; say
+        // what activating does, gated exactly like the trait above. The
+        // outcome stays the label — the hint must not lead.
+        .accessibilityHint(onCallBack != nil ? Text("Calls back") : Text(verbatim: ""))
     }
 }

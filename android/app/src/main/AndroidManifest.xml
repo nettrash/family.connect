@@ -76,6 +76,31 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- The OS share target (docs/protocol.md, "Photos, videos,
+                 audio, files and locations"): share files, images, videos,
+                 audio or text from any app; a chat picker follows and the
+                 items land STAGED in that chat's composer — nothing
+                 auto-sends. Shared text/plain becomes composer TEXT, not
+                 an attachment. launchMode stays singleTop, so a share
+                 while the app is open arrives via onNewIntent. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="application/*" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="application/*" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
         </activity>
 
         <!-- Hands a downloaded attachment to whatever app can open it.

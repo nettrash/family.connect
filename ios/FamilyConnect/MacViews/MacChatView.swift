@@ -36,6 +36,9 @@ struct MacChatView: View {
     @State private var selectedChatID: Int64?
     @State private var showingSettings = false
     @State private var showingFamily = false
+    /// Files were shared into the app and are waiting for a chat: the
+    /// picker sheet is up. See ShareImport.
+    @State private var showsShareTarget = false
 
     /// userID → profile-picture version, worked out once for the whole
     /// sidebar rather than per row.
@@ -96,7 +99,7 @@ struct MacChatView: View {
                     openWindow(id: MacWindow.board)
                     markBoardSeen()
                 } label: {
-                    Label("Board", systemImage: "doc.text")
+                    Label("Board", systemImage: "square.grid.2x2")
                 }
                 .help("The family board")
                 // Notes pinned since this Mac last showed the board. NOT
@@ -117,6 +120,7 @@ struct MacChatView: View {
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
+                .help("Settings")
             }
         }
         .sheet(isPresented: $showingSettings) {
@@ -124,6 +128,19 @@ struct MacChatView: View {
         }
         .sheet(isPresented: $showingFamily) {
             MacFamilyView(onOpenChat: { selectedChatID = $0 })
+        }
+        // Where a share INTO the app lands: pick a chat, and the files
+        // stage in its composer — nothing is sent until Send there.
+        // Dismissing without choosing discards the files (a no-op after a
+        // choice, so onDismiss can say it unconditionally).
+        .sheet(isPresented: $showsShareTarget, onDismiss: {
+            session.discardPendingShareImport()
+        }) {
+            ShareTargetPicker { chatID in
+                session.chooseShareTarget(chatID: chatID)
+                showsShareTarget = false
+                selectedChatID = chatID
+            }
         }
         // ⌘R from the menu bar.
         .onReceive(NotificationCenter.default.publisher(for: .macRequestResync)) { _ in
@@ -137,9 +154,18 @@ struct MacChatView: View {
             // window from quietly clearing the family chat's badge.
             if selectedChatID == nil { selectedChatID = chats.first?.chatID }
             consumePendingRoute() // clicked before this window existed
+            if session.pendingShareImport != nil { showsShareTarget = true }
         }
         .onChange(of: session.pendingPushRoute) { _, _ in
             consumePendingRoute() // clicked while the window is up
+        }
+        .onChange(of: session.pendingShareImport) { _, pending in
+            // A share arrived while the app is up: the sheets step aside
+            // so the picker is what the person sees.
+            guard pending != nil else { return }
+            showingSettings = false
+            showingFamily = false
+            showsShareTarget = true
         }
         .onChange(of: chats.map(\.chatID)) { _, ids in
             if let selectedChatID, ids.contains(selectedChatID) { return }

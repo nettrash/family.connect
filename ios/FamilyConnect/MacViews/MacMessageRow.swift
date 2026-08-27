@@ -34,6 +34,9 @@ struct MacMessageRow: View {
     var showsTimestamp: Bool = true
     var isRunStart: Bool = true
     var isRunEnd: Bool = true
+    /// Whether some other member has read this message — feeds the
+    /// delivery ladder beside the timestamp, exactly as on the phone.
+    var isRead: Bool = false
     var onReply: () -> Void = {}
     var onEdit: () -> Void = {}
     /// Clicking a quote asks to jump to the quoted message — the phone's
@@ -132,6 +135,9 @@ struct MacMessageRow: View {
                         Text(
                             message.createdAt,
                             format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+                        if isMine {
+                            statusGlyph
+                        }
                     }
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -326,27 +332,8 @@ struct MacMessageRow: View {
                     onTapQuote: onTapQuote,
                     onDoubleTap: { quickHeart() })
             }
-            if let attachment = message.attachment {
-                if attachment.isLocation {
-                    // Its own view, shared with the phone: a location has
-                    // no bytes, so none of the download machinery applies,
-                    // and it carries its own click-to-open-in-Maps.
-                    LocationAttachmentView(attachment: attachment, isMine: isMine)
-                } else if attachment.isAudio {
-                    // The player IS the interaction; a click belongs to its
-                    // own controls, so no open/heart pair here.
-                    MacAttachmentBlock(attachment: attachment, isMine: isMine)
-                } else {
-                    MacAttachmentBlock(attachment: attachment, isMine: isMine)
-                        // Count 2 BEFORE count 1, and both as onTapGesture:
-                        // that is what makes them exclusive. A bare
-                        // single-click handler on a CHILD masks the
-                        // balloon's double-click outright, and
-                        // double-clicking a photo would open it AND heart
-                        // it — the same bug the phone had.
-                        .onTapGesture(count: 2) { quickHeart() }
-                        .onTapGesture(count: 1) { onOpenAttachment(attachment) }
-                }
+            if !message.attachments.isEmpty {
+                attachmentStack(message.attachments)
             }
             if isStreaming && message.body.isEmpty {
                 // The row exists but nothing has arrived yet; an empty
@@ -442,7 +429,7 @@ struct MacMessageRow: View {
             let chips = MessagePresentation.reactionChips(
                 message.reactions, currentUserID: coordinator.currentUserID)
             if !chips.isEmpty {
-                MacReactionRow(chips: chips) { chip in
+                MacReactionRow(chips: chips, onTintedBalloon: isMine && !isEmojiOnly) { chip in
                     // A click never takes a reaction away. On a chip I am
                     // not part of, join it; on one I AM part of, show who
                     // reacted — where my own row is the explicit remove.
@@ -486,6 +473,71 @@ struct MacMessageRow: View {
         .shadow(
             color: .black.opacity(hovering && !isEmojiOnly ? 0.12 : 0), radius: 3, y: 1)
         .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+
+    /// Side of one cell in the two-column media grid a multi-attachment
+    /// balloon draws — the phone's number, sized for a Mac balloon.
+    private static let gridCellSide: CGFloat = 120
+
+    /// What the balloon draws for its attachment set — one attachment is
+    /// exactly the block it has always drawn; several become a
+    /// two-column grid of square media cells in SENT order (each cell
+    /// opening ITS attachment) with files and audio stacked as rows
+    /// under it. Same composition as the phone's, from the same blocks.
+    @ViewBuilder
+    private func attachmentStack(_ attachments: [AttachmentDTO]) -> some View {
+        if attachments.count == 1, let attachment = attachments.first {
+            singleAttachment(attachment)
+        } else {
+            let media = attachments.filter { !$0.isFile && !$0.isAudio && !$0.isLocation }
+            let listed = attachments.filter { $0.isFile || $0.isAudio || $0.isLocation }
+            VStack(alignment: .leading, spacing: 4) {
+                // Rows of two, hand-rolled: the Mac thread is the same
+                // non-lazy real-heights window the phone's is, and a lazy
+                // grid would put height estimates back into it.
+                ForEach(Array(stride(from: 0, to: media.count, by: 2)), id: \.self) { start in
+                    HStack(spacing: 4) {
+                        ForEach(media[start..<min(start + 2, media.count)]) { attachment in
+                            MacAttachmentBlock(
+                                attachment: attachment,
+                                isMine: isMine,
+                                cellSide: Self.gridCellSide)
+                                // Count 2 before count 1 — the exclusivity
+                                // rule the single block explains.
+                                .onTapGesture(count: 2) { quickHeart() }
+                                .onTapGesture(count: 1) { onOpenAttachment(attachment) }
+                        }
+                    }
+                }
+                ForEach(listed) { attachment in
+                    singleAttachment(attachment)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func singleAttachment(_ attachment: AttachmentDTO) -> some View {
+        if attachment.isLocation {
+            // Its own view, shared with the phone: a location has
+            // no bytes, so none of the download machinery applies,
+            // and it carries its own click-to-open-in-Maps.
+            LocationAttachmentView(attachment: attachment, isMine: isMine)
+        } else if attachment.isAudio {
+            // The player IS the interaction; a click belongs to its
+            // own controls, so no open/heart pair here.
+            MacAttachmentBlock(attachment: attachment, isMine: isMine)
+        } else {
+            MacAttachmentBlock(attachment: attachment, isMine: isMine)
+                // Count 2 BEFORE count 1, and both as onTapGesture:
+                // that is what makes them exclusive. A bare
+                // single-click handler on a CHILD masks the
+                // balloon's double-click outright, and
+                // double-clicking a photo would open it AND heart
+                // it — the same bug the phone had.
+                .onTapGesture(count: 2) { quickHeart() }
+                .onTapGesture(count: 1) { onOpenAttachment(attachment) }
+        }
     }
 
     /// True when the body is nothing but a few emoji.
@@ -599,7 +651,50 @@ struct MacMessageRow: View {
 
     /// macOS's default body size over iOS's. One constant to change if the
     /// Mac's emoji ever want to be bigger or smaller.
-    private static let macBodyRatio: CGFloat = 13.0 / 17.0
+    fileprivate static let macBodyRatio: CGFloat = 13.0 / 17.0
+
+    /// The phone's delivery ladder (MessageBubbleView.statusGlyph), ported:
+    /// clock while pending, checkmark when the server has it, a tinted
+    /// double checkmark once another member has read it.
+    @ViewBuilder
+    private var statusGlyph: some View {
+        switch message.state {
+        case .pending:
+            Image(systemName: "clock")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Sending")
+        case .sent:
+            if isRead {
+                DoubleCheckmark()
+                    .foregroundStyle(.tint)
+                    .accessibilityLabel("Read")
+            } else {
+                Image(systemName: "checkmark")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Sent")
+            }
+        case .failed:
+            // Never reached: a failed row shows the inline "Try Again"
+            // button instead of a timestamp (see the row body).
+            EmptyView()
+        }
+    }
+}
+
+/// Two overlapped SF checkmarks — the system has no double-check symbol.
+/// The phone's DoubleCheckmark, verbatim.
+private struct DoubleCheckmark: View {
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Image(systemName: "checkmark")
+            Image(systemName: "checkmark")
+                .offset(x: 4)
+        }
+        .font(.caption2)
+        .padding(.trailing, 4)
+    }
 }
 
 /// The emoji already on a message.
@@ -610,6 +705,10 @@ struct MacMessageRow: View {
 /// deliberate, through "See who reacted".
 private struct MacReactionRow: View {
     let chips: [ReactionChip]
+    /// True on my own tint-filled balloon — where an accent-colored ring
+    /// would sit on an accent-colored ground. The phone's lesson
+    /// (MessageBubbleView): stroke with the balloon's CONTENT color.
+    let onTintedBalloon: Bool
     /// The whole chip, not just its emoji: the caller has to know whether
     /// this is mine to decide between joining and showing who reacted.
     let onPick: (ReactionChip) -> Void
@@ -622,6 +721,10 @@ private struct MacReactionRow: View {
                 } label: {
                     HStack(spacing: 3) {
                         Text(chip.emoji)
+                            // The pinned cross-platform chip-emoji size
+                            // (18pt on the phone, 16sp on Android), scaled
+                            // by the Mac's body ratio like the emoji ladder.
+                            .font(.system(size: 18 * MacMessageRow.macBodyRatio))
                         if chip.count > 1 {
                             Text("\(chip.count)").font(.caption2)
                         }
@@ -630,7 +733,9 @@ private struct MacReactionRow: View {
                     .padding(.vertical, 2)
                     .overlay(
                         Capsule().strokeBorder(
-                            chip.includesMe ? Color.accentColor : Color.secondary.opacity(0.4),
+                            chip.includesMe
+                                ? (onTintedBalloon ? Color.white : Color.primary)
+                                : Color.secondary.opacity(0.4),
                             lineWidth: 1))
                 }
                 .buttonStyle(.plain)
@@ -734,6 +839,10 @@ private struct MacAttachmentBlock: View {
     /// For CONTRAST: an own balloon is filled with the tint, so anything
     /// drawn in the accent colour there would be invisible.
     let isMine: Bool
+    /// Non-nil when this attachment is one CELL of a multi-attachment
+    /// grid: a square of exactly this side, filled and clipped, instead
+    /// of the free-standing fit-to-320 thumbnail. Media only.
+    var cellSide: CGFloat? = nil
 
     @Environment(AttachmentStore.self) private var store
 
@@ -766,18 +875,31 @@ private struct MacAttachmentBlock: View {
             .padding(.vertical, 6)
             .padding(.horizontal, 8)
             .background(
-                (isMine ? Color.white.opacity(0.14) : Color.black.opacity(0.05)),
+                (isMine ? Color.white.opacity(0.14) : Color.primary.opacity(0.05)),
                 in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.black.opacity(0.06)))
+                    .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.primary.opacity(0.06)))
             .hoverCursor(.pointingHand)
         } else if let image = store.image(id: attachment.id, preview: true)
             ?? store.image(id: attachment.id, preview: false) {
-            image
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(maxWidth: 320, maxHeight: 320)
+            Group {
+                if let cellSide {
+                    // A grid cell: the grid's shape, not the photo's —
+                    // filled and clipped to an exact square, so every row
+                    // of cells has one real height.
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: cellSide, height: cellSide)
+                        .clipped()
+                } else {
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: 320, maxHeight: 320)
+                }
+            }
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay {
                     if attachment.isVideo {
@@ -790,7 +912,7 @@ private struct MacAttachmentBlock: View {
                 // A hairline so a pale photo does not melt into a pale balloon.
                 .overlay(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.black.opacity(0.08)))
+                        .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08)))
                 // Clickable, and on a Mac only the cursor says so.
                 .hoverCursor(.pointingHand)
         } else {
@@ -798,9 +920,9 @@ private struct MacAttachmentBlock: View {
                 .fill(LinearGradient(
                     colors: isMine
                         ? [.white.opacity(0.22), .white.opacity(0.10)]
-                        : [.black.opacity(0.10), .black.opacity(0.04)],
+                        : [.primary.opacity(0.10), .primary.opacity(0.04)],
                     startPoint: .top, endPoint: .bottom))
-                .frame(width: 240, height: 180)
+                .frame(width: cellSide ?? 240, height: cellSide ?? 180)
                 .overlay {
                     if attachment.isVideo {
                         Image(systemName: "play.circle.fill").font(.largeTitle)

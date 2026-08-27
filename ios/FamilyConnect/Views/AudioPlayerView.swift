@@ -81,11 +81,11 @@ struct AudioPlayerView: View {
         .padding(.horizontal, 8)
         .frame(maxWidth: 260)
         .background(
-            (isMine ? Color.white.opacity(0.14) : Color.black.opacity(0.05)),
+            (isMine ? Color.white.opacity(0.14) : Color.primary.opacity(0.05)),
             in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.black.opacity(0.06)))
+                .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.primary.opacity(0.06)))
         .onDisappear(perform: teardown)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Audio, \(AudioRecorder.timeLabel(total))")

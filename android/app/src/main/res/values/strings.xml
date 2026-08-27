@@ -289,4 +289,42 @@
     <string name="s_not_reachable">Not reachable</string>
     <string name="s_calls_are_off_on_this_server">Calls are off on this server</string>
     <string name="e_call_failed_to_start">Couldn\'t start the call.</string>
+    <!-- Multiple attachments per message, and the OS share target
+         (docs/protocol.md, "Photos, videos, audio, files and locations"). -->
+    <string name="s_uploading_n_of_m">Uploading %1$d of %2$d…</string>
+    <string name="e_attachment_limit">A message can carry at most %1$d attachments.</string>
+    <string name="s_share_choose_chat">Share to…</string>
+    <string name="s_shared_with_family">Shared with Family</string>
+    <string name="e_share_too_many">Only the first %1$d items were kept.</string>
+    <string name="e_share_unavailable">Join a family first, then share things here.</string>
+    <string name="e_share_failed">Couldn\'t read what was shared.</string>
+    <!-- Previously hardcoded chrome surfaced by the 2026-08 UX polish pass:
+         connectivity banner, composer progress, typing subtitle, empty-thread
+         subtitles, settings rows, delivery-tick TalkBack labels, speaker-label
+         fallbacks, and the board note dialog. -->
+    <string name="s_no_connection">No connection</string>
+    <string name="s_preparing">Preparing…</string>
+    <string name="s_sending_ellipsis">Sending…</string>
+    <string name="s_is_typing">%1$s is typing…</string>
+    <string name="s_say_hi_direct">Say hi — this is where your conversation starts</string>
+    <string name="s_say_hi_family">Say hi — this is where your family chat starts</string>
+    <string name="s_change_photo">Change photo</string>
+    <string name="s_add_photo">Add photo</string>
+    <string name="s_manage_family">Manage family</string>
+    <string name="s_family_members">Family members</string>
+    <string name="s_join_requests_members_invite_code">Join requests, members, invite code</string>
+    <string name="s_see_who_is_in_the_family">See who is in the family</string>
+    <string name="s_read">Read</string>
+    <string name="s_you">You</string>
+    <string name="s_someone">Someone</string>
+    <string name="s_member_n">Member %1$d</string>
+    <string name="s_written_by">Written by %1$s</string>
+    <string name="s_new_note">New note</string>
+    <string name="s_note_from">Note from %1$s: %2$s</string>
+    <string name="s_color_yellow">Yellow</string>
+    <string name="s_color_pink">Pink</string>
+    <string name="s_color_blue">Blue</string>
+    <string name="s_color_green">Green</string>
+    <string name="s_color_orange">Orange</string>
+    <string name="s_color_purple">Purple</string>
 </resources>

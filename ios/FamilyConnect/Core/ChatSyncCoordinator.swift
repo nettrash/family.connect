@@ -476,7 +476,7 @@ final class ChatSyncCoordinator {
             if let chat = fetchChat(message.chatID),
                chat.lastMessageDate == entity.createdAt {
                 chat.lastMessagePreview = Self.preview(
-                    body: message.body, attachment: message.attachment,
+                    body: message.body, attachments: message.attachmentList,
                     call: message.call, isMine: message.senderID == currentUserID)
             }
             saveContext()
@@ -810,22 +810,16 @@ final class ChatSyncCoordinator {
         applyAttachment(dto, to: entity)
     }
 
-    /// An attachment is fixed at send time and never changes — except
+    /// An attachment set is fixed at send time and never changes — except
     /// `has_preview`, which flips once the client's preview upload lands,
-    /// so the newest copy always wins.
+    /// so a non-empty incoming copy always wins wholesale. The read rule
+    /// is MessageDTO.attachmentList (prefer `attachments`, fall back to
+    /// the legacy `attachment`), and an ABSENT field never wipes stored
+    /// state — the third-time rule, now on its fourth field.
     private func applyAttachment(_ dto: MessageDTO, to entity: MessageEntity) {
-        entity.attachmentID = dto.attachment?.id
-        entity.attachmentKind = dto.attachment?.kind
-        entity.attachmentMIME = dto.attachment?.mime
-        entity.attachmentSize = dto.attachment?.size ?? 0
-        entity.attachmentWidth = dto.attachment?.width
-        entity.attachmentHeight = dto.attachment?.height
-        entity.attachmentDurationMS = dto.attachment?.durationMS
-        entity.attachmentHasPreview = dto.attachment?.hasPreview ?? false
-        entity.attachmentName = dto.attachment?.name
-        entity.attachmentLatitude = dto.attachment?.latitude
-        entity.attachmentLongitude = dto.attachment?.longitude
-        entity.attachmentAccuracyM = dto.attachment?.accuracyM
+        let list = dto.attachmentList
+        guard !list.isEmpty else { return }
+        entity.applyAttachmentList(list)
     }
 
     /// A call record is written once by the server and never changes, and
@@ -884,6 +878,7 @@ final class ChatSyncCoordinator {
                 editSeq: dto.editSeq ?? 0,
                 editedAt: dto.editedAt,
                 attachment: dto.attachment,
+                attachments: dto.attachmentList,
                 call: dto.call)
             modelContext.insert(entity)
         }
@@ -917,7 +912,7 @@ final class ChatSyncCoordinator {
         }
         if chat.lastMessageDate == nil || dto.createdAt >= (chat.lastMessageDate ?? .distantPast) {
             chat.lastMessagePreview = Self.preview(
-                body: dto.body, attachment: dto.attachment,
+                body: dto.body, attachments: dto.attachmentList,
                 call: dto.call, isMine: dto.senderID == currentUserID)
             chat.lastMessageDate = dto.createdAt
             chat.lastMessageSenderID = dto.senderID
@@ -967,7 +962,7 @@ final class ChatSyncCoordinator {
             messageID: dto.id,
             title: ChatNotifier.title(
                 chatKind: chat.kind, chatTitle: chat.title, senderName: displayName(of: dto.senderID)),
-            body: ChatNotifier.body(text: dto.body, attachment: dto.attachment, call: dto.call))
+            body: ChatNotifier.body(text: dto.body, attachments: dto.attachmentList, call: dto.call))
         #endif
     }
 
@@ -1364,74 +1359,107 @@ final class ChatSyncCoordinator {
             return false
         }
         if let row = fetchMessage(localID: localID) {
-            row.attachmentID = attachment.id
-            row.attachmentKind = attachment.kind
-            row.attachmentMIME = attachment.mime
-            row.attachmentSize = attachment.size
-            row.attachmentName = attachment.name
-            row.attachmentLatitude = attachment.latitude
-            row.attachmentLongitude = attachment.longitude
-            row.attachmentAccuracyM = attachment.accuracyM
+            // The own-send write site: JSON set plus flat first-item
+            // columns, like every other write site. A location is always
+            // alone (docs/protocol.md), so the set is one.
+            row.applyAttachmentList([attachment])
             saveContext()
         }
         pendingDelivery = Task { await self.deliver(localID: localID) }
         return true
     }
 
+    /// The one-attachment spelling, kept for its callers and tests. Same
+    /// contract as before plurality: the prepared file is consumed either
+    /// way — deleted on whole-send success by the array path, and
+    /// deleted here on failure.
     func sendMedia(
         _ prepared: MediaPrep.Prepared,
         caption: String,
         replyTo: ReplyToDTO? = nil,
         in chatID: Int64
     ) async -> Bool {
-        defer {
-            // The prepared file is ours; the picker's original is not.
+        let sent = await sendMedia([prepared], caption: caption, replyTo: replyTo, in: chatID)
+        if !sent {
             try? FileManager.default.removeItem(at: prepared.fileURL)
         }
-        let attachment: AttachmentDTO
-        do {
-            attachment = try await api.uploadAttachment(
-                fileURL: prepared.fileURL,
-                mime: prepared.mime,
-                kind: prepared.kind,
-                width: prepared.width,
-                height: prepared.height,
-                durationMS: prepared.durationMS,
-                name: prepared.name)
-        } catch APIError.unauthorized {
-            session?.handleUnauthorized()
-            return false
-        } catch {
-            // .error, not .info: an upload that failed is the one thing
-            // the sender will come asking about, and info-level os_log
-            // does not reach Xcode's console.
-            AppLog.sync.error("Attachment upload failed: \(String(describing: error), privacy: .public)")
-            return false
-        }
+        return sent
+    }
 
-        // Seed the cache with what we already hold, so this device draws
-        // its own bubble immediately instead of fetching back bytes it
-        // just produced.
-        if let preview = prepared.previewJPEG {
-            attachmentStore?.seed(preview, id: attachment.id, preview: true)
-        }
-        if prepared.kind == "photo", let full = try? Data(contentsOf: prepared.fileURL) {
-            attachmentStore?.seed(full, id: attachment.id, preview: false)
-        }
-
-        var hasPreview = false
-        if let preview = prepared.previewJPEG {
-            // Best-effort: a bubble with no preview fetches the full
-            // image, which is worse but not broken. The RESULT is what
-            // the pending row records — claiming a preview that failed
-            // would leave the bubble waiting for bytes that are not there
-            // until the ack corrects it.
+    /// Send up to ten attachments as ONE message, in the order given.
+    ///
+    /// Each item is uploaded in order (bytes, then its best-effort
+    /// preview), the ids are collected, and ONE message is enqueued
+    /// claiming the whole array — all-or-nothing on the server's side
+    /// (docs/protocol.md, "Photos, videos, audio, files and locations").
+    ///
+    /// Failure anywhere returns false with the message never enqueued
+    /// and EVERY prepared file left on disk — the files are consumed
+    /// only on whole-send success — so the composer can re-stage the
+    /// entire set and a retry cannot silently send a subset; ids already
+    /// uploaded but never claimed are simply abandoned — the server
+    /// sweeps unclaimed attachments after 24 hours, which is exactly
+    /// what the sweep exists for.
+    ///
+    /// `onItemStart` reports (index, total) as each upload begins, so the
+    /// composer can say "Uploading 2 of 5…" through its existing strip.
+    func sendMedia(
+        _ prepared: [MediaPrep.Prepared],
+        caption: String,
+        replyTo: ReplyToDTO? = nil,
+        in chatID: Int64,
+        onItemStart: ((Int, Int) -> Void)? = nil
+    ) async -> Bool {
+        guard !prepared.isEmpty else { return false }
+        var uploaded: [AttachmentDTO] = []
+        for (index, item) in prepared.enumerated() {
+            onItemStart?(index + 1, prepared.count)
+            let attachment: AttachmentDTO
             do {
-                try await api.uploadPreview(attachmentID: attachment.id, jpeg: preview)
-                hasPreview = true
+                attachment = try await api.uploadAttachment(
+                    fileURL: item.fileURL,
+                    mime: item.mime,
+                    kind: item.kind,
+                    width: item.width,
+                    height: item.height,
+                    durationMS: item.durationMS,
+                    name: item.name)
+            } catch APIError.unauthorized {
+                session?.handleUnauthorized()
+                return false
             } catch {
-                AppLog.sync.error("Preview upload failed: \(String(describing: error), privacy: .public)")
+                // .error, not .info: an upload that failed is the one thing
+                // the sender will come asking about, and info-level os_log
+                // does not reach Xcode's console.
+                AppLog.sync.error("Attachment upload failed: \(String(describing: error), privacy: .public)")
+                return false
             }
+
+            // Seed the cache with what we already hold, so this device
+            // draws its own bubble immediately instead of fetching back
+            // bytes it just produced.
+            if let preview = item.previewJPEG {
+                attachmentStore?.seed(preview, id: attachment.id, preview: true)
+            }
+            if item.kind == "photo", let full = try? Data(contentsOf: item.fileURL) {
+                attachmentStore?.seed(full, id: attachment.id, preview: false)
+            }
+
+            var hasPreview = false
+            if let preview = item.previewJPEG {
+                // Best-effort: a bubble with no preview fetches the full
+                // image, which is worse but not broken. The RESULT is what
+                // the pending row records — claiming a preview that failed
+                // would leave the bubble waiting for bytes that are not
+                // there until the ack corrects it.
+                do {
+                    try await api.uploadPreview(attachmentID: attachment.id, jpeg: preview)
+                    hasPreview = true
+                } catch {
+                    AppLog.sync.error("Preview upload failed: \(String(describing: error), privacy: .public)")
+                }
+            }
+            uploaded.append(attachment.withPreviewFlag(hasPreview))
         }
 
         guard let localID = enqueue(
@@ -1440,21 +1468,19 @@ final class ChatSyncCoordinator {
             return false
         }
         if let row = fetchMessage(localID: localID) {
-            // The pending bubble draws its own attachment straight away;
-            // the ack replaces it with the server's copy.
-            row.attachmentID = attachment.id
-            row.attachmentKind = attachment.kind
-            row.attachmentMIME = attachment.mime
-            row.attachmentSize = attachment.size
-            row.attachmentWidth = attachment.width
-            row.attachmentHeight = attachment.height
-            row.attachmentDurationMS = attachment.durationMS
-            row.attachmentHasPreview = hasPreview
-            row.attachmentName = attachment.name
-            row.attachmentLatitude = attachment.latitude
-            row.attachmentLongitude = attachment.longitude
-            row.attachmentAccuracyM = attachment.accuracyM
+            // The own-send write site: the pending bubble draws its whole
+            // set straight away; the ack replaces it with the server's copy.
+            row.applyAttachmentList(uploaded)
             saveContext()
+        }
+        // The prepared files are consumed ONLY here, on whole-send
+        // success. Any failure above left every file on disk — even the
+        // ones whose uploads landed — so the composer restores the
+        // ENTIRE set and a retry offers exactly what was composed; the
+        // ids of uploads that landed on a failed send are abandoned to
+        // the server's 24-hour sweep of unclaimed attachments.
+        for item in prepared {
+            try? FileManager.default.removeItem(at: item.fileURL)
         }
         pendingDelivery = Task { await self.deliver(localID: localID) }
         return true
@@ -1535,9 +1561,29 @@ final class ChatSyncCoordinator {
     /// A photo is normally sent with no caption, and an empty string is not
     /// nil — so the row rendered blank rather than falling back to "No
     /// messages yet". What arrived is the useful thing to say.
+    ///
+    /// The single-attachment spelling, kept for the callers (and tests)
+    /// that hold one attachment or none. The array version below is the
+    /// real rule.
     nonisolated static func preview(
         body: String,
         attachment: AttachmentDTO?,
+        call: CallDTO? = nil,
+        isMine: Bool = false
+    ) -> String {
+        preview(
+            body: body, attachments: attachment.map { [$0] } ?? [],
+            call: call, isMine: isMine)
+    }
+
+    /// The plural rule, mirroring the server's push summaries
+    /// (docs/protocol.md, "Push notifications"): a caption always wins;
+    /// ONE attachment says what it is by name or kind; several of one
+    /// kind become a count ("3 Photos" — names give way to the count);
+    /// a mixed set is "N attachments".
+    nonisolated static func preview(
+        body: String,
+        attachments: [AttachmentDTO],
         call: CallDTO? = nil,
         isMine: Bool = false
     ) -> String {
@@ -1545,7 +1591,27 @@ final class ChatSyncCoordinator {
         // predate calls; this one knows the object and never shows it.
         if let call { return CallRecordText.label(call, isMine: isMine) }
         if !body.isEmpty { return body }
-        guard let attachment else { return body }
+        guard let attachment = attachments.first else { return body }
+        if attachments.count > 1 {
+            let kinds = Set(attachments.map(\.kind))
+            guard kinds.count == 1 else {
+                return String(localized: "\(attachments.count) attachments")
+            }
+            switch attachment.kind {
+            case AttachmentDTO.Kind.photo:
+                return String(localized: "\(attachments.count) Photos")
+            case AttachmentDTO.Kind.video:
+                return String(localized: "\(attachments.count) Videos")
+            case AttachmentDTO.Kind.audio:
+                return String(localized: "\(attachments.count) Audio")
+            case AttachmentDTO.Kind.file:
+                return String(localized: "\(attachments.count) Files")
+            default:
+                // A location is always alone (the server refuses it in
+                // company), so this is a future kind — the honest word.
+                return String(localized: "\(attachments.count) attachments")
+            }
+        }
         if attachment.isVideo { return String(localized: "Video") }
         if attachment.isAudio {
             return attachment.name.flatMap { $0.isEmpty ? nil : $0 }
@@ -1672,7 +1738,10 @@ final class ChatSyncCoordinator {
         let chatID = row.chatID
         let body = row.body
         let replyToMessageID = row.replyToMessageID
-        let attachmentID = row.attachmentID
+        // The whole set's ids, in the sender's order — the array spelling
+        // is the only one this client sends (`attachment_ids`).
+        let ids = row.attachmentList.map(\.id)
+        let attachmentIDs = ids.isEmpty ? nil : ids
         // Read off the row rather than passed in, so a retry — a sweep, a
         // tap on a failed bubble, a relaunch — still carries the options a
         // poll cannot be created without.
@@ -1688,7 +1757,7 @@ final class ChatSyncCoordinator {
                 clientMsgID: clientMsgID,
                 body: body,
                 replyToMessageID: replyToMessageID,
-                attachmentID: attachmentID,
+                attachmentIDs: attachmentIDs,
                 pollOptions: pollOptions))
             if await waitForAck(clientMsgID: clientMsgID, timeout: ackTimeout) { return }
         } catch {
@@ -1706,7 +1775,7 @@ final class ChatSyncCoordinator {
                 clientMsgID: clientMsgID,
                 body: body,
                 replyToMessageID: replyToMessageID,
-                attachmentID: attachmentID,
+                attachmentIDs: attachmentIDs,
                 pollOptions: pollOptions)
             _ = upsert(dto, bumpUnread: false)
         } catch APIError.unauthorized {
@@ -2216,7 +2285,7 @@ final class ChatSyncCoordinator {
         }
         if let last = item.lastMessage {
             chat.lastMessagePreview = Self.preview(
-                body: last.body, attachment: last.attachment,
+                body: last.body, attachments: last.attachmentList,
                 call: last.call, isMine: last.senderID == currentUserID)
             chat.lastMessageDate = last.createdAt
             chat.lastMessageSenderID = last.senderID

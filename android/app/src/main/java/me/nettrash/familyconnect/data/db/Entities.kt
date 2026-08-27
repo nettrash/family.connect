@@ -25,6 +25,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.CallDto
 import me.nettrash.familyconnect.data.net.dto.BirthdayDto
 
@@ -47,7 +48,13 @@ class Converters {
 @Entity(tableName = "chats")
 data class ChatEntity(
     @PrimaryKey val id: Long,
-    /** "family" | "direct" — mirrors Chat.kind on the wire. */
+    /**
+     * "family" | "direct" | "ai" — mirrors Chat.kind on the wire. The
+     * share target is the first place this app COMPARES against "ai"
+     * (see [me.nettrash.familyconnect.ui.share.shareTargets]): the
+     * assistant's private thread takes no shared files, so it is
+     * filtered out of the chat picker there.
+     */
     val kind: String,
     val peerUserId: Long?,
     val title: String,
@@ -137,11 +144,16 @@ data class MessageEntity(
     @ColumnInfo(defaultValue = "0") val editSeq: Long = 0,
     val editedAt: Long? = null,
     /**
-     * The message's photo or video, flattened into columns rather than
+     * The message's FIRST attachment, flattened into columns rather than
      * kept as a relation: an attachment belongs to exactly one message,
      * is written once with it, and is read on every row of the thread —
      * a join would buy nothing. `attachmentId == null` means no media,
-     * which is what [attachment] keys on.
+     * which is what the flat-column fallback keys on.
+     *
+     * Since v16 the full set lives in [attachmentsJson]; these twelve
+     * columns are kept for rows written before plurality, and are still
+     * mirrored from the first element on every write so a downgrade
+     * degrades to "the first attachment" rather than to nothing.
      */
     val attachmentId: Long? = null,
     val attachmentKind: String? = null,
@@ -193,13 +205,40 @@ data class MessageEntity(
      */
     val callOutcome: String? = null,
     val callDurationSecs: Int? = null,
+    /**
+     * The message's attachments, stored as the wire-shape JSON array
+     * (see AttachmentsCodec) — 1 to 10 of them, in the sender's order.
+     * Null on a row that carries none, and on rows written before
+     * plurality, whose single attachment still lives in the flat
+     * columns; [attachmentList] reads through both.
+     */
+    val attachmentsJson: String? = null,
 ) {
     /** The wire shape back out of the two columns, or null for a message that is not a call. */
     val call: CallDto?
         get() = callOutcome?.let { CallDto(outcome = it, durationSecs = callDurationSecs) }
 
-    /** The wire shape back out of the flat columns, or null for no media. */
+    /**
+     * Every attachment on this message, in the sender's order: the JSON
+     * column when it is present and readable, else the flat columns'
+     * single attachment (a pre-plurality row), else nothing.
+     */
+    val attachmentList: List<AttachmentDto>
+        get() = AttachmentsCodec.decode(attachmentsJson)
+            ?: legacyAttachment?.let(::listOf).orEmpty()
+
+    /** The ids [attachmentList] carries, for a send that must re-claim them. */
+    val attachmentIds: List<Long>?
+        get() = attachmentList.map { it.id }.takeIf { it.isNotEmpty() }
+
+    /** The FIRST attachment — the pre-plurality read, kept because every
+     *  single-attachment consumer (share, save, the context menu) means
+     *  exactly this. */
     val attachment: AttachmentDto?
+        get() = attachmentList.firstOrNull()
+
+    /** The wire shape back out of the flat columns, or null for no media. */
+    private val legacyAttachment: AttachmentDto?
         get() = attachmentId?.let { id ->
             AttachmentDto(
                 id = id,

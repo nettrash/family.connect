@@ -140,7 +140,8 @@ interface MessageDao {
             attachmentName = :name,
             attachmentLatitude = :latitude,
             attachmentLongitude = :longitude,
-            attachmentAccuracyM = :accuracyM
+            attachmentAccuracyM = :accuracyM,
+            attachmentsJson = :attachmentsJson
         WHERE clientMsgId = :clientMsgId
         """,
     )
@@ -158,6 +159,8 @@ interface MessageDao {
         latitude: Double?,
         longitude: Double?,
         accuracyM: Int?,
+        /** The full set, wire-shape JSON; the flat columns mirror its first element. */
+        attachmentsJson: String?,
     )
 
     /**

@@ -270,6 +270,7 @@ class MessageDaoTest {
             latitude = 55.7558,
             longitude = 37.6173,
             accuracyM = 12,
+            attachmentsJson = null,
         )
 
         val stored = dao.findByClientMsgId("a")

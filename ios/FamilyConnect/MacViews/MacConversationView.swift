@@ -76,12 +76,14 @@ struct MacConversationView: View {
     /// failure and only on a failure; knowing which kind this is, is what
     /// lets this one do the same.
     @State private var mediaNotice: Notice?
-    /// Prepared and waiting for Send. The Mac used to have no staging step
-    /// at all — every door sent the moment it had bytes — and paste forced
-    /// the question, because a paste that sent by itself would be a trap.
-    /// Now every attachment door lands here first, which is also what lets
-    /// a caption be written while looking at the thing.
-    @State private var staged: StagedAttachment?
+    /// Prepared and waiting for Send — up to StagedAttachment.maxPerMessage
+    /// items, in the order staged, which is the order the message will
+    /// carry. The Mac used to have no staging step at all — every door
+    /// sent the moment it had bytes — and paste forced the question,
+    /// because a paste that sent by itself would be a trap. Now every
+    /// attachment door APPENDS here first, which is also what lets a
+    /// caption be written while looking at the things.
+    @State private var staged: [StagedAttachment] = []
     /// The message being answered, while the composer is primed.
     @State private var replyDraft: ReplyToDTO?
     /// Live height of the composer, watched for the same reason the phone
@@ -376,6 +378,46 @@ struct MacConversationView: View {
         .onChange(of: composerIsPrimed) { _, isPrimed in
             if !isPrimed { composerPriming = nil }
         }
+        // The share picker chose THIS chat while it was already selected —
+        // `.id(selectedChatID)` rebuilds nothing then, so `.task` will not
+        // run again and this is what stages the files instead.
+        .onChange(of: session.shareImportTarget) {
+            consumeShareImport()
+        }
+    }
+
+    /// Stage files shared into the app, if any are addressed to this
+    /// chat. Handed over exactly once and only for the chosen chat, so a
+    /// window that merely appears while a share is pending cannot swallow
+    /// it. Nothing auto-sends — the files sit staged until Send.
+    private func consumeShareImport() {
+        guard let urls = session.takeShareImport(for: chatID), !urls.isEmpty else { return }
+        mediaNotice = .busy(String(localized: "Preparing…"))
+        Task {
+            for url in urls {
+                do {
+                    let prepared = try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit)
+                    // `prepare` may hand back the source itself (a video
+                    // that already fits); only delete the import — the
+                    // whole per-import `fc-shared-<id>` directory, so no
+                    // empty husk survives — when a new file was made from
+                    // it. (When the source IS the staged file, its
+                    // directory lives until the file is consumed.)
+                    if prepared.fileURL != url {
+                        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                    }
+                    // The cap (and its notice) lives in `stage`.
+                    stage(prepared)
+                } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                    mediaNotice = .failed(String(localized: "That file is over the 100 MB limit."))
+                    try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                } catch {
+                    mediaNotice = .failed(String(localized: "Couldn't read that file."))
+                    try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                }
+            }
+            if mediaNotice == .busy(String(localized: "Preparing…")) { mediaNotice = nil }
+        }
     }
 
     /// Day sections and sender runs, through the SAME rules the phone
@@ -519,6 +561,9 @@ struct MacConversationView: View {
                                 showsTimestamp: row.isRunEnd,
                                 isRunStart: row.isRunStart,
                                 isRunEnd: row.isRunEnd,
+                                isRead: MessagePresentation.isRead(
+                                    row.message,
+                                    othersReadUpTo: chat?.othersReadUpTo ?? 0),
                                 onReply: { beginReply(row.message) },
                                 onEdit: { beginEdit(row.message) },
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
@@ -590,6 +635,11 @@ struct MacConversationView: View {
                 if draft.isEmpty, let parked = ComposerDrafts.take(for: chatID) {
                     draft = parked
                 }
+                // Files shared into the app and addressed to THIS chat
+                // land in the composer, staged — the ordinary arrival,
+                // since the picker selects the chat and the sidebar's
+                // `.id(selectedChatID)` builds this view fresh.
+                consumeShareImport()
                 await ChatPresenceOpening.run(
                     // Claim the chat, and claim NOTHING about what is
                     // visible: `isPinnedToBottom` starts optimistically true
@@ -1031,6 +1081,12 @@ struct MacConversationView: View {
                     if mediaNotice.isFailure {
                         Image(systemName: "exclamationmark.circle")
                             .foregroundStyle(.red)
+                    } else {
+                        // Every working state animates, as the phone's
+                        // strip does — without it a long upload looks
+                        // stalled.
+                        ProgressView()
+                            .controlSize(.small)
                     }
                     Text(mediaNotice.text)
                         .font(.callout)
@@ -1050,6 +1106,7 @@ struct MacConversationView: View {
             if let replyDraft {
                 MacComposerBanner(
                     icon: "arrowshape.turn.up.left",
+                    title: String(localized: "Replying to \(quoteAuthorName(replyDraft.senderID))"),
                     text: replyDraft.excerpt,
                     onCancel: { self.replyDraft = nil })
             }
@@ -1059,8 +1116,8 @@ struct MacConversationView: View {
                     text: "Editing message",
                     onCancel: { cancelEdit() })
             }
-            if let staged {
-                StagedAttachmentChip(item: staged) { discardStaged() }
+            if !staged.isEmpty {
+                StagedAttachmentRow(items: staged) { discardStaged($0) }
             }
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
@@ -1121,8 +1178,10 @@ struct MacConversationView: View {
                 // Editing borrows the composer to rewrite an existing
                 // message; there is no second attachment to add, and
                 // attaching would post it as a new message while leaving the
-                // edit banner armed. iOS and Android already gated this.
-                .disabled(editTarget != nil)
+                // edit banner armed. iOS and Android already gated this —
+                // and a running send gates it too, or staging more media
+                // mid-upload would arm a second, concurrent send.
+                .disabled(composerIsBusy)
 
                 if showsAssistantMention {
                     Button {
@@ -1192,7 +1251,7 @@ struct MacConversationView: View {
         guard !isSending else { return false }
         // Something staged is enough on its own: an attachment does not
         // need a caption, which is the phone's rule too.
-        if staged != nil { return true }
+        if !staged.isEmpty { return true }
         return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -1308,8 +1367,10 @@ struct MacConversationView: View {
     private var typingLine: String? {
         let ids = coordinator.typingUserIDs(in: chatID)
         guard !ids.isEmpty else { return nil }
-        let names = ids.map { memberNames[$0] ?? "Someone" }
-        return names.count == 1 ? "\(names[0]) is typing…" : "\(names.joined(separator: ", ")) are typing…"
+        let names = ids.map { memberNames[$0] ?? String(localized: "Someone") }
+        return names.count == 1
+            ? String(localized: "\(names[0]) is typing…")
+            : String(localized: "\(names.joined(separator: ", ")) are typing…")
     }
 
     /// Tell the coordinator what the person at this window can actually
@@ -1363,11 +1424,11 @@ struct MacConversationView: View {
             return
         }
 
-        // An attachment takes whatever is typed as its caption, so this
-        // comes BEFORE the empty-body guard: an attachment on its own is a
-        // perfectly good message.
-        if let item = staged {
-            sendStaged(item, caption: body)
+        // Attachments take whatever is typed as their caption, so this
+        // comes BEFORE the empty-body guard: attachments on their own are
+        // a perfectly good message.
+        if !staged.isEmpty {
+            sendStaged(staged, caption: body)
             return
         }
         guard !body.isEmpty else { return }
@@ -1457,17 +1518,22 @@ struct MacConversationView: View {
 
     /// An open panel rather than PhotosPicker: on the Mac what people
     /// attach lives in the file system, and the same panel covers photos,
-    /// videos and documents alike.
+    /// videos and documents alike. Multi-select since a message carries
+    /// up to ten; sequential preparation, because ten re-encodes at once
+    /// is how a machine stalls.
     private func pickAttachment() {
-        guard let url = MacFilePicker.pickOne() else { return }
+        let urls = MacFilePicker.pickMany()
+        guard !urls.isEmpty else { return }
         mediaNotice = .busy(String(localized: "Preparing…"))
         Task {
-            do {
-                stage(try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit))
-            } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                mediaNotice = .failed(String(localized: "That file is over the 100 MB limit."))
-            } catch {
-                mediaNotice = .failed(String(localized: "Couldn't read that file."))
+            for url in urls {
+                do {
+                    stage(try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit))
+                } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                    mediaNotice = .failed(String(localized: "That file is over the 100 MB limit."))
+                } catch {
+                    mediaNotice = .failed(String(localized: "Couldn't read that file."))
+                }
             }
         }
     }
@@ -1590,25 +1656,30 @@ struct MacConversationView: View {
         }
     }
 
-    /// Hold prepared media in the composer, replacing anything already
-    /// there — one attachment per message, so a second pick supersedes the
-    /// first rather than queueing behind it.
+    /// Hold prepared media in the composer, APPENDING behind whatever is
+    /// already staged — up to the protocol's ten per message. At the cap
+    /// the pick is refused with a dismissible notice and the prepared
+    /// file cleaned up, because nothing else owns it now.
     private func stage(_ prepared: MediaPrep.Prepared) {
-        discardStaged()
+        guard StagedAttachment.canAdd(to: staged.count) else {
+            try? FileManager.default.removeItem(at: prepared.fileURL)
+            mediaNotice = .failed(String(
+                localized: "You can attach up to \(StagedAttachment.maxPerMessage) items."))
+            return
+        }
         mediaNotice = nil
-        staged = StagedAttachment(prepared: prepared)
+        staged.append(StagedAttachment(prepared: prepared))
         composerFocused = true
     }
 
-    /// Throw away the staged attachment and its temp file.
+    /// Throw away ONE staged item and its temp file.
     ///
     /// The file is ours: MediaPrep wrote it into a temp directory and
-    /// nothing else will clean it up, because the `defer` that normally
-    /// deletes it lives in `sendMedia` — which never ran.
-    private func discardStaged() {
-        guard let staged else { return }
-        try? FileManager.default.removeItem(at: staged.prepared.fileURL)
-        self.staged = nil
+    /// nothing else will clean it up, because the delete that normally
+    /// consumes it lives in `sendMedia` — which never ran.
+    private func discardStaged(_ item: StagedAttachment) {
+        try? FileManager.default.removeItem(at: item.prepared.fileURL)
+        staged.removeAll { $0.id == item.id }
     }
 
     /// Commit the staged attachment with whatever the composer holds.
@@ -1621,19 +1692,37 @@ struct MacConversationView: View {
     /// into the caption, and the primed reply was dropped entirely while
     /// its banner stayed armed, so the NEXT ordinary message silently
     /// became that reply.
-    private func sendStaged(_ item: StagedAttachment, caption: String) {
+    private func sendStaged(_ items: [StagedAttachment], caption: String) {
         let quote = replyDraft
         draft = ""
         replyDraft = nil
-        staged = nil
+        staged = []
         mediaNotice = .busy(String(localized: "Sending…"))
+        // A media send IS a send: `composerIsBusy` and `canSend` read
+        // this, so the attach menu, the paste door and a second Send
+        // stay closed until the upload resolves — the same gate the
+        // phone keys on its `.uploading` state. The notice alone gates
+        // nothing, which is right: a download's `.busy` notice must
+        // leave the composer usable.
+        isSending = true
         // Declared at the door, because that is the only moment this is
         // knowable without guessing (see `owesSendPin`).
         owesSendPin = true
         Task {
-            if await coordinator.sendMedia(
-                item.prepared, caption: caption, replyTo: quote, in: chatID)
-            {
+            defer { isSending = false }
+            let sent = await coordinator.sendMedia(
+                items.map(\.prepared),
+                caption: caption,
+                replyTo: quote,
+                in: chatID,
+                onItemStart: { index, total in
+                    // The same line that already says "Sending…" carries
+                    // the count once there is more than one to count.
+                    guard total > 1 else { return }
+                    mediaNotice = .busy(
+                        String(localized: "Uploading \(index) of \(total)…"))
+                })
+            if sent {
                 mediaNotice = nil
             } else {
                 mediaNotice = .failed(String(localized: "Couldn't send that."))
@@ -1642,13 +1731,13 @@ struct MacConversationView: View {
                 // the next reader out of history for somebody else's
                 // message.
                 restoreComposer(caption: caption, quote: quote)
-                // Put the attachment back too: `sendMedia` deletes the temp
-                // file only on the paths that consumed it, and a failed
-                // send the user can retry is worth more than a tidy temp
-                // dir.
-                if FileManager.default.fileExists(atPath: item.prepared.fileURL.path) {
-                    staged = item
-                }
+                // Put the attachments back too — ALL of them: `sendMedia`
+                // consumes the temp files only on whole-send success, so
+                // after a failure every file is still on disk and the
+                // retry offers exactly the set that was composed; ids
+                // uploaded but never claimed are left to the server's 24h
+                // sweep of unclaimed attachments.
+                staged = items + staged
             }
         }
     }
@@ -1670,6 +1759,9 @@ struct MacConversationView: View {
 /// "Replying to…" / "Editing message" above the field, with the way out.
 private struct MacComposerBanner: View {
     let icon: String
+    /// The tinted "who" line above the excerpt — the phone's reply banner
+    /// leads with it, and without it two banners look alike.
+    var title: String? = nil
     let text: String
     let onCancel: () -> Void
 
@@ -1677,10 +1769,17 @@ private struct MacComposerBanner: View {
         HStack(spacing: 6) {
             Image(systemName: icon)
                 .foregroundStyle(.tint)
-            Text(text)
-                .font(.callout)
-                .lineLimit(1)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                if let title {
+                    Text(title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tint)
+                }
+                Text(text)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
             Button {
                 onCancel()

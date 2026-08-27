@@ -117,6 +117,10 @@ fun SettingsScreen(
     val context = LocalContext.current
     val shareTitle = stringResource(R.string.s_share_invite_code)
     val inviteLabel = stringResource(R.string.s_invite_code)
+    // Resolved out here: snackbars fire from click handlers and coroutines,
+    // which are not composable contexts.
+    val copiedLabel = stringResource(R.string.s_copied)
+    val passwordChangedLabel = stringResource(R.string.s_password_changed)
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -218,7 +222,11 @@ fun SettingsScreen(
             )
             ListItem(
                 headlineContent = {
-                    Text(if (state.avatarVersion > 0) "Change photo" else "Add photo")
+                    Text(
+                        stringResource(
+                            if (state.avatarVersion > 0) R.string.s_change_photo else R.string.s_add_photo,
+                        ),
+                    )
                 },
                 leadingContent = {
                     Icon(
@@ -334,7 +342,7 @@ fun SettingsScreen(
                                             ClipData.newPlainText(inviteLabel, code)
                                                 .toClipEntry(),
                                         )
-                                        snackbarHostState.showSnackbar("Copied")
+                                        snackbarHostState.showSnackbar(copiedLabel)
                                     }
                                 }) {
                                     Icon(
@@ -359,15 +367,21 @@ fun SettingsScreen(
                 run {
                     ListItem(
                         headlineContent = {
-                            Text(if (state.isOwner) "Manage family" else "Family members")
+                            Text(
+                                stringResource(
+                                    if (state.isOwner) R.string.s_manage_family else R.string.s_family_members,
+                                ),
+                            )
                         },
                         supportingContent = {
                             Text(
-                                if (state.isOwner) {
-                                    "Join requests, members, invite code"
-                                } else {
-                                    "See who is in the family"
-                                },
+                                stringResource(
+                                    if (state.isOwner) {
+                                        R.string.s_join_requests_members_invite_code
+                                    } else {
+                                        R.string.s_see_who_is_in_the_family
+                                    },
+                                ),
                             )
                         },
                         leadingContent = {
@@ -608,7 +622,7 @@ fun SettingsScreen(
             },
             onConfirm = { password ->
                 viewModel.changePassword(currentPassword, password) {
-                    scope.launch { snackbarHostState.showSnackbar("Password changed") }
+                    scope.launch { snackbarHostState.showSnackbar(passwordChangedLabel) }
                 }
                 changingPassword = false
                 currentPassword = ""

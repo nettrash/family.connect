@@ -49,8 +49,8 @@ interface ChatApi {
         clientMsgId: String,
         body: String,
         replyToMessageId: Long? = null,
-        /** An uploaded photo or video this message claims. */
-        attachmentId: Long? = null,
+        /** The uploaded attachments this message claims, in the sender's order. */
+        attachmentIds: List<Long>? = null,
         /** The options that make this message a poll; the body is the question. */
         poll: NewPollDto? = null,
     ): ApiResult<MessageResponse>
@@ -131,14 +131,14 @@ class DefaultChatApi @Inject constructor(
         clientMsgId: String,
         body: String,
         replyToMessageId: Long?,
-        attachmentId: Long?,
+        attachmentIds: List<Long>?,
         poll: NewPollDto?,
     ): ApiResult<MessageResponse> =
         // 201 on first delivery, 200 when the same client_msg_id retries —
         // both are 2xx, both decode to the same message. Never a duplicate.
         client.post(
             "/chats/$chatId/messages",
-            SendMessageRequest(clientMsgId, body, replyToMessageId, attachmentId, poll),
+            SendMessageRequest(clientMsgId, body, replyToMessageId, attachmentIds, poll),
         )
 
     override suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit> =

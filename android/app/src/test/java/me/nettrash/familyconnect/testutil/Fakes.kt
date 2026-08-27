@@ -410,8 +410,8 @@ class FakeChatApi : ChatApi {
     /** Every reply target a REST send carried, in order. */
     val postedReplyTargets = mutableListOf<Long?>()
 
-    /** Every attachment id a REST send carried, in order. */
-    val postedAttachmentIds = mutableListOf<Long?>()
+    /** Every attachment-id ARRAY a REST send carried, in order (null = none). */
+    val postedAttachmentIds = mutableListOf<List<Long>?>()
 
     /** Every poll a REST send carried, in order (null for an ordinary message). */
     val postedPolls = mutableListOf<NewPollDto?>()
@@ -421,12 +421,12 @@ class FakeChatApi : ChatApi {
         clientMsgId: String,
         body: String,
         replyToMessageId: Long?,
-        attachmentId: Long?,
+        attachmentIds: List<Long>?,
         poll: NewPollDto?,
     ): ApiResult<MessageResponse> {
         postedMessages += Triple(chatId, clientMsgId, body)
         postedReplyTargets += replyToMessageId
-        postedAttachmentIds += attachmentId
+        postedAttachmentIds += attachmentIds
         postedPolls += poll
         return postMessageHandler(chatId, clientMsgId, body)
     }

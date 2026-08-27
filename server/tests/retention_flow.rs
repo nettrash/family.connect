@@ -272,6 +272,112 @@ async fn a_shared_file_survives_until_its_last_message_expires() {
     assert!(!path.exists(), "the shared file outlived its last message");
 }
 
+/// A message may carry a whole album, and the sweep must reclaim EVERY
+/// file it owned — except bytes another, newer message still shares.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_expired_album_takes_all_its_unshared_files_with_it() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+    let days = server.state.cfg.limits.retention_days;
+
+    // Three photos with distinct bytes: three files on disk.
+    let mut album_ids = Vec::new();
+    for len in [512usize, 640, 768] {
+        let uploaded: Value = server
+            .put_bytes_method(
+                "POST",
+                &owner,
+                "/attachments?kind=photo",
+                "image/jpeg",
+                jpeg_bytes(len),
+            )
+            .await
+            .json()
+            .await
+            .expect("JSON");
+        album_ids.push(uploaded["attachment"]["id"].as_i64().expect("id"));
+    }
+    let response = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_ids": album_ids,
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    let album_message = response.json::<Value>().await.expect("JSON")["message"]["id"]
+        .as_i64()
+        .expect("id");
+
+    // A NEWER message shares the third photo's bytes (dedup, 0011): that
+    // one file must survive the album's expiry.
+    let shared_upload: Value = server
+        .put_bytes_method(
+            "POST",
+            &owner,
+            "/attachments?kind=photo",
+            "image/jpeg",
+            jpeg_bytes(768),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let shared_id = shared_upload["attachment"]["id"].as_i64().expect("id");
+    let response = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_id": shared_id,
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+
+    let mut paths = Vec::new();
+    for id in &album_ids {
+        let key: String = sqlx::query_scalar("SELECT storage_key FROM attachments WHERE id = $1")
+            .bind(id)
+            .fetch_one(&server.state.pool)
+            .await
+            .expect("key");
+        paths.push(server.state.storage.blob_path(&key));
+    }
+    for path in &paths {
+        assert!(path.exists());
+    }
+
+    age(&server, album_message, days + 1).await;
+    let swept = family_connect::handlers_chat::sweep_expired_messages(&server.state)
+        .await
+        .expect("sweep");
+    assert_eq!(swept, 1, "one MESSAGE went, however many files it owned");
+
+    // All three rows went with the message…
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments WHERE message_id = $1")
+        .bind(album_message)
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("count");
+    assert_eq!(rows, 0);
+    // …and so did every file nothing else shares. The third survives for
+    // the newer message that points at the same bytes.
+    assert!(!paths[0].exists(), "the first photo's file leaked");
+    assert!(!paths[1].exists(), "the second photo's file leaked");
+    assert!(
+        paths[2].exists(),
+        "the shared file went down with the wrong message"
+    );
+}
+
 /// 0 means keep everything — a state, not a very large number.
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]

@@ -141,6 +141,114 @@ final class AppSession {
     /// session we just dropped) must not navigate the next user.
     var pendingPushRoute: PushRoute?
 
+    /// Files shared INTO the app, waiting for the user to choose a chat.
+    ///
+    /// Set by `handleShareURL` (the share extension's hand-off), consumed
+    /// by the chat pickers (ChatListView / MacChatView). The pendingPushRoute
+    /// idiom: parked here so a share that launched the app survives
+    /// bootstrap, and cleared by every purge for the same reason.
+    var pendingShareImport: [URL]?
+
+    /// The chosen destination: the shared files, addressed to one chat.
+    /// Set by `chooseShareTarget`, consumed exactly once by that chat's
+    /// conversation view, which STAGES the files in its composer — the
+    /// user still presses Send there; nothing auto-sends.
+    var shareImportTarget: ShareImportTarget?
+
+    struct ShareImportTarget: Equatable {
+        let chatID: Int64
+        let urls: [URL]
+    }
+
+    /// The share extension opened `familyconnect://share?ids=…`: move the
+    /// staged files out of the App Group inbox into this process's temp
+    /// directory and park them for the chat picker. Ids are validated as
+    /// UUIDs (ShareImport) — anything else never becomes a path.
+    ///
+    /// `container` is injectable so the parsing-and-moving shape can be
+    /// exercised against a plain directory; the app passes nothing and
+    /// gets the real group container.
+    func handleShareURL(
+        _ url: URL,
+        container: URL? = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ShareImport.appGroup)
+    ) {
+        guard let ids = ShareImport.ids(from: url), let container else { return }
+        var moved: [URL] = []
+        for id in ids {
+            guard let inbox = ShareImport.inboxDirectory(container: container, id: id),
+                  let name = (try? FileManager.default.contentsOfDirectory(atPath: inbox.path))?.first
+            else { continue }
+            let source = inbox.appendingPathComponent(name)
+            let destinationDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("fc-shared-\(id)", isDirectory: true)
+            let destination = destinationDirectory.appendingPathComponent(name)
+            do {
+                try? FileManager.default.removeItem(at: destinationDirectory)
+                try FileManager.default.createDirectory(
+                    at: destinationDirectory, withIntermediateDirectories: true)
+                try FileManager.default.moveItem(at: source, to: destination)
+                moved.append(destination)
+            } catch {
+                AppLog.app.info("Share import could not move a staged file: \(String(describing: error))")
+            }
+            try? FileManager.default.removeItem(at: inbox)
+        }
+        guard !moved.isEmpty else { return }
+        // A second share before the first was placed replaces it — the
+        // picker is about to show THESE files, and the old ones are gone
+        // from the composer nobody chose for them.
+        discardPendingShareImport()
+        pendingShareImport = moved
+    }
+
+    /// The picker chose: address the parked files to one chat.
+    func chooseShareTarget(chatID: Int64) {
+        guard let urls = pendingShareImport else { return }
+        pendingShareImport = nil
+        shareImportTarget = ShareImportTarget(chatID: chatID, urls: urls)
+    }
+
+    /// The addressed files, handed over exactly once — and only to the
+    /// chat they were addressed to, so a conversation that merely appears
+    /// while a share is pending cannot swallow it.
+    func takeShareImport(for chatID: Int64) -> [URL]? {
+        guard let target = shareImportTarget, target.chatID == chatID else { return nil }
+        shareImportTarget = nil
+        return target.urls
+    }
+
+    /// The picker was dismissed without choosing: the files are nobody's,
+    /// so they go. A no-op after `chooseShareTarget`, which is what lets
+    /// the sheet's onDismiss call this unconditionally.
+    func discardPendingShareImport() {
+        guard let urls = pendingShareImport else { return }
+        pendingShareImport = nil
+        deleteShareImportFiles(urls)
+    }
+
+    /// Drop BOTH share-import holders and their bytes: the files still
+    /// parked for the picker AND the ones `chooseShareTarget` already
+    /// addressed to a chat but no conversation has consumed yet. The
+    /// purge path — `discardPendingShareImport` alone is a no-op once
+    /// the URLs have moved into `shareImportTarget`, which would clear
+    /// the state while leaving the moved files on disk.
+    func discardShareImports() {
+        let urls = (pendingShareImport ?? []) + (shareImportTarget?.urls ?? [])
+        pendingShareImport = nil
+        shareImportTarget = nil
+        deleteShareImportFiles(urls)
+    }
+
+    /// Each shared file lives alone in its per-import `fc-shared-<id>`
+    /// directory (see `handleShareURL`); deleting the DIRECTORY is what
+    /// keeps a discard from leaving empty husks behind.
+    private func deleteShareImportFiles(_ urls: [URL]) {
+        for url in urls {
+            try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+        }
+    }
+
     var isOwner: Bool { role == "owner" }
 
     private let api: APIClient
@@ -452,6 +560,11 @@ final class AppSession {
             AppSettings.wipe(keepServerURL: !scope.wipesServerURL)
         }
         pendingPushRoute = nil
+        // Shared files waiting for a chat are family-scoped too: a share
+        // parked before a logout must not land in the next session —
+        // whether it is still waiting for the picker or was already
+        // addressed to a chat. Both holders, bytes included.
+        discardShareImports()
         AppLog.app.info("Purged local state (\(String(describing: reason), privacy: .public))")
     }
 

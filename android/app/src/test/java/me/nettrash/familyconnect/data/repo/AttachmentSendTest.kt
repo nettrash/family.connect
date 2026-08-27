@@ -167,14 +167,14 @@ class AttachmentSendTest {
         ackWith(hasPreview = true)
         val media = prepared()
 
-        assertThat(repository.sendMedia(media, caption = "", chatId = CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(media), caption = "", chatId = CHAT)).isTrue()
         advanceUntilIdle()
 
         // A message pointing at an upload that never landed would be
         // worse than a composer that is visibly busy — so the order is
         // load-bearing, not incidental.
         assertThat(attachmentApi.calls).containsExactly("upload", "preview").inOrder()
-        assertThat(chatApi.postedAttachmentIds).containsExactly(34L)
+        assertThat(chatApi.postedAttachmentIds).containsExactly(listOf(34L))
 
         val row = messageDao.findByClientMsgId(chatApi.postedMessages.single().second)
         assertThat(row).isNotNull()
@@ -195,7 +195,7 @@ class AttachmentSendTest {
         val repository = newRepository()
         ackWith(hasPreview = true)
 
-        assertThat(repository.sendMedia(prepared(), "at the lake", CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(prepared()), "at the lake", CHAT)).isTrue()
         advanceUntilIdle()
 
         val row = messageDao.findByClientMsgId(chatApi.postedMessages.single().second)
@@ -212,12 +212,14 @@ class AttachmentSendTest {
         }
         val media = prepared()
 
-        assertThat(repository.sendMedia(media, caption = "", chatId = CHAT)).isFalse()
+        assertThat(repository.sendMedia(listOf(media), caption = "", chatId = CHAT)).isFalse()
         advanceUntilIdle()
 
         assertThat(chatApi.postedMessages).isEmpty()
         assertThat(attachmentApi.calls).containsExactly("upload")
-        assertThat(media.file.exists()).isFalse()
+        // The prepared file SURVIVES a refused upload — nothing landed,
+        // so the composer can re-stage it for a retry (iOS parity).
+        assertThat(media.file.exists()).isTrue()
     }
 
     /** The preview is best-effort: a bubble without one fetches the full photo. */
@@ -232,7 +234,7 @@ class AttachmentSendTest {
         // and has_preview is false because the preview never landed.
         ackWith(hasPreview = false)
 
-        assertThat(repository.sendMedia(prepared(), caption = "", chatId = CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)).isTrue()
         advanceUntilIdle()
 
         val row = messageDao.findByClientMsgId(chatApi.postedMessages.single().second)
@@ -247,7 +249,7 @@ class AttachmentSendTest {
         val repository = newRepository()
         ackWith(hasPreview = false)
 
-        assertThat(repository.sendMedia(prepared(previewJpeg = null), "", CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(prepared(previewJpeg = null)), "", CHAT)).isTrue()
         advanceUntilIdle()
 
         assertThat(attachmentApi.calls).containsExactly("upload")
@@ -261,11 +263,11 @@ class AttachmentSendTest {
         socket.setOpen(true)
         runCurrent()
 
-        assertThat(repository.sendMedia(prepared(), caption = "", chatId = CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)).isTrue()
         runCurrent()
 
         val frame = socket.sent.filterIsInstance<ClientFrame.Send>().single()
-        assertThat(frame.attachmentId).isEqualTo(34)
+        assertThat(frame.attachmentIds).containsExactly(34L)
         assertThat(frame.body).isEmpty()
     }
 
@@ -364,7 +366,7 @@ class AttachmentSendTest {
             )
         }
 
-        assertThat(repository.sendMedia(preparedFile(), caption = "", chatId = CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(preparedFile()), caption = "", chatId = CHAT)).isTrue()
         advanceUntilIdle()
 
         // No preview call at all: a document has nothing to draw.
@@ -445,7 +447,7 @@ class AttachmentSendTest {
         val repository = newRepository()
         ackWith(hasPreview = true)
 
-        assertThat(repository.sendMedia(prepared(), caption = "", chatId = CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)).isTrue()
         advanceUntilIdle()
 
         assertThat(chatDao.getById(CHAT)!!.lastMessageBody).isEqualTo("Photo")
@@ -458,5 +460,183 @@ class AttachmentSendTest {
         assertThat(response.attachment.isVideo).isTrue()
         // Portrait or landscape, a bubble always has a shape to reserve.
         assertThat(response.attachment.aspectRatio).isGreaterThan(0f)
+    }
+
+    // -- Plurality (docs/protocol.md, "Photos, videos, audio, files and locations") --
+
+    @Test
+    fun `an album uploads each item in the sender's order and sends one message`() =
+        runTest(dispatcher) {
+            insertChat()
+            val repository = newRepository()
+            var nextId = 100L
+            attachmentApi.uploadHandler = { _, _, kind ->
+                ApiResult.Ok(
+                    AttachmentResponse(FakeAttachmentApi.attachment(id = nextId++, kind = kind)),
+                )
+            }
+            chatApi.postMessageHandler = { chatId, clientMsgId, body ->
+                ApiResult.Ok(
+                    MessageResponse(
+                        MessageDto(
+                            id = 920,
+                            chatId = chatId,
+                            senderId = ME,
+                            clientMsgId = clientMsgId,
+                            body = body,
+                            createdAt = "2026-08-26T09:00:00Z",
+                            attachments = listOf(
+                                FakeAttachmentApi.attachment(id = 100, hasPreview = true),
+                                FakeAttachmentApi.attachment(id = 101, hasPreview = true),
+                                FakeAttachmentApi.attachment(id = 102, hasPreview = true),
+                            ),
+                            // The legacy spelling rides beside it: the FIRST
+                            // element, which a plural-aware reader ignores.
+                            attachment = FakeAttachmentApi.attachment(id = 100, hasPreview = true),
+                        ),
+                    ),
+                )
+            }
+            val media = listOf(prepared(), prepared(), prepared())
+
+            assertThat(repository.sendMedia(media, caption = "", chatId = CHAT)).isTrue()
+            advanceUntilIdle()
+
+            // Bytes then preview, per item, in the sender's order — then
+            // ONE message claiming all three ids in that same order.
+            assertThat(attachmentApi.calls)
+                .containsExactly("upload", "preview", "upload", "preview", "upload", "preview")
+                .inOrder()
+            assertThat(chatApi.postedAttachmentIds).containsExactly(listOf(100L, 101L, 102L))
+            assertThat(chatApi.postedMessages).hasSize(1)
+
+            val row = messageDao.findByClientMsgId(chatApi.postedMessages.single().second)!!
+            assertThat(row.attachmentList.map { it.id })
+                .containsExactly(100L, 101L, 102L)
+                .inOrder()
+            // The legacy read stays the first element, so single-attachment
+            // consumers (share, save, the context menu) keep their meaning.
+            assertThat(row.attachment!!.id).isEqualTo(100L)
+            media.forEach { assertThat(it.file.exists()).isFalse() }
+        }
+
+    @Test
+    fun `a mid-way refused upload sends no message at all for the album`() =
+        runTest(dispatcher) {
+            insertChat()
+            val repository = newRepository()
+            var uploads = 0
+            attachmentApi.uploadHandler = { _, _, _ ->
+                uploads += 1
+                if (uploads == 2) {
+                    ApiResult.HttpError(413, "attachment_too_large", "too big")
+                } else {
+                    ApiResult.Ok(
+                        AttachmentResponse(FakeAttachmentApi.attachment(id = uploads.toLong())),
+                    )
+                }
+            }
+            val media = listOf(prepared(), prepared(), prepared())
+
+            assertThat(repository.sendMedia(media, caption = "", chatId = CHAT)).isFalse()
+            advanceUntilIdle()
+
+            // Nothing was written and nothing was claimed: the first
+            // upload's bytes are the server's 24-hour sweep's business.
+            assertThat(chatApi.postedMessages).isEmpty()
+            // The third item was never attempted — the failure stops the walk.
+            assertThat(attachmentApi.calls.count { it == "upload" }).isEqualTo(2)
+            // The first item's bytes are on the server, so its file was
+            // consumed; the failed item and the never-attempted tail KEEP
+            // theirs — that is what the composer re-stages for retry.
+            assertThat(media[0].file.exists()).isFalse()
+            assertThat(media[1].file.exists()).isTrue()
+            assertThat(media[2].file.exists()).isTrue()
+        }
+
+    /** The read rule on the arrival path: prefer `attachments`, ignore the legacy copy. */
+    @Test
+    fun `an inbound message prefers attachments over the legacy attachment`() =
+        runTest(dispatcher) {
+            insertChat()
+            val repository = newRepository()
+
+            repository.applyServerMessage(
+                MessageDto(
+                    id = 921,
+                    chatId = CHAT,
+                    senderId = 9,
+                    clientMsgId = "theirs-album",
+                    body = "",
+                    createdAt = "2026-08-26T09:05:00Z",
+                    attachments = listOf(
+                        FakeAttachmentApi.attachment(id = 41),
+                        FakeAttachmentApi.attachment(id = 42, kind = "video"),
+                    ),
+                    attachment = FakeAttachmentApi.attachment(id = 41),
+                ),
+                live = false,
+            )
+            advanceUntilIdle()
+
+            val row = messageDao.findByServerId(921)!!
+            assertThat(row.attachmentList.map { it.id }).containsExactly(41L, 42L).inOrder()
+            // And the chat list counted the set rather than naming one item.
+            assertThat(chatDao.getById(CHAT)!!.lastMessageBody).isEqualTo("2 attachments")
+        }
+
+    /** A legacy-only server (`attachment`, no `attachments`) still lands its one. */
+    @Test
+    fun `a legacy single attachment still reads through the fallback`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+
+        repository.applyServerMessage(
+            MessageDto(
+                id = 922,
+                chatId = CHAT,
+                senderId = 9,
+                clientMsgId = "theirs-legacy",
+                body = "",
+                createdAt = "2026-08-26T09:06:00Z",
+                attachment = FakeAttachmentApi.attachment(id = 55),
+            ),
+            live = false,
+        )
+        advanceUntilIdle()
+
+        assertThat(messageDao.findByServerId(922)!!.attachmentList.map { it.id })
+            .containsExactly(55L)
+    }
+
+    /**
+     * The plural previews, per the push-summary convention: several of
+     * one kind become a count, a mixed set the bare "N attachments", and
+     * a caption still wins over everything.
+     */
+    @Test
+    fun `the chat-list preview counts a set`() {
+        fun a(kind: String, id: Long) = FakeAttachmentApi.attachment(id = id, kind = kind)
+
+        assertThat(
+            MessageRepository.previewText("", listOf(a("photo", 1), a("photo", 2), a("photo", 3))),
+        ).isEqualTo("3 Photos")
+        assertThat(MessageRepository.previewText("", listOf(a("video", 1), a("video", 2))))
+            .isEqualTo("2 Videos")
+        assertThat(MessageRepository.previewText("", listOf(a("audio", 1), a("audio", 2))))
+            .isEqualTo("2 Audio")
+        assertThat(
+            MessageRepository.previewText(
+                "",
+                listOf(a("file", 1), a("file", 2), a("file", 3), a("file", 4)),
+            ),
+        ).isEqualTo("4 Files")
+        // A mixed set gives its names up for the plain count.
+        assertThat(MessageRepository.previewText("", listOf(a("photo", 1), a("video", 2))))
+            .isEqualTo("2 attachments")
+        // A caption still wins over any count.
+        assertThat(
+            MessageRepository.previewText("beach day", listOf(a("photo", 1), a("photo", 2))),
+        ).isEqualTo("beach day")
     }
 }

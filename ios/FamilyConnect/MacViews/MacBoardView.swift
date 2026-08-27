@@ -57,7 +57,7 @@ struct MacBoardView: View {
                 if notes.isEmpty {
                     ContentUnavailableView(
                         "The board is empty",
-                        systemImage: "doc.text",
+                        systemImage: "square.grid.2x2",
                         description: Text("Add a note — everyone in the family sees it."))
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 }
@@ -148,6 +148,10 @@ private struct MacNoteView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(note.text)
                 .font(.callout)
+                // Forced ink, matching BoardView: the pastels are fixed
+                // light colors in both appearances, so .primary’s dark-mode
+                // white was unreadable on them.
+                .foregroundStyle(.black.opacity(0.85))
                 .lineLimit(4)
             Spacer(minLength: 0)
             Text(authorName)
@@ -212,7 +216,9 @@ private extension Double {
 private struct MacNoteEditor: View {
     @Binding var text: String
     @Binding var color: String
-    let title: String
+    /// A key, not a String: `Text(title)` then goes through the catalog
+    /// ("New Note" / "Edit Note") instead of shipping English verbatim.
+    let title: LocalizedStringKey
     let onSave: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -236,6 +242,7 @@ private struct MacNoteEditor: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Save") {
                     onSave()
                     dismiss()

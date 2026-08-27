@@ -126,7 +126,9 @@ fun OfflineBanner(
                 )
             }
             Text(
-                text = if (showOffline) "No connection" else "Connecting…",
+                text = stringResource(
+                    if (showOffline) R.string.s_no_connection else R.string.s_connecting,
+                ),
                 style = MaterialTheme.typography.labelMedium,
                 color = contentColor,
             )

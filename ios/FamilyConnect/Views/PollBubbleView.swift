@@ -314,6 +314,10 @@ struct PollBubbleView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .overlay(Capsule().strokeBorder(contentColor.opacity(0.5), lineWidth: 1))
+                        // Tap slack only — a negative inset, so the drawn
+                        // capsule and the balloon height stay exactly as
+                        // they are (heights feed the thread’s anchoring).
+                        .contentShape(Capsule().inset(by: -8))
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("Ends the poll. This cannot be undone.")

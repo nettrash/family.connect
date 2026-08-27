@@ -91,16 +91,20 @@ object PastedMedia {
      */
     data class Item(val scheme: String?, val mime: String?, val text: String?)
 
+    /** One item [decide] chose to attach: where it sits in the clip, and what to send it as. */
+    data class Pick(val index: Int, val kind: String)
+
     /** What a whole clipboard is, once [decide] has looked at it. */
     sealed interface Verdict {
         /**
-         * Stage the item at [index] as an attachment of [kind]. The words
-         * in the same clip, if any, are NOT also pasted: a browser's
-         * "copy image" carries the picture's own address as its text, and
-         * nobody wants that address typed next to the picture. A caption
-         * is something the sender writes.
+         * Stage the items named by [picks], in clip order, each as an
+         * attachment of its own kind. The words in the same clip, if any,
+         * are NOT also pasted: a browser's "copy image" carries the
+         * picture's own address as its text, and nobody wants that
+         * address typed next to the picture. A caption is something the
+         * sender writes.
          */
-        data class Attach(val index: Int, val kind: String) : Verdict
+        data class Attach(val picks: List<Pick>) : Verdict
 
         /** Put these words in the composer. */
         data class Words(val text: String) : Verdict
@@ -110,19 +114,25 @@ object PastedMedia {
     }
 
     /**
-     * What a clipboard is: an attachment, some words, or nothing.
+     * What a clipboard is: attachments, some words, or nothing.
      *
-     * An attachable item WINS, wherever it sits in the clip — the first
-     * one, since a message carries at most one attachment
-     * (docs/protocol.md). Failing that the first non-empty text is what
-     * "paste" means. Failing both there is nothing here, and the door
-     * says so rather than looking broken.
+     * Attachable items WIN, wherever they sit in the clip — ALL of them,
+     * in clip order, since a message now carries up to
+     * [AttachmentDto.MAX_PER_MESSAGE] attachments (docs/protocol.md,
+     * "Photos, videos, audio, files and locations"); anything past the
+     * cap is left on the clipboard. Failing that the first non-empty
+     * text is what "paste" means. Failing both there is nothing here,
+     * and the door says so rather than looking broken.
      */
     fun decide(items: List<Item>): Verdict {
-        items.forEachIndexed { index, item ->
-            val kind = kindFor(item.scheme, item.mime)
-            if (kind != null) return Verdict.Attach(index, kind)
+        val picks = buildList {
+            items.forEachIndexed { index, item ->
+                if (size >= AttachmentDto.MAX_PER_MESSAGE) return@forEachIndexed
+                val kind = kindFor(item.scheme, item.mime)
+                if (kind != null) add(Pick(index, kind))
+            }
         }
+        if (picks.isNotEmpty()) return Verdict.Attach(picks)
         val text = items.firstNotNullOfOrNull { it.text?.takeIf(String::isNotEmpty) }
         return if (text != null) Verdict.Words(text) else Verdict.Empty
     }

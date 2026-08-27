@@ -43,6 +43,7 @@ import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.AttachmentApi
 import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.CallDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
 import me.nettrash.familyconnect.data.net.dto.MessagePollStateDto
@@ -148,7 +149,7 @@ class MessageRepository @Inject constructor(
             ),
         )
         chatDao.updateLastMessage(chatId, trimmed, now, me)
-        dispatch(clientMsgId, chatId, trimmed, replyTo?.messageId, attachmentId = null)
+        dispatch(clientMsgId, chatId, trimmed, replyTo?.messageId, attachmentIds = null)
     }
 
     /**
@@ -209,7 +210,7 @@ class MessageRepository @Inject constructor(
             chatId,
             trimmedQuestion,
             replyTo?.messageId,
-            attachmentId = null,
+            attachmentIds = null,
             poll = NewPollDto(trimmedOptions),
         )
     }
@@ -272,84 +273,120 @@ class MessageRepository @Inject constructor(
                 attachmentLatitude = attachment.latitude,
                 attachmentLongitude = attachment.longitude,
                 attachmentAccuracyM = attachment.accuracyM,
+                // The JSON column too, like every other write site: a
+                // location is a one-element set (protocol: always alone).
+                attachmentsJson = AttachmentsCodec.encode(listOf(attachment)),
                 replyToMessageId = replyTo?.messageId,
                 replySenderId = replyTo?.senderId,
                 replyExcerpt = replyTo?.excerpt,
             ),
         )
-        chatDao.updateLastMessage(chatId, previewText(body, attachment), now, me)
-        dispatch(clientMsgId, chatId, body, replyTo?.messageId, attachment.id)
+        chatDao.updateLastMessage(chatId, previewText(body, listOf(attachment)), now, me)
+        dispatch(clientMsgId, chatId, body, replyTo?.messageId, listOf(attachment.id))
         return true
     }
 
     suspend fun sendMedia(
-        prepared: MediaPrep.Prepared,
+        prepared: List<MediaPrep.Prepared>,
         caption: String,
         chatId: Long,
         replyTo: ReplyToDto? = null,
+        /** Told before each item's upload starts: (1-based index, total). */
+        onProgress: (index: Int, total: Int) -> Unit = { _, _ -> },
     ): Boolean {
-        try {
-            val me = settings.state.first().myUserId ?: return false
+        if (prepared.isEmpty()) return false
+        val me = settings.state.first().myUserId ?: return false
+        // Each item's bytes go up in the SENDER'S order, because that
+        // order is what `attachment_ids` preserves and what every read
+        // gives back (protocol.md, "Photos, videos, audio, files and
+        // locations"). A mid-way failure returns false with earlier
+        // uploads already landed: nothing has claimed them, so the
+        // server's 24-hour sweep of unclaimed attachments is what
+        // cleans them up — re-uploading on retry is the cheaper
+        // mistake, not a leak.
+        //
+        // Each item's prepared FILE is deleted only once its own upload
+        // has landed (mirroring iOS ChatSyncCoordinator.sendMedia): on a
+        // mid-way failure the files of the failed item and everything
+        // after it are LEFT ON DISK, which is what lets the composer
+        // re-stage exactly the unsent tail for a one-tap retry.
+        val uploadedAttachments = ArrayList<AttachmentDto>(prepared.size)
+        prepared.forEachIndexed { index, item ->
+            onProgress(index + 1, prepared.size)
             val uploaded = attachmentApi.upload(
-                file = prepared.file,
-                mime = prepared.mime,
-                kind = prepared.kind,
-                width = prepared.width,
-                height = prepared.height,
-                durationMs = prepared.durationMs,
-                name = prepared.name,
+                file = item.file,
+                mime = item.mime,
+                kind = item.kind,
+                width = item.width,
+                height = item.height,
+                durationMs = item.durationMs,
+                name = item.name,
             )
             val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment ?: return false
 
+            // Per-item and best-effort, exactly as it was for one: a
+            // failed preview costs a thumbnail, never the send.
             var hasPreview = false
-            prepared.previewJpeg?.let { jpeg ->
+            item.previewJpeg?.let { jpeg ->
                 hasPreview = attachmentApi.uploadPreview(attachment.id, jpeg) is ApiResult.Ok
             }
-
-            val body = caption.trim()
-            val clientMsgId = UUID.randomUUID().toString()
-            val now = clock.now()
-            messageDao.insert(
-                MessageEntity(
-                    clientMsgId = clientMsgId,
-                    serverId = null,
-                    chatId = chatId,
-                    senderId = me,
-                    // A photo needs no caption: an empty body is allowed
-                    // WITH an attachment (protocol.md), and only then.
-                    body = body,
-                    createdAt = now,
-                    status = MessageStatus.SENDING,
-                    attachmentId = attachment.id,
-                    attachmentKind = attachment.kind,
-                    attachmentMime = attachment.mime,
-                    attachmentSize = attachment.size,
-                    attachmentWidth = attachment.width,
-                    attachmentHeight = attachment.height,
-                    attachmentDurationMs = attachment.durationMs,
-                    attachmentHasPreview = hasPreview,
-                    attachmentName = attachment.name,
-                    attachmentLatitude = attachment.latitude,
-                    attachmentLongitude = attachment.longitude,
-                    attachmentAccuracyM = attachment.accuracyM,
-                    // A photo can answer a message like any other reply;
-                    // this used to be dropped on the floor, so the quote
-                    // vanished and its banner stayed armed.
-                    replyToMessageId = replyTo?.messageId,
-                    replySenderId = replyTo?.senderId,
-                    replyExcerpt = replyTo?.excerpt,
-                ),
-            )
-            // What arrived, not an empty string: a caption-less photo left
-            // the chat-list row blank because "" is not null and the
-            // fallback never fired.
-            chatDao.updateLastMessage(chatId, previewText(body, attachment), now, me)
-            dispatch(clientMsgId, chatId, body, replyTo?.messageId, attachment.id)
-            return true
-        } finally {
-            // The prepared file is ours whatever happened to it.
-            prepared.file.delete()
+            uploadedAttachments += attachment.copy(hasPreview = hasPreview)
+            // This item's bytes are on the server; its prepared file is
+            // consumed. Items after this one keep theirs until their own
+            // upload lands, so a mid-way failure leaves them restorable.
+            item.file.delete()
         }
+
+        val first = uploadedAttachments.first()
+        val body = caption.trim()
+        val clientMsgId = UUID.randomUUID().toString()
+        val now = clock.now()
+        messageDao.insert(
+            MessageEntity(
+                clientMsgId = clientMsgId,
+                serverId = null,
+                chatId = chatId,
+                senderId = me,
+                // A photo needs no caption: an empty body is allowed
+                // WITH an attachment (protocol.md), and only then.
+                body = body,
+                createdAt = now,
+                status = MessageStatus.SENDING,
+                // The flat columns mirror the FIRST element; the full
+                // set rides in attachmentsJson.
+                attachmentId = first.id,
+                attachmentKind = first.kind,
+                attachmentMime = first.mime,
+                attachmentSize = first.size,
+                attachmentWidth = first.width,
+                attachmentHeight = first.height,
+                attachmentDurationMs = first.durationMs,
+                attachmentHasPreview = first.hasPreview,
+                attachmentName = first.name,
+                attachmentLatitude = first.latitude,
+                attachmentLongitude = first.longitude,
+                attachmentAccuracyM = first.accuracyM,
+                attachmentsJson = AttachmentsCodec.encode(uploadedAttachments),
+                // A photo can answer a message like any other reply;
+                // this used to be dropped on the floor, so the quote
+                // vanished and its banner stayed armed.
+                replyToMessageId = replyTo?.messageId,
+                replySenderId = replyTo?.senderId,
+                replyExcerpt = replyTo?.excerpt,
+            ),
+        )
+        // What arrived, not an empty string: a caption-less photo left
+        // the chat-list row blank because "" is not null and the
+        // fallback never fired.
+        chatDao.updateLastMessage(chatId, previewText(body, uploadedAttachments), now, me)
+        dispatch(
+            clientMsgId,
+            chatId,
+            body,
+            replyTo?.messageId,
+            uploadedAttachments.map { it.id },
+        )
+        return true
     }
 
     /**
@@ -359,8 +396,11 @@ class MessageRepository @Inject constructor(
      * null — so the row rendered blank rather than falling back. Mirrors
      * iOS's ChatSyncCoordinator.preview.
      */
-    fun previewText(body: String, attachment: AttachmentDto?, call: CallDto? = null): String =
-        Companion.previewText(body, attachment, call)
+    fun previewText(
+        body: String,
+        attachments: List<AttachmentDto>,
+        call: CallDto? = null,
+    ): String = Companion.previewText(body, attachments, call)
 
     /**
      * Assistant replies still being written, by server id. Drives the
@@ -396,7 +436,7 @@ class MessageRepository @Inject constructor(
             row.chatId,
             row.body,
             row.replyToMessageId,
-            row.attachmentId,
+            row.attachmentIds,
             pendingPollOf(row),
         )
     }
@@ -432,7 +472,7 @@ class MessageRepository @Inject constructor(
                     row.chatId,
                     row.body,
                     row.replyToMessageId,
-                    row.attachmentId,
+                    row.attachmentIds,
                     pendingPollOf(row),
                 )
             }
@@ -444,12 +484,12 @@ class MessageRepository @Inject constructor(
         chatId: Long,
         body: String,
         replyToMessageId: Long?,
-        attachmentId: Long?,
+        attachmentIds: List<Long>?,
         poll: NewPollDto? = null,
     ) {
         val overSocket = socket.state.value == SocketState.Open &&
             socket.trySend(
-                ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId, attachmentId, poll),
+                ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll),
             )
         if (overSocket) {
             pendingAcks[clientMsgId] = scope.launch {
@@ -457,11 +497,11 @@ class MessageRepository @Inject constructor(
                 pendingAcks.remove(clientMsgId)
                 // No ack in time — the frame may or may not have landed.
                 // REST with the same client_msg_id is safe either way.
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentId, poll)
+                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll)
             }
         } else {
             scope.launch {
-                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentId, poll)
+                restFallback(clientMsgId, chatId, body, replyToMessageId, attachmentIds, poll)
             }
         }
     }
@@ -471,13 +511,13 @@ class MessageRepository @Inject constructor(
         chatId: Long,
         body: String,
         replyToMessageId: Long?,
-        attachmentId: Long?,
+        attachmentIds: List<Long>?,
         poll: NewPollDto? = null,
     ) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // ack won the race
         val result =
-            chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentId, poll)
+            chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll)
         when (result) {
             is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message)
             else -> messageDao.setStatus(clientMsgId, MessageStatus.FAILED)
@@ -516,20 +556,28 @@ class MessageRepository @Inject constructor(
         // An attachment is fixed at send time — except has_preview, which
         // flips once the preview upload lands. The server's copy is the
         // one that counts, so it replaces what this device guessed.
+        // Read through the plural-first rule: prefer `attachments`, fall
+        // back to the legacy `attachment`. Per the protocol the two are
+        // never present without each other, so an "absent" set here means
+        // a message that genuinely carries none — never a wipe of stored
+        // state by an older wire shape.
+        val acked = message.resolvedAttachments
+        val ackedFirst = acked.firstOrNull()
         messageDao.setAttachment(
             clientMsgId,
-            message.attachment?.id,
-            message.attachment?.kind,
-            message.attachment?.mime,
-            message.attachment?.size ?: 0L,
-            message.attachment?.width,
-            message.attachment?.height,
-            message.attachment?.durationMs,
-            message.attachment?.hasPreview ?: false,
-            message.attachment?.name,
-            message.attachment?.latitude,
-            message.attachment?.longitude,
-            message.attachment?.accuracyM,
+            ackedFirst?.id,
+            ackedFirst?.kind,
+            ackedFirst?.mime,
+            ackedFirst?.size ?: 0L,
+            ackedFirst?.width,
+            ackedFirst?.height,
+            ackedFirst?.durationMs,
+            ackedFirst?.hasPreview ?: false,
+            ackedFirst?.name,
+            ackedFirst?.latitude,
+            ackedFirst?.longitude,
+            ackedFirst?.accuracyM,
+            acked.takeIf { it.isNotEmpty() }?.let(AttachmentsCodec::encode),
         )
         // The server's poll — real option ids and a real seq — replacing
         // the local copy the optimistic row drew with. Guarded like every
@@ -537,7 +585,7 @@ class MessageRepository @Inject constructor(
         applyEmbeddedPoll(message)
         chatDao.updateLastMessage(
             message.chatId,
-            previewText(message.body, message.attachment, message.call),
+            previewText(message.body, acked, message.call),
             createdAt,
             message.senderId,
         )
@@ -588,6 +636,13 @@ class MessageRepository @Inject constructor(
             return
         }
         val createdAt = TimeFormat.parseTimestamp(message.createdAt) ?: clock.now()
+        // The plural-first read, on the path a message ARRIVES on. This is
+        // one of the write sites the "third-time rule" names: history
+        // pages and live frames both land here, and insertIgnore never
+        // overwrites, so a re-delivery without the field cannot wipe what
+        // an earlier delivery stored.
+        val arrived = message.resolvedAttachments
+        val arrivedFirst = arrived.firstOrNull()
         messageDao.insertIgnore(
             listOf(
                 MessageEntity(
@@ -609,24 +664,26 @@ class MessageRepository @Inject constructor(
                     replyParentExcerpt = message.replyTo?.parent?.excerpt,
                     editSeq = message.editSeq ?: 0L,
                     editedAt = message.editedAt?.let(TimeFormat::parseTimestamp),
-                    attachmentId = message.attachment?.id,
-                    attachmentKind = message.attachment?.kind,
-                    attachmentMime = message.attachment?.mime,
-                    attachmentSize = message.attachment?.size ?: 0L,
-                    attachmentWidth = message.attachment?.width,
-                    attachmentHeight = message.attachment?.height,
-                    attachmentDurationMs = message.attachment?.durationMs,
-                    attachmentHasPreview = message.attachment?.hasPreview ?: false,
-                    attachmentName = message.attachment?.name,
+                    attachmentId = arrivedFirst?.id,
+                    attachmentKind = arrivedFirst?.kind,
+                    attachmentMime = arrivedFirst?.mime,
+                    attachmentSize = arrivedFirst?.size ?: 0L,
+                    attachmentWidth = arrivedFirst?.width,
+                    attachmentHeight = arrivedFirst?.height,
+                    attachmentDurationMs = arrivedFirst?.durationMs,
+                    attachmentHasPreview = arrivedFirst?.hasPreview ?: false,
+                    attachmentName = arrivedFirst?.name,
                     // A location IS these three columns — it has no bytes
                     // to fall back on, so dropping them here does not
                     // degrade the bubble, it EMPTIES it. This is the path a
                     // message ARRIVES on, which is why the bug they caused
                     // was invisible to whoever sent the location and total
                     // for everybody else.
-                    attachmentLatitude = message.attachment?.latitude,
-                    attachmentLongitude = message.attachment?.longitude,
-                    attachmentAccuracyM = message.attachment?.accuracyM,
+                    attachmentLatitude = arrivedFirst?.latitude,
+                    attachmentLongitude = arrivedFirst?.longitude,
+                    attachmentAccuracyM = arrivedFirst?.accuracyM,
+                    attachmentsJson = arrived.takeIf { it.isNotEmpty() }
+                        ?.let(AttachmentsCodec::encode),
                     // The THIRD write site a new field on a message needs,
                     // after the send path and the frame-apply path below.
                     // Missing it drops every poll this device sees for the
@@ -646,7 +703,7 @@ class MessageRepository @Inject constructor(
         )
         chatDao.updateLastMessage(
             message.chatId,
-            previewText(message.body, message.attachment, message.call),
+            previewText(message.body, arrived, message.call),
             createdAt,
             message.senderId,
         )
@@ -1091,7 +1148,11 @@ class MessageRepository @Inject constructor(
          * not null — so the row rendered blank rather than falling back.
          * Mirrors iOS's ChatSyncCoordinator.preview.
          */
-        fun previewText(body: String, attachment: AttachmentDto?, call: CallDto? = null): String {
+        fun previewText(
+            body: String,
+            attachments: List<AttachmentDto>,
+            call: CallDto? = null,
+        ): String {
             // A call record's body is the server's English placeholder,
             // and the preview says the same thing in the same words — the
             // one line this list has for it. Checked FIRST, because the
@@ -1100,7 +1161,30 @@ class MessageRepository @Inject constructor(
                 return if (call.outcome == CallDto.MISSED) "Missed voice call" else "Voice call"
             }
             if (body.isNotEmpty()) return body
-            if (attachment == null) return body
+            val attachment = attachments.firstOrNull() ?: return body
+            if (attachments.size > 1) {
+                // Several of one kind get a count — "3 Photos" — and a
+                // mixed set the plain "N attachments": the same ENGLISH
+                // literals the push summary uses, per this function's own
+                // convention (protocol.md, "Push notifications"; names
+                // give way to the count).
+                val n = attachments.size
+                val kinds = attachments.mapTo(HashSet()) { it.kind }
+                return if (kinds.size == 1) {
+                    when {
+                        attachment.isVideo -> "$n Videos"
+                        attachment.isAudio -> "$n Audio"
+                        attachment.isFile -> "$n Files"
+                        // A location is always alone (protocol), so a
+                        // uniform multi-set here can only be photos — or
+                        // a kind added later, which falls through.
+                        attachment.kind == AttachmentDto.KIND_PHOTO -> "$n Photos"
+                        else -> "$n attachments"
+                    }
+                } else {
+                    "$n attachments"
+                }
+            }
             return when {
                 attachment.isVideo -> "Video"
                 attachment.isAudio -> attachment.name?.takeIf { it.isNotEmpty() } ?: "Audio"
@@ -1110,6 +1194,10 @@ class MessageRepository @Inject constructor(
                 else -> "Photo"
             }
         }
+
+        /** The pre-plurality spelling, kept for single-attachment callers. */
+        fun previewText(body: String, attachment: AttachmentDto?, call: CallDto? = null): String =
+            previewText(body, attachment?.let(::listOf).orEmpty(), call)
 
         /** Most broken locations repaired per resync — see the note above. */
         private const val REPAIR_BATCH = 25

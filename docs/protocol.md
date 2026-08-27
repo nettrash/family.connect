@@ -96,8 +96,12 @@ Message   {"id": 1338, "chat_id": 42, "sender_id": 7,
           — plus "reply_to": {ReplyTo} when (and only when) the message is a reply.
           — plus "edited_at": "…" and "edit_seq": 88 when (and only when) the body has been
             edited. Both absent on a message still in its original form.
-          — plus "attachment": {Attachment} when the message carries a photo, video,
-            piece of audio, file or location.
+          — plus "attachments": [Attachment] when the message carries photos, videos,
+            audio, files or a location — 1 to 10 of them, in the order the sender chose;
+            absent (never an empty array) on a message that carries none.
+          — plus "attachment": {Attachment}, the FIRST element of "attachments", kept for
+            clients that predate plurality; a client that reads "attachments" ignores it.
+            The two are never present without each other.
           — plus "poll": {Poll} when (and only when) the message is a poll. A poll's
             QUESTION is the message body, so a client that knows nothing of polls shows it
             as an ordinary message and loses only the options — see "Polls".
@@ -615,6 +619,9 @@ file by its name, which is its whole identity, and a location by its label. A ki
 this list has not been extended for renders as the bare word `[attachment]`, never as anything about
 itself.
 
+Several attachments contribute one placeholder each, space-separated and in the sender's order —
+`[photo] [photo] [video] beach day` — each under the same rules as if it were alone.
+
 **A location contributes its label or the bare `[location]`, and NEVER its coordinates.** That is
 the rule a coordinate already lives under everywhere else here — it may not reach a log, an alert or
 a push body — and a third-party model is the strictest case of all of them, because what reaches it
@@ -686,9 +693,16 @@ suggest otherwise.
 
 ### Photos, videos, audio, files and locations
 
-A message may carry one attachment: a photo, a video, a piece of audio, or any other file. One, not
-many: sending three photos makes three messages, which is what a thread shows anyway, and it keeps
-both the wire shape and the bubble layout honest.
+A message may carry attachments — up to ten of them: photos, videos, audio, files, in any mix.
+(For a long time it was one, and "sending three photos makes three messages" was the rule; a
+family sends albums, and ten separate bubbles for one beach afternoon was the wire being honest at
+the reader's expense.) Order is the sender's: the `attachment_ids` array is preserved, and every
+read returns the attachments in exactly that order. Two rules keep the shape sane: a LOCATION is
+always alone — a place is a statement, not a page of an album, and a bubble that is half map and
+half photos serves neither — and a poll still carries no attachment at all. Claiming is
+all-or-nothing: if ANY id in the array cannot be claimed (already used, swept, not the caller's),
+the whole message is refused and nothing is written — the same transaction rule the single
+attachment always had, extended to the set.
 
 **Uploading is a separate step from sending.** The bytes go up first, on their own request, and the
 message that follows names the attachment by id. A 100 MB video and a 30-byte message have nothing
@@ -798,7 +812,7 @@ mutation path and a sequence cursor of its own, and would be a new section here.
 
 An attachment belongs to whoever uploaded it until a message claims it, and to that message's chat
 afterwards. Before it is claimed only the uploader may read it; after, every member of the chat
-may. An attachment can be claimed once: a second message naming it is `attachment_already_used`.
+may. An attachment can be claimed once — by one message, alongside up to nine others: a second message naming it is `attachment_already_used`, and the same id twice in one `attachment_ids` array is `invalid_attachment`.
 **Unclaimed attachments are deleted after 24 hours** — a send the user abandoned must not leave
 100 MB on the server forever.
 
@@ -1170,10 +1184,10 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachment` — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. |
+| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachments` (and the legacy `attachment`), trimmed exactly as before — kind and name, no dimensions, no coordinates — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self`, `not_same_family`, `user_not_found`. |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_id` claims an attachment this caller uploaded; a message carrying one may have an empty body. `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. Errors: `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
+| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. Errors: `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
 | `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/edits` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {messages: [Message]}` ordered by `edit_seq` ascending — the edit catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `PUT /chats/{id}/messages/{mid}/vote` | `{option_id: 5}` → `200 {message_id, poll: {Poll}}`. Sets the caller's choice on a poll — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or clear). One choice per member; there is no multiple choice. Re-PUT of the option already held is a no-op: no seq bump, no fan-out. Errors: `invalid_poll` (400 — no such option on this poll), `poll_closed` (409), `message_not_found` (404 — no such poll *in this chat*), `not_chat_member`, `chat_not_found`. |
@@ -1218,7 +1232,7 @@ Frames are JSON text messages tagged by `"type"`.
 {"type": "send",   "chat_id": 42, "client_msg_id": "1c4a9b02-…", "body": "Six works",
                    "reply_to_message_id": 1337}
 {"type": "send",   "chat_id": 42, "client_msg_id": "9d3f1e77-…", "body": "",
-                   "attachment_id": 34}
+                   "attachment_ids": [34, 35, 36]}
 {"type": "send",   "chat_id": 42, "client_msg_id": "5b2e0c14-…", "body": "Pizza or pasta?",
                    "poll": {"options": ["Pizza", "Pasta"]}}
 {"type": "read",   "chat_id": 42, "last_read_message_id": 1337}
@@ -1461,10 +1475,12 @@ message ids. Title `"<Family> — <Author>"`, body the note's text (or `"New not
 `include_message_body = false`, the same switch that governs message bodies). Tapping it opens the
 board.
 
-A message carrying an attachment MAY have an empty body — which is how a photo is normally sent —
+A message carrying attachments MAY have an empty body — which is how photos are normally sent —
 and an alert showing a name above a blank line says nothing arrived. Such a message pushes what
-arrived instead: `"Photo"`, `"Video"`, `"Audio"`, the file's name, or a location's label falling
-back to `"Location"`. A caption, when there is one, still wins. A location's COORDINATES are never
+arrived instead: for ONE attachment, `"Photo"`, `"Video"`, `"Audio"`, the file's name, or a
+location's label falling back to `"Location"`; for several of one kind, a count — `"3 Photos"`,
+`"2 Videos"`, `"2 Audio"`, `"4 Files"` (names give way to the count); for a mixed set,
+`"N attachments"`. A caption, when there is one, still wins. A location's COORDINATES are never
 in an alert — a lock screen is the one place a family member's position should not be readable
 without unlocking the phone.
 
@@ -1572,6 +1588,8 @@ unregistered deletes the row, as an ordinary push would.
 | Poll options | 2 minimum (fixed), 10 maximum |
 | Poll option text | 100 chars |
 | Family-chat history sent with a mention | 30 days / 200 messages / 40 000 chars, whichever binds first (fixed) |
+| Attachment size | 100 MB (`limits.max_attachment_bytes`; keep nginx in step) |
+| Attachments per message | 10 (`limits.max_attachments_per_message`; the fewest is 1, fixed) |
 | Call ring timeout | 45 s |
 | Buffered caller candidates while ringing | 64 (fixed) |
 | Offer / answer SDP | 64 KiB (fixed) |

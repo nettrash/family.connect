@@ -55,8 +55,11 @@ import me.nettrash.familyconnect.ui.chat.ChatScreen
 import me.nettrash.familyconnect.ui.chatlist.ChatListScreen
 import me.nettrash.familyconnect.ui.familyadmin.FamilyAdminScreen
 import me.nettrash.familyconnect.ui.familygate.FamilyGateScreen
+import me.nettrash.familyconnect.MainViewModel
 import me.nettrash.familyconnect.calls.CallState
 import me.nettrash.familyconnect.ui.call.CallScreen
+import me.nettrash.familyconnect.ui.share.SharePreparingSheet
+import me.nettrash.familyconnect.ui.share.ShareTargetSheet
 import me.nettrash.familyconnect.ui.serversetup.ServerSetupScreen
 import me.nettrash.familyconnect.ui.settings.SettingsScreen
 import me.nettrash.familyconnect.ui.waiting.WaitingScreen
@@ -136,6 +139,21 @@ fun startDestinationFor(status: FamilyStatus): String = when (status) {
     FamilyStatus.MEMBER, FamilyStatus.OWNER -> Routes.CHAT_LIST
 }
 
+/**
+ * Whether picking a share target may navigate to that chat NOW.
+ *
+ * The same status → route rule [startDestinationFor] pins, evaluated on
+ * the CURRENT session status — never the frozen boot start destination:
+ * someone who logged in or joined a family after boot has a live chat UI
+ * even though the NavHost was composed with a gate route as its start,
+ * and [MainViewModel.onShared] admits their share off a FRESH snapshot.
+ * Gating on the boot route stranded that share's targeted stash with no
+ * visible outcome. Null (no emission yet) never navigates. Pure —
+ * pinned by unit tests.
+ */
+fun shareNavigatesToChat(status: FamilyStatus?): Boolean =
+    status != null && startDestinationFor(status) == Routes.CHAT_LIST
+
 @Composable
 fun AppNavHost(
     startDestination: String,
@@ -145,6 +163,14 @@ fun AppNavHost(
     isOwner: Boolean = false,
     /** The one voice call this device can be on; the call screen follows it. */
     callState: StateFlow<CallState>? = null,
+    /** The OS-share flow — null when no share is in progress (MainViewModel). */
+    shareFlow: StateFlow<MainViewModel.ShareFlow?>? = null,
+    /** The picker chose a chat: the stash is aimed, then this navigates. */
+    onShareChatChosen: (Long) -> Unit = {},
+    /** The picker was dismissed: the share (and its cache files) is discarded. */
+    onShareCancelled: () -> Unit = {},
+    /** LIVE session status — the share picker's navigation gate (see [shareNavigatesToChat]). */
+    sessionStatus: StateFlow<FamilyStatus?>? = null,
 ) {
     val navController = rememberNavController()
 
@@ -212,6 +238,34 @@ fun AppNavHost(
             }
         }
         onPendingRouteConsumed()
+    }
+
+    // The OS-share overlay: a holding sheet while the bytes copy, then
+    // the chat picker. Sheets rather than destinations, because a share
+    // is a question layered over wherever the person already is — and
+    // dismissing it must leave them exactly there.
+    if (shareFlow != null) {
+        val share by shareFlow.collectAsStateWithLifecycle()
+        val currentStatus = sessionStatus?.collectAsStateWithLifecycle()
+        when (share) {
+            MainViewModel.ShareFlow.Preparing ->
+                SharePreparingSheet(onDismiss = onShareCancelled)
+            is MainViewModel.ShareFlow.ChooseChat -> ShareTargetSheet(
+                onPick = { chatId ->
+                    onShareChatChosen(chatId)
+                    // Gated on the CURRENT status, not the frozen boot
+                    // start destination: onShared admits a share off a
+                    // FRESH snapshot, so a login or family join after
+                    // boot must not strand the targeted stash without
+                    // navigation (see shareNavigatesToChat).
+                    if (shareNavigatesToChat(currentStatus?.value)) {
+                        navController.navigate(Routes.chat(chatId))
+                    }
+                },
+                onDismiss = onShareCancelled,
+            )
+            null -> Unit
+        }
     }
 
     // The NavHost paints its own ground. Every transition below offsets

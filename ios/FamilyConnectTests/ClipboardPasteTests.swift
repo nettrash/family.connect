@@ -150,6 +150,25 @@ struct ClipboardPasteTests {
         #expect(ClipboardAttachment.action(for: .text, composerIsBusy: true) == .type)
     }
 
+    #if os(iOS)
+    /// The composer-side half of the same gate: which media states close
+    /// the attach and paste doors. A SEND does — including a multi-item
+    /// send carrying progress text, which is why progress rides inside
+    /// `.uploading` and never through `.working` — while a download or
+    /// share (`.working`) leaves the composer usable, and a dismissible
+    /// failure gates nothing.
+    @Test("A send blocks the composer's doors; a download does not")
+    func mediaStateGating() {
+        typealias State = ConversationView.MediaSendState
+        #expect(State.preparing.blocksComposer)
+        #expect(State.uploading(nil).blocksComposer)
+        #expect(State.uploading("Uploading 2 of 5…").blocksComposer)
+        #expect(!State.idle.blocksComposer)
+        #expect(!State.working("Preparing…").blocksComposer)
+        #expect(!State.failed("nope").blocksComposer)
+    }
+    #endif
+
     /// `prepare` must never be the arbiter. It takes the best
     /// representation it can find, so on a clipboard holding both words and
     /// a picture it takes the picture — the opposite of what the rule says,

@@ -34,7 +34,11 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         clientMsgID: String,
         body: String,
         replyToMessageID: Int64?,
-        attachmentID: Int64?,
+        /// The attachments this message claims, in the sender's order —
+        /// encoded as `attachment_ids`. The legacy `attachment_id` is the
+        /// one-element spelling of the same thing and this client no
+        /// longer sends it; the server accepts the array.
+        attachmentIDs: [Int64]?,
         pollOptions: [String]?)
     case read(chatID: Int64, lastReadMessageID: Int64)
     case typing(chatID: Int64)
@@ -55,7 +59,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
         case clientMsgID = "client_msg_id"
         case body
         case replyToMessageID = "reply_to_message_id"
-        case attachmentID = "attachment_id"
+        case attachmentIDs = "attachment_ids"
         case lastReadMessageID = "last_read_message_id"
         case poll
         case callID = "call_id"
@@ -74,7 +78,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .send(let chatID, let clientMsgID, let body, let replyToMessageID, let attachmentID, let pollOptions):
+        case .send(let chatID, let clientMsgID, let body, let replyToMessageID, let attachmentIDs, let pollOptions):
             try container.encode("send", forKey: .type)
             try container.encode(chatID, forKey: .chatID)
             try container.encode(clientMsgID, forKey: .clientMsgID)
@@ -83,7 +87,7 @@ nonisolated enum ClientFrame: Encodable, Equatable, Sendable {
             // carry "reply_to_message_id": null — the protocol writes the
             // field as absent.
             try container.encodeIfPresent(replyToMessageID, forKey: .replyToMessageID)
-            try container.encodeIfPresent(attachmentID, forKey: .attachmentID)
+            try container.encodeIfPresent(attachmentIDs, forKey: .attachmentIDs)
             if let pollOptions {
                 var poll = container.nestedContainer(keyedBy: NewPollKeys.self, forKey: .poll)
                 try poll.encode(pollOptions, forKey: .options)

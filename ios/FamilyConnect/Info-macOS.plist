@@ -34,5 +34,16 @@
 	-->
 	<key>FCDefaultServerURL</key>
 	<string>$(FC_DEFAULT_SERVER_URL)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>me.nettrash.FamilyConnect.share</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>familyconnect</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

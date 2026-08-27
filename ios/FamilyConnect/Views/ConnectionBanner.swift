@@ -37,8 +37,8 @@ struct ConnectionBanner: View {
     private var label: String? {
         switch coordinator.connectionState {
         case .connected: nil
-        case .connecting: "Connecting…"
-        case .offline: "Offline"
+        case .connecting: String(localized: "Connecting…")
+        case .offline: String(localized: "Offline")
         }
     }
 }

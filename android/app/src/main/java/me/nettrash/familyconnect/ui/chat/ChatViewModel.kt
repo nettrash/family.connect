@@ -71,6 +71,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
@@ -102,6 +103,7 @@ import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageBody
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.repo.PastedMedia
+import me.nettrash.familyconnect.data.repo.ShareStash
 import android.content.ClipData
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.di.AppScope
@@ -148,6 +150,13 @@ class ChatViewModel @Inject constructor(
      * SessionRepository plays with its push-token repository).
      */
     private val callStarter: CallStarter = CallStarter { _, _ -> false },
+    /**
+     * Where an OS share parks what it prepared until this chat's
+     * composer collects it. Defaulted with the same trick as
+     * [callStarter]: the tests never share, and Dagger injects the
+     * app-wide singleton the share flow deposited into.
+     */
+    private val shareStash: ShareStash = ShareStash(),
 ) : ViewModel() {
 
     val chatId: Long = checkNotNull(savedStateHandle["chatId"]) { "chatId nav arg missing" }
@@ -592,6 +601,17 @@ class ChatViewModel @Inject constructor(
                     _typingUser.value = null
                 }
         }
+
+        // An OS share aimed at THIS chat: drain the stash into the
+        // composer — items land STAGED and words land in the field,
+        // nothing auto-sends. The claim is target-checked, so a chat
+        // opened by any other route finds nothing here (mirrors iOS's
+        // pendingShareImport).
+        viewModelScope.launch {
+            val share = shareStash.claim(chatId) ?: return@launch
+            share.items.forEach { stage(it) }
+            share.text?.let { appendPasted(it) }
+        }
     }
 
     /** What the composer is doing with a picked photo or video. */
@@ -627,9 +647,14 @@ class ChatViewModel @Inject constructor(
     /** Drives the input bar's busy strip. */
     val mediaState: StateFlow<MediaSendState> = _mediaState
 
-    /** Media prepared and waiting for Send; null when there is none. */
-    private val _staged = MutableStateFlow<MediaPrep.Prepared?>(null)
-    val staged: StateFlow<MediaPrep.Prepared?> = _staged
+    /**
+     * Media prepared and waiting for Send — up to
+     * [AttachmentDto.MAX_PER_MESSAGE] of them, in the order they were
+     * added, which is the order the message will carry them
+     * (docs/protocol.md, "Photos, videos, audio, files and locations").
+     */
+    private val _staged = MutableStateFlow<List<MediaPrep.Prepared>>(emptyList())
+    val staged: StateFlow<List<MediaPrep.Prepared>> = _staged
 
     /** Screen calls this from a LifecycleResumeEffect. */
     fun setResumed(isResumed: Boolean) {
@@ -691,10 +716,14 @@ class ChatViewModel @Inject constructor(
         // An attachment can travel with no words at all — that is how a
         // photo is normally sent — so a blank draft only stops the send
         // when there is nothing staged either.
-        val attachment = _staged.value
-        if (body.isBlank() && attachment == null) return
-        if (attachment != null) {
-            sendStaged(attachment, body)
+        // Taken ATOMICALLY (one swap): stage() can land concurrently
+        // from the appScope prepare loops and the share drain, and a
+        // separate read-then-clear would silently drop — and leak the
+        // file of — anything staged between the two writes.
+        val attachments = _staged.getAndUpdate { emptyList() }
+        if (body.isBlank() && attachments.isEmpty()) return
+        if (attachments.isNotEmpty()) {
+            sendStaged(attachments, body)
             return
         }
         // Edit mode: the composer was borrowed to rewrite an existing
@@ -727,7 +756,15 @@ class ChatViewModel @Inject constructor(
      * MessageRepository.sendMedia). [mediaState] is what the input bar
      * draws while that runs.
      */
-    fun stageMedia(uri: Uri, isVideo: Boolean) {
+    fun stageMedia(uri: Uri, isVideo: Boolean) = stageMedia(listOf(uri to isVideo))
+
+    /**
+     * The multi-picker's entry: each (uri, isVideo) prepared and staged
+     * in the order it was picked — which is the order the message will
+     * carry them.
+     */
+    fun stageMedia(items: List<Pair<Uri, Boolean>>) {
+        if (items.isEmpty()) return
         if (_mediaState.value == MediaSendState.Preparing ||
             _mediaState.value == MediaSendState.Uploading
         ) {
@@ -740,21 +777,28 @@ class ChatViewModel @Inject constructor(
         // at the same moment survives the same navigation, and so must
         // this. The state writes below are harmless once nobody is reading.
         appScope.launch {
-            val prepared = try {
-                if (isVideo) mediaPrep.prepareVideo(uri) else mediaPrep.preparePhoto(uri)
-            } catch (_: MediaPrep.TooLargeAfterCompression) {
-                // The one failure the user can act on, so it says what
-                // would help rather than just refusing.
-                _mediaState.value = MediaSendState.Failed(
-                    appContext.getString(R.string.e_still_too_large),
-                )
-                return@launch
-            } catch (_: Exception) {
-                _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_prepare_failed))
-                return@launch
-            }
+            items.forEachIndexed { index, (uri, isVideo) ->
+                val prepared = try {
+                    if (isVideo) mediaPrep.prepareVideo(uri) else mediaPrep.preparePhoto(uri)
+                } catch (_: MediaPrep.TooLargeAfterCompression) {
+                    // The one failure the user can act on, so it says what
+                    // would help rather than just refusing. What was
+                    // already staged stays staged.
+                    _mediaState.value = MediaSendState.Failed(
+                        appContext.getString(R.string.e_still_too_large),
+                    )
+                    return@launch
+                } catch (_: Exception) {
+                    _mediaState.value =
+                        MediaSendState.Failed(appContext.getString(R.string.e_prepare_failed))
+                    return@launch
+                }
 
-            stage(prepared)
+                if (!stage(prepared)) return@launch
+                // stage() reports Idle so each chip appears as it lands;
+                // the strip goes back to busy while more are still coming.
+                if (index < items.lastIndex) _mediaState.value = MediaSendState.Preparing
+            }
         }
     }
 
@@ -829,23 +873,46 @@ class ChatViewModel @Inject constructor(
         if (_replyDraft.value == null) _replyDraft.value = quote
     }
 
-    private fun sendStaged(prepared: MediaPrep.Prepared, caption: String) {
+    private fun sendStaged(prepared: List<MediaPrep.Prepared>, caption: String) {
         val quote = _replyDraft.value
         inputState.clearText()
         _replyDraft.value = null
-        _staged.value = null
+        // send() already took the staged set atomically; clearing it again
+        // here would clobber anything staged in between.
         _mediaState.value = MediaSendState.Uploading
         // App scope, not viewModelScope: navigating away used to take a
         // 90 MB upload with it — no bubble, no FAILED row, no error.
         appScope.launch {
-            if (messageRepository.sendMedia(prepared, caption, chatId, quote)) {
+            val sent = messageRepository.sendMedia(
+                prepared,
+                caption,
+                chatId,
+                quote,
+            ) { index, total ->
+                // "Uploading 2 of 5…" — only a set worth counting gets a
+                // counter; a single upload keeps the plain busy strip.
+                if (total > 1) {
+                    _mediaState.value = MediaSendState.Working(
+                        appContext.getString(R.string.s_uploading_n_of_m, index, total),
+                    )
+                }
+            }
+            if (sent) {
                 _mediaState.value = MediaSendState.Idle
             } else {
                 _mediaState.value =
                     MediaSendState.Failed(appContext.getString(R.string.e_send_failed))
-                // sendMedia deletes the prepared file whatever happened, so
-                // only restore what can still be sent.
-                if (prepared.file.exists()) _staged.value = prepared
+                // sendMedia deletes an item's prepared file only once
+                // ITS upload has landed (iOS parity), so the files still
+                // on disk are exactly the unsent tail — put them back in
+                // the composer for a one-tap retry. Uploads that landed
+                // before the failure are left to the server's 24-hour
+                // sweep of unclaimed attachments. PREPENDED atomically:
+                // they were staged before anything added mid-upload.
+                val remainder = prepared.filter { it.file.exists() }
+                if (remainder.isNotEmpty()) {
+                    _staged.update { current -> remainder + current }
+                }
                 if (inputState.text.isEmpty()) {
                     inputState.setTextAndPlaceCursorAtEnd(caption)
                 }
@@ -857,10 +924,13 @@ class ChatViewModel @Inject constructor(
     /**
      * Hold prepared media in the composer until the user presses Send.
      *
-     * Picking used to send immediately, so a caption had to be typed BEFORE
-     * choosing the photo and there was no way to back out once picked. One
-     * attachment per message, so a second pick replaces the first rather
-     * than queueing behind it.
+     * Picking used to send immediately, so a caption had to be typed
+     * BEFORE choosing the photo and there was no way to back out once
+     * picked. A message now carries up to
+     * [AttachmentDto.MAX_PER_MESSAGE] attachments, so staging APPENDS —
+     * the old one-per-message discard-first rule died with plurality —
+     * and at the cap the new item is refused with a notice rather than
+     * silently replacing anything.
      */
     /**
      * Test seam: staging normally follows a real pick + prepare, which a
@@ -868,10 +938,32 @@ class ChatViewModel @Inject constructor(
      */
     fun stagePrepared(prepared: MediaPrep.Prepared) = stage(prepared)
 
-    private fun stage(prepared: MediaPrep.Prepared) {
-        discardStaged()
-        _staged.value = prepared
-        _mediaState.value = MediaSendState.Idle
+    /** True when the item was taken; false (file deleted, notice shown) at the cap. */
+    private fun stage(prepared: MediaPrep.Prepared): Boolean {
+        // CAS loop, not a plain read-modify-write: stage() runs on the
+        // appScope prepare loops (a Default-pool thread each), the share
+        // drain and the main thread at once, and two racing
+        // `value = value + x` writes can lose an item — whose file then
+        // leaks, because only staged items are ever cleaned up. The cap
+        // check sits INSIDE the loop so refusal and append decide
+        // against the same list.
+        while (true) {
+            val current = _staged.value
+            if (current.size >= AttachmentDto.MAX_PER_MESSAGE) {
+                prepared.file.delete()
+                _mediaState.value = MediaSendState.Failed(
+                    appContext.getString(
+                        R.string.e_attachment_limit,
+                        AttachmentDto.MAX_PER_MESSAGE,
+                    ),
+                )
+                return false
+            }
+            if (_staged.compareAndSet(current, current + prepared)) {
+                _mediaState.value = MediaSendState.Idle
+                return true
+            }
+        }
     }
 
     /**
@@ -895,10 +987,20 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /** Throw away staged media and the temp file nothing else will clean up. */
-    fun discardStaged() {
-        _staged.value?.file?.delete()
-        _staged.value = null
+    /** Throw away ONE staged item and the temp file nothing else will clean up. */
+    fun discardStaged(index: Int) {
+        // CAS: a concurrent stage() append must not be clobbered by this
+        // write (nor vice versa). The victim is resolved against the SAME
+        // list the swap replaces, and its file is deleted only after the
+        // swap took — never the file of an item that stays visible.
+        while (true) {
+            val current = _staged.value
+            val victim = current.getOrNull(index) ?: return
+            if (_staged.compareAndSet(current, current.filterIndexed { i, _ -> i != index })) {
+                victim.file.delete()
+                return
+            }
+        }
     }
 
     /**
@@ -973,7 +1075,11 @@ class ChatViewModel @Inject constructor(
         voiceRecorder.cancel()
     }
 
-    fun stageFile(uri: Uri) {
+    fun stageFile(uri: Uri) = stageFiles(listOf(uri))
+
+    /** The multi-document picker's entry: each Uri prepared and staged in order. */
+    fun stageFiles(uris: List<Uri>) {
+        if (uris.isEmpty()) return
         if (_mediaState.value == MediaSendState.Preparing ||
             _mediaState.value == MediaSendState.Uploading
         ) {
@@ -982,27 +1088,32 @@ class ChatViewModel @Inject constructor(
         _mediaState.value = MediaSendState.Preparing
         // App scope for the same reason as sendMedia.
         appScope.launch {
-            val declared = providerType(uri).orEmpty()
-            val prepared = try {
-                // Audio the server's magic check knows gets a player rather
-                // than a document row; anything else it would refuse falls
-                // through to the file path, where nothing is verified.
-                if (declared in MediaPrep.SENDABLE_AUDIO_TYPES) {
-                    mediaPrep.prepareAudio(uri)
-                } else {
-                    mediaPrep.prepareFile(uri)
+            uris.forEachIndexed { index, uri ->
+                val declared = providerType(uri).orEmpty()
+                val prepared = try {
+                    // Audio the server's magic check knows gets a player rather
+                    // than a document row; anything else it would refuse falls
+                    // through to the file path, where nothing is verified.
+                    if (declared in MediaPrep.SENDABLE_AUDIO_TYPES) {
+                        mediaPrep.prepareAudio(uri)
+                    } else {
+                        mediaPrep.prepareFile(uri)
+                    }
+                } catch (_: MediaPrep.TooLargeAfterCompression) {
+                    // A document cannot be compressed the way a video can, so
+                    // the advice is different: there is nothing to try.
+                    _mediaState.value =
+                        MediaSendState.Failed(appContext.getString(R.string.e_file_too_large))
+                    return@launch
+                } catch (_: Exception) {
+                    _mediaState.value =
+                        MediaSendState.Failed(appContext.getString(R.string.e_read_file_failed))
+                    return@launch
                 }
-            } catch (_: MediaPrep.TooLargeAfterCompression) {
-                // A document cannot be compressed the way a video can, so
-                // the advice is different: there is nothing to try.
-                _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_file_too_large))
-                return@launch
-            } catch (_: Exception) {
-                _mediaState.value = MediaSendState.Failed(appContext.getString(R.string.e_read_file_failed))
-                return@launch
-            }
 
-            stage(prepared)
+                if (!stage(prepared)) return@launch
+                if (index < uris.lastIndex) _mediaState.value = MediaSendState.Preparing
+            }
         }
     }
 
@@ -1044,8 +1155,8 @@ class ChatViewModel @Inject constructor(
      * attachment upload followed by the existing claim-on-send, and it is
      * STAGED rather than sent — so a caption can be added, and a paste by
      * accident can be discarded. It goes through the same [stage] as the
-     * picker, so a previously staged item is replaced rather than queued
-     * behind (one attachment per message, docs/protocol.md).
+     * picker, so it APPENDS behind whatever is already staged, up to the
+     * cap a message may carry (docs/protocol.md).
      *
      * [declaredMime] is what the clipboard said the item is, used only
      * when the provider will not answer for itself. [keepAlive] is the
@@ -1069,28 +1180,29 @@ class ChatViewModel @Inject constructor(
         // that was never an attachment in the first place and had every
         // right to land in the composer as words.
         val kind = PastedMedia.kindFor(uri.scheme, mime) ?: return PasteResult.NOTHING
-        return stagePasted(uri, mime, kind, keepAlive)
+        return stagePasted(listOf(PasteTarget(uri, mime, kind)), keepAlive)
     }
 
+    /** One item the paste rule has already called an attachment. */
+    private data class PasteTarget(val uri: Uri, val mime: String?, val kind: String)
+
     /**
-     * Prepare and stage one item the rule has already called an
-     * attachment.
+     * Prepare and stage the items the rule has already called
+     * attachments, in clip order.
      *
      * Private, and reachable only through [PastedMedia] having said so:
      * the preparation must never be the thing that decides what a
      * clipboard is, or there are two policies and they drift.
      *
-     * [keepAlive] is whatever object the platform hung this Uri's read
-     * grant on — for content committed by a KEYBOARD that is an
-     * `InputContentInfo`, and the grant dies with it, not at some later
-     * timeout. The copy below runs on another thread, so that object is
-     * referenced until the copy is done and cannot be collected out from
-     * under it.
+     * [keepAlive] is whatever object the platform hung these Uris' read
+     * grants on — for content committed by a KEYBOARD that is an
+     * `InputContentInfo`, and the grants die with it, not at some later
+     * timeout. The copies below run on another thread, so that object is
+     * referenced until the last copy is done and cannot be collected out
+     * from under it.
      */
     private fun stagePasted(
-        uri: Uri,
-        mime: String?,
-        kind: String,
+        targets: List<PasteTarget>,
         keepAlive: Any?,
     ): PasteResult {
         // The same guard the attach menu carries: the composer is borrowed
@@ -1123,56 +1235,69 @@ class ChatViewModel @Inject constructor(
         // App scope, like every other prepare-and-send here: leaving the
         // screen must not take a 90 MB upload with it.
         appScope.launch {
-            val prepared = try {
-                when (kind) {
-                    // The SAME preparation the picker uses — the downscaled
-                    // photo, the poster frame, the duration. A second path
-                    // would be a second set of bugs.
-                    AttachmentDto.KIND_PHOTO -> mediaPrep.preparePhoto(uri)
-                    AttachmentDto.KIND_VIDEO -> mediaPrep.prepareVideo(uri, declaredMime = mime)
-                    AttachmentDto.KIND_AUDIO -> mediaPrep.prepareAudio(
-                        uri,
-                        declaredMime = mime,
-                        fallbackName = pastedName(mime),
-                    )
-                    // `kind=file` REQUIRES a name of 1–255 characters and a
-                    // clipboard item usually has none: MediaPrep prefers the
-                    // provider's DISPLAY_NAME and falls back to this one.
-                    else -> mediaPrep.prepareFile(
-                        uri,
-                        declaredMime = mime,
-                        fallbackName = pastedName(mime),
-                    )
+            try {
+                targets.forEachIndexed { index, target ->
+                    val prepared = try {
+                        when (target.kind) {
+                            // The SAME preparation the picker uses — the
+                            // downscaled photo, the poster frame, the
+                            // duration. A second path would be a second set
+                            // of bugs.
+                            AttachmentDto.KIND_PHOTO -> mediaPrep.preparePhoto(target.uri)
+                            AttachmentDto.KIND_VIDEO ->
+                                mediaPrep.prepareVideo(target.uri, declaredMime = target.mime)
+                            AttachmentDto.KIND_AUDIO -> mediaPrep.prepareAudio(
+                                target.uri,
+                                declaredMime = target.mime,
+                                fallbackName = pastedName(target.mime),
+                            )
+                            // `kind=file` REQUIRES a name of 1–255 characters
+                            // and a clipboard item usually has none: MediaPrep
+                            // prefers the provider's DISPLAY_NAME and falls
+                            // back to this one.
+                            else -> mediaPrep.prepareFile(
+                                target.uri,
+                                declaredMime = target.mime,
+                                fallbackName = pastedName(target.mime),
+                            )
+                        }
+                    } catch (_: MediaPrep.TooLargeAfterCompression) {
+                        // The existing two messages, already translated: a
+                        // video can be shortened, a document cannot be made
+                        // smaller. What was already staged stays staged.
+                        _mediaState.value = MediaSendState.Failed(
+                            appContext.getString(
+                                if (target.kind == AttachmentDto.KIND_VIDEO) {
+                                    R.string.e_still_too_large
+                                } else {
+                                    R.string.e_file_too_large
+                                },
+                            ),
+                        )
+                        return@launch
+                    } catch (_: Exception) {
+                        _mediaState.value = MediaSendState.Failed(
+                            appContext.getString(
+                                if (target.kind == AttachmentDto.KIND_PHOTO ||
+                                    target.kind == AttachmentDto.KIND_VIDEO
+                                ) {
+                                    R.string.e_prepare_failed
+                                } else {
+                                    R.string.e_read_file_failed
+                                },
+                            ),
+                        )
+                        return@launch
+                    }
+
+                    if (!stage(prepared)) return@launch
+                    if (index < targets.lastIndex) {
+                        _mediaState.value = MediaSendState.Preparing
+                    }
                 }
-            } catch (_: MediaPrep.TooLargeAfterCompression) {
-                // The existing two messages, already translated: a video
-                // can be shortened, a document cannot be made smaller.
-                _mediaState.value = MediaSendState.Failed(
-                    appContext.getString(
-                        if (kind == AttachmentDto.KIND_VIDEO) {
-                            R.string.e_still_too_large
-                        } else {
-                            R.string.e_file_too_large
-                        },
-                    ),
-                )
-                return@launch
-            } catch (_: Exception) {
-                _mediaState.value = MediaSendState.Failed(
-                    appContext.getString(
-                        if (kind == AttachmentDto.KIND_PHOTO || kind == AttachmentDto.KIND_VIDEO) {
-                            R.string.e_prepare_failed
-                        } else {
-                            R.string.e_read_file_failed
-                        },
-                    ),
-                )
-                return@launch
             } finally {
                 pasteGrant = null
             }
-
-            stage(prepared)
         }
         return PasteResult.STAGING
     }
@@ -1236,9 +1361,13 @@ class ChatViewModel @Inject constructor(
         }
         return when (val verdict = PastedMedia.decide(items)) {
             is PastedMedia.Verdict.Attach -> stagePasted(
-                uri = clip!!.getItemAt(verdict.index).uri!!,
-                mime = items[verdict.index].mime,
-                kind = verdict.kind,
+                targets = verdict.picks.map { pick ->
+                    PasteTarget(
+                        uri = clip!!.getItemAt(pick.index).uri!!,
+                        mime = items[pick.index].mime,
+                        kind = pick.kind,
+                    )
+                },
                 keepAlive = keepAlive,
             )
 

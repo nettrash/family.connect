@@ -101,6 +101,14 @@ fun buildReactionDetails(
     reactions: List<ReactionDto>,
     names: Map<Long, String>,
     myUserId: Long,
+    /**
+     * Display text for my own entry and for a user id the roster does not
+     * know. Passed in rather than resourced here because this file stays
+     * Compose- and Android-free (see the header); the English defaults
+     * keep the pure tests pinning the ordering rules unchanged.
+     */
+    youLabel: String = "You",
+    memberFallback: (Long) -> String = { "Member $it" },
 ): List<ReactionDetail> {
     if (reactions.isEmpty()) return emptyList()
     val othersByEmoji = LinkedHashMap<String, MutableList<String>>()
@@ -110,13 +118,13 @@ fun buildReactionDetails(
         if (reaction.userId == myUserId) {
             mine += reaction.emoji
         } else {
-            others += names[reaction.userId] ?: "Member ${reaction.userId}"
+            others += names[reaction.userId] ?: memberFallback(reaction.userId)
         }
     }
     return othersByEmoji.map { (emoji, others) ->
         ReactionDetail(
             emoji = emoji,
-            names = if (emoji in mine) listOf("You") + others else others,
+            names = if (emoji in mine) listOf(youLabel) + others else others,
         )
     }
 }

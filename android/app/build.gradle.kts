@@ -309,6 +309,13 @@ dependencies {
     testImplementation(libs.robolectric)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Compose UI tests as local Robolectric tests (NoteDialogTest): the BOM
+    // pins the versions. ui-test-manifest is debugImplementation — the
+    // ComponentActivity createComposeRule launches must be in the VARIANT's
+    // merged manifest (which Robolectric reads), not on the test classpath.
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.ui.test.junit4)
+    debugImplementation(libs.androidx.ui.test.manifest)
 }
 
 // ---- IDE compatibility: legacy aggregate test-class tasks --------------

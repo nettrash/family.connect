@@ -265,12 +265,12 @@ import androidx.compose.material.icons.filled.Mic
 import android.graphics.BitmapFactory
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.ui.graphics.asImageBitmap
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import androidx.core.content.FileProvider
 import java.io.File
-import me.nettrash.familyconnect.ui.components.AttachmentBlock
+import me.nettrash.familyconnect.ui.components.AttachmentGroup
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
 import me.nettrash.familyconnect.ui.components.EmptyState
@@ -393,31 +393,42 @@ fun ChatScreen(
     val clipboard = LocalClipboard.current
     // Hoisted: a coroutine is not a composable context.
     val clipLabel = stringResource(R.string.s_message)
+    // Resolved out here: toasts and the attachment-busy notice fire from
+    // click handlers and coroutines, which are not composable contexts.
+    val copiedLabel = stringResource(R.string.s_copied)
+    val savedToGalleryLabel = stringResource(R.string.s_saved_to_gallery)
+    val preparingLabel = stringResource(R.string.s_preparing)
     val context = LocalContext.current
 
     // The system photo picker: no permission, no gallery access — it
-    // hands back one item's Uri and nothing else, which is the whole
-    // reason this app never asks for READ_MEDIA_IMAGES.
+    // hands back the picked Uris and nothing else, which is the whole
+    // reason this app never asks for READ_MEDIA_IMAGES. Multiple since a
+    // message learned to carry up to ten attachments; the picker itself
+    // enforces the cap.
     val pickMedia = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
-    ) { uri ->
-        if (uri != null) {
-            // Guarded: `getType` reaches into the picker's provider and
-            // throws for a Uri it does not recognise — on the main thread,
-            // where that is a crash rather than a failed pick.
-            val type = runCatching { context.contentResolver.getType(uri) }
-                .getOrNull()
-                .orEmpty()
-            viewModel.stageMedia(uri, isVideo = type.startsWith("video/"))
+        ActivityResultContracts.PickMultipleVisualMedia(AttachmentDto.MAX_PER_MESSAGE),
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            val items = uris.map { uri ->
+                // Guarded: `getType` reaches into the picker's provider and
+                // throws for a Uri it does not recognise — on the main
+                // thread, where that is a crash rather than a failed pick.
+                val type = runCatching { context.contentResolver.getType(uri) }
+                    .getOrNull()
+                    .orEmpty()
+                uri to type.startsWith("video/")
+            }
+            viewModel.stageMedia(items)
         }
     }
-    // OpenDocument, not GetContent: it returns a Uri whose read permission
-    // this process actually holds, which is what makes the copy in
-    // MediaPrep.prepareFile work. "*/*" because the family is never told
-    // what they may send (protocol.md, "Files").
+    // OpenMultipleDocuments, not GetContent: it returns Uris whose read
+    // permission this process actually holds, which is what makes the copy
+    // in MediaPrep.prepareFile work. "*/*" because the family is never told
+    // what they may send (protocol.md, "Files"). The staging cap trims a
+    // selection past ten with a notice.
     val pickFile = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument(),
-    ) { uri -> if (uri != null) viewModel.stageFile(uri) }
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris -> if (uris.isNotEmpty()) viewModel.stageFiles(uris) }
 
     // Pasting. Two doors into the same staging: the attach menu's Paste,
     // which reads the clipboard itself and works with the field unfocused,
@@ -550,7 +561,7 @@ fun ChatScreen(
         scope.launch {
             when (viewModel.saveToGallery(context, attachment)) {
                 GallerySaver.Result.SAVED ->
-                    Toast.makeText(context, "Saved to gallery", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, savedToGalleryLabel, Toast.LENGTH_SHORT).show()
                 GallerySaver.Result.NEEDS_PERMISSION ->
                     viewModel.reportSaveNeedsPermission()
                 GallerySaver.Result.FAILED -> Unit // the strip already says so
@@ -583,7 +594,7 @@ fun ChatScreen(
     // re-encode what the sender sent.
     val shareAttachment: (AttachmentDto, String) -> Unit = { attachment, caption ->
         scope.launch {
-            viewModel.reportAttachmentBusy("Preparing…")
+            viewModel.reportAttachmentBusy(preparingLabel)
             val file = viewModel.localFile(attachment)
             if (file == null) {
                 viewModel.reportAttachmentOpenFailed(downloaded = false)
@@ -602,7 +613,7 @@ fun ChatScreen(
         scope.launch {
             // Say something immediately: a large PDF takes seconds, and a
             // tap that looks like nothing invites a second tap.
-            viewModel.reportAttachmentBusy("Preparing…")
+            viewModel.reportAttachmentBusy(preparingLabel)
             val file = viewModel.localFile(attachment)
             val opened = file != null && openWithSystem(context, file, attachment.mime)
             if (opened) {
@@ -878,7 +889,7 @@ fun ChatScreen(
                                 exit = fadeOut(tween(150)),
                             ) {
                                 Text(
-                                    text = "${lastTypingUser.value} is typing…",
+                                    text = stringResource(R.string.s_is_typing, lastTypingUser.value),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary,
                                     maxLines = 1,
@@ -941,11 +952,13 @@ fun ChatScreen(
                                     title = stringResource(R.string.s_no_messages_yet),
                                     // kind is "family" | "direct" (ChatEntity)
                                     // — a 1:1 chat is not "your family chat".
-                                    subtitle = if (chat?.kind == "direct") {
-                                        "Say hi — this is where your conversation starts"
-                                    } else {
-                                        "Say hi — this is where your family chat starts"
-                                    },
+                                    subtitle = stringResource(
+                                        if (chat?.kind == "direct") {
+                                            R.string.s_say_hi_direct
+                                        } else {
+                                            R.string.s_say_hi_family
+                                        },
+                                    ),
                                 )
                             }
                         }
@@ -1119,7 +1132,11 @@ fun ChatScreen(
                 onSend = viewModel::send,
                 replyDraft = replyDraft,
                 replyAuthorName = replyDraft?.senderId?.let { sender ->
-                    if (sender == myUserId) "You" else memberNames[sender] ?: "Someone"
+                    if (sender == myUserId) {
+                        stringResource(R.string.s_you)
+                    } else {
+                        memberNames[sender] ?: stringResource(R.string.s_someone)
+                    }
                 } ?: "",
                 onCancelReply = viewModel::cancelReply,
                 focusRequester = focusRequester,
@@ -1209,7 +1226,7 @@ fun ChatScreen(
                     // than a snackbar because this screen's bottom edge
                     // is the input bar, which a snackbar would cover.
                     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                        Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, copiedLabel, Toast.LENGTH_SHORT).show()
                     }
                 }
             },
@@ -2042,7 +2059,7 @@ private fun MessageBubble(
                 // run rather than in a gutter beside every bubble: the
                 // thread's layout — and the run-corner geometry above —
                 // stays exactly as it was. Same choice as iOS.
-                val senderName = item.senderName ?: "Member ${entity.senderId}"
+                val senderName = item.senderName ?: stringResource(R.string.s_member_n, entity.senderId)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
@@ -2306,6 +2323,11 @@ private fun ReactionChipsRow(
     var menuOffsetX by remember { mutableStateOf(0.dp) }
     val density = LocalDensity.current
     val haptics = LocalHapticFeedback.current
+    // Resolved out here: openDetails runs in tap handlers, which are not
+    // composable contexts. The same strings feed buildReactionDetails so
+    // the popup rows and the avatar lookup agree on the labels.
+    val youLabel = stringResource(R.string.s_you)
+    val memberTemplate = stringResource(R.string.s_member_n)
     // Opening the list: decode the reactions once, resolve the names,
     // and point the menu at the chip that was pressed.
     val openDetails: (String) -> Unit = { emoji ->
@@ -2313,9 +2335,9 @@ private fun ReactionChipsRow(
         reactorIds = buildMap {
             for (reaction in reactions) {
                 val name = if (reaction.userId == myUserId) {
-                    "You"
+                    youLabel
                 } else {
-                    memberNames[reaction.userId] ?: "Member ${reaction.userId}"
+                    memberNames[reaction.userId] ?: memberTemplate.format(reaction.userId)
                 }
                 if (name !in this) put(name, reaction.userId)
             }
@@ -2327,6 +2349,8 @@ private fun ReactionChipsRow(
             reactions = reactions,
             names = memberNames,
             myUserId = myUserId ?: -1L,
+            youLabel = youLabel,
+            memberFallback = { memberTemplate.format(it) },
         )
     }
     Box(modifier = Modifier.onGloballyPositioned { rowLeft[0] = it.boundsInWindow().left }) {
@@ -2420,7 +2444,7 @@ private fun ReactionChipsRow(
                     val leadName = detail.names.firstOrNull() ?: "?"
                     val leadId = reactorIds[leadName] ?: 0L
                     Avatar(
-                        name = if (leadName == "You") {
+                        name = if (leadName == youLabel) {
                             myUserId?.let { memberNames[it] } ?: leadName
                         } else {
                             leadName
@@ -3029,8 +3053,8 @@ private fun BubbleContent(
             val parentExcerpt = entity.replyParentExcerpt
             val parentLine = if (parentSender != null && parentExcerpt != null) {
                 val name = when (parentSender) {
-                    myUserId -> "You"
-                    else -> memberNames[parentSender] ?: "Someone"
+                    myUserId -> stringResource(R.string.s_you)
+                    else -> memberNames[parentSender] ?: stringResource(R.string.s_someone)
                 }
                 "$name: $parentExcerpt"
             } else {
@@ -3038,8 +3062,8 @@ private fun BubbleContent(
             }
             QuoteBlock(
                 authorName = when (quotedSender) {
-                    myUserId -> "You"
-                    else -> memberNames[quotedSender] ?: "Someone"
+                    myUserId -> stringResource(R.string.s_you)
+                    else -> memberNames[quotedSender] ?: stringResource(R.string.s_someone)
                 },
                 excerpt = quotedExcerpt,
                 isMine = isMine,
@@ -3086,12 +3110,15 @@ private fun BubbleContent(
             if (size.width > blockWidth) blockWidth = size.width
         }
 
-        // A photo or video sits above the caption, inside the balloon.
-        entity.attachment?.let { attachment ->
-            AttachmentBlock(
-                attachment = attachment,
+        // The attachments sit above the caption, inside the balloon — one
+        // exactly as before, an album as a grid, files and audio as rows
+        // (see AttachmentGroup).
+        val bubbleAttachments = entity.attachmentList
+        if (bubbleAttachments.isNotEmpty()) {
+            AttachmentGroup(
+                attachments = bubbleAttachments,
                 showMapPreviews = mapPreviewsEnabled,
-                onOpen = { onOpenAttachment(attachment) },
+                onOpen = onOpenAttachment,
                 modifier = measureBlock,
                 streamUrl = streamUrl,
                 onLongPress = onTextLongPress,
@@ -3593,7 +3620,9 @@ private fun StatusGlyph(
             )
             MessageStatus.SENT -> Icon(
                 imageVector = if (isRead) Icons.Filled.DoneAll else Icons.Filled.Check,
-                contentDescription = if (isRead) "Read" else "Sent",
+                contentDescription = stringResource(
+                    if (isRead) R.string.s_read else R.string.s_sent,
+                ),
                 modifier = Modifier.size(14.dp),
                 tint = if (isRead) MaterialTheme.colorScheme.primary else metaColor,
             )
@@ -3628,11 +3657,13 @@ private fun MediaStrip(
             -> {
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                 Text(
-                    text = if (state == ChatViewModel.MediaSendState.Preparing) {
-                        "Preparing…"
-                    } else {
-                        "Sending…"
-                    },
+                    text = stringResource(
+                        if (state == ChatViewModel.MediaSendState.Preparing) {
+                            R.string.s_preparing
+                        } else {
+                            R.string.s_sending_ellipsis
+                        },
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -3709,6 +3740,40 @@ private fun formatDuration(ms: Long): String {
     return "%d:%02d".format(whole / 60, whole % 60)
 }
 
+/**
+ * Everything staged, as a horizontally scrolling row of chips — each with
+ * its OWN remove, since dropping the third photo of five must not touch
+ * the other four. The one-line hint below is shared by the whole set.
+ */
+@Composable
+private fun StagedAttachmentRow(
+    staged: List<MediaPrep.Prepared>,
+    onDiscard: (Int) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp)
+                .padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            staged.forEachIndexed { index, item ->
+                StagedAttachmentChip(staged = item, onDiscard = { onDiscard(index) })
+            }
+        }
+        Text(
+            text = stringResource(R.string.s_add_a_message_or_send_it_on_its_own),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+        )
+    }
+}
+
 @Composable
 private fun StagedAttachmentChip(
     staged: MediaPrep.Prepared,
@@ -3720,11 +3785,9 @@ private fun StagedAttachmentChip(
         }
     }
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier.widthIn(max = 220.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Box(
             modifier = Modifier
@@ -3748,35 +3811,39 @@ private fun StagedAttachmentChip(
                 )
             }
             if (staged.kind == AttachmentDto.KIND_VIDEO) {
-                Icon(
-                    Icons.Filled.PlayCircle,
-                    contentDescription = null,
-                    tint = Color.White,
-                )
+                // The same 45%-black circle the bubble thumbnails and grid
+                // cells put behind their play glyph (Attachments.kt) — a
+                // bare white glyph disappears on a bright first frame.
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.45f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = Color.White,
+                    )
+                }
             }
         }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = staged.name?.takeIf { it.isNotBlank() }
-                    ?: stringResource(
-                        if (staged.kind == AttachmentDto.KIND_VIDEO) {
-                            R.string.s_video
-                        } else {
-                            R.string.s_photo
-                        },
-                    ),
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = stringResource(R.string.s_add_a_message_or_send_it_on_its_own),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        Text(
+            text = staged.name?.takeIf { it.isNotBlank() }
+                ?: stringResource(
+                    if (staged.kind == AttachmentDto.KIND_VIDEO) {
+                        R.string.s_video
+                    } else {
+                        R.string.s_photo
+                    },
+                ),
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
         IconButton(onClick = onDiscard) {
             Icon(
                 Icons.Filled.Close,
@@ -3799,7 +3866,7 @@ private fun InputBar(
     isEditing: Boolean,
     onCancelEdit: () -> Unit,
     mediaState: ChatViewModel.MediaSendState,
-    staged: MediaPrep.Prepared?,
+    staged: List<MediaPrep.Prepared>,
     onPickMedia: () -> Unit,
     onPickFile: () -> Unit,
     /** The attach menu's Paste: whatever is on the clipboard, right now. */
@@ -3825,7 +3892,7 @@ private fun InputBar(
     recordingMs: Long?,
     onStopRecording: () -> Unit,
     onCancelRecording: () -> Unit,
-    onDiscardStaged: () -> Unit,
+    onDiscardStaged: (Int) -> Unit,
     onDismissMediaError: () -> Unit,
     /** Share where this device is, once. */
     onShareLocation: () -> Unit,
@@ -3860,8 +3927,8 @@ private fun InputBar(
                     onCancel = onCancelRecording,
                 )
             }
-            if (staged != null) {
-                StagedAttachmentChip(staged = staged, onDiscard = onDiscardStaged)
+            if (staged.isNotEmpty()) {
+                StagedAttachmentRow(staged = staged, onDiscard = onDiscardStaged)
             }
             Row(
                 modifier = Modifier
@@ -3888,7 +3955,11 @@ private fun InputBar(
                         // sentence waiting to be dismissed, and it used to
                         // grey this button out — so an error from one paste
                         // blocked the next one until something cleared it.
-                        enabled = !isEditing && !mediaState.isBusy,
+                        // Greyed at the cap too: a message carries at most
+                        // ten attachments, and offering an add that can
+                        // only be refused is worse than a disabled button.
+                        enabled = !isEditing && !mediaState.isBusy &&
+                            staged.size < AttachmentDto.MAX_PER_MESSAGE,
                         modifier = Modifier.size(44.dp),
                     ) {
                         Icon(
@@ -4087,7 +4158,7 @@ private fun InputBar(
                 )
                 // An attachment can travel with no words at all, so Send is
                 // live as soon as there is either.
-                val canSend = state.text.isNotBlank() || staged != null
+                val canSend = state.text.isNotBlank() || staged.isNotEmpty()
                 // The disabled slots get the same animated colors as the
                 // enabled ones — otherwise the tween would be invisible
                 // because the button snaps to its disabled palette.

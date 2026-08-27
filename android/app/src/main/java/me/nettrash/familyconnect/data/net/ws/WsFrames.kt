@@ -59,16 +59,20 @@ sealed interface ClientFrame {
          */
         @SerialName("reply_to_message_id") val replyToMessageId: Long? = null,
         /**
-         * Optional: an uploaded photo or video this message claims
-         * (protocol.md, "Photos, videos and files"). Omitted the same way, for
-         * the same reason.
+         * Optional: the uploaded attachments this message claims, 1-10 of
+         * them in the sender's order (protocol.md, "Photos, videos, audio,
+         * files and locations"). Omitted the same way, for the same reason.
+         * Always the PLURAL spelling on the way out — `attachment_id` is
+         * the legacy one-element spelling the server still accepts, but
+         * this client stopped sending it when messages learned to carry
+         * more than one.
          */
-        @SerialName("attachment_id") val attachmentId: Long? = null,
+        @SerialName("attachment_ids") val attachmentIds: List<Long>? = null,
         /**
          * Optional: the options that make this message a poll
          * (protocol.md, "Polls"). The body is then the QUESTION. Omitted
          * the same way, for the same reason — and mutually exclusive
-         * with [attachmentId], which the server enforces.
+         * with [attachmentIds], which the server enforces.
          */
         val poll: NewPollDto? = null,
     ) : ClientFrame

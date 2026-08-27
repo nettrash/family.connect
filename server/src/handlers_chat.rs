@@ -51,10 +51,15 @@ pub struct PostMessageRequest {
     /// Optional: the message being answered. Must be in this same chat.
     #[serde(default)]
     pub reply_to_message_id: Option<i64>,
-    /// Optional: an attachment this caller uploaded, claimed by this
-    /// message. A message carrying one may have an empty body.
+    /// Optional: the legacy spelling of a one-element `attachment_ids`,
+    /// still accepted. Sending BOTH is `validation`.
     #[serde(default)]
     pub attachment_id: Option<i64>,
+    /// Optional: attachments this caller uploaded, claimed by this message
+    /// in the order given — 1 to `limits.max_attachments_per_message` of
+    /// them. A message carrying any may have an empty body.
+    #[serde(default)]
+    pub attachment_ids: Option<Vec<i64>>,
     /// Optional: makes this message a poll. The body is then the QUESTION
     /// and may NOT be empty, and a poll excludes an attachment.
     #[serde(default)]
@@ -152,22 +157,21 @@ pub async fn ensure_chat_access(
 /// security property), so this can only matter if that check is ever
 /// weakened — at which point a quote must still not leak text out of a chat
 /// the reader cannot see.
+///
+/// ATTACHMENTS ARE DELIBERATELY NOT JOINED HERE. A message may carry up to
+/// ten, and a LEFT JOIN would multiply every page row by the size of its
+/// album — under a LIMIT that either truncates the page or repeats its
+/// messages. They are hydrated after the fact by `attach_attachments`,
+/// exactly as polls and reactions are.
 const MESSAGE_COLS: &str = "m.id, m.chat_id, m.sender_id, m.client_msg_id, m.body, m.created_at, \
                             m.reaction_seq, m.edit_seq, m.edited_at, m.reply_to_message_id, \
                             p.sender_id AS reply_sender_id, p.body AS reply_body, \
                             p.reply_to_message_id AS reply_parent_message_id, \
-                            g.sender_id AS reply_parent_sender_id, g.body AS reply_parent_body, \
-                            att.id AS att_id, att.kind AS att_kind, att.mime AS att_mime, \
-                            att.size_bytes AS att_size, att.width AS att_width, \
-                            att.height AS att_height, att.duration_ms AS att_duration_ms, \
-                            att.has_preview AS att_has_preview, att.name AS att_name, \
-                            att.latitude AS att_latitude, att.longitude AS att_longitude, \
-                            att.accuracy_m AS att_accuracy_m";
+                            g.sender_id AS reply_parent_sender_id, g.body AS reply_parent_body";
 const MESSAGE_FROM: &str = "FROM messages m LEFT JOIN messages p \
                             ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id \
                             LEFT JOIN messages g \
-                            ON g.id = p.reply_to_message_id AND g.chat_id = m.chat_id \
-                            LEFT JOIN attachments att ON att.message_id = m.id";
+                            ON g.id = p.reply_to_message_id AND g.chat_id = m.chat_id";
 
 /// Delete messages past the retention age, and the attachment files they
 /// leave behind.
@@ -260,6 +264,52 @@ async fn attach_reactions(state: &AppState, messages: &mut [Message]) -> Result<
     Ok(())
 }
 
+/// Fill the attachment list in on every message of a page that carries one.
+///
+/// One query for the whole page, exactly as `attach_polls` does it — never
+/// one per message, and never a JOIN on the message SELECT, which under
+/// plurality would multiply every row by the size of its album (see the
+/// note on `MESSAGE_COLS`).
+///
+/// Sets BOTH fields the protocol ties together: `attachments` in the
+/// sender's order (`position`, stamped at claim time, with `id` as a
+/// tiebreak so the order is total), and the legacy `attachment` as its
+/// first element. Never one without the other, and neither on a message
+/// that carries none — absent, not an empty array, on the wire.
+pub async fn attach_attachments(
+    pool: &sqlx::PgPool,
+    messages: &mut [Message],
+) -> Result<(), ApiError> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
+    let rows = sqlx::query(
+        "SELECT message_id, id, kind, mime, size_bytes, width, height, duration_ms,
+                has_preview, name, latitude, longitude, accuracy_m
+         FROM attachments
+         WHERE message_id = ANY($1)
+         ORDER BY message_id, position, id",
+    )
+    .bind(&message_ids)
+    .fetch_all(pool)
+    .await?;
+    let mut by_message: HashMap<i64, Vec<Attachment>> = HashMap::new();
+    for row in &rows {
+        by_message
+            .entry(row.get("message_id"))
+            .or_default()
+            .push(Attachment::from_row(row));
+    }
+    for message in messages.iter_mut() {
+        if let Some(list) = by_message.remove(&message.id) {
+            message.attachment = list.first().cloned();
+            message.attachments = Some(list);
+        }
+    }
+    Ok(())
+}
+
 /// Trim and bounds-check a message body. Shared by send and edit on
 /// purpose: the protocol gives them the same rules, and two copies would
 /// eventually disagree about which one is authoritative.
@@ -343,7 +393,9 @@ pub async fn create_message(
     client_msg_id: Uuid,
     body: &str,
     reply_to_message_id: Option<i64>,
-    attachment_id: Option<i64>,
+    // Already merged from the two spellings the wire accepts (see
+    // `merge_attachment_ids`); empty means the message carries none.
+    attachment_ids: &[i64],
     // Optional: makes this message a poll (protocol.md, "Polls"). A poll is
     // created HERE, inside the message transaction, rather than by a second
     // endpoint — a poll IS a message, and a second write path is exactly
@@ -375,10 +427,31 @@ pub async fn create_message(
                 "polls are only allowed in the family chat",
             ));
         }
-        if attachment_id.is_some() {
+        if !attachment_ids.is_empty() {
             return Err(ApiError::bad_request(
                 codes::INVALID_POLL,
                 "a message carries a poll or an attachment, not both",
+            ));
+        }
+    }
+
+    // The set rules, checked before any id is looked up: the ceiling and
+    // the no-duplicates rule are about the ARRAY, not about what it names,
+    // so a send that breaks them is refused for the real reason rather
+    // than for whatever the first bad id happens to be.
+    let max_attachments = state.cfg.limits.max_attachments_per_message;
+    if attachment_ids.len() > max_attachments {
+        return Err(ApiError::bad_request(
+            codes::INVALID_ATTACHMENT,
+            format!("a message carries at most {max_attachments} attachments"),
+        ));
+    }
+    {
+        let mut seen = std::collections::HashSet::new();
+        if !attachment_ids.iter().all(|id| seen.insert(*id)) {
+            return Err(ApiError::bad_request(
+                codes::INVALID_ATTACHMENT,
+                "the same attachment id appears twice in one message",
             ));
         }
     }
@@ -388,7 +461,7 @@ pub async fn create_message(
     // relaxation — its body is the question, and a poll with no question is
     // `message_empty` — and the exclusion just above means the two
     // conditions can never both hold anyway.
-    let body = if attachment_id.is_some() && poll.is_none() && body.trim().is_empty() {
+    let body = if !attachment_ids.is_empty() && poll.is_none() && body.trim().is_empty() {
         String::new()
     } else {
         validate_body(state, body)?
@@ -484,11 +557,67 @@ pub async fn create_message(
         // RETURNING cannot join, so the snippet resolved above is attached
         // here rather than re-read.
         message.reply_to = reply_to;
-        if let Some(attachment_id) = attachment_id {
-            // `?` here rolls the transaction back on drop: no message, and
-            // the sender gets the real reason.
-            message.attachment =
-                Some(claim_attachment(&mut tx, attachment_id, sender_id, message.id).await?);
+        if !attachment_ids.is_empty() {
+            // Claimed one by one, IN THE SENDER'S ORDER, stamping the
+            // array index as `position` — which is the order every read
+            // returns. The `?` rolls the transaction back on drop: ANY id
+            // failing takes the message and every earlier claim with it
+            // (all-or-nothing, protocol.md), and the sender gets the real
+            // reason.
+            // LOCKS ARE TAKEN IN ID ORDER, positions stay the sender's.
+            // Claiming in array order took row locks in whatever order the
+            // sender listed the ids, and two concurrent sends from the
+            // same uploader naming overlapping ids in opposite orders
+            // ([34, 61] vs [61, 34]) formed a lock cycle — Postgres broke
+            // it with 40P01, which surfaced as a 500 where the loser's
+            // truthful answer is `attachment_already_used`. Sorting a COPY
+            // for acquisition makes every transaction lock in one global
+            // order, so the loser now blocks, sees the winner's claim, and
+            // gets the 409. The `position` stamped is still the index in
+            // the SENDER'S array, and the claimed list is put back into
+            // that order below — the wire order never changes.
+            let mut lock_order: Vec<(usize, i64)> =
+                attachment_ids.iter().copied().enumerate().collect();
+            lock_order.sort_unstable_by_key(|(_, id)| *id);
+            let mut claimed_by_index = Vec::with_capacity(lock_order.len());
+            for (position, attachment_id) in lock_order {
+                claimed_by_index.push((
+                    position,
+                    claim_attachment(
+                        &mut tx,
+                        attachment_id,
+                        sender_id,
+                        message.id,
+                        position as i16,
+                    )
+                    .await?,
+                ));
+            }
+            claimed_by_index.sort_unstable_by_key(|(position, _)| *position);
+            let claimed: Vec<_> = claimed_by_index
+                .into_iter()
+                .map(|(_, attachment)| attachment)
+                .collect();
+            // A LOCATION is always alone (protocol.md) — a place is a
+            // statement, not a page of an album. Checked AFTER the claims
+            // because only the claims reveal the kinds, and the order costs
+            // nothing: returning here drops the transaction, so nothing is
+            // written either way. The protocol does not promise WHICH
+            // refusal wins when several apply — only that nothing lands.
+            if claimed.len() > 1
+                && claimed
+                    .iter()
+                    .any(|attachment| attachment.kind == Attachment::KIND_LOCATION)
+            {
+                return Err(ApiError::bad_request(
+                    codes::INVALID_ATTACHMENT,
+                    "a location is always a message's only attachment",
+                ));
+            }
+            // Both fields, always together: the legacy `attachment` is the
+            // first element, for clients that predate plurality.
+            message.attachment = claimed.first().cloned();
+            message.attachments = Some(claimed);
         }
         if let Some(options) = &poll_options {
             // Same transaction, same reason: a poll written after an
@@ -575,6 +704,7 @@ pub async fn create_message(
     //     first write won, poll and all — and a client that retried would
     //     otherwise draw the question with no options.
     attach_reactions(state, std::slice::from_mut(&mut message)).await?;
+    attach_attachments(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
     Ok((message, false))
@@ -688,6 +818,7 @@ pub async fn fetch_message(
     let Some(row) = row else { return Ok(None) };
     let mut message = Message::from_row(&row);
     attach_reactions(state, std::slice::from_mut(&mut message)).await?;
+    attach_attachments(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
@@ -715,26 +846,52 @@ pub async fn fetch_message_by_client_id(
     let Some(row) = row else { return Ok(None) };
     let mut message = Message::from_row(&row);
     attach_reactions(state, std::slice::from_mut(&mut message)).await?;
+    attach_attachments(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
 
-/// Bind an uploaded attachment to the message that just claimed it.
+/// The one list of attachment ids a send names, merged from the two
+/// spellings the protocol accepts: `attachment_ids` (the array), and the
+/// legacy `attachment_id`, which is exactly a one-element array and is
+/// still accepted. Sending BOTH is `validation` — two spellings that could
+/// disagree are a client bug worth hearing about, not something to pick a
+/// winner between. An empty array is the same statement as neither.
+pub fn merge_attachment_ids(
+    legacy: Option<i64>,
+    ids: Option<Vec<i64>>,
+) -> Result<Vec<i64>, ApiError> {
+    match (legacy, ids) {
+        (Some(_), Some(_)) => Err(ApiError::validation(
+            "send attachment_ids or the legacy attachment_id, not both",
+        )),
+        (Some(id), None) => Ok(vec![id]),
+        (None, Some(ids)) => Ok(ids),
+        (None, None) => Ok(Vec::new()),
+    }
+}
+
+/// Bind an uploaded attachment to the message that just claimed it,
+/// stamping `position` — the index into the sender's `attachment_ids`
+/// array, which is the order every read returns.
 ///
-/// Claimable once, by its uploader only. The unique index on `message_id`
-/// is the real guarantee; this check exists to answer with the protocol's
-/// error rather than a constraint violation.
+/// Claimable once, by its uploader only. The `message_id IS NULL` guard in
+/// the UPDATE is the real guarantee (0025 removed the unique index that
+/// used to forbid a second attachment per MESSAGE — claiming stays
+/// once-per-ATTACHMENT); the check below exists to answer with the
+/// protocol's error rather than silence.
 /// Runs inside the caller's transaction so that a refusal takes the
-/// message with it — see the note at the insert.
+/// message and every sibling claim with it — see the note at the insert.
 async fn claim_attachment(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     attachment_id: i64,
     uploader_id: i64,
     message_id: i64,
+    position: i16,
 ) -> Result<Attachment, ApiError> {
     let row = sqlx::query(
-        "UPDATE attachments SET message_id = $3
+        "UPDATE attachments SET message_id = $3, position = $4
          WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL
          RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name,
                    latitude, longitude, accuracy_m",
@@ -742,6 +899,7 @@ async fn claim_attachment(
     .bind(attachment_id)
     .bind(uploader_id)
     .bind(message_id)
+    .bind(position)
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(row) = row {
@@ -956,8 +1114,6 @@ pub async fn list_chats(
                 lm.id AS last_id, lm.sender_id AS last_sender_id,
                 lm.client_msg_id AS last_client_msg_id, lm.body AS last_body,
                 lm.created_at AS last_created_at,
-                lm.att_id, lm.att_kind, lm.att_mime, lm.att_size,
-                lm.att_has_preview, lm.att_name,
                 lm.call_outcome, lm.call_duration_secs,
                 uc.unread AS unread_count,
                 -- The caller's own marker, off the SAME chat_reads row the
@@ -976,19 +1132,16 @@ pub async fn list_chats(
                AND pu.id = CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END
          LEFT JOIN chat_reads cr ON cr.chat_id = c.id AND cr.user_id = $1
          LEFT JOIN LATERAL (
-             -- The attachment comes with it: a photo sent without a
-             -- caption has an EMPTY body, and a preview line with nothing
-             -- in it is a chat row that looks like nothing happened.
+             -- The BARE last message. Its attachments are hydrated after
+             -- the fact with one query for the whole list — joined here
+             -- they would multiply the candidate rows before the LIMIT 1,
+             -- and a three-photo album would repeat as three last messages.
              SELECT m2.id, m2.sender_id, m2.client_msg_id, m2.body, m2.created_at,
-                    att.id AS att_id, att.kind AS att_kind, att.mime AS att_mime,
-                    att.size_bytes AS att_size, att.has_preview AS att_has_preview,
-                    att.name AS att_name,
                     -- The call record's outcome comes with the preview: a
                     -- client that knows the object draws its own wording
                     -- rather than the English placeholder body.
                     cl.outcome AS call_outcome, cl.duration_secs AS call_duration_secs
              FROM messages m2
-             LEFT JOIN attachments att ON att.message_id = m2.id
              LEFT JOIN calls cl ON cl.message_id = m2.id
              WHERE m2.chat_id = c.id ORDER BY m2.id DESC LIMIT 1
          ) lm ON TRUE
@@ -1006,6 +1159,49 @@ pub async fn list_chats(
     .fetch_all(&state.pool)
     .await?;
 
+    // The preview attachments, hydrated with ONE page-sized query rather
+    // than joined inside the lateral (see the note there). Trimmed exactly
+    // as the preview always was — kind and name, plus the mime, size and
+    // preview flag the row carried before plurality; no dimensions, and NO
+    // COORDINATES: a chat-list row is one line of text — "Location" — and
+    // shipping a family member's position on every list read to draw
+    // nothing with it would be a wider answer than the question.
+    let preview_ids: Vec<i64> = rows
+        .iter()
+        .filter_map(|row| row.get::<Option<i64>, _>("last_id"))
+        .collect();
+    let mut preview_attachments: HashMap<i64, Vec<Attachment>> = HashMap::new();
+    if !preview_ids.is_empty() {
+        let attachment_rows = sqlx::query(
+            "SELECT message_id, id, kind, mime, size_bytes, has_preview, name
+             FROM attachments
+             WHERE message_id = ANY($1)
+             ORDER BY message_id, position, id",
+        )
+        .bind(&preview_ids)
+        .fetch_all(&state.pool)
+        .await?;
+        for row in &attachment_rows {
+            preview_attachments
+                .entry(row.get("message_id"))
+                .or_default()
+                .push(Attachment {
+                    id: row.get("id"),
+                    kind: row.get("kind"),
+                    mime: row.get("mime"),
+                    size: row.get("size_bytes"),
+                    width: None,
+                    height: None,
+                    duration_ms: None,
+                    has_preview: row.get("has_preview"),
+                    name: row.get("name"),
+                    latitude: None,
+                    longitude: None,
+                    accuracy_m: None,
+                });
+        }
+    }
+
     let chats: Vec<ChatListEntry> = rows
         .iter()
         .map(|row| {
@@ -1020,55 +1216,44 @@ pub async fn list_chats(
                 _ => row.get("peer_display_name"),
             };
             let chat_id: i64 = row.get("chat_id");
-            let last_message = row.get::<Option<i64>, _>("last_id").map(|last_id| Message {
-                id: last_id,
-                chat_id,
-                sender_id: row.get("last_sender_id"),
-                client_msg_id: row.get("last_client_msg_id"),
-                body: row.get("last_body"),
-                created_at: row.get("last_created_at"),
-                reactions: None,
-                reaction_seq: None,
-                // Previews carry neither reactions nor the quote: the chat
-                // list draws one line of text, not a bubble.
-                reply_to: None,
-                // Nor the edit stamps — the preview is the current text,
-                // and whether it was edited is a bubble's business.
-                edited_at: None,
-                edit_seq: None,
-                // The attachment DOES come along: without it a client has
+            let last_message = row.get::<Option<i64>, _>("last_id").map(|last_id| {
+                // The attachments DO come along: without them a client has
                 // nothing to write on the row for a caption-less photo.
-                attachment: row.get::<Option<i64>, _>("att_id").map(|id| Attachment {
-                    id,
-                    kind: row.get("att_kind"),
-                    mime: row.get("att_mime"),
-                    size: row.get("att_size"),
-                    width: None,
-                    height: None,
-                    duration_ms: None,
-                    has_preview: row.get("att_has_preview"),
-                    name: row.get("att_name"),
-                    // Nor the coordinates. A chat-list row is one line of
-                    // text — "Location" — and shipping a family member's
-                    // position on every list read to draw nothing with it
-                    // would be a wider answer than the question.
-                    latitude: None,
-                    longitude: None,
-                    accuracy_m: None,
-                }),
-                // Nor the poll. A poll's QUESTION is the body, which the
-                // preview already carries — the options are a bubble's
-                // business and three tables' worth of reads per chat.
-                poll: None,
-                // The call record DOES come along: its placeholder body is
-                // not something a client should show, so a preview needs the
-                // outcome to draw its own line ("Missed voice call", "5:12").
-                call: row.get::<Option<String>, _>("call_outcome").map(|outcome| {
-                    crate::models::CallRecord {
-                        outcome,
-                        duration_secs: row.get("call_duration_secs"),
-                    }
-                }),
+                // Hydrated above; the legacy `attachment` is the first
+                // element, exactly as on a full message.
+                let attachments = preview_attachments.remove(&last_id);
+                Message {
+                    id: last_id,
+                    chat_id,
+                    sender_id: row.get("last_sender_id"),
+                    client_msg_id: row.get("last_client_msg_id"),
+                    body: row.get("last_body"),
+                    created_at: row.get("last_created_at"),
+                    reactions: None,
+                    reaction_seq: None,
+                    // Previews carry neither reactions nor the quote: the chat
+                    // list draws one line of text, not a bubble.
+                    reply_to: None,
+                    // Nor the edit stamps — the preview is the current text,
+                    // and whether it was edited is a bubble's business.
+                    edited_at: None,
+                    edit_seq: None,
+                    attachment: attachments.as_ref().and_then(|list| list.first().cloned()),
+                    attachments,
+                    // Nor the poll. A poll's QUESTION is the body, which the
+                    // preview already carries — the options are a bubble's
+                    // business and three tables' worth of reads per chat.
+                    poll: None,
+                    // The call record DOES come along: its placeholder body is
+                    // not something a client should show, so a preview needs the
+                    // outcome to draw its own line ("Missed voice call", "5:12").
+                    call: row.get::<Option<String>, _>("call_outcome").map(|outcome| {
+                        crate::models::CallRecord {
+                            outcome,
+                            duration_secs: row.get("call_duration_secs"),
+                        }
+                    }),
+                }
             });
             let last_reaction_seq: i64 = row.get("last_reaction_seq");
             let last_edit_seq: i64 = row.get("last_edit_seq");
@@ -1221,6 +1406,7 @@ pub async fn get_messages(
 
     let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
     attach_reactions(&state, &mut messages).await?;
+    attach_attachments(&state.pool, &mut messages).await?;
     attach_polls(&state.pool, &mut messages).await?;
     attach_calls(&state.pool, &mut messages).await?;
 
@@ -1244,6 +1430,7 @@ pub async fn post_message(
         .get(header::ACCEPT_LANGUAGE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let attachment_ids = merge_attachment_ids(req.attachment_id, req.attachment_ids)?;
     let (message, created) = create_message(
         &state,
         chat_id,
@@ -1251,7 +1438,7 @@ pub async fn post_message(
         req.client_msg_id,
         &req.body,
         req.reply_to_message_id,
-        req.attachment_id,
+        &attachment_ids,
         req.poll.as_ref(),
         language.as_deref(),
     )
@@ -1394,6 +1581,7 @@ pub async fn get_edits(
 
     let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
     attach_reactions(&state, &mut messages).await?;
+    attach_attachments(&state.pool, &mut messages).await?;
     attach_polls(&state.pool, &mut messages).await?;
     attach_calls(&state.pool, &mut messages).await?;
 
@@ -1517,5 +1705,34 @@ mod tests {
             None
         );
         assert!(parse_pagination_param(&params, "limit").is_err());
+    }
+
+    /// The two spellings of "this message claims attachments" merge into
+    /// one list — and sending BOTH is `validation`, pinned here so nobody
+    /// ever picks a precedence for two values that could disagree.
+    #[test]
+    fn attachment_ids_and_the_legacy_spelling_merge_but_never_together() {
+        assert_eq!(
+            merge_attachment_ids(None, None).expect("neither is fine"),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            merge_attachment_ids(Some(34), None).expect("the legacy spelling"),
+            vec![34]
+        );
+        assert_eq!(
+            merge_attachment_ids(None, Some(vec![34, 61])).expect("the array"),
+            vec![34, 61]
+        );
+        // An empty array is the same statement as neither: no attachments.
+        assert_eq!(
+            merge_attachment_ids(None, Some(Vec::new())).expect("an empty array"),
+            Vec::<i64>::new()
+        );
+        let err = merge_attachment_ids(Some(34), Some(vec![34])).expect_err("both is refused");
+        assert!(
+            matches!(err, ApiError::BadRequest { code, .. } if code == codes::VALIDATION),
+            "both spellings at once must be `validation`: {err:?}"
+        );
     }
 }

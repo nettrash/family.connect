@@ -286,9 +286,20 @@ pub struct Message {
     pub edited_at: Option<OffsetDateTime>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edit_seq: Option<i64>,
-    /// Present when the message carries a photo or video.
+    /// The FIRST element of `attachments`, kept for clients that predate
+    /// plurality; a client that reads `attachments` ignores it. The two are
+    /// never present without each other (protocol.md, Objects).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub attachment: Option<Attachment>,
+    /// Present when the message carries photos, videos, audio, files or a
+    /// location — 1 to 10 of them, in the order the sender chose. Absent
+    /// (NEVER an empty array) on a message that carries none. Hydrated
+    /// AFTER the fact by `handlers_chat::attach_attachments`, exactly as
+    /// `poll` and `reactions` are — a set of rows cannot be joined onto a
+    /// message row without multiplying it, so `from_row` leaves this `None`
+    /// and never reads a column for it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub attachments: Option<Vec<Attachment>>,
     /// Present when (and only when) the message is a poll. Hydrated AFTER
     /// the fact by an `attach_*` helper, exactly as `reactions` is — a poll
     /// is three tables and cannot be joined onto a message row without
@@ -505,24 +516,6 @@ impl Message {
         let edited_at = row
             .try_get::<Option<OffsetDateTime>, _>("edited_at")
             .unwrap_or_default();
-        // Joined attachment columns, absent on the narrow SELECTs.
-        let attachment = match row.try_get::<Option<i64>, _>("att_id") {
-            Ok(Some(id)) => Some(Attachment {
-                id,
-                kind: row.try_get("att_kind").unwrap_or_default(),
-                mime: row.try_get("att_mime").unwrap_or_default(),
-                size: row.try_get("att_size").unwrap_or_default(),
-                width: row.try_get("att_width").unwrap_or_default(),
-                height: row.try_get("att_height").unwrap_or_default(),
-                duration_ms: row.try_get("att_duration_ms").unwrap_or_default(),
-                has_preview: row.try_get("att_has_preview").unwrap_or_default(),
-                name: row.try_get("att_name").unwrap_or_default(),
-                latitude: row.try_get("att_latitude").unwrap_or_default(),
-                longitude: row.try_get("att_longitude").unwrap_or_default(),
-                accuracy_m: row.try_get("att_accuracy_m").unwrap_or_default(),
-            }),
-            _ => None,
-        };
         Self {
             id: row.get("id"),
             chat_id: row.get("chat_id"),
@@ -535,10 +528,11 @@ impl Message {
             reply_to,
             edited_at,
             edit_seq,
-            attachment,
-            // Not read from a column, by design: see the field's doc. The
-            // paths that expose a poll enrich afterwards, as they do for
-            // reactions.
+            // Not read from columns, by design: see each field's doc. The
+            // paths that expose attachments or a poll enrich afterwards,
+            // as they do for reactions.
+            attachment: None,
+            attachments: None,
             poll: None,
             call: None,
         }

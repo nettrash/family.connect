@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 15.
+ * Room database, version 16.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -240,6 +240,22 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE messages ADD COLUMN callOutcome TEXT")
                 db.execSQL("ALTER TABLE messages ADD COLUMN callDurationSecs INTEGER")
+            }
+        }
+
+        /**
+         * v16: multiple attachments per message.
+         *
+         * One nullable TEXT column with NO default, exactly like v14's
+         * `pollJson` and for the same reason: absence IS the meaning —
+         * every message already in the table carries at most one
+         * attachment, which stays in the twelve flat columns and is read
+         * through the entity's fallback. Nothing is backfilled: a
+         * pre-plurality row IS its flat columns.
+         */
+        val MIGRATION_15_16: Migration = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentsJson TEXT")
             }
         }
 

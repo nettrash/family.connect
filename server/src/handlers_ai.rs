@@ -385,7 +385,9 @@ struct HistoryMessage {
     /// `display_name`, which no client has ever shown anybody.
     sender: String,
     body: String,
-    attachment: Option<Attachment>,
+    /// What the message carried, in the sender's order — empty on an
+    /// ordinary text message. Each contributes one placeholder to the line.
+    attachments: Vec<Attachment>,
 }
 
 /// `YYYY-MM-DD HH:MM UTC`.
@@ -462,23 +464,28 @@ fn attachment_placeholder(attachment: &Attachment) -> String {
 /// implementation of markdown, wrong in a different way from every client's.
 fn history_line(message: &HistoryMessage) -> Option<String> {
     let body = message.body.trim();
-    let content = match message.attachment.as_ref() {
-        None => {
-            if body.is_empty() {
-                return None;
-            }
-            body.to_string()
+    let content = if message.attachments.is_empty() {
+        if body.is_empty() {
+            return None;
         }
-        Some(attachment) => {
-            let placeholder = attachment_placeholder(attachment);
-            if body.is_empty() {
-                placeholder
-            } else {
-                // The caption rides along: "[photo] look at this" is the
-                // whole message, and the words are usually the half that
-                // matters.
-                format!("{placeholder} {body}")
-            }
+        body.to_string()
+    } else {
+        // One placeholder PER attachment, space-separated and in the
+        // sender's order — "[photo] [photo] [video] beach day" — each under
+        // the same rules as if it were alone (protocol.md, "Mentioning the
+        // assistant in the family chat").
+        let placeholders = message
+            .attachments
+            .iter()
+            .map(attachment_placeholder)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if body.is_empty() {
+            placeholders
+        } else {
+            // The caption rides along: "[photo] look at this" is the whole
+            // message, and the words are usually the half that matters.
+            format!("{placeholders} {body}")
         }
     };
     Some(format!(
@@ -561,9 +568,9 @@ fn history_note(
 /// landed in the chat between the send and this task, which is a real race
 /// and not a hypothetical one.
 ///
-/// The three coordinate columns are NOT in this SELECT, and that is on
-/// purpose: `attachment_placeholder` would drop them anyway, but a column
-/// that was never read cannot be interpolated by accident later.
+/// The three coordinate columns are NOT in the attachment query, and that
+/// is on purpose: `attachment_placeholder` would drop them anyway, but a
+/// column that was never read cannot be interpolated by accident later.
 /// `Attachment::from_row` degrades them to `None` rather than panicking on
 /// a narrow select, which is what makes leaving them out possible.
 ///
@@ -582,12 +589,9 @@ pub async fn family_chat_history(
     assistant_id: i64,
 ) -> Result<Option<String>> {
     let rows = sqlx::query(
-        "SELECT m.created_at, m.body, m.sender_id, u.display_name,
-                att.id, att.kind, att.mime, att.size_bytes, att.width, att.height,
-                att.duration_ms, att.has_preview, att.name
+        "SELECT m.id, m.created_at, m.body, m.sender_id, u.display_name
          FROM messages m
          JOIN users u ON u.id = m.sender_id
-         LEFT JOIN attachments att ON att.message_id = m.id
          WHERE m.chat_id = $1
            AND m.id < $2
            AND m.created_at >= now() - ($3::int * INTERVAL '1 day')
@@ -601,6 +605,33 @@ pub async fn family_chat_history(
     .fetch_all(&state.pool)
     .await?;
 
+    // The attachments, hydrated with ONE query for the whole window rather
+    // than joined above: a message may carry up to ten, and a LEFT JOIN
+    // under that LIMIT multiplies rows until real messages fall off the end
+    // of the window. Ordered by `position` — the transcript renders one
+    // placeholder per attachment, in the sender's order.
+    let message_ids: Vec<i64> = rows.iter().map(|row| row.get::<i64, _>("id")).collect();
+    let mut attachments_by_message: std::collections::HashMap<i64, Vec<Attachment>> =
+        std::collections::HashMap::new();
+    if !message_ids.is_empty() {
+        let attachment_rows = sqlx::query(
+            "SELECT message_id, id, kind, mime, size_bytes, width, height,
+                    duration_ms, has_preview, name
+             FROM attachments
+             WHERE message_id = ANY($1)
+             ORDER BY message_id, position, id",
+        )
+        .bind(&message_ids)
+        .fetch_all(&state.pool)
+        .await?;
+        for row in &attachment_rows {
+            attachments_by_message
+                .entry(row.get("message_id"))
+                .or_default()
+                .push(Attachment::from_row(row));
+        }
+    }
+
     let messages: Vec<HistoryMessage> = rows
         .iter()
         .map(|row| HistoryMessage {
@@ -611,12 +642,9 @@ pub async fn family_chat_history(
                 row.get("display_name")
             },
             body: row.get("body"),
-            // The LEFT JOIN misses on an ordinary message, and `att.id` is
-            // the NULL that says so — `Attachment::from_row` reads columns
-            // that are NOT NULL on a real row and would panic on those.
-            attachment: row
-                .get::<Option<i64>, _>("id")
-                .map(|_| Attachment::from_row(row)),
+            attachments: attachments_by_message
+                .remove(&row.get::<i64, _>("id"))
+                .unwrap_or_default(),
         })
         .collect();
 
@@ -1150,7 +1178,7 @@ mod tests {
             at,
             sender: sender.to_string(),
             body: body.to_string(),
-            attachment: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -1164,7 +1192,7 @@ mod tests {
             at,
             sender: sender.to_string(),
             body: body.to_string(),
-            attachment: Some(attachment),
+            attachments: vec![attachment],
         }
     }
 
@@ -1358,6 +1386,54 @@ mod tests {
                  [2026-07-28 19:03 UTC] Anna: [location] Grandma's house",
                 header()
             )
+        );
+    }
+
+    /// Several attachments contribute one placeholder EACH, space-separated
+    /// and in the sender's order, with the caption riding along after them
+    /// — `[photo] [photo] [video] beach day` — each placeholder under the
+    /// same rules as if it were alone (protocol.md).
+    #[test]
+    fn several_attachments_contribute_one_placeholder_each_in_order() {
+        let at = datetime!(2026-07-28 19:03 UTC);
+        let album = |body: &str| HistoryMessage {
+            at,
+            sender: "Bob".to_string(),
+            body: body.to_string(),
+            attachments: vec![
+                attachment("photo", None),
+                attachment("photo", None),
+                attachment("video", None),
+            ],
+        };
+        let note = history_note(NOW, &[album("beach day")]).expect("a transcript");
+        assert_eq!(
+            transcript_of(&note),
+            "[2026-07-28 19:03 UTC] Bob: [photo] [photo] [video] beach day"
+        );
+        // Without a caption the placeholders are the whole line.
+        let note = history_note(NOW, &[album("")]).expect("a transcript");
+        assert_eq!(
+            transcript_of(&note),
+            "[2026-07-28 19:03 UTC] Bob: [photo] [photo] [video]"
+        );
+        // And a named file keeps its name inside the run, in its slot.
+        let note = history_note(
+            NOW,
+            &[HistoryMessage {
+                at,
+                sender: "Bob".to_string(),
+                body: String::new(),
+                attachments: vec![
+                    attachment("file", Some("receipts.pdf")),
+                    attachment("photo", None),
+                ],
+            }],
+        )
+        .expect("a transcript");
+        assert_eq!(
+            transcript_of(&note),
+            "[2026-07-28 19:03 UTC] Bob: [file] receipts.pdf [photo]"
         );
     }
 

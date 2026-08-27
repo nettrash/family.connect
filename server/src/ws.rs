@@ -50,10 +50,15 @@ pub enum ClientFrame {
         /// Optional: the message being answered (protocol.md, "Replies").
         #[serde(default)]
         reply_to_message_id: Option<i64>,
-        /// Optional: an attachment this caller uploaded (protocol.md,
-        /// "Photos, videos and files"). The bytes never travel in a frame.
+        /// Optional: the legacy spelling of a one-element `attachment_ids`,
+        /// still accepted. Sending BOTH is `validation`.
         #[serde(default)]
         attachment_id: Option<i64>,
+        /// Optional: attachments this caller uploaded, claimed by this
+        /// message in the order given (protocol.md, "Photos, videos, audio,
+        /// files and locations"). The bytes never travel in a frame.
+        #[serde(default)]
+        attachment_ids: Option<Vec<i64>>,
         /// Optional: makes this message a poll (protocol.md, "Polls"). The
         /// body is then the QUESTION, and a poll excludes an attachment.
         #[serde(default)]
@@ -521,11 +526,20 @@ async fn handle_client_text(
                 body,
                 reply_to_message_id,
                 attachment_id,
+                attachment_ids,
                 poll,
             } = frame
             else {
                 unreachable!("type tag was \"send\"");
             };
+            // The same merge REST performs: array or legacy single, never
+            // both, and the error frame carries the client_msg_id so the
+            // sender can correlate the refusal.
+            let attachment_ids =
+                match handlers_chat::merge_attachment_ids(attachment_id, attachment_ids) {
+                    Ok(ids) => ids,
+                    Err(err) => return Some(ServerFrame::error(err, Some(client_msg_id))),
+                };
             match handlers_chat::create_message(
                 state,
                 chat_id,
@@ -533,7 +547,7 @@ async fn handle_client_text(
                 client_msg_id,
                 &body,
                 reply_to_message_id,
-                attachment_id,
+                &attachment_ids,
                 poll.as_ref(),
                 language,
             )
@@ -730,6 +744,7 @@ mod tests {
             edited_at: None,
             edit_seq: None,
             attachment: None,
+            attachments: None,
             poll: None,
             call: None,
         }
@@ -771,6 +786,7 @@ mod tests {
                 body: "Dinner at 7?".to_string(),
                 reply_to_message_id: None,
                 attachment_id: None,
+                attachment_ids: None,
                 poll: None,
             }
         );
@@ -792,6 +808,7 @@ mod tests {
                 body: "Six works".to_string(),
                 reply_to_message_id: Some(1337),
                 attachment_id: None,
+                attachment_ids: None,
                 poll: None,
             }
         );
@@ -813,10 +830,85 @@ mod tests {
                 body: "Pizza or pasta?".to_string(),
                 reply_to_message_id: None,
                 attachment_id: None,
+                attachment_ids: None,
                 poll: Some(NewPoll {
                     options: vec!["Pizza".to_string(), "Pasta".to_string()],
                 }),
             }
+        );
+    }
+
+    /// protocol.md's third `send` example: an album rides the ordinary
+    /// frame as an `attachment_ids` array, in the sender's order, and the
+    /// body may be empty. The legacy `attachment_id` stays parseable
+    /// beside it (the tests above), because deployed clients still send it.
+    #[test]
+    fn client_send_frame_carries_attachment_ids() {
+        let json = r#"{"type": "send", "chat_id": 42, "client_msg_id": "9d3f1e77-0000-4000-8000-000000000001", "body": "", "attachment_ids": [34, 35, 36]}"#;
+        let frame: ClientFrame = serde_json::from_str(json).expect("parses");
+        assert_eq!(
+            frame,
+            ClientFrame::Send {
+                chat_id: 42,
+                client_msg_id: Uuid::parse_str("9d3f1e77-0000-4000-8000-000000000001")
+                    .expect("valid uuid"),
+                body: String::new(),
+                reply_to_message_id: None,
+                attachment_id: None,
+                attachment_ids: Some(vec![34, 35, 36]),
+                poll: None,
+            }
+        );
+    }
+
+    /// A message carrying attachments serialises BOTH keys the protocol
+    /// ties together: `attachments` (1–10, sender's order, never an empty
+    /// array) and the legacy `attachment`, which is its FIRST element for
+    /// clients that predate plurality. Never one without the other — and
+    /// neither at all on a bare message.
+    #[test]
+    fn a_message_frame_carries_the_attachment_list_and_its_legacy_first() {
+        fn photo(id: i64) -> crate::models::Attachment {
+            crate::models::Attachment {
+                id,
+                kind: "photo".to_string(),
+                mime: "image/jpeg".to_string(),
+                size: 4096,
+                width: None,
+                height: None,
+                duration_ms: None,
+                has_preview: false,
+                name: None,
+                latitude: None,
+                longitude: None,
+                accuracy_m: None,
+            }
+        }
+        let mut message = sample_message();
+        message.body = String::new();
+        message.attachments = Some(vec![photo(35), photo(34)]);
+        message.attachment = Some(photo(35));
+        let json = serde_json::to_value(ServerFrame::Message { message }).expect("serializes");
+        let attachments = json["message"]["attachments"]
+            .as_array()
+            .expect("attachments is an array");
+        assert_eq!(
+            attachments
+                .iter()
+                .map(|a| a["id"].as_i64().expect("id"))
+                .collect::<Vec<_>>(),
+            vec![35, 34],
+            "the sender's order, not the id order: {json}"
+        );
+        assert_eq!(
+            json["message"]["attachment"], attachments[0],
+            "the legacy key is the FIRST element, byte for byte: {json}"
+        );
+
+        let bare = serde_json::to_value(sample_message()).expect("serializes");
+        assert!(
+            bare.get("attachments").is_none() && bare.get("attachment").is_none(),
+            "both keys must be absent, never null or [], on a bare message: {bare}"
         );
     }
 

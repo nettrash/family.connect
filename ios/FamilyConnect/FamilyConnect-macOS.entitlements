@@ -50,5 +50,11 @@
 	     entitlement, which reported success and then recorded silence. -->
 	<key>com.apple.security.personal-information.location</key>
 	<true/>
+	<!-- The share extension stages files into this group's ShareInbox/
+	     for the app to pick up (ShareImport). -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.me.nettrash.FamilyConnect</string>
+	</array>
 </dict>
 </plist>

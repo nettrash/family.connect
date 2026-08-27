@@ -82,6 +82,14 @@ struct RootView: View {
             coordinator.refreshUnreadBadge()
             await session.bootstrap()
         }
+        // The share extension's hand-off (familyconnect://share?ids=…),
+        // on both platforms: the staged files move out of the App Group
+        // inbox and park on the session until the chat picker consumes
+        // them — the pendingPushRoute idiom, which is what makes a share
+        // that LAUNCHED the app survive bootstrap.
+        .onOpenURL { url in
+            session.handleShareURL(url)
+        }
         .onChange(of: session.phase) { oldPhase, newPhase in
             if newPhase == .active {
                 Task { await coordinator.activate() }

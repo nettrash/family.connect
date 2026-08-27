@@ -399,6 +399,14 @@ pub struct LimitsConfig {
     #[serde(default = "default_max_attachment_bytes")]
     pub max_attachment_bytes: usize,
 
+    /// Most attachments one message may claim (protocol.md, "Photos,
+    /// videos, audio, files and locations"). Ten by default. The FEWEST is
+    /// not configurable — it is 1, because a message that carries no
+    /// attachment is simply an ordinary message, not a state an operator
+    /// could allow or forbid.
+    #[serde(default = "default_max_attachments_per_message")]
+    pub max_attachments_per_message: usize,
+
     /// Largest PREVIEW accepted (the downscaled photo or poster frame).
     /// Small on purpose — it is drawn in a chat bubble.
     #[serde(default = "default_max_preview_bytes")]
@@ -665,6 +673,7 @@ impl Default for LimitsConfig {
             max_poll_option_chars: default_max_poll_option_chars(),
             max_board_notes: default_max_board_notes(),
             max_attachment_bytes: default_max_attachment_bytes(),
+            max_attachments_per_message: default_max_attachments_per_message(),
             max_preview_bytes: default_max_preview_bytes(),
             attachment_grace_hours: default_attachment_grace_hours(),
             retention_days: default_retention_days(),
@@ -742,6 +751,23 @@ impl Config {
         }
         if self.limits.max_poll_option_chars == 0 {
             anyhow::bail!("limits.max_poll_option_chars must be at least 1");
+        }
+        // The fewest is 1 and fixed (protocol.md's Limits table): zero
+        // would make every attachment send invalid, which no operator
+        // means by lowering a ceiling.
+        if self.limits.max_attachments_per_message < 1 {
+            anyhow::bail!("limits.max_attachments_per_message must be at least 1");
+        }
+        // An upper bound as well: the claim stamps each attachment's
+        // `position` into a SMALLINT (migration 0025), and `as i16` on an
+        // unbounded index would wrap negative past 32767 and reverse the
+        // album's read order. 100 is already ten times the protocol's
+        // default; nothing about a chat bubble wants more.
+        if self.limits.max_attachments_per_message > 100 {
+            anyhow::bail!(
+                "limits.max_attachments_per_message must be at most 100 — attachment \
+                 positions are stored as SMALLINT and clients lay albums out for ten"
+            );
         }
         if self.limits.default_page_size < 1 {
             anyhow::bail!("limits.default_page_size must be at least 1");
@@ -883,6 +909,11 @@ fn default_max_poll_option_chars() -> usize {
 
 fn default_max_attachment_bytes() -> usize {
     100 * 1024 * 1024
+}
+
+/// protocol.md's Limits table: 10 per message, the fewest is 1 (fixed).
+fn default_max_attachments_per_message() -> usize {
+    10
 }
 
 fn default_max_preview_bytes() -> usize {

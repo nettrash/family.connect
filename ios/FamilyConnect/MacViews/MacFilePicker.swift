@@ -34,6 +34,19 @@ enum MacFilePicker {
         panel.prompt = String(localized: "Attach")
         return panel.runModal() == .OK ? panel.url : nil
     }
+
+    /// The files the user chose, or [] if they cancelled. The many-item
+    /// door for a message that now carries up to ten attachments; the
+    /// composer enforces the cap, where the notice can be shown.
+    static func pickMany() -> [URL] {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = []
+        panel.prompt = String(localized: "Attach")
+        return panel.runModal() == .OK ? panel.urls : []
+    }
 }
 
 #endif

@@ -186,8 +186,10 @@ struct ConversationView: View {
     /// message they are answering. Suppressed only when they were not at
     /// the bottom already; ends with the draft.
     @State private var replyStartedFromHistory = false
-    /// The picked photo or video, while it is being prepared and uploaded.
-    @State private var pickedMedia: PhotosPickerItem?
+    /// The picked photos and videos, while they are being prepared. A
+    /// LIST since the picker went multi-select (up to the message cap);
+    /// they stage in the order picked, which is the order sent.
+    @State private var pickedMedia: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
     @State private var showCamera = false
     @State private var recorder = AudioRecorder()
@@ -216,15 +218,32 @@ struct ConversationView: View {
     /// NOT optimistic: the message appears once the server has the bytes,
     /// because a bubble pointing at an upload that failed is worse than a
     /// composer that is visibly busy.
-    private enum MediaSendState: Equatable {
+    enum MediaSendState: Equatable {
         case idle
         case preparing
-        case uploading
+        /// A send in flight. The associated text is the multi-item
+        /// progress ("Uploading 2 of 5…"); nil keeps the plain
+        /// "Sending…". Progress rides INSIDE this case, never through
+        /// `.working`, because `.working` is the download/share state
+        /// and leaves the composer usable — only a send closes the
+        /// attach and paste doors.
+        case uploading(String?)
         /// A download/save the user asked for, with its own wording — the
         /// same strip reports it, since it is the one place this screen
         /// already says what it is busy with.
         case working(String)
         case failed(String)
+
+        /// Whether this state closes the attachment doors — the pure
+        /// rule behind `composerIsBusy`, split out so it can be tested.
+        /// A send blocks (staging more mid-send would allow a second,
+        /// concurrent send); a download or a dismissible failure does not.
+        var blocksComposer: Bool {
+            switch self {
+            case .preparing, .uploading: return true
+            case .idle, .working, .failed: return false
+            }
+        }
     }
 
     /// Files on their way to the share sheet.
@@ -243,10 +262,13 @@ struct ConversationView: View {
     /// An attachment (and any caption) handed to the share sheet.
     @State private var sharePayload: SharePayload?
 
-    /// Media that is prepared and waiting for the user to press Send.
-    /// The type and its chip are shared with the Mac composer — see
-    /// Views/StagedAttachment.swift.
-    @State private var staged: StagedAttachment?
+    /// Media that is prepared and waiting for the user to press Send —
+    /// up to StagedAttachment.maxPerMessage of it, in the order staged,
+    /// which is the order the message will carry (docs/protocol.md,
+    /// "Photos, videos, audio, files and locations"). A pick APPENDS; at
+    /// the cap a brief notice says so. The type and its chips are shared
+    /// with the Mac composer — see Views/StagedAttachment.swift.
+    @State private var staged: [StagedAttachment] = []
 
     init(chatID: Int64) {
         self.chatID = chatID
@@ -441,6 +463,11 @@ struct ConversationView: View {
                 if model.draft.isEmpty, let parked = ComposerDrafts.take(for: chatID) {
                     model.draft = parked
                 }
+                // Files shared into the app and addressed to THIS chat
+                // land in the composer, staged — the ordinary arrival,
+                // since the picker routes here and this view is then
+                // built fresh (`.id(chatID)`).
+                consumeShareImport()
                 await openThread(proxy: proxy)
             }
             .onChange(of: messages.count) { oldCount, newCount in
@@ -641,6 +668,47 @@ struct ConversationView: View {
         .onChange(of: model.draft) { _, newValue in
             guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             coordinator.sendTyping(in: chatID)
+        }
+        // The share picker chose THIS chat while it was already open —
+        // `.id(chatID)` rebuilds nothing then, so `.task` will not run
+        // again and this is what stages the files instead.
+        .onChange(of: session.shareImportTarget) {
+            consumeShareImport()
+        }
+    }
+
+    /// Stage files shared into the app, if any are addressed to this
+    /// chat. `takeShareImport` hands them over exactly once and only for
+    /// the chat the picker chose, so a conversation that merely appears
+    /// while a share is pending cannot swallow it. Nothing auto-sends —
+    /// the files sit staged until Send.
+    private func consumeShareImport() {
+        guard let urls = session.takeShareImport(for: chatID), !urls.isEmpty else { return }
+        mediaState = .preparing
+        Task {
+            for url in urls {
+                do {
+                    let prepared = try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit)
+                    // `prepare` may hand back the source itself (a video
+                    // that already fits); only delete the import — the
+                    // whole per-import `fc-shared-<id>` directory, so no
+                    // empty husk survives — when a new file was made from
+                    // it. (When the source IS the staged file, its
+                    // directory lives until the file is consumed.)
+                    if prepared.fileURL != url {
+                        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                    }
+                    // The cap (and its notice) lives in `stage`.
+                    stage(prepared)
+                } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                    mediaState = .failed(String(localized: "That file is over the 100 MB limit."))
+                    try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                } catch {
+                    mediaState = .failed(String(localized: "Couldn't read that file."))
+                    try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                }
+            }
+            if mediaState == .preparing { mediaState = .idle }
         }
     }
 
@@ -932,8 +1000,8 @@ struct ConversationView: View {
             if recorder.isRecording {
                 recordingStrip
             }
-            if let staged {
-                stagedChip(staged)
+            if !staged.isEmpty {
+                stagedRow
             }
             HStack(alignment: .bottom, spacing: 8) {
                 // A Menu rather than two buttons: the composer is narrow,
@@ -1015,6 +1083,7 @@ struct ConversationView: View {
                 .photosPicker(
                     isPresented: $showPhotoPicker,
                     selection: $pickedMedia,
+                    maxSelectionCount: StagedAttachment.maxPerMessage,
                     matching: .any(of: [.images, .videos]),
                     photoLibrary: .shared())
                 if showsAssistantMention {
@@ -1324,20 +1393,21 @@ struct ConversationView: View {
     /// for an edit, or already busy with a file. Named once so the attach
     /// menu, the ⌘V door and the rule's `busy` branch cannot drift apart.
     private var composerIsBusy: Bool {
-        mediaState == .preparing || mediaState == .uploading || editTarget != nil
+        mediaState.blocksComposer || editTarget != nil
     }
 
     /// Whether Send has anything to do: words, or something staged, or both.
     private var canSend: Bool {
-        if staged != nil { return true }
+        if !staged.isEmpty { return true }
         return !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// The staged attachment sitting above the field, with the way out.
+    /// The staged attachments sitting above the field, each with its own
+    /// way out — the familiar chip for one, a scrolling row for several.
     @ViewBuilder
-    private func stagedChip(_ item: StagedAttachment) -> some View {
-        StagedAttachmentChip(item: item) {
-            withAnimation(.spring(duration: 0.25)) { discardStaged() }
+    private var stagedRow: some View {
+        StagedAttachmentRow(items: staged) { item in
+            withAnimation(.spring(duration: 0.25)) { discardStaged(item) }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -1363,10 +1433,16 @@ struct ConversationView: View {
                     .foregroundStyle(.red)
             } else {
                 switch mediaState {
-                case .preparing, .uploading:
+                case .preparing:
                     ProgressView()
                         .controlSize(.small)
-                    Text(mediaState == .preparing ? "Preparing…" : "Sending…")
+                    Text("Preparing…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .uploading(let progress):
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(progress ?? String(localized: "Sending…"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 case .working(let label):
@@ -1409,7 +1485,7 @@ struct ConversationView: View {
             viewingAttachment: $viewingAttachment,
             showCamera: $showCamera,
             onPickedMedia: stagePickedMedia,
-            onPickedFile: stagePickedFile,
+            onPickedFiles: stagePickedFiles,
             onCapturedPhoto: stageCapturedPhoto,
             onCapturedVideo: stageCapturedVideo,
             onImportFailed: { mediaState = .failed(String(localized: "Couldn't read that file.")) },
@@ -1551,18 +1627,22 @@ struct ConversationView: View {
         }
     }
 
-    /// Stage a picked document. Nothing is re-encoded — a file goes as it is.
-    private func stagePickedFile(_ url: URL) {
+    /// Stage picked documents, in the order picked. Nothing is re-encoded
+    /// — a file goes as it is. Sequential on purpose: preparing is a copy
+    /// (an iCloud download, possibly), and ten at once would stampede.
+    private func stagePickedFiles(_ urls: [URL]) {
         mediaState = .preparing
         Task {
-            do {
-                stage(try await MediaPrep.prepareFile(from: url, limit: MediaPrep.sizeLimit))
-            } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                // A document cannot be compressed the way a video can, so
-                // the advice is different: there is nothing to try.
-                mediaState = .failed(String(localized: "That file is over the 100 MB limit."))
-            } catch {
-                mediaState = .failed(String(localized: "Couldn't read that file."))
+            for url in urls {
+                do {
+                    stage(try await MediaPrep.prepareFile(from: url, limit: MediaPrep.sizeLimit))
+                } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                    // A document cannot be compressed the way a video can,
+                    // so the advice is different: there is nothing to try.
+                    mediaState = .failed(String(localized: "That file is over the 100 MB limit."))
+                } catch {
+                    mediaState = .failed(String(localized: "Couldn't read that file."))
+                }
             }
         }
     }
@@ -1605,56 +1685,87 @@ struct ConversationView: View {
         }
     }
 
-    /// Hold prepared media in the composer, replacing anything already
-    /// there — one attachment per message, so a second pick supersedes the
-    /// first rather than queueing behind it.
+    /// Hold prepared media in the composer, APPENDING behind whatever is
+    /// already staged — a message carries up to ten attachments, in the
+    /// order staged. At the cap the pick is refused with a notice (the
+    /// house style for something the composer could not do) and the
+    /// prepared file cleaned up, because nothing else owns it now.
     private func stage(_ prepared: MediaPrep.Prepared) {
-        discardStaged()
+        guard StagedAttachment.canAdd(to: staged.count) else {
+            try? FileManager.default.removeItem(at: prepared.fileURL)
+            mediaState = .idle
+            composerNotice = String(
+                localized: "You can attach up to \(StagedAttachment.maxPerMessage) items.")
+            return
+        }
         mediaState = .idle
         composerNotice = nil
         withAnimation(.spring(duration: 0.25)) {
-            staged = StagedAttachment(prepared: prepared)
+            staged.append(StagedAttachment(prepared: prepared))
         }
         inputFocused = true
     }
 
-    /// Commit staged media with whatever the composer holds.
+    /// Commit the staged set with whatever the composer holds.
     ///
     /// The composer is taken atomically FIRST — caption, quote and the
-    /// staged file together — so nothing typed during the upload is
+    /// staged files together — so nothing typed during the upload is
     /// swallowed into the caption and a primed reply cannot leak onto the
     /// next message. Everything goes back if the send never lands.
-    private func sendStaged(_ item: StagedAttachment, caption: String) {
+    private func sendStaged(_ items: [StagedAttachment], caption: String) {
         let handoff = takeComposer()
-        withAnimation(.spring(duration: 0.25)) { staged = nil }
-        mediaState = .uploading
+        withAnimation(.spring(duration: 0.25)) { staged = [] }
+        mediaState = .uploading(nil)
         Task {
-            if await coordinator.sendMedia(
-                item.prepared, caption: handoff.caption, replyTo: handoff.replyTo, in: chatID)
-            {
+            let sent = await coordinator.sendMedia(
+                items.map(\.prepared),
+                caption: handoff.caption,
+                replyTo: handoff.replyTo,
+                in: chatID,
+                onItemStart: { index, total in
+                    // The existing strip carries the progress; one item
+                    // keeps the plain "Sending…" it has always shown.
+                    // Progress stays INSIDE `.uploading` so the composer
+                    // still counts as busy — `.working` would reopen the
+                    // attach menu and the paste door mid-send.
+                    guard total > 1 else { return }
+                    mediaState = .uploading(
+                        String(localized: "Uploading \(index) of \(total)…"))
+                })
+            if sent {
                 mediaState = .idle
             } else {
                 mediaState = .failed(String(localized: "Couldn't send that — try again."))
                 restore(handoff)
-                // Put the attachment back too: `sendMedia` deletes the temp
-                // file only on the paths that consumed it, and a failed send
-                // the user can retry is worth more than a tidy temp dir.
-                if FileManager.default.fileExists(atPath: item.prepared.fileURL.path) {
-                    withAnimation(.spring(duration: 0.25)) { staged = item }
+                // Put the attachments back too — ALL of them: `sendMedia`
+                // consumes the temp files only on whole-send success, so
+                // after a failure every file is still on disk and the
+                // retry offers exactly the set that was composed. Ids
+                // already uploaded but never claimed are the server's 24h
+                // sweep's problem, not ours.
+                withAnimation(.spring(duration: 0.25)) {
+                    staged = items + staged
                 }
             }
         }
     }
 
-    /// Throw away staged media and its temp file.
+    /// Throw away ONE staged item and its temp file.
     ///
     /// The file is ours: `MediaPrep` wrote it into a temp directory and
-    /// nothing else will clean it up, because the `defer` that normally
-    /// deletes it lives in `sendMedia` — which never ran.
+    /// nothing else will clean it up, because the delete that normally
+    /// consumes it lives in `sendMedia` — which never ran.
+    private func discardStaged(_ item: StagedAttachment) {
+        try? FileManager.default.removeItem(at: item.prepared.fileURL)
+        staged.removeAll { $0.id == item.id }
+    }
+
+    /// Throw away the whole staged set.
     private func discardStaged() {
-        guard let staged else { return }
-        try? FileManager.default.removeItem(at: staged.prepared.fileURL)
-        self.staged = nil
+        for item in staged {
+            try? FileManager.default.removeItem(at: item.prepared.fileURL)
+        }
+        staged = []
     }
 
     /// Fetch a file's bytes and hand them to Quick Look, which previews
@@ -1669,61 +1780,65 @@ struct ConversationView: View {
         }
     }
 
-    /// Prepare and send a picked photo or video.
+    /// Prepare and stage the picked photos and videos, in picked order.
     ///
     /// Preparation happens off the main actor: re-encoding a video is
-    /// seconds of work, and the thread has to keep scrolling while it runs.
-    private func stagePickedMedia(_ item: PhotosPickerItem) {
+    /// seconds of work, and the thread has to keep scrolling while it
+    /// runs. Sequential rather than concurrent — several 4K clips
+    /// re-encoding at once is how a phone falls over.
+    private func stagePickedMedia(_ items: [PhotosPickerItem]) {
         mediaState = .preparing
         Task {
-            defer { pickedMedia = nil }
+            defer { pickedMedia = [] }
             let limit = MediaPrep.sizeLimit
-            // Decide from what the item SAYS it is, rather than trying a
-            // movie transfer and reading the failure as "must be a photo" —
-            // a transfer can fail for reasons that have nothing to do with
-            // the kind (iCloud, cancellation), and that path would then
-            // hand a video's bytes to the photo decoder.
-            let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
-            let prepared: MediaPrep.Prepared
-            do {
-                if isVideo {
-                    guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
-                        mediaState = .failed(String(localized: "Couldn't read that video."))
-                        return
+            for item in items {
+                // Decide from what the item SAYS it is, rather than trying a
+                // movie transfer and reading the failure as "must be a photo" —
+                // a transfer can fail for reasons that have nothing to do with
+                // the kind (iCloud, cancellation), and that path would then
+                // hand a video's bytes to the photo decoder.
+                let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+                let prepared: MediaPrep.Prepared
+                do {
+                    if isVideo {
+                        guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
+                            mediaState = .failed(String(localized: "Couldn't read that video."))
+                            continue
+                        }
+                        prepared = try await MediaPrep.prepareVideo(from: movie.url, limit: limit)
+                        // prepareVideo returns the source itself when it already
+                        // fits; only delete the copy when it made a new file.
+                        if prepared.fileURL != movie.url {
+                            try? FileManager.default.removeItem(at: movie.url)
+                        }
+                    } else if let data = try await item.loadTransferable(type: Data.self) {
+                        prepared = try await MediaPrep.preparePhoto(from: data, limit: limit)
+                    } else {
+                        mediaState = .failed(String(localized: "Couldn't read that item."))
+                        continue
                     }
-                    prepared = try await MediaPrep.prepareVideo(from: movie.url, limit: limit)
-                    // prepareVideo returns the source itself when it already
-                    // fits; only delete the copy when it made a new file.
-                    if prepared.fileURL != movie.url {
-                        try? FileManager.default.removeItem(at: movie.url)
-                    }
-                } else if let data = try await item.loadTransferable(type: Data.self) {
-                    prepared = try await MediaPrep.preparePhoto(from: data, limit: limit)
-                } else {
-                    mediaState = .failed(String(localized: "Couldn't read that item."))
-                    return
+                } catch MediaPrep.PrepError.tooLargeAfterCompression {
+                    // The one case the user has to act on: compression was not
+                    // enough, so say what would help rather than just refusing.
+                    mediaState = .failed(String(localized: "Still too large after compressing — try a shorter clip."))
+                    continue
+                } catch {
+                    mediaState = .failed(String(localized: "Couldn't prepare that item."))
+                    continue
                 }
-            } catch MediaPrep.PrepError.tooLargeAfterCompression {
-                // The one case the user has to act on: compression was not
-                // enough, so say what would help rather than just refusing.
-                mediaState = .failed(String(localized: "Still too large after compressing — try a shorter clip."))
-                return
-            } catch {
-                mediaState = .failed(String(localized: "Couldn't prepare that item."))
-                return
-            }
 
-            stage(prepared)
+                stage(prepared)
+            }
         }
     }
 
     private var typingLine: String? {
         let ids = coordinator.typingUserIDs(in: chatID)
         guard !ids.isEmpty else { return nil }
-        let names = ids.map { displayName(for: $0) ?? "Someone" }
+        let names = ids.map { displayName(for: $0) ?? String(localized: "Someone") }
         switch names.count {
-        case 1: return "\(names[0]) is typing…"
-        default: return "\(names.joined(separator: ", ")) are typing…"
+        case 1: return String(localized: "\(names[0]) is typing…")
+        default: return String(localized: "\(names.joined(separator: ", ")) are typing…")
         }
     }
 
@@ -1946,14 +2061,14 @@ struct ConversationView: View {
         // An attachment can travel with no words at all — that is how a
         // photo is normally sent — so an empty draft is only a reason to
         // stop when there is nothing staged either.
-        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || staged != nil else {
+        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !staged.isEmpty else {
             return
         }
         if let target = editTarget {
             submitEdit(target: target, body: body)
             return
         }
-        if let staged {
+        if !staged.isEmpty {
             sendStaged(staged, caption: body)
             return
         }
@@ -2104,7 +2219,7 @@ struct ConversationView: View {
         Task {
             do {
                 let fix = try await locationProvider.currentFix()
-                mediaState = .uploading
+                mediaState = .uploading(nil)
                 // Take-then-restore, like every other send here: whatever
                 // was typed travels with the pin, and comes back if the
                 // send never happened.
@@ -2248,14 +2363,14 @@ private struct DayPill: View {
 /// will solve in reasonable time. Grouping them also keeps the four
 /// bindings that only attachments touch in one place.
 private struct AttachmentSurfaces: ViewModifier {
-    @Binding var pickedMedia: PhotosPickerItem?
+    @Binding var pickedMedia: [PhotosPickerItem]
     @Binding var showFilePicker: Bool
     @Binding var previewedFile: URL?
     @Binding var viewingAttachment: AttachmentDTO?
     @Binding var showCamera: Bool
 
-    let onPickedMedia: (PhotosPickerItem) -> Void
-    let onPickedFile: (URL) -> Void
+    let onPickedMedia: ([PhotosPickerItem]) -> Void
+    let onPickedFiles: ([URL]) -> Void
     let onCapturedPhoto: (Data) -> Void
     let onCapturedVideo: (URL) -> Void
     let onImportFailed: () -> Void
@@ -2263,21 +2378,21 @@ private struct AttachmentSurfaces: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: pickedMedia) { _, item in
-                guard let item else { return }
-                onPickedMedia(item)
+            .onChange(of: pickedMedia) { _, items in
+                guard !items.isEmpty else { return }
+                onPickedMedia(items)
             }
             .fileImporter(
                 isPresented: $showFilePicker,
                 allowedContentTypes: [.item],
-                allowsMultipleSelection: false
+                allowsMultipleSelection: true
             ) { result in
                 // .item, not a list of types: the whole point of files is
                 // that the family is never told what they may send.
                 switch result {
                 case .success(let urls):
-                    guard let url = urls.first else { return }
-                    onPickedFile(url)
+                    guard !urls.isEmpty else { return }
+                    onPickedFiles(urls)
                 case .failure:
                     onImportFailed()
                 }

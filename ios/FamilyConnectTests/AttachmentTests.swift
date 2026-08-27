@@ -242,7 +242,10 @@ struct AttachmentTests {
                 .first { $0.url.path() == "/api/v1/chats/42/messages" })
         let body = try #require(send.bodyJSON())
         #expect(body["body"] as? String == "at the lake")
-        #expect(body["attachment_id"] as? Int == 34)
+        // The array spelling, even for one attachment — the legacy
+        // singular is never sent any more.
+        #expect(body["attachment_ids"] as? [Int] == [34])
+        #expect(body["attachment_id"] == nil)
     }
 
     @Test("A refused upload sends no message at all")
@@ -750,4 +753,192 @@ struct AttachmentTests {
         #expect(MediaPrep.sizeLimit == 100 * 1024 * 1024)
     }
 
+    // MARK: - Several attachments on one message
+
+    /// Two prepared photos on disk, distinguishable by size.
+    private func preparedPair() throws -> [MediaPrep.Prepared] {
+        try (0..<2).map { index in
+            let url = MediaPrep.temporaryURL(extension: "jpg")
+            try Data(repeating: 0xAB, count: 64 + index).write(to: url)
+            return MediaPrep.Prepared(
+                fileURL: url,
+                mime: "image/jpeg",
+                kind: "photo",
+                width: 1600,
+                height: 1200,
+                durationMS: nil,
+                previewJPEG: nil)
+        }
+    }
+
+    @Test("Several attachments upload in order and claim as ONE message")
+    func multiSendClaimsOneMessage() async throws {
+        let host = "attach-multi.test"
+        let uploads = UploadCounter()
+        let harness = try makeHarness(host: host) { request in
+            switch (request.method, request.url.path()) {
+            case ("POST", "/api/v1/attachments"):
+                let id = 40 + uploads.next()
+                return .json(201, Self.attachmentJSON(id: Int64(id)))
+            default:
+                let clientID = request.bodyJSON()?["client_msg_id"] as? String ?? ""
+                return .json(201, """
+                    {"message": {"id": 970, "chat_id": 42, "sender_id": 7, "body": "",
+                     "created_at": "2026-08-22T09:00:00Z", "client_msg_id": "\(clientID)",
+                     "attachments": [
+                       {"id": 41, "kind": "photo", "mime": "image/jpeg", "size": 64, "has_preview": false},
+                       {"id": 42, "kind": "photo", "mime": "image/jpeg", "size": 65, "has_preview": false}],
+                     "attachment": {"id": 41, "kind": "photo", "mime": "image/jpeg", "size": 64, "has_preview": false}}}
+                    """)
+            }
+        }
+        defer { harness.tearDown() }
+
+        var progress: [(Int, Int)] = []
+        let pair = try preparedPair()
+        let sent = await harness.coordinator.sendMedia(
+            pair, caption: "", in: 42,
+            onItemStart: { progress.append(($0, $1)) })
+        #expect(sent)
+        await harness.settle()
+
+        // Whole-send success is the one consumer of the prepared files.
+        #expect(!FileManager.default.fileExists(atPath: pair[0].fileURL.path))
+        #expect(!FileManager.default.fileExists(atPath: pair[1].fileURL.path))
+
+        // Progress named each item against the total.
+        #expect(progress.map(\.0) == [1, 2])
+        #expect(progress.map(\.1) == [2, 2])
+
+        // One send, claiming BOTH ids in upload order — the array
+        // spelling, and never the legacy singular.
+        let send = try #require(
+            StubURLProtocol.requests(host: host)
+                .first { $0.url.path() == "/api/v1/chats/42/messages" })
+        let body = try #require(send.bodyJSON())
+        #expect(body["attachment_ids"] as? [Int] == [41, 42])
+        #expect(body["attachment_id"] == nil)
+
+        // The row carries the whole set; the flat snapshot is the first.
+        let row = try #require(harness.messages().first)
+        #expect(row.attachmentList.map(\.id) == [41, 42])
+        #expect(row.attachmentSnapshot?.id == 41)
+    }
+
+    /// A failure mid-way sends nothing: the ids already uploaded are
+    /// abandoned to the server's 24-hour sweep of unclaimed attachments,
+    /// and EVERY file stays on disk — files are consumed only on
+    /// whole-send success — so the composer restores the entire set and
+    /// a retry cannot silently send a subset of what was composed.
+    @Test("A mid-way upload failure sends no message and keeps every file")
+    func midWayFailureKeepsUnsentFiles() async throws {
+        let host = "attach-midfail.test"
+        let uploads = UploadCounter()
+        let harness = try makeHarness(host: host) { request in
+            if request.url.path() == "/api/v1/attachments" {
+                if uploads.next() == 1 {
+                    return .json(201, Self.attachmentJSON(id: 50))
+                }
+                return .json(413, #"{"error": {"code": "attachment_too_large", "message": "no"}}"#)
+            }
+            return .json(201, #"{"message": {}}"#)
+        }
+        defer { harness.tearDown() }
+
+        let pair = try preparedPair()
+        #expect(await harness.coordinator.sendMedia(pair, caption: "", in: 42) == false)
+        await harness.settle()
+        #expect(harness.messages().isEmpty)
+        // BOTH survive — the one whose upload landed too: a retry must
+        // offer the whole set, never just the tail.
+        #expect(FileManager.default.fileExists(atPath: pair[0].fileURL.path))
+        #expect(FileManager.default.fileExists(atPath: pair[1].fileURL.path))
+        for item in pair { try? FileManager.default.removeItem(at: item.fileURL) }
+    }
+
+    /// The plural preview rules, mirroring the server's push summaries:
+    /// one attachment by name or kind, several of one kind as a count
+    /// (names give way to it), a mixed set as "N attachments", a caption
+    /// always winning.
+    @Test("The chat-list preview counts a plural set the way the server does")
+    func pluralPreviewWording() throws {
+        func attachment(id: Int64 = 1, kind: String, name: String? = nil) -> AttachmentDTO {
+            let json = """
+                {"id": \(id), "kind": "\(kind)", "mime": "application/octet-stream", "size": 1,
+                 "has_preview": false\(name.map { ", \"name\": \"\($0)\"" } ?? "")}
+                """
+            return try! JSONDecoder().decode(AttachmentDTO.self, from: Data(json.utf8))
+        }
+        let photos = [attachment(id: 1, kind: "photo"), attachment(id: 2, kind: "photo"),
+                      attachment(id: 3, kind: "photo")]
+        #expect(ChatSyncCoordinator.preview(body: "", attachments: photos) == "3 Photos")
+        #expect(ChatSyncCoordinator.preview(
+            body: "", attachments: [attachment(id: 1, kind: "video"), attachment(id: 2, kind: "video")])
+            == "2 Videos")
+        #expect(ChatSyncCoordinator.preview(
+            body: "", attachments: [attachment(id: 1, kind: "audio"), attachment(id: 2, kind: "audio")])
+            == "2 Audio")
+        // Names give way to the count.
+        #expect(ChatSyncCoordinator.preview(
+            body: "",
+            attachments: [attachment(id: 1, kind: "file", name: "a.pdf"),
+                          attachment(id: 2, kind: "file", name: "b.pdf")])
+            == "2 Files")
+        // A mixed set is just a number of things.
+        #expect(ChatSyncCoordinator.preview(
+            body: "", attachments: [attachment(id: 1, kind: "photo"), attachment(id: 2, kind: "file", name: "a.pdf")])
+            == "2 attachments")
+        // A caption still wins over any of it.
+        #expect(ChatSyncCoordinator.preview(body: "beach day", attachments: photos) == "beach day")
+        // One attachment keeps today's words.
+        #expect(ChatSyncCoordinator.preview(
+            body: "", attachments: [attachment(id: 1, kind: "photo")]) == "Photo")
+    }
+
+    /// The stored set: JSON in the wire shape, preferred over the flat
+    /// columns; a pre-plurality row (flat columns only) still answers a
+    /// one-element list — nothing already on a device is re-read.
+    @Test("The entity's attachment list prefers the JSON set and falls back to the flat row")
+    func entityAttachmentListRoundTrips() throws {
+        let json = #"{"id": 61, "kind": "photo", "mime": "image/jpeg", "size": 10, "has_preview": true}"#
+        let first = try JSONDecoder().decode(AttachmentDTO.self, from: Data(json.utf8))
+        let second = try JSONDecoder().decode(
+            AttachmentDTO.self,
+            from: Data(#"{"id": 62, "kind": "video", "mime": "video/mp4", "size": 20, "has_preview": false}"#.utf8))
+
+        // The first-sight insert path, plural.
+        let entity = MessageEntity(
+            localID: "local-multi", chatID: 42, senderID: 7, body: "",
+            createdAt: Date(), status: .sent, attachments: [first, second])
+        #expect(entity.attachmentList == [first, second])
+        // The flat snapshot is the FIRST — existing callers keep working,
+        // and a downgrade still shows something.
+        #expect(entity.attachmentSnapshot == first)
+        #expect(entity.attachmentsJSON?.contains("\"id\"") == true)
+
+        // A row written before plurality: flat columns, no JSON.
+        let legacy = MessageEntity(
+            localID: "local-legacy", chatID: 42, senderID: 7, body: "",
+            createdAt: Date(), status: .sent)
+        legacy.attachmentID = second.id
+        legacy.attachmentKind = second.kind
+        legacy.attachmentMIME = second.mime
+        legacy.attachmentSize = second.size
+        #expect(legacy.attachmentsJSON == nil)
+        #expect(legacy.attachmentList.map(\.id) == [62])
+    }
+
+}
+
+/// A tiny call counter for stub handlers, which are @Sendable closures —
+/// a `var` captured there would be a concurrency error.
+private final class UploadCounter: @unchecked Sendable {
+    private var value = 0
+    private let lock = NSLock()
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
 }

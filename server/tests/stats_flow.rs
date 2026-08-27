@@ -184,6 +184,66 @@ async fn attachments_are_counted_by_kind_without_inflating_messages() {
     assert_eq!(owner_row["attachments"]["count"].as_i64(), Some(3));
 }
 
+/// An album is ONE message carrying N attachments — the message total must
+/// count it once, and the attachment totals must count each of the N.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_album_counts_one_message_and_every_attachment() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+
+    send(&server, &owner, chat_id, "just words").await;
+
+    // Three photos with distinct bytes, on ONE message.
+    let mut ids = Vec::new();
+    for len in [512usize, 640, 768] {
+        let uploaded = server
+            .put_bytes_method(
+                "POST",
+                &owner,
+                "/attachments?kind=photo",
+                "image/jpeg",
+                jpeg_bytes(len),
+            )
+            .await;
+        assert_eq!(uploaded.status(), 201);
+        let body: Value = uploaded.json().await.expect("JSON");
+        ids.push(body["attachment"]["id"].as_i64().expect("id"));
+    }
+    let sent = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({"client_msg_id": Uuid::new_v4().to_string(), "body": "",
+                   "attachment_ids": ids}),
+        )
+        .await;
+    assert_eq!(sent.status(), 201);
+
+    let stats: Value = server
+        .get(&owner, "/families/mine/stats")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let totals = &stats["totals"];
+    assert_eq!(
+        totals["messages"].as_i64(),
+        Some(2),
+        "two messages, however many attachments one carried: {totals}"
+    );
+    assert_eq!(totals["attachments"]["count"].as_i64(), Some(3));
+    assert_eq!(totals["attachments"]["photo"].as_i64(), Some(3));
+    assert_eq!(
+        totals["attachments"]["bytes"].as_i64(),
+        Some(512 + 640 + 768)
+    );
+
+    let owner_row = &stats["members"][0];
+    assert_eq!(owner_row["messages"].as_i64(), Some(2));
+    assert_eq!(owner_row["attachments"]["count"].as_i64(), Some(3));
+}
+
 /// `bytes` is what was sent; `stored_bytes` counts each distinct file once.
 /// The gap between them is what one-copy-per-family saved, and reporting
 /// only one of the two would hide it.

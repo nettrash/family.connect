@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  app-sandbox is REQUIRED for a Mac .appex (a non-sandboxed extension
+	  is rejected at upload, error 90296 — exchange-ios's gotcha); it is
+	  ignored at runtime on iOS.
+
+	  application-groups lets the extension write the shared files into
+	  the App Group container (ShareInbox/) for the main app to pick up.
+	  Nothing else: the extension stages bytes and hands off through the
+	  familyconnect:// URL scheme, where the upload (and the choice of
+	  chat) live.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.me.nettrash.FamilyConnect</string>
+	</array>
+</dict>
+</plist>

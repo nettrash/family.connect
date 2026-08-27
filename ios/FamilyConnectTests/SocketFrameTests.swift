@@ -31,7 +31,7 @@ struct SocketFrameTests {
             clientMsgID: "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
             body: "Dinner at 7?",
             replyToMessageID: nil,
-            attachmentID: nil,
+            attachmentIDs: nil,
             pollOptions: nil))
         #expect(json["type"] as? String == "send")
         #expect(json["chat_id"] as? Int == 42)
@@ -50,7 +50,7 @@ struct SocketFrameTests {
             clientMsgID: "1c4a9b02-0000-4000-8000-000000000001",
             body: "Six works",
             replyToMessageID: 1337,
-            attachmentID: nil,
+            attachmentIDs: nil,
             pollOptions: nil))
         #expect(json["type"] as? String == "send")
         #expect(json["reply_to_message_id"] as? Int == 1337)
@@ -58,19 +58,42 @@ struct SocketFrameTests {
         #expect(json.count == 5)
     }
 
-    @Test("a photo's send frame carries the attachment id and an empty body")
+    @Test("a photo's send frame carries the attachment id array and an empty body")
     func encodeSendAttachment() throws {
         let json = try fields(of: .send(
             chatID: 42,
             clientMsgID: "1c4a9b02-0000-4000-8000-000000000002",
             body: "",
             replyToMessageID: nil,
-            attachmentID: 34,
+            attachmentIDs: [34],
             pollOptions: nil))
         #expect(json["type"] as? String == "send")
-        #expect(json["attachment_id"] as? Int == 34)
+        // The ARRAY spelling, even for one: the legacy `attachment_id`
+        // is a one-element alias this client no longer sends.
+        #expect(json["attachment_ids"] as? [Int] == [34])
+        #expect(json["attachment_id"] == nil)
         // A photo needs no caption: the empty body is sent, not omitted.
         #expect(json["body"] as? String == "")
+        #expect(json.count == 5)
+    }
+
+    @Test("a multi-attachment send frame matches the protocol.md literal")
+    func encodeSendManyAttachments() throws {
+        // The literal in protocol.md §Client → server:
+        // {"type": "send", "chat_id": 42, "client_msg_id": "9d3f1e77-…",
+        //  "body": "", "attachment_ids": [34, 35, 36]}
+        let json = try fields(of: .send(
+            chatID: 42,
+            clientMsgID: "9d3f1e77-0000-4000-8000-000000000004",
+            body: "",
+            replyToMessageID: nil,
+            attachmentIDs: [34, 35, 36],
+            pollOptions: nil))
+        #expect(json["type"] as? String == "send")
+        #expect(json["chat_id"] as? Int == 42)
+        #expect(json["body"] as? String == "")
+        // In the SENDER'S order — the server preserves it on every read.
+        #expect(json["attachment_ids"] as? [Int] == [34, 35, 36])
         #expect(json.count == 5)
     }
 
@@ -84,7 +107,7 @@ struct SocketFrameTests {
             clientMsgID: "5b2e0c14-0000-4000-8000-000000000003",
             body: "Pizza or pasta?",
             replyToMessageID: nil,
-            attachmentID: nil,
+            attachmentIDs: nil,
             pollOptions: ["Pizza", "Pasta"]))
         #expect(json["type"] as? String == "send")
         // The QUESTION is the body — there is no question field, which is
@@ -316,6 +339,43 @@ struct SocketFrameTests {
             return
         }
         #expect(ordinary.poll == nil)
+    }
+
+    @Test("a message with attachments decodes them, legacy attachment being the first")
+    func decodeMessageWithAttachments() throws {
+        // The doc's shape: "attachments" is 1–10 in the sender's order,
+        // and "attachment" is its FIRST element, kept for clients that
+        // predate plurality — a client that reads the array ignores it.
+        let frame = try decode("""
+        {"type": "message",
+         "message": {"id": 1342, "chat_id": 42, "sender_id": 7, "client_msg_id": null,
+                     "body": "", "created_at": "2026-08-19T17:07:00Z",
+                     "attachments": [
+                       {"id": 34, "kind": "photo", "mime": "image/jpeg", "size": 100, "has_preview": true},
+                       {"id": 35, "kind": "photo", "mime": "image/jpeg", "size": 200, "has_preview": true},
+                       {"id": 36, "kind": "video", "mime": "video/mp4", "size": 300, "has_preview": false}],
+                     "attachment": {"id": 34, "kind": "photo", "mime": "image/jpeg", "size": 100, "has_preview": true}}}
+        """)
+        guard case .message(let message) = frame else {
+            Issue.record("expected .message, got \(frame)")
+            return
+        }
+        // The read rule: the array wins, in the sender's order.
+        #expect(message.attachmentList.map(\.id) == [34, 35, 36])
+        #expect(message.attachment?.id == 34)
+
+        // A legacy server (or field) still reads as a one-element list.
+        let legacy = try decode("""
+        {"type": "message",
+         "message": {"id": 1343, "chat_id": 42, "sender_id": 7, "client_msg_id": null,
+                     "body": "", "created_at": "2026-08-19T17:08:00Z",
+                     "attachment": {"id": 37, "kind": "photo", "mime": "image/jpeg", "size": 1, "has_preview": false}}}
+        """)
+        guard case .message(let single) = legacy else {
+            Issue.record("expected .message, got \(legacy)")
+            return
+        }
+        #expect(single.attachmentList.map(\.id) == [37])
     }
 
     @Test("pong decodes")

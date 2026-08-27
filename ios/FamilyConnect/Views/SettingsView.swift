@@ -273,8 +273,9 @@ struct SettingsView: View {
                             .font(.body.monospaced())
                             .textSelection(.enabled)
                     }
+                    let server = AppSettings.serverURL?.absoluteString ?? ""
                     ShareLink(
-                        item: "Join our family on Family Connect! Server: \(AppSettings.serverURL?.absoluteString ?? "") — invite code: \(code)"
+                        item: String(localized: "Join our family on Family Connect! Server: \(server) — invite code: \(code)")
                     ) {
                         Label("Share Invite", systemImage: "square.and.arrow.up")
                     }

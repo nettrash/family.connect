@@ -90,9 +90,18 @@ nonisolated enum ChatNotifier {
     /// never coordinates); the only difference is what an empty message
     /// with no attachment says, and the server says "New message".
     static func body(text: String, attachment: AttachmentDTO?, call: CallDTO? = nil) -> String {
+        body(text: text, attachments: attachment.map { [$0] } ?? [], call: call)
+    }
+
+    /// The plural spelling, mirroring the server's push-summary rules:
+    /// one attachment by name or kind, several of one kind as a count
+    /// ("3 Photos"), a mixed set as "N attachments" — and a caption still
+    /// wins (docs/protocol.md, "Push notifications").
+    static func body(text: String, attachments: [AttachmentDTO], call: CallDTO? = nil) -> String {
         // A call record is announced from the CALLEE's side — the caller
         // is never told about their own call — so the wording is theirs.
-        let summary = ChatSyncCoordinator.preview(body: text, attachment: attachment, call: call, isMine: false)
+        let summary = ChatSyncCoordinator.preview(
+            body: text, attachments: attachments, call: call, isMine: false)
         return summary.isEmpty ? String(localized: "New message") : summary
     }
 

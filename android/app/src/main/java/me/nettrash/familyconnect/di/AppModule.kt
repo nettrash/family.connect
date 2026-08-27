@@ -75,6 +75,8 @@ import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.OkHttpChatSocket
 import me.nettrash.familyconnect.data.repo.AvatarSource
 import me.nettrash.familyconnect.data.repo.ContentResolverAvatarSource
+import me.nettrash.familyconnect.data.repo.DefaultShareImporter
+import me.nettrash.familyconnect.data.repo.ShareImporter
 import me.nettrash.familyconnect.data.push.FirebasePushTokenProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
 import me.nettrash.familyconnect.data.settings.DataStoreSettingsRepository
@@ -128,6 +130,11 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindConnectivityObserver(impl: AndroidConnectivityObserver): ConnectivityObserver
+
+    // The OS share target's copy-to-cache step. An interface so
+    // MainViewModel's tests can default it away (see ShareImporter).
+    @Binds
+    abstract fun bindShareImporter(impl: DefaultShareImporter): ShareImporter
 
     @Binds
     abstract fun bindChatSocket(impl: OkHttpChatSocket): ChatSocket
@@ -205,6 +212,7 @@ abstract class AppModule {
                     AppDatabase.MIGRATION_12_13,
                     AppDatabase.MIGRATION_13_14,
                     AppDatabase.MIGRATION_14_15,
+                    AppDatabase.MIGRATION_15_16,
                 )
                 .build()
 

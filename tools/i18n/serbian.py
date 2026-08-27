@@ -413,6 +413,34 @@ SR = {
 "Voice call · %@": "Гласовни позив · %@",
 "Voice call declined": "Гласовни позив одбијен",
 "Voice call": "Гласовни позив",
+# --- several attachments per message + share-into-the-app (iOS + macOS; ---
+# --- added with the plural-attachments feature; Android twins pending) ---
+# The plural chat-list/push summaries, mirroring the server's rules
+# ("3 Photos", names give way to the count, a mixed set is a number of
+# things). The label-genitive shape ("фотографија: 3") is the one this
+# file already uses for "%lld attachments, %@" — it reads the same for
+# every count, so no plural machinery is needed.
+"%lld Photos": "фотографија: %lld",
+"%lld Videos": "видео снимака: %lld",
+"%lld Audio": "аудио записа: %lld",
+"%lld Files": "датотека: %lld",
+"%lld attachments": "прилога: %lld",
+# The composer's progress line while a multi-attachment send uploads.
+"Uploading %lld of %lld…": "Отпремање %1$lld од %2$lld…",
+# The cap notice: an imperative-free statement, so nothing is gendered.
+"You can attach up to %lld items.": "Можеш да приложиш највише %lld ставки.",
+# The share-into-the-app chat picker's title.
+"Send to": "Пошаљи у",
+
+# --- 2026-08-26 UI polish (iOS/macOS): new user-visible strings. ---
+"%@ is typing…": "%@ куца…",
+"%@ are typing…": "%@ куцају…",
+"Calls back": "Узвраћа позив",
+"Edit Note": "Уреди белешку",
+"Offline": "Ван мреже",
+"Join our family on Family Connect! Server: %@ — invite code: %@":
+  "Придружи се нашој породици у Family Connect! Сервер: %1$@ — позивни код: %2$@",
+# --- end 2026-08-26 UI polish (iOS/macOS) ---
 }
 
 # The members count is a plural, and Serbian's CLDR categories are one/few/other

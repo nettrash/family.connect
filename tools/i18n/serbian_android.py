@@ -194,4 +194,51 @@ ANDROID_ONLY = {
 "s_not_reachable": "Недоступно",
 "s_calls_are_off_on_this_server": "Позиви су искључени на овом серверу",
 "e_call_failed_to_start": "Позив није могао да почне.",
+
+# --- multiple attachments per message + the OS share target (Android) ---
+# Added by the Android implementer for the plurality/share feature pair.
+# Cyrillic only, as always; the Latin set is generated. None of these have
+# an iOS counterpart wording to reuse yet — if the catalogue ever gains
+# the same English, move them to serbian.SR per this file's rule.
+"s_uploading_n_of_m": "Отпремање %1$d од %2$d…",
+"e_attachment_limit": "Порука може да носи највише %1$d прилога.",
+"s_share_choose_chat": "Подели у…",
+"s_shared_with_family": "Подељено са Family",
+"e_share_too_many": "Задржано је само првих %1$d ставки.",
+"e_share_unavailable": "Прво се придружи породици, па подели овде.",
+"e_share_failed": "Оно што је подељено није могло да се прочита.",
+# --- end multiple attachments + share target ---
+
+# --- UX polish 2026-08: previously hardcoded Android chrome ---
+# Added by the Android polish pass. Cyrillic only, as always; the Latin set
+# is generated. Some of these ("You", "Read", …) may gain an iOS catalogue
+# counterpart later — if the English ever matches, move them to serbian.SR
+# per this file's rule. s_written_by is "Аутор:" on purpose: Serbian past
+# tense inflects on gender and this file stays GENDER-NEUTRAL.
+"s_no_connection": "Нема везе",
+"s_preparing": "Припрема…",
+"s_sending_ellipsis": "Слање…",
+"s_is_typing": "%1$s куца…",
+"s_say_hi_direct": "Поздрави се — овде почиње ваш разговор",
+"s_say_hi_family": "Поздрави се — овде почиње ваш породични разговор",
+"s_change_photo": "Промени слику",
+"s_add_photo": "Додај слику",
+"s_manage_family": "Управљај породицом",
+"s_family_members": "Чланови породице",
+"s_join_requests_members_invite_code": "Захтеви за приступ, чланови, позивни код",
+"s_see_who_is_in_the_family": "Погледај ко је у породици",
+"s_read": "Прочитано",
+"s_you": "Ти",
+"s_someone": "Неко",
+"s_member_n": "Члан %1$d",
+"s_written_by": "Аутор: %1$s",
+"s_new_note": "Нова белешка",
+"s_note_from": "Белешка од %1$s: %2$s",
+"s_color_yellow": "Жута",
+"s_color_pink": "Розе",
+"s_color_blue": "Плава",
+"s_color_green": "Зелена",
+"s_color_orange": "Наранџаста",
+"s_color_purple": "Љубичаста",
+# --- end UX polish 2026-08 ---
 }

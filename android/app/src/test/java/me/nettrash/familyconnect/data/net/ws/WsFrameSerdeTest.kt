@@ -410,6 +410,60 @@ class WsFrameSerdeTest {
         )
     }
 
+    /**
+     * protocol.md's third `send` example, verbatim: an album claim. The
+     * PLURAL spelling always — this client stopped sending the legacy
+     * `attachment_id` when messages learned to carry more than one.
+     */
+    @Test
+    fun sendFrameWithAttachmentIdsEncodesExactlyAsProtocol() {
+        assertEncodesTo(
+            ClientFrame.Send(
+                chatId = 42,
+                clientMsgId = "9d3f1e77-ceea-4e17-a91c-0d9f8e7b2a01",
+                body = "",
+                attachmentIds = listOf(34, 35, 36),
+            ),
+            """{"type": "send", "chat_id": 42, "client_msg_id": "9d3f1e77-ceea-4e17-a91c-0d9f8e7b2a01",
+                "body": "", "attachment_ids": [34, 35, 36]}""",
+        )
+    }
+
+    /**
+     * A message carrying attachments per protocol.md's "Objects": the
+     * plural array in the sender's order, plus the legacy `attachment` —
+     * its FIRST element, which a reader that knows `attachments` ignores.
+     */
+    @Test
+    fun aMessageWithAttachmentsReadsThePluralAndIgnoresTheLegacy() {
+        val decoded = parseServerFrame(
+            json,
+            """{"type": "message", "message": {"id": 1341, "chat_id": 42, "sender_id": 7,
+                "client_msg_id": "9d3f1e77-ceea-4e17-a91c-0d9f8e7b2a01",
+                "body": "", "created_at": "2026-08-19T17:03:12Z",
+                "attachments": [{"id": 34, "kind": "photo", "mime": "image/jpeg", "size": 182734},
+                                {"id": 35, "kind": "video", "mime": "video/mp4", "size": 999999,
+                                 "duration_ms": 8400}],
+                "attachment": {"id": 34, "kind": "photo", "mime": "image/jpeg", "size": 182734}}}""",
+        ) as ServerFrame.Message
+        assertThat(decoded.message.resolvedAttachments.map { it.id })
+            .containsExactly(34L, 35L)
+            .inOrder()
+    }
+
+    /** A legacy-only server: the singular is still the fallback read. */
+    @Test
+    fun aLegacyOnlyAttachmentStillResolves() {
+        val decoded = parseServerFrame(
+            json,
+            """{"type": "message", "message": {"id": 1342, "chat_id": 42, "sender_id": 7,
+                "client_msg_id": "9d3f1e77-ceea-4e17-a91c-0d9f8e7b2a01",
+                "body": "", "created_at": "2026-08-19T17:03:12Z",
+                "attachment": {"id": 34, "kind": "photo", "mime": "image/jpeg", "size": 182734}}}""",
+        ) as ServerFrame.Message
+        assertThat(decoded.message.resolvedAttachments.map { it.id }).containsExactly(34L)
+    }
+
     @Test
     fun pongFrameRoundTrips() {
         assertRoundTrips("""{"type": "pong"}""", ServerFrame.Pong)

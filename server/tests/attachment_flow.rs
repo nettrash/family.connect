@@ -862,6 +862,14 @@ async fn the_chat_list_preview_carries_the_attachment() {
         .expect("the family chat");
     let last = &chat["last_message"];
     assert_eq!(last["body"], "");
+    // The ARRAY comes along, trimmed to kind and name, and the legacy
+    // `attachment` is its first element — never one without the other, on
+    // a preview exactly as on a full message.
+    let attachments = last["attachments"].as_array().expect("attachments array");
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0]["kind"], "file");
+    assert_eq!(attachments[0]["name"], "Rechnung.pdf");
+    assert_eq!(last["attachment"], attachments[0]);
     assert_eq!(last["attachment"]["kind"], "file");
     assert_eq!(last["attachment"]["name"], "Rechnung.pdf");
 }
@@ -1449,4 +1457,425 @@ async fn a_location_from_someone_with_no_family_is_refused() {
     )
     .await;
     assert_error(response, 403, "not_in_family").await;
+}
+
+// -- Several attachments on one message (protocol.md, "Photos, videos,
+//    audio, files and locations") -------------------------------------------
+
+/// Upload one photo of `len` bytes, answering its id.
+async fn upload_photo_id(server: &TestServer, token: &str, len: usize) -> i64 {
+    let body: Value = upload(server, token, "?kind=photo", "image/jpeg", jpeg_bytes(len))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    body["attachment"]["id"].as_i64().expect("id")
+}
+
+/// Send `attachment_ids` with the given body, answering the raw response.
+async fn send_ids(
+    server: &TestServer,
+    token: &str,
+    chat_id: i64,
+    body: &str,
+    ids: &[i64],
+) -> reqwest::Response {
+    server
+        .post(
+            token,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": body,
+                "attachment_ids": ids,
+            }),
+        )
+        .await
+}
+
+/// How many messages the chat currently shows.
+async fn message_count(server: &TestServer, token: &str, chat_id: i64) -> usize {
+    let page: Value = server
+        .get(token, &format!("/chats/{chat_id}/messages"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    page["messages"].as_array().expect("array").len()
+}
+
+/// The whole point of the feature: an album is ONE message, its order is
+/// the SENDER'S — the `attachment_ids` array, not the upload order — and
+/// every read gives it back exactly that way, with the legacy `attachment`
+/// as the first element. An empty body is fine beside a full album.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_album_is_sent_in_the_senders_order_and_read_back_in_it() {
+    let server = spawn_server().await;
+    let (owner, member, chat_id) = family_of_two(&server).await;
+
+    // Uploaded a, b, c — sent [b, a, c], which no id or timestamp order
+    // could reproduce by accident.
+    let a = upload_photo_id(&server, &owner, 512).await;
+    let b = upload_photo_id(&server, &owner, 640).await;
+    let c = upload_photo_id(&server, &owner, 768).await;
+    let sent_order = [b, a, c];
+
+    let response = send_ids(&server, &owner, chat_id, "", &sent_order).await;
+    assert_eq!(response.status(), 201);
+    let ack: Value = response.json().await.expect("JSON");
+    let ids_of = |message: &Value| -> Vec<i64> {
+        message["attachments"]
+            .as_array()
+            .expect("attachments array")
+            .iter()
+            .map(|a| a["id"].as_i64().expect("id"))
+            .collect()
+    };
+    assert_eq!(ids_of(&ack["message"]), sent_order, "the send's own ack");
+    assert_eq!(
+        ack["message"]["attachment"]["id"].as_i64(),
+        Some(b),
+        "the legacy field is the FIRST element of the array"
+    );
+
+    // And a fresh read by ANOTHER member sees the same order.
+    let page: Value = server
+        .get(&member, &format!("/chats/{chat_id}/messages"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let message = &page["messages"][0];
+    assert_eq!(ids_of(message), sent_order, "read back: {message}");
+    assert_eq!(message["attachment"]["id"].as_i64(), Some(b));
+    assert_eq!(message["body"], "", "an album needs no caption");
+
+    // Every attachment in the set is readable by the whole chat.
+    for id in sent_order {
+        assert_eq!(
+            server
+                .get(&member, &format!("/attachments/{id}"))
+                .await
+                .status(),
+            200
+        );
+    }
+}
+
+/// All-or-nothing, extended to the set: the SECOND id failing leaves
+/// neither a message nor the FIRST claim behind.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_failed_claim_mid_array_rolls_the_whole_send_back() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+    let before = message_count(&server, &owner, chat_id).await;
+
+    let good = upload_photo_id(&server, &owner, 512).await;
+    assert_error(
+        send_ids(&server, &owner, chat_id, "", &[good, 999_999]).await,
+        404,
+        "attachment_not_found",
+    )
+    .await;
+
+    // No message…
+    assert_eq!(message_count(&server, &owner, chat_id).await, before);
+    // …and the first id was NOT claimed on the way to the refusal: it is
+    // still free to ride a later message.
+    let response = send_ids(&server, &owner, chat_id, "", &[good]).await;
+    assert_eq!(
+        response.status(),
+        201,
+        "the rolled-back claim must leave the attachment claimable"
+    );
+}
+
+/// The same id twice in one array is `invalid_attachment`, and nothing is
+/// written — a duplicate is a malformed set, not two claims.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_duplicate_id_in_one_array_is_refused() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+    let before = message_count(&server, &owner, chat_id).await;
+
+    let id = upload_photo_id(&server, &owner, 512).await;
+    assert_error(
+        send_ids(&server, &owner, chat_id, "", &[id, id]).await,
+        400,
+        "invalid_attachment",
+    )
+    .await;
+    assert_eq!(message_count(&server, &owner, chat_id).await, before);
+
+    // Refused before anything was claimed: still usable alone.
+    assert_eq!(
+        send_ids(&server, &owner, chat_id, "", &[id]).await.status(),
+        201
+    );
+}
+
+/// An eleventh id is over the ceiling and refused with exactly
+/// `invalid_attachment` — checked before any id is even looked up, which
+/// is why ids that name nothing still get the ceiling's error and not
+/// `attachment_not_found`.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_eleventh_attachment_is_refused_with_invalid_attachment() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+    assert_eq!(server.state.cfg.limits.max_attachments_per_message, 10);
+    let before = message_count(&server, &owner, chat_id).await;
+
+    let eleven: Vec<i64> = (1..=11).collect();
+    assert_error(
+        send_ids(&server, &owner, chat_id, "", &eleven).await,
+        400,
+        "invalid_attachment",
+    )
+    .await;
+    assert_eq!(message_count(&server, &owner, chat_id).await, before);
+}
+
+/// The array and the legacy single field are two spellings of one thing —
+/// sending BOTH is `validation`, whatever they contain.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn both_spellings_at_once_are_refused_as_validation() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+
+    let id = upload_photo_id(&server, &owner, 512).await;
+    assert_error(
+        server
+            .post(
+                &owner,
+                &format!("/chats/{chat_id}/messages"),
+                json!({
+                    "client_msg_id": Uuid::new_v4().to_string(),
+                    "body": "",
+                    "attachment_id": id,
+                    "attachment_ids": [id],
+                }),
+            )
+            .await,
+        400,
+        "validation",
+    )
+    .await;
+
+    // Nothing was consumed by the refusal.
+    let response = send_ids(&server, &owner, chat_id, "", &[id]).await;
+    assert_eq!(response.status(), 201);
+}
+
+/// The legacy `attachment_id` keeps working — it is exactly a one-element
+/// `attachment_ids` — and the message it makes carries the ARRAY too, with
+/// the legacy `attachment` as its first (and only) element.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_legacy_attachment_id_yields_a_one_element_array() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+
+    let id = upload_photo_id(&server, &owner, 512).await;
+    let response = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_id": id,
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("JSON");
+    let message = &body["message"];
+    let attachments = message["attachments"]
+        .as_array()
+        .expect("attachments array");
+    assert_eq!(attachments.len(), 1, "one element, never absent: {message}");
+    assert_eq!(attachments[0]["id"].as_i64(), Some(id));
+    assert_eq!(message["attachment"], attachments[0]);
+}
+
+/// A location is always alone: beside a photo it is refused, and the
+/// refusal writes nothing — neither the message nor either claim.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_location_is_always_a_messages_only_attachment() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+    let before = message_count(&server, &owner, chat_id).await;
+
+    let pin: Value = upload(
+        &server,
+        &owner,
+        "?kind=location&latitude=55.7558&longitude=37.6173",
+        "",
+        Vec::new(),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let pin_id = pin["attachment"]["id"].as_i64().expect("id");
+    let photo_id = upload_photo_id(&server, &owner, 512).await;
+
+    assert_error(
+        send_ids(&server, &owner, chat_id, "", &[pin_id, photo_id]).await,
+        400,
+        "invalid_attachment",
+    )
+    .await;
+    assert_eq!(message_count(&server, &owner, chat_id).await, before);
+
+    // The rollback left both claimable: the photo rides one message and
+    // the pin rides its own, which is the shape the protocol wants.
+    assert_eq!(
+        send_ids(&server, &owner, chat_id, "", &[photo_id])
+            .await
+            .status(),
+        201
+    );
+    assert_eq!(
+        send_ids(&server, &owner, chat_id, "", &[pin_id])
+            .await
+            .status(),
+        201
+    );
+}
+
+/// Any mix of the byte-carrying kinds is fine in one album.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_mixed_album_of_kinds_is_allowed() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+
+    let photo = upload_photo_id(&server, &owner, 512).await;
+    let file: Value = upload(
+        &server,
+        &owner,
+        "?kind=file&name=receipts.pdf",
+        "application/pdf",
+        b"%PDF-1.7".to_vec(),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let file_id = file["attachment"]["id"].as_i64().expect("id");
+    let audio: Value = upload(
+        &server,
+        &owner,
+        "?kind=audio&duration_ms=4200",
+        "audio/mp4",
+        mp4_bytes(1024),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let audio_id = audio["attachment"]["id"].as_i64().expect("id");
+
+    let response = send_ids(
+        &server,
+        &owner,
+        chat_id,
+        "for the trip",
+        &[photo, file_id, audio_id],
+    )
+    .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("JSON");
+    let kinds: Vec<&str> = body["message"]["attachments"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|a| a["kind"].as_str().expect("kind"))
+        .collect();
+    assert_eq!(kinds, ["photo", "file", "audio"]);
+}
+
+/// THE JOIN-MULTIPLICATION REGRESSION TEST. Three messages of three
+/// attachments each must page as three messages of three — with the old
+/// LEFT JOIN in the message SELECT each row multiplied by its album, so a
+/// LIMIT truncated the page and messages repeated.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_page_of_albums_does_not_duplicate_messages() {
+    let server = spawn_server().await;
+    let (owner, _, chat_id) = family_of_two(&server).await;
+
+    let mut sent = Vec::new();
+    for n in 0..3usize {
+        let mut ids = Vec::new();
+        for k in 0..3usize {
+            // Distinct sizes so nothing dedups into anything else.
+            ids.push(upload_photo_id(&server, &owner, 512 + n * 97 + k * 31).await);
+        }
+        let response = send_ids(&server, &owner, chat_id, "", &ids).await;
+        assert_eq!(response.status(), 201);
+        sent.push(ids);
+    }
+
+    for query in ["", "?limit=50", "?limit=2"] {
+        let page: Value = server
+            .get(&owner, &format!("/chats/{chat_id}/messages{query}"))
+            .await
+            .json()
+            .await
+            .expect("JSON");
+        let messages = page["messages"].as_array().expect("array");
+        let expected = if query == "?limit=2" { 2 } else { 3 };
+        assert_eq!(
+            messages.len(),
+            expected,
+            "a page ({query}) must count MESSAGES, not attachment rows: {page}"
+        );
+        let mut seen = std::collections::HashSet::new();
+        for message in messages {
+            assert!(
+                seen.insert(message["id"].as_i64().expect("id")),
+                "a message repeated in one page: {page}"
+            );
+            assert_eq!(
+                message["attachments"].as_array().expect("array").len(),
+                3,
+                "every album keeps all three attachments: {message}"
+            );
+        }
+    }
+
+    // And the chat-list preview carries the newest album whole.
+    let chats: Value = server
+        .get(&owner, "/chats")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let chat = chats["chats"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|entry| entry["chat"]["id"].as_i64() == Some(chat_id))
+        .expect("the family chat");
+    let preview = &chat["last_message"];
+    let preview_ids: Vec<i64> = preview["attachments"]
+        .as_array()
+        .expect("preview attachments")
+        .iter()
+        .map(|a| a["id"].as_i64().expect("id"))
+        .collect();
+    assert_eq!(preview_ids, sent[2], "the newest message's album, in order");
+    assert_eq!(
+        preview["attachment"]["id"].as_i64(),
+        Some(sent[2][0]),
+        "and the legacy first element beside it"
+    );
 }

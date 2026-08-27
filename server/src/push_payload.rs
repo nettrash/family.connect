@@ -90,35 +90,70 @@ pub struct Notification {
 /// when a message carries one with no caption (which is how photos are
 /// normally sent — an empty body would push a blank line); or
 /// `"New message"` when `[push] include_message_body = false`.
-/// What to say about a message that has no words: a file's name (which is
-/// its whole identity) or what kind of thing arrived.
+/// What to say about a message that has no words: for ONE attachment, the
+/// file's name (which is its whole identity) or what kind of thing arrived;
+/// for several of ONE kind, a count — `"3 Photos"`, `"2 Videos"`,
+/// `"2 Audio"`, `"4 Files"` — where names give way to the count, because
+/// four filenames are not a lock-screen line; for a mixed set,
+/// `"N attachments"` (protocol.md, "Push notifications"). A location's
+/// label only ever appears alone, since a location is always a message's
+/// only attachment.
 fn attachment_summary(message: &Message) -> Option<String> {
-    let attachment = message.attachment.as_ref()?;
-    Some(match attachment.kind.as_str() {
-        "photo" => "Photo".to_string(),
-        "video" => "Video".to_string(),
-        // A voice note has no name worth showing, so the kind is the
-        // summary; a track picked off a disk may carry one, and that wins.
-        "audio" => attachment
-            .name
-            .clone()
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "Audio".to_string()),
-        // A location's label if it was given one, and the word otherwise.
-        // Never the coordinates: an alert on a lock screen is the one place
-        // a family member's position should not be readable without
-        // unlocking the phone.
-        "location" => attachment
-            .name
-            .clone()
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "Location".to_string()),
-        _ => attachment
-            .name
-            .clone()
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "File".to_string()),
-    })
+    // The list, with the legacy single field as its one-element fallback —
+    // the server always fills both together, so the fallback only matters
+    // to a `Message` built by hand.
+    let attachments: &[crate::models::Attachment] = match message.attachments.as_deref() {
+        Some(list) if !list.is_empty() => list,
+        _ => std::slice::from_ref(message.attachment.as_ref()?),
+    };
+    if let [attachment] = attachments {
+        return Some(match attachment.kind.as_str() {
+            "photo" => "Photo".to_string(),
+            "video" => "Video".to_string(),
+            // A voice note has no name worth showing, so the kind is the
+            // summary; a track picked off a disk may carry one, and that
+            // wins.
+            "audio" => attachment
+                .name
+                .clone()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "Audio".to_string()),
+            // A location's label if it was given one, and the word
+            // otherwise. Never the coordinates: an alert on a lock screen
+            // is the one place a family member's position should not be
+            // readable without unlocking the phone.
+            "location" => attachment
+                .name
+                .clone()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "Location".to_string()),
+            _ => attachment
+                .name
+                .clone()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "File".to_string()),
+        });
+    }
+    let count = attachments.len();
+    let first_kind = attachments[0].kind.as_str();
+    Some(
+        if attachments
+            .iter()
+            .all(|attachment| attachment.kind == first_kind)
+        {
+            match first_kind {
+                "photo" => format!("{count} Photos"),
+                "video" => format!("{count} Videos"),
+                "audio" => format!("{count} Audio"),
+                "file" => format!("{count} Files"),
+                // A location is always alone, and a kind added later has no
+                // plural word here yet — the generic count is safe for both.
+                _ => format!("{count} attachments"),
+            }
+        } else {
+            format!("{count} attachments")
+        },
+    )
 }
 
 pub fn message_notification(
@@ -400,6 +435,7 @@ mod tests {
             edited_at: None,
             edit_seq: None,
             attachment: None,
+            attachments: None,
             reaction_seq: None,
             poll: None,
             call: None,
@@ -723,6 +759,105 @@ mod tests {
             "S",
             "Anna",
             &with_attachment("photo", None),
+            1,
+            1,
+        );
+        assert_eq!(hidden.body, "New message");
+    }
+
+    /// Several attachments push a COUNT: `"3 Photos"` / `"2 Videos"` /
+    /// `"2 Audio"` / `"4 Files"` when they are all one kind — names give
+    /// way to the count, because four filenames are not a lock-screen line
+    /// — and `"N attachments"` for a mixed set (protocol.md). A caption
+    /// still wins over all of it, and the privacy switch still hides
+    /// everything.
+    #[test]
+    fn several_uncaptioned_attachments_push_a_count() {
+        fn attachment(kind: &str, name: Option<&str>) -> crate::models::Attachment {
+            crate::models::Attachment {
+                id: 34,
+                kind: kind.to_string(),
+                mime: "application/octet-stream".to_string(),
+                size: 4096,
+                width: None,
+                height: None,
+                duration_ms: None,
+                has_preview: false,
+                name: name.map(str::to_string),
+                latitude: None,
+                longitude: None,
+                accuracy_m: None,
+            }
+        }
+        fn with_attachments(list: Vec<crate::models::Attachment>) -> Message {
+            Message {
+                body: String::new(),
+                attachment: list.first().cloned(),
+                attachments: Some(list),
+                ..protocol_message()
+            }
+        }
+        let summary = |message: &Message| {
+            message_notification(true, "direct", "The Smiths", "Anna", message, 1, 1).body
+        };
+
+        let photos = with_attachments(vec![
+            attachment("photo", None),
+            attachment("photo", None),
+            attachment("photo", None),
+        ]);
+        assert_eq!(summary(&photos), "3 Photos");
+        let videos = with_attachments(vec![attachment("video", None), attachment("video", None)]);
+        assert_eq!(summary(&videos), "2 Videos");
+        let audio = with_attachments(vec![
+            attachment("audio", Some("Track A.mp3")),
+            attachment("audio", Some("Track B.mp3")),
+        ]);
+        assert_eq!(summary(&audio), "2 Audio", "names give way to the count");
+        let files = with_attachments(vec![
+            attachment("file", Some("a.pdf")),
+            attachment("file", Some("b.pdf")),
+            attachment("file", Some("c.pdf")),
+            attachment("file", Some("d.pdf")),
+        ]);
+        assert_eq!(summary(&files), "4 Files", "names give way to the count");
+
+        let mixed = with_attachments(vec![
+            attachment("photo", None),
+            attachment("file", Some("a.pdf")),
+            attachment("audio", None),
+        ]);
+        assert_eq!(summary(&mixed), "3 attachments");
+
+        // ONE attachment in the array is exactly the singular wording the
+        // test above pins — the array changes nothing about what one photo
+        // or one named file says.
+        assert_eq!(
+            summary(&with_attachments(vec![attachment("photo", None)])),
+            "Photo"
+        );
+        assert_eq!(
+            summary(&with_attachments(vec![attachment(
+                "file",
+                Some("Rechnung.pdf")
+            )])),
+            "Rechnung.pdf"
+        );
+
+        // A caption still wins.
+        let captioned = Message {
+            body: "at the lake".to_string(),
+            ..with_attachments(vec![attachment("photo", None), attachment("photo", None)])
+        };
+        assert_eq!(summary(&captioned), "at the lake");
+
+        // And the privacy switch still hides everything.
+        let hidden = message_notification(
+            false,
+            "direct",
+            "S",
+            "Anna",
+            &with_attachments(vec![attachment("photo", None), attachment("photo", None)]),
             1,
             1,
         );

@@ -29,7 +29,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.StandardTestDispatcher
 import me.nettrash.familyconnect.data.net.LinkPreviewRepository
 import okhttp3.OkHttpClient
@@ -51,6 +53,7 @@ import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.ApiResult
+import me.nettrash.familyconnect.data.net.dto.AttachmentResponse
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
 import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.dto.PollCodec
@@ -505,7 +508,7 @@ class ChatViewModelTest {
             ),
         )
         runCurrent()
-        assertThat(viewModel.staged.value).isNotNull()
+        assertThat(viewModel.staged.value).isNotEmpty()
 
         viewModel.inputState.setTextAndPlaceCursorAtEnd("look at this")
         viewModel.send()
@@ -517,7 +520,7 @@ class ChatViewModelTest {
         assertThat(row).isNotNull()
         assertThat(row!!.body).isEqualTo("look at this")
         // Composer emptied, staging consumed.
-        assertThat(viewModel.staged.value).isNull()
+        assertThat(viewModel.staged.value).isEmpty()
         assertThat(viewModel.inputState.text.toString()).isEmpty()
     }
 
@@ -543,7 +546,75 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         assertThat(attachmentApi.calls).contains("upload")
-        assertThat(viewModel.staged.value).isNull()
+        assertThat(viewModel.staged.value).isEmpty()
+    }
+
+    /**
+     * A FAILED album send restores the unsent tail to the composer.
+     *
+     * sendMedia deletes an item's prepared file only once its upload has
+     * landed, so after a mid-way failure the files still on disk are
+     * exactly the unsent items — and they must reappear STAGED, with the
+     * caption back in the field, for a one-tap retry (iOS parity: both
+     * Apple composers re-stage the survivors the same way).
+     */
+    @Test
+    fun aFailedAlbumSendRestoresTheUnsentItems() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        var uploads = 0
+        attachmentApi.uploadHandler = { _, _, _ ->
+            uploads += 1
+            if (uploads == 1) {
+                ApiResult.Ok(AttachmentResponse(FakeAttachmentApi.attachment(id = 1)))
+            } else {
+                ApiResult.HttpError(413, "attachment_too_large", "too big")
+            }
+        }
+        val items = listOf(tempPrepared(tag = 1), tempPrepared(tag = 2), tempPrepared(tag = 3))
+        items.forEach { viewModel.stagePrepared(it) }
+        runCurrent()
+        viewModel.inputState.setTextAndPlaceCursorAtEnd("three of us")
+
+        viewModel.send()
+        advanceUntilIdle()
+
+        // The second upload failed: items 2 and 3 are back in the
+        // composer, files intact, in their original order.
+        assertThat(viewModel.staged.value).containsExactly(items[1], items[2]).inOrder()
+        assertThat(viewModel.staged.value.all { it.file.exists() }).isTrue()
+        // The caption came back too, and the failure is on the strip.
+        assertThat(viewModel.inputState.text.toString()).isEqualTo("three of us")
+        assertThat(viewModel.mediaState.value)
+            .isInstanceOf(ChatViewModel.MediaSendState.Failed::class.java)
+    }
+
+    /**
+     * stage() is reachable from three scopes at once (the appScope
+     * prepare loops, the share drain, the main thread), so the staged
+     * list is mutated with CAS — no item may be silently lost with its
+     * file leaked. Genuinely parallel on Dispatchers.Default: with plain
+     * read-modify-writes this is flaky, with CAS it is exact.
+     */
+    @Test
+    fun concurrentStagingLosesNoItemAndHoldsTheCap() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val items = List(24) { tempPrepared(tag = it.toByte()) }
+
+        withContext(Dispatchers.Default) {
+            items.map { item -> launch { viewModel.stagePrepared(item) } }.joinAll()
+        }
+
+        assertThat(viewModel.staged.value).hasSize(AttachmentDto.MAX_PER_MESSAGE)
+        // Every item either sits staged with its file intact, or was
+        // refused at the cap with its file deleted — none silently lost.
+        val stagedNow = viewModel.staged.value.toSet()
+        items.forEach { item ->
+            if (item in stagedNow) {
+                assertThat(item.file.exists()).isTrue()
+            } else {
+                assertThat(item.file.exists()).isFalse()
+            }
+        }
     }
 
     @Test
@@ -1067,7 +1138,7 @@ class ChatViewModelTest {
      */
     private suspend fun ChatViewModel.awaitStaged(
         predicate: (MediaPrep.Prepared) -> Boolean = { true },
-    ): MediaPrep.Prepared = staged.filterNotNull().first(predicate)
+    ): MediaPrep.Prepared = staged.first { list -> list.any(predicate) }.last(predicate)
 
     /** The same wait, for the paths that end in the composer's error strip. */
     private suspend fun ChatViewModel.awaitFailure(): ChatViewModel.MediaSendState.Failed =
@@ -1170,17 +1241,18 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         assertThat(result).isEqualTo(ChatViewModel.PasteResult.NOTHING)
-        assertThat(viewModel.staged.value).isNull()
+        assertThat(viewModel.staged.value).isEmpty()
         assertThat(viewModel.mediaState.value).isEqualTo(ChatViewModel.MediaSendState.Idle)
     }
 
     /**
-     * One attachment per message: a paste goes through the same staging
-     * the picker does, so it REPLACES what was staged (and deletes the
-     * file nothing else would clean up) rather than queueing behind it.
+     * Plurality: a paste goes through the same staging the picker does,
+     * so it APPENDS behind what was already staged — the old
+     * replace-first rule died when a message learned to carry up to ten
+     * attachments (docs/protocol.md).
      */
     @Test
-    fun aPasteReplacesWhateverWasAlreadyStaged() = runTest(dispatcher) {
+    fun aPasteAppendsBehindWhateverWasAlreadyStaged() = runTest(dispatcher) {
         val viewModel = newViewModel()
         val first = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 3 }) }
         viewModel.stagePrepared(
@@ -1200,7 +1272,63 @@ class ChatViewModelTest {
 
         val staged = viewModel.awaitStaged { it.mime == "application/pdf" }
         assertThat(staged.kind).isEqualTo(AttachmentDto.KIND_FILE)
-        assertThat(first.exists()).isFalse()
+        // The first item is still there, still first, its file untouched.
+        assertThat(viewModel.staged.value).hasSize(2)
+        assertThat(viewModel.staged.value.first().mime).isEqualTo("image/jpeg")
+        assertThat(first.exists()).isTrue()
+    }
+
+    /** A message carries at most ten: the eleventh is refused with a notice. */
+    @Test
+    fun theEleventhStagedItemIsRefusedWithANotice() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        repeat(AttachmentDto.MAX_PER_MESSAGE) {
+            viewModel.stagePrepared(tempPrepared(tag = it.toByte()))
+        }
+        runCurrent()
+        assertThat(viewModel.staged.value).hasSize(AttachmentDto.MAX_PER_MESSAGE)
+
+        val extra = tempPrepared(tag = 99)
+        viewModel.stagePrepared(extra)
+        runCurrent()
+
+        assertThat(viewModel.staged.value).hasSize(AttachmentDto.MAX_PER_MESSAGE)
+        // The refused file is cleaned up — nothing else ever would.
+        assertThat(extra.file.exists()).isFalse()
+        assertThat(viewModel.mediaState.value)
+            .isInstanceOf(ChatViewModel.MediaSendState.Failed::class.java)
+    }
+
+    /** Each chip has its OWN remove: dropping one leaves the others in order. */
+    @Test
+    fun discardingOneStagedItemLeavesTheOthersInOrder() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        val a = tempPrepared(tag = 1)
+        val b = tempPrepared(tag = 2)
+        val c = tempPrepared(tag = 3)
+        listOf(a, b, c).forEach(viewModel::stagePrepared)
+        runCurrent()
+
+        viewModel.discardStaged(1)
+        runCurrent()
+
+        assertThat(viewModel.staged.value).containsExactly(a, c).inOrder()
+        assertThat(b.file.exists()).isFalse()
+        assertThat(a.file.exists()).isTrue()
+        assertThat(c.file.exists()).isTrue()
+    }
+
+    private fun tempPrepared(tag: Byte): MediaPrep.Prepared {
+        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { tag }) }
+        return MediaPrep.Prepared(
+            file = file,
+            mime = "image/jpeg",
+            kind = AttachmentDto.KIND_PHOTO,
+            width = 10,
+            height = 10,
+            durationMs = null,
+            previewJpeg = null,
+        )
     }
 
     /**
@@ -1218,7 +1346,7 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         assertThat(result).isEqualTo(ChatViewModel.PasteResult.BUSY)
-        assertThat(viewModel.staged.value).isNull()
+        assertThat(viewModel.staged.value).isEmpty()
     }
 
     /** And the other half of that guard: one upload at a time. */
@@ -1275,7 +1403,7 @@ class ChatViewModelTest {
 
         assertThat(result).isEqualTo(ChatViewModel.PasteResult.TEXT)
         assertThat(viewModel.inputState.text.toString()).isEqualTo("dinner at 7")
-        assertThat(viewModel.staged.value).isNull()
+        assertThat(viewModel.staged.value).isEmpty()
     }
 
     /** Appended to what was being written, with a separator, never over it. */
@@ -1357,7 +1485,7 @@ class ChatViewModelTest {
         // Untouched: the field has not pasted yet, and this door must not
         // paste for it.
         assertThat(viewModel.inputState.text.toString()).isEqualTo("see you at")
-        assertThat(viewModel.staged.value).isNull()
+        assertThat(viewModel.staged.value).isEmpty()
     }
 
     /** A copied link is words at this door too — not a download. */
@@ -1378,7 +1506,7 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         assertThat(result).isEqualTo(ChatViewModel.PasteResult.TEXT)
-        assertThat(viewModel.staged.value).isNull()
+        assertThat(viewModel.staged.value).isEmpty()
     }
 
     /**

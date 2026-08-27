@@ -412,15 +412,19 @@ actor APIClient {
         /// Absent, never null, on an ordinary message — Encodable omits a
         /// nil optional, which is exactly what the protocol writes.
         let replyToMessageID: Int64?
-        let attachmentID: Int64?
+        /// The claimed attachments, in the sender's order. Always the
+        /// ARRAY spelling: the legacy `attachment_id` is a one-element
+        /// alias the server still accepts from older clients, and sending
+        /// both is `validation` — so this client sends only the array.
+        let attachmentIDs: [Int64]?
         /// What makes the message a poll; the body is then the QUESTION.
-        /// Mutually exclusive with `attachmentID` server-side.
+        /// Mutually exclusive with `attachmentIDs` server-side.
         let poll: NewPollRequest?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
             case replyToMessageID = "reply_to_message_id"
-            case attachmentID = "attachment_id"
+            case attachmentIDs = "attachment_ids"
             case poll
         }
     }
@@ -443,7 +447,7 @@ actor APIClient {
         clientMsgID: String,
         body: String,
         replyToMessageID: Int64? = nil,
-        attachmentID: Int64? = nil,
+        attachmentIDs: [Int64]? = nil,
         pollOptions: [String]? = nil
     ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
@@ -452,7 +456,7 @@ actor APIClient {
                 clientMsgID: clientMsgID,
                 body: body,
                 replyToMessageID: replyToMessageID,
-                attachmentID: attachmentID,
+                attachmentIDs: attachmentIDs,
                 poll: pollOptions.map { NewPollRequest(options: $0) }))
         return response.message
     }

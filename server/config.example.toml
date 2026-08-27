@@ -58,6 +58,12 @@ max_poll_option_chars = 100
 # changes how much of the family's disk a single message can take. Keep the
 # nginx `location = /api/v1/attachments` block in step with it.
 max_attachment_bytes = 104857600
+# Most attachments one message may claim — the album ceiling. Ten is what
+# the clients lay out as a grid in one bubble; protocol.md fixes the default
+# at 10. The FEWEST is not a setting: one, always — a message with no
+# attachment is just an ordinary message. Note the size ceiling above is per
+# ATTACHMENT, so one message can in principle carry ten times that.
+max_attachments_per_message = 10
 # Largest preview (the downscaled photo or a video's poster frame). Small on
 # purpose: it is drawn in a chat bubble.
 max_preview_bytes = 2097152

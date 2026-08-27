@@ -80,13 +80,21 @@ struct CallView: View {
             }
         } else if isEnded {
             // Nothing to do: the reason is on screen and the view goes away
-            // by itself.
-            Color.clear.frame(height: 72)
+            // by itself. Same height as a button row, so the centered
+            // column does not jump the instant a call ends.
+            Color.clear.frame(height: Self.buttonSide)
         } else {
             HStack(spacing: 40) {
+                // Fixed colors on the toggles, never .primary/.secondary:
+                // .primary is WHITE in dark mode, which painted the active
+                // state’s white glyph on a white disc. The system Phone
+                // app’s pair instead — active is a white disc with a black
+                // glyph, inactive a gray disc with a white one — reads the
+                // same in both appearances, on both platforms.
                 roundButton(
                     calls.isMuted ? "mic.slash.fill" : "mic.fill",
-                    tint: calls.isMuted ? .primary : .secondary,
+                    tint: calls.isMuted ? .white : .gray,
+                    glyph: calls.isMuted ? .black : .white,
                     label: calls.isMuted ? String(localized: "Unmute") : String(localized: "Mute")
                 ) {
                     calls.toggleMute()
@@ -94,7 +102,8 @@ struct CallView: View {
                 #if os(iOS)
                 roundButton(
                     calls.isSpeaker ? "speaker.wave.3.fill" : "speaker.wave.1",
-                    tint: calls.isSpeaker ? .primary : .secondary,
+                    tint: calls.isSpeaker ? .white : .gray,
+                    glyph: calls.isSpeaker ? .black : .white,
                     label: String(localized: "Speaker")
                 ) {
                     calls.toggleSpeaker()
@@ -107,12 +116,16 @@ struct CallView: View {
         }
     }
 
-    private func roundButton(_ symbol: String, tint: Color, label: String, action: @escaping () -> Void) -> some View {
+    /// One diameter for the buttons AND the ended-state placeholder, so
+    /// the two heights cannot drift apart again.
+    private static let buttonSide: CGFloat = 64
+
+    private func roundButton(_ symbol: String, tint: Color, glyph: Color = .white, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.title2)
-                .foregroundStyle(.white)
-                .frame(width: 64, height: 64)
+                .foregroundStyle(glyph)
+                .frame(width: Self.buttonSide, height: Self.buttonSide)
                 .background(tint, in: Circle())
         }
         .buttonStyle(.plain)

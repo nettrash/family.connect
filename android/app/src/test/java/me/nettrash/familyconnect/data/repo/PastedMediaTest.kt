@@ -166,6 +166,9 @@ class PastedMediaTest {
     private fun item(scheme: String? = null, mime: String? = null, text: String? = null) =
         PastedMedia.Item(scheme = scheme, mime = mime, text = text)
 
+    private fun attach(vararg picks: Pair<Int, String>) =
+        PastedMedia.Verdict.Attach(picks.map { PastedMedia.Pick(it.first, it.second) })
+
     @Test
     fun `a clipboard of words is words`() {
         val verdict = PastedMedia.decide(listOf(item(text = "dinner at 7")))
@@ -175,15 +178,13 @@ class PastedMediaTest {
     @Test
     fun `a clipboard holding a picture is an attachment`() {
         val verdict = PastedMedia.decide(listOf(item(scheme = "content", mime = "image/png")))
-        assertThat(verdict)
-            .isEqualTo(PastedMedia.Verdict.Attach(index = 0, kind = AttachmentDto.KIND_PHOTO))
+        assertThat(verdict).isEqualTo(attach(0 to AttachmentDto.KIND_PHOTO))
     }
 
     @Test
     fun `a clipboard holding a file is an attachment`() {
         val verdict = PastedMedia.decide(listOf(item(scheme = "content", mime = "application/pdf")))
-        assertThat(verdict)
-            .isEqualTo(PastedMedia.Verdict.Attach(index = 0, kind = AttachmentDto.KIND_FILE))
+        assertThat(verdict).isEqualTo(attach(0 to AttachmentDto.KIND_FILE))
     }
 
     /**
@@ -199,8 +200,7 @@ class PastedMediaTest {
                 item(scheme = "content", mime = "image/jpeg"),
             ),
         )
-        assertThat(verdict)
-            .isEqualTo(PastedMedia.Verdict.Attach(index = 1, kind = AttachmentDto.KIND_PHOTO))
+        assertThat(verdict).isEqualTo(attach(1 to AttachmentDto.KIND_PHOTO))
     }
 
     /** A copied link is a Uri and is still words. */
@@ -221,16 +221,46 @@ class PastedMediaTest {
             .isEqualTo(PastedMedia.Verdict.Empty)
     }
 
-    /** The first attachable item, since a message carries only one. */
+    /**
+     * ALL attachable items, in clip order — a message now carries up to
+     * ten, so a clip holding a video and a picture stages both, each as
+     * its own kind.
+     */
     @Test
-    fun `the first attachable item is the one taken`() {
+    fun `every attachable item is taken, in clip order`() {
         val verdict = PastedMedia.decide(
             listOf(
                 item(scheme = "content", mime = "video/mp4"),
                 item(scheme = "content", mime = "image/png"),
             ),
         )
-        assertThat(verdict)
-            .isEqualTo(PastedMedia.Verdict.Attach(index = 0, kind = AttachmentDto.KIND_VIDEO))
+        assertThat(verdict).isEqualTo(
+            attach(0 to AttachmentDto.KIND_VIDEO, 1 to AttachmentDto.KIND_PHOTO),
+        )
+    }
+
+    /** The cap: anything attachable past ten stays on the clipboard. */
+    @Test
+    fun `attachable items past the cap are left behind`() {
+        val items = List(12) { item(scheme = "content", mime = "image/png") }
+        val verdict = PastedMedia.decide(items) as PastedMedia.Verdict.Attach
+        assertThat(verdict.picks).hasSize(AttachmentDto.MAX_PER_MESSAGE)
+        assertThat(verdict.picks.map { it.index })
+            .isEqualTo((0 until AttachmentDto.MAX_PER_MESSAGE).toList())
+    }
+
+    /** Words riding beside attachable items are still not swallowed. */
+    @Test
+    fun `a mixed clip attaches the items and leaves the words alone`() {
+        val verdict = PastedMedia.decide(
+            listOf(
+                item(text = "beach day"),
+                item(scheme = "content", mime = "image/jpeg"),
+                item(scheme = "content", mime = "image/png"),
+            ),
+        )
+        assertThat(verdict).isEqualTo(
+            attach(1 to AttachmentDto.KIND_PHOTO, 2 to AttachmentDto.KIND_PHOTO),
+        )
     }
 }

@@ -49,6 +49,9 @@ struct AttachmentViewer: View {
                     .foregroundStyle(.white)
                     .padding(10)
                     .background(.black.opacity(0.45), in: Circle())
+                    // Drawn size unchanged; only the tappable circle grows
+                    // to ~44pt so a near-miss closes instead of panning.
+                    .contentShape(Circle().inset(by: -6))
             }
             .padding(16)
             .accessibilityLabel("Close")
@@ -65,6 +68,7 @@ struct AttachmentViewer: View {
                     .foregroundStyle(.white)
                     .padding(10)
                     .background(.black.opacity(0.45), in: Circle())
+                    .contentShape(Circle().inset(by: -6))
             }
             .padding(16)
             .accessibilityLabel("Share")

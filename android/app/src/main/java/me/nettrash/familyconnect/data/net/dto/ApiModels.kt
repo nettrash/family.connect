@@ -299,8 +299,18 @@ data class MessageDto(
     // is the apply guard — see MessageRepository.applyBody.
     @SerialName("edited_at") val editedAt: String? = null,
     @SerialName("edit_seq") val editSeq: Long? = null,
-    // Present when (and only when) the message carries a photo or video.
+    // The FIRST element of `attachments`, kept for clients that predate
+    // plurality (docs/protocol.md, "Objects"). A client that reads
+    // `attachments` ignores it; the two are never present without each
+    // other. This client reads through [resolvedAttachments].
     val attachment: AttachmentDto? = null,
+    /**
+     * Present when (and only when) the message carries photos, videos,
+     * audio, files or a location — 1 to 10 of them, in the order the
+     * sender chose; absent (never an empty array) on a message that
+     * carries none (docs/protocol.md, "Objects").
+     */
+    val attachments: List<AttachmentDto>? = null,
     /**
      * Present when (and only when) this message is a poll — and polls
      * exist in the FAMILY CHAT only (docs/protocol.md, "Polls"). The
@@ -320,7 +330,16 @@ data class MessageDto(
      * the call it was on.
      */
     val call: CallDto? = null,
-)
+) {
+    /**
+     * The read rule, in one place: prefer `attachments`, fall back to the
+     * legacy `attachment` (its first element, on a server that sends
+     * both). Empty for a message that carries none — never null, because
+     * every consumer walks the list.
+     */
+    val resolvedAttachments: List<AttachmentDto>
+        get() = attachments ?: attachment?.let(::listOf).orEmpty()
+}
 
 /**
  * The record of a voice call, on the message that is its history entry
@@ -475,6 +494,14 @@ data class AttachmentDto(
         const val KIND_FILE = "file"
         const val KIND_LOCATION = "location"
         const val DEFAULT_ASPECT = 4f / 3f
+
+        /**
+         * Most attachments one message may carry (protocol.md, "Limits":
+         * `limits.max_attachments_per_message`, whose fewest is 1, fixed).
+         * The staging cap, the picker cap and the share-target cap all
+         * read this one number.
+         */
+        const val MAX_PER_MESSAGE = 10
     }
 }
 
@@ -516,6 +543,26 @@ object PollCodec {
     /** Null for a message that is not a poll, or for a row we cannot read. */
     fun decode(raw: String?): PollDto? =
         raw?.let { runCatching { json.decodeFromString<PollDto>(it) }.getOrNull() }
+}
+
+/**
+ * Local persistence codec: the messages table stores a message's
+ * attachments verbatim as the wire-shape JSON array (`attachmentsJson`
+ * column — null = none stored there; rows written before plurality keep
+ * their twelve flat columns and decode through the entity's fallback).
+ * The same shape and the same private-Json reasoning as [PollCodec]:
+ * replaced whole, never patched, and a house-config change can never
+ * silently re-shape stored rows.
+ */
+object AttachmentsCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(attachments: List<AttachmentDto>): String = json.encodeToString(attachments)
+
+    /** Null when the column is null or unreadable — the caller then falls
+     *  back to the flat columns a pre-plurality row still carries. */
+    fun decode(raw: String?): List<AttachmentDto>? =
+        raw?.let { runCatching { json.decodeFromString<List<AttachmentDto>>(it) }.getOrNull() }
 }
 
 // -- Request bodies ----------------------------------------------------------
@@ -588,11 +635,15 @@ data class SendMessageRequest(
     // rather than sent as "reply_to_message_id": null — which is what the
     // protocol writes for an ordinary message.
     @SerialName("reply_to_message_id") val replyToMessageId: Long? = null,
-    /** The uploaded attachment this message claims, if any. */
-    @SerialName("attachment_id") val attachmentId: Long? = null,
+    /**
+     * The uploaded attachments this message claims, in the sender's order
+     * (1-10). The PLURAL spelling always — `attachment_id` is the legacy
+     * one-element form, still accepted but no longer sent.
+     */
+    @SerialName("attachment_ids") val attachmentIds: List<Long>? = null,
     /**
      * Makes this message a poll: the body is then the QUESTION and must
-     * be non-empty, and `poll` and `attachment_id` are mutually
+     * be non-empty, and `poll` and `attachment_ids` are mutually
      * exclusive (docs/protocol.md, "Polls"). Omitted for an ordinary
      * message — encodeDefaults=false again.
      */

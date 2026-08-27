@@ -36,6 +36,11 @@ struct AttachmentView: View {
     /// drawing tint on tint — invisible. Everything inside a balloon has to
     /// take its colour from whatever is directly behind it.
     var isMine: Bool = false
+    /// Non-nil when this attachment is one CELL of a multi-attachment
+    /// grid: a square of exactly this side, filled and clipped, instead
+    /// of the free-standing thumbnail sized by the attachment's own
+    /// aspect ratio. Media only — files and audio stack as rows.
+    var cellSide: CGFloat? = nil
 
     @Environment(AttachmentStore.self) private var store
 
@@ -45,6 +50,8 @@ struct AttachmentView: View {
     private static let maxHeight: CGFloat = 320
 
     private var size: CGSize {
+        // A grid cell's shape is the grid's, not the attachment's.
+        if let cellSide { return CGSize(width: cellSide, height: cellSide) }
         let ratio = attachment.aspectRatio
         var width = Self.maxWidth
         var height = width / ratio
@@ -134,13 +141,15 @@ struct AttachmentView: View {
         .frame(maxWidth: Self.maxWidth)
         // A wash that works on BOTH grounds: lightening over the tinted own
         // balloon, darkening over the neutral one. A single black wash went
-        // muddy over the accent colour.
+        // muddy over the accent colour. Theirs-side uses .primary, not
+        // .black, so the wash flips with the appearance instead of
+        // vanishing on a dark balloon (identical in light mode).
         .background(
-            (isMine ? Color.white.opacity(0.14) : Color.black.opacity(0.05)),
+            (isMine ? Color.white.opacity(0.14) : Color.primary.opacity(0.05)),
             in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.black.opacity(0.06)))
+                .strokeBorder(isMine ? Color.white.opacity(0.16) : Color.primary.opacity(0.06)))
         .contentShape(Rectangle())
         // Count 2 BEFORE count 1, and both as onTapGesture: that is what
         // makes them exclusive. The double tap used to be a
@@ -181,7 +190,7 @@ struct AttachmentView: View {
             LinearGradient(
                 colors: isMine
                     ? [.white.opacity(0.22), .white.opacity(0.10)]
-                    : [.black.opacity(0.10), .black.opacity(0.04)],
+                    : [.primary.opacity(0.10), .primary.opacity(0.04)],
                 startPoint: .top,
                 endPoint: .bottom)
             if let image {
@@ -200,7 +209,7 @@ struct AttachmentView: View {
         // A hairline so a pale photo does not melt into a pale balloon.
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.black.opacity(0.08)))
+                .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08)))
         .contentShape(Rectangle())
         // Count 2 BEFORE count 1, and both as onTapGesture: that is what
         // makes them exclusive. The double tap used to be a
