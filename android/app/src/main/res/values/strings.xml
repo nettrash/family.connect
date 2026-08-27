@@ -343,6 +343,12 @@
     <string name="s_color_green">Green</string>
     <string name="s_color_orange">Orange</string>
     <string name="s_color_purple">Purple</string>
+    <!-- Board note sizes (docs/protocol.md, "Board"): the three step names,
+         worded identically on every platform so one translation serves all. -->
+    <string name="s_size">Size</string>
+    <string name="s_small">Small</string>
+    <string name="s_medium">Medium</string>
+    <string name="s_large">Large</string>
     <!-- Chrome literals localised 2026-08: the family console, the
          auth/join screens, the reply banner, the call linger line. -->
     <string name="s_declined">Declined</string>

@@ -309,6 +309,10 @@
     <string name="s_color_green">Vert</string>
     <string name="s_color_orange">Orange</string>
     <string name="s_color_purple">Violet</string>
+    <string name="s_size">Taille</string>
+    <string name="s_small">Petite</string>
+    <string name="s_medium">Moyenne</string>
+    <string name="s_large">Grande</string>
     <string name="s_declined">Refusé</string>
     <string name="s_reset">Réinitialiser</string>
     <string name="s_create_account">Créer un compte</string>

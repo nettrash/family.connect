@@ -309,6 +309,10 @@
     <string name="s_color_green">Verde</string>
     <string name="s_color_orange">Naranja</string>
     <string name="s_color_purple">Morado</string>
+    <string name="s_size">Tamaño</string>
+    <string name="s_small">Pequeña</string>
+    <string name="s_medium">Mediana</string>
+    <string name="s_large">Grande</string>
     <string name="s_declined">Rechazada</string>
     <string name="s_reset">Restablecer</string>
     <string name="s_create_account">Crear cuenta</string>

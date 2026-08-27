@@ -1,0 +1,21 @@
+-- 0027_note_size — a note learns how loudly it speaks (docs/protocol.md,
+-- "Board").
+--
+-- `size` is a STEP, not a measurement: one of `small`, `medium`, `large`,
+-- a name each client draws at its own idiom — a large note is bigger on a
+-- Mac than on a phone, as everything is — the same way `color` is a name
+-- and not a hex value. A free width and height in board fractions would
+-- have made one note a third of a phone and a third of a desktop window,
+-- and left the type size undefined. TEXT for the same reason `color` is
+-- TEXT and not an enum type: the vocabulary lives in the server
+-- (`Note::SIZES`) and is enforced at the write path, so it grows with a
+-- code change rather than a migration.
+--
+-- NOT NULL DEFAULT 'medium', because every note written before this column
+-- existed WAS a medium note — it is the size everything had, so the
+-- default is the truth about the past and nothing already on a wall
+-- changes. Size belongs to the AUTHOR with text and colour (a size anyone
+-- could change is a size anyone could shrink to nothing); that rule lives
+-- in the handler, since a CHECK cannot know who is asking.
+
+ALTER TABLE notes ADD COLUMN size TEXT NOT NULL DEFAULT 'medium';

@@ -56,6 +56,7 @@ import me.nettrash.familyconnect.data.net.dto.MessagesResponse
 import me.nettrash.familyconnect.data.net.BoardApi
 import me.nettrash.familyconnect.data.net.dto.BoardChangesResponse
 import me.nettrash.familyconnect.data.net.dto.BoardResponse
+import me.nettrash.familyconnect.data.net.dto.CreateNoteRequest
 import me.nettrash.familyconnect.data.net.dto.NoteDto
 import me.nettrash.familyconnect.data.net.dto.NoteResponse
 import me.nettrash.familyconnect.data.net.dto.PatchNoteRequest
@@ -672,7 +673,8 @@ class FakeBoardApi : BoardApi {
     var board: BoardResponse = BoardResponse(emptyList(), 0)
     /** Pages the catch-up will serve, oldest first. */
     var changePages: MutableList<List<NoteDto>> = mutableListOf()
-    val created = mutableListOf<Triple<String, String, Pair<Double, Double>>>()
+    /** Every create, as the request the wire would carry — like [patched]. */
+    val created = mutableListOf<CreateNoteRequest>()
     val patched = mutableListOf<Pair<Long, PatchNoteRequest>>()
     val deleted = mutableListOf<Long>()
 
@@ -692,11 +694,12 @@ class FakeBoardApi : BoardApi {
     override suspend fun createNote(
         text: String,
         color: String,
+        size: String,
         x: Double,
         y: Double,
     ): ApiResult<NoteResponse> {
-        created += Triple(text, color, x to y)
-        val note = noteDto(id = nextSeq, text = text, color = color, x = x, y = y, boardSeq = nextSeq)
+        created += CreateNoteRequest(text, color, size, x, y)
+        val note = noteDto(id = nextSeq, text = text, color = color, size = size, x = x, y = y, boardSeq = nextSeq)
         nextSeq++
         return createResult?.invoke(note) ?: ApiResult.Ok(NoteResponse(note))
     }
@@ -705,14 +708,16 @@ class FakeBoardApi : BoardApi {
         id: Long,
         text: String?,
         color: String?,
+        size: String?,
         x: Double?,
         y: Double?,
     ): ApiResult<NoteResponse> {
-        patched += id to PatchNoteRequest(text, color, x, y)
+        patched += id to PatchNoteRequest(text, color, size, x, y)
         val note = noteDto(
             id = id,
             text = text ?: "note $id",
             color = color ?: "yellow",
+            size = size ?: "medium",
             x = x ?: 0.0,
             y = y ?: 0.0,
             boardSeq = nextSeq++,
@@ -733,6 +738,8 @@ fun noteDto(
     authorId: Long = 7L,
     text: String = "note $id",
     color: String = "yellow",
+    /** Null models a server from before the field existed, not a tombstone. */
+    size: String? = "medium",
     x: Double = 0.2,
     y: Double = 0.3,
     boardSeq: Long,
@@ -742,6 +749,7 @@ fun noteDto(
     authorId = if (deleted == true) null else authorId,
     text = if (deleted == true) null else text,
     color = if (deleted == true) null else color,
+    size = if (deleted == true) null else size,
     x = if (deleted == true) null else x,
     y = if (deleted == true) null else y,
     createdAt = if (deleted == true) null else "2026-08-22T12:00:00Z",

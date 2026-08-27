@@ -1,8 +1,10 @@
 //! The family board: a wall of sticker notes (docs/protocol.md, "Board").
 //!
 //! Two authorship rules, deliberately different: **anyone in the family may
-//! MOVE a note; only its author may change its text or colour, or delete
-//! it.** Tidying the wall is a shared act; rewriting someone's words is not.
+//! MOVE a note; only its author may change its text, colour or size, or
+//! delete it.** Tidying the wall is a shared act; rewriting someone's words
+//! is not — and neither is deciding how loudly they speak, since a size
+//! anyone could change is a size anyone could shrink to nothing.
 //!
 //! Every mutation takes the next `family_board_seq` and stamps it on the
 //! note, with the family's `last_board_seq` following GREATEST-guarded —
@@ -34,19 +36,25 @@ use crate::state::AppState;
 pub struct CreateNoteRequest {
     pub text: String,
     pub color: String,
+    /// Absent means `medium`: a client that predates sizes keeps making
+    /// the notes it always made.
+    #[serde(default)]
+    pub size: Option<String>,
     pub x: f64,
     pub y: f64,
 }
 
-/// Every field optional: a move sends only `x`/`y`, an edit only `text`
-/// and/or `color`. Which fields are present is what decides whether the
-/// caller needs to be the author.
+/// Every field optional: a move sends only `x`/`y`, an edit any of `text`,
+/// `color` and `size`. Which fields are present is what decides whether
+/// the caller needs to be the author.
 #[derive(Debug, Deserialize)]
 pub struct PatchNoteRequest {
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
+    #[serde(default)]
+    pub size: Option<String>,
     #[serde(default)]
     pub x: Option<f64>,
     #[serde(default)]
@@ -88,8 +96,19 @@ fn validate_color(color: &str) -> Result<String, ApiError> {
     }
 }
 
+fn validate_size(size: &str) -> Result<String, ApiError> {
+    if Note::SIZES.contains(&size) {
+        Ok(size.to_string())
+    } else {
+        Err(ApiError::bad_request(
+            codes::INVALID_NOTE_SIZE,
+            format!("size must be one of {}", Note::SIZES.join(", ")),
+        ))
+    }
+}
+
 const NOTE_COLS: &str =
-    "id, author_id, text, color, x, y, board_seq, created_at, updated_at, deleted_at";
+    "id, author_id, text, color, size, x, y, board_seq, created_at, updated_at, deleted_at";
 
 /// `GET /families/mine/board` — the whole board, tombstones excluded.
 pub async fn get_board(
@@ -160,6 +179,10 @@ pub async fn create_note(
     let family_id = caller_family(&state, auth.user_id).await?;
     let text = validate_text(&req.text)?;
     let color = validate_color(&req.color)?;
+    let size = match req.size.as_deref() {
+        Some(size) => validate_size(size)?,
+        None => Note::DEFAULT_SIZE.to_string(),
+    };
 
     let mut tx = state.pool.begin().await?;
     let live: i64 = sqlx::query_scalar(
@@ -182,14 +205,15 @@ pub async fn create_note(
         .fetch_one(&mut *tx)
         .await?;
     let row = sqlx::query(&format!(
-        "INSERT INTO notes (family_id, author_id, text, color, x, y, board_seq)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        "INSERT INTO notes (family_id, author_id, text, color, size, x, y, board_seq)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING {NOTE_COLS}"
     ))
     .bind(family_id)
     .bind(auth.user_id)
     .bind(&text)
     .bind(&color)
+    .bind(&size)
     .bind(Note::clamp_position(req.x))
     .bind(Note::clamp_position(req.y))
     .bind(seq)
@@ -207,8 +231,8 @@ pub async fn create_note(
     Ok((StatusCode::CREATED, Json(json!({"note": note}))).into_response())
 }
 
-/// `PATCH /families/mine/board/notes/{id}` — move it (anyone) or rewrite it
-/// (the author).
+/// `PATCH /families/mine/board/notes/{id}` — move it (anyone) or rewrite,
+/// recolour or resize it (the author).
 pub async fn patch_note(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -218,10 +242,11 @@ pub async fn patch_note(
     let family_id = caller_family(&state, auth.user_id).await?;
     let text = req.text.as_deref().map(validate_text).transpose()?;
     let color = req.color.as_deref().map(validate_color).transpose()?;
+    let size = req.size.as_deref().map(validate_size).transpose()?;
 
     let mut tx = state.pool.begin().await?;
     let locked = sqlx::query(
-        "SELECT author_id, text, color, x, y, deleted_at FROM notes
+        "SELECT author_id, text, color, size, x, y, deleted_at FROM notes
          WHERE id = $1 AND family_id = $2 FOR UPDATE",
     )
     .bind(note_id)
@@ -245,16 +270,20 @@ pub async fn patch_note(
         ));
     }
 
-    // The split rule: content is the author's, position is everyone's.
-    if (text.is_some() || color.is_some()) && locked.get::<i64, _>("author_id") != auth.user_id {
+    // The split rule: content — text, colour and size — is the author's,
+    // position is everyone's.
+    if (text.is_some() || color.is_some() || size.is_some())
+        && locked.get::<i64, _>("author_id") != auth.user_id
+    {
         return Err(ApiError::forbidden(
             codes::NOT_NOTE_AUTHOR,
-            "only the author can change this note's text or colour",
+            "only the author can change this note's text, colour or size",
         ));
     }
 
     let next_text = text.unwrap_or_else(|| locked.get("text"));
     let next_color = color.unwrap_or_else(|| locked.get("color"));
+    let next_size = size.unwrap_or_else(|| locked.get("size"));
     let next_x = req
         .x
         .map(Note::clamp_position)
@@ -266,6 +295,7 @@ pub async fn patch_note(
 
     let changed = next_text != locked.get::<String, _>("text")
         || next_color != locked.get::<String, _>("color")
+        || next_size != locked.get::<String, _>("size")
         || next_x != locked.get::<f64, _>("x")
         || next_y != locked.get::<f64, _>("y");
 
@@ -274,14 +304,15 @@ pub async fn patch_note(
             .fetch_one(&mut *tx)
             .await?;
         let row = sqlx::query(&format!(
-            "UPDATE notes SET text = $2, color = $3, x = $4, y = $5,
-                              board_seq = $6, updated_at = now()
+            "UPDATE notes SET text = $2, color = $3, size = $4, x = $5, y = $6,
+                              board_seq = $7, updated_at = now()
              WHERE id = $1
              RETURNING {NOTE_COLS}"
         ))
         .bind(note_id)
         .bind(&next_text)
         .bind(&next_color)
+        .bind(&next_size)
         .bind(next_x)
         .bind(next_y)
         .bind(seq)

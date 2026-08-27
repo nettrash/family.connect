@@ -90,6 +90,11 @@ class BoardRepository @Inject constructor(
                 authorId = authorId,
                 text = text,
                 color = color,
+                // Absent from an older server means "medium", the size
+                // every note had before there was one; an unknown NAME is
+                // kept as-is and the screen draws it as medium, the same
+                // forgiveness color gets.
+                size = note.size ?: "medium",
                 x = x,
                 y = y,
                 createdAt = note.createdAt?.let(TimeFormat::parseTimestamp) ?: existing?.createdAt ?: now,
@@ -134,8 +139,8 @@ class BoardRepository @Inject constructor(
         }
     }
 
-    suspend fun addNote(text: String, color: String, x: Double, y: Double): Boolean =
-        when (val result = boardApi.createNote(text, color, x, y)) {
+    suspend fun addNote(text: String, color: String, size: String, x: Double, y: Double): Boolean =
+        when (val result = boardApi.createNote(text, color, size, x, y)) {
             is ApiResult.Ok -> {
                 applyNote(result.value.note)
                 settings.setBoardCursor(maxOf(boardCursor(), result.value.note.boardSeq))
@@ -146,15 +151,19 @@ class BoardRepository @Inject constructor(
 
     /**
      * Move (anyone) or rewrite (the author) — which fields are sent is what
-     * the server checks permission against, so nulls must not be sent.
+     * the server checks permission against, so nulls must not be sent. A
+     * MOVE sends only x/y; size travels with the author's edit, beside
+     * text and color, because how loudly a note speaks is the writer's
+     * call (docs/protocol.md, "Board").
      */
     suspend fun updateNote(
         id: Long,
         text: String? = null,
         color: String? = null,
+        size: String? = null,
         x: Double? = null,
         y: Double? = null,
-    ): Boolean = when (val result = boardApi.patchNote(id, text, color, x, y)) {
+    ): Boolean = when (val result = boardApi.patchNote(id, text, color, size, x, y)) {
         is ApiResult.Ok -> {
             applyNote(result.value.note)
             settings.setBoardCursor(maxOf(boardCursor(), result.value.note.boardSeq))

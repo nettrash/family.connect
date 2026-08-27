@@ -287,6 +287,10 @@
     <string name="s_color_green">Zelena</string>
     <string name="s_color_orange">Narandžasta</string>
     <string name="s_color_purple">Ljubičasta</string>
+    <string name="s_size">Veličina</string>
+    <string name="s_small">Mala</string>
+    <string name="s_medium">Srednja</string>
+    <string name="s_large">Velika</string>
     <string name="s_declined">Odbijeno</string>
     <string name="s_reset">Resetuj</string>
     <string name="s_create_account">Napravi nalog</string>

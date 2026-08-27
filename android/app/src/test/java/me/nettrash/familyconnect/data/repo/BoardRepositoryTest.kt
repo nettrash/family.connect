@@ -201,8 +201,8 @@ class BoardRepositoryTest {
         assertThat(noteDao.observeNotes().first()).isEmpty()
     }
 
-    /** A move sends ONLY x/y — sending text would make the server demand
-     *  authorship the mover may not have. */
+    /** A move sends ONLY x/y — sending text (or size) would make the server
+     *  demand authorship the mover may not have. */
     @Test
     fun `moving a note sends only the position`() = runTest(dispatcher) {
         val repository = repository()
@@ -216,5 +216,74 @@ class BoardRepositoryTest {
         assertThat(request.y).isEqualTo(0.6)
         assertThat(request.text).isNull()
         assertThat(request.color).isNull()
+        assertThat(request.size).isNull()
+    }
+
+    // -- Sizes (docs/protocol.md, "A note has a size") ------------------------
+
+    @Test
+    fun `a note applies with its size`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(noteDto(id = 1, size = "large", boardSeq = 10))
+        runCurrent()
+
+        assertThat(noteDao.findById(1)!!.size).isEqualTo("large")
+    }
+
+    /** A server from before the field existed sends no size; every note it
+     *  has is the size every note had — medium. */
+    @Test
+    fun `a note without a size is stored as medium`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(noteDto(id = 1, size = null, boardSeq = 10))
+        runCurrent()
+
+        assertThat(noteDao.findById(1)!!.size).isEqualTo("medium")
+    }
+
+    @Test
+    fun `a newer seq changes the size in place`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(noteDto(id = 1, size = "small", boardSeq = 10))
+        repository.applyNote(noteDto(id = 1, size = "large", boardSeq = 11))
+        runCurrent()
+
+        val notes = noteDao.observeNotes().first()
+        assertThat(notes).hasSize(1)
+        assertThat(notes[0].size).isEqualTo("large")
+        assertThat(notes[0].boardSeq).isEqualTo(11)
+    }
+
+    /** Size is the author's field: it travels with text and colour, never
+     *  with a move. */
+    @Test
+    fun `editing a note sends size with text and colour`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.updateNote(id = 7, text = "Louder", color = "pink", size = "large")
+        runCurrent()
+
+        val (id, request) = boardApi.patched.single()
+        assertThat(id).isEqualTo(7)
+        assertThat(request.text).isEqualTo("Louder")
+        assertThat(request.color).isEqualTo("pink")
+        assertThat(request.size).isEqualTo("large")
+        assertThat(request.x).isNull()
+        assertThat(request.y).isNull()
+        assertThat(noteDao.findById(7)!!.size).isEqualTo("large")
+    }
+
+    @Test
+    fun `creating a note sends its size`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.addNote(text = "Milk", color = "yellow", size = "small", x = 0.1, y = 0.2)
+        runCurrent()
+
+        assertThat(boardApi.created.single().size).isEqualTo("small")
+        assertThat(noteDao.observeNotes().first().single().size).isEqualTo("small")
     }
 }

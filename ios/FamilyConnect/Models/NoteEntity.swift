@@ -30,6 +30,13 @@ final class NoteEntity {
     /// from a newer server must render as *something* rather than fail to
     /// decode.
     var color: String
+    /// One of the protocol's three step names — small, medium, large — a
+    /// String for the same reason as `color`. Defaulted so a store written
+    /// before the field existed migrates in place: SwiftData adds a new
+    /// attribute with a default as a lightweight migration and fills every
+    /// existing row with it, and "medium" is exactly the size those rows
+    /// had when they were drawn.
+    var size: String = "medium"
     /// Fractions of the board, 0…1 from the top-left, so a note sits in the
     /// same relative place on a phone and a tablet.
     var x: Double
@@ -44,6 +51,7 @@ final class NoteEntity {
         authorID: Int64,
         text: String,
         color: String,
+        size: String = "medium",
         x: Double,
         y: Double,
         createdAt: Date,
@@ -54,6 +62,7 @@ final class NoteEntity {
         self.authorID = authorID
         self.text = text
         self.color = color
+        self.size = size
         self.x = x
         self.y = y
         self.createdAt = createdAt

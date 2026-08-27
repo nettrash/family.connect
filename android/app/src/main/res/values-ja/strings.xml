@@ -303,6 +303,10 @@
     <string name="s_color_green">緑</string>
     <string name="s_color_orange">オレンジ</string>
     <string name="s_color_purple">紫</string>
+    <string name="s_size">サイズ</string>
+    <string name="s_small">小</string>
+    <string name="s_medium">中</string>
+    <string name="s_large">大</string>
     <string name="s_declined">拒否されました</string>
     <string name="s_reset">リセット</string>
     <string name="s_create_account">アカウントを作成</string>

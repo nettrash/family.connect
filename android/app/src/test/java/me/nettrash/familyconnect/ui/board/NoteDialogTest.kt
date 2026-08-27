@@ -8,6 +8,10 @@
  * a swatch selects that color, the selection is published to semantics,
  * and Save hands the picked color back.
  *
+ * The size row is the same contract one field over: a segmented button
+ * selects a step, the selection is published to semantics, and Save hands
+ * the picked size back beside the colour.
+ *
  * A local Robolectric Compose test, not an instrumented one — same
  * reasoning as the rest of app/src/test.
  */
@@ -35,6 +39,7 @@ class NoteDialogTest {
         noteId = null,
         text = "hi",
         color = "yellow",
+        size = "medium",
         x = 0.1,
         y = 0.1,
         authorId = 1L,
@@ -42,14 +47,14 @@ class NoteDialogTest {
 
     @Test
     fun tappingASwatchSelectsItAndSaveReportsThatColor() {
-        var saved: Pair<String, String>? = null
+        var saved: Triple<String, String, String>? = null
         compose.setContent {
             NoteDialog(
                 draft = draft(),
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},
-                onSave = { text, color -> saved = text to color },
+                onSave = { text, color, size -> saved = Triple(text, color, size) },
                 onDelete = null,
             )
         }
@@ -61,6 +66,77 @@ class NoteDialogTest {
         compose.onNodeWithContentDescription("Green").assertIsSelected()
 
         compose.onNodeWithText("Save").performClick()
-        assertThat(saved).isEqualTo("hi" to "green")
+        assertThat(saved).isEqualTo(Triple("hi", "green", "medium"))
+    }
+
+    @Test
+    fun tappingASizeSelectsItAndSaveReportsThatSize() {
+        var saved: Triple<String, String, String>? = null
+        compose.setContent {
+            NoteDialog(
+                draft = draft(),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { text, color, size -> saved = Triple(text, color, size) },
+                onDelete = null,
+            )
+        }
+
+        // The dialog opens with the draft's size selected.
+        compose.onNodeWithText("Medium").assertIsSelected()
+
+        compose.onNodeWithText("Large").performClick()
+        compose.onNodeWithText("Large").assertIsSelected()
+
+        compose.onNodeWithText("Save").performClick()
+        assertThat(saved).isEqualTo(Triple("hi", "yellow", "large"))
+    }
+
+    /**
+     * A name this client does not know draws as medium, and the picker says
+     * so — but Save hands the NAME back untouched, the way an unknown colour
+     * is, so opening a note to fix its text does not also shrink it.
+     */
+    @Test
+    fun anUnknownSizeOpensWithMediumSelectedAndRoundTripsUntouched() {
+        var saved: Triple<String, String, String>? = null
+        compose.setContent {
+            NoteDialog(
+                draft = draft().copy(size = "enormous"),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { text, color, size -> saved = Triple(text, color, size) },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Medium").assertIsSelected()
+
+        compose.onNodeWithText("Save").performClick()
+        assertThat(saved).isEqualTo(Triple("hi", "yellow", "enormous"))
+    }
+
+    /** Once the author picks a step, that step wins over the unknown name. */
+    @Test
+    fun pickingAStepReplacesAnUnknownSize() {
+        var saved: Triple<String, String, String>? = null
+        compose.setContent {
+            NoteDialog(
+                draft = draft().copy(size = "enormous"),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { text, color, size -> saved = Triple(text, color, size) },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Small").performClick()
+        compose.onNodeWithText("Small").assertIsSelected()
+
+        compose.onNodeWithText("Save").performClick()
+        assertThat(saved).isEqualTo(Triple("hi", "yellow", "small"))
     }
 }

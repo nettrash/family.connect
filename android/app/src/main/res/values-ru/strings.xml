@@ -312,6 +312,10 @@
     <string name="s_color_green">Зелёный</string>
     <string name="s_color_orange">Оранжевый</string>
     <string name="s_color_purple">Фиолетовый</string>
+    <string name="s_size">Размер</string>
+    <string name="s_small">Маленькая</string>
+    <string name="s_medium">Средняя</string>
+    <string name="s_large">Большая</string>
     <string name="s_declined">Отклонён</string>
     <string name="s_reset">Сбросить</string>
     <string name="s_create_account">Создать учётную запись</string>

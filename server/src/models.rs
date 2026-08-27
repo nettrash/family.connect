@@ -735,6 +735,12 @@ pub struct Note {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// `small` / `medium` / `large` — a step, not a measurement, drawn at
+    /// each client's own idiom. Always present on a live note; a reader
+    /// that finds it missing (an older server) treats the note as
+    /// `medium`, which is what every note was before the field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub x: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -764,6 +770,17 @@ impl Note {
     /// rather than stored and silently drawn as a default.
     pub const COLORS: [&'static str; 6] = ["yellow", "pink", "blue", "green", "orange", "purple"];
 
+    /// Sizes a note may take. Names rather than dimensions for the same
+    /// reason colours are names rather than hex values: a `large` note is
+    /// bigger on a Mac than on a phone, and only the client knows by how
+    /// much (protocol.md, "Board").
+    pub const SIZES: [&'static str; 3] = ["small", "medium", "large"];
+
+    /// The size a note takes when none is sent — and the size every note
+    /// had before sizes existed, so nothing on a wall moved when the field
+    /// arrived.
+    pub const DEFAULT_SIZE: &str = "medium";
+
     /// Longest note text. A sticker, not a message.
     pub const MAX_TEXT_CHARS: usize = 280;
 
@@ -784,6 +801,7 @@ impl Note {
                 author_id: None,
                 text: None,
                 color: None,
+                size: None,
                 x: None,
                 y: None,
                 created_at: None,
@@ -797,6 +815,7 @@ impl Note {
             author_id: Some(row.get("author_id")),
             text: Some(row.get("text")),
             color: Some(row.get("color")),
+            size: Some(row.get("size")),
             x: Some(row.get("x")),
             y: Some(row.get("y")),
             created_at: Some(row.get("created_at")),

@@ -50,7 +50,8 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `owner_cannot_leave`, `cannot_remove_owner`, `cannot_dm_self`, `not_same_family`,
 `user_not_found`, `chat_not_found`, `not_chat_member`, `message_empty`, `message_too_long`,
 `message_not_found`, `not_message_author`, `invalid_emoji`, `note_not_found`,
-`not_note_author`, `invalid_note_color`, `invalid_language`, `board_full`, `invalid_pagination`,
+`not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_language`, `board_full`,
+`invalid_pagination`,
 `device_not_found`, `invalid_poll`, `poll_closed`,
 `calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`, `peer_busy`, `peer_unreachable`,
 `avatar_too_large`, `invalid_image`, `attachment_too_large`, `invalid_attachment`,
@@ -144,7 +145,7 @@ IceServer {"urls": ["turn:turn.example.com:3478?transport=udp"],
            "username": "1756300000:7", "credential": "…"}
           — "username"/"credential" on a TURN server only, and only when the operator
             configured credentials; a STUN server is "urls" alone — see "Voice calls"
-Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow",
+Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow", "size": "medium",
            "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88}
           — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
 ```
@@ -340,15 +341,27 @@ a separate high-water mark of the note ids it has SHOWN the user, advanced only 
 actually opened, and counts live notes above it. Note ids are server-assigned and monotonic, so
 "created since you last looked" needs nothing further from the server.
 
-Who may do what: **anyone in the family may MOVE a note; only its author may change its text or
-colour, or delete it.** Moving is the shared act (tidying the wall together), authorship is the
-personal one.
+Who may do what: **anyone in the family may MOVE a note; only its author may change its text,
+colour or size, or delete it.** Moving is the shared act (tidying the wall together), authorship is
+the personal one.
 
 `x` and `y` are fractions of the board, `0.0`–`1.0` from the top-left, so a note sits in the same
 relative place on a phone and a tablet. Values outside that range are CLAMPED rather than
 rejected — a drag that ends past the edge should stick to the edge, not fail. `color` is one of
 `yellow`, `pink`, `blue`, `green`, `orange`, `purple`; anything else is `invalid_note_color`.
 `text` is trimmed, non-empty and at most 280 characters.
+
+**A note has a size**, so the thing that matters this week can be made big enough to read from
+across the room and a passing remark can stay small. `size` is one of `small`, `medium`, `large`;
+anything else is `invalid_note_size`, and a note created without one is `medium` — the size every
+note had before the field existed, so nothing already on a wall changed when it arrived. It is a
+STEP, not a measurement: a fixed name each client draws at its own idiom (a `large` note is
+bigger on a Mac than on a phone, as everything is) with a larger type size and more lines of the
+text showing, the same way `color` is a name and not a hex value. A free width and height in board
+fractions would have made the same note a third of a phone and a third of a desktop window, and
+left the type size undefined. Size belongs to the AUTHOR, with text and colour: how loudly a note
+speaks is the writer's call, and a size anyone could change is a size anyone could shrink to
+nothing. Resizing takes a `board_seq` like any other mutation and does not notify, like a move.
 
 Every board mutation — create, edit, move, delete — takes the next value of a third server-wide
 sequence and stamps it on the note as `board_seq`, with the family exposing its maximum as
@@ -1210,8 +1223,8 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 |---|---|
 | `GET /families/mine/board` | → `200 {notes: [Note], max_board_seq: 88}`. The whole board as it now stands, tombstones excluded, newest `board_seq` first. `max_board_seq` is `0` for a board nothing has ever been written to. Error: `not_in_family`. |
 | `GET /families/mine/board/changes` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {notes: [Note]}` ordered by `board_seq` ascending, INCLUDING tombstones — the board catch-up, looped until a short page. Errors: `not_in_family`, `invalid_pagination`. |
-| `POST /families/mine/board/notes` | `{text, color, x, y}` → `201 {note: Note}`. Caller becomes the author. Errors: `validation` (text empty or > 280), `invalid_note_color`, `board_full` (409, over the note ceiling), `not_in_family`. |
-| `PATCH /families/mine/board/notes/{id}` | `{text?, color?, x?, y?}` → `200 {note: Note}`. Any member may send `x`/`y`; only the author may send `text` or `color` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `validation`, `not_in_family`. |
+| `POST /families/mine/board/notes` | `{text, color, x, y, size?}` → `201 {note: Note}`. Caller becomes the author. `size` defaults to `medium` when absent. Errors: `validation` (text empty or > 280), `invalid_note_color`, `invalid_note_size`, `board_full` (409, over the note ceiling), `not_in_family`. |
+| `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, x?, y?}` → `200 {note: Note}`. Any member may send `x`/`y`; only the author may send `text`, `color` or `size` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `validation`, `not_in_family`. |
 | `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |
 
 ### Chats & messages

@@ -15,6 +15,11 @@
  * rewrite or delete one. A note you cannot edit still opens — read-only,
  * saying who wrote it — rather than silently ignoring the tap.
  *
+ * A note's SIZE is a step name, not a measurement (docs/protocol.md,
+ * "Board"): the wire says "large" and this screen decides what large is
+ * on a phone, the way it decides what "yellow" is. It sits with text and
+ * colour as the author's call, so the drag path never touches it.
+ *
  * iOS counterpart: ios/FamilyConnect/Views/BoardView.swift
  */
 
@@ -31,6 +36,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -49,7 +55,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.Typography
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -59,6 +69,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,7 +83,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -106,17 +119,70 @@ object NoteColors {
     }
 }
 
+/**
+ * The three step names the protocol allows, and what each one IS on a
+ * phone. Unknown values fall back to medium — the size every note had
+ * before there was one — so a note a newer client wrote never fails to
+ * draw here; it just draws the way it always did. The metrics live in
+ * this one place so the sticker, its clamp and its text agree by
+ * construction. (Phone idiom: iOS BoardView uses the same names with the
+ * same shape; the Mac is wider, as everything is there.)
+ */
+object NoteSizes {
+    const val SMALL = "small"
+    const val MEDIUM = "medium"
+    const val LARGE = "large"
+
+    /** In the order the picker shows them. */
+    val steps = listOf(SMALL, MEDIUM, LARGE)
+
+    /** Collapses an unknown name to medium, so everything below has three cases. */
+    fun resolve(name: String): String = if (name in steps) name else MEDIUM
+
+    /** The sticker is square; this is its side. */
+    fun side(name: String): Dp = when (resolve(name)) {
+        SMALL -> 100.dp
+        LARGE -> 220.dp
+        else -> 132.dp
+    }
+
+    /** Lines of the text that show before it ellipsises. */
+    fun maxLines(name: String): Int = when (resolve(name)) {
+        SMALL -> 3
+        LARGE -> 10
+        else -> 5
+    }
+
+    /** Takes the theme's typography rather than reading it, so it stays plain Kotlin. */
+    fun textStyle(name: String, typography: Typography): TextStyle = when (resolve(name)) {
+        SMALL -> typography.bodySmall
+        LARGE -> typography.bodyLarge
+        else -> typography.bodyMedium
+    }
+
+    /** The picker's label — the raw step key is not display text. */
+    fun label(name: String): Int = when (resolve(name)) {
+        SMALL -> R.string.s_small
+        LARGE -> R.string.s_large
+        else -> R.string.s_medium
+    }
+}
+
 /** A note being written or rewritten. `noteId` null = a new one. */
 data class NoteDraft(
     val noteId: Long?,
     val text: String,
     val color: String,
+    /**
+     * The step name AS STORED — possibly one this client does not know,
+     * kept raw so an untouched edit hands it back unchanged, the way
+     * [color] is. A new note starts medium.
+     */
+    val size: String,
     val x: Double,
     val y: Double,
     val authorId: Long,
 )
-
-private val NOTE_SIDE = 132.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -152,6 +218,7 @@ fun BoardScreen(
                     noteId = null,
                     text = "",
                     color = NoteColors.palette[slot],
+                    size = NoteSizes.MEDIUM,
                     x = 0.12 + slot * 0.03,
                     y = 0.10 + slot * 0.06,
                     authorId = myUserId ?: -1L,
@@ -170,7 +237,6 @@ fun BoardScreen(
             val density = LocalDensity.current
             val boardWidthPx = with(density) { maxWidth.roundToPx() }
             val boardHeightPx = with(density) { maxHeight.roundToPx() }
-            val sidePx = with(density) { NOTE_SIDE.roundToPx() }
 
             if (notes.isEmpty()) {
                 EmptyState(
@@ -191,13 +257,13 @@ fun BoardScreen(
                     },
                     boardWidthPx = boardWidthPx,
                     boardHeightPx = boardHeightPx,
-                    sidePx = sidePx,
                     onMoved = { x, y -> viewModel.moveNote(note.id, x, y) },
                     onTap = {
                         editing = NoteDraft(
                             noteId = note.id,
                             text = note.text,
                             color = note.color,
+                            size = note.size,
                             x = note.x,
                             y = note.y,
                             authorId = note.authorId,
@@ -217,12 +283,12 @@ fun BoardScreen(
                 else -> memberNames[draft.authorId] ?: stringResource(R.string.s_someone)
             },
             onDismiss = { editing = null },
-            onSave = { text, color ->
+            onSave = { text, color, size ->
                 editing = null
                 if (draft.noteId == null) {
-                    viewModel.addNote(text, color, draft.x, draft.y)
+                    viewModel.addNote(text, color, size, draft.x, draft.y)
                 } else {
-                    viewModel.editNote(draft.noteId, text, color)
+                    viewModel.editNote(draft.noteId, text, color, size)
                 }
             },
             onDelete = draft.noteId?.let { id ->
@@ -239,6 +305,21 @@ fun BoardScreen(
  * One sticker. Drag moves it locally at once and reports the FRACTION on
  * release — the server is told where it ended up, not every frame of how it
  * got there.
+ *
+ * The geometry runs in one direction: the stored fraction becomes a
+ * top-left ORIGIN clamped to the board first, the drag delta is added to
+ * THAT and clamped again, and what is drawn is what is reported back.
+ * Adding the delta to the unclamped product instead meant a note stored
+ * at x near 1 — drawn pinned to the edge — did not move until the finger
+ * had travelled the whole overhang, which a large note makes a long way.
+ *
+ * The same dead travel came back by another door: the drag delta is only
+ * zeroed when the server's answer lands, and a drop that ends on the very
+ * fraction the note already has (pushed further into an edge it is
+ * pinned to, or returned to its starting pixel) gets NO answer — the
+ * server sees nothing changed and keeps the old row and seq. So a release
+ * that would be a no-op is not sent at all, and the delta is zeroed here
+ * instead; drawn equals origin in that case, so nothing jumps.
  */
 @Composable
 private fun StickyNote(
@@ -246,7 +327,6 @@ private fun StickyNote(
     authorName: String,
     boardWidthPx: Int,
     boardHeightPx: Int,
-    sidePx: Int,
     onMoved: (Double, Double) -> Unit,
     onTap: () -> Unit,
 ) {
@@ -255,30 +335,42 @@ private fun StickyNote(
     // Resolved out here: a semantics block is not a composable context.
     val noteDescription = stringResource(R.string.s_note_from, authorName, note.text)
 
-    // Reset the local offset only when the AUTHORITATIVE position arrives.
-    // Zeroing it on drag-end instead would snap the note back to where it
-    // started for the one frame before the server's answer lands.
+    // Reset the local offset when the AUTHORITATIVE position arrives.
+    // Zeroing it on every drag-end instead would snap the note back to
+    // where it started for the one frame before the server's answer
+    // lands. The one release that gets no answer — a drop on the fraction
+    // already stored — is zeroed in onDragEnd, where it is known.
     LaunchedEffect(note.x, note.y) {
         dragX = 0f
         dragY = 0f
     }
 
-    val maxX = (boardWidthPx - sidePx).coerceAtLeast(0)
-    val maxY = (boardHeightPx - sidePx).coerceAtLeast(0)
+    val side = NoteSizes.side(note.size)
+    val sidePx = with(LocalDensity.current) { side.roundToPx() }
+    val geometry = NoteGeometry(
+        boardWidthPx = boardWidthPx,
+        boardHeightPx = boardHeightPx,
+        sidePx = sidePx,
+        x = note.x,
+        y = note.y,
+    )
+    // pointerInput restarts its block only when a KEY changes, so a plain
+    // capture of the geometry would be frozen at the first composition's:
+    // after one confirmed move the next drag-end would read the note's OLD
+    // origin and report a stale fraction. The running block reads through
+    // this holder instead, which always has the current frame's values.
+    val latestGeometry by rememberUpdatedState(geometry)
 
     Box(
         modifier = Modifier
-            .offset {
-                IntOffset(
-                    ((note.x * boardWidthPx).toFloat() + dragX).roundToInt().coerceIn(0, maxX),
-                    ((note.y * boardHeightPx).toFloat() + dragY).roundToInt().coerceIn(0, maxY),
-                )
-            }
-            .size(NOTE_SIDE)
+            // The offset draws it and drag-end reports it from the same
+            // arithmetic, so the two cannot disagree.
+            .offset { IntOffset(geometry.drawnX(dragX), geometry.drawnY(dragY)) }
+            .size(side)
             .shadow(if (dragX == 0f && dragY == 0f) 2.dp else 8.dp, RoundedCornerShape(10.dp))
             .clip(RoundedCornerShape(10.dp))
             .background(NoteColors.compose(note.color))
-            .pointerInput(note.id, boardWidthPx, boardHeightPx) {
+            .pointerInput(note.id) {
                 detectDragGestures(
                     onDrag = { change, delta ->
                         change.consume()
@@ -286,13 +378,21 @@ private fun StickyNote(
                         dragY += delta.y
                     },
                     onDragEnd = {
-                        // Clamped, so a note dropped past the edge sticks
-                        // to the edge — matching what the server does.
-                        val width = boardWidthPx.coerceAtLeast(1)
-                        val height = boardHeightPx.coerceAtLeast(1)
-                        val x = ((note.x * width + dragX) / width).coerceIn(0.0, 1.0)
-                        val y = ((note.y * height + dragY) / height).coerceIn(0.0, 1.0)
-                        onMoved(x, y)
+                        // Read back from the DRAWN position, clamped, so a
+                        // note dropped past the edge sticks to the edge —
+                        // matching what the server does.
+                        val g = latestGeometry
+                        if (g.moved(dragX, dragY)) {
+                            onMoved(g.fractionX(dragX), g.fractionY(dragY))
+                        } else {
+                            // Nothing to tell the server, and nothing it
+                            // would answer with: the fraction is the one it
+                            // holds, so the seq stays and the LaunchedEffect
+                            // above never fires. Zero the delta here or it
+                            // is carried into the next drag as dead travel.
+                            dragX = 0f
+                            dragY = 0f
+                        }
                     },
                 )
             }
@@ -309,12 +409,14 @@ private fun StickyNote(
         Column(modifier = Modifier.fillMaxSize()) {
             Text(
                 text = note.text,
-                style = MaterialTheme.typography.bodyMedium,
+                style = NoteSizes.textStyle(note.size, MaterialTheme.typography),
                 color = Color.Black.copy(alpha = 0.85f),
-                maxLines = 5,
+                maxLines = NoteSizes.maxLines(note.size),
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            // The byline keeps its small style at every size: it is who
+            // wrote the note, not part of what they wrote.
             Text(
                 text = authorName,
                 style = MaterialTheme.typography.labelSmall,
@@ -325,9 +427,47 @@ private fun StickyNote(
 }
 
 /**
+ * One sticker's place on one frame of the board, in pixels — see the
+ * geometry note on [StickyNote]. The stored fraction is clamped into a
+ * top-left ORIGIN first, the drag delta is added to that and clamped
+ * again, and the fraction reported back is read off the drawn position.
+ */
+private class NoteGeometry(
+    boardWidthPx: Int,
+    boardHeightPx: Int,
+    sidePx: Int,
+    private val x: Double,
+    private val y: Double,
+) {
+    private val width = boardWidthPx.coerceAtLeast(1)
+    private val height = boardHeightPx.coerceAtLeast(1)
+    private val maxX = (boardWidthPx - sidePx).coerceAtLeast(0)
+    private val maxY = (boardHeightPx - sidePx).coerceAtLeast(0)
+    private val originX = (x * boardWidthPx).roundToInt().coerceIn(0, maxX)
+    private val originY = (y * boardHeightPx).roundToInt().coerceIn(0, maxY)
+
+    fun drawnX(dragX: Float): Int = (originX + dragX).roundToInt().coerceIn(0, maxX)
+    fun drawnY(dragY: Float): Int = (originY + dragY).roundToInt().coerceIn(0, maxY)
+
+    fun fractionX(dragX: Float): Double = (drawnX(dragX).toDouble() / width).coerceIn(0.0, 1.0)
+    fun fractionY(dragY: Float): Double = (drawnY(dragY).toDouble() / height).coerceIn(0.0, 1.0)
+
+    /**
+     * Whether a release here would change the STORED position — the same
+     * comparison the server makes before it spends a seq on a move, so
+     * the two agree on which drops are no-ops. Read off the reported
+     * fraction rather than the pixel delta: a note pinned to an edge can
+     * be dragged a long way and still land on the fraction it already has.
+     */
+    fun moved(dragX: Float, dragY: Float): Boolean =
+        fractionX(dragX) != x || fractionY(dragY) != y
+}
+
+/**
  * The add/edit dialog. Read-only when the note is someone else's: the tap
  * still opens something rather than doing nothing, it just cannot be
- * changed.
+ * changed. `onSave` hands back text, colour and size — the three things
+ * that are the author's to decide.
  */
 @Composable
 internal fun NoteDialog(
@@ -335,11 +475,17 @@ internal fun NoteDialog(
     canEdit: Boolean,
     authorName: String,
     onDismiss: () -> Unit,
-    onSave: (String, String) -> Unit,
+    onSave: (String, String, String) -> Unit,
     onDelete: (() -> Unit)?,
 ) {
     var text by remember(draft.noteId) { mutableStateOf(draft.text) }
     var color by remember(draft.noteId) { mutableStateOf(draft.color) }
+    // Held RAW, like the colour: a name this client does not know is
+    // drawn as medium, and the picker says so below, but Save must hand
+    // back what was there unless the author actually picked a step —
+    // otherwise an older client quietly downgrades what a newer server
+    // accepted, just by opening the note to fix a typo.
+    var size by remember(draft.noteId) { mutableStateOf(draft.size) }
     var confirmDelete by remember { mutableStateOf(false) }
 
     if (confirmDelete && onDelete != null) {
@@ -411,6 +557,33 @@ internal fun NoteDialog(
                             }
                         }
                     }
+                    Spacer(Modifier.size(16.dp))
+                    Text(
+                        text = stringResource(R.string.s_size),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.size(4.dp))
+                    // A segmented row rather than three swatches: a size
+                    // has no colour to show, and the row already carries
+                    // the single-choice semantics the swatches spell out
+                    // by hand.
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        NoteSizes.steps.forEachIndexed { index, name ->
+                            SegmentedButton(
+                                // Resolved for DISPLAY only: the selection
+                                // shows the step the note draws as.
+                                selected = NoteSizes.resolve(size) == name,
+                                onClick = { size = name },
+                                shape = SegmentedButtonDefaults.itemShape(
+                                    index = index,
+                                    count = NoteSizes.steps.size,
+                                ),
+                            ) {
+                                Text(stringResource(NoteSizes.label(name)))
+                            }
+                        }
+                    }
                 } else {
                     Text(draft.text)
                     Spacer(Modifier.size(8.dp))
@@ -425,7 +598,7 @@ internal fun NoteDialog(
         confirmButton = {
             if (canEdit) {
                 TextButton(
-                    onClick = { onSave(text, color) },
+                    onClick = { onSave(text, color, size) },
                     enabled = text.isNotBlank(),
                 ) {
                     Text(stringResource(R.string.s_save))

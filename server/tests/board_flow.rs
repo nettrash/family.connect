@@ -1,11 +1,67 @@
 //! Integration: the family board — the split authorship rule (anyone
-//! moves, only the author rewrites or deletes), tombstones, and the third
-//! catch-up cursor (protocol.md, "Board").
+//! moves, only the author rewrites, resizes or deletes), tombstones, note
+//! sizes, and the third catch-up cursor (protocol.md, "Board").
 
 mod common;
 
+use std::time::Duration;
+
 use common::{TestServer, assert_error, spawn_server};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+type WsClient = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+const FRAME_WAIT: Duration = Duration::from_secs(5);
+
+// --- Minimal WebSocket client (the size test wants to see the live frame
+// --- carry the field; mirrors the helpers in ws_flow.rs).
+
+async fn connect_ws(ts: &TestServer, token: &str) -> WsClient {
+    let mut request = ts
+        .ws_url
+        .as_str()
+        .into_client_request()
+        .expect("building the ws request");
+    request.headers_mut().insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}")).expect("header value"),
+    );
+    let (mut ws, _response) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("websocket upgrade succeeds");
+    // A pong proves the server-side connection task is registered — later
+    // fan-outs cannot race past a connection that already answered a frame.
+    ws.send(Message::text(json!({"type": "ping"}).to_string()))
+        .await
+        .expect("sending ping");
+    let pong = next_frame_of_type(&mut ws, "pong").await;
+    assert_eq!(pong, json!({"type": "pong"}));
+    ws
+}
+
+async fn next_frame_of_type(ws: &mut WsClient, wanted: &str) -> Value {
+    let deadline = tokio::time::Instant::now() + FRAME_WAIT;
+    loop {
+        let message = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for a {wanted:?} frame"))
+            .expect("socket closed while waiting for a frame")
+            .expect("socket errored while waiting for a frame");
+        if let Message::Text(text) = message {
+            let value: Value = serde_json::from_str(text.as_str()).expect("frames are JSON");
+            if value["type"] == wanted {
+                return value;
+            }
+        }
+    }
+}
 
 /// Family of two; returns `(owner_token, member_token)`.
 async fn family_of_two(ts: &TestServer) -> (String, String) {
@@ -420,4 +476,185 @@ async fn families_mine_reports_the_board_cursor() {
         .await
         .expect("JSON");
     assert_eq!(after["max_board_seq"].as_i64(), Some(seq));
+}
+
+/// A note created without a size is `medium` — the size every note had
+/// before the field existed — and a chosen size survives every path a
+/// client reads notes through: the creation reply, the full board, the
+/// change feed and the live frame.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_note_without_a_size_is_medium_and_a_chosen_size_is_kept_everywhere() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let mut member_ws = connect_ws(&server, &member).await;
+
+    let plain = add_note(&server, &owner, "Milk").await;
+    assert_eq!(plain["note"]["size"], "medium", "got {plain}");
+    let plain_frame = next_frame_of_type(&mut member_ws, "board_note").await;
+    assert_eq!(plain_frame["note"]["size"], "medium", "got {plain_frame}");
+
+    let response = server
+        .post(
+            &owner,
+            "/families/mine/board/notes",
+            json!({"text": "DENTIST 9AM", "color": "pink", "size": "large", "x": 0.5, "y": 0.5}),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    let large: Value = response.json().await.expect("JSON");
+    assert_eq!(large["note"]["size"], "large", "got {large}");
+    let large_id = large["note"]["id"].as_i64().expect("id");
+    let large_frame = next_frame_of_type(&mut member_ws, "board_note").await;
+    assert_eq!(large_frame["note"]["id"].as_i64(), Some(large_id));
+    assert_eq!(large_frame["note"]["size"], "large", "got {large_frame}");
+
+    let size_of = |notes: &Value, id: i64| -> Value {
+        notes
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|n| n["id"].as_i64() == Some(id))
+            .unwrap_or_else(|| panic!("note {id} missing from {notes}"))["size"]
+            .clone()
+    };
+    let plain_id = plain["note"]["id"].as_i64().expect("id");
+
+    let board: Value = server
+        .get(&member, "/families/mine/board")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(size_of(&board["notes"], plain_id), "medium");
+    assert_eq!(size_of(&board["notes"], large_id), "large");
+
+    let changes: Value = server
+        .get(&member, "/families/mine/board/changes?after_seq=0")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(size_of(&changes["notes"], plain_id), "medium");
+    assert_eq!(size_of(&changes["notes"], large_id), "large");
+}
+
+/// Size belongs to the author with text and colour: a size anyone could
+/// change is a size anyone could shrink to nothing. Moving stays shared,
+/// and a resize is a mutation like any other — it takes a new seq.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn anyone_may_move_a_note_but_only_the_author_may_resize_it() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let created = add_note(&server, &owner, "Milk").await;
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    let created_seq = created["note"]["board_seq"].as_i64().expect("seq");
+
+    assert_error(
+        server
+            .patch(
+                &member,
+                &format!("/families/mine/board/notes/{note_id}"),
+                json!({"size": "large"}),
+            )
+            .await,
+        403,
+        "not_note_author",
+    )
+    .await;
+
+    // The same member may still move it — position is everyone's.
+    let moved = server
+        .patch(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"x": 0.9, "y": 0.1}),
+        )
+        .await;
+    assert_eq!(moved.status(), 200);
+    let moved: Value = moved.json().await.expect("JSON");
+    assert_eq!(moved["note"]["size"], "medium");
+    let moved_seq = moved["note"]["board_seq"].as_i64().expect("seq");
+    assert!(moved_seq > created_seq);
+
+    let resized = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"size": "small"}),
+        )
+        .await;
+    assert_eq!(resized.status(), 200);
+    let resized: Value = resized.json().await.expect("JSON");
+    assert_eq!(resized["note"]["size"], "small");
+    // Everything else is left as it was: a resize touches only the size.
+    assert_eq!(resized["note"]["text"], "Milk");
+    assert_eq!(resized["note"]["x"].as_f64(), Some(0.9));
+    assert!(
+        resized["note"]["board_seq"].as_i64().expect("seq") > moved_seq,
+        "a resize takes a new board_seq"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn bad_sizes_are_refused() {
+    let server = spawn_server().await;
+    let (owner, _) = family_of_two(&server).await;
+
+    assert_error(
+        server
+            .post(
+                &owner,
+                "/families/mine/board/notes",
+                json!({"text": "Milk", "color": "yellow", "size": "huge", "x": 0.1, "y": 0.1}),
+            )
+            .await,
+        400,
+        "invalid_note_size",
+    )
+    .await;
+
+    let note_id = add_note(&server, &owner, "Milk").await["note"]["id"]
+        .as_i64()
+        .expect("id");
+    assert_error(
+        server
+            .patch(
+                &owner,
+                &format!("/families/mine/board/notes/{note_id}"),
+                json!({"size": "huge"}),
+            )
+            .await,
+        400,
+        "invalid_note_size",
+    )
+    .await;
+}
+
+/// Same rule as re-sending a note's text: the size it already has takes
+/// no sequence value, so a client retrying a resize advances nobody's
+/// cursor.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn re_sending_the_current_size_is_a_no_op() {
+    let server = spawn_server().await;
+    let (owner, _) = family_of_two(&server).await;
+    let created = add_note(&server, &owner, "Milk").await;
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    let seq = created["note"]["board_seq"].as_i64().expect("seq");
+
+    let again: Value = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"size": "medium"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(again["note"]["size"], "medium");
+    assert_eq!(again["note"]["board_seq"].as_i64(), Some(seq));
 }

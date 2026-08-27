@@ -8,7 +8,17 @@
 //  Positions are FRACTIONS of the board, not points, so the wall looks the
 //  same on a phone and an iPad — the view multiplies by its own size on the
 //  way out and divides on the way in, and nothing but that conversion knows
-//  about pixels.
+//  about pixels. The fraction is the note's TOP-LEFT corner, as on the Mac
+//  and Android, and it is drawn CLAMPED inside the board: a stored 0.98
+//  would otherwise hang a note off the right edge, and a large note off
+//  most of the way. Adding a drag to that unclamped origin was worse — a
+//  note at the edge did not move until the finger had travelled the
+//  overhang. So the drawn origin is clamp(stored) + drag, clamped again,
+//  and the fraction reported on release is read back from where it is
+//  DRAWN, so what was dropped is what gets stored.
+//
+//  Size is a name — small, medium, large — chosen by the author with the
+//  text and colour, and drawn at the phone's metrics (NoteSize.swift).
 //
 //  Two authorship rules, and the UI has to make both legible: anyone may
 //  DRAG any note (tidying the wall is shared), but tapping to edit or
@@ -31,6 +41,12 @@ private struct NoteDraft: Identifiable {
     var noteID: Int64?
     var text: String
     var color: String
+    var size: NoteSize
+    /// The raw wire name the entity holds, nil for a new note. Kept apart
+    /// from `size` so an edit that leaves the picker alone sends no size —
+    /// a name this client does not know shows as medium but is not saved
+    /// as medium (NoteSize.patchName).
+    var storedSize: String?
     var x: Double
     var y: Double
     var authorID: Int64
@@ -75,6 +91,8 @@ struct BoardView: View {
                                     noteID: note.noteID,
                                     text: note.text,
                                     color: note.color,
+                                    size: NoteSize(name: note.size),
+                                    storedSize: note.size,
                                     x: note.x,
                                     y: note.y,
                                     authorID: note.authorID)
@@ -98,6 +116,8 @@ struct BoardView: View {
                             noteID: nil,
                             text: "",
                             color: NoteColor.palette.randomElement() ?? "yellow",
+                            size: .medium,
+                            storedSize: nil,
                             x: 0.12 + slot * 0.03,
                             y: 0.10 + slot * 0.06,
                             authorID: currentUserID)
@@ -111,7 +131,9 @@ struct BoardView: View {
                     draft: draft,
                     canEdit: draft.noteID == nil || draft.authorID == currentUserID,
                     authorName: displayName(for: draft.authorID),
-                    onSave: { text, color in save(draft: draft, text: text, color: color) },
+                    onSave: { text, color, size in
+                        save(draft: draft, text: text, color: color, size: size)
+                    },
                     onDelete: draft.noteID.map { id in { delete(id: id) } })
             }
             .task { await coordinator.loadBoard() }
@@ -125,13 +147,16 @@ struct BoardView: View {
             ?? String(localized: "Someone")
     }
 
-    private func save(draft: NoteDraft, text: String, color: String) {
+    private func save(draft: NoteDraft, text: String, color: String, size: NoteSize) {
         editing = nil
         Task {
             if let id = draft.noteID {
-                await coordinator.updateNote(id: id, text: text, color: color)
+                await coordinator.updateNote(
+                    id: id, text: text, color: color,
+                    size: size.patchName(replacing: draft.storedSize))
             } else {
-                _ = await coordinator.addNote(text: text, color: color, x: draft.x, y: draft.y)
+                _ = await coordinator.addNote(
+                    text: text, color: color, size: size.name, x: draft.x, y: draft.y)
             }
         }
     }
@@ -155,40 +180,60 @@ private struct StickyNote: View {
 
     @State private var drag: CGSize = .zero
 
-    private static let side: CGFloat = 132
+    /// A top-left corner held inside the board, so no part of the note is
+    /// off-screen whatever its size.
+    private static func clamp(_ point: CGPoint, side: CGFloat, board: CGSize) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, 0), max(board.width - side, 0)),
+            y: min(max(point.y, 0), max(board.height - side, 0)))
+    }
 
     var body: some View {
+        let size = NoteSize(name: note.size)
+        let side = size.side
+        // Where it is drawn RIGHT NOW: the stored corner, held inside the
+        // board, plus whatever the drag has moved it, held inside again.
+        // Clamping only on release would let a note be dragged off the
+        // edge and then snap back.
+        let origin = Self.clamp(
+            CGPoint(x: note.x * boardSize.width, y: note.y * boardSize.height),
+            side: side, board: boardSize)
+        let drawn = Self.clamp(
+            CGPoint(x: origin.x + drag.width, y: origin.y + drag.height),
+            side: side, board: boardSize)
+
         VStack(alignment: .leading, spacing: 6) {
             Text(note.text)
-                .font(.callout)
+                .font(size.font)
                 .foregroundStyle(.black.opacity(0.85))
-                .lineLimit(5)
+                .lineLimit(size.lineLimit)
             Spacer(minLength: 0)
             Text(authorName)
                 .font(.caption2)
                 .foregroundStyle(.black.opacity(0.5))
         }
         .padding(10)
-        .frame(width: Self.side, height: Self.side, alignment: .topLeading)
+        .frame(width: side, height: side, alignment: .topLeading)
         .background(NoteColor.swiftUI(note.color), in: RoundedRectangle(cornerRadius: 10))
         .shadow(color: .black.opacity(drag == .zero ? 0.12 : 0.25), radius: drag == .zero ? 3 : 10, y: 2)
         .rotationEffect(.degrees(Self.tilt(for: note.noteID)))
         .scaleEffect(drag == .zero ? 1 : 1.04)
-        .position(
-            x: note.x * boardSize.width + Self.side / 2 + drag.width,
-            y: note.y * boardSize.height + Self.side / 2 + drag.height)
+        // `position` places the CENTRE; the stored fraction is the corner.
+        .position(x: drawn.x + side / 2, y: drawn.y + side / 2)
         .animation(.spring(duration: 0.2), value: drag == .zero)
         .gesture(
             DragGesture()
                 .onChanged { drag = $0.translation }
-                .onEnded { value in
-                    // Report where it landed as a fraction, clamped so a
-                    // note dropped past the edge sticks to the edge —
-                    // matching what the server would do anyway.
+                .onEnded { _ in
+                    // Read back from where it is DRAWN, clamped so a note
+                    // dropped past the edge sticks to the edge — matching
+                    // what the server would do anyway, and what the Mac
+                    // does. Deriving the fraction from the raw translation
+                    // would store a position the note was never at.
                     let width = max(boardSize.width, 1)
                     let height = max(boardSize.height, 1)
-                    let x = min(max((note.x * width + value.translation.width) / width, 0), 1)
-                    let y = min(max((note.y * height + value.translation.height) / height, 0), 1)
+                    let x = min(max(drawn.x / width, 0), 1)
+                    let y = min(max(drawn.y / height, 0), 1)
                     drag = .zero
                     onMoved(CGPoint(x: x, y: y))
                 })
@@ -215,19 +260,20 @@ private struct NoteEditor: View {
     let draft: NoteDraft
     let canEdit: Bool
     let authorName: String
-    let onSave: (String, String) -> Void
+    let onSave: (String, String, NoteSize) -> Void
     let onDelete: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
     @State private var color: String
+    @State private var size: NoteSize
     @State private var confirmDelete = false
 
     init(
         draft: NoteDraft,
         canEdit: Bool,
         authorName: String,
-        onSave: @escaping (String, String) -> Void,
+        onSave: @escaping (String, String, NoteSize) -> Void,
         onDelete: (() -> Void)?
     ) {
         self.draft = draft
@@ -237,6 +283,7 @@ private struct NoteEditor: View {
         self.onDelete = onDelete
         _text = State(initialValue: draft.text)
         _color = State(initialValue: draft.color)
+        _size = State(initialValue: draft.size)
     }
 
     var body: some View {
@@ -274,6 +321,18 @@ private struct NoteEditor: View {
                             }
                         }
                     }
+                    // Size sits with text and colour: it is the author's
+                    // call how loudly a note speaks, so a reader of someone
+                    // else's note never sees this section.
+                    Section("Size") {
+                        Picker("Size", selection: $size) {
+                            ForEach(NoteSize.allCases) { size in
+                                Text(size.title).tag(size)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
                 }
                 if let onDelete, canEdit {
                     Section {
@@ -296,7 +355,7 @@ private struct NoteEditor: View {
                 }
                 if canEdit {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") { onSave(text, color) }
+                        Button("Save") { onSave(text, color, size) }
                             .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }

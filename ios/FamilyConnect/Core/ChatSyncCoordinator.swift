@@ -648,10 +648,14 @@ final class ChatSyncCoordinator {
             // beats drawing a blank sticker.
             return false
         }
+        // A server from before sizes never sends one; "medium" is the size
+        // every note had then, so the wall does not change under it.
+        let size = dto.size ?? NoteSize.medium.name
         if let existing {
             existing.authorID = authorID
             existing.text = text
             existing.color = color
+            existing.size = size
             existing.x = x
             existing.y = y
             existing.updatedAt = dto.updatedAt ?? existing.updatedAt
@@ -662,6 +666,7 @@ final class ChatSyncCoordinator {
                 authorID: authorID,
                 text: text,
                 color: color,
+                size: size,
                 x: x,
                 y: y,
                 createdAt: dto.createdAt ?? Date(),
@@ -705,8 +710,9 @@ final class ChatSyncCoordinator {
         }
     }
 
-    func addNote(text: String, color: String, x: Double, y: Double) async -> Bool {
-        guard let dto = try? await api.createNote(text: text, color: color, x: x, y: y) else {
+    func addNote(text: String, color: String, size: String, x: Double, y: Double) async -> Bool {
+        guard let dto = try? await api.createNote(text: text, color: color, size: size, x: x, y: y)
+        else {
             return false
         }
         applyNote(dto)
@@ -716,16 +722,21 @@ final class ChatSyncCoordinator {
     }
 
     /// Move (anyone) or rewrite (the author) — which fields are sent is
-    /// what the server checks permission against.
+    /// what the server checks permission against. Text, colour and size
+    /// are the author's; a MOVE must therefore send x/y and nothing else,
+    /// or a non-author's drag comes back `not_note_author`.
     @discardableResult
     func updateNote(
         id: Int64,
         text: String? = nil,
         color: String? = nil,
+        size: String? = nil,
         x: Double? = nil,
         y: Double? = nil
     ) async -> Bool {
-        guard let dto = try? await api.patchNote(id: id, text: text, color: color, x: x, y: y) else {
+        guard let dto = try? await api.patchNote(
+            id: id, text: text, color: color, size: size, x: x, y: y)
+        else {
             return false
         }
         applyNote(dto)

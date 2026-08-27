@@ -282,6 +282,15 @@ data class NoteEntity(
     val text: String,
     /** One of the protocol's six names; kept as text so an unknown one still renders. */
     val color: String,
+    /**
+     * One of the protocol's three step names, kept as text for the same
+     * reason as [color]: an unknown one still renders, as medium. A real
+     * default rather than nullable, because absent-on-the-wire IS
+     * "medium" — the size every note had before the field existed — and
+     * the @ColumnInfo default byte-matches MIGRATION_17_18 so an
+     * upgraded schema validates against a fresh one.
+     */
+    @ColumnInfo(defaultValue = "medium") val size: String = "medium",
     /** Fractions of the board, 0..1 from the top-left. */
     val x: Double,
     val y: Double,

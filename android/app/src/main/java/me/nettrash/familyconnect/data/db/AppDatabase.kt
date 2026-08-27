@@ -2,7 +2,7 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 16.
+ * Room database, version 18.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 17,
+    version = 18,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -267,6 +267,19 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_16_17: Migration = object : Migration(16, 17) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE messages ADD COLUMN callVideo INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v18: note sizes (docs/protocol.md, "Board"). NOT NULL DEFAULT
+         * 'medium', because every existing note IS medium — that is the
+         * size a note had before it could have one — and the default
+         * byte-matches NoteEntity.size's @ColumnInfo so a migrated schema
+         * and a fresh install validate identically.
+         */
+        val MIGRATION_17_18: Migration = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN size TEXT NOT NULL DEFAULT 'medium'")
             }
         }
 

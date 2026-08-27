@@ -513,6 +513,15 @@ SR = {
 "Couldn't remove the photo.": "Фотографија није уклоњена.",
 "Couldn't upload the photo.": "Фотографија није отпремљена.",
 "The server could not be reached.": "Сервер није доступан.",
+# --- board note sizes (docs/protocol.md, "Board"; iOS + macOS + Android share ---
+# --- these four words, so Android finds them by the English match) ---
+# The three step names are adjectives and agree with "белешка" (feminine),
+# the same way the colour names do ("Жута", "Плава").
+"Size": "Величина",
+"Small": "Мала",
+"Medium": "Средња",
+"Large": "Велика",
+# --- end board note sizes ---
 }
 
 # The members count is a plural, and Serbian's CLDR categories are one/few/other

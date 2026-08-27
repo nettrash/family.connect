@@ -303,6 +303,10 @@
     <string name="s_color_green">绿色</string>
     <string name="s_color_orange">橙色</string>
     <string name="s_color_purple">紫色</string>
+    <string name="s_size">大小</string>
+    <string name="s_small">小</string>
+    <string name="s_medium">中</string>
+    <string name="s_large">大</string>
     <string name="s_declined">已拒绝</string>
     <string name="s_reset">重置</string>
     <string name="s_create_account">创建账户</string>

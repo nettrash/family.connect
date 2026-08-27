@@ -70,8 +70,8 @@ class BoardViewModel @Inject constructor(
         }
     }
 
-    fun addNote(text: String, color: String, x: Double, y: Double) {
-        viewModelScope.launch { boardRepository.addNote(text, color, x, y) }
+    fun addNote(text: String, color: String, size: String, x: Double, y: Double) {
+        viewModelScope.launch { boardRepository.addNote(text, color, size, x, y) }
     }
 
     /** Anyone in the family may move any note. */
@@ -79,9 +79,13 @@ class BoardViewModel @Inject constructor(
         viewModelScope.launch { boardRepository.updateNote(id, x = x, y = y) }
     }
 
-    /** Author only, enforced server-side; the UI hides it for everyone else. */
-    fun editNote(id: Long, text: String, color: String) {
-        viewModelScope.launch { boardRepository.updateNote(id, text = text, color = color) }
+    /**
+     * Author only, enforced server-side; the UI hides it for everyone else.
+     * Size is an author's field like text and color — a move never carries
+     * it (docs/protocol.md, "Board").
+     */
+    fun editNote(id: Long, text: String, color: String, size: String) {
+        viewModelScope.launch { boardRepository.updateNote(id, text = text, color = color, size = size) }
     }
 
     fun deleteNote(id: Long) {

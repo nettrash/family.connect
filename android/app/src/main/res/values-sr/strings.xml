@@ -287,6 +287,10 @@
     <string name="s_color_green">Зелена</string>
     <string name="s_color_orange">Наранџаста</string>
     <string name="s_color_purple">Љубичаста</string>
+    <string name="s_size">Величина</string>
+    <string name="s_small">Мала</string>
+    <string name="s_medium">Средња</string>
+    <string name="s_large">Велика</string>
     <string name="s_declined">Одбијено</string>
     <string name="s_reset">Ресетуј</string>
     <string name="s_create_account">Направи налог</string>

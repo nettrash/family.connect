@@ -306,6 +306,10 @@
     <string name="s_color_green">Grün</string>
     <string name="s_color_orange">Orange</string>
     <string name="s_color_purple">Lila</string>
+    <string name="s_size">Größe</string>
+    <string name="s_small">Klein</string>
+    <string name="s_medium">Mittel</string>
+    <string name="s_large">Groß</string>
     <string name="s_declined">Abgelehnt</string>
     <string name="s_reset">Zurücksetzen</string>
     <string name="s_create_account">Konto erstellen</string>

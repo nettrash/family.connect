@@ -714,6 +714,13 @@ data class NoteDto(
     @SerialName("author_id") val authorId: Long? = null,
     val text: String? = null,
     val color: String? = null,
+    /**
+     * "small" | "medium" | "large" — a STEP each client draws at its own
+     * idiom, not a measurement (docs/protocol.md, "Board"). Null from a
+     * server that predates the field, which means "medium": the size
+     * every note had before there was one.
+     */
+    val size: String? = null,
     val x: Double? = null,
     val y: Double? = null,
     @SerialName("created_at") val createdAt: String? = null,
@@ -740,20 +747,22 @@ data class NoteResponse(val note: NoteDto)
 data class CreateNoteRequest(
     val text: String,
     val color: String,
+    val size: String,
     val x: Double,
     val y: Double,
 )
 
 /**
  * Every field optional: a MOVE sends only x/y (any member may), an edit
- * sends text and/or color (author only). Which fields are present is what
- * decides the permission the server applies — so nulls must be OMITTED,
- * which the house Json does via encodeDefaults=false.
+ * sends text, color and/or size (author only). Which fields are present is
+ * what decides the permission the server applies — so nulls must be
+ * OMITTED, which the house Json does via encodeDefaults=false.
  */
 @Serializable
 data class PatchNoteRequest(
     val text: String? = null,
     val color: String? = null,
+    val size: String? = null,
     val x: Double? = null,
     val y: Double? = null,
 )

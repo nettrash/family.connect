@@ -931,11 +931,16 @@ nonisolated struct MemberResponse: Codable, Equatable, Sendable {
 /// cannot say anything (docs/protocol.md, "Board"). Every content field is
 /// therefore optional — a tombstone carries only `id`, `deleted` and
 /// `boardSeq`.
+///
+/// `size` is optional for a second reason: a server from before the field
+/// existed never sends it, and such a note is `medium` — the one size every
+/// note had then — rather than a decode failure.
 nonisolated struct NoteDTO: Codable, Equatable, Sendable {
     let id: Int64
     let authorID: Int64?
     let text: String?
     let color: String?
+    let size: String?
     let x: Double?
     let y: Double?
     let createdAt: Date?
@@ -948,6 +953,7 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
         case authorID = "author_id"
         case text
         case color
+        case size
         case x
         case y
         case createdAt = "created_at"

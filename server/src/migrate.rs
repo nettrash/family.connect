@@ -153,6 +153,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "call_video",
         sql: include_str!("../migrations/0026_call_video.sql"),
     },
+    Migration {
+        version: 27,
+        name: "note_size",
+        sql: include_str!("../migrations/0027_note_size.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

@@ -7,7 +7,17 @@
 //  Positions are FRACTIONS of the board (0–1), not pixels — the same
 //  values the phone stores, so a note dragged on a Mac lands in the same
 //  relative place on everyone's screen whatever the window size
-//  (docs/protocol.md, "Board").
+//  (docs/protocol.md, "Board"). The fraction is the note's TOP-LEFT
+//  corner, as the protocol says and as the phones draw it; an earlier
+//  version of this file treated it as the centre, which put the same note
+//  half a sticker apart on a Mac and a phone. The corner is drawn CLAMPED
+//  inside the board, so a stored 0.98 hugs the edge rather than hanging
+//  off it, and the fraction read back on release is where the note was
+//  drawn, not where the arithmetic would have put it.
+//
+//  Size is a name — small, medium, large — chosen by the author with the
+//  text and colour, and drawn at the Mac's metrics (NoteSize.swift): a
+//  landscape card, bigger than the phone's square sticker at every step.
 //
 //  Dragging reports the fraction on RELEASE, not every frame: a drag is
 //  one intent, and a note that fanned out sixty times a second would be a
@@ -35,6 +45,7 @@ struct MacBoardView: View {
     @State private var composing = false
     @State private var draftText = ""
     @State private var draftColor = NoteColor.palette.first ?? "yellow"
+    @State private var draftSize = NoteSize.medium
 
     var body: some View {
         GeometryReader { geometry in
@@ -47,7 +58,10 @@ struct MacBoardView: View {
                         isMine: note.authorID == coordinator.currentUserID,
                         authorName: displayName(for: note.authorID),
                         onMove: { x, y in
-                            Task { await coordinator.updateNote(id: note.noteID, x: x, y: y) }
+                            _ = await coordinator.updateNote(id: note.noteID, x: x, y: y)
+                        },
+                        onResize: { size in
+                            Task { await coordinator.updateNote(id: note.noteID, size: size.name) }
                         },
                         onEdit: { editing = note },
                         onDelete: {
@@ -70,6 +84,7 @@ struct MacBoardView: View {
                 Button {
                     draftText = ""
                     draftColor = NoteColor.palette.randomElement() ?? "yellow"
+                    draftSize = .medium
                     composing = true
                 } label: {
                     Label("Add Note", systemImage: "plus")
@@ -80,13 +95,14 @@ struct MacBoardView: View {
         }
         .task { await coordinator.loadBoard() }
         .sheet(isPresented: $composing) {
-            MacNoteEditor(text: $draftText, color: $draftColor, title: "New Note") {
+            MacNoteEditor(text: $draftText, color: $draftColor, size: $draftSize, title: "New Note") {
                 Task {
                     // Dropped near the middle with a little scatter, so a
                     // run of new notes does not stack into one pile.
                     _ = await coordinator.addNote(
                         text: draftText,
                         color: draftColor,
+                        size: draftSize.name,
                         x: Double.random(in: 0.25...0.65),
                         y: Double.random(in: 0.25...0.65))
                 }
@@ -110,7 +126,9 @@ private struct MacNoteView: View {
     let board: CGSize
     let isMine: Bool
     let authorName: String
-    let onMove: (Double, Double) -> Void
+    /// Awaited, so the sticker knows when the move is over (see the drag).
+    let onMove: (Double, Double) async -> Void
+    let onResize: (NoteSize) -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -119,47 +137,46 @@ private struct MacNoteView: View {
 
     private var isDragging: Bool { drag != .zero && !committing }
 
-    private static let size = CGSize(width: 150, height: 110)
-
     /// Where a note's fractional position puts its top-left corner, held
-    /// inside the board so no part of it is off-screen.
-    private static func origin(x: Double, y: Double, board: CGSize) -> CGPoint {
-        clamp(CGPoint(x: x * board.width - size.width / 2,
-                      y: y * board.height - size.height / 2),
-              board: board)
+    /// inside the board so no part of it is off-screen — which depends on
+    /// the note's size, a large one running out of room sooner.
+    private static func origin(x: Double, y: Double, size: CGSize, board: CGSize) -> CGPoint {
+        clamp(CGPoint(x: x * board.width, y: y * board.height), size: size, board: board)
     }
 
-    private static func clamp(_ point: CGPoint, board: CGSize) -> CGPoint {
+    private static func clamp(_ point: CGPoint, size: CGSize, board: CGSize) -> CGPoint {
         CGPoint(
             x: min(max(point.x, 0), max(board.width - size.width, 0)),
             y: min(max(point.y, 0), max(board.height - size.height, 0)))
     }
 
     var body: some View {
+        let noteSize = NoteSize(name: note.size)
+        let size = noteSize.frame
         // Where it is drawn RIGHT NOW: its stored position plus whatever
         // the drag has moved it, held inside the board either way. Clamping
         // only on release would let a note be dragged off the edge and then
         // snap back.
+        let origin = Self.origin(x: note.x, y: note.y, size: size, board: board)
         let position = Self.clamp(
-            CGPoint(x: Self.origin(x: note.x, y: note.y, board: board).x + drag.width,
-                    y: Self.origin(x: note.x, y: note.y, board: board).y + drag.height),
-            board: board)
+            CGPoint(x: origin.x + drag.width, y: origin.y + drag.height),
+            size: size, board: board)
 
         VStack(alignment: .leading, spacing: 4) {
             Text(note.text)
-                .font(.callout)
+                .font(noteSize.font)
                 // Forced ink, matching BoardView: the pastels are fixed
                 // light colors in both appearances, so .primary’s dark-mode
                 // white was unreadable on them.
                 .foregroundStyle(.black.opacity(0.85))
-                .lineLimit(4)
+                .lineLimit(noteSize.lineLimit)
             Spacer(minLength: 0)
             Text(authorName)
                 .font(.caption2)
                 .foregroundStyle(.black.opacity(0.5))
         }
         .padding(10)
-        .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
         .background(NoteColor.swiftUI(note.color), in: RoundedRectangle(cornerRadius: 8))
         // Lifted off the wall while it is in hand — the same cue the phone
         // gives, and the only feedback a cursor drag has.
@@ -178,14 +195,27 @@ private struct MacNoteView: View {
                     // Read back from where it is DRAWN, so what was dropped
                     // is what gets stored — deriving the fraction from the
                     // raw translation would save a position the note was
-                    // never actually at.
-                    let x = ((position.x + Self.size.width / 2) / board.width).clampedToBoard()
-                    let y = ((position.y + Self.size.height / 2) / board.height).clampedToBoard()
+                    // never actually at. The corner, not the centre: that
+                    // is what the phones store, and what protocol.md says.
+                    let x = (position.x / max(board.width, 1)).clampedToBoard()
+                    let y = (position.y / max(board.height, 1)).clampedToBoard()
                     committing = true
-                    onMove(x, y)
                     // The local offset is NOT zeroed here: it is released
                     // when the authoritative position lands, or the note
-                    // jumps back for a frame.
+                    // jumps back for a frame. It is released when the move
+                    // RETURNS as well: a drop that reproduces the stored
+                    // fraction (a note on the edge pushed further out) is a
+                    // server no-op, and a failed PATCH changes nothing
+                    // either — neither moves `note.x`, so without this the
+                    // note would stay "committing" and the next drag would
+                    // show no lift. On success the coordinator has applied
+                    // the reply before returning, so this runs after the
+                    // position landed and changes nothing.
+                    Task {
+                        await onMove(x, y)
+                        drag = .zero
+                        committing = false
+                    }
                 })
         .onChange(of: note.x) { _, _ in drag = .zero; committing = false }
         .onChange(of: note.y) { _, _ in drag = .zero; committing = false }
@@ -197,6 +227,17 @@ private struct MacNoteView: View {
         .contextMenu {
             if isMine {
                 Button("Edit…", action: onEdit)
+                // A Toggle in a menu is the native checkmarked item, so the
+                // current size reads as a state rather than an icon. Each
+                // choice PATCHes the size alone — the author's field, so
+                // the menu is the author's too.
+                Menu("Size") {
+                    ForEach(NoteSize.allCases) { size in
+                        Toggle(size.title, isOn: Binding(
+                            get: { noteSize == size },
+                            set: { on in if on { onResize(size) } }))
+                    }
+                }
                 Button("Delete", role: .destructive, action: onDelete)
             } else {
                 // Anyone may MOVE a note; only its author may change it.
@@ -216,6 +257,7 @@ private extension Double {
 private struct MacNoteEditor: View {
     @Binding var text: String
     @Binding var color: String
+    @Binding var size: NoteSize
     /// A key, not a String: `Text(title)` then goes through the catalog
     /// ("New Note" / "Edit Note") instead of shipping English verbatim.
     let title: LocalizedStringKey
@@ -239,6 +281,12 @@ private struct MacNoteEditor: View {
                         .onTapGesture { color = name }
                 }
             }
+            Picker("Size", selection: $size) {
+                ForEach(NoteSize.allCases) { size in
+                    Text(size.title).tag(size)
+                }
+            }
+            .pickerStyle(.segmented)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -263,14 +311,22 @@ private struct MacNoteEditorForExisting: View {
     @Environment(\.dismiss) private var dismiss
     @State private var text: String = ""
     @State private var color: String = "yellow"
+    @State private var size: NoteSize = .medium
 
     var body: some View {
-        MacNoteEditor(text: $text, color: $color, title: "Edit Note") {
-            Task { await coordinator.updateNote(id: note.noteID, text: text, color: color) }
+        MacNoteEditor(text: $text, color: $color, size: $size, title: "Edit Note") {
+            Task {
+                // Size only when the author changed it, so a name this
+                // Mac does not know survives a text edit (NoteSize).
+                await coordinator.updateNote(
+                    id: note.noteID, text: text, color: color,
+                    size: size.patchName(replacing: note.size))
+            }
         }
         .onAppear {
             text = note.text
             color = note.color
+            size = NoteSize(name: note.size)
         }
     }
 }

@@ -609,16 +609,22 @@ actor APIClient {
     private struct CreateNoteRequest: Encodable {
         let text: String
         let color: String
+        let size: String
         let x: Double
         let y: Double
     }
 
     /// Every field optional: a MOVE sends only x/y (any member may), an
-    /// edit sends text and/or color (author only). Which fields are present
-    /// is what decides the permission the server applies.
+    /// edit sends text, color and/or size (author only). Which fields are
+    /// present is what decides the permission the server applies — so a
+    /// nil here must be ABSENT on the wire, not null. The synthesised
+    /// encoder does that (`encodeIfPresent` per optional); a hand-written
+    /// one that encoded nulls would turn every move into an author-only
+    /// edit and get a 403 for anyone else.
     private struct PatchNoteRequest: Encodable {
         let text: String?
         let color: String?
+        let size: String?
         let x: Double?
         let y: Double?
     }
@@ -643,10 +649,12 @@ actor APIClient {
         return response.notes
     }
 
-    func createNote(text: String, color: String, x: Double, y: Double) async throws -> NoteDTO {
+    func createNote(
+        text: String, color: String, size: String, x: Double, y: Double
+    ) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
             "POST", "/families/mine/board/notes",
-            body: CreateNoteRequest(text: text, color: color, x: x, y: y))
+            body: CreateNoteRequest(text: text, color: color, size: size, x: x, y: y))
         return response.note
     }
 
@@ -654,12 +662,13 @@ actor APIClient {
         id: Int64,
         text: String? = nil,
         color: String? = nil,
+        size: String? = nil,
         x: Double? = nil,
         y: Double? = nil
     ) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
             "PATCH", "/families/mine/board/notes/\(id)",
-            body: PatchNoteRequest(text: text, color: color, x: x, y: y))
+            body: PatchNoteRequest(text: text, color: color, size: size, x: x, y: y))
         return response.note
     }
 

@@ -26,13 +26,24 @@ interface BoardApi {
     /** The board catch-up, tombstones INCLUDED. */
     suspend fun getBoardChanges(afterSeq: Long, limit: Int): ApiResult<BoardChangesResponse>
 
-    suspend fun createNote(text: String, color: String, x: Double, y: Double): ApiResult<NoteResponse>
+    suspend fun createNote(
+        text: String,
+        color: String,
+        size: String,
+        x: Double,
+        y: Double,
+    ): ApiResult<NoteResponse>
 
-    /** Null fields are omitted, which is what decides the permission applied. */
+    /**
+     * Null fields are omitted, which is what decides the permission
+     * applied: `size` rides with text and color as an author's field, so
+     * a move must leave it null.
+     */
     suspend fun patchNote(
         id: Long,
         text: String?,
         color: String?,
+        size: String?,
         x: Double?,
         y: Double?,
     ): ApiResult<NoteResponse>
@@ -57,19 +68,21 @@ class DefaultBoardApi @Inject constructor(
     override suspend fun createNote(
         text: String,
         color: String,
+        size: String,
         x: Double,
         y: Double,
     ): ApiResult<NoteResponse> =
-        client.post("/families/mine/board/notes", CreateNoteRequest(text, color, x, y))
+        client.post("/families/mine/board/notes", CreateNoteRequest(text, color, size, x, y))
 
     override suspend fun patchNote(
         id: Long,
         text: String?,
         color: String?,
+        size: String?,
         x: Double?,
         y: Double?,
     ): ApiResult<NoteResponse> =
-        client.patch("/families/mine/board/notes/$id", PatchNoteRequest(text, color, x, y))
+        client.patch("/families/mine/board/notes/$id", PatchNoteRequest(text, color, size, x, y))
 
     override suspend fun deleteNote(id: Long): ApiResult<Unit> =
         client.delete("/families/mine/board/notes/$id")

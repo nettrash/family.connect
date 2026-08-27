@@ -11,6 +11,10 @@
 //  actually remove the row: it is the only signal a note is gone, and a
 //  client that ignores it shows a deleted note forever.
 //
+//  Size rides the same guard as everything else, with one extra rule: a
+//  DTO with no size at all (an older server) is medium, not a dropped
+//  note — the field arrived after the board did.
+//
 
 import Foundation
 import SwiftData
@@ -58,22 +62,24 @@ struct BoardSyncTests {
             context: container.mainContext, host: host)
     }
 
+    /// `size` nil is what an older server sends — no field at all.
     private func note(
         id: Int64,
         text: String = "Milk",
         color: String = "yellow",
+        size: String? = "medium",
         x: Double = 0.2,
         y: Double = 0.3,
         boardSeq: Int64
     ) -> NoteDTO {
         NoteDTO(
-            id: id, authorID: 7, text: text, color: color, x: x, y: y,
+            id: id, authorID: 7, text: text, color: color, size: size, x: x, y: y,
             createdAt: Self.stamp, updatedAt: Self.stamp, boardSeq: boardSeq, deleted: nil)
     }
 
     private func tombstone(id: Int64, boardSeq: Int64) -> NoteDTO {
         NoteDTO(
-            id: id, authorID: nil, text: nil, color: nil, x: nil, y: nil,
+            id: id, authorID: nil, text: nil, color: nil, size: nil, x: nil, y: nil,
             createdAt: nil, updatedAt: nil, boardSeq: boardSeq, deleted: true)
     }
 
@@ -164,9 +170,59 @@ struct BoardSyncTests {
 
         harness.coordinator.applyNote(
             NoteDTO(
-                id: 1, authorID: nil, text: nil, color: nil, x: nil, y: nil,
+                id: 1, authorID: nil, text: nil, color: nil, size: nil, x: nil, y: nil,
                 createdAt: nil, updatedAt: nil, boardSeq: 3, deleted: nil))
 
         #expect(harness.notes().isEmpty)
+    }
+
+    @Test("a note applies with its size")
+    func sizeIsStored() throws {
+        let harness = try makeHarness(host: "board-size.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.applyNote(note(id: 1, size: "large", boardSeq: 10))
+
+        #expect(harness.note(1)?.size == "large")
+    }
+
+    /// An older server has no size field; the note is medium — the size
+    /// every note had before the field existed — not a dropped note.
+    @Test("a note without a size is medium")
+    func missingSizeIsMedium() throws {
+        let harness = try makeHarness(host: "board-nosize.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.applyNote(note(id: 1, size: nil, boardSeq: 10))
+
+        #expect(harness.notes().count == 1)
+        #expect(harness.note(1)?.size == "medium")
+    }
+
+    @Test("a newer seq changes the size in place")
+    func newerSeqResizes() throws {
+        let harness = try makeHarness(host: "board-resize.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.applyNote(note(id: 1, size: "large", boardSeq: 10))
+        harness.coordinator.applyNote(note(id: 1, size: "small", boardSeq: 11))
+
+        #expect(harness.notes().count == 1)
+        #expect(harness.note(1)?.size == "small")
+        #expect(harness.note(1)?.boardSeq == 11)
+    }
+
+    /// Resizing is a mutation like a move: the same guard keeps a late
+    /// frame from shrinking a note the author has since made large.
+    @Test("a stale seq does not change the size")
+    func staleSeqKeepsSize() throws {
+        let harness = try makeHarness(host: "board-stalesize.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.applyNote(note(id: 1, size: "large", boardSeq: 20))
+        harness.coordinator.applyNote(note(id: 1, size: "small", boardSeq: 12))
+
+        #expect(harness.note(1)?.size == "large")
+        #expect(harness.note(1)?.boardSeq == 20)
     }
 }
