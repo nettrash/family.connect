@@ -579,6 +579,6 @@ final class AppSession {
         if case APIError.transport(let urlError) = error {
             return urlError.localizedDescription
         }
-        return "The server could not be reached."
+        return String(localized: "The server could not be reached.")
     }
 }

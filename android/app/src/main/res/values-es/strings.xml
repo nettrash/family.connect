@@ -309,4 +309,31 @@
     <string name="s_color_green">Verde</string>
     <string name="s_color_orange">Naranja</string>
     <string name="s_color_purple">Morado</string>
+    <string name="s_declined">Rechazada</string>
+    <string name="s_reset">Restablecer</string>
+    <string name="s_create_account">Crear cuenta</string>
+    <string name="s_show_password">Mostrar contraseña</string>
+    <string name="s_hide_password">Ocultar contraseña</string>
+    <string name="s_your_request_is_with_the_family_owner">Tu solicitud está con el propietario de la familia.</string>
+    <string name="s_your_request_to_join_is_with_the_family_owner">Tu solicitud para unirte a «%1$s» está con el propietario de la familia.</string>
+    <string name="s_replying_to">Respondiendo a %1$s</string>
+    <string name="s_replying_to_excerpt">Respondiendo a %1$s: %2$s</string>
+    <string name="s_replying_to_excerpt_with_parent">Respondiendo a %1$s: %2$s, que a su vez respondía a %3$s</string>
+    <string name="s_remove_member_q">¿Quitar a %1$s?</string>
+    <string name="s_approve_member">Aprobar a %1$s</string>
+    <string name="s_reject_member">Rechazar a %1$s</string>
+    <string name="s_remove_member">Quitar a %1$s</string>
+    <string name="s_approved_member">Aprobado: %1$s</string>
+    <string name="s_rejected_member">Rechazado: %1$s</string>
+    <string name="s_removed_member">Eliminado: %1$s</string>
+    <string name="s_reset_password_of">Restablecer la contraseña de %1$s</string>
+    <string name="s_member_signed_out_explanation">Se cerrará la sesión de %1$s en todos sus dispositivos y necesitará esta contraseña para volver a entrar. Dísela en persona: el servidor no puede enviarla por correo.</string>
+    <string name="s_join_open_caption">Cualquiera con el código de invitación entra al instante.</string>
+    <string name="s_join_approval_caption">Quien entre con el código espera tu aprobación.</string>
+    <string name="s_those_two_do_not_match">No coinciden.</string>
+    <plurals name="s_use_at_least_characters">
+        <item quantity="one">Usa al menos %1$d carácter.</item>
+        <item quantity="many">Usa al menos %1$d caracteres.</item>
+        <item quantity="other">Usa al menos %1$d caracteres.</item>
+    </plurals>
 </resources>

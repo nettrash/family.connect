@@ -84,6 +84,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.FlowRow
@@ -1581,7 +1582,7 @@ private fun ReplyBanner(
         Spacer(Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "Replying to $authorName",
+                text = stringResource(R.string.s_replying_to, authorName),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
             )
@@ -2282,6 +2283,13 @@ private fun QuoteBlock(
     // colour there and the theme accent on theirs — the same rule the
     // link colour follows.
     val accent = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
+    // Resolved here, not inside `semantics` — that lambda is not
+    // composable, and the sentence is localised like the visible one.
+    val quoteDescription = if (parentLine == null) {
+        stringResource(R.string.s_replying_to_excerpt, authorName, excerpt)
+    } else {
+        stringResource(R.string.s_replying_to_excerpt_with_parent, authorName, excerpt, parentLine)
+    }
     Row(
         modifier = Modifier
             .clip(RoundedRectangle6)
@@ -2298,11 +2306,7 @@ private fun QuoteBlock(
             )
             .padding(end = 6.dp)
             .semantics {
-                contentDescription = if (parentLine == null) {
-                    "Replying to $authorName: $excerpt"
-                } else {
-                    "Replying to $authorName: $excerpt, which replied to $parentLine"
-                }
+                contentDescription = quoteDescription
                 role = Role.Button
             },
         verticalAlignment = Alignment.CenterVertically,
@@ -3097,10 +3101,17 @@ private fun BubbleContent(
     // Everything that is CONTENT shares one left edge, whichever side the
     // balloon is on — the quote, the attachment, the body and the link
     // card — with ONE deliberate exception the product owner reversed:
-    // in MY OWN replies the BODY text is right-aligned again (the block
-    // sits at End and wrapped lines take TextAlign.End), while the QUOTE
-    // above it keeps the left edge, so its accent bar still points at
-    // the first character of the excerpt. Everything else stays
+    // in MY OWN replies the BODY text is right-aligned again — but only
+    // while it fits in one or two lines; from the third line on the body
+    // reads as a paragraph and goes back to Start. TextBlock makes that
+    // call per block from its laid-out line count (ReplyBodyAlignment)
+    // and applies it to BOTH the block's edge in this Column and the
+    // ragging of its lines, because the two must agree: a block narrower
+    // than the balloon (hard line breaks under a wide quote) pinned at
+    // End with Start-ragged lines is neither right-aligned nor arranged
+    // to the left — while the QUOTE above it keeps the left edge, so its
+    // accent bar still points at the first character of the excerpt.
+    // Everything else stays
     // left-aligned for the original reason: aligning ALL content to the
     // balloon's own side floated a short quote's accent bar away from
     // the text it points at.
@@ -3224,8 +3235,11 @@ private fun BubbleContent(
             val minTextWidth = with(LocalDensity.current) { blockWidth.toDp() }
             // The one alignment exception — see the header comment: my
             // own REPLY right-aligns its body under the left-aligned
-            // quote. Only plain-text blocks flip; a table keeps its
-            // full-width footprint and per-column alignment.
+            // quote, while the body is at most two lines. This is only
+            // the INTENT: TextBlock makes the per-line-count call
+            // (ReplyBodyAlignment) and places itself by it. Only
+            // plain-text blocks flip; a table keeps its full-width
+            // footprint and per-column alignment.
             val bodyAlignsEnd = isMine &&
                 quotedId != null && quotedSender != null && quotedExcerpt != null
             blocks.forEachIndexed { index, bodyBlock ->
@@ -3245,8 +3259,7 @@ private fun BubbleContent(
                         mentionColor = mentionColor,
                         minWidth = minTextWidth,
                         acked = acked,
-                        textAlign = if (bodyAlignsEnd) TextAlign.End else null,
-                        modifier = if (bodyAlignsEnd) Modifier.align(Alignment.End) else Modifier,
+                        endAligned = bodyAlignsEnd,
                         onDoubleTap = onDoubleTap,
                         onLongPress = onTextLongPress,
                     )
@@ -3397,9 +3410,13 @@ private fun StreamingCursor() {
  * the reaction capsule on long-press. Blocks with no links skip it
  * entirely and let the balloon's own `combinedClickable` handle them —
  * which is every ordinary message.
+ *
+ * A ColumnScope extension because the block places ITSELF at End or
+ * Start in the balloon's Column: the own-reply edge is decided from the
+ * laid-out line count, which only this composable knows.
  */
 @Composable
-private fun TextBlock(
+private fun ColumnScope.TextBlock(
     rendered: MessageMarkdown.Rendered,
     /** Links in THIS block's rendered text. */
     links: List<LinkSpan>,
@@ -3413,9 +3430,13 @@ private fun TextBlock(
     minWidth: Dp,
     /** Acked: there is a message id to react to. */
     acked: Boolean,
-    /** End for the body of my own reply — see BubbleContent's header comment. */
-    textAlign: TextAlign? = null,
     modifier: Modifier = Modifier,
+    /**
+     * The body of my own reply — see BubbleContent's header comment. The
+     * INTENT only: whether it actually sits and rags End is decided here
+     * from the laid-out line count (ReplyBodyAlignment).
+     */
+    endAligned: Boolean = false,
     onDoubleTap: () -> Unit,
     onLongPress: () -> Unit,
 ) {
@@ -3468,14 +3489,31 @@ private fun TextBlock(
             )
         }
     }
+    // End through two lines, Start from three — decided ONCE, here, where
+    // the line count is known, and applied to both the block's edge in
+    // the Column and the ragging of its lines. Deciding the edge from the
+    // intent alone (at the call site) put a hard-broken three-liner —
+    // narrower than the balloon under a wide quote, so not the widest
+    // child — at End with Start-ragged lines: neither alignment, and not
+    // what iOS draws. Before the first layout the count is unknown;
+    // assumed short, so a short body never flashes Start-then-End — a
+    // long one lays out once more, which is the cheaper of the two
+    // visible corrections.
+    val alignsEnd = ReplyBodyAlignment.alignsEnd(endAligned, textLayout?.lineCount ?: 1)
     Text(
         text = body,
         onTextLayout = { textLayout = it },
         // linkSpanAt queries the laid-out result (getLineLeft/Right,
         // getBoundingBox), which already reflects the alignment — no
-        // offset compensation needed for an End-aligned block.
-        textAlign = textAlign,
-        modifier = modifier.then(textModifier).widthIn(min = minWidth),
+        // offset compensation needed for an End-aligned block, and the
+        // result is the one for the alignment the flip settled on.
+        textAlign = if (alignsEnd) TextAlign.End else null,
+        // The align comes FIRST, so the pointerInput region matches the
+        // box as placed.
+        modifier = modifier
+            .align(if (alignsEnd) Alignment.End else Alignment.Start)
+            .then(textModifier)
+            .widthIn(min = minWidth),
         style = if (emojiFontSize != null) {
             MaterialTheme.typography.bodyMedium.copy(
                 fontSize = emojiFontSize.sp,

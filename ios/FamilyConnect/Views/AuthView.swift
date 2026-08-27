@@ -18,9 +18,19 @@ import SwiftUI
 @MainActor @Observable
 final class AuthModel {
     enum Mode: String, CaseIterable, Identifiable {
-        case login = "Log In"
-        case register = "Register"
+        case login
+        case register
         var id: String { rawValue }
+
+        /// The segment's text. Not the raw value: `Text(mode.rawValue)`
+        /// is Text(String), which is verbatim, and the picker was the one
+        /// English thing on a translated screen.
+        var title: String {
+            switch self {
+            case .login: String(localized: "Log In")
+            case .register: String(localized: "Register")
+            }
+        }
     }
 
     var mode: Mode = .login
@@ -56,7 +66,7 @@ struct AuthView: View {
                 Section {
                     Picker("Mode", selection: Bindable(model).mode) {
                         ForEach(AuthModel.Mode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
+                            Text(mode.title).tag(mode)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -134,22 +144,24 @@ struct AuthView: View {
         }
     }
 
-    /// Map API errors to inline copy, keyed on the machine codes.
+    /// Map API errors to inline copy, keyed on the machine codes. Every
+    /// sentence goes through the catalog: these are Strings on their way
+    /// to a Label, and a String literal is not localized by itself.
     static func describe(_ error: Error, isLogin: Bool) -> String {
         switch error {
         case APIError.unauthorized:
             return isLogin
-                ? "Wrong username or password."
-                : "The server rejected the request. Try again."
+                ? String(localized: "Wrong username or password.")
+                : String(localized: "The server rejected the request. Try again.")
         case APIError.conflict(let code, let message):
-            if code == "username_taken" { return "That username is taken." }
-            return message ?? "The server rejected the request."
+            if code == "username_taken" { return String(localized: "That username is taken.") }
+            return message ?? String(localized: "The server rejected the request.")
         case APIError.transport:
-            return "Can't reach the server. Check your connection."
+            return String(localized: "Can't reach the server. Check your connection.")
         case APIError.server:
-            return "The server had a problem. Try again in a moment."
+            return String(localized: "The server had a problem. Try again in a moment.")
         default:
-            return "Something went wrong. Try again."
+            return String(localized: "Something went wrong. Try again.")
         }
     }
 }

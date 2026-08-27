@@ -441,6 +441,28 @@ struct ConversationView: View {
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
+            // The Mac's empty state, on the phone: a thread with nothing
+            // in it was a blank screen here. An OVERLAY only — the scroll
+            // geometry and the opening routine are untouched, and it
+            // takes no hits so it cannot swallow a gesture meant for the
+            // thread. While the first page is still on its way
+            // (`loadInitial` parks the model in `.loadingOlder`) a
+            // spinner, not a claim there is nothing to see.
+            .overlay {
+                if messages.isEmpty {
+                    Group {
+                        if model.state == .loadingOlder {
+                            ProgressView()
+                        } else {
+                            ContentUnavailableView(
+                                "No messages yet",
+                                systemImage: "bubble.left.and.bubble.right",
+                                description: Text("Say something to get started."))
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
             // The way back down, for a reader the anchored open has
             // deliberately left in history — and for anyone who scrolled
             // there themselves. Android's button, Android's icon, and the
@@ -1232,6 +1254,10 @@ struct ConversationView: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
+                    // Tap slack only, the poll's idiom: a negative inset,
+                    // so the banner's height stays exactly what it is —
+                    // it feeds the inputBarHeight re-pin.
+                    .contentShape(Rectangle().inset(by: -12))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Cancel reply")
@@ -1260,6 +1286,8 @@ struct ConversationView: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
+                    // Tap slack only — see the reply banner.
+                    .contentShape(Rectangle().inset(by: -12))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Cancel editing")

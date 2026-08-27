@@ -343,4 +343,32 @@
     <string name="s_color_green">Green</string>
     <string name="s_color_orange">Orange</string>
     <string name="s_color_purple">Purple</string>
+    <!-- Chrome literals localised 2026-08: the family console, the
+         auth/join screens, the reply banner, the call linger line. -->
+    <string name="s_declined">Declined</string>
+    <string name="s_reset">Reset</string>
+    <string name="s_create_account">Create account</string>
+    <string name="s_show_password">Show password</string>
+    <string name="s_hide_password">Hide password</string>
+    <string name="s_your_request_is_with_the_family_owner">Your request is with the family owner.</string>
+    <string name="s_your_request_to_join_is_with_the_family_owner">Your request to join “%1$s” is with the family owner.</string>
+    <string name="s_replying_to">Replying to %1$s</string>
+    <string name="s_replying_to_excerpt">Replying to %1$s: %2$s</string>
+    <string name="s_replying_to_excerpt_with_parent">Replying to %1$s: %2$s, which replied to %3$s</string>
+    <string name="s_remove_member_q">Remove %1$s?</string>
+    <string name="s_approve_member">Approve %1$s</string>
+    <string name="s_reject_member">Reject %1$s</string>
+    <string name="s_remove_member">Remove %1$s</string>
+    <string name="s_approved_member">Approved %1$s</string>
+    <string name="s_rejected_member">Rejected %1$s</string>
+    <string name="s_removed_member">Removed %1$s</string>
+    <string name="s_reset_password_of">Reset %1$s\'s password</string>
+    <string name="s_member_signed_out_explanation">%1$s will be signed out on every device and will need this password to sign back in. Tell it to them somewhere safe — the server has no way to email it.</string>
+    <string name="s_join_open_caption">Anyone with the invite code joins instantly.</string>
+    <string name="s_join_approval_caption">Joins with the code wait for your approval.</string>
+    <string name="s_those_two_do_not_match">Those two do not match.</string>
+    <plurals name="s_use_at_least_characters">
+        <item quantity="one">Use at least %1$d character.</item>
+        <item quantity="other">Use at least %1$d characters.</item>
+    </plurals>
 </resources>

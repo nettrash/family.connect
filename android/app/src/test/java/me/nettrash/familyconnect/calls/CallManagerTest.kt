@@ -148,7 +148,7 @@ class CallManagerTest {
         runCurrent()
         assertThat(sentEnds()).containsExactly(ClientFrame.CallEnd(callId, CallEndReason.HANGUP))
         assertThat(manager.state.value)
-            .isEqualTo(CallState.Ended(callId, CHAT, PEER, CallEnding.HANGUP, durationSecs = 222))
+            .isEqualTo(CallState.Ended(callId, CHAT, PEER, CallEnding.HANGUP, durationSecs = 222, outgoing = true))
         assertThat(media.created.single().closed).isTrue()
         assertThat(audio.ended).isEqualTo(1)
 
@@ -197,7 +197,43 @@ class CallManagerTest {
         runCurrent()
 
         assertThat(sentEnds()).containsExactly(ClientFrame.CallEnd(callId, CallEndReason.CANCEL))
-        assertThat((manager.state.value as CallState.Ended).reason).isEqualTo(CallEnding.TIMEOUT)
+        val ended = manager.state.value as CallState.Ended
+        assertThat(ended.reason).isEqualTo(CallEnding.TIMEOUT)
+        // The caller's side of a timeout: the linger line says "No answer".
+        assertThat(ended.outgoing).isTrue()
+    }
+
+    @Test
+    fun thePeerDecliningEndsAnOutgoingCallOnTheCallersSide() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = true)
+        runCurrent()
+        val callId = outgoingCallId()
+
+        socket.emit(ServerFrame.CallEnd(callId, CallEndReason.DECLINE))
+        runCurrent()
+
+        val ended = manager.state.value as CallState.Ended
+        assertThat(ended.reason).isEqualTo(CallEnding.DECLINE)
+        // "Declined" to the one who placed the call — the callee sees
+        // "Call ended" (CallNotifications.endedTextRes).
+        assertThat(ended.outgoing).isTrue()
+        assertThat(ended.video).isTrue()
+    }
+
+    @Test
+    fun theDirectionDoesNotLeakFromOneCallIntoTheNext() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = false)
+        runCurrent()
+        manager.hangUp()
+        runCurrent()
+        assertThat((manager.state.value as CallState.Ended).outgoing).isTrue()
+
+        // A new call may start from Ended — an incoming one, this time.
+        offer()
+        manager.decline()
+        runCurrent()
+
+        assertThat((manager.state.value as CallState.Ended).outgoing).isFalse()
     }
 
     @Test
@@ -326,7 +362,10 @@ class CallManagerTest {
         runCurrent()
 
         assertThat(sentEnds()).containsExactly(ClientFrame.CallEnd(CALL, CallEndReason.DECLINE))
-        assertThat((manager.state.value as CallState.Ended).reason).isEqualTo(CallEnding.DECLINE)
+        val ended = manager.state.value as CallState.Ended
+        assertThat(ended.reason).isEqualTo(CallEnding.DECLINE)
+        // I declined: my linger line is "Call ended", not "Declined".
+        assertThat(ended.outgoing).isFalse()
         assertThat(media.created).isEmpty()
         assertThat(audio.begun).isEqualTo(0)
     }
@@ -348,7 +387,10 @@ class CallManagerTest {
         advanceTimeBy(timings.ringTimeoutMillis + 1)
         runCurrent()
 
-        assertThat((manager.state.value as CallState.Ended).reason).isEqualTo(CallEnding.TIMEOUT)
+        val ended = manager.state.value as CallState.Ended
+        assertThat(ended.reason).isEqualTo(CallEnding.TIMEOUT)
+        // The callee's side of a timeout: a MISSED call, not "No answer".
+        assertThat(ended.outgoing).isFalse()
     }
 
     @Test

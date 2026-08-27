@@ -25,7 +25,7 @@ nonisolated enum ServerURLNormalizer {
 
     static func normalize(_ raw: String) -> Verdict {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return .invalid(reason: "Enter the server address.") }
+        guard !text.isEmpty else { return .invalid(reason: String(localized: "Enter the server address.")) }
         if !text.contains("://") {
             text = "https://" + text
         }
@@ -34,7 +34,7 @@ nonisolated enum ServerURLNormalizer {
               let scheme = components.scheme?.lowercased(),
               let host = components.host, !host.isEmpty,
               let url = components.url else {
-            return .invalid(reason: "That doesn't look like a valid address.")
+            return .invalid(reason: String(localized: "That doesn't look like a valid address."))
         }
         switch scheme {
         case "https":
@@ -43,9 +43,9 @@ nonisolated enum ServerURLNormalizer {
             if isLocalNetworkHost(host) {
                 return .okInsecureLocal(url)
             }
-            return .invalid(reason: "Plain http only works for servers on your local network. Use https for \(host).")
+            return .invalid(reason: String(localized: "Plain http only works for servers on your local network. Use https for \(host)."))
         default:
-            return .invalid(reason: "Use an https:// or http:// address.")
+            return .invalid(reason: String(localized: "Use an https:// or http:// address."))
         }
     }
 

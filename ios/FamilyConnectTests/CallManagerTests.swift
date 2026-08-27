@@ -65,7 +65,9 @@ struct CallManagerTests {
             remoteCandidates.append(candidate)
         }
         func setMuted(_ muted: Bool) { self.muted = muted }
-        func setSpeaker(_ enabled: Bool) {}
+        /// Every route the manager asked for, in order.
+        var speaker: [Bool] = []
+        func setSpeaker(_ enabled: Bool) { speaker.append(enabled) }
         func close() { closed = true }
 
         // Video: every camera/renderer call recorded for assertions.
@@ -583,6 +585,42 @@ struct CallManagerTests {
         #expect(h.signaling.sent.first == .callOffer(callID: id, chatID: 42, sdp: "v=0 offer", video: true))
     }
 
+    // MARK: - Speaker route
+
+    @Test("speaker: a choice made before the media client exists reaches it on creation, and is said again on audio activation")
+    func speakerRouteIsReapplied() async throws {
+        let h = Harness()
+        #expect(h.manager.startCall(chatID: 42, peerUserID: 9))
+        // Tapped while the call is still being placed: no media client yet.
+        h.manager.toggleSpeaker()
+        #expect(h.manager.isSpeaker)
+        #expect(h.media.speaker.isEmpty)
+        await h.drain()
+        // Applied the moment the client existed, mute alongside it.
+        #expect(h.media.speaker == [true])
+        #expect(h.media.muted == false)
+        // CallKit activates the session: the same route, said again.
+        h.manager.systemDidActivateAudio()
+        #expect(h.media.speaker == [true, true])
+        h.manager.toggleSpeaker()
+        #expect(h.media.speaker == [true, true, false])
+        h.manager.systemDidActivateAudio()
+        #expect(h.media.speaker == [true, true, false, false])
+    }
+
+    @Test("speaker: a video call is speaker-on from its first media client, and off stays off through activation")
+    func videoSpeakerDefaultReachesMedia() async throws {
+        let h = Harness()
+        #expect(h.manager.startCall(chatID: 42, peerUserID: 9, video: true))
+        #expect(h.manager.isSpeaker)
+        await h.drain()
+        #expect(h.media.speaker == [true])
+        h.manager.toggleSpeaker()
+        #expect(!h.manager.isSpeaker)
+        h.manager.systemDidActivateAudio()
+        #expect(h.media.speaker == [true, false, false])
+    }
+
     @Test("video outgoing: a denied camera still places the call, camera off, with the status note")
     func videoCameraDenied() async throws {
         let h = Harness(camera: false)
@@ -675,6 +713,33 @@ struct CallManagerTests {
         h.media.emitRemoteVideo(true)
         #expect(h.manager.isRemoteVideoActive)
         h.media.emitRemoteVideo(false)
+        #expect(!h.manager.isRemoteVideoActive)
+    }
+
+    @Test("video: ending the call takes the remote picture down with the media, before the linger")
+    func videoEndClearsRemotePicture() async throws {
+        let h = Harness()
+        // A linger long enough to observe the ended state in, not a reset.
+        h.manager.endedLinger = 5
+        h.manager.startCall(chatID: 42, peerUserID: 9, video: true)
+        await h.drain()
+        let id = try #require(h.manager.callID)
+        // Answered and connected — the happy path's steps, since a hang
+        // up from anywhere earlier is a cancel, not a hang-up.
+        h.manager.handle(frame: .callAnswer(callID: id, sdp: "v=0 remote answer"))
+        h.media.emit(.connected)
+        guard case .active = h.manager.phase else {
+            Issue.record("expected active, got \(h.manager.phase)")
+            return
+        }
+        h.media.emitRemoteVideo(true)
+        #expect(h.manager.isRemoteVideoActive)
+
+        h.manager.hangUp()
+        #expect(h.manager.phase == .ended(.hangup))
+        #expect(h.media.closed)
+        // The regression: this stayed true until resetToIdle, so the call
+        // screen showed the frozen last frame for the whole ended linger.
         #expect(!h.manager.isRemoteVideoActive)
     }
 

@@ -5,9 +5,12 @@
 //  The pure pieces of voice calls: the record's wording, the in-call
 //  status line, the socket-hold rule, the VoIP payload parser, the wire
 //  shapes of the record and of `calls_enabled`, and the chat-list preview.
+//  Plus, at the bottom, the one stateful piece: what a call record looks
+//  like after a trip through the store.
 //
 
 import Foundation
+import SwiftData
 import Testing
 @testable import FamilyConnect
 
@@ -233,5 +236,102 @@ struct CallModelTests {
             token: "a", storedToken: "a", storedDeviceID: 1, voipToken: "v", storedVoIPToken: "v"))
         #expect(PushRegistrationLogic.needsRegistration(
             token: "b", storedToken: "a", storedDeviceID: 1, voipToken: nil, storedVoIPToken: nil))
+    }
+}
+
+/// The record's trip through SwiftData. The video flag rode the wire and
+/// the wording from the day video shipped, but the ROW never stored it —
+/// every cached record came back out as voice and a video call's bubble
+/// said "Voice call". These pin all three write sites the flag has.
+@MainActor
+@Suite("Call record persistence")
+struct CallRecordPersistenceTests {
+
+    private static let serverDate = ISO8601DateFormatter().date(from: "2026-08-19T17:05:00Z")!
+
+    private func makeContainer() throws -> ModelContainer {
+        try ModelContainer(
+            for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    }
+
+    private func dto(id: Int64, call: CallDTO?) -> MessageDTO {
+        MessageDTO(
+            id: id, chatID: 42, senderID: 9, clientMsgID: nil,
+            body: call?.video == true ? "Video call" : "Voice call",
+            createdAt: Self.serverDate, call: call)
+    }
+
+    @Test("a row built from a video record reads back as a video record, a voice one as voice")
+    func entityRoundTrip() throws {
+        let container = try makeContainer()
+        let video = MessageEntity(
+            localID: "s:1", serverID: 1, chatID: 42, senderID: 9, body: "Video call",
+            createdAt: Self.serverDate, status: .sent,
+            call: CallDTO(outcome: "completed", durationSecs: 222, video: true))
+        let voice = MessageEntity(
+            localID: "s:2", serverID: 2, chatID: 42, senderID: 9, body: "Voice call",
+            createdAt: Self.serverDate, status: .sent,
+            call: CallDTO(outcome: "completed", durationSecs: 9))
+        let plain = MessageEntity(
+            localID: "s:3", serverID: 3, chatID: 42, senderID: 9, body: "hi",
+            createdAt: Self.serverDate, status: .sent)
+        container.mainContext.insert(video)
+        container.mainContext.insert(voice)
+        container.mainContext.insert(plain)
+        try container.mainContext.save()
+
+        // Back out through a fetch, not the instances in hand.
+        let rows = try container.mainContext.fetch(FetchDescriptor<MessageEntity>())
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.localID, $0) })
+        #expect(byID["s:1"]?.callSnapshot == CallDTO(outcome: "completed", durationSecs: 222, video: true))
+        #expect(byID["s:1"]?.callSnapshot?.video == true)
+        #expect(byID["s:2"]?.callSnapshot == CallDTO(outcome: "completed", durationSecs: 9))
+        #expect(byID["s:2"]?.callSnapshot?.video == false)
+        #expect(byID["s:3"]?.callSnapshot == nil)
+        // The wording the bubble draws is downstream of exactly this.
+        let stored = try #require(byID["s:1"]?.callSnapshot)
+        #expect(CallRecordText.label(stored, isMine: false) == "Video call · 3:42")
+    }
+
+    @Test("the coordinator stores the flag on first sight and rewrites it on re-delivery; an absent record never wipes")
+    func coordinatorWritesTheFlag() throws {
+        let host = "call-video.test"
+        StubURLProtocol.register(host: host, handler: { _ in .empty(204) })
+        defer { StubURLProtocol.unregister(host: host) }
+        let container = try makeContainer()
+        let api = APIClient(
+            serverURL: URL(string: "https://\(host)")!,
+            session: StubURLProtocol.makeSession())
+        let coordinator = ChatSyncCoordinator(modelContainer: container, api: api)
+        coordinator.currentUserIDOverride = 7
+        container.mainContext.insert(ChatEntity(chatID: 42, kind: "family", pinRank: 0, title: "The Smiths"))
+        try container.mainContext.save()
+
+        // First sight, from a history page.
+        let missedVideo = CallDTO(outcome: "missed", video: true)
+        let row = coordinator.upsert(dto(id: 100, call: missedVideo), bumpUnread: false)
+        #expect(row.callVideo)
+        #expect(row.callSnapshot == missedVideo)
+
+        // A row cached by the build that had no column: the flag is off
+        // although the record is a video one. Re-delivery of the same id
+        // (a re-fetched page, a resync overlapping a live frame) goes
+        // through applyCall and repairs it.
+        row.callVideo = false
+        try container.mainContext.save()
+        let again = coordinator.upsert(dto(id: 100, call: missedVideo), bumpUnread: false)
+        #expect(again.localID == row.localID)
+        #expect(row.callVideo)
+        #expect(row.callSnapshot?.video == true)
+
+        // The absent-field rule, on the flag as on the rest of the record.
+        _ = coordinator.upsert(dto(id: 100, call: nil), bumpUnread: false)
+        #expect(row.callSnapshot == missedVideo)
+
+        // A voice record stays voice through the same door.
+        let voice = coordinator.upsert(dto(id: 101, call: CallDTO(outcome: "completed", durationSecs: 9)), bumpUnread: false)
+        #expect(!voice.callVideo)
+        #expect(voice.callSnapshot?.video == false)
     }
 }

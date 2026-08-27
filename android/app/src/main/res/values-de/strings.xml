@@ -306,4 +306,30 @@
     <string name="s_color_green">Grün</string>
     <string name="s_color_orange">Orange</string>
     <string name="s_color_purple">Lila</string>
+    <string name="s_declined">Abgelehnt</string>
+    <string name="s_reset">Zurücksetzen</string>
+    <string name="s_create_account">Konto erstellen</string>
+    <string name="s_show_password">Passwort anzeigen</string>
+    <string name="s_hide_password">Passwort ausblenden</string>
+    <string name="s_your_request_is_with_the_family_owner">Deine Anfrage liegt beim Eigentümer der Familie.</string>
+    <string name="s_your_request_to_join_is_with_the_family_owner">Deine Anfrage für „%1$s“ liegt beim Eigentümer der Familie.</string>
+    <string name="s_replying_to">Antwort an %1$s</string>
+    <string name="s_replying_to_excerpt">Antwort an %1$s: %2$s</string>
+    <string name="s_replying_to_excerpt_with_parent">Antwort an %1$s: %2$s, die wiederum auf %3$s antwortete</string>
+    <string name="s_remove_member_q">%1$s entfernen?</string>
+    <string name="s_approve_member">%1$s freigeben</string>
+    <string name="s_reject_member">%1$s ablehnen</string>
+    <string name="s_remove_member">%1$s entfernen</string>
+    <string name="s_approved_member">Freigegeben: %1$s</string>
+    <string name="s_rejected_member">Abgelehnt: %1$s</string>
+    <string name="s_removed_member">Entfernt: %1$s</string>
+    <string name="s_reset_password_of">Passwort von %1$s zurücksetzen</string>
+    <string name="s_member_signed_out_explanation">%1$s wird auf allen Geräten abgemeldet und braucht dieses Passwort, um sich wieder anzumelden. Gib es auf sicherem Weg weiter – der Server kann keine E-Mails verschicken.</string>
+    <string name="s_join_open_caption">Wer den Einladungscode hat, tritt sofort bei.</string>
+    <string name="s_join_approval_caption">Beitritte mit dem Code warten auf deine Freigabe.</string>
+    <string name="s_those_two_do_not_match">Die beiden stimmen nicht überein.</string>
+    <plurals name="s_use_at_least_characters">
+        <item quantity="one">Mindestens %1$d Zeichen.</item>
+        <item quantity="other">Mindestens %1$d Zeichen.</item>
+    </plurals>
 </resources>

@@ -98,11 +98,11 @@ struct MacFamilyView: View {
     private var header: some View {
         HStack(spacing: 12) {
             InitialsAvatar(
-                title: session.family?.name ?? "Family",
+                title: session.family?.name ?? String(localized: "Family"),
                 isFamily: true,
                 size: 44)
             VStack(alignment: .leading, spacing: 1) {
-                Text(session.family?.name ?? "Family")
+                Text(session.family?.name ?? String(localized: "Family"))
                     .font(.title3.weight(.semibold))
                 Text("\(members.count) members")
                     .font(.callout)
@@ -283,7 +283,7 @@ struct MacFamilyView: View {
             do {
                 try await work()
             } catch {
-                errorText = "That didn't work. Try again."
+                errorText = String(localized: "That didn't work. Try again.")
             }
         }
     }

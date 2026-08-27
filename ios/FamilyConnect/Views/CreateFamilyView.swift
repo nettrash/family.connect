@@ -73,10 +73,10 @@ struct CreateFamilyView: View {
                 try await session.createFamily(name: name)
             } catch APIError.conflict(let code, let message) {
                 model.errorText = code == "already_in_family"
-                    ? "You're already in a family. Pull to refresh."
-                    : (message ?? "The server rejected that name.")
+                    ? String(localized: "You're already in a family. Pull to refresh.")
+                    : (message ?? String(localized: "The server rejected that name."))
             } catch {
-                model.errorText = "Can't reach the server. Try again."
+                model.errorText = String(localized: "Can't reach the server. Try again.")
             }
         }
     }

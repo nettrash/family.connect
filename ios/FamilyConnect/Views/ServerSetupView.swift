@@ -33,7 +33,7 @@ final class ServerSetupModel {
     /// Live insecure-http advisory (recomputed as the user types).
     var insecureWarning: String? {
         if case .okInsecureLocal = ServerURLNormalizer.normalize(urlText) {
-            return "This address uses plain http. That's fine for a server on your home network, but anyone on the same network can read the traffic."
+            return String(localized: "This address uses plain http. That's fine for a server on your home network, but anyone on the same network can read the traffic.")
         }
         return nil
     }
@@ -117,7 +117,8 @@ struct ServerSetupView: View {
             do {
                 try await session.setServer(url)
             } catch {
-                model.errorText = "No Family Connect server answered at \(url.absoluteString). Check the address and your network."
+                model.errorText = String(
+                    localized: "No Family Connect server answered at \(url.absoluteString). Check the address and your network.")
             }
         }
     }

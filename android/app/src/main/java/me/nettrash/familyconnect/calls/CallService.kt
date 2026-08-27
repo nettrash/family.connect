@@ -83,7 +83,7 @@ class CallService : Service() {
                 stopSelf()
             }
             is CallState.Incoming -> {
-                val name = state.callerName ?: nameOf(state.peerUserId)
+                val name = state.callerName ?: nameOf(state.peerUserId, state.video)
                 promote(
                     CallNotifications.INCOMING_ID,
                     CallNotifications.incoming(this, name, state.peerUserId, state.video),
@@ -96,7 +96,7 @@ class CallService : Service() {
                 }
                 promote(
                     CallNotifications.ONGOING_ID,
-                    CallNotifications.ongoing(this, nameOf(state.peerUserId), state.peerUserId, status),
+                    CallNotifications.ongoing(this, nameOf(state.peerUserId, state.video), state.peerUserId, status),
                 )
             }
             is CallState.Ended -> {
@@ -107,9 +107,10 @@ class CallService : Service() {
                         CallNotifications.ONGOING_ID,
                         CallNotifications.ongoing(
                             this,
-                            state.peerUserId?.let { nameOf(it) } ?: getString(R.string.s_voice_call),
+                            state.peerUserId?.let { nameOf(it, state.video) }
+                                ?: getString(CallNotifications.kindTextRes(state.video)),
                             state.peerUserId ?: 0L,
-                            getString(R.string.s_call_ended),
+                            getString(CallNotifications.endedTextRes(state.reason, state.outgoing, state.video)),
                         ),
                     )
                 }
@@ -148,9 +149,13 @@ class CallService : Service() {
         return type
     }
 
-    private suspend fun nameOf(userId: Long): String =
+    /**
+     * The peer's roster name, or the call's KIND when the roster does not
+     * know them yet — "Video call" on a video call, not "Voice call".
+     */
+    private suspend fun nameOf(userId: Long, video: Boolean): String =
         memberDao.observeMembers().first().resolvedDisplayNames(this)[userId]
-            ?: getString(R.string.s_voice_call)
+            ?: getString(CallNotifications.kindTextRes(video))
 
     override fun onDestroy() {
         scope.cancel()

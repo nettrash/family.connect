@@ -303,4 +303,29 @@
     <string name="s_color_green">緑</string>
     <string name="s_color_orange">オレンジ</string>
     <string name="s_color_purple">紫</string>
+    <string name="s_declined">拒否されました</string>
+    <string name="s_reset">リセット</string>
+    <string name="s_create_account">アカウントを作成</string>
+    <string name="s_show_password">パスワードを表示</string>
+    <string name="s_hide_password">パスワードを隠す</string>
+    <string name="s_your_request_is_with_the_family_owner">リクエストはファミリーのオーナーに届いています。</string>
+    <string name="s_your_request_to_join_is_with_the_family_owner">「%1$s」への参加リクエストはファミリーのオーナーに届いています。</string>
+    <string name="s_replying_to">%1$s に返信</string>
+    <string name="s_replying_to_excerpt">%1$s に返信: %2$s</string>
+    <string name="s_replying_to_excerpt_with_parent">%1$s に返信: %2$s、さらに %3$s への返信</string>
+    <string name="s_remove_member_q">%1$s を削除しますか？</string>
+    <string name="s_approve_member">%1$s を承認</string>
+    <string name="s_reject_member">%1$s を拒否</string>
+    <string name="s_remove_member">%1$s を削除</string>
+    <string name="s_approved_member">%1$s を承認しました</string>
+    <string name="s_rejected_member">%1$s を拒否しました</string>
+    <string name="s_removed_member">%1$s を削除しました</string>
+    <string name="s_reset_password_of">%1$s のパスワードをリセット</string>
+    <string name="s_member_signed_out_explanation">%1$s はすべての端末からサインアウトされ、再びサインインするにはこのパスワードが必要です。安全な方法で直接伝えてください。サーバはメールを送れません。</string>
+    <string name="s_join_open_caption">招待コードを持っていれば誰でもすぐに参加できます。</string>
+    <string name="s_join_approval_caption">コードで参加する人は、あなたの承認を待ちます。</string>
+    <string name="s_those_two_do_not_match">2つが一致しません。</string>
+    <plurals name="s_use_at_least_characters">
+        <item quantity="other">%1$d 文字以上にしてください。</item>
+    </plurals>
 </resources>

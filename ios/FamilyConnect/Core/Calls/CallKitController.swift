@@ -158,6 +158,8 @@ extension CallKitController: CXProviderDelegate {
     nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         Task { @MainActor in
             WebRTCClient.audioSessionDidActivate(audioSession)
+            // The route, now that there is a live session to route.
+            self.manager?.systemDidActivateAudio()
         }
     }
 

@@ -81,16 +81,16 @@ struct JoinFamilyView: View {
                 try await session.join(code: code)
             } catch APIError.notFound(let errorCode) {
                 model.errorText = errorCode == "invalid_invite_code"
-                    ? "That code doesn't match any family. Check it and try again."
-                    : "That code doesn't work anymore."
+                    ? String(localized: "That code doesn't match any family. Check it and try again.")
+                    : String(localized: "That code doesn't work anymore.")
             } catch APIError.conflict(let errorCode, let message) {
                 switch errorCode {
-                case "already_in_family": model.errorText = "You're already in a family."
-                case "join_request_pending": model.errorText = "You already have a pending request."
-                default: model.errorText = message ?? "The server rejected that code."
+                case "already_in_family": model.errorText = String(localized: "You're already in a family.")
+                case "join_request_pending": model.errorText = String(localized: "You already have a pending request.")
+                default: model.errorText = message ?? String(localized: "The server rejected that code.")
                 }
             } catch {
-                model.errorText = "Can't reach the server. Try again."
+                model.errorText = String(localized: "Can't reach the server. Try again.")
             }
         }
     }

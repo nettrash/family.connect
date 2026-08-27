@@ -312,15 +312,19 @@ struct MacMessageRow: View {
     private var balloon: some View {
         // Alignment rule, updated 2026-08 at the product owner's ask:
         // content used to share one left edge unconditionally, but in MY
-        // replies the BODY now sits against the trailing edge while the
-        // QUOTE keeps the left one (its leading-pinned frame below is what
-        // holds it there inside the trailing stack). Everything else —
-        // others' messages, own messages without a quote — is unchanged.
-        // ReplyContentLayout (shared with the phone) is what lets the
-        // body sit trailing while the quote keeps the leading edge AND the
-        // balloon still hugs its widest child — the frame-based version of
-        // this rule took the row's width, the documented slab regression.
-        let contentStack = alignsBodyTrailing
+        // replies a SHORT body — one or two lines — now sits against the
+        // trailing edge while the QUOTE keeps the left one; from three
+        // lines the body goes back to the leading edge (the owner's
+        // follow-up — a right-ragged paragraph reads as an accident).
+        // OwnReplyBodyAlignment, shared with the phone, measures the
+        // count and owns every alignment-dependent modifier on the body.
+        // Everything else — others' messages, own messages without a
+        // quote — is unchanged. ReplyContentLayout (shared with the
+        // phone) is what lets the body sit trailing while the quote keeps
+        // the leading edge AND the balloon still hugs its widest child —
+        // the frame-based version of this rule took the row's width, the
+        // documented slab regression.
+        let contentStack = isOwnReply
             ? AnyLayout(ReplyContentLayout(spacing: 5))
             : AnyLayout(VStackLayout(alignment: .leading, spacing: 5))
         contentStack {
@@ -348,6 +352,11 @@ struct MacMessageRow: View {
                     isMine: isMine,
                     onCallBack: onCallBack,
                     onDoubleTap: { quickHeart() })
+                // The shared record is clickable (call back) and on a Mac
+                // only the cursor says so — the quote block's rule. An
+                // arrow, not nothing, when there is no call-back, so the
+                // hand is a promise the click keeps.
+                .hoverCursor(onCallBack != nil ? .pointingHand : .arrow)
             } else if !message.body.isEmpty {
                 // One text block — everything without a table — comes back
                 // as exactly this `Text` and nothing around it.
@@ -359,10 +368,6 @@ struct MacMessageRow: View {
                     Text(text)
                         .font(emojiFont)
                         .fixedSize(horizontal: false, vertical: true)
-                        // The reply rule again, inside the wrap: a body
-                        // that sits on the trailing edge also rags its
-                        // lines against it.
-                        .multilineTextAlignment(alignsBodyTrailing ? .trailing : .leading)
                         .overlay(alignment: .bottomTrailing) {
                             // The last text block is the only one still
                             // growing, so it is the one that ends in a
@@ -371,19 +376,26 @@ struct MacMessageRow: View {
                                 Text(verbatim: "▍").opacity(0.6).offset(x: 8)
                             }
                         }
-                        // A table has already decided how wide this balloon
-                        // is. Text left to itself reports the width it
-                        // WANTS, which leaves a narrow paragraph floating
-                        // beside a wide grid; filling makes it wrap against
-                        // the same edge. Gated on there BEING a table — the
-                        // phone learned the hard way that doing this
+                        // The reply rule, all three of its modifiers at
+                        // once — line ragging, the frame's edge and the
+                        // ReplyContentLayout tag — from one measured line
+                        // count: trailing through two lines, leading from
+                        // three. After the cursor overlay (which does not
+                        // change the Text's size) and before any frame, so
+                        // it counts lines from the Text's own height.
+                        //
+                        // `fillsWidth`: a table or a poll has already
+                        // decided how wide this balloon is. Text left to
+                        // itself reports the width it WANTS, which leaves
+                        // a narrow paragraph floating beside a wide grid;
+                        // filling makes it wrap against the same edge.
+                        // Gated on there BEING such a block — the phone
+                        // learned the hard way that doing this
                         // unconditionally makes every balloon full width.
-                        .frame(
-                            maxWidth: fillsBalloonWidth ? .infinity : nil,
-                            alignment: alignsBodyTrailing ? .trailing : .leading)
-                        // The edge this block hugs in an own reply's
-                        // ReplyContentLayout; a VStack ignores the tag.
-                        .balloonEdge(.trailing)
+                        .ownReplyBodyAlignment(
+                            enabled: isOwnReply,
+                            font: emojiFont,
+                            fillsWidth: fillsBalloonWidth)
                 }
             }
             if let preview = linkPreview {
@@ -591,11 +603,13 @@ struct MacMessageRow: View {
         hasTable || message.poll != nil
     }
 
-    /// An own message that IS a reply right-aligns its body while the
-    /// quote above it stays on the left — the product rule, shared with
-    /// the phone (see the balloon stack's comment). Everyone else's
-    /// messages, and own messages without a quote, keep one left edge.
-    private var alignsBodyTrailing: Bool {
+    /// An own message that IS a reply lays out with ReplyContentLayout:
+    /// the quote keeps the left edge and the body picks its own by line
+    /// count — trailing through two lines, leading from three — the
+    /// product rule, shared with the phone (see the balloon stack's
+    /// comment and OwnReplyBodyAlignment). Everyone else's messages, and
+    /// own messages without a quote, keep one left edge.
+    private var isOwnReply: Bool {
         isMine && message.replyTo != nil
     }
 
@@ -788,9 +802,11 @@ private struct MacQuoteBlock: View {
         // excerpt was, and every reply balloon on the Mac came out a
         // fixed-width slab regardless of what the reply said. The balloon
         // already caps itself at 460 after its background, which is the
-        // bound that was actually wanted. (An OWN reply's trailing stack
-        // now pins this block leading and full width at the CALL SITE —
-        // that is the one case where the width is meant to be taken.)
+        // bound that was actually wanted. (In an OWN reply the balloon
+        // uses ReplyContentLayout, which hugs its widest child and places
+        // this block on the leading edge — BalloonEdgeKey's default; it is
+        // never given a width at the call site either. Only the BODY
+        // carries a trailing tag, via OwnReplyBodyAlignment.)
         // The phone's load-bearing pin, ported with the rest: the accent
         // bar is a Shape with a width-only frame — infinitely flexible in
         // height — and an unpinned block beside a body Text flips the

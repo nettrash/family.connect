@@ -171,7 +171,7 @@ fun AuthScreen(
                                 if (passwordVisible) Icons.Outlined.VisibilityOff
                                 else Icons.Outlined.Visibility,
                             contentDescription =
-                                if (passwordVisible) "Hide password" else "Show password",
+                                stringResource(if (passwordVisible) R.string.s_hide_password else R.string.s_show_password),
                         )
                     }
                 },
@@ -192,7 +192,9 @@ fun AuthScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 BusyButtonContent(
-                    label = if (state.mode == AuthViewModel.Mode.LOGIN) stringResource(R.string.s_log_in) else "Create account",
+                    label = stringResource(
+                        if (state.mode == AuthViewModel.Mode.LOGIN) R.string.s_log_in else R.string.s_create_account,
+                    ),
                     busy = state.submitting,
                 )
             }

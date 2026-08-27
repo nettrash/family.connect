@@ -135,6 +135,10 @@ struct StagedAttachmentChip: View {
                 Image(systemName: "xmark.circle.fill")
                     .font(.title3)
                     .foregroundStyle(.secondary)
+                    // Tap slack without a layout change: the chip's height
+                    // is part of the input bar's, which the thread re-pins
+                    // against.
+                    .contentShape(Rectangle().inset(by: -12))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Remove attachment")

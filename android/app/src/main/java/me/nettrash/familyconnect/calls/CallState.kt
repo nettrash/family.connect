@@ -91,6 +91,14 @@ sealed interface CallState {
         val durationSecs: Int? = null,
         /** What kind of call it WAS — the linger line words itself with it. */
         val video: Boolean = false,
+        /**
+         * Whether THIS device placed the call. The linger line reads
+         * differently by side, as on iOS: a timeout is "No answer" to
+         * the caller and a missed call to the callee; a decline is
+         * "Declined" to the caller and just the end of the call to the
+         * one who declined.
+         */
+        val outgoing: Boolean = false,
     ) : CallState
 }
 

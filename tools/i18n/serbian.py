@@ -459,6 +459,60 @@ SR = {
 "Join our family on Family Connect! Server: %@ — invite code: %@":
   "Придружи се нашој породици у Family Connect! Сервер: %1$@ — позивни код: %2$@",
 # --- end 2026-08-26 UI polish (iOS/macOS) ---
+# The call screen's way back, join-request accessibility, and the error
+# sentences the views used to hold as bare String literals (they reach a
+# Text through a String variable, so the catalog never saw them).
+"Return to Call": "Назад на позив",
+"Approve %@": "Одобри %@",
+"Reject %@": "Одбиј %@",
+"Couldn't approve the request. Pull to refresh.": "Захтев није одобрен. Повуци да освежиш.",
+"Couldn't reject the request. Pull to refresh.": "Захтев није одбијен. Повуци да освежиш.",
+"Couldn't rotate the code. Try again.": "Код није обновљен. Покушај поново.",
+"Couldn't change the policy. Try again.": "Правило није промењено. Покушај поново.",
+"Couldn't remove %@. Try again.": "Уклањање за %@ није успело. Покушај поново.",
+"Register": "Региструј се",
+"Wrong username or password.": "Погрешно корисничко име или лозинка.",
+"The server rejected the request. Try again.": "Сервер је одбио захтев. Покушај поново.",
+"That username is taken.": "То корисничко име је заузето.",
+"The server rejected the request.": "Сервер је одбио захтев.",
+"Can't reach the server. Check your connection.": "Сервер није доступан. Провери везу.",
+"The server had a problem. Try again in a moment.": "Сервер је наишао на проблем. Покушај поново за тренутак.",
+"Something went wrong. Try again.": "Нешто је пошло наопако. Покушај поново.",
+"That code doesn't match any family. Check it and try again.": "Тај код не одговара ниједној породици. Провери га и покушај поново.",
+"That code doesn't work anymore.": "Тај код више не важи.",
+"You're already in a family.": "Већ си у породици.",
+"You already have a pending request.": "Већ имаш захтев на чекању.",
+"The server rejected that code.": "Сервер је одбио тај код.",
+"Can't reach the server. Try again.": "Сервер није доступан. Покушај поново.",
+"Open": "Отворена",
+"Approval": "Одобрење",
+"Couldn't leave right now. Try again.": "Напуштање тренутно није успело. Покушај поново.",
+"You're already in a family. Pull to refresh.": "Већ си у породици. Повуци да освежиш.",
+"The server rejected that name.": "Сервер је одбио то име.",
+"Use at least %lld characters.": "Користи најмање %lld знакова.",
+"Those two do not match.": "Ове две се не поклапају.",
+"That current password is not right.": "Тренутна лозинка није тачна.",
+"Couldn't change your password. Try again.": "Лозинка није промењена. Покушај поново.",
+"Couldn't reset that password. Try again.": "Лозинка није ресетована. Покушај поново.",
+"The server couldn't open a chat with them. Try again.": "Сервер није успео да отвори разговор с том особом. Покушај поново.",
+"That didn't work. Try again.": "Није успело. Покушај поново.",
+"This address uses plain http. That's fine for a server on your home network, but anyone on the same network can read the traffic.": "Ова адреса користи обичан http. За сервер у кућној мрежи то је у реду, али свако на истој мрежи може да чита саобраћај.",
+"No Family Connect server answered at %@. Check the address and your network.": "Ниједан Family Connect сервер није одговорио на %@. Провери адресу и мрежу.",
+"Enter the server address.": "Унеси адресу сервера.",
+"That doesn't look like a valid address.": "То не личи на исправну адресу.",
+"Plain http only works for servers on your local network. Use https for %@.": "Обичан http ради само за сервере у локалној мрежи. За %@ користи https.",
+"Use an https:// or http:// address.": "Користи адресу која почиње са https:// или http://.",
+"No server address is set.": "Адреса сервера није подешена.",
+"This server doesn't support profile pictures yet — it needs updating.": "Овај сервер још не подржава слике профила — треба га ажурирати.",
+"The server refused that.": "Сервер је то одбио.",
+"That photo is too large for this server.": "Та фотографија је превелика за овај сервер.",
+"That file isn't a photo we can use.": "Та датотека није фотографија коју можемо да користимо.",
+"The server refused the photo.": "Сервер је одбио фотографију.",
+"The server had a problem (%lld). Try again.": "Сервер је наишао на проблем (%lld). Покушај поново.",
+"The server sent an answer this app didn't understand.": "Сервер је послао одговор који ова апликација не разуме.",
+"Couldn't remove the photo.": "Фотографија није уклоњена.",
+"Couldn't upload the photo.": "Фотографија није отпремљена.",
+"The server could not be reached.": "Сервер није доступан.",
 }
 
 # The members count is a plural, and Serbian's CLDR categories are one/few/other
@@ -498,6 +552,22 @@ SR_COUNTS = {
         "one": "{n} нова порука",
         "few": "{n} нове поруке",
         "other": "{n} нових порука",
+    },
+    # The chat list's unread badge, read aloud. "порука" is implied, so the
+    # adjective inflects like the noun it stands for: 1 непрочитана,
+    # 2–4 непрочитане, 5+ непрочитаних.
+    "unread": {
+        "one": "{n} непрочитана",
+        "few": "{n} непрочитане",
+        "other": "{n} непрочитаних",
+    },
+    # The password-length rule in the family console's reset dialog
+    # (Android only; iOS words it without the number). A masculine noun:
+    # "1 знак", "2–4 знака", "5+ знакова".
+    "characters": {
+        "one": "Користи бар {n} знак.",
+        "few": "Користи бар {n} знака.",
+        "other": "Користи бар {n} знакова.",
     },
 }
 

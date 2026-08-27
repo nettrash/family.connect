@@ -78,6 +78,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -123,6 +124,9 @@ fun FamilyAdminScreen(
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
     val clipboard = LocalClipboard.current
     val context = LocalContext.current
+    // The copy confirmation, resolved here rather than in the button's
+    // onClick — not a composable scope.
+    val copiedMessage = stringResource(R.string.s_copied)
     val inviteLabel = stringResource(R.string.s_invite_code)
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -153,7 +157,7 @@ fun FamilyAdminScreen(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
-                title = { Text(if (isOwner) "Manage family" else "Family members") },
+                title = { Text(stringResource(if (isOwner) R.string.s_manage_family else R.string.s_family_members)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.s_back))
@@ -195,6 +199,12 @@ fun FamilyAdminScreen(
                 } else {
                     state.requests.forEach { request ->
                         key(request.id) {
+                            // Resolved in composition: the snackbar text is
+                            // chosen inside onClick, which is not a
+                            // composable scope, and lint refuses resource
+                            // lookups through LocalContext anyway.
+                            val approvedMessage = stringResource(R.string.s_approved_member, request.user.displayName)
+                            val rejectedMessage = stringResource(R.string.s_rejected_member, request.user.displayName)
                             AnimatedVisibility(
                                 visible = request.id !in departingRequests,
                                 enter = expandVertically(tween(200)) + fadeIn(tween(200)),
@@ -225,9 +235,7 @@ fun FamilyAdminScreen(
                                                     departingRequests += request.id
                                                     viewModel.approve(request.id) {
                                                         scope.launch {
-                                                            snackbarHostState.showSnackbar(
-                                                                "Approved ${request.user.displayName}",
-                                                            )
+                                                            snackbarHostState.showSnackbar(approvedMessage)
                                                         }
                                                     }
                                                 },
@@ -240,7 +248,7 @@ fun FamilyAdminScreen(
                                             ) {
                                                 Icon(
                                                     Icons.Filled.Check,
-                                                    contentDescription = "Approve ${request.user.displayName}",
+                                                    contentDescription = stringResource(R.string.s_approve_member, request.user.displayName),
                                                 )
                                             }
                                             IconButton(
@@ -248,9 +256,7 @@ fun FamilyAdminScreen(
                                                     departingRequests += request.id
                                                     viewModel.reject(request.id) {
                                                         scope.launch {
-                                                            snackbarHostState.showSnackbar(
-                                                                "Rejected ${request.user.displayName}",
-                                                            )
+                                                            snackbarHostState.showSnackbar(rejectedMessage)
                                                         }
                                                     }
                                                 },
@@ -259,7 +265,7 @@ fun FamilyAdminScreen(
                                             ) {
                                                 Icon(
                                                     Icons.Filled.Close,
-                                                    contentDescription = "Reject ${request.user.displayName}",
+                                                    contentDescription = stringResource(R.string.s_reject_member, request.user.displayName),
                                                     tint = MaterialTheme.colorScheme.error,
                                                 )
                                             }
@@ -305,7 +311,7 @@ fun FamilyAdminScreen(
                                     clipboard.setClipEntry(
                                         ClipData.newPlainText(inviteLabel, code).toClipEntry(),
                                     )
-                                    snackbarHostState.showSnackbar("Copied")
+                                    snackbarHostState.showSnackbar(copiedMessage)
                                 }
                             },
                             enabled = state.inviteCode != null,
@@ -355,11 +361,9 @@ fun FamilyAdminScreen(
                     }
                 }
                 Text(
-                    text = if (state.joinPolicy == "open") {
-                        "Anyone with the invite code joins instantly."
-                    } else {
-                        "Joins with the code wait for your approval."
-                    },
+                    text = stringResource(
+                        if (state.joinPolicy == "open") R.string.s_join_open_caption else R.string.s_join_approval_caption,
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -508,7 +512,7 @@ fun FamilyAdminScreen(
                                                 Icon(
                                                     Icons.Filled.Key,
                                                     contentDescription =
-                                                        "Reset ${member.displayName}'s password",
+                                                        stringResource(R.string.s_reset_password_of, member.displayName),
                                                 )
                                             }
                                             IconButton(
@@ -517,7 +521,7 @@ fun FamilyAdminScreen(
                                             ) {
                                                 Icon(
                                                     Icons.Filled.PersonRemove,
-                                                    contentDescription = "Remove ${member.displayName}",
+                                                    contentDescription = stringResource(R.string.s_remove_member, member.displayName),
                                                     tint = MaterialTheme.colorScheme.error,
                                                 )
                                             }
@@ -557,9 +561,11 @@ fun FamilyAdminScreen(
     }
 
     confirmRemove?.let { member ->
+        // Resolved here: the confirm button's onClick is not a composable scope.
+        val removedMessage = stringResource(R.string.s_removed_member, member.displayName)
         AlertDialog(
             onDismissRequest = { confirmRemove = null },
-            title = { Text("Remove ${member.displayName}?") },
+            title = { Text(stringResource(R.string.s_remove_member_q, member.displayName)) },
             text = { Text(stringResource(R.string.s_they_lose_access_to_the_family_chats_history_stays_and_ret)) },
             confirmButton = {
                 DestructiveTextButton(
@@ -568,7 +574,7 @@ fun FamilyAdminScreen(
                         departingMembers += member.userId
                         viewModel.removeMember(member.userId) {
                             scope.launch {
-                                snackbarHostState.showSnackbar("Removed ${member.displayName}")
+                                snackbarHostState.showSnackbar(removedMessage)
                             }
                         }
                         confirmRemove = null
@@ -612,19 +618,21 @@ fun FamilyAdminScreen(
     }
 
     resetTarget?.let { member ->
+        // Same sentence as the key icon's description — "Reset X's
+        // password" reads as the deed done, too. Resolved here: onConfirm
+        // is not a composable scope.
+        val resetMessage = stringResource(R.string.s_reset_password_of, member.displayName)
         SetPasswordDialog(
             title = stringResource(R.string.s_reset_password),
             // Said plainly, because it is not obvious and not undoable.
-            explanation = "${member.displayName} will be signed out on every device and will " +
-                "need this password to sign back in. Tell it to them somewhere safe — the " +
-                "server has no way to email it.",
-            confirmLabel = "Reset",
+            explanation = stringResource(R.string.s_member_signed_out_explanation, member.displayName),
+            confirmLabel = stringResource(R.string.s_reset),
             busy = state.busy,
             onDismiss = { resetTarget = null },
             onConfirm = { password ->
                 viewModel.resetMemberPassword(member.userId, password) {
                     scope.launch {
-                        snackbarHostState.showSnackbar("Reset ${member.displayName}'s password")
+                        snackbarHostState.showSnackbar(resetMessage)
                     }
                 }
                 resetTarget = null
@@ -657,6 +665,14 @@ fun SetPasswordDialog(
     var password by remember { mutableStateOf("") }
     var confirmation by remember { mutableStateOf("") }
     var problem by remember { mutableStateOf<String?>(null) }
+    // Resolved in composition: the button's onClick, where they are
+    // chosen, is not a composable scope.
+    val tooShort = pluralStringResource(
+        R.plurals.s_use_at_least_characters,
+        MIN_PASSWORD_LENGTH,
+        MIN_PASSWORD_LENGTH,
+    )
+    val mismatch = stringResource(R.string.s_those_two_do_not_match)
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
@@ -706,9 +722,8 @@ fun SetPasswordDialog(
                     problem = when {
                         // The rule the server enforces, checked here so the
                         // dialog can say so without a round trip.
-                        password.length < MIN_PASSWORD_LENGTH ->
-                            "Use at least $MIN_PASSWORD_LENGTH characters."
-                        password != confirmation -> "Those two do not match."
+                        password.length < MIN_PASSWORD_LENGTH -> tooShort
+                        password != confirmation -> mismatch
                         else -> null
                     }
                     if (problem == null) onConfirm(password)

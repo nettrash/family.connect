@@ -825,11 +825,15 @@ final class ChatSyncCoordinator {
     /// A call record is written once by the server and never changes, and
     /// an incoming copy WITHOUT one says nothing about a record already
     /// stored — the absent-field rule, third time this project has been
-    /// bitten by it. So the record is only ever set, never cleared.
+    /// bitten by it. So the record is only ever set, never cleared. All
+    /// three columns move together: the video flag is part of the record,
+    /// and this is also the path that repairs a row cached before the
+    /// flag was stored at all.
     private func applyCall(_ dto: MessageDTO, to entity: MessageEntity) {
         guard let call = dto.call else { return }
         entity.callOutcome = call.outcome
         entity.callDurationSecs = call.durationSecs
+        entity.callVideo = call.video
     }
 
     /// Apply one server message. `bumpUnread` is true only for live

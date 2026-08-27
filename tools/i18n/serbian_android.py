@@ -261,4 +261,36 @@ ANDROID_ONLY = {
 "s_color_orange": "Наранџаста",
 "s_color_purple": "Љубичаста",
 # --- end UX polish 2026-08 ---
+
+# The chrome literals localised in the 2026-08 review pass: the family
+# console's dialogs, snackbars and captions, the auth/join screens, the
+# reply banner and its accessibility sentence. "Declined", "Reset" and
+# "Create account" are found by the English match and not repeated here.
+# The colon forms ("Одобрено: %1$s") keep the participle off the person,
+# so nothing is gendered.
+"s_remove_member_q": "Уклонити %1$s?",
+"s_approve_member": "Одобри %1$s",
+"s_reject_member": "Одбиј %1$s",
+"s_remove_member": "Уклони %1$s",
+"s_approved_member": "Одобрено: %1$s",
+"s_rejected_member": "Одбијено: %1$s",
+"s_removed_member": "Уклоњено: %1$s",
+"s_reset_password_of": "Ресетуј лозинку за %1$s",
+# The iOS sentence with %1$s in place of %@, which the English match
+# cannot see past — same words as serbian.py.
+"s_member_signed_out_explanation":
+  "Све сесије за %1$s биће затворене, а за поновну пријаву требаће ова лозинка. "
+  "Пренеси је на сигуран начин — сервер не може да шаље мејлове.",
+"s_join_open_caption": "Свако ко има позивни код придружује се одмах.",
+"s_join_approval_caption": "Придруживање кодом чека твоје одобрење.",
+"s_those_two_do_not_match": "Ове две се не поклапају.",
+"s_show_password": "Прикажи лозинку",
+"s_hide_password": "Сакриј лозинку",
+"s_your_request_is_with_the_family_owner": "Твој захтев је код власника породице.",
+"s_your_request_to_join_is_with_the_family_owner":
+  "Твој захтев за приступ породици „%1$s“ је код власника породице.",
+# "Replying to %@" on iOS; the placeholders differ, the words do not.
+"s_replying_to": "Одговор за %1$s",
+"s_replying_to_excerpt": "Одговор за %1$s: %2$s",
+"s_replying_to_excerpt_with_parent": "Одговор за %1$s: %2$s, које је одговарало %3$s",
 }

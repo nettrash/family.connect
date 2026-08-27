@@ -74,6 +74,19 @@ final class WebRTCClient: NSObject, CallMediaClient {
     /// candidate tasks keep this client alive past `media = nil`.
     private var closed = false
 
+    #if os(iOS)
+    /// The route the manager last asked for — kept, because the session
+    /// gets re-configured underneath the override (see init) and the
+    /// answer each time is to say this again.
+    private var speakerOn = false
+    private var routeObserver: (any NSObjectProtocol)?
+    /// Re-applications driven by route-change notifications, bounded so
+    /// a route the hardware refuses (a wired headset ignores the speaker
+    /// override) can never become a notification loop.
+    private var notifiedReapplies = 0
+    private static let maxNotifiedReapplies = 6
+    #endif
+
     /// Fails only when libwebrtc refuses the configuration, which with an
     /// audio/video unified-plan connection it does not.
     init?(iceServers: [IceServerDTO], video: Bool = false) {
@@ -111,6 +124,30 @@ final class WebRTCClient: NSObject, CallMediaClient {
             self.videoTrack = nil
         }
         super.init()
+        #if os(iOS)
+        // WebRTC's audio unit writes its own configuration into the
+        // session when it starts — after CallKit's didActivate, and again
+        // after an interruption — and every category/mode write drops the
+        // output override. The stock configuration is also .voiceChat,
+        // which on a VIDEO call put the earpiece back moments after the
+        // speaker was chosen (configureAudioSessionForCall now keeps that
+        // configuration equal to ours, so the write changes nothing). The
+        // category-change notification is the one signal that a write
+        // happened; the answer is to say the wanted route again.
+        routeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            guard let raw, let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+            // Category (or mode) writes, and a headset pulled out: both
+            // drop the override (Apple: it "remains in effect only until
+            // the current route changes"). NEVER on a device plugged IN —
+            // forcing the speaker there would defeat the headphones the
+            // person just reached for.
+            guard reason == .categoryChange || reason == .oldDeviceUnavailable else { return }
+            Task { @MainActor in self?.reapplySpeakerRouteAfterNotification() }
+        }
+        #endif
         connection.add(track, streamIds: ["stream0"])
         if let videoTrack { connection.add(videoTrack, streamIds: ["stream0"]) }
         connection.delegate = self
@@ -261,6 +298,27 @@ final class WebRTCClient: NSObject, CallMediaClient {
 
     func setSpeaker(_ enabled: Bool) {
         #if os(iOS)
+        speakerOn = enabled
+        // An explicit choice opens a fresh budget: the mode write a
+        // video-call toggle makes is itself a category change, so each
+        // toggle would otherwise spend one of the six on its own echo.
+        notifiedReapplies = 0
+        applySpeakerRoute()
+        #endif
+    }
+
+    #if os(iOS)
+    private func reapplySpeakerRouteAfterNotification() {
+        guard !closed, notifiedReapplies < Self.maxNotifiedReapplies else { return }
+        notifiedReapplies += 1
+        applySpeakerRoute()
+    }
+
+    /// The route the manager wants, said to the session. Idempotent:
+    /// called from setSpeaker, and again whenever the session was
+    /// re-configured underneath the override (see init).
+    private func applySpeakerRoute() {
+        let enabled = speakerOn
         let session = RTCAudioSession.sharedInstance()
         session.lockForConfiguration()
         defer { session.unlockForConfiguration() }
@@ -277,14 +335,24 @@ final class WebRTCClient: NSObject, CallMediaClient {
             // session's ACTIVATION, and neither setMode nor the override
             // activates anything.
             if isVideoCall {
-                try session.setMode(enabled ? .videoChat : .voiceChat)
+                let mode: AVAudioSession.Mode = enabled ? .videoChat : .voiceChat
+                // Only when it differs: a mode write is itself a
+                // category-change notification, which is what brings us
+                // here — writing the same mode again would be a loop.
+                if session.mode != mode.rawValue {
+                    try session.setMode(mode)
+                }
+                // And WebRTC's own configuration follows, or its next
+                // audio-unit start puts the mode — and with it the
+                // default route — back.
+                Self.syncWebRTCConfiguration(mode: mode)
             }
             try session.overrideOutputAudioPort(enabled ? .speaker : .none)
         } catch {
             AppLog.ui.info("Speaker override failed: \(String(describing: error))")
         }
-        #endif
     }
+    #endif
 
     func close() {
         // Order matters: stop the capturer FIRST, then close the
@@ -292,6 +360,10 @@ final class WebRTCClient: NSObject, CallMediaClient {
         // frames into a dead source — the camera light stays on for a call
         // that no longer exists.
         closed = true
+        #if os(iOS)
+        if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
+        routeObserver = nil
+        #endif
         capturer?.stopCapture()
         if let localRenderer { videoTrack?.remove(localRenderer) }
         if let remoteRelay { remoteVideoTrack?.remove(remoteRelay) }
@@ -373,9 +445,24 @@ final class WebRTCClient: NSObject, CallMediaClient {
             try session.setCategory(
                 .playAndRecord, mode: video ? .videoChat : .voiceChat,
                 options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+            syncWebRTCConfiguration(mode: video ? .videoChat : .voiceChat)
         } catch {
             AppLog.ui.info("Call audio session configuration failed: \(String(describing: error))")
         }
+    }
+
+    /// What WebRTC's audio unit writes into the session when it starts
+    /// (RTCAudioSession.setConfiguration, from its audio thread). Its
+    /// stock configuration is .voiceChat, which on a VIDEO call put the
+    /// mode — and the speaker the toggle claimed — back to the earpiece
+    /// moments after CallKit activated the session. Kept equal to ours,
+    /// so that write changes nothing and drops no override.
+    private static func syncWebRTCConfiguration(mode: AVAudioSession.Mode) {
+        let config = RTCAudioSessionConfiguration.webRTC()
+        config.category = AVAudioSession.Category.playAndRecord.rawValue
+        config.categoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
+        config.mode = mode.rawValue
+        RTCAudioSessionConfiguration.setWebRTC(config)
     }
     #endif
 }

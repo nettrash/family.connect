@@ -287,6 +287,28 @@
     <string name="s_color_green">Зелена</string>
     <string name="s_color_orange">Наранџаста</string>
     <string name="s_color_purple">Љубичаста</string>
+    <string name="s_declined">Одбијено</string>
+    <string name="s_reset">Ресетуј</string>
+    <string name="s_create_account">Направи налог</string>
+    <string name="s_show_password">Прикажи лозинку</string>
+    <string name="s_hide_password">Сакриј лозинку</string>
+    <string name="s_your_request_is_with_the_family_owner">Твој захтев је код власника породице.</string>
+    <string name="s_your_request_to_join_is_with_the_family_owner">Твој захтев за приступ породици „%1$s“ је код власника породице.</string>
+    <string name="s_replying_to">Одговор за %1$s</string>
+    <string name="s_replying_to_excerpt">Одговор за %1$s: %2$s</string>
+    <string name="s_replying_to_excerpt_with_parent">Одговор за %1$s: %2$s, које је одговарало %3$s</string>
+    <string name="s_remove_member_q">Уклонити %1$s?</string>
+    <string name="s_approve_member">Одобри %1$s</string>
+    <string name="s_reject_member">Одбиј %1$s</string>
+    <string name="s_remove_member">Уклони %1$s</string>
+    <string name="s_approved_member">Одобрено: %1$s</string>
+    <string name="s_rejected_member">Одбијено: %1$s</string>
+    <string name="s_removed_member">Уклоњено: %1$s</string>
+    <string name="s_reset_password_of">Ресетуј лозинку за %1$s</string>
+    <string name="s_member_signed_out_explanation">Све сесије за %1$s биће затворене, а за поновну пријаву требаће ова лозинка. Пренеси је на сигуран начин — сервер не може да шаље мејлове.</string>
+    <string name="s_join_open_caption">Свако ко има позивни код придружује се одмах.</string>
+    <string name="s_join_approval_caption">Придруживање кодом чека твоје одобрење.</string>
+    <string name="s_those_two_do_not_match">Ове две се не поклапају.</string>
     <plurals name="s_voted_of_family">
         <item quantity="one">%1$d глас од %2$d</item>
         <item quantity="few">%1$d гласа од %2$d</item>
@@ -301,5 +323,10 @@
         <item quantity="one">%1$d нова порука</item>
         <item quantity="few">%1$d нове поруке</item>
         <item quantity="other">%1$d нових порука</item>
+    </plurals>
+    <plurals name="s_use_at_least_characters">
+        <item quantity="one">Користи бар %1$d знак.</item>
+        <item quantity="few">Користи бар %1$d знака.</item>
+        <item quantity="other">Користи бар %1$d знакова.</item>
     </plurals>
 </resources>

@@ -99,7 +99,7 @@ struct NewChatView: View {
                 dismiss()
                 onOpen(chatID)
             } catch {
-                errorText = "The server couldn't open a chat with them. Try again."
+                errorText = String(localized: "The server couldn't open a chat with them. Try again.")
             }
         }
     }

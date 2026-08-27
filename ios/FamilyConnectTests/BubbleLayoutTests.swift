@@ -31,6 +31,14 @@
 //  detail); the quote is identified by being the tallest band, since it is
 //  the only one taller than a line of text.
 //
+//  THE RAGGING TESTS at the bottom read the same bands sideways: each
+//  band's left-most and right-most inked column say which edge the lines
+//  rag against, which is the own-reply rule (trailing through two lines,
+//  leading from three — OwnReplyBodyAlignment). That alignment is state
+//  written by onGeometryChange during layout, so those bubbles are hosted
+//  in a real UIWindow and laid out before they are read, where the other
+//  tests can use ImageRenderer directly.
+//
 
 #if os(iOS)
 
@@ -203,8 +211,18 @@ struct BubbleLayoutTests {
         return image
     }
 
+    /// One run of inked rows, with the columns its ink spans.
+    private struct Band {
+        var start: Int
+        var end: Int
+        var left: Int
+        var right: Int
+        var height: Int { end - start }
+        var width: Int { right - left }
+    }
+
     /// Rows of pixels containing white ink, collapsed into contiguous bands.
-    private func bands(in image: CGImage) throws -> [(start: Int, end: Int)] {
+    private func bands(in image: CGImage) throws -> [Band] {
         let width = image.width
         let height = image.height
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
@@ -220,10 +238,12 @@ struct BubbleLayoutTests {
             "could not read the rendered pixels")
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        var result: [(start: Int, end: Int)] = []
-        var bandStart: Int?
+        var result: [Band] = []
+        var open: Band?
         for y in 0..<height {
             var inked = 0
+            var left = Int.max
+            var right = Int.min
             for x in 0..<width {
                 let index = (y * width + x) * 4
                 // Light ink on the tint. The floor is 170 rather than 200
@@ -234,18 +254,30 @@ struct BubbleLayoutTests {
                 // 255): high in blue, so all three channels are required.
                 if pixels[index] > 170, pixels[index + 1] > 170, pixels[index + 2] > 170 {
                     inked += 1
+                    left = min(left, x)
+                    right = max(right, x + 1)
                 }
             }
             // The accent bar is exactly 3pt wide and is what welds the
             // quote's lines together, so 3 inked pixels IS a row.
-            if inked >= 3, bandStart == nil {
-                bandStart = y
-            } else if inked < 3, let start = bandStart {
-                result.append((start, y))
-                bandStart = nil
+            if inked >= 3 {
+                if var band = open {
+                    band.left = min(band.left, left)
+                    band.right = max(band.right, right)
+                    open = band
+                } else {
+                    open = Band(start: y, end: y, left: left, right: right)
+                }
+            } else if var band = open {
+                band.end = y
+                result.append(band)
+                open = nil
             }
         }
-        if let start = bandStart { result.append((start, height)) }
+        if var band = open {
+            band.end = height
+            result.append(band)
+        }
         // Weld micro-gaps. A glyph row can dip below the 3-pixel floor for
         // a single row INSIDE a line (a descender's waist), splitting one
         // line into two bands — measured on the left-aligned control body,
@@ -256,10 +288,12 @@ struct BubbleLayoutTests {
         // one band. A REAL lost line removes a full line pitch (~22 rows at
         // .large), which this cannot absorb — the regression the suite
         // exists for still fails it.
-        var welded: [(start: Int, end: Int)] = []
+        var welded: [Band] = []
         for band in result {
             if let last = welded.last, band.start - last.end <= 2 {
-                welded[welded.count - 1] = (last.start, band.end)
+                welded[welded.count - 1] = Band(
+                    start: last.start, end: band.end,
+                    left: min(last.left, band.left), right: max(last.right, band.right))
             } else {
                 welded.append(band)
             }
@@ -277,8 +311,112 @@ struct BubbleLayoutTests {
     private func quoteBandHeight(excerpt: String) throws -> Int {
         let replyTo = ReplyToSnapshot(messageID: 41, senderID: 7, excerpt: excerpt)
         let measured = try bands(in: render(body: Self.body, replyTo: replyTo))
-        let tallest = try #require(measured.max { ($0.end - $0.start) < ($1.end - $1.start) })
-        return tallest.end - tallest.start
+        let tallest = try #require(measured.max { $0.height < $1.height })
+        return tallest.height
+    }
+
+    // MARK: - The own-reply ragging rule
+
+    /// Two lines, the second much shorter than the first — so which edge
+    /// the lines rag against is unmistakable. Wraps once at the render
+    /// width, after "you" (the sanity checks below say so).
+    private static let twoLineBody = "Yes I totally agree with you about that"
+
+    @Test("an own reply of three or more lines rags its lines LEFT")
+    func longOwnReplyRagsLeading() throws {
+        // Self.body is the four-plus-line fixture the truncation test uses.
+        let lines = try textBands(body: Self.body)
+        #expect(lines.count >= 3, "fixture too short to cross the three-line threshold")
+        let widest = try #require(lines.max { $0.width < $1.width })
+        let shortest = try #require(lines.min { $0.width < $1.width })
+        #expect(shortest.width < widest.width - 20, "fixture lines are too alike to tell an edge")
+
+        #expect(
+            abs(shortest.left - widest.left) <= 4,
+            """
+            a long own reply's lines do not share a left edge (shortest at             \(shortest.left), widest at \(widest.left)) — three or more             lines must go back to leading alignment
+            """)
+        #expect(
+            shortest.right < widest.right - 20,
+            """
+            a long own reply's shortest line still reaches the right edge             (\(shortest.right) vs \(widest.right)) — it is right-ragged,             which is the rule for two lines at most
+            """)
+    }
+
+    @Test("an own reply of one or two lines still rags its lines RIGHT")
+    func shortOwnReplyRagsTrailing() throws {
+        let lines = try textBands(body: Self.twoLineBody)
+        #expect(lines.count == 2, "fixture wrapped to \(lines.count) line(s), not the two it needs")
+        let widest = try #require(lines.max { $0.width < $1.width })
+        let shortest = try #require(lines.min { $0.width < $1.width })
+        #expect(shortest.width < widest.width - 20, "fixture lines are too alike to tell an edge")
+
+        #expect(
+            abs(shortest.right - widest.right) <= 4,
+            """
+            a short own reply's lines do not share a right edge (shortest at             \(shortest.right), widest at \(widest.right)) — through two             lines the body stays trailing-aligned
+            """)
+        #expect(
+            shortest.left > widest.left + 20,
+            """
+            a short own reply's shortest line starts at the left edge             (\(shortest.left) vs \(widest.left)) — it is left-ragged, which             is the rule from three lines on
+            """)
+    }
+
+    /// The body's line bands of an own reply, hosted for real: every band
+    /// except the quote block, which is the tallest (its accent bar welds
+    /// its lines) and always sits on the leading edge whatever the body
+    /// does.
+    private func textBands(body: String) throws -> [Band] {
+        let measured = try bands(in: renderHosted(body: body, replyTo: quote))
+        let tallest = try #require(measured.max { $0.height < $1.height })
+        return measured.filter { $0.start != tallest.start }
+    }
+
+    /// The reply balloon in a UIWindow, laid out until the alignment
+    /// state written by onGeometryChange has fed back into layout, then
+    /// captured. ImageRenderer would draw the first pass only — the one
+    /// before the body's height has been read — and always show the
+    /// trailing (unmeasured) alignment.
+    private func renderHosted(body: String, replyTo: ReplyToSnapshot?) throws -> CGImage {
+        let canvas = CGRect(x: 0, y: 0, width: Self.renderWidth, height: 600)
+        let host = UIHostingController(
+            rootView: bubble(body: body, replyTo: replyTo)
+                .frame(height: canvas.height, alignment: .top))
+        // Transparent, like ImageRenderer's canvas: the band reader takes
+        // any light pixel for ink, and a white view background would be
+        // one band from top to bottom.
+        host.view.backgroundColor = .clear
+        // A window outside every scene is never composited on iOS 13+,
+        // and an uncomposited window draws nothing — so it joins the test
+        // host's scene.
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first
+        let window = scene.map { UIWindow(windowScene: $0) } ?? UIWindow(frame: canvas)
+        window.frame = canvas
+        window.backgroundColor = .clear
+        window.rootViewController = host
+        window.isHidden = false
+        defer { window.isHidden = true }
+
+        // Layout, state write, layout again: two passes settle it, the
+        // third is slack. Each spin lets SwiftUI apply the pending @State.
+        for _ in 0..<3 {
+            window.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let image = UIGraphicsImageRenderer(bounds: canvas, format: format).image { context in
+            // The layer tree, not drawHierarchy: the latter needs the
+            // window to have been through the compositor, which a
+            // just-shown test window may not have been.
+            window.layer.render(in: context.cgContext)
+        }
+        return try #require(image.cgImage, "the hosted bubble did not render")
     }
 }
 

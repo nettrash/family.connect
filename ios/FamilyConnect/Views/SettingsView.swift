@@ -266,7 +266,10 @@ struct SettingsView: View {
         Section {
             if let family = model.family ?? session.family {
                 LabeledContent("Family", value: family.name)
-                LabeledContent("Join policy", value: family.joinPolicy == "open" ? "Open" : "Approval")
+                // `value:` is a String, not a key — localized by hand.
+                LabeledContent(
+                    "Join policy",
+                    value: family.joinPolicy == "open" ? String(localized: "Open") : String(localized: "Approval"))
                 if session.isOwner, let code = model.family?.inviteCode {
                     LabeledContent("Invite code") {
                         Text(code)
@@ -370,7 +373,7 @@ struct SettingsView: View {
             } catch APIError.conflict(let code, _) where code == "owner_cannot_leave" {
                 model.ownerBlockedAlert = true
             } catch {
-                model.errorText = "Couldn't leave right now. Try again."
+                model.errorText = String(localized: "Couldn't leave right now. Try again.")
             }
         }
     }

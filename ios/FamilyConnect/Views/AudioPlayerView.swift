@@ -50,6 +50,8 @@ struct AudioPlayerView: View {
                 Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 32))
                     .foregroundStyle(ink)
+                    // The glyph is 32; the target is the platform's 44.
+                    .frame(width: 44, height: 44)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)

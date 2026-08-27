@@ -162,11 +162,14 @@ struct MessageBubbleView: View {
             || bodyBlocks.contains { $0.isTable }
     }
 
-    /// An own message that IS a reply right-aligns its body while the
-    /// quote above it stays on the left — the product rule as of 2026-08
-    /// (see the content stack's comment in `bubble`). Everyone else's
-    /// messages, and own messages without a quote, keep one left edge.
-    private var alignsBodyTrailing: Bool {
+    /// An own message that IS a reply lays its balloon out with
+    /// ReplyContentLayout, where the quote keeps the left edge and the
+    /// body chooses its own by line count: trailing while it fits in two
+    /// lines, back to leading from three (`OwnReplyBodyAlignment` — the
+    /// product rule as of 2026-08, refined at the owner's ask; see the
+    /// content stack's comment in `bubble`). Everyone else's messages,
+    /// and own messages without a quote, keep one left edge.
+    private var isOwnReply: Bool {
         isMine && message.replyTo != nil
     }
 
@@ -482,9 +485,15 @@ struct MessageBubbleView: View {
             // Content used to share ONE left edge unconditionally ("text
             // reads from the left; only the balloon has a side"), and that
             // rule is now deliberately reversed for exactly one case: in
-            // MY replies the BODY sits against the trailing edge, while
-            // the QUOTE keeps the left one. Everyone else's messages, and
-            // own messages without a quote, still share one left edge.
+            // MY replies a SHORT body — one or two lines — sits against
+            // the trailing edge, while the QUOTE keeps the left one. A
+            // body that wraps to three lines or more goes back to the
+            // leading edge (the owner's follow-up: a right-ragged
+            // paragraph reads as an accident). The line count is measured
+            // by OwnReplyBodyAlignment, which owns all three
+            // alignment-dependent modifiers on the body Text. Everyone
+            // else's messages, and own messages without a quote, still
+            // share one left edge.
             //
             // How the quote stays left while the body sits right — and
             // the balloon still HUGS its content: ReplyContentLayout. Its
@@ -497,7 +506,7 @@ struct MessageBubbleView: View {
             // block and the body Text is untouched: vertical pinning is
             // what keeps a reply from truncating its own body
             // (BubbleLayoutTests pins that).
-            let contentStack = alignsBodyTrailing
+            let contentStack = isOwnReply
                 ? AnyLayout(ReplyContentLayout(spacing: 2))
                 : AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
             contentStack {
@@ -569,9 +578,6 @@ struct MessageBubbleView: View {
                         // below warn about. The quote block below is pinned too,
                         // which is the cause rather than the symptom.
                         .fixedSize(horizontal: false, vertical: true)
-                        // The reply rule again, inside the wrap: a body on
-                        // the trailing edge also rags its lines against it.
-                        .multilineTextAlignment(alignsBodyTrailing ? .trailing : .leading)
                         // While the assistant is writing, the text ends in a
                         // cursor rather than just stopping mid-word — on the
                         // LAST text block, which is the only one still growing.
@@ -583,24 +589,30 @@ struct MessageBubbleView: View {
                                     .offset(x: 8)
                             }
                         }
-                        // A sibling block — a link card or a photo — has already
-                        // decided how wide this balloon is. Text left to itself
-                        // reports the width it WANTS (SwiftUI balances the lines,
-                        // so two lines each come out around half width), and the
-                        // result is a narrow paragraph floating over a wide card.
-                        // Filling the width makes it wrap against the same edge.
+                        // The reply rule, all three of its modifiers at once:
+                        // the line ragging, the width-filling frame's edge and
+                        // the ReplyContentLayout tag, from ONE measured line
+                        // count (trailing through two lines, leading from
+                        // three). Placed AFTER the cursor overlay, which
+                        // does not change the Text's size, and BEFORE any
+                        // frame, so the height it counts lines from is the
+                        // Text's own. Off (plain leading, nothing measured)
+                        // for every message that is not an own reply.
                         //
-                        // Gated on there BEING such a block: unconditionally,
-                        // this is the change that made every balloon full width
-                        // when the reply quote did it.
-                        .frame(
-                            maxWidth: fillsBalloonWidth ? .infinity : nil,
-                            alignment: alignsBodyTrailing ? .trailing : .leading)
-                        // The edge this block hugs in an own reply's
-                        // ReplyContentLayout; a VStack ignores the tag.
-                        // Only the BODY rides trailing — Android is the
-                        // reference, and it moves nothing else.
-                        .balloonEdge(.trailing)
+                        // `fillsWidth`: a sibling block — a link card or a
+                        // photo — has already decided how wide this balloon
+                        // is. Text left to itself reports the width it WANTS
+                        // (SwiftUI balances the lines, so two lines each come
+                        // out around half width), and the result is a narrow
+                        // paragraph floating over a wide card. Filling the
+                        // width makes it wrap against the same edge. Gated on
+                        // there BEING such a block: unconditionally, this is
+                        // the change that made every balloon full width when
+                        // the reply quote did it.
+                        .ownReplyBodyAlignment(
+                            enabled: isOwnReply,
+                            font: bubbleFont,
+                            fillsWidth: fillsBalloonWidth)
                 }
                 // The colour again, one level up: a table's cells are Texts
                 // of their own and have no colour of their own, and on my

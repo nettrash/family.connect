@@ -19,37 +19,44 @@ import Foundation
 
 nonisolated enum AvatarFailure {
 
-    /// - Parameter verb: "upload" or "remove", for the fallback sentence.
+    /// Every sentence goes through the catalog: these are Strings on
+    /// their way to a Text, and a literal is not localized by itself.
+    ///
+    /// - Parameter verb: "upload" or "remove", choosing the fallback
+    ///   sentence. Two whole sentences rather than a verb spliced into
+    ///   one, so each language can word them its own way.
     static func message(for error: Error, verb: String) -> String {
         switch error {
         case APIError.notConfigured:
-            return "No server address is set."
+            return String(localized: "No server address is set.")
         case APIError.transport:
-            return "Can't reach the server. Check your connection."
+            return String(localized: "Can't reach the server. Check your connection.")
         case APIError.notFound:
             // The endpoint itself is missing. Both avatar mutations are
             // "me"-scoped, so the server can only 404 them by not having
             // the route at all — i.e. it was built before profile
             // pictures existed.
-            return "This server doesn't support profile pictures yet — it needs updating."
+            return String(localized: "This server doesn't support profile pictures yet — it needs updating.")
         case APIError.forbidden:
-            return "The server refused that."
+            return String(localized: "The server refused that.")
         case APIError.payloadTooLarge:
             // Either the server's own cap or — far more often — a proxy
             // in front of it with a smaller `client_max_body_size`.
-            return "That photo is too large for this server."
+            return String(localized: "That photo is too large for this server.")
         case APIError.conflict(let code, let message):
             return switch code {
-            case "avatar_too_large": "That photo is too large for this server."
-            case "invalid_image": "That file isn't a photo we can use."
-            default: message ?? "The server refused the photo."
+            case "avatar_too_large": String(localized: "That photo is too large for this server.")
+            case "invalid_image": String(localized: "That file isn't a photo we can use.")
+            default: message ?? String(localized: "The server refused the photo.")
             }
         case APIError.server(let status, _):
-            return "The server had a problem (\(status)). Try again."
+            return String(localized: "The server had a problem (\(status)). Try again.")
         case APIError.decoding:
-            return "The server sent an answer this app didn't understand."
+            return String(localized: "The server sent an answer this app didn't understand.")
         default:
-            return "Couldn't \(verb) the photo."
+            return verb == "remove"
+                ? String(localized: "Couldn't remove the photo.")
+                : String(localized: "Couldn't upload the photo.")
         }
     }
 }

@@ -303,4 +303,29 @@
     <string name="s_color_green">绿色</string>
     <string name="s_color_orange">橙色</string>
     <string name="s_color_purple">紫色</string>
+    <string name="s_declined">已拒绝</string>
+    <string name="s_reset">重置</string>
+    <string name="s_create_account">创建账户</string>
+    <string name="s_show_password">显示密码</string>
+    <string name="s_hide_password">隐藏密码</string>
+    <string name="s_your_request_is_with_the_family_owner">你的申请已交给家庭拥有者。</string>
+    <string name="s_your_request_to_join_is_with_the_family_owner">你加入“%1$s”的申请已交给家庭拥有者。</string>
+    <string name="s_replying_to">回复 %1$s</string>
+    <string name="s_replying_to_excerpt">回复 %1$s：%2$s</string>
+    <string name="s_replying_to_excerpt_with_parent">回复 %1$s：%2$s，而它回复的是 %3$s</string>
+    <string name="s_remove_member_q">移除 %1$s？</string>
+    <string name="s_approve_member">批准 %1$s</string>
+    <string name="s_reject_member">拒绝 %1$s</string>
+    <string name="s_remove_member">移除 %1$s</string>
+    <string name="s_approved_member">已批准：%1$s</string>
+    <string name="s_rejected_member">已拒绝：%1$s</string>
+    <string name="s_removed_member">已移除：%1$s</string>
+    <string name="s_reset_password_of">重置 %1$s 的密码</string>
+    <string name="s_member_signed_out_explanation">%1$s 将在所有设备上退出登录，需要用这个密码重新登录。请当面告诉对方——服务器无法通过邮件发送。</string>
+    <string name="s_join_open_caption">任何拥有邀请码的人都会立即加入。</string>
+    <string name="s_join_approval_caption">使用邀请码加入的人需要等你批准。</string>
+    <string name="s_those_two_do_not_match">两次输入不一致。</string>
+    <plurals name="s_use_at_least_characters">
+        <item quantity="other">至少使用 %1$d 个字符。</item>
+    </plurals>
 </resources>

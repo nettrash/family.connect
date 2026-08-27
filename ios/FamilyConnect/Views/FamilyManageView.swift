@@ -116,20 +116,29 @@ struct FamilyManageView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        // 44pt targets on glyph-only buttons, and a label
+                        // that says WHOSE request — two unlabelled icons
+                        // per row is what VoiceOver read before.
                         Button {
                             reject(request)
                         } label: {
                             Image(systemName: "xmark.circle")
                                 .foregroundStyle(.red)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.borderless)
+                        .accessibilityLabel(Text("Reject \(request.user.displayName)"))
                         Button {
                             approve(request)
                         } label: {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(.tint)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.borderless)
+                        .accessibilityLabel(Text("Approve \(request.user.displayName)"))
                     }
                     .disabled(model.workingRequestIDs.contains(request.id))
                 }
@@ -272,7 +281,7 @@ struct FamilyManageView: View {
                 model.requests.removeAll { $0.id == request.id }
                 await coordinator.resync() // roster + chats pick up the new member
             } catch {
-                model.errorText = "Couldn't approve the request. Pull to refresh."
+                model.errorText = String(localized: "Couldn't approve the request. Pull to refresh.")
             }
         }
     }
@@ -285,7 +294,7 @@ struct FamilyManageView: View {
                 try await coordinator.api.rejectJoinRequest(id: request.id)
                 model.requests.removeAll { $0.id == request.id }
             } catch {
-                model.errorText = "Couldn't reject the request. Pull to refresh."
+                model.errorText = String(localized: "Couldn't reject the request. Pull to refresh.")
             }
         }
     }
@@ -307,7 +316,7 @@ struct FamilyManageView: View {
                         aiHistory: family.aiHistory)
                 }
             } catch {
-                model.errorText = "Couldn't rotate the code. Try again."
+                model.errorText = String(localized: "Couldn't rotate the code. Try again.")
             }
         }
     }
@@ -327,7 +336,7 @@ struct FamilyManageView: View {
                     language: updated.language,
                     aiHistory: updated.aiHistory)
             } catch {
-                model.errorText = "Couldn't change the policy. Try again."
+                model.errorText = String(localized: "Couldn't change the policy. Try again.")
             }
         }
     }
@@ -339,7 +348,7 @@ struct FamilyManageView: View {
                 settingsModel.members.removeAll { $0.id == member.id }
                 await coordinator.resync()
             } catch {
-                model.errorText = "Couldn't remove \(member.displayName). Try again."
+                model.errorText = String(localized: "Couldn't remove \(member.displayName). Try again.")
             }
         }
     }

@@ -186,6 +186,14 @@ final class CallManager {
     /// is not at an ear), and the toggle must draw the state the ear
     /// hears. Seeded wherever `isVideo` is set, mirroring Android's
     /// `audio.begin(video)` pairing of route and state.
+    ///
+    /// This is the AUTHORITY on the route, not a record of one tap: it
+    /// is applied to the media client when that client is created
+    /// (`applyAudioState`) and said again when CallKit activates the
+    /// session (`systemDidActivateAudio`), because a route set on a
+    /// session that is not live yet does not survive activation — the
+    /// toggle used to show "speaker" over a call the ear heard in the
+    /// receiver.
     private(set) var isSpeaker = false
     /// The call's KIND (docs/protocol.md, "Video"): set when the call is
     /// placed or when the offer/push arrives, fixed for the call's life.
@@ -364,6 +372,18 @@ final class CallManager {
         media?.setSpeaker(isSpeaker)
     }
 
+    /// Mute and route as the state says, onto a media client that has
+    /// just been created. Both toggles are usable before the client
+    /// exists (an outgoing call rings while the ICE servers are still
+    /// being fetched; a video call is seeded speaker-on at placement),
+    /// and a client built after the tap would otherwise start from its
+    /// own defaults — the toggle drawing one thing, the ear hearing
+    /// another.
+    private func applyAudioState() {
+        media?.setMuted(isMuted)
+        media?.setSpeaker(isSpeaker)
+    }
+
     /// Camera on/off, on a video call. The call's kind never changes —
     /// the track is enabled or disabled, no renegotiation, no frame.
     ///
@@ -448,6 +468,17 @@ final class CallManager {
     func systemDidSetMuted(_ muted: Bool) {
         isMuted = muted
         media?.setMuted(muted)
+    }
+
+    /// CallKit activated the audio session (CXProviderDelegate's
+    /// didActivate, via CallKitController). Activation is the moment a
+    /// route can actually take: a choice made while the call still rang,
+    /// or the video call's speaker default, went to a session that was
+    /// not live, and WebRTC's audio unit re-configures the session as it
+    /// starts. So the wanted route is said again, here, from the state
+    /// the toggle draws. Idempotent; a no-op on the Mac's media client.
+    func systemDidActivateAudio() {
+        media?.setSpeaker(isSpeaker)
     }
 
     // MARK: - The push path
@@ -563,6 +594,7 @@ final class CallManager {
             self.media = media
             media.delegate = self
             applyVideoState()
+            applyAudioState()
             let sdp = try await media.createOffer()
             guard id == callID else { return }
             try await send(.callOffer(callID: id, chatID: chatID, sdp: sdp, video: isVideo))
@@ -681,6 +713,7 @@ final class CallManager {
             self.media = media
             media.delegate = self
             applyVideoState()
+            applyAudioState()
             try await media.setRemoteDescription(sdp: offer, isOffer: true)
             guard id == callID else { return }
             remoteDescriptionSet = true
@@ -739,6 +772,14 @@ final class CallManager {
         guardTask = nil
         media?.close()
         media = nil
+        // The picture goes with the media, HERE and not only in the reset
+        // two seconds later: the closed client sends no frames, so for the
+        // whole ended linger the screen otherwise kept the frozen last
+        // frame with the reason tucked into the pill's caption — the
+        // identity block (and the reason under the name) comes back only
+        // once this is false. Android's CallManager clears it in finish
+        // for the same reason.
+        isRemoteVideoActive = false
         if reportToSystem, let callUUID {
             systemBridge?.reportEnded(callID: callUUID, reason: reason)
         }

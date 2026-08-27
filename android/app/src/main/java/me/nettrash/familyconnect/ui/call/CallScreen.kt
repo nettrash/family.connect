@@ -21,16 +21,25 @@
  * the WebRTC factory owns, registered as sinks with the manager, and
  * RELEASED here (AndroidView.onRelease) — the media client detaches
  * sinks on close but never releases a renderer; that is the UI's job.
+ *
+ * A video call is drawn DARK whatever the system theme (the app theme is
+ * nested here, forced dark), on a black ground, and holds the screen
+ * awake; a voice call follows the system and sleeps like a phone call.
  */
 
 package me.nettrash.familyconnect.ui.call
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.pm.PackageManager
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,6 +69,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -72,7 +82,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -81,9 +93,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.calls.CallEnding
+import me.nettrash.familyconnect.calls.CallNotifications
 import me.nettrash.familyconnect.calls.CallState
 import me.nettrash.familyconnect.ui.chat.CallRecordWording
 import me.nettrash.familyconnect.ui.components.Avatar
+import me.nettrash.familyconnect.ui.theme.FamilyConnectTheme
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 
@@ -197,89 +211,158 @@ fun CallScreen(
         }
     }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            if (isVideoCall && live != null) {
-                // The far side, full-bleed behind everything. Black until
-                // frames arrive; the avatar and status stay drawn over it
-                // until they do.
-                RemoteVideo(
-                    viewModel = viewModel,
-                    modifier = Modifier.fillMaxSize(),
-                )
-                if (isCameraOn) {
-                    LocalPreview(
+    // A video call is DARK whatever the system theme, like the iPhone's:
+    // the far side's SurfaceViewRenderer is black until the first frame
+    // arrives — and for the whole call when their camera is off — and in
+    // the light theme the name, the status and the captions were
+    // onSurface, black on black, on every incoming video call among
+    // others. The app's one theme composable, nested and forced dark
+    // while the call is video; a voice call keeps following the system.
+    FamilyConnectTheme(darkTheme = isVideoCall || isSystemInDarkTheme()) {
+        // Only a VIDEO call holds the screen awake: the picture is the
+        // point, and nobody touches the phone for minutes. A voice call
+        // held to the ear must still go dark as any phone call does —
+        // nothing else in the app holds this flag, so clearing it on the
+        // way out hands the screen back to the system untouched.
+        val keepAwake = isVideoCall && live != null
+        DisposableEffect(keepAwake) {
+            val window = if (keepAwake) context.findActivity()?.window else null
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+        }
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            // Black under the renderer, not the dark scheme's surface: the
+            // strip beside a letterboxed picture would otherwise be a
+            // slightly different dark than the renderer's own black.
+            color = if (isVideoCall) Color.Black else MaterialTheme.colorScheme.background,
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                if (isVideoCall && live != null) {
+                    // The far side, full-bleed behind everything. Black until
+                    // frames arrive; the avatar and status stay drawn over it
+                    // until they do.
+                    RemoteVideo(
                         viewModel = viewModel,
-                        isFrontCamera = isFrontCamera,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .systemBarsPadding()
-                            .padding(16.dp)
-                            .size(width = 110.dp, height = 150.dp)
-                            .clip(RoundedCornerShape(12.dp)),
+                        modifier = Modifier.fillMaxSize(),
                     )
-                }
-            }
-
-            // True once the remote picture is actually flowing — the
-            // moment the identity block steps aside (and turns white,
-            // since it now sits on video, not on the theme background).
-            val overVideo = isVideoCall && remoteVideoActive && live != null
-
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .systemBarsPadding()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Spacer(Modifier.height(24.dp))
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    peer?.let { person ->
-                        if (!overVideo) {
-                            Avatar(
-                                name = person.name,
-                                userId = person.userId,
-                                size = 112,
-                                avatarVersion = person.avatarVersion,
-                            )
-                            Spacer(Modifier.height(20.dp))
-                        }
-                        Text(
-                            text = person.name,
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = if (overVideo) Color.White else Color.Unspecified,
-                            textAlign = TextAlign.Center,
+                    if (isCameraOn) {
+                        LocalPreview(
+                            viewModel = viewModel,
+                            isFrontCamera = isFrontCamera,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .systemBarsPadding()
+                                .padding(16.dp)
+                                .size(width = 110.dp, height = 150.dp)
+                                .clip(RoundedCornerShape(12.dp)),
                         )
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = statusLine(state),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (overVideo) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                    )
                 }
 
-                when (state) {
-                    is CallState.Incoming -> IncomingControls(onDecline = viewModel::decline, onAccept = accept)
-                    is CallState.Outgoing, is CallState.Connecting, is CallState.Active -> ActiveControls(
-                        isMuted = isMuted,
-                        isSpeaker = isSpeaker,
-                        isVideoCall = isVideoCall,
-                        isCameraOn = isCameraOn,
-                        onToggleMute = viewModel::toggleMute,
-                        onToggleSpeaker = viewModel::toggleSpeaker,
-                        onToggleCamera = toggleCamera,
-                        onFlipCamera = viewModel::flipCamera,
-                        onHangUp = viewModel::hangUp,
-                    )
-                    CallState.Idle, is CallState.Ended -> Spacer(Modifier.height(72.dp))
+                // True once the remote picture is actually flowing — the
+                // moment the identity block steps aside into its pill (and
+                // turns white, since it now sits on a picture that may be
+                // any colour, not on the black ground) and the control row
+                // takes its scrim, for the same reason.
+                val overVideo = isVideoCall && remoteVideoActive && live != null
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .systemBarsPadding()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Spacer(Modifier.height(24.dp))
+                    // Over the picture the identity is a top-START pill — the
+                    // iPhone's — kept clear of the local preview pinned
+                    // top-end: centred, any name wider than ~108 dp on a
+                    // 360 dp phone ran under the preview, on the raw picture,
+                    // with nothing behind it. Centred over the avatar
+                    // otherwise, exactly as before.
+                    val identityModifier = if (overVideo) {
+                        Modifier
+                            .align(Alignment.Start)
+                            // The preview's width plus its inset, so the pill
+                            // ends before the preview begins.
+                            .padding(end = if (isCameraOn) 126.dp else 0.dp)
+                            .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
+                            .padding(horizontal = 14.dp, vertical = 8.dp)
+                    } else {
+                        Modifier
+                    }
+                    Column(
+                        modifier = identityModifier,
+                        horizontalAlignment = if (overVideo) Alignment.Start else Alignment.CenterHorizontally,
+                    ) {
+                        peer?.let { person ->
+                            if (!overVideo) {
+                                Avatar(
+                                    name = person.name,
+                                    userId = person.userId,
+                                    size = 112,
+                                    avatarVersion = person.avatarVersion,
+                                )
+                                Spacer(Modifier.height(20.dp))
+                            }
+                            Text(
+                                text = person.name,
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = if (overVideo) Color.White else Color.Unspecified,
+                                textAlign = if (overVideo) TextAlign.Start else TextAlign.Center,
+                                // One line in the pill; a long name ends in
+                                // an ellipsis rather than growing the pill
+                                // into the preview's row.
+                                maxLines = if (overVideo) 1 else Int.MAX_VALUE,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = statusLine(state),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (overVideo) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = if (overVideo) TextAlign.Start else TextAlign.Center,
+                        )
+                    }
+
+                    when (state) {
+                        is CallState.Incoming -> IncomingControls(onDecline = viewModel::decline, onAccept = accept)
+                        is CallState.Outgoing, is CallState.Connecting, is CallState.Active -> ActiveControls(
+                            isMuted = isMuted,
+                            isSpeaker = isSpeaker,
+                            isVideoCall = isVideoCall,
+                            isCameraOn = isCameraOn,
+                            overVideo = overVideo,
+                            onToggleMute = viewModel::toggleMute,
+                            onToggleSpeaker = viewModel::toggleSpeaker,
+                            onToggleCamera = toggleCamera,
+                            onFlipCamera = viewModel::flipCamera,
+                            onHangUp = viewModel::hangUp,
+                        )
+                        CallState.Idle, is CallState.Ended -> Spacer(Modifier.height(72.dp))
+                    }
                 }
             }
         }
     }
+}
+
+/**
+ * The Activity behind a Compose context. LocalContext is seldom the
+ * Activity itself (a theme or configuration wrapper, usually), so this
+ * walks the ContextWrapper chain until it finds one — or gives up, in
+ * which case there is no window to keep awake and nothing to clean up.
+ */
+private fun Context.findActivity(): Activity? {
+    var current: Context? = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return null
 }
 
 /**
@@ -356,27 +439,21 @@ private fun statusLine(state: CallState): String = when (state) {
         }
         CallRecordWording.duration(((now - state.sinceMillis) / 1000).toInt())
     }
-    is CallState.Ended -> when (state.reason) {
-        CallEnding.HANGUP -> state.durationSecs
-            ?.let {
-                stringResource(
-                    if (state.video) R.string.s_video_call_with_duration else R.string.s_voice_call_with_duration,
-                    CallRecordWording.duration(it),
-                )
-            }
-            ?: stringResource(R.string.s_call_ended)
-        CallEnding.DECLINE -> stringResource(
-            if (state.video) R.string.s_declined_video_call else R.string.s_declined_voice_call,
-        )
-        CallEnding.CANCEL -> stringResource(R.string.s_call_ended)
-        CallEnding.TIMEOUT -> stringResource(R.string.s_no_answer)
-        CallEnding.FAILED -> stringResource(R.string.s_call_failed)
-        CallEnding.ANSWERED_ELSEWHERE -> stringResource(R.string.s_answered_on_another_device)
-        CallEnding.BUSY, CallEnding.PEER_BUSY -> stringResource(R.string.s_busy)
-        CallEnding.PEER_UNREACHABLE -> stringResource(R.string.s_not_reachable)
-        CallEnding.NO_OFFER -> stringResource(R.string.s_call_ended)
-        CallEnding.DISABLED -> stringResource(R.string.s_calls_are_off_on_this_server)
-        CallEnding.VIDEO_DISABLED -> stringResource(R.string.s_video_calls_are_off_on_this_server)
+    is CallState.Ended -> {
+        // A hung-up call keeps its length on the linger line — the same
+        // "Video call · 3:12" the chat's call record is about to show,
+        // where the iPhone says only "Call ended". Every other ending
+        // words itself by reason and DIRECTION, exactly as the iPhone
+        // does (CallNotifications.endedTextRes).
+        val hungUpAfter = state.durationSecs?.takeIf { state.reason == CallEnding.HANGUP }
+        if (hungUpAfter != null) {
+            stringResource(
+                if (state.video) R.string.s_video_call_with_duration else R.string.s_voice_call_with_duration,
+                CallRecordWording.duration(hungUpAfter),
+            )
+        } else {
+            stringResource(CallNotifications.endedTextRes(state.reason, state.outgoing, state.video))
+        }
     }
 }
 
@@ -385,13 +462,14 @@ private fun IncomingControls(onDecline: () -> Unit, onAccept: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Top,
     ) {
         RoundButton(
             icon = Icons.Filled.CallEnd,
             label = stringResource(R.string.s_decline),
             container = MaterialTheme.colorScheme.error,
             content = MaterialTheme.colorScheme.onError,
+            modifier = Modifier.weight(1f),
             onClick = onDecline,
         )
         RoundButton(
@@ -399,6 +477,7 @@ private fun IncomingControls(onDecline: () -> Unit, onAccept: () -> Unit) {
             label = stringResource(R.string.s_answer),
             container = Color(0xFF2E7D32),
             content = Color.White,
+            modifier = Modifier.weight(1f),
             onClick = onAccept,
         )
     }
@@ -410,25 +489,53 @@ private fun ActiveControls(
     isSpeaker: Boolean,
     isVideoCall: Boolean,
     isCameraOn: Boolean,
+    /** The row sits on the remote picture — captions white, a scrim behind. */
+    overVideo: Boolean,
     onToggleMute: () -> Unit,
     onToggleSpeaker: () -> Unit,
     onToggleCamera: () -> Unit,
     onFlipCamera: () -> Unit,
     onHangUp: () -> Unit,
 ) {
-    // Up to five buttons on a video call — smaller discs, or they do not
-    // fit a narrow phone side by side.
-    val buttonSize = if (isVideoCall) 60 else 72
+    // Up to five discs on a video call: 56 dp, the iPhone's, so all five
+    // fit a 360 dp phone inside the scrim's padding (5 × 56 = 280 ≤ 288)
+    // — 60 did not, and the last disc took the squeeze. A voice call's
+    // three have room for 72.
+    val buttonSize = if (isVideoCall) 56 else 72
+    // Over the far side's picture the row sits on whatever their camera
+    // shows — a bright wall, a window — so white captions and a
+    // translucent scrim under the whole row keep discs and captions
+    // readable over any picture. On the ground (black on a video call,
+    // see CallScreen) neither is needed, and a scrim there would look
+    // like a stray card.
+    val captionColor = if (overVideo) Color.White else Color.Unspecified
+    val scrim = if (overVideo) {
+        Modifier
+            .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(28.dp))
+            .padding(12.dp)
+    } else {
+        Modifier
+    }
+    // Every disc takes an EQUAL share of the row (weight) and sits at the
+    // top of it: left to SpaceEvenly alone, the LAST child got whatever
+    // width was left over on a 360 dp phone, in German, at a large font
+    // scale — its disc squashed and its caption wrapped letter per line —
+    // and a caption that wraps to two lines must not pull its disc out of
+    // line with the others.
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(scrim),
         horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Top,
     ) {
         RoundButton(
             icon = if (isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
             label = stringResource(if (isMuted) R.string.s_unmute else R.string.s_mute),
             container = if (isMuted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
             content = if (isMuted) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+            labelColor = captionColor,
             size = buttonSize,
             onClick = onToggleMute,
         )
@@ -439,6 +546,8 @@ private fun ActiveControls(
                 label = stringResource(if (isCameraOn) R.string.s_camera_off else R.string.s_camera_on),
                 container = if (!isCameraOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                 content = if (!isCameraOn) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+                labelColor = captionColor,
                 size = buttonSize,
                 onClick = onToggleCamera,
             )
@@ -448,6 +557,8 @@ private fun ActiveControls(
                     label = stringResource(R.string.s_flip_camera),
                     container = MaterialTheme.colorScheme.surfaceVariant,
                     content = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                    labelColor = captionColor,
                     size = buttonSize,
                     onClick = onFlipCamera,
                 )
@@ -458,6 +569,8 @@ private fun ActiveControls(
             label = stringResource(R.string.s_hang_up),
             container = MaterialTheme.colorScheme.error,
             content = MaterialTheme.colorScheme.onError,
+            modifier = Modifier.weight(1f),
+            labelColor = captionColor,
             size = buttonSize,
             onClick = onHangUp,
         )
@@ -466,6 +579,8 @@ private fun ActiveControls(
             label = stringResource(R.string.s_speaker),
             container = if (isSpeaker) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
             content = if (isSpeaker) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+            labelColor = captionColor,
             size = buttonSize,
             onClick = onToggleSpeaker,
         )
@@ -478,10 +593,14 @@ private fun RoundButton(
     label: String,
     container: Color,
     content: Color,
+    /** The row's share for this disc — `weight(1f)` from both rows, see ActiveControls. */
+    modifier: Modifier = Modifier,
+    /** The caption under the disc — Unspecified (onSurface) on the ground, white over video. */
+    labelColor: Color = Color.Unspecified,
     size: Int = 72,
     onClick: () -> Unit,
 ) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             modifier = Modifier
                 .size(size.dp)
@@ -500,6 +619,19 @@ private fun RoundButton(
             }
         }
         Spacer(Modifier.height(8.dp))
-        Text(text = label, style = MaterialTheme.typography.labelMedium)
+        // The icon already carries the label as its contentDescription, so
+        // a caption TalkBack also read made every disc say its name twice
+        // — decorative to accessibility, then. Centred and at most two
+        // lines: a long caption ("Kamera ausschalten") wraps rather than
+        // widening its share, and an absurd one ends in an ellipsis.
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = labelColor,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.clearAndSetSemantics {},
+        )
     }
 }

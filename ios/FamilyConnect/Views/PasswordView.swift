@@ -42,10 +42,10 @@ private enum PasswordRules {
 
     static func problem(new: String, confirmation: String) -> String? {
         if new.count < minimumLength {
-            return "Use at least \(minimumLength) characters."
+            return String(localized: "Use at least \(minimumLength) characters.")
         }
         if new != confirmation {
-            return "Those two do not match."
+            return String(localized: "Those two do not match.")
         }
         return nil
     }
@@ -125,9 +125,9 @@ struct ChangePasswordView: View {
                 // The server answers 401 for a WRONG CURRENT PASSWORD here,
                 // which is not a dead session — treating it as one would
                 // sign the user out for a typo.
-                errorText = "That current password is not right."
+                errorText = String(localized: "That current password is not right.")
             } catch {
-                errorText = "Couldn't change your password. Try again."
+                errorText = String(localized: "Couldn't change your password. Try again.")
             }
         }
     }
@@ -211,7 +211,7 @@ struct ResetPasswordView: View {
                     userID: member.id, newPassword: newPassword)
                 didSucceed = true
             } catch {
-                errorText = "Couldn't reset that password. Try again."
+                errorText = String(localized: "Couldn't reset that password. Try again.")
             }
         }
     }

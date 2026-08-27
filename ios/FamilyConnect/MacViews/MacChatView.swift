@@ -27,6 +27,7 @@ import SwiftUI
 struct MacChatView: View {
     @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    @Environment(CallManager.self) private var calls
     @Query(sort: [SortDescriptor(\ChatEntity.pinRank), SortDescriptor(\ChatEntity.lastMessageDate, order: .reverse)])
     private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
@@ -92,8 +93,25 @@ struct MacChatView: View {
                     description: Text("Pick a chat from the sidebar."))
             }
         }
-        .navigationTitle(session.family?.name ?? "Family")
+        .navigationTitle(session.family?.name ?? String(localized: "Family"))
         .toolbar {
+            // The way back into a call whose window was closed. Closing
+            // the Call window does not hang up (FamilyConnectApp), and
+            // the thread's own call buttons are disabled while a call is
+            // in progress — so without this a closed window was a call
+            // with no screen at all until the far side ended it. Only
+            // while there is a call to return to. Reopening re-attaches
+            // the video surfaces (CallVideoSurface).
+            if !calls.isIdle {
+                ToolbarItem {
+                    Button {
+                        openWindow(id: MacWindow.call)
+                    } label: {
+                        Label("Return to Call", systemImage: "phone.badge.waveform")
+                    }
+                    .help("Return to Call")
+                }
+            }
             ToolbarItem {
                 Button {
                     openWindow(id: MacWindow.board)
@@ -254,7 +272,9 @@ private struct MacChatRow: View {
                     }
                 }
                 HStack(spacing: 6) {
-                    Text(chat.lastMessagePreview ?? "No messages yet")
+                    // `??` makes this a String, and Text(String) is
+                    // verbatim — the fallback has to be localized by hand.
+                    Text(chat.lastMessagePreview ?? String(localized: "No messages yet"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

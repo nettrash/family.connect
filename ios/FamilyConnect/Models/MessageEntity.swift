@@ -138,19 +138,29 @@ final class MessageEntity {
     var attachmentLatitude: Double?
     var attachmentLongitude: Double?
     var attachmentAccuracyM: Int?
-    /// The voice call this message records, when it is one (docs/
-    /// protocol.md, "Voice calls"): `completed`, `missed`, `declined` or
-    /// `failed`, and the seconds it lasted when it was ever answered. Two
-    /// nil-defaulted columns, so a lightweight migration. nil = not a
-    /// call record, which is the ONLY thing absence means here — nothing
-    /// on the wire ever takes a record off a message.
+    /// The call this message records, when it is one (docs/protocol.md,
+    /// "Voice calls" and "Video"): `completed`, `missed`, `declined` or
+    /// `failed`, the seconds it lasted when it was ever answered, and
+    /// whether it was a VIDEO call. Three defaulted columns (two nil, one
+    /// false — the `attachmentHasPreview` precedent), so a lightweight
+    /// migration. nil outcome = not a call record, which is the ONLY
+    /// thing absence means here — nothing on the wire ever takes a
+    /// record off a message.
+    ///
+    /// `callVideo` was the column this row lacked for a release: without
+    /// it every stored record rebuilt as voice and a video call's bubble
+    /// read "Voice call" the moment it came back out of the store. A row
+    /// cached BEFORE the column existed keeps `false` until the server's
+    /// copy is applied again (a re-delivered history page goes through
+    /// the coordinator's `applyCall`, which rewrites all three).
     var callOutcome: String?
     var callDurationSecs: Int?
+    var callVideo: Bool = false
 
     /// The call record as the views want it, or nil when this is not one.
     var callSnapshot: CallDTO? {
         guard let callOutcome else { return nil }
-        return CallDTO(outcome: callOutcome, durationSecs: callDurationSecs)
+        return CallDTO(outcome: callOutcome, durationSecs: callDurationSecs, video: callVideo)
     }
 
     /// Every attachment on this message, in the sender's order.
@@ -356,6 +366,7 @@ final class MessageEntity {
         // that arrives in a history page has no other way in.
         self.callOutcome = call?.outcome
         self.callDurationSecs = call?.durationSecs
+        self.callVideo = call?.video ?? false
         // The FIRST-SIGHT write site for the plural set (the other two
         // are the coordinator's apply-a-frame path and its own-send
         // path). Written after the flat columns above so that a set

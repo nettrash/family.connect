@@ -309,4 +309,31 @@
     <string name="s_color_green">Vert</string>
     <string name="s_color_orange">Orange</string>
     <string name="s_color_purple">Violet</string>
+    <string name="s_declined">Refusé</string>
+    <string name="s_reset">Réinitialiser</string>
+    <string name="s_create_account">Créer un compte</string>
+    <string name="s_show_password">Afficher le mot de passe</string>
+    <string name="s_hide_password">Masquer le mot de passe</string>
+    <string name="s_your_request_is_with_the_family_owner">Ta demande est chez le propriétaire de la famille.</string>
+    <string name="s_your_request_to_join_is_with_the_family_owner">Ta demande pour rejoindre « %1$s » est chez le propriétaire de la famille.</string>
+    <string name="s_replying_to">Réponse à %1$s</string>
+    <string name="s_replying_to_excerpt">Réponse à %1$s : %2$s</string>
+    <string name="s_replying_to_excerpt_with_parent">Réponse à %1$s : %2$s, qui répondait à %3$s</string>
+    <string name="s_remove_member_q">Retirer %1$s ?</string>
+    <string name="s_approve_member">Approuver %1$s</string>
+    <string name="s_reject_member">Refuser %1$s</string>
+    <string name="s_remove_member">Retirer %1$s</string>
+    <string name="s_approved_member">Approuvé : %1$s</string>
+    <string name="s_rejected_member">Refusé : %1$s</string>
+    <string name="s_removed_member">Retiré : %1$s</string>
+    <string name="s_reset_password_of">Réinitialiser le mot de passe de %1$s</string>
+    <string name="s_member_signed_out_explanation">La session de %1$s sera fermée sur tous ses appareils et ce mot de passe lui sera nécessaire pour se reconnecter. Transmets-le de vive voix : le serveur ne peut pas l’envoyer par e-mail.</string>
+    <string name="s_join_open_caption">Toute personne ayant le code d’invitation rejoint immédiatement.</string>
+    <string name="s_join_approval_caption">Les arrivées avec le code attendent ton approbation.</string>
+    <string name="s_those_two_do_not_match">Les deux ne correspondent pas.</string>
+    <plurals name="s_use_at_least_characters">
+        <item quantity="one">Utilise au moins %1$d caractère.</item>
+        <item quantity="many">Utilise au moins %1$d caractères.</item>
+        <item quantity="other">Utilise au moins %1$d caractères.</item>
+    </plurals>
 </resources>

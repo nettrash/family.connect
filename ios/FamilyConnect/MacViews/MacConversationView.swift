@@ -1127,12 +1127,16 @@ struct MacConversationView: View {
                     icon: "arrowshape.turn.up.left",
                     title: String(localized: "Replying to \(quoteAuthorName(replyDraft.senderID))"),
                     text: replyDraft.excerpt,
+                    cancelLabel: String(localized: "Cancel reply"),
                     onCancel: { self.replyDraft = nil })
             }
             if editTarget != nil {
                 MacComposerBanner(
                     icon: "pencil",
-                    text: "Editing message",
+                    // The banner's `text` is a String (the reply's is an
+                    // excerpt), so this one is localized by hand.
+                    text: String(localized: "Editing message"),
+                    cancelLabel: String(localized: "Cancel editing"),
                     onCancel: { cancelEdit() })
             }
             if !staged.isEmpty {
@@ -1237,6 +1241,18 @@ struct MacConversationView: View {
                     .lineLimit(1...8)
                     .focused($composerFocused)
                     .onSubmit(send)
+                    // Escape backs out of what the composer is primed
+                    // with, the phone's two cancel buttons from the
+                    // keyboard: an edit first (it borrowed the field and
+                    // gives the draft back), else the reply. Nothing
+                    // primed, nothing happens.
+                    .onExitCommand {
+                        if editTarget != nil {
+                            cancelEdit()
+                        } else {
+                            replyDraft = nil
+                        }
+                    }
 
                 Button(action: send) {
                     Image(systemName: "arrow.up.circle.fill")
@@ -1782,6 +1798,9 @@ private struct MacComposerBanner: View {
     /// leads with it, and without it two banners look alike.
     var title: String? = nil
     let text: String
+    /// What the X does, for VoiceOver and the tooltip — a bare
+    /// xmark.circle.fill is "button" to both.
+    let cancelLabel: String
     let onCancel: () -> Void
 
     var body: some View {
@@ -1806,6 +1825,8 @@ private struct MacComposerBanner: View {
                 Image(systemName: "xmark.circle.fill")
             }
             .buttonStyle(.borderless)
+            .accessibilityLabel(cancelLabel)
+            .help(cancelLabel)
         }
     }
 }

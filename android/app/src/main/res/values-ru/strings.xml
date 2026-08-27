@@ -312,4 +312,32 @@
     <string name="s_color_green">Зелёный</string>
     <string name="s_color_orange">Оранжевый</string>
     <string name="s_color_purple">Фиолетовый</string>
+    <string name="s_declined">Отклонён</string>
+    <string name="s_reset">Сбросить</string>
+    <string name="s_create_account">Создать учётную запись</string>
+    <string name="s_show_password">Показать пароль</string>
+    <string name="s_hide_password">Скрыть пароль</string>
+    <string name="s_your_request_is_with_the_family_owner">Твоя заявка у владельца семьи.</string>
+    <string name="s_your_request_to_join_is_with_the_family_owner">Твоя заявка в «%1$s» у владельца семьи.</string>
+    <string name="s_replying_to">Ответ %1$s</string>
+    <string name="s_replying_to_excerpt">Ответ %1$s: %2$s</string>
+    <string name="s_replying_to_excerpt_with_parent">Ответ %1$s: %2$s, которое отвечало %3$s</string>
+    <string name="s_remove_member_q">Удалить %1$s?</string>
+    <string name="s_approve_member">Одобрить %1$s</string>
+    <string name="s_reject_member">Отклонить %1$s</string>
+    <string name="s_remove_member">Удалить %1$s</string>
+    <string name="s_approved_member">Одобрено: %1$s</string>
+    <string name="s_rejected_member">Отклонено: %1$s</string>
+    <string name="s_removed_member">Удалено: %1$s</string>
+    <string name="s_reset_password_of">Сбросить пароль %1$s</string>
+    <string name="s_member_signed_out_explanation">%1$s выйдет из аккаунта на всех устройствах, и для входа понадобится этот пароль. Передай его лично — сервер не умеет отправлять почту.</string>
+    <string name="s_join_open_caption">Любой, у кого есть код приглашения, вступает сразу.</string>
+    <string name="s_join_approval_caption">Вступающие по коду ждут твоего одобрения.</string>
+    <string name="s_those_two_do_not_match">Они не совпадают.</string>
+    <plurals name="s_use_at_least_characters">
+        <item quantity="one">Не менее %1$d символа.</item>
+        <item quantity="few">Не менее %1$d символов.</item>
+        <item quantity="many">Не менее %1$d символов.</item>
+        <item quantity="other">Не менее %1$d символов.</item>
+    </plurals>
 </resources>

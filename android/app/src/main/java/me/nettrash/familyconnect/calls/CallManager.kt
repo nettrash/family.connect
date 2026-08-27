@@ -166,6 +166,12 @@ class CallManager @Inject constructor(
     private val pendingRemoteCandidates = ArrayList<IceCandidateDto>()
     private var acceptPending = false
     private var answeredAtMillis: Long? = null
+    /**
+     * Whether this device PLACED the current call — set on the outgoing
+     * path, cleared with the other call locals — for CallState.Ended,
+     * which has no live state left to read the direction from.
+     */
+    private var outgoing = false
     private var guardJob: Job? = null
     private var lingerJob: Job? = null
 
@@ -353,6 +359,7 @@ class CallManager @Inject constructor(
         if (current !is CallState.Idle && current !is CallState.Ended) return
         lingerJob?.cancel()
         resetCallLocals()
+        outgoing = true
         val callId = UUID.randomUUID().toString()
         _state.value = CallState.Outgoing(callId, chatId, peerUserId, video = video, ringing = false)
         // The camera comes up with a video call; the screen turns it off
@@ -660,6 +667,7 @@ class CallManager @Inject constructor(
             reason = reason,
             durationSecs = duration,
             video = live?.video ?: false,
+            outgoing = outgoing,
         )
         val ended = _state.value
         lingerJob?.cancel()
@@ -681,6 +689,7 @@ class CallManager @Inject constructor(
         pendingRemoteCandidates.clear()
         acceptPending = false
         answeredAtMillis = null
+        outgoing = false
         _isMuted.value = false
         _isSpeaker.value = false
         _isCameraOn.value = false

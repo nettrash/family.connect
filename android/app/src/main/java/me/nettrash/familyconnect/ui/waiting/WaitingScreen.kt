@@ -160,8 +160,8 @@ fun WaitingScreen(
                         Spacer(Modifier.height(8.dp))
                         Text(
                             text = state.familyName
-                                ?.let { "Your request to join “$it” is with the family owner." }
-                                ?: "Your request is with the family owner.",
+                                ?.let { stringResource(R.string.s_your_request_to_join_is_with_the_family_owner, it) }
+                                ?: stringResource(R.string.s_your_request_is_with_the_family_owner),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,

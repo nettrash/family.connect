@@ -287,6 +287,28 @@
     <string name="s_color_green">Zelena</string>
     <string name="s_color_orange">Narandžasta</string>
     <string name="s_color_purple">Ljubičasta</string>
+    <string name="s_declined">Odbijeno</string>
+    <string name="s_reset">Resetuj</string>
+    <string name="s_create_account">Napravi nalog</string>
+    <string name="s_show_password">Prikaži lozinku</string>
+    <string name="s_hide_password">Sakrij lozinku</string>
+    <string name="s_your_request_is_with_the_family_owner">Tvoj zahtev je kod vlasnika porodice.</string>
+    <string name="s_your_request_to_join_is_with_the_family_owner">Tvoj zahtev za pristup porodici „%1$s“ je kod vlasnika porodice.</string>
+    <string name="s_replying_to">Odgovor za %1$s</string>
+    <string name="s_replying_to_excerpt">Odgovor za %1$s: %2$s</string>
+    <string name="s_replying_to_excerpt_with_parent">Odgovor za %1$s: %2$s, koje je odgovaralo %3$s</string>
+    <string name="s_remove_member_q">Ukloniti %1$s?</string>
+    <string name="s_approve_member">Odobri %1$s</string>
+    <string name="s_reject_member">Odbij %1$s</string>
+    <string name="s_remove_member">Ukloni %1$s</string>
+    <string name="s_approved_member">Odobreno: %1$s</string>
+    <string name="s_rejected_member">Odbijeno: %1$s</string>
+    <string name="s_removed_member">Uklonjeno: %1$s</string>
+    <string name="s_reset_password_of">Resetuj lozinku za %1$s</string>
+    <string name="s_member_signed_out_explanation">Sve sesije za %1$s biće zatvorene, a za ponovnu prijavu trebaće ova lozinka. Prenesi je na siguran način — server ne može da šalje mejlove.</string>
+    <string name="s_join_open_caption">Svako ko ima pozivni kod pridružuje se odmah.</string>
+    <string name="s_join_approval_caption">Pridruživanje kodom čeka tvoje odobrenje.</string>
+    <string name="s_those_two_do_not_match">Ove dve se ne poklapaju.</string>
     <plurals name="s_voted_of_family">
         <item quantity="one">%1$d glas od %2$d</item>
         <item quantity="few">%1$d glasa od %2$d</item>
@@ -301,5 +323,10 @@
         <item quantity="one">%1$d nova poruka</item>
         <item quantity="few">%1$d nove poruke</item>
         <item quantity="other">%1$d novih poruka</item>
+    </plurals>
+    <plurals name="s_use_at_least_characters">
+        <item quantity="one">Koristi bar %1$d znak.</item>
+        <item quantity="few">Koristi bar %1$d znaka.</item>
+        <item quantity="other">Koristi bar %1$d znakova.</item>
     </plurals>
 </resources>

@@ -85,7 +85,7 @@ struct ChatListView: View {
                     .listStyle(.plain)
                 }
             }
-            .navigationTitle(session.family?.name ?? "Chats")
+            .navigationTitle(session.family?.name ?? String(localized: "Chats"))
             .navigationDestination(for: Int64.self) { chatID in
                 ConversationView(chatID: chatID)
                     // Rebuild cleanly when the routed chat changes IN
@@ -313,12 +313,17 @@ struct ChatRowView: View {
                 isFamily: chat.kind == "family",
                 userID: chat.peerUserID,
                 avatarVersion: peerAvatarVersion)
+                // The initials repeat the title; VoiceOver would read
+                // the name twice.
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(chat.title)
                     .font(.body.weight(chat.unreadCount > 0 ? .semibold : .regular))
                     .lineLimit(1)
-                Text(chat.lastMessagePreview ?? "No messages yet")
+                // `??` makes this a String, and Text(String) is verbatim —
+                // the fallback has to be localized by hand.
+                Text(chat.lastMessagePreview ?? String(localized: "No messages yet"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -339,10 +344,15 @@ struct ChatRowView: View {
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .background(.tint, in: Capsule())
+                        // A bare number means nothing read aloud.
+                        .accessibilityLabel(Text("\(chat.unreadCount) unread"))
                 }
             }
         }
         .padding(.vertical, 4)
+        // One element per row — title, preview, when, unread — rather
+        // than four stops per chat.
+        .accessibilityElement(children: .combine)
     }
 }
 

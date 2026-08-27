@@ -97,6 +97,37 @@ object CallNotifications {
     fun ongoingTextRes(video: Boolean): Int =
         if (video) R.string.s_ongoing_video_call else R.string.s_ongoing_voice_call
 
+    /**
+     * The call's kind as a title — what stands in for the peer's name when
+     * the roster does not know them (CallService.nameOf). Pure, same reason.
+     */
+    fun kindTextRes(video: Boolean): Int =
+        if (video) R.string.s_video_call else R.string.s_voice_call
+
+    /**
+     * What an ENDED call says — the screen's linger line and the ongoing
+     * notification's last status. Direction-aware where the two sides
+     * see different things, mirroring iOS CallStatusText.ended: a
+     * timeout is "No answer" to the caller and a missed call to the
+     * callee; a decline is "Declined" to the caller and plain "Call
+     * ended" to the one who declined. Pure, same reason as the others.
+     */
+    fun endedTextRes(reason: CallEnding, outgoing: Boolean, video: Boolean): Int = when (reason) {
+        CallEnding.HANGUP, CallEnding.CANCEL, CallEnding.NO_OFFER -> R.string.s_call_ended
+        CallEnding.DECLINE -> if (outgoing) R.string.s_declined else R.string.s_call_ended
+        CallEnding.TIMEOUT -> when {
+            outgoing -> R.string.s_no_answer
+            video -> R.string.s_missed_video_call
+            else -> R.string.s_missed_voice_call
+        }
+        CallEnding.FAILED -> R.string.s_call_failed
+        CallEnding.ANSWERED_ELSEWHERE -> R.string.s_answered_on_another_device
+        CallEnding.BUSY, CallEnding.PEER_BUSY -> R.string.s_busy
+        CallEnding.PEER_UNREACHABLE -> R.string.s_not_reachable
+        CallEnding.DISABLED -> R.string.s_calls_are_off_on_this_server
+        CallEnding.VIDEO_DISABLED -> R.string.s_video_calls_are_off_on_this_server
+    }
+
     /** The full-screen ringing notification for [callerName]. */
     fun incoming(context: Context, callerName: String, peerUserId: Long, video: Boolean): Notification {
         val person = Person.Builder().setName(callerName).setKey(peerUserId.toString()).build()
