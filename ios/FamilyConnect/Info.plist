@@ -29,6 +29,22 @@
 		<string>audio</string>
 		<string>voip</string>
 	</array>
+	<!-- Calls the SYSTEM starts (CallIntents.swift): a Family row tapped in
+	     the Phone app's Recents, "Family voice/video call" on a contact card
+	     or in Favorites, and Siri's "call Anna on Family". The user-activity
+	     types are what makes the Phone app offer Family at all, and the
+	     supported intent is what lets Siri hand the app the request in-app
+	     (no Intents extension). -->
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INStartCallIntent</string>
+		<string>INStartAudioCallIntent</string>
+		<string>INStartVideoCallIntent</string>
+	</array>
+	<key>INIntentsSupported</key>
+	<array>
+		<string>INStartCallIntent</string>
+	</array>
 	<!--
 	  FCDefaultServerURL: the server this build is pre-pointed at, read
 	  by AppSettings.defaultServerURL. Expanded from the user-defined

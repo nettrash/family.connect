@@ -53,13 +53,16 @@ protocol CallSignaling: AnyObject {
 /// whether a call is up.
 @MainActor
 protocol CallSystemBridge: AnyObject {
-    func reportOutgoing(callID: UUID, peerName: String, isVideo: Bool)
+    /// `peerUserID` lets the system side look up the member's contact
+    /// link (the handle it reports, the call it donates); `peerName` is
+    /// what the system shows.
+    func reportOutgoing(callID: UUID, peerUserID: Int64, peerName: String, isVideo: Bool)
     func reportOutgoingConnecting(callID: UUID)
     func reportOutgoingConnected(callID: UUID)
     /// An incoming call the SOCKET delivered. The push path reports its
     /// own before the manager hears of the call at all. `hasVideo` is the
     /// offer's flag, so the system UI rings with a camera when it should.
-    func reportIncoming(callID: UUID, peerName: String, hasVideo: Bool)
+    func reportIncoming(callID: UUID, peerUserID: Int64?, peerName: String, hasVideo: Bool)
     func reportEnded(callID: UUID, reason: CallEndReason)
     func requestAnswer(callID: UUID)
     func requestEnd(callID: UUID)
@@ -314,7 +317,7 @@ final class CallManager {
         // (see isSpeaker's declaration).
         self.isSpeaker = video
         transition(to: .outgoing(ringing: false))
-        systemBridge?.reportOutgoing(callID: uuid, peerName: peer.name, isVideo: video)
+        systemBridge?.reportOutgoing(callID: uuid, peerUserID: peerUserID, peerName: peer.name, isVideo: video)
         pendingWork = Task { await self.placeOutgoing(id: id, chatID: chatID) }
         return true
     }
@@ -658,7 +661,9 @@ final class CallManager {
         beginIncoming(
             callID: payload.callID, chatID: payload.chatID, fromUserID: payload.fromUserID,
             fallbackName: "", offerSDP: payload.sdp, video: payload.video)
-        if let callUUID { systemBridge?.reportIncoming(callID: callUUID, peerName: peerName, hasVideo: isVideo) }
+        if let callUUID {
+            systemBridge?.reportIncoming(callID: callUUID, peerUserID: payload.fromUserID, peerName: peerName, hasVideo: isVideo)
+        }
         startGuard(seconds: ringTimeout + guardSlack, reason: .timeout)
     }
 

@@ -34,7 +34,15 @@ final class CallKitController: NSObject, CallSystemBridge {
         configuration.supportsVideo = true
         configuration.maximumCallGroups = 1
         configuration.maximumCallsPerCallGroup = 1
-        configuration.supportedHandleTypes = [.generic]
+        // Our own calls carry a `.generic` handle (CallHandle). The other
+        // two are declared so the Phone app offers Family on a contact's
+        // phone numbers and e-mails — in Favorites and on the contact card
+        // — and hands the app that contact to resolve (CallIntents,
+        // ContactLinks); nothing here dials a number.
+        configuration.supportedHandleTypes = [.generic, .phoneNumber, .emailAddress]
+        // A Family call is a call: it belongs in Recents like any other,
+        // named after the person (localizedCallerName), and tapping it
+        // there calls them again (CallIntents).
         configuration.includesCallsInRecents = true
         provider = CXProvider(configuration: configuration)
         super.init()
@@ -44,10 +52,33 @@ final class CallKitController: NSObject, CallSystemBridge {
 
     // MARK: - CallSystemBridge
 
-    func reportOutgoing(callID: UUID, peerName: String, isVideo: Bool) {
-        let action = CXStartCallAction(call: callID, handle: CXHandle(type: .generic, value: peerName))
+    func reportOutgoing(callID: UUID, peerUserID: Int64, peerName: String, isVideo: Bool) {
+        let link = ContactLinks.shared.link(for: peerUserID)
+        let action = CXStartCallAction(call: callID, handle: Self.handle(peerName: peerName, link: link))
         action.isVideo = isVideo
         request(action)
+        CallDonation.donate(peerUserID: peerUserID, peerName: peerName, video: isVideo, contactIdentifier: link?.contactIdentifier)
+    }
+
+    /// The system's handle for an OUTGOING call. The Recents row shows a
+    /// handle's raw value unless the system can map it to a contact, and
+    /// it maps phone numbers and e-mails — so a member linked to a device
+    /// contact (ContactLinks) is reported by that contact's number (or
+    /// e-mail), and the row carries the contact's name and photo like any
+    /// call. An unlinked member is reported by their display name — a
+    /// deliberate choice over the id (CallHandle): names are write-once
+    /// in this protocol, the row stays readable, and tapping it comes
+    /// back through CallIntents, where CallRequestRouter turns the number
+    /// or the name back into the member (two members with one name are
+    /// asked about; linking a contact ends that).
+    static func handle(peerName: String, link: ContactLink?) -> CXHandle {
+        if let number = link?.phoneNumbers.first, !number.isEmpty {
+            return CXHandle(type: .phoneNumber, value: number)
+        }
+        if let email = link?.emailAddresses.first, !email.isEmpty {
+            return CXHandle(type: .emailAddress, value: email)
+        }
+        return CXHandle(type: .generic, value: peerName)
     }
 
     func reportOutgoingConnecting(callID: UUID) {
@@ -58,15 +89,20 @@ final class CallKitController: NSObject, CallSystemBridge {
         provider.reportOutgoingCall(with: callID, connectedAt: nil)
     }
 
-    func reportIncoming(callID: UUID, peerName: String, hasVideo: Bool) {
-        reportIncoming(callID: callID, peerName: peerName, hasVideo: hasVideo) { _ in }
+    func reportIncoming(callID: UUID, peerUserID: Int64?, peerName: String, hasVideo: Bool) {
+        reportIncoming(callID: callID, peerUserID: peerUserID, peerName: peerName, hasVideo: hasVideo) { _ in }
     }
 
     /// The push path's version, whose completion the PushKit delegate
     /// waits on. Never skipped on an error: iOS terminates an app that
     /// receives a VoIP push and reports no call.
-    func reportIncoming(callID: UUID, peerName: String, hasVideo: Bool, completion: @escaping @Sendable (Error?) -> Void) {
+    func reportIncoming(callID: UUID, peerUserID: Int64?, peerName: String, hasVideo: Bool, completion: @escaping @Sendable (Error?) -> Void) {
         let update = CXCallUpdate()
+        // An INCOMING call keeps the generic name handle even for a linked
+        // member: a phone-number handle is run through the block list and
+        // Focus rules ("calls from Favorites only") before it is allowed
+        // to ring, and a Family call must not become LESS likely to ring
+        // because the caller was linked. The name is what the row shows.
         update.remoteHandle = CXHandle(type: .generic, value: peerName)
         update.localizedCallerName = peerName
         update.hasVideo = hasVideo
@@ -129,6 +165,21 @@ extension CallKitController: CXProviderDelegate {
             // mode .videoChat (speaker by default).
             WebRTCClient.configureAudioSessionForCall(video: self.manager?.isVideo ?? false)
             action.fulfill()
+            // The person's NAME for the system UI, said once the call is
+            // the provider's (after the fulfil — an update before it may
+            // be dropped). Incoming calls carry it on the CXCallUpdate
+            // that reports them; an outgoing one has to be told.
+            if let name = self.manager?.peerName, !name.isEmpty {
+                let update = CXCallUpdate()
+                update.remoteHandle = action.handle
+                update.localizedCallerName = name
+                update.hasVideo = action.isVideo
+                update.supportsGrouping = false
+                update.supportsUngrouping = false
+                update.supportsHolding = false
+                update.supportsDTMF = false
+                provider.reportCall(with: action.callUUID, updated: update)
+            }
         }
     }
 

@@ -10,6 +10,11 @@
 	-->
 	<key>aps-environment</key>
 	<string>development</string>
+	<!-- "Call Anna on Family": Siri's call intents, handled in the app
+	     (CallIntents.swift). Automatic signing adds the capability to the
+	     App ID. -->
+	<key>com.apple.developer.siri</key>
+	<true/>
 	<!-- The share extension stages files into this group's ShareInbox/
 	     for the app to pick up (ShareImport). -->
 	<key>com.apple.security.application-groups</key>

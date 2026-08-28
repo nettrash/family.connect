@@ -52,6 +52,8 @@ struct FamilyConnectApp: App {
     /// its own window (docs/protocol.md, "Incoming calls").
     private let callKit: CallKitController?
     private let voipRegistrar: VoIPPushRegistrar?
+    /// Siri's call intents, answered from the roster (CallIntents).
+    private let callIntentHandler: CallIntentHandler?
     #endif
 
     /// App-wide link-preview cache. Independent of the store, so it is
@@ -156,6 +158,18 @@ struct FamilyConnectApp: App {
             voip.start()
             self.callKit = callKit
             self.voipRegistrar = voip
+            // Siri resolves a spoken name against the ACTIVE roster — the
+            // member pickers' gate, so a name cannot resolve to somebody
+            // who left or deleted their account.
+            let intents = CallIntentHandler()
+            intents.roster = {
+                let descriptor = FetchDescriptor<MemberEntity>(
+                    predicate: #Predicate { !$0.isCurrentUser && !$0.hasLeft && !$0.accountDeleted })
+                let members = (try? container.mainContext.fetch(descriptor)) ?? []
+                return members.map { CallRequestRouter.Candidate(userID: $0.userID, name: $0.resolvedDisplayName) }
+            }
+            AppDelegate.callIntentHandler = intents
+            self.callIntentHandler = intents
             #elseif os(macOS)
             // The Mac rings through Notification Center: a socket-delivered
             // offer while the app is behind other windows — or has none
@@ -198,6 +212,7 @@ struct FamilyConnectApp: App {
             #if os(iOS)
             self.callKit = nil
             self.voipRegistrar = nil
+            self.callIntentHandler = nil
             #endif
             self.avatars = nil
             self.attachments = nil

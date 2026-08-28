@@ -90,6 +90,15 @@ struct RootView: View {
         .onOpenURL { url in
             session.handleShareURL(url)
         }
+        #if os(iOS)
+        // A call the system asked for (CallIntents): a Recents row, a
+        // contact card or Favorites button, Siri. Parked on the session
+        // like a push route, so a request that launched the app survives
+        // bootstrap; ChatListView routes it.
+        .onContinueUserActivity(CallRequest.activityTypes[0]) { session.pendingCallRequest = CallRequest.parse(activity: $0) }
+        .onContinueUserActivity(CallRequest.activityTypes[1]) { session.pendingCallRequest = CallRequest.parse(activity: $0) }
+        .onContinueUserActivity(CallRequest.activityTypes[2]) { session.pendingCallRequest = CallRequest.parse(activity: $0) }
+        #endif
         .onChange(of: session.phase) { oldPhase, newPhase in
             if newPhase == .active {
                 Task { await coordinator.activate() }

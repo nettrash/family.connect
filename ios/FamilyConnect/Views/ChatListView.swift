@@ -27,6 +27,7 @@ import SwiftUI
 struct ChatListView: View {
     @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    @Environment(CallManager.self) private var calls
     @Query private var chats: [ChatEntity]
     /// The roster, purely to resolve a direct chat's peer to their
     /// profile-picture version — one query for the list rather than one
@@ -42,6 +43,21 @@ struct ChatListView: View {
     /// Files were shared into the app and are waiting for a chat: the
     /// picker sheet is up. See ShareImport.
     @State private var showsShareTarget = false
+    /// A system call request naming a contact nobody is linked to yet:
+    /// the "who is this?" sheet is up (CallRequestLinkSheet).
+    @State private var linkingCall: LinkingCall?
+    /// Why a system call request could not be placed.
+    @State private var callRequestError: String?
+
+    private struct LinkingCall: Identifiable {
+        let id = UUID()
+        /// nil when the person is only choosing for this call (a name two
+        /// members share) and there is no contact to remember it for.
+        let contactIdentifier: String?
+        let contactName: String?
+        let handle: CallRequest.Handle?
+        let video: Bool
+    }
 
     /// pinRank asc (family first), then recency desc, then stable id.
     private var sortedChats: [ChatEntity] {
@@ -188,8 +204,25 @@ struct ChatListView: View {
                 }
             }
         }
+        .sheet(item: $linkingCall) { linking in
+            CallRequestLinkSheet(contactIdentifier: linking.contactIdentifier, contactName: linking.contactName, handle: linking.handle) { userID in
+                place(callTo: userID, video: linking.video)
+            }
+        }
+        .alert("Couldn't place the call", isPresented: .init(
+            get: { callRequestError != nil },
+            set: { if !$0 { callRequestError = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(callRequestError ?? "")
+        }
+        .onChange(of: session.pendingCallRequest) { _, _ in
+            consumePendingCallRequest()
+        }
         .task {
             consumePendingRoute() // parked before this view existed (cold start)
+            consumePendingCallRequest()
             if session.pendingShareImport != nil { showsShareTarget = true }
         }
         .onChange(of: session.pendingPushRoute) { _, _ in
@@ -241,6 +274,75 @@ struct ChatListView: View {
         if highest > AppSettings.boardSeenNoteID {
             AppSettings.boardSeenNoteID = highest
         }
+    }
+
+    /// Act on a call the system asked for (CallIntents), then clear it so
+    /// it fires once. Who is meant is CallRequestRouter's decision; the
+    /// roster gate is the pickers' — not me, not left, not deleted.
+    private func consumePendingCallRequest() {
+        guard let request = session.pendingCallRequest else { return }
+        session.pendingCallRequest = nil
+        // One call at a time (docs/protocol.md): a request that arrives
+        // mid-call is refused out loud, not dropped — the manager would
+        // only have returned false.
+        guard calls.isIdle else {
+            callRequestError = String(localized: "You're already on a call.", comment: "Alert shown when the Phone app or Siri asked Family to call somebody while a call is already in progress.")
+            return
+        }
+        let links = ContactLinks.shared
+        let directory = CallRequestRouter.Directory(
+            isActiveMember: { id in
+                members.contains { $0.userID == id && !$0.isCurrentUser && !$0.hasLeft && !$0.accountDeleted }
+            },
+            roster: {
+                members.filter { !$0.isCurrentUser && !$0.hasLeft && !$0.accountDeleted }
+                    .map { CallRequestRouter.Candidate(userID: $0.userID, name: $0.resolvedDisplayName) }
+            },
+            linkedMember: { links.userID(linkedTo: $0) },
+            memberByPhone: { links.userID(matchingPhone: $0) },
+            memberByEmail: { links.userID(matchingEmail: $0) })
+        switch CallRequestRouter.resolve(request, in: directory) {
+        case .member(let userID):
+            place(callTo: userID, video: request.video)
+        case .needsChoice(let contactIdentifier, let contactName):
+            dismissSheets()
+            linkingCall = LinkingCall(contactIdentifier: contactIdentifier, contactName: contactName, handle: request.handle, video: request.video)
+        case .unknown:
+            callRequestError = String(localized: "Family doesn't know who that is. Link the contact to a family member from the roster first.", comment: "Alert shown when the Phone app or Siri asked Family to call somebody the app cannot match to a family member.")
+        }
+    }
+
+    /// Open (or create) the direct chat and ring: what the conversation's
+    /// own call button does, from outside.
+    private func place(callTo userID: Int64, video: Bool) {
+        guard session.callsEnabled else {
+            callRequestError = String(localized: "Calls are off on this server.")
+            return
+        }
+        dismissSheets()
+        Task {
+            do {
+                let chatID = try await coordinator.openDirectChat(with: userID)
+                path = [chatID]
+                if !calls.startCall(chatID: chatID, peerUserID: userID, video: video) {
+                    callRequestError = String(localized: "You're already on a call.")
+                }
+            } catch {
+                callRequestError = String(localized: "The server couldn't open a chat with them. Try again.")
+            }
+        }
+    }
+
+    /// Every sheet this list can have up: the call screen is a cover on
+    /// RootView and cannot present over one of them. The share picker
+    /// too — its dismissal discards the parked share, which is the lesser
+    /// loss against a call that starts with no screen.
+    private func dismissSheets() {
+        showsNewChat = false
+        showsSettings = false
+        showsJoinRequests = false
+        showsBoard = false
+        showsShareTarget = false
     }
 
     /// Act on a parked notification tap, then clear it so it fires once.

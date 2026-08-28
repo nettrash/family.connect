@@ -258,5 +258,7 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.legacyDeviceRegistered)
         defaults.removeObject(forKey: Key.boardCursor)
         defaults.removeObject(forKey: Key.boardSeenNoteID)
+        // Member ↔ contact links name user ids of THIS server's family.
+        defaults.removeObject(forKey: ContactLinks.key)
     }
 }

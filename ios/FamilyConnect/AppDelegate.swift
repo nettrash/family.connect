@@ -24,6 +24,7 @@
 // not from a push payload.
 #if os(iOS)
 
+import Intents
 import UIKit
 import UserNotifications
 
@@ -33,6 +34,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// container failed, in which case there is nothing to route to).
     static weak var registrar: PushRegistrar?
     static weak var session: AppSession?
+    /// Siri's "call Anna on Family" (CallIntents), resolved in-app.
+    static weak var callIntentHandler: CallIntentHandler?
 
     func application(
         _ application: UIApplication,
@@ -40,6 +43,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         return true
+    }
+
+    // MARK: - Siri
+
+    /// The in-app intent handler (iOS 14+): no Intents extension, the
+    /// roster is right here. Anything but a call intent is declined.
+    func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any? {
+        guard intent is INStartCallIntent else { return nil }
+        return Self.callIntentHandler
     }
 
     // MARK: - APNs token

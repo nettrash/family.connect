@@ -43,6 +43,11 @@ struct FamilyManageView: View {
     @State private var resettingPassword: MemberDTO?
     /// The member whose birthday the owner is editing; nil while closed.
     @State private var editingBirthday: MemberDTO?
+    /// The member being linked to a device contact; nil while the system
+    /// picker is closed (ContactPicker).
+    @State private var linkingContact: MemberDTO?
+    /// Bumped on every link change so the captions re-read ContactLinks.
+    @State private var linksGeneration = 0
 
     var body: some View {
         List {
@@ -65,6 +70,18 @@ struct FamilyManageView: View {
         .navigationTitle(session.isOwner ? "Manage Family" : "Family Members")
         .sheet(item: $resettingPassword) { member in
             ResetPasswordView(member: member)
+        }
+        .sheet(item: $linkingContact) { member in
+            // The system picker: no Contacts permission, just the one
+            // contact the person chooses (ContactPicker).
+            ContactPicker(
+                onPick: { link in
+                    ContactLinks.shared.link(userID: member.id, to: link)
+                    linksGeneration += 1
+                    linkingContact = nil
+                },
+                onCancel: { linkingContact = nil })
+            .ignoresSafeArea()
         }
         .sheet(item: $editingBirthday) { member in
             MemberBirthdayView(member: member) { birthday in
@@ -195,6 +212,14 @@ struct FamilyManageView: View {
             })
     }
 
+    /// Read through `linksGeneration` so a link made or removed in this
+    /// view redraws the caption (ContactLinks is plain defaults, not
+    /// observable).
+    private func contactLink(for member: MemberDTO) -> ContactLink? {
+        _ = linksGeneration
+        return ContactLinks.shared.link(for: member.id)
+    }
+
     @ViewBuilder
     private var membersSection: some View {
         Section("Members") {
@@ -218,12 +243,39 @@ struct FamilyManageView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        // The device contact this member is, on this
+                        // phone (ContactLinks) — what lets the Phone app's
+                        // Favorites and a contact card call them on Family.
+                        if let link = contactLink(for: member) {
+                            Label(String(localized: "Linked to \(link.contactName)", comment: "Caption under a family member naming the device contact they are linked to; the argument is the contact's name."), systemImage: "person.crop.circle.badge.checkmark")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
                     if member.role == "owner" {
                         Text("Owner")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                }
+                .contextMenu {
+                    // Not for oneself: a link is how OTHER people reach
+                    // this member through the Phone app.
+                    if member.id != AppSettings.currentUserID {
+                        Button {
+                            linkingContact = member
+                        } label: {
+                            Label("Link to a Contact…", systemImage: "person.crop.circle.badge.plus")
+                        }
+                        if contactLink(for: member) != nil {
+                            Button(role: .destructive) {
+                                ContactLinks.shared.unlink(userID: member.id)
+                                linksGeneration += 1
+                            } label: {
+                                Label("Unlink Contact", systemImage: "person.crop.circle.badge.xmark")
+                            }
+                        }
                     }
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -346,6 +398,7 @@ struct FamilyManageView: View {
             do {
                 try await coordinator.api.removeMember(userID: member.id)
                 settingsModel.members.removeAll { $0.id == member.id }
+                ContactLinks.shared.unlink(userID: member.id)
                 await coordinator.resync()
             } catch {
                 model.errorText = String(localized: "Couldn't remove \(member.displayName). Try again.")

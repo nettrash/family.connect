@@ -154,12 +154,17 @@ struct CallManagerTests {
     final class FakeBridge: CallSystemBridge {
         weak var manager: CallManager?
         var events: [String] = []
-        func reportOutgoing(callID: UUID, peerName: String, isVideo: Bool) {
+        /// The peer the system side was told about, per report — what it
+        /// looks the contact link up by.
+        var handles: [Int64?] = []
+        func reportOutgoing(callID: UUID, peerUserID: Int64, peerName: String, isVideo: Bool) {
+            handles.append(peerUserID)
             events.append(isVideo ? "outgoing:\(peerName):video" : "outgoing:\(peerName)")
         }
         func reportOutgoingConnecting(callID: UUID) { events.append("connecting") }
         func reportOutgoingConnected(callID: UUID) { events.append("connected") }
-        func reportIncoming(callID: UUID, peerName: String, hasVideo: Bool) {
+        func reportIncoming(callID: UUID, peerUserID: Int64?, peerName: String, hasVideo: Bool) {
+            handles.append(peerUserID)
             events.append(hasVideo ? "incoming:\(peerName):video" : "incoming:\(peerName)")
         }
         func reportEnded(callID: UUID, reason: CallEndReason) { events.append("ended:\(reason.rawValue)") }
@@ -336,6 +341,17 @@ struct CallManagerTests {
         #expect(h.ringback.events == ["start", "stop"], "connected and ended: silent")
         #expect(h.ringback.startCalls == 1, "exactly one start for the whole call")
         #expect(h.ringback.resets >= 1, "the idle reset forgets the session")
+    }
+
+    @Test("the system side is told the peer's user id, outgoing and incoming")
+    func systemHandlesAreUserIDs() async throws {
+        let h = Harness(bridge: true)
+        h.manager.startCall(chatID: 42, peerUserID: 9)
+        #expect(h.bridge?.handles == [9])
+        h.manager.hangUp()
+        await h.drain()
+        h.manager.handle(frame: offer(id: remoteID, from: 11))
+        #expect(h.bridge?.handles == [9, 11])
     }
 
     @Test("ringback: the far side ringing is reported to the system as 'connecting'")

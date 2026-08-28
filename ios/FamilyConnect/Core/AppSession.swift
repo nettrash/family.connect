@@ -145,6 +145,13 @@ final class AppSession {
     /// session we just dropped) must not navigate the next user.
     var pendingPushRoute: PushRoute?
 
+    /// A call the SYSTEM asked for — a Recents row, a contact card's
+    /// "Family" button, Siri (CallIntents) — waiting for the chat list to
+    /// route it once the phase is `.active`. The pendingPushRoute idiom:
+    /// parked here so a request that launched the app survives bootstrap,
+    /// and cleared by every purge.
+    var pendingCallRequest: CallRequest?
+
     /// Files shared INTO the app, waiting for the user to choose a chat.
     ///
     /// Set by `handleShareURL` (the share extension's hand-off), consumed
@@ -560,11 +567,16 @@ final class AppSession {
         if scope.wipesChatData {
             clearChatStore()
             clearAvatarCache()
+            // Member ↔ contact links name members of the family that just
+            // went — family-scoped like the roster, not defaults-scoped,
+            // so they go with it on a kick or a leave as well.
+            ContactLinks.shared.removeAll()
         }
         if scope.wipesDefaults {
             AppSettings.wipe(keepServerURL: !scope.wipesServerURL)
         }
         pendingPushRoute = nil
+        pendingCallRequest = nil
         // Shared files waiting for a chat are family-scoped too: a share
         // parked before a logout must not land in the next session —
         // whether it is still waiting for the picker or was already
