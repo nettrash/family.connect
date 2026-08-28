@@ -9,7 +9,9 @@
  * surfaceContainerHigh — with 18dp corners tightened to 4dp against
  * same-sender run neighbors, capped at 80% of the row width.
  * Emoji-only messages render bare: transparent balloon, glyphs on the
- * EmojiOnly size ladder (identical on iOS). Text bodies go through
+ * EmojiOnly size ladder (identical on iOS). So does a message that is
+ * nothing but photos or videos: no balloon, no inset, the tile IS the
+ * message (isMediaOnly in ChatItems.kt). Text bodies go through
  * MessageLinks: URLs, emails and phone numbers render as tappable
  * links (browser / mail / dialer).
  * Status glyphs on my bubbles: clock (sending), ✓ (sent), ✓✓ (read —
@@ -197,6 +199,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -2023,6 +2026,14 @@ private fun MessageBubble(
     // detector is a raw pointerInput, which contributes no click action,
     // so without these the links would be sighted-only.
     val emojiFontSize = remember(entity.body) { EmojiOnly.displayFontSize(entity.body) }
+    // A message that is nothing but photos or videos draws BARE — no
+    // balloon, no inset and no bubble-shaped clip; the tile is the message
+    // (isMediaOnly in ChatItems.kt says what keeps the balloon, and why).
+    // Decided up here because the clip is part of the modifier chain
+    // below: an 18dp balloon corner over the tile's own 14dp corner at
+    // zero inset would shave the tile into a shape neither of them has.
+    val mediaOnly = remember(entity, isStreaming) { isMediaOnly(entity, isStreaming) }
+    val surfaceShape = if (mediaOnly) RectangleShape else bubbleShape
     // MARKDOWN FIRST, and the order is load-bearing. Markdown DELETES
     // characters (`**`, backticks, `](url)`), so detecting links over the
     // raw body and drawing the rendered one would leave every link after
@@ -2082,7 +2093,7 @@ private fun MessageBubble(
                 bubbleBounds = it.boundsInWindow()
                 onPositioned(item, bubbleBounds)
             }
-            .clip(bubbleShape)
+            .clip(surfaceShape)
             .then(
                 if (bodyBlocks.none { it.links.isNotEmpty() }) {
                     Modifier
@@ -2164,14 +2175,20 @@ private fun MessageBubble(
             val isEmojiOnly = remember(entity.body) {
                 EmojiOnly.displayFontSize(entity.body) != null
             }
+            // Bare = no fill, and everything on it takes the chat
+            // background's content colour rather than the tint's:
+            // emoji-only, and media-only (which also drops the inset and
+            // the clip — see `surfaceShape`). One flag for both, so
+            // nothing adapts to one half of the rule and not the other.
+            val isBare = isEmojiOnly || mediaOnly
             Surface(
-                shape = bubbleShape,
+                shape = surfaceShape,
                 color = when {
-                    isEmojiOnly -> Color.Transparent
+                    isBare -> Color.Transparent
                     isMine -> MaterialTheme.colorScheme.primaryContainer
                     else -> MaterialTheme.colorScheme.surfaceContainerHigh
                 },
-                contentColor = if (isMine && !isEmojiOnly) {
+                contentColor = if (isMine && !isBare) {
                     MaterialTheme.colorScheme.onPrimaryContainer
                 } else {
                     MaterialTheme.colorScheme.onSurface
@@ -2184,6 +2201,7 @@ private fun MessageBubble(
                     chat = chat,
                     isMine = isMine,
                     isStreaming = isStreaming,
+                    mediaOnly = mediaOnly,
                     emojiFontSize = emojiFontSize,
                     blocks = bodyBlocks,
                     memberNames = memberNames,
@@ -3069,6 +3087,13 @@ private fun BubbleContent(
     isMine: Boolean,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
+    /**
+     * Nothing but photos/videos: the balloon is gone (MessageBubble), so
+     * the content's inset goes with it — the tile's edge is the message's
+     * edge — and the timestamp row takes the phone's 4dp hug instead of
+     * the balloon's 12dp. Resolved by the caller, which owns the fill.
+     */
+    mediaOnly: Boolean = false,
     /** Emoji-ladder size for an emoji-only body, else null. Resolved by the caller. */
     emojiFontSize: Float?,
     /**
@@ -3131,7 +3156,7 @@ private fun BubbleContent(
     // now say so themselves — see their `align` modifiers below. iOS makes
     // the same split with a nested leading VStack.
     Column(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        modifier = if (mediaOnly) Modifier else Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.Start,
     ) {
         // The quote sits inside the balloon, above the reply's own text —
@@ -3362,7 +3387,12 @@ private fun BubbleContent(
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.End,
-                modifier = Modifier.align(Alignment.End),
+                modifier = Modifier
+                    .align(Alignment.End)
+                    // Under a bare tile there is no balloon inset to sit
+                    // in; the phone hugs its timestamp 4pt inside the
+                    // tile's edge, and so does this.
+                    .padding(horizontal = if (mediaOnly) 4.dp else 0.dp),
             ) {
                 if (item.showTimestamp) {
                     Text(

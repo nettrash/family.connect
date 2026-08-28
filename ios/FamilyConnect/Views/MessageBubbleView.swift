@@ -6,6 +6,8 @@
 //  leading, secondarySystemFill — semantic colors so both appearances
 //  work without a palette. Emoji-only messages render bare: transparent
 //  balloon, glyphs on the EmojiOnly size ladder (identical on Android).
+//  So does a message that is nothing but photos or videos: no balloon and
+//  no inset, the tile IS the message (MessagePresentation.isMediaOnly).
 //  Text bodies go through MessageLinks: URLs, emails and phone numbers
 //  render as tappable links (browser / Mail / call).
 //  Below the bubble: HH:mm plus, on own
@@ -471,7 +473,11 @@ struct MessageBubbleView: View {
     private var bubble: some View {
         // Emoji-only messages render bare: no balloon, just the glyphs
         // (the padding stays so the long-press target and the picker
-        // anchor keep their size). Foreground goes primary on both
+        // anchor keep their size). So does a message that is nothing but
+        // photos or videos — the tile is the message, and a balloon
+        // around it was a frame around a picture
+        // (MessagePresentation.isMediaOnly says what keeps the balloon,
+        // and why). Foreground goes primary on both
         // sides — the rare monochrome pictograph (☂, ™) would vanish
         // as white-on-transparent on own messages. Text messages go
         // through MessageLinks so URLs, emails and phone numbers are
@@ -643,7 +649,7 @@ struct MessageBubbleView: View {
                     memberCount: memberCount,
                     memberNames: memberNames,
                     avatarVersions: avatarVersions,
-                    isMine: isMine && !isEmojiOnly,
+                    isMine: isMine && !isBare,
                     onVote: onVote,
                     onClose: onClosePoll,
                     onDoubleTap: { toggleQuickHeart() },
@@ -656,10 +662,16 @@ struct MessageBubbleView: View {
                 reactionRow
             }
         }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            // A media-only message drops the balloon's inset along with
+            // its fill: the tile's edge lands where the balloon's edge
+            // would have, so a bare photo is not a photo floating 12pt
+            // inside an invisible frame. Emoji keep the inset — a glyph
+            // has no edge of its own, and the padding is its long-press
+            // target. The tile carries the gestures itself.
+            .padding(.horizontal, isMediaOnly ? 0 : 12)
+            .padding(.vertical, isMediaOnly ? 0 : 8)
             .background(
-                isEmojiOnly
+                isBare
                     ? AnyShapeStyle(Color.clear)
                     : isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.secondarySystemFill)),
                 in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -711,7 +723,7 @@ struct MessageBubbleView: View {
                 onOpen: { onOpenAttachment(attachment) },
                 onLongPress: { onLongPress() },
                 onDoubleTap: { toggleQuickHeart() },
-                isMine: isMine)
+                isMine: attachmentsOnTint)
         } else {
             let media = AttachmentAlbum.media(of: attachments)
             let rows = AttachmentAlbum.rows(of: attachments)
@@ -722,14 +734,14 @@ struct MessageBubbleView: View {
                         onOpen: { onOpenAttachment(media[0]) },
                         onLongPress: { onLongPress() },
                         onDoubleTap: { toggleQuickHeart() },
-                        isMine: isMine)
+                        isMine: attachmentsOnTint)
                 } else if let single = media.first {
                     AttachmentView(
                         attachment: single,
                         onOpen: { onOpenAttachment(single) },
                         onLongPress: { onLongPress() },
                         onDoubleTap: { toggleQuickHeart() },
-                        isMine: isMine)
+                        isMine: attachmentsOnTint)
                 }
                 ForEach(rows) { attachment in
                     AttachmentView(
@@ -737,7 +749,7 @@ struct MessageBubbleView: View {
                         onOpen: { onOpenAttachment(attachment) },
                         onLongPress: { onLongPress() },
                         onDoubleTap: { toggleQuickHeart() },
-                        isMine: isMine)
+                        isMine: attachmentsOnTint)
                 }
             }
         }
@@ -791,13 +803,32 @@ struct MessageBubbleView: View {
         EmojiOnly.displayFontSize(for: message.body) != nil
     }
 
+    /// True when the message is nothing but photos and/or videos — the
+    /// other bare treatment. The rule, and why files, audio and places
+    /// are not in it, lives in MessagePresentation.isMediaOnly.
+    private var isMediaOnly: Bool {
+        MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
+    }
+
+    /// True when the balloon draws with no fill — an emoji-only body or a
+    /// media-only message. Everything that adapts to "nothing behind me"
+    /// (the content colour, the chips' outline, the poll's tone) keys off
+    /// this, never off one of its halves.
+    private var isBare: Bool { isEmojiOnly || isMediaOnly }
+
+    /// The tone the attachment blocks draw against. Their `isMine` is a
+    /// CONTRAST switch (white hairline and placeholder over the tint),
+    /// so a bare tile — sitting on the chat background, not the tint —
+    /// takes the neutral side whichever side of the thread it is on.
+    private var attachmentsOnTint: Bool { isMine && !isMediaOnly }
+
     /// What everything drawn ON the balloon derives from: white on my
-    /// tinted balloon, primary otherwise — including bare emoji-only
-    /// bubbles, where white would vanish against the chat background.
-    /// One rule keeps the text, the chips and their outlines legible on
-    /// both balloon tones.
+    /// tinted balloon, primary otherwise — including bare bubbles
+    /// (emoji-only, media-only), where white would vanish against the
+    /// chat background. One rule keeps the text, the chips and their
+    /// outlines legible on both balloon tones.
     private var bubbleContentColor: Color {
-        isMine && !isEmojiOnly ? .white : .primary
+        isMine && !isBare ? .white : .primary
     }
 
     /// Emoji-only messages render on the EmojiOnly size ladder (one

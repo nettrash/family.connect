@@ -38,6 +38,7 @@ package me.nettrash.familyconnect.ui.chat
 
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.net.dto.PollCodec
+import me.nettrash.familyconnect.ui.components.AttachmentAlbum
 import me.nettrash.familyconnect.data.net.dto.PollDto
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
@@ -350,4 +351,28 @@ fun buildChatItems(
         }
     }
     return items
+}
+
+/**
+ * True when a message is nothing but photos and/or videos — no caption, no
+ * quote, no poll, no call, nothing still arriving — and the bubble
+ * therefore draws it BARE: no balloon, the way an emoji-only body draws.
+ *
+ * The balloon exists to give TEXT a surface. A photo brings its own, and a
+ * photo inside a tinted balloon is a frame around a picture — which is why
+ * every mainstream messenger draws a lone photo bare. Every one of them
+ * also keeps the balloon for voice notes, documents and places, and so does
+ * this rule: a file, audio or location row is words and controls, which
+ * need the surface (and its wash and hairline are cut FOR a balloon — on
+ * the chat background they vanish). A caption, a quote or a row beside the
+ * photo keeps the balloon for the same reason: the words in it need the
+ * surface, and a photo hanging half out of a balloon is the look everyone
+ * moved away from. Same rule on iOS and macOS
+ * (`MessagePresentation.isMediaOnly`), pinned by mirrored vectors.
+ */
+fun isMediaOnly(entity: MessageEntity, isStreaming: Boolean = false): Boolean {
+    if (isStreaming || entity.body.isNotEmpty()) return false
+    if (entity.replyToMessageId != null || entity.pollJson != null || entity.call != null) return false
+    val attachments = entity.attachmentList
+    return attachments.isNotEmpty() && AttachmentAlbum.rows(attachments).isEmpty()
 }

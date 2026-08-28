@@ -427,7 +427,7 @@ struct MacMessageRow: View {
                     avatarVersions: Dictionary(
                         poll.options.flatMap(\.votes).map { ($0, avatarVersionFor($0)) },
                         uniquingKeysWith: { first, _ in first }),
-                    isMine: isMine && !isEmojiOnly,
+                    isMine: isMine && !isBare,
                     onVote: { optionID in
                         Task { await coordinator.vote(localID: message.localID, optionID: optionID) }
                     },
@@ -441,7 +441,7 @@ struct MacMessageRow: View {
             let chips = MessagePresentation.reactionChips(
                 message.reactions, currentUserID: coordinator.currentUserID)
             if !chips.isEmpty {
-                MacReactionRow(chips: chips, onTintedBalloon: isMine && !isEmojiOnly) { chip in
+                MacReactionRow(chips: chips, onTintedBalloon: isMine && !isBare) { chip in
                     // A click never takes a reaction away. On a chip I am
                     // not part of, join it; on one I AM part of, show who
                     // reacted — where my own row is the explicit remove.
@@ -458,14 +458,21 @@ struct MacMessageRow: View {
                 }
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
+        // A message that is nothing but photos or videos drops the inset
+        // along with the fill (below): the tile's edge lands where the
+        // balloon's would have. Emoji keep it — a glyph has no edge of its
+        // own, and the padding is its hover target.
+        .padding(.horizontal, isMediaOnly ? 0 : 11)
+        .padding(.vertical, isMediaOnly ? 0 : 7)
         // A message that is nothing but emoji renders BARE, exactly as it
         // does on the phone and on Android: the padding and the shape stay
         // (so the hover target, the context menu and the run-aware corners
-        // are untouched) and only the fill goes.
+        // are untouched) and only the fill goes. So does a media-only
+        // message — the tile is the message, and a balloon around it was
+        // a frame around a picture (MessagePresentation.isMediaOnly says
+        // what keeps the balloon, and why).
         .background(
-            isEmojiOnly
+            isBare
                 ? AnyShapeStyle(Color.clear)
                 : isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.appSecondaryFill),
             in: shape)
@@ -473,7 +480,7 @@ struct MacMessageRow: View {
         // to .primary so a monochrome pictograph (☂, ™) is still visible
         // against the window. Same rule as MessageBubbleView.
         .foregroundStyle(
-            isMine && !isEmojiOnly ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+            isMine && !isBare ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
         .frame(maxWidth: 460, alignment: isMine ? .trailing : .leading)
         // A pending row is dimmed until the server has it — the same
         // signal the phone gives, without a status glyph.
@@ -483,7 +490,7 @@ struct MacMessageRow: View {
         // where there is no balloon to lift — the shadow would fall on the
         // glyphs themselves and read as a smudge.
         .shadow(
-            color: .black.opacity(hovering && !isEmojiOnly ? 0.12 : 0), radius: 3, y: 1)
+            color: .black.opacity(hovering && !isBare ? 0.12 : 0), radius: 3, y: 1)
         .animation(.easeOut(duration: 0.12), value: hovering)
     }
 
@@ -504,7 +511,7 @@ struct MacMessageRow: View {
                 if media.count >= 2 {
                     MacAlbumStack(
                         album: AttachmentAlbum(items: media, index: 0),
-                        isMine: isMine,
+                        isMine: attachmentsOnTint,
                         onOpen: { onOpenAttachment(media[0]) })
                         // Count 2 before count 1 — the exclusivity
                         // rule the single block explains.
@@ -526,13 +533,13 @@ struct MacMessageRow: View {
             // Its own view, shared with the phone: a location has
             // no bytes, so none of the download machinery applies,
             // and it carries its own click-to-open-in-Maps.
-            LocationAttachmentView(attachment: attachment, isMine: isMine)
+            LocationAttachmentView(attachment: attachment, isMine: attachmentsOnTint)
         } else if attachment.isAudio {
             // The player IS the interaction; a click belongs to its
             // own controls, so no open/heart pair here.
-            MacAttachmentBlock(attachment: attachment, isMine: isMine)
+            MacAttachmentBlock(attachment: attachment, isMine: attachmentsOnTint)
         } else {
-            MacAttachmentBlock(attachment: attachment, isMine: isMine)
+            MacAttachmentBlock(attachment: attachment, isMine: attachmentsOnTint)
                 // Count 2 BEFORE count 1, and both as onTapGesture:
                 // that is what makes them exclusive. A bare
                 // single-click handler on a CHILD masks the
@@ -546,6 +553,24 @@ struct MacMessageRow: View {
 
     /// True when the body is nothing but a few emoji.
     private var isEmojiOnly: Bool { EmojiOnly.displayFontSize(for: message.body) != nil }
+
+    /// True when the message is nothing but photos and/or videos — the
+    /// other bare treatment (MessagePresentation.isMediaOnly has the rule
+    /// and why files, audio and places stay in a balloon).
+    private var isMediaOnly: Bool {
+        MessagePresentation.isMediaOnly(message, isStreaming: isStreaming)
+    }
+
+    /// No fill behind the content — emoji-only or media-only. Everything
+    /// that adapts to "nothing behind me" keys off this, never off one
+    /// half of it.
+    private var isBare: Bool { isEmojiOnly || isMediaOnly }
+
+    /// The tone the attachment blocks draw against: their `isMine` is a
+    /// CONTRAST switch (white hairline and placeholder over the tint), so
+    /// a bare tile on the window's own background takes the neutral side
+    /// whichever side of the thread it is on.
+    private var attachmentsOnTint: Bool { isMine && !isMediaOnly }
 
     /// The web link this bubble would preview, if any. Emoji-only bodies
     /// have no links, and tel:/mailto: are not previewable.

@@ -472,6 +472,30 @@ nonisolated enum MessagePresentation {
         return serverID <= othersReadUpTo
     }
 
+    /// True when a message is nothing but photos and/or videos — no
+    /// caption, no quote, no poll, no call, nothing still arriving — and
+    /// the bubble therefore draws it BARE: no balloon, the way an
+    /// emoji-only body draws.
+    ///
+    /// The balloon exists to give TEXT a surface. A photo brings its own,
+    /// and a photo inside a tinted balloon is a frame around a picture —
+    /// which is why every mainstream messenger draws a lone photo bare.
+    /// Every one of them also keeps the balloon for voice notes, documents
+    /// and places, and so does this rule: a file, audio or location row is
+    /// words and controls, which need the surface (and its wash and
+    /// hairline are cut FOR a balloon — on the chat background they
+    /// vanish). A caption, a quote or a row beside the photo keeps the
+    /// balloon for the same reason: the words in it need the surface, and
+    /// a photo hanging half out of a balloon is the look everyone moved
+    /// away from. Same rule on Android (`isMediaOnly` in ChatItems.kt),
+    /// pinned by mirrored vectors.
+    static func isMediaOnly(_ message: MessageSnapshot, isStreaming: Bool = false) -> Bool {
+        guard !isStreaming, message.body.isEmpty, message.replyTo == nil,
+              message.poll == nil, message.call == nil,
+              !message.attachments.isEmpty else { return false }
+        return AttachmentAlbum.rows(of: message.attachments).isEmpty
+    }
+
     /// Aggregate a message's raw reaction list into the chips the bubble
     /// draws: one per distinct emoji, in the order each emoji first
     /// appears in the list (the server preserves reaction order, so this
