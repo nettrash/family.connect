@@ -17,6 +17,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import dagger.hilt.android.HiltAndroidApp
 import me.nettrash.familyconnect.calls.CallNotifications
 import me.nettrash.familyconnect.calls.CallServiceLauncher
+import me.nettrash.familyconnect.calls.TelecomCalls
 import me.nettrash.familyconnect.data.net.ws.ChatSocketManager
 import me.nettrash.familyconnect.data.push.PushNotifications
 import javax.inject.Inject
@@ -33,10 +34,15 @@ class FamilyConnectApp : Application() {
     @Inject
     lateinit var callServiceLauncher: CallServiceLauncher
 
+    /** Family's calls, registered with the platform's Telecom (headsets, Wear, Auto, the call log). */
+    @Inject
+    lateinit var telecomCalls: TelecomCalls
+
     override fun onCreate() {
         super.onCreate()
         ProcessLifecycleOwner.get().lifecycle.addObserver(chatSocketManager)
         callServiceLauncher.start()
+        telecomCalls.start()
         CallNotifications.ensureChannels(this)
         // The "messages" channel must exist before the first push renders —
         // including the system-tray path while the app process is dead, so

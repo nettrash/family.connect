@@ -107,6 +107,13 @@
                 <data android:mimeType="application/*" />
                 <data android:mimeType="text/*" />
             </intent-filter>
+            <!-- The Phone app's call log calling a Family call back
+                 (Android 16.1+; TelecomCalls / CallBackRegistry): the
+                 intent carries the Telecom UUID of the original call. -->
+            <intent-filter>
+                <action android:name="android.telecom.action.CALL_BACK" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />

@@ -48,7 +48,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
+import me.nettrash.familyconnect.calls.CallBackRegistry
 import me.nettrash.familyconnect.calls.CallNotifications
+import me.nettrash.familyconnect.calls.TelecomCalls
 import me.nettrash.familyconnect.data.push.PendingRoute
 import me.nettrash.familyconnect.data.push.PushNotifications
 import me.nettrash.familyconnect.data.push.PushRouteParser
@@ -80,6 +82,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var attachments: AttachmentRepository
 
+    @Inject
+    lateinit var callBacks: CallBackRegistry
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -88,6 +93,7 @@ class MainActivity : ComponentActivity() {
         // must not re-fire an already-consumed deep link.
         if (savedInstanceState == null) {
             handlePushIntent(intent)
+            handleCallBackIntent(intent)
             handleShareIntent(intent)
         }
         showOverLockScreenForCall(intent)
@@ -151,6 +157,7 @@ class MainActivity : ComponentActivity() {
                             callState = viewModel.callState,
                             shareFlow = viewModel.shareFlow,
                             onShareChatChosen = viewModel::shareChatChosen,
+                            onCallBack = { route -> viewModel.callBack(route) },
                             onShareCancelled = viewModel::cancelShare,
                             sessionStatus = viewModel.sessionStatus,
                         )
@@ -163,8 +170,23 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handlePushIntent(intent)
+        handleCallBackIntent(intent)
         handleShareIntent(intent)
         showOverLockScreenForCall(intent)
+    }
+
+    /**
+     * The Phone app's call log (Android 16.1+): "call back" hands over the
+     * UUID Telecom gave the original call, and CallBackRegistry says who
+     * that was. A UUID the registry does not know — another install, a
+     * cleared registry — opens the app and nothing more.
+     */
+    private fun handleCallBackIntent(intent: Intent?) {
+        intent ?: return
+        if (intent.action != TelecomCalls.ACTION_CALL_BACK) return
+        val uuid = intent.getStringExtra(TelecomCalls.EXTRA_UUID) ?: return
+        val entry = callBacks.find(uuid) ?: return
+        viewModel.onPendingRoute(PendingRoute.CallBack(entry.chatId, entry.peerUserId, entry.video))
     }
 
     private fun handlePushIntent(intent: Intent?) {

@@ -18,6 +18,12 @@
  * is best effort: a tone must never take the call's signalling down with
  * it (a throw here would end the socket-frame collector for good).
  *
+ * With the call registered with Telecom (TelecomCalls), the mode, the
+ * focus and the route are the PLATFORM's: the app must not set them, and
+ * the speaker toggle becomes a request for an endpoint. AndroidCallAudio
+ * asks its CallRouteOwner which world it is in per call; the hand-rolled
+ * path below is what a call Telecom refused falls back to.
+ *
  * iOS counterpart: Core/Calls/CallRingback.swift (RingbackPlayer).
  */
 
@@ -61,6 +67,18 @@ interface CallAudio {
     fun stopRingback()
 }
 
+/**
+ * Who routes a call's audio: Telecom (TelecomCalls), or nobody — in which
+ * case AndroidCallAudio does it the old way.
+ */
+interface CallRouteOwner {
+    /** True while the platform manages the current call's audio. */
+    val ownsAudio: Boolean
+
+    /** Ask the platform for the speaker (or back off it); true when it took the request. */
+    fun requestSpeaker(on: Boolean): Boolean
+}
+
 @Singleton
 class AndroidCallAudio @Inject constructor(
     @param:ApplicationContext private val context: Context,
@@ -71,7 +89,34 @@ class AndroidCallAudio @Inject constructor(
     private var previousMode = AudioManager.MODE_NORMAL
     private var ringback: AudioTrack? = null
 
+    /** Set by TelecomCalls once it has registered; null keeps the old path. */
+    @Volatile
+    var routeOwner: CallRouteOwner? = null
+
+    /** The hand-rolled mode/focus were taken for the current call. */
+    private var legacyBegun = false
+
     override fun begin(video: Boolean) {
+        val owner = routeOwner
+        if (owner != null && owner.ownsAudio) {
+            // Telecom takes the mode and the focus as it adds the call; the
+            // one thing to say is the route a video call starts on.
+            if (video) owner.requestSpeaker(true)
+            return
+        }
+        legacyBegin(video)
+    }
+
+    /**
+     * Telecom refused the call after all (TelecomCalls): take the mode,
+     * the focus and the route by hand, as before it existed.
+     */
+    fun takeOverAudio(video: Boolean) {
+        if (!legacyBegun) legacyBegin(video)
+    }
+
+    private fun legacyBegin(video: Boolean) {
+        legacyBegun = true
         val audio = manager
         previousMode = audio.mode
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -91,13 +136,23 @@ class AndroidCallAudio @Inject constructor(
     override fun end() {
         val audio = manager
         stopRingback()
-        setSpeaker(false)
+        // Nothing to give back when Telecom held the call's audio: the
+        // mode and the focus were never this app's to take.
+        if (!legacyBegun) return
+        legacyBegun = false
+        legacySetSpeaker(false)
         focus?.let(audio::abandonAudioFocusRequest)
         focus = null
         audio.mode = previousMode
     }
 
     override fun setSpeaker(on: Boolean) {
+        val owner = routeOwner
+        if (owner != null && owner.ownsAudio && owner.requestSpeaker(on)) return
+        legacySetSpeaker(on)
+    }
+
+    private fun legacySetSpeaker(on: Boolean) {
         val audio = manager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (on) {

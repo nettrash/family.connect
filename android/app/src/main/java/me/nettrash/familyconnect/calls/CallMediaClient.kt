@@ -33,6 +33,14 @@ interface CallMediaClient {
     fun setMuted(muted: Boolean)
 
     /**
+     * Whether the far side is HEARD. Off while Telecom holds the call for
+     * a cellular one (CallManager.setHeld): the platform's rule for a held
+     * call is no microphone and no incoming media. Default no-op so a fake
+     * needs nothing.
+     */
+    fun setRemoteAudioEnabled(enabled: Boolean) {}
+
+    /**
      * Turn the local camera on or off (docs/protocol.md, "Video": cameras
      * toggle by enabling/disabling the TRACK — no renegotiation, no
      * frame; the far side simply sees the stream stop). Off also stops

@@ -159,6 +159,82 @@ class CallManagerTest {
         assertThat(manager.isInCall.value).isFalse()
     }
 
+    // -- The platform's hand on a call (TelecomCalls) ---------------------------------
+
+    @Test
+    fun telecomRefusingAnOutgoingCallEndsItBusyWithACancel() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = false)
+        runCurrent()
+        val callId = outgoingCallId()
+
+        manager.systemRefused("6a1f0c3e-0000-4000-8000-00000000dead")
+        runCurrent()
+        assertThat(manager.state.value).isInstanceOf(CallState.Outgoing::class.java)
+
+        manager.systemRefused(callId)
+        runCurrent()
+
+        assertThat(sentEnds()).containsExactly(ClientFrame.CallEnd(callId, CallEndReason.CANCEL))
+        val ended = manager.state.value as CallState.Ended
+        assertThat(ended.reason).isEqualTo(CallEnding.BUSY)
+        assertThat(ended.outgoing).isTrue()
+        assertThat(audio.ended).isEqualTo(1)
+    }
+
+    @Test
+    fun systemRefusedIsOnlyForAnOutgoingCall() = runTest(dispatcher) {
+        offer()
+        manager.systemRefused(CALL)
+        runCurrent()
+        assertThat(manager.state.value).isInstanceOf(CallState.Incoming::class.java)
+        assertThat(sentEnds()).isEmpty()
+    }
+
+    @Test
+    fun holdMutesTheMicrophoneUntilTakenBackAndTheToggleStillWins() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = false)
+        runCurrent()
+        val client = media.created.single()
+
+        manager.setHeld(true)
+        assertThat(client.mutedNow).isTrue()
+        manager.setHeld(false)
+        assertThat(client.mutedNow).isFalse()
+
+        // Muted by the person, then held and released: still muted.
+        manager.toggleMute()
+        manager.setHeld(true)
+        manager.setHeld(false)
+        assertThat(client.mutedNow).isTrue()
+        assertThat(manager.isMuted.value).isTrue()
+
+        // Held, the toggle cannot open the microphone: the cellular call
+        // in front must not be heard by the family.
+        manager.setHeld(true)
+        manager.toggleMute()
+        assertThat(manager.isMuted.value).isFalse()
+        assertThat(client.mutedNow).isTrue()
+        manager.setHeld(false)
+        assertThat(client.mutedNow).isFalse()
+
+        // The system unmuting (a headset button) clears both.
+        manager.setMuted(false)
+        assertThat(client.mutedNow).isFalse()
+        assertThat(manager.isMuted.value).isFalse()
+    }
+
+    @Test
+    fun theSystemsRouteDrawsTheSpeakerToggleWithoutAskingForARoute() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = false)
+        runCurrent()
+        assertThat(manager.isSpeaker.value).isFalse()
+        manager.onSystemRoute(speaker = true)
+        assertThat(manager.isSpeaker.value).isTrue()
+        assertThat(audio.speakerOn).isFalse()
+        manager.onSystemRoute(speaker = false)
+        assertThat(manager.isSpeaker.value).isFalse()
+    }
+
     // -- Ringback ------------------------------------------------------------------
 
     @Test

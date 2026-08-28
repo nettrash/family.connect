@@ -39,6 +39,12 @@ sealed interface PendingRoute {
 
     /** The call screen; [answer] when the tap was the notification's Answer button. */
     data class Call(val answer: Boolean = false) : PendingRoute
+
+    /**
+     * The Phone app's call log asked for a call back (TelecomCalls,
+     * CallBackRegistry): open the chat and ring them again.
+     */
+    data class CallBack(val chatId: Long, val peerUserId: Long, val video: Boolean) : PendingRoute
 }
 
 object PushRouteParser {

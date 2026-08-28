@@ -167,6 +167,8 @@ fun AppNavHost(
     shareFlow: StateFlow<MainViewModel.ShareFlow?>? = null,
     /** The picker chose a chat: the stash is aimed, then this navigates. */
     onShareChatChosen: (Long) -> Unit = {},
+    /** The Phone app's call log asked for a call back: place it (MainViewModel). */
+    onCallBack: (PendingRoute.CallBack) -> Unit = {},
     /** The picker was dismissed: the share (and its cache files) is discarded. */
     onShareCancelled: () -> Unit = {},
     /** LIVE session status — the share picker's navigation gate (see [shareNavigatesToChat]). */
@@ -235,6 +237,12 @@ fun AppNavHost(
                     if (navController.currentBackStackEntry?.destination?.route != Routes.CALL) {
                         navController.navigate(Routes.CALL) { launchSingleTop = true }
                     }
+                is PendingRoute.CallBack -> {
+                    // Into the chat first, so the call screen has the
+                    // conversation to fall back onto when it ends.
+                    navController.navigate(Routes.chat(route.chatId))
+                    onCallBack(route)
+                }
             }
         }
         onPendingRouteConsumed()

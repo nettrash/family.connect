@@ -174,6 +174,8 @@ class CallManager @Inject constructor(
     private var outgoing = false
     private var guardJob: Job? = null
     private var lingerJob: Job? = null
+    /** Telecom holds the call (setHeld): the microphone is off regardless of the mute toggle. */
+    private var held = false
 
     init {
         scope.launch {
@@ -255,13 +257,61 @@ class CallManager @Inject constructor(
     fun toggleMute() {
         val muted = !_isMuted.value
         _isMuted.value = muted
-        media?.setMuted(muted)
+        // A held call (Telecom, a cellular call in front) keeps the
+        // microphone off whatever the toggle says.
+        media?.setMuted(muted || held)
     }
 
     fun toggleSpeaker() {
         val on = !_isSpeaker.value
         _isSpeaker.value = on
         audio.setSpeaker(on)
+    }
+
+    // -- What the platform does to a call (TelecomCalls) ---------------------------
+
+    /**
+     * The system routed the audio somewhere — a headset connected, a
+     * request took — and the toggle must draw what the ear hears.
+     */
+    fun onSystemRoute(speaker: Boolean) {
+        if (_state.value !is CallState.Live) return
+        _isSpeaker.value = speaker
+    }
+
+    /** The system muted or unmuted the microphone (a headset's button). */
+    fun setMuted(muted: Boolean) {
+        _isMuted.value = muted
+        media?.setMuted(muted || held)
+    }
+
+    /**
+     * The system put the call on hold (a cellular call was answered) or
+     * took it back. This call has no hold of its own on the wire: the
+     * microphone stops while held, and the far side keeps hearing silence
+     * rather than a click — the closest an unbuffered P2P call gets.
+     */
+    fun setHeld(on: Boolean) {
+        held = on
+        media?.setMuted(on || _isMuted.value)
+        media?.setRemoteAudioEnabled(!on)
+    }
+
+    /**
+     * Telecom refused to add the OUTGOING call [callId] because a cellular
+     * call is in progress. The far side never rang; the call ends here as
+     * busy — that call and no other, the refusal having arrived off the
+     * mutex like every other outside event.
+     */
+    fun systemRefused(callId: String) {
+        scope.launch {
+            mutex.withLock {
+                val current = _state.value as? CallState.Outgoing ?: return@withLock
+                if (current.callId != callId) return@withLock
+                socket.trySend(ClientFrame.CallEnd(current.callId, CallEndReason.CANCEL))
+                finish(CallEnding.BUSY)
+            }
+        }
     }
 
     /**
@@ -563,7 +613,10 @@ class CallManager @Inject constructor(
             return null
         }
         media = client
-        client.setMuted(_isMuted.value)
+        // A Telecom hold (setHeld) can land while the ICE servers are
+        // still being fetched: the client comes up already held.
+        client.setMuted(_isMuted.value || held)
+        client.setRemoteAudioEnabled(!held)
         if (video) {
             // The camera state was decided BEFORE the media existed (the
             // default, or the screen's permission-denied override) — hand
@@ -664,6 +717,7 @@ class CallManager @Inject constructor(
         // as the stop it is.
         audio.stopRingback()
         audio.end()
+        held = false
         _isMuted.value = false
         _isSpeaker.value = false
         _answerRequested.value = false
@@ -696,6 +750,7 @@ class CallManager @Inject constructor(
         media?.close()
         media = null
         audio.stopRingback()
+        held = false
         offerSdp = null
         remoteDescriptionSet = false
         pendingRemoteCandidates.clear()

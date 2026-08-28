@@ -108,6 +108,10 @@ val releaseSigning: Map<String, String>? = run {
 android {
     namespace = "me.nettrash.familyconnect"
     compileSdk = 36
+    // 36.1 (Android 16.1): what core-telecom 1.1.x — the Phone app's call
+    // log for Family calls (TelecomCalls) — compiles against. targetSdk
+    // stays 36; nothing in behaviour changes with the compile floor.
+    compileSdkMinor = 1
 
     defaultConfig {
         applicationId = "me.nettrash.familyconnect"
@@ -234,6 +238,7 @@ if (googleServicesJsonPresent) {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.core.telecom)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)

@@ -41,6 +41,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.push.PendingRoute
 import me.nettrash.familyconnect.calls.CallState
+import me.nettrash.familyconnect.calls.CallStarter
 import me.nettrash.familyconnect.calls.CallStateSource
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.repo.FamilyStatus
@@ -57,6 +58,8 @@ class MainViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     /** Defaulted for the tests; Dagger ignores the default and injects CallManager. */
     private val calls: CallStateSource = CallStateSource.NONE,
+    /** The call log's call-back (PendingRoute.CallBack); same trick. */
+    private val callStarter: CallStarter = CallStarter { _, _, _ -> false },
     /** Same trick: the tests never share; Dagger injects DefaultShareImporter. */
     private val shareImporter: ShareImporter = ShareImporter.NONE,
     /** And the app-wide stash the chosen chat's composer drains. */
@@ -108,6 +111,10 @@ class MainViewModel @Inject constructor(
     fun consumePendingRoute() {
         _pendingRoute.value = null
     }
+
+    /** The Phone app's call log: ring them again. False when a call is already up. */
+    fun callBack(route: PendingRoute.CallBack): Boolean =
+        callStarter.startCall(route.chatId, route.peerUserId, route.video)
 
     // -- The OS share target --------------------------------------------------
 

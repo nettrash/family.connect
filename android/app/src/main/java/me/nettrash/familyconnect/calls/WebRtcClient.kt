@@ -111,6 +111,11 @@ class WebRtcClient(
 
     private val audioSource: AudioSource
     private val audioTrack: AudioTrack
+    /** The far side's audio, once it arrives; gated by setRemoteAudioEnabled (a Telecom hold). */
+    @Volatile
+    private var remoteAudioTrack: AudioTrack? = null
+    @Volatile
+    private var remoteAudioEnabled = true
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
     private var videoCapturer: CameraVideoCapturer? = null
@@ -196,6 +201,10 @@ class WebRtcClient(
                 remoteVideoTrack = track
                 remoteSink?.let(track::addSink)
                 listener.onRemoteVideoActive(true)
+            }
+            if (track is AudioTrack) {
+                remoteAudioTrack = track
+                track.setEnabled(remoteAudioEnabled)
             }
         }
 
@@ -328,6 +337,12 @@ class WebRtcClient(
         audioTrack.setEnabled(!muted)
     }
 
+    override fun setRemoteAudioEnabled(enabled: Boolean) {
+        if (closed) return
+        remoteAudioEnabled = enabled
+        remoteAudioTrack?.setEnabled(enabled)
+    }
+
     override fun setCameraEnabled(enabled: Boolean) {
         if (closed) return
         val track = videoTrack ?: return
@@ -403,6 +418,7 @@ class WebRtcClient(
         runCatching { localSink?.let { videoTrack?.removeSink(it) } }
         runCatching { remoteSink?.let { remoteVideoTrack?.removeSink(it) } }
         remoteVideoTrack = null
+        remoteAudioTrack = null
         runCatching { videoCapturer?.stopCapture() }
         capturing = false
         runCatching { connection.close() }
