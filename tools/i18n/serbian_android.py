@@ -293,4 +293,12 @@ ANDROID_ONLY = {
 "s_replying_to": "Одговор за %1$s",
 "s_replying_to_excerpt": "Одговор за %1$s: %2$s",
 "s_replying_to_excerpt_with_parent": "Одговор за %1$s: %2$s, које је одговарало %3$s",
+
+# --- 2026-08-27 photo albums ---
+# The album viewer's page label ("2 of 5"), which the English match cannot
+# see past: Android writes %1$d where the catalogue writes %lld, the same
+# reason s_uploading_n_of_m is here. Same words as serbian.py. "Album",
+# "Previous" and "Next" ARE found by the English match and are not repeated.
+"s_n_of_m": "%1$d од %2$d",
+# --- end photo albums ---
 }

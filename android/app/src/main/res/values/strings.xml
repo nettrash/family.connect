@@ -79,6 +79,14 @@
     <string name="s_password">Password</string>
     <string name="s_video">Video</string>
     <string name="s_photo">Photo</string>
+    <string name="s_album">Album</string>
+    <!--
+      The album viewer's page label ("2 of 5") and, under the bubble's
+      stack of cards, its accessibility label ("Album, 1 of 5"). Two
+      arguments, so a translation may reorder them; a count with no plural
+      because neither number is a quantity of anything.
+    -->
+    <string name="s_n_of_m">%1$d of %2$d</string>
     <string name="s_take_photo">Take photo</string>
     <string name="s_statistics">Statistics</string>
     <string name="s_messages">Messages</string>

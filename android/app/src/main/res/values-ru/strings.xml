@@ -66,6 +66,8 @@
     <string name="s_password">Пароль</string>
     <string name="s_video">Видео</string>
     <string name="s_photo">Фото</string>
+    <string name="s_album">Альбом</string>
+    <string name="s_n_of_m">%1$d из %2$d</string>
     <string name="s_photo_or_video">Фото или видео</string>
     <string name="s_privacy">Конфиденциальность</string>
     <string name="s_react">Реакция</string>

@@ -2,13 +2,16 @@
 //  MacAttachmentViewer.swift
 //  FamilyConnect
 //
-//  A photo or video at full size, in its own sheet.
+//  A message's photos and videos at full size, in their own window, one
+//  at a time with arrows between them.
 //
 //  The Mac's Save and Share are the platform's own, not the phone's: an
 //  NSSavePanel puts the file wherever the person wants it (which is what
 //  "save" means on a Mac — there is no single gallery), and
 //  NSSharingServicePicker is the same menu every other Mac app shows.
-//  That is why this is not the iOS viewer with conditionals.
+//  That is why this is not the iOS viewer with conditionals. Paging is
+//  the Mac's idiom too: toolbar arrows and the arrow keys, not a swipe —
+//  a Mac window has no pages to drag between.
 //
 
 #if os(macOS)
@@ -18,7 +21,10 @@ import AppKit
 import SwiftUI
 
 struct MacAttachmentViewer: View {
-    let attachment: AttachmentDTO
+    /// Where the window opened: the message's media and the clicked one.
+    /// Copied into state so the arrows move the view, not the window's
+    /// key (FamilyConnectApp explains why the key holds the index).
+    @State private var album: AttachmentAlbum
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(AttachmentStore.self) private var store
@@ -27,13 +33,53 @@ struct MacAttachmentViewer: View {
     @State private var zoom: CGFloat = 1
     @State private var busy = false
 
+    init(album: AttachmentAlbum) {
+        _album = State(initialValue: album)
+    }
+
+    private var attachment: AttachmentDTO { album.current }
+
+    /// "2 of 5" while there is somewhere to page; the item's own name when
+    /// there is not, as the window has always been titled.
+    private var title: String {
+        guard album.count > 1 else { return attachment.displayName }
+        return String(
+            localized: "\(album.index + 1) of \(album.count)",
+            comment: "Which photo of an album is being looked at: the first number is its position, the second the album's size.")
+    }
+
     var body: some View {
         content
+            // Keyed by the item, so a page turn starts the picture's scroll
+            // view fresh instead of inheriting the last one's offset.
+            .id(attachment.id)
             .frame(minWidth: 480, minHeight: 360)
-            .navigationTitle(attachment.displayName)
+            .navigationTitle(title)
             .toolbar {
                 ToolbarItem {
                     if busy { ProgressView().controlSize(.small) }
+                }
+                if album.count > 1 {
+                    ToolbarItem {
+                        Button {
+                            turn(to: album.previous())
+                        } label: {
+                            Label("Previous", systemImage: "chevron.left")
+                        }
+                        .keyboardShortcut(.leftArrow, modifiers: [])
+                        .disabled(!album.hasPrevious)
+                        .help("Previous")
+                    }
+                    ToolbarItem {
+                        Button {
+                            turn(to: album.next())
+                        } label: {
+                            Label("Next", systemImage: "chevron.right")
+                        }
+                        .keyboardShortcut(.rightArrow, modifiers: [])
+                        .disabled(!album.hasNext)
+                        .help("Next")
+                    }
                 }
                 ToolbarItem {
                     Button {
@@ -52,6 +98,14 @@ struct MacAttachmentViewer: View {
                     .help("Share")
                 }
             }
+    }
+
+    /// A page turn is also a zoom reset: the next picture is a different
+    /// shape, and a 3x window into it would show a corner of nothing.
+    private func turn(to next: AttachmentAlbum) {
+        guard next != album else { return }
+        zoom = 1
+        album = next
     }
 
     @ViewBuilder
@@ -95,7 +149,10 @@ struct MacAttachmentViewer: View {
 
     /// NSSavePanel, not a fixed folder: on a Mac "save" means the person
     /// picks where, and the sandbox grants access to exactly that place.
+    /// Acts on the page that is up when the button is clicked, even if the
+    /// person pages on while the bytes are fetched.
     private func save() {
+        let attachment = attachment
         Task {
             busy = true
             defer { busy = false }
@@ -112,6 +169,7 @@ struct MacAttachmentViewer: View {
     }
 
     private func share() {
+        let attachment = attachment
         Task {
             busy = true
             defer { busy = false }
@@ -162,7 +220,9 @@ private struct MacPlayerSurface: NSViewRepresentable {
     }
 }
 
-/// Streams with the session token attached, like the iOS player.
+/// Streams with the session token attached, like the iOS player. Keyed by
+/// its attachment in the viewer, so paging away from a clip tears this
+/// down (`onDisappear`) and the stream stops with the page.
 private struct MacVideoPlayer: View {
     let attachment: AttachmentDTO
 

@@ -522,6 +522,22 @@ SR = {
 "Medium": "Средња",
 "Large": "Велика",
 # --- end board note sizes ---
+# --- 2026-08-27 photo albums (iOS + macOS + Android share "Album", "Previous" ---
+# --- and "Next", so Android finds them by the English match; the page label ---
+# --- is Android's %1$d twin, s_n_of_m, in serbian_android.py) ---
+# The viewer's page label ("2 of 5") and, under the bubble's stack of cards,
+# its accessibility sentence ("Album, 1 of 5"). Neither number counts
+# anything, so this is a plain string and not a plural — positional, like
+# "Отпремање %1$lld од %2$lld…", the file's other "of" pair.
+"%lld of %lld": "%1$lld од %2$lld",
+"Album": "Албум",
+# The Mac viewer's ‹ › buttons. Adjectives agreeing with the elided
+# "фотографија" (feminine), the way the note sizes agree with "белешка" —
+# the pages are photos first and videos by exception, and nothing here
+# describes the reader, so nothing is gendered about a person.
+"Previous": "Претходна",
+"Next": "Следећа",
+# --- end 2026-08-27 photo albums ---
 }
 
 # The members count is a plural, and Serbian's CLDR categories are one/few/other

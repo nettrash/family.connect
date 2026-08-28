@@ -591,10 +591,15 @@ struct MacConversationView: View {
                                         openFile(attachment)
                                     } else {
                                         // Its own window, which is what
-                                        // makes it resizable.
+                                        // makes it resizable — holding the
+                                        // whole message's media, opened at
+                                        // the one that was clicked, so the
+                                        // arrows page through the rest.
+                                        let media = AttachmentAlbum.media(of: row.message.attachments)
+                                        let index = media.firstIndex { $0.id == attachment.id } ?? 0
                                         openWindow(
                                             id: MacWindow.attachment,
-                                            value: attachment)
+                                            value: AttachmentAlbum(items: media, index: index))
                                     }
                                 },
                                 memberCount: familyMemberCount,

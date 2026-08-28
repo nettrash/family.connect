@@ -693,20 +693,16 @@ struct MessageBubbleView: View {
             })
     }
 
-    /// Side of one cell in the two-column media grid a multi-attachment
-    /// bubble draws. Square-ish and fixed, so a band of cells has a real
-    /// height the thread's scroll anchoring can rely on.
-    private static let gridCellSide: CGFloat = 118
-
     /// What a bubble draws for its attachment set.
     ///
     /// ONE attachment is exactly the block this bubble has always drawn —
     /// the thumbnail at the attachment's own shape, or the file/audio/
-    /// location row. SEVERAL: the photos and videos form a two-column
-    /// grid of square cells in SENT order, each cell opening ITS
-    /// attachment in the existing viewer, and any files or audio stack
-    /// under it as the rows they have always been. No new image pipeline
-    /// — every cell is the same AttachmentView, told to be a cell.
+    /// location row. SEVERAL: the photos and videos (AttachmentAlbum's
+    /// cut, in SENT order) become one pile when there are two or more and
+    /// stay the ordinary free-shape thumbnail when there is one, and any
+    /// files, audio or location stack under it as the rows they have
+    /// always been. The pile opens its first item; the viewer pages from
+    /// there. No new image pipeline — the pile draws the same previews.
     @ViewBuilder
     private func attachmentBlock(_ attachments: [AttachmentDTO]) -> some View {
         if attachments.count == 1, let attachment = attachments.first {
@@ -717,27 +713,25 @@ struct MessageBubbleView: View {
                 onDoubleTap: { toggleQuickHeart() },
                 isMine: isMine)
         } else {
-            let media = attachments.filter { !$0.isFile && !$0.isAudio && !$0.isLocation }
-            let listed = attachments.filter { $0.isFile || $0.isAudio || $0.isLocation }
+            let media = AttachmentAlbum.media(of: attachments)
+            let rows = AttachmentAlbum.rows(of: attachments)
             VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
-                // Hand-rolled rows of two rather than a LazyVGrid: this
-                // stack lives inside the thread's NON-lazy window, whose
-                // whole design is real heights (see ConversationView's
-                // header), and a lazy grid would put estimates back.
-                ForEach(Array(stride(from: 0, to: media.count, by: 2)), id: \.self) { start in
-                    HStack(spacing: 4) {
-                        ForEach(media[start..<min(start + 2, media.count)]) { attachment in
-                            AttachmentView(
-                                attachment: attachment,
-                                onOpen: { onOpenAttachment(attachment) },
-                                onLongPress: { onLongPress() },
-                                onDoubleTap: { toggleQuickHeart() },
-                                isMine: isMine,
-                                cellSide: Self.gridCellSide)
-                        }
-                    }
+                if media.count >= 2 {
+                    AlbumStackView(
+                        album: AttachmentAlbum(items: media, index: 0),
+                        onOpen: { onOpenAttachment(media[0]) },
+                        onLongPress: { onLongPress() },
+                        onDoubleTap: { toggleQuickHeart() },
+                        isMine: isMine)
+                } else if let single = media.first {
+                    AttachmentView(
+                        attachment: single,
+                        onOpen: { onOpenAttachment(single) },
+                        onLongPress: { onLongPress() },
+                        onDoubleTap: { toggleQuickHeart() },
+                        isMine: isMine)
                 }
-                ForEach(listed) { attachment in
+                ForEach(rows) { attachment in
                     AttachmentView(
                         attachment: attachment,
                         onOpen: { onOpenAttachment(attachment) },

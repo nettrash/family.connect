@@ -209,8 +209,9 @@ struct ConversationView: View {
     /// True while the poll form is up. A sheet rather than a banner over
     /// the field: a question plus up to ten options is a form, not a line.
     @State private var showPollComposer = false
-    /// The attachment being viewed full-screen.
-    @State private var viewingAttachment: AttachmentDTO?
+    /// The album being viewed full-screen: the message's media and the
+    /// one that was tapped. A lone photo is an album of one.
+    @State private var viewingAlbum: AttachmentAlbum?
     /// A downloaded file on its way to Quick Look.
     @State private var previewedFile: URL?
 
@@ -804,7 +805,12 @@ struct ConversationView: View {
                                     if attachment.isFile {
                                         openFile(attachment)
                                     } else {
-                                        viewingAttachment = attachment
+                                        // The whole message's media, opened
+                                        // at the one that was tapped — the
+                                        // viewer pages through the rest.
+                                        let media = AttachmentAlbum.media(of: message.attachments)
+                                        let index = media.firstIndex { $0.id == attachment.id } ?? 0
+                                        viewingAlbum = AttachmentAlbum(items: media, index: index)
                                     }
                                 },
                                 onVote: { optionID in
@@ -1530,7 +1536,7 @@ struct ConversationView: View {
             pickedMedia: $pickedMedia,
             showFilePicker: $showFilePicker,
             previewedFile: $previewedFile,
-            viewingAttachment: $viewingAttachment,
+            viewingAlbum: $viewingAlbum,
             showCamera: $showCamera,
             onPickedMedia: stagePickedMedia,
             onPickedFiles: stagePickedFiles,
@@ -2414,7 +2420,7 @@ private struct AttachmentSurfaces: ViewModifier {
     @Binding var pickedMedia: [PhotosPickerItem]
     @Binding var showFilePicker: Bool
     @Binding var previewedFile: URL?
-    @Binding var viewingAttachment: AttachmentDTO?
+    @Binding var viewingAlbum: AttachmentAlbum?
     @Binding var showCamera: Bool
 
     let onPickedMedia: ([PhotosPickerItem]) -> Void
@@ -2450,10 +2456,8 @@ private struct AttachmentSurfaces: ViewModifier {
                     .ignoresSafeArea()
             }
             .quickLookPreview($previewedFile)
-            .fullScreenCover(item: $viewingAttachment) { attachment in
-                AttachmentViewer(
-                    attachment: attachment,
-                    onShare: { onShareAttachment(attachment) })
+            .fullScreenCover(item: $viewingAlbum) { album in
+                AttachmentViewer(album: album, onShare: onShareAttachment)
             }
     }
 }

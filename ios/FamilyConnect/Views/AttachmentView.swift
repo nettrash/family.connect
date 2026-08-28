@@ -10,6 +10,10 @@
 //  size the image will be. Without that, every photo that finishes loading
 //  would resize its bubble and shove the whole thread.
 //
+//  Several photos in one message are not several of these: they are one
+//  AlbumStackView, which borrows the placeholder and the video badge
+//  from here so a pile's top card looks exactly like a lone photo.
+//
 //  Android counterpart: the attachment block in ui/chat/ChatScreen.kt
 //
 
@@ -36,11 +40,6 @@ struct AttachmentView: View {
     /// drawing tint on tint — invisible. Everything inside a balloon has to
     /// take its colour from whatever is directly behind it.
     var isMine: Bool = false
-    /// Non-nil when this attachment is one CELL of a multi-attachment
-    /// grid: a square of exactly this side, filled and clipped, instead
-    /// of the free-standing thumbnail sized by the attachment's own
-    /// aspect ratio. Media only — files and audio stack as rows.
-    var cellSide: CGFloat? = nil
 
     @Environment(AttachmentStore.self) private var store
 
@@ -50,8 +49,6 @@ struct AttachmentView: View {
     private static let maxHeight: CGFloat = 320
 
     private var size: CGSize {
-        // A grid cell's shape is the grid's, not the attachment's.
-        if let cellSide { return CGSize(width: cellSide, height: cellSide) }
         let ratio = attachment.aspectRatio
         var width = Self.maxWidth
         var height = width / ratio
@@ -75,10 +72,30 @@ struct AttachmentView: View {
     /// back "fixed" it. Same reason AttachmentViewer reads it.
     private var image: Image? {
         _ = store.generation
+        return Self.image(for: attachment, in: store)
+    }
+
+    /// The lookup behind `image`, for any view that draws a bubble-sized
+    /// preview of an attachment. The caller reads `store.generation` — the
+    /// paragraph above is about the caller, not this function.
+    static func image(for attachment: AttachmentDTO, in store: AttachmentStore) -> Image? {
         if attachment.hasPreview {
             return store.image(id: attachment.id, preview: true)
         }
         return attachment.isVideo ? nil : store.image(id: attachment.id, preview: false)
+    }
+
+    /// What a media tile shows until its bytes arrive. A soft vertical
+    /// ramp rather than flat grey: while the bytes are still coming this
+    /// rectangle is all there is to look at, and a dead slab reads as a
+    /// broken image.
+    static func placeholder(isMine: Bool) -> LinearGradient {
+        LinearGradient(
+            colors: isMine
+                ? [.white.opacity(0.22), .white.opacity(0.10)]
+                : [.primary.opacity(0.10), .primary.opacity(0.04)],
+            startPoint: .top,
+            endPoint: .bottom)
     }
 
     /// True while bytes we expect are still on their way. A video with no
@@ -184,15 +201,7 @@ struct AttachmentView: View {
     @ViewBuilder
     private var mediaThumbnail: some View {
         ZStack {
-            // A soft vertical ramp rather than flat grey: while the bytes
-            // are still coming this rectangle is all there is to look at,
-            // and a dead slab reads as a broken image.
-            LinearGradient(
-                colors: isMine
-                    ? [.white.opacity(0.22), .white.opacity(0.10)]
-                    : [.primary.opacity(0.10), .primary.opacity(0.04)],
-                startPoint: .top,
-                endPoint: .bottom)
+            Self.placeholder(isMine: isMine)
             if let image {
                 image
                     .resizable()
@@ -201,7 +210,7 @@ struct AttachmentView: View {
                 ProgressView()
             }
             if attachment.isVideo {
-                videoOverlay
+                VideoBadgeOverlay(attachment: attachment)
             }
         }
         .frame(width: size.width, height: size.height)
@@ -227,8 +236,14 @@ struct AttachmentView: View {
         .accessibilityAction { onOpen() }
     }
 
-    @ViewBuilder
-    private var videoOverlay: some View {
+}
+
+/// The play badge and, when known, the duration in the bottom-trailing
+/// corner — over a lone video and over an album whose top card is one.
+struct VideoBadgeOverlay: View {
+    let attachment: AttachmentDTO
+
+    var body: some View {
         ZStack {
             Image(systemName: "play.circle.fill")
                 .font(.system(size: 42))

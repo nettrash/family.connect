@@ -66,6 +66,8 @@
     <string name="s_password">Лозинка</string>
     <string name="s_video">Видео</string>
     <string name="s_photo">Фотографија</string>
+    <string name="s_album">Албум</string>
+    <string name="s_n_of_m">%1$d од %2$d</string>
     <string name="s_take_photo">Сликај</string>
     <string name="s_statistics">Статистика</string>
     <string name="s_messages">Поруке</string>

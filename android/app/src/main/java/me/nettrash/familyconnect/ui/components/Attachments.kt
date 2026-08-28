@@ -2,8 +2,10 @@
  * Attachments.kt
  * Family Connect (Android)
  *
- * The seam between the attachment cache and composition, and the two
- * pieces of chrome a photo or video bubble is made of.
+ * The seam between the attachment cache and composition, and the pieces
+ * of chrome a photo or video bubble is made of — one thumbnail for a lone
+ * item, a stack of cards for an album (see AttachmentAlbum.kt for the
+ * set itself).
  *
  * LocalAttachments carries the app-scoped AttachmentRepository down the
  * tree the same way LocalAvatars carries the avatar cache, and for the
@@ -40,6 +42,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.LocalContentColor
@@ -73,6 +76,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -94,13 +98,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
+import kotlin.math.sin
 
 val LocalAttachments = staticCompositionLocalOf<AttachmentRepository?> { null }
 
@@ -129,18 +137,18 @@ fun rememberAttachmentImage(attachment: AttachmentDto, preview: Boolean): ImageB
  * attachments in the SENDER'S order (docs/protocol.md, "Photos, videos,
  * audio, files and locations").
  *
- * Media (photos and videos) first: a message whose ONLY attachment is
- * one photo or video renders exactly as it always has (the full
- * [AttachmentBlock] thumbnail at its own aspect ratio); any other set
- * puts its media in a two-column grid of square cells, in order, each
- * opening ITS attachment — including a LONE media item riding with
- * file/audio rows, which takes a single grid cell for parity with
- * Apple, whose rule branches on the TOTAL attachment count
- * (MessageBubbleView.attachmentBlock / MacMessageRow.attachmentBlock).
- * Files, audio and a location keep their rows, stacked —
- * and a location is always alone on a message (protocol), so it falls
- * out of this naturally as a one-row group. Every piece re-emits the
- * bubble's own long-press and double-tap, like every block does.
+ * Media (photos and videos) first: ONE photo or video renders exactly as
+ * it always has (the full [AttachmentBlock] thumbnail at its own aspect
+ * ratio) — whether or not file/audio rows ride along, since a lone
+ * photo is a lone photo whatever sits under it. Two or more become an
+ * [AlbumStack]: one card with the rest peeking out behind it, opening
+ * the viewer on the first item, which then pages through them all. A
+ * grid used to sit here, and an odd count left one square alone at an
+ * edge; the stack has no such seam. Files, audio and a location keep
+ * their rows, stacked under the media — and a location is always alone
+ * on a message (protocol), so it falls out of this naturally as a
+ * one-row group. Every piece re-emits the bubble's own long-press and
+ * double-tap, like every block does.
  */
 @Composable
 fun AttachmentGroup(
@@ -152,18 +160,20 @@ fun AttachmentGroup(
     onDoubleTap: () -> Unit = {},
     showMapPreviews: Boolean = true,
 ) {
-    val media = attachments.filter { !it.isFile && !it.isAudio && !it.isLocation }
-    val rows = attachments.filter { it.isFile || it.isAudio || it.isLocation }
+    val media = AttachmentAlbum.media(attachments)
+    val rows = AttachmentAlbum.rows(attachments)
     Column(
         modifier = modifier.widthIn(max = MAX_WIDTH.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         when {
-            // Full free-aspect only when this media item is the message's
-            // ONLY attachment: Apple branches on attachments.count == 1,
-            // so one photo in a MIXED set draws as a square grid cell on
-            // iPhone/Mac — mirror that here rather than diverge.
-            media.size == 1 && rows.isEmpty() -> AttachmentBlock(
+            media.size >= 2 -> AlbumStack(
+                media = media,
+                onOpen = { onOpen(media[0]) },
+                onLongPress = onLongPress,
+                onDoubleTap = onDoubleTap,
+            )
+            media.size == 1 -> AttachmentBlock(
                 attachment = media[0],
                 onOpen = { onOpen(media[0]) },
                 streamUrl = streamUrl,
@@ -171,18 +181,6 @@ fun AttachmentGroup(
                 onDoubleTap = onDoubleTap,
                 showMapPreviews = showMapPreviews,
             )
-            media.isNotEmpty() -> media.chunked(GRID_COLUMNS).forEach { rowItems ->
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    rowItems.forEach { item ->
-                        MediaGridCell(
-                            attachment = item,
-                            onOpen = { onOpen(item) },
-                            onLongPress = onLongPress,
-                            onDoubleTap = onDoubleTap,
-                        )
-                    }
-                }
-            }
         }
         rows.forEach { item ->
             AttachmentBlock(
@@ -198,29 +196,118 @@ fun AttachmentGroup(
 }
 
 /**
- * One square of the album grid: the preview cropped to fill, a play badge
- * and duration on a video. Square on purpose — an album's cells share one
- * shape so the grid reads as a set, and each image's own aspect ratio
- * still governs the full-screen viewer it opens.
+ * An album in a bubble: the FIRST item's preview on a card, with the
+ * second and third peeking out behind it, tilted a little each way — a
+ * pile of real previews, the way a stack of prints sits on a table. One
+ * element, one tap: it opens the viewer on the first item and the viewer
+ * pages from there, so nothing here needs a cell per photo.
+ *
+ * The card's shape is decided from the attachments' declared dimensions
+ * and nothing else ([AttachmentAlbum.cardRatio]) — the bubble must not
+ * change height as previews arrive, for the same reason the single
+ * thumbnail reserves its shape (see [AttachmentBlock]). Its width is the
+ * thumbnail's rule too, `widthIn(max)` rather than a fixed 240dp, so a
+ * balloon narrower than that (a split-screen window, the largest display
+ * size) shrinks the pile instead of pushing its count badge out through
+ * the balloon's edge. The container is the card plus [PEEK] above it,
+ * and the card sits at its bottom, so the tilted corners have room and
+ * are never clipped away.
+ *
+ * The cards behind are shrunk about their CENTRE, so scaling alone would
+ * pull their top edge down by half the height they lose — on a portrait
+ * card that is more than the lift, and the pile vanished behind the front
+ * card. Each translation therefore lifts by [LIFT] plus exactly that
+ * loss, which puts the second card's top edge 6dp above the front card's
+ * and the third's 12dp, whatever the aspect; the tilt then raises one
+ * corner of each a little further, which is the fan the reader sees.
+ *
+ * Accessibility deliberately flattens the pile to ONE button — "Album,
+ * 1 of N" — rather than reading three photos and two badges; the count
+ * badge and the duration are visual, and the viewer that opens says the
+ * rest. The gestures are the thumbnail's trio, and for the same reason:
+ * the stack IS the balloon in a caption-less message, so it must carry
+ * the heart and the reaction menu itself.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MediaGridCell(
-    attachment: AttachmentDto,
+private fun AlbumStack(
+    media: List<AttachmentDto>,
     onOpen: () -> Unit,
     onLongPress: () -> Unit,
     onDoubleTap: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // Resolved out here: a semantics block is not a composable context.
+    val albumDescription = stringResource(R.string.s_album) + ", " +
+        stringResource(R.string.s_n_of_m, 1, media.size)
+    Box(
+        modifier = modifier
+            .widthIn(max = MAX_WIDTH.dp)
+            // Gestures and semantics before the padding: the peek strip is
+            // part of the one button, not a dead band above it.
+            .combinedClickable(
+                role = Role.Button,
+                onClick = onOpen,
+                onLongClick = onLongPress,
+                onDoubleClick = onDoubleTap,
+            )
+            .clearAndSetSemantics { contentDescription = albumDescription }
+            .padding(top = PEEK.dp)
+            .aspectRatio(AttachmentAlbum.cardRatio(media[0])),
+    ) {
+        // Deepest first, so the front card paints last and on top.
+        if (media.size >= 3) {
+            AlbumCard(
+                attachment = media[2],
+                modifier = Modifier.graphicsLayer {
+                    translationY = -(2 * LIFT.dp.toPx() + (1 - BACK_SCALE) * size.height / 2)
+                    scaleX = BACK_SCALE
+                    scaleY = BACK_SCALE
+                    rotationZ = TILT
+                },
+            )
+        }
+        AlbumCard(
+            attachment = media[1],
+            modifier = Modifier.graphicsLayer {
+                translationY = -(LIFT.dp.toPx() + (1 - MIDDLE_SCALE) * size.height / 2)
+                scaleX = MIDDLE_SCALE
+                scaleY = MIDDLE_SCALE
+                rotationZ = -TILT
+            },
+        )
+        AlbumCard(attachment = media[0]) {
+            if (media[0].isVideo) {
+                PlayBadge()
+                media[0].durationMs?.let { millis ->
+                    DurationBadge(millis, Modifier.align(Alignment.BottomEnd))
+                }
+            }
+            CountBadge(media.size, Modifier.align(Alignment.TopEnd))
+        }
+    }
+}
+
+/**
+ * One card of the stack: the preview filled and clipped into the frame,
+ * over the same soft placeholder the single thumbnail shows while the
+ * bytes are still coming. Every card fills the container's card frame —
+ * the behind ones are shrunk from there — so all three share the front
+ * card's shape. Behind-cards get no badges — they are there to be
+ * glimpsed, not read.
+ */
+@Composable
+private fun AlbumCard(
+    attachment: AttachmentDto,
+    modifier: Modifier = Modifier,
+    overlay: @Composable BoxScope.() -> Unit = {},
 ) {
     val image = rememberAttachmentImage(attachment, preview = true)
         ?: rememberAttachmentImage(attachment, preview = false)
-    // Resolved out here: a semantics block is not a composable context.
-    val mediaDescription = stringResource(
-        if (attachment.isVideo) R.string.s_video else R.string.s_photo,
-    )
     Box(
-        modifier = Modifier
-            .size(GRID_CELL.dp)
-            .clip(RoundedCornerShape(10.dp))
+        modifier = modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(14.dp))
             .background(
                 Brush.verticalGradient(
                     listOf(
@@ -229,13 +316,7 @@ private fun MediaGridCell(
                     ),
                 ),
             )
-            .border(1.dp, LocalContentColor.current.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
-            .combinedClickable(
-                onClick = onOpen,
-                onLongClick = onLongPress,
-                onDoubleClick = onDoubleTap,
-            )
-            .semantics { contentDescription = mediaDescription },
+            .border(1.dp, LocalContentColor.current.copy(alpha = 0.12f), RoundedCornerShape(14.dp)),
         contentAlignment = Alignment.Center,
     ) {
         if (image != null) {
@@ -246,24 +327,55 @@ private fun MediaGridCell(
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        if (attachment.isVideo) {
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.45f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    tint = Color.White,
-                )
-            }
-            attachment.durationMs?.let { millis ->
-                DurationBadge(millis, Modifier.align(Alignment.BottomEnd))
-            }
-        }
+        overlay()
+    }
+}
+
+/**
+ * "⧉ 5": how many are in the pile, in the duration chip's dress so the
+ * two badges on one video card read as a pair. Top-trailing, where the
+ * duration is bottom-trailing.
+ */
+@Composable
+private fun CountBadge(count: Int, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .padding(6.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(BADGE_SCRIM)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.PhotoLibrary,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(12.dp),
+        )
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White,
+        )
+    }
+}
+
+/** The play glyph over a video preview — the thumbnail's and the stack's. */
+@Composable
+private fun PlayBadge() {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(BADGE_SCRIM),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Filled.PlayArrow,
+            contentDescription = null,
+            tint = Color.White,
+        )
     }
 }
 
@@ -664,19 +776,7 @@ private fun MediaThumbnail(
             )
         }
         if (attachment.isVideo) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.45f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    tint = Color.White,
-                )
-            }
+            PlayBadge()
             attachment.durationMs?.let { millis ->
                 DurationBadge(millis, Modifier.align(Alignment.BottomEnd))
             }
@@ -685,10 +785,11 @@ private fun MediaThumbnail(
 }
 
 /**
- * The duration chip on a video preview. One composable for the album grid
- * cell and the single thumbnail, so the identical element cannot change
- * weight between a one-video message and a two-video album (it briefly
- * did: 4dp outer / 4×1dp inner against 6dp outer / 5×2dp inner).
+ * The duration chip on a video preview. One composable for the album
+ * stack's front card and the single thumbnail, so the identical element
+ * cannot change weight between a one-video message and a two-video album
+ * (it briefly did: 4dp outer / 4×1dp inner against 6dp outer / 5×2dp
+ * inner).
  */
 @Composable
 private fun DurationBadge(millis: Int, modifier: Modifier = Modifier) {
@@ -699,7 +800,7 @@ private fun DurationBadge(millis: Int, modifier: Modifier = Modifier) {
         modifier = modifier
             .padding(6.dp)
             .clip(RoundedCornerShape(4.dp))
-            .background(Color.Black.copy(alpha = 0.45f))
+            .background(BADGE_SCRIM)
             .padding(horizontal = 5.dp, vertical = 2.dp),
     )
 }
@@ -714,9 +815,32 @@ fun formatDuration(millis: Int): String {
 
 private const val MAX_WIDTH = 240
 
-/** The album grid: two columns of square cells inside [MAX_WIDTH]. */
-private const val GRID_COLUMNS = 2
-private const val GRID_CELL = (MAX_WIDTH - 4) / 2
+/**
+ * The album stack's pile: the second card a touch smaller and tilted one
+ * way, the third smaller still and tilted the other, so the edges that
+ * peek out read as separate prints rather than as one thick card. [LIFT]
+ * is how far above the front card's top edge the second card's sits, in
+ * dp; the third sits twice that.
+ */
+private const val MIDDLE_SCALE = 0.94f
+private const val BACK_SCALE = 0.88f
+private const val TILT = 2.5f
+private const val LIFT = 6f
+
+/**
+ * Room the stack reserves above the front card, in dp: the third card's
+ * lift plus the rise of its high corner — a card TILT degrees off true is
+ * highest at one corner, width · scale · sin(TILT) / 2 above its own top
+ * edge, about 4.6dp at the widest card — so the whole pile is drawn
+ * rather than clipped by the balloon. Sized for the widest card; a
+ * narrower balloon over-reserves by a fraction of a dp, which is cheaper
+ * than a reservation that moves with the window.
+ */
+private val PEEK: Float =
+    2 * LIFT + MAX_WIDTH * BACK_SCALE * sin(Math.toRadians(TILT.toDouble())).toFloat() / 2
+
+/** The one wash under every badge on a preview — play, duration, count. */
+private val BADGE_SCRIM = Color.Black.copy(alpha = 0.45f)
 
 /**
  * Shape limits for the reserved box. A panorama or a very tall crop would

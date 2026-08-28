@@ -487,41 +487,33 @@ struct MacMessageRow: View {
         .animation(.easeOut(duration: 0.12), value: hovering)
     }
 
-    /// Side of one cell in the two-column media grid a multi-attachment
-    /// balloon draws — the phone's number, sized for a Mac balloon.
-    private static let gridCellSide: CGFloat = 120
-
     /// What the balloon draws for its attachment set — one attachment is
-    /// exactly the block it has always drawn; several become a
-    /// two-column grid of square media cells in SENT order (each cell
-    /// opening ITS attachment) with files and audio stacked as rows
-    /// under it. Same composition as the phone's, from the same blocks.
+    /// exactly the block it has always drawn; several become a pile of
+    /// the photos and videos (AttachmentAlbum's cut, SENT order) when
+    /// there are two or more, the ordinary thumbnail when there is one,
+    /// with files, audio and a location stacked as rows under it. Same
+    /// composition as the phone's, from the same blocks.
     @ViewBuilder
     private func attachmentStack(_ attachments: [AttachmentDTO]) -> some View {
         if attachments.count == 1, let attachment = attachments.first {
             singleAttachment(attachment)
         } else {
-            let media = attachments.filter { !$0.isFile && !$0.isAudio && !$0.isLocation }
-            let listed = attachments.filter { $0.isFile || $0.isAudio || $0.isLocation }
+            let media = AttachmentAlbum.media(of: attachments)
+            let rows = AttachmentAlbum.rows(of: attachments)
             VStack(alignment: .leading, spacing: 4) {
-                // Rows of two, hand-rolled: the Mac thread is the same
-                // non-lazy real-heights window the phone's is, and a lazy
-                // grid would put height estimates back into it.
-                ForEach(Array(stride(from: 0, to: media.count, by: 2)), id: \.self) { start in
-                    HStack(spacing: 4) {
-                        ForEach(media[start..<min(start + 2, media.count)]) { attachment in
-                            MacAttachmentBlock(
-                                attachment: attachment,
-                                isMine: isMine,
-                                cellSide: Self.gridCellSide)
-                                // Count 2 before count 1 — the exclusivity
-                                // rule the single block explains.
-                                .onTapGesture(count: 2) { quickHeart() }
-                                .onTapGesture(count: 1) { onOpenAttachment(attachment) }
-                        }
-                    }
+                if media.count >= 2 {
+                    MacAlbumStack(
+                        album: AttachmentAlbum(items: media, index: 0),
+                        isMine: isMine,
+                        onOpen: { onOpenAttachment(media[0]) })
+                        // Count 2 before count 1 — the exclusivity
+                        // rule the single block explains.
+                        .onTapGesture(count: 2) { quickHeart() }
+                        .onTapGesture(count: 1) { onOpenAttachment(media[0]) }
+                } else if let single = media.first {
+                    singleAttachment(single)
                 }
-                ForEach(listed) { attachment in
+                ForEach(rows) { attachment in
                     singleAttachment(attachment)
                 }
             }
@@ -855,10 +847,6 @@ private struct MacAttachmentBlock: View {
     /// For CONTRAST: an own balloon is filled with the tint, so anything
     /// drawn in the accent colour there would be invisible.
     let isMine: Bool
-    /// Non-nil when this attachment is one CELL of a multi-attachment
-    /// grid: a square of exactly this side, filled and clipped, instead
-    /// of the free-standing fit-to-320 thumbnail. Media only.
-    var cellSide: CGFloat? = nil
 
     @Environment(AttachmentStore.self) private var store
 
@@ -899,23 +887,10 @@ private struct MacAttachmentBlock: View {
             .hoverCursor(.pointingHand)
         } else if let image = store.image(id: attachment.id, preview: true)
             ?? store.image(id: attachment.id, preview: false) {
-            Group {
-                if let cellSide {
-                    // A grid cell: the grid's shape, not the photo's —
-                    // filled and clipped to an exact square, so every row
-                    // of cells has one real height.
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: cellSide, height: cellSide)
-                        .clipped()
-                } else {
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: 320, maxHeight: 320)
-                }
-            }
+            image
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 320, maxHeight: 320)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay {
                     if attachment.isVideo {
@@ -938,7 +913,7 @@ private struct MacAttachmentBlock: View {
                         ? [.white.opacity(0.22), .white.opacity(0.10)]
                         : [.primary.opacity(0.10), .primary.opacity(0.04)],
                     startPoint: .top, endPoint: .bottom))
-                .frame(width: cellSide ?? 240, height: cellSide ?? 180)
+                .frame(width: 240, height: 180)
                 .overlay {
                     if attachment.isVideo {
                         Image(systemName: "play.circle.fill").font(.largeTitle)
@@ -947,6 +922,131 @@ private struct MacAttachmentBlock: View {
                     }
                 }
         }
+    }
+}
+
+/// Several photos in one Mac balloon, as a pile: the first at its own
+/// shape on a 300pt card, the second and third peeking out behind it,
+/// the count in a corner — the phone's AlbumStackView, at Mac size.
+///
+/// A pile rather than a grid for the phone's reason: a grid crops every
+/// photo to one square and leaves an odd one alone at an edge. The card
+/// is sized from METADATA (AttachmentAlbum.cardSize) — this thread is
+/// the same non-lazy real-heights window the phone's is, and a card that
+/// grew when its preview landed would shove it.
+///
+/// No gestures of its own: the balloon attaches the double-click heart
+/// and the single-click open, in that order, exactly as it does to a
+/// lone photo. The accessibility action is the one thing that has to
+/// live here, because a bare click gesture publishes none.
+private struct MacAlbumStack: View {
+    /// The message's media, in sent order; at least two.
+    let album: AttachmentAlbum
+    let isMine: Bool
+    /// Opens the viewer at the first item — for VoiceOver, which never
+    /// sees the balloon's click.
+    let onOpen: () -> Void
+
+    @Environment(AttachmentStore.self) private var store
+
+    /// The balloon's media width, so the pile is as wide as a lone photo.
+    private static let cardWidth: CGFloat = 300
+
+    private var card: CGSize {
+        AttachmentAlbum.cardSize(for: album.items[0], maxWidth: Self.cardWidth)
+    }
+
+    var body: some View {
+        // Reading `generation` is what makes this redraw when a fetch
+        // lands — the iOS bubble's rule, and the same bug if left out.
+        let _ = store.generation
+        ZStack(alignment: .bottom) {
+            if album.items.count >= 3 {
+                layer(album.items[2], .third)
+            }
+            layer(album.items[1], .second)
+            topCard
+        }
+        // The peek room is reserved and the card sits at the bottom of
+        // it, so the tilted corners above are drawn, never clipped —
+        // AttachmentAlbum.Layer keeps every corner inside that room.
+        .frame(width: card.width, height: card.height + AttachmentAlbum.peek, alignment: .bottom)
+        .contentShape(Rectangle())
+        // Clickable, and on a Mac only the cursor says so.
+        .hoverCursor(.pointingHand)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onOpen() }
+    }
+
+    /// "Album, 1 of N" — the viewer's own position wording.
+    private var accessibilityText: String {
+        let position = String(
+            localized: "\(1) of \(album.count)",
+            comment: "Which photo of an album is being looked at: the first number is its position, the second the album's size.")
+        return "\(String(localized: "Album", comment: "Several photos or videos sent as one message.")), \(position)"
+    }
+
+    private var topCard: some View {
+        tile(album.items[0])
+            .overlay {
+                if album.items[0].isVideo {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.white, .black.opacity(0.35))
+                        .shadow(radius: 3)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                HStack(spacing: 3) {
+                    Image(systemName: "photo.stack")
+                    Text(album.count, format: .number)
+                }
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.black.opacity(0.55), in: Capsule())
+                .padding(6)
+            }
+    }
+
+    /// A card behind the top one: shrunk, tilted and lifted, so the pile
+    /// reads as several things rather than one card with a thick edge.
+    /// Shrunk about the TOP edge — the phone's rule, for the phone's
+    /// reason: a centre shrink pulls a tall card's top edge down further
+    /// than the lift raises it, and the pile drew as one card
+    /// (AttachmentAlbum.Layer has the geometry).
+    private func layer(_ item: AttachmentDTO, _ place: AttachmentAlbum.Layer) -> some View {
+        tile(item)
+            .scaleEffect(place.scale, anchor: .top)
+            .rotationEffect(.degrees(place.tilt))
+            .offset(y: -place.offset(for: card))
+    }
+
+    /// The item's preview filled and clipped into the card's frame, over
+    /// the same soft placeholder a lone photo shows until its bytes land.
+    private func tile(_ item: AttachmentDTO) -> some View {
+        ZStack {
+            LinearGradient(
+                colors: isMine
+                    ? [.white.opacity(0.22), .white.opacity(0.10)]
+                    : [.primary.opacity(0.10), .primary.opacity(0.04)],
+                startPoint: .top, endPoint: .bottom)
+            if let image = store.image(id: item.id, preview: true)
+                ?? store.image(id: item.id, preview: false) {
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            }
+        }
+        .frame(width: card.width, height: card.height)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        // A hairline so a pale photo does not melt into a pale balloon.
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08)))
     }
 }
 

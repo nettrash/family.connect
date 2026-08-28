@@ -304,12 +304,14 @@ struct FamilyConnectApp: App {
         .defaultSize(width: 780, height: 560)
         .windowResizability(.contentMinSize)
 
-        // Keyed BY ATTACHMENT, so two photos open as two windows and the
-        // same photo twice raises the first.
-        WindowGroup(id: MacWindow.attachment, for: AttachmentDTO.self) { $attachment in
+        // Keyed BY ALBUM AND INDEX — the message's media plus the one that
+        // was clicked — so two photos open as two windows and the same
+        // photo twice raises the first. Paging inside the window does not
+        // move its key.
+        WindowGroup(id: MacWindow.attachment, for: AttachmentAlbum.self) { $album in
             windowContents {
-                if let attachment {
-                    MacAttachmentViewer(attachment: attachment)
+                if let album {
+                    MacAttachmentViewer(album: album)
                 } else {
                     ContentUnavailableView("Attachment unavailable", systemImage: "photo")
                 }

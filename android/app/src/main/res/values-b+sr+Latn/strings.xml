@@ -66,6 +66,8 @@
     <string name="s_password">Lozinka</string>
     <string name="s_video">Video</string>
     <string name="s_photo">Fotografija</string>
+    <string name="s_album">Album</string>
+    <string name="s_n_of_m">%1$d od %2$d</string>
     <string name="s_take_photo">Slikaj</string>
     <string name="s_statistics">Statistika</string>
     <string name="s_messages">Poruke</string>

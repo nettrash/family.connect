@@ -271,6 +271,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import androidx.core.content.FileProvider
 import java.io.File
+import me.nettrash.familyconnect.ui.components.AttachmentAlbum
 import me.nettrash.familyconnect.ui.components.AttachmentGroup
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
@@ -355,8 +356,9 @@ fun ChatScreen(
         if (chat != null) chatWasSeen = true else if (chatWasSeen) currentOnBack()
     }
 
-    // The attachment open full screen, and the picker that starts a send.
-    var viewingAttachment by remember { mutableStateOf<AttachmentDto?>(null) }
+    // The album open full screen — one message's photos and videos and
+    // the page it opened on — and the picker that starts a send.
+    var viewingAlbum by remember { mutableStateOf<AttachmentAlbum?>(null) }
 
     // The message the floating capsule is open for, and the one the "+"
     // full-picker sheet is open for. Both are transient snapshots.
@@ -1085,7 +1087,16 @@ fun ChatScreen(
                                         if (attachment.isFile) {
                                             openFile(attachment)
                                         } else {
-                                            viewingAttachment = attachment
+                                            // Built here, the one place the
+                                            // whole message is in scope: the
+                                            // viewer pages through all of its
+                                            // media, starting on the tapped
+                                            // one, and the per-attachment
+                                            // callbacks below stay as they are.
+                                            viewingAlbum = AttachmentAlbum.opening(
+                                                item.entity.attachmentList,
+                                                attachment,
+                                            )
                                         }
                                     },
                                     onLongPress = { pressed, bounds ->
@@ -1179,19 +1190,19 @@ fun ChatScreen(
                 }
             }
 
-            viewingAttachment?.let { attachment ->
+            viewingAlbum?.let { album ->
                 AttachmentViewer(
-                    attachment = attachment,
+                    album = album,
                     streamUrl = viewModel::attachmentStreamUrl,
-                    onShare = {
-                        viewingAttachment = null
+                    onShare = { attachment ->
+                        viewingAlbum = null
                         shareAttachment(attachment, "")
                     },
-                    onSave = {
-                        viewingAttachment = null
+                    onSave = { attachment ->
+                        viewingAlbum = null
                         saveAttachment(attachment)
                     },
-                    onDismiss = { viewingAttachment = null },
+                    onDismiss = { viewingAlbum = null },
                 )
             }
             InputBar(
@@ -3194,8 +3205,8 @@ private fun BubbleContent(
         }
 
         // The attachments sit above the caption, inside the balloon — one
-        // exactly as before, an album as a grid, files and audio as rows
-        // (see AttachmentGroup).
+        // exactly as before, an album as a stack of cards, files and audio
+        // as rows (see AttachmentGroup).
         val bubbleAttachments = entity.attachmentList
         if (bubbleAttachments.isNotEmpty()) {
             AttachmentGroup(
