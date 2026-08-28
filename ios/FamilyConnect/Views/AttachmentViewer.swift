@@ -18,6 +18,17 @@
 //  while the photo is zoomed (`scrollDisabled`); a page-style TabView
 //  cannot, and turned the page on every pan.
 //
+//  The other half of that bargain is the photo's own gestures: a child's
+//  gesture wins over an ancestor's, so a DragGesture that is merely
+//  attached to the photo eats the swipe the pager needs — and it used to
+//  be attached at 1x too, where it had nothing to pan. The result was a
+//  page that turned only from the letterbox around the picture. The pan
+//  is now attached ONLY while zoomed (a GestureMask), so at 1x the
+//  ScrollView is the only thing that wants a one-finger drag — see
+//  ZoomablePhoto. The pinch stays an ordinary (exclusive) gesture: two
+//  fingers never competed with the swipe, and keeping it exclusive is
+//  what stops the pager from turning a page under a pinch.
+//
 //  Android counterpart: ui/chat/AttachmentViewer.kt
 //
 
@@ -79,6 +90,11 @@ struct AttachmentViewer: View {
             .scrollPosition(id: $position)
             .scrollIndicators(.hidden)
             .scrollDisabled(isZoomed)
+            // Safety net: should a page ever leave while zoomed (it writes
+            // `isZoomed` only on its own transitions, and a page that is
+            // gone writes nothing), the pager must not stay disabled
+            // forever — the page that arrives is at 1x.
+            .onChange(of: position) { _, _ in isZoomed = false }
         }
         .overlay(alignment: .topLeading) {
             Button {
@@ -110,6 +126,7 @@ struct AttachmentViewer: View {
                     .padding(.vertical, 8)
                     .background(.black.opacity(0.45), in: Capsule())
                     .padding(16)
+                    .accessibilityIdentifier("attachment-viewer-page")
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -181,8 +198,21 @@ private struct ZoomablePhoto: View {
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .scaleEffect(zoom)
                     .offset(offset)
+                    // The whole page, letterbox included, pinches and
+                    // double-taps: a plain frame is not hit-testable
+                    // outside its content.
+                    .contentShape(Rectangle())
+                    // The pinch is exclusive on purpose (see the header).
+                    // The pan exists only while zoomed — `.subviews` masks
+                    // it out entirely at 1x, so the ScrollView alone owns
+                    // a one-finger drag then; zoomed, scrollDisabled has
+                    // the ScrollView standing down and the pan takes over.
+                    // The trade-off: a drag that BEGAN as the pinch (fingers
+                    // never lifted) is not picked up by the pan — a fresh
+                    // touch is; the alternative was the pan eating every
+                    // swipe at 1x, which is the bug this replaced.
                     .gesture(magnification)
-                    .simultaneousGesture(pan)
+                    .simultaneousGesture(pan, including: zoom > 1 ? .all : .subviews)
                     .onTapGesture(count: 2) { toggleZoom() }
                     .accessibilityLabel("Photo")
             } else {
@@ -204,6 +234,13 @@ private struct ZoomablePhoto: View {
             }
         }
         .onChange(of: zoom > 1) { _, zoomed in isZoomed = zoomed }
+        // A page that leaves comes back at 1x, like a fresh one — and
+        // writing zoom here releases `isZoomed` through the onChange above.
+        .onDisappear {
+            zoom = 1
+            pinchBase = 1
+            resetPan()
+        }
     }
 
     private var magnification: some Gesture {
@@ -220,8 +257,9 @@ private struct ZoomablePhoto: View {
     private var pan: some Gesture {
         DragGesture()
             .onChanged { value in
-                // Panning an unzoomed photo would just slide it off the
-                // screen with nothing to reveal.
+                // Masked out at 1x (see the body), so this only ever runs
+                // zoomed; the guard is belt and braces for a drag that
+                // began zoomed and outlived a double-tap back to 1x.
                 guard zoom > 1 else { return }
                 offset = CGSize(
                     width: dragBase.width + value.translation.width,

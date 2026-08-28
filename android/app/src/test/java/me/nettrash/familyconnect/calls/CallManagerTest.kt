@@ -159,6 +159,132 @@ class CallManagerTest {
         assertThat(manager.isInCall.value).isFalse()
     }
 
+    // -- Ringback ------------------------------------------------------------------
+
+    @Test
+    fun theRingbackSoundsFromRingingToTheAnswerAndNeverAgain() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = false)
+        runCurrent()
+        val callId = outgoingCallId()
+        assertThat(audio.ringbackStarts).isEqualTo(0)
+
+        socket.emit(ServerFrame.CallRinging(callId))
+        runCurrent()
+        assertThat(audio.ringbackStarts).isEqualTo(1)
+        assertThat(audio.isRinging).isTrue()
+
+        // A duplicate ringing frame does not restart the cadence.
+        socket.emit(ServerFrame.CallRinging(callId))
+        runCurrent()
+        assertThat(audio.ringbackStarts).isEqualTo(1)
+
+        socket.emit(ServerFrame.CallAnswer(callId, "their-answer"))
+        runCurrent()
+        assertThat(audio.isRinging).isFalse()
+        assertThat(audio.ringbackStops).isEqualTo(1)
+
+        media.created.single().listener.onConnected()
+        runCurrent()
+        manager.hangUp()
+        runCurrent()
+        assertThat(audio.ringbackStarts).isEqualTo(1)
+        assertThat(audio.ringbackStops).isEqualTo(1)
+    }
+
+    @Test
+    fun cancellingWhileItRingsBackSilencesTheRingback() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = false)
+        runCurrent()
+        socket.emit(ServerFrame.CallRinging(outgoingCallId()))
+        runCurrent()
+        assertThat(audio.isRinging).isTrue()
+
+        manager.hangUp()
+        runCurrent()
+        assertThat(audio.isRinging).isFalse()
+        assertThat(audio.ringbackStops).isEqualTo(1)
+        // The idle reset adds nothing.
+        advanceTimeBy(timings.lingerMillis + 1)
+        runCurrent()
+        assertThat(audio.ringbackStops).isEqualTo(1)
+    }
+
+    @Test
+    fun aRemoteDeclineOrTimeoutSilencesTheRingback() = runTest(dispatcher) {
+        for (reason in listOf("decline", "timeout")) {
+            val starts = audio.ringbackStarts
+            manager.startCall(CHAT, PEER, video = false)
+            runCurrent()
+            val callId = outgoingCallId()
+            socket.emit(ServerFrame.CallRinging(callId))
+            runCurrent()
+            assertThat(audio.isRinging).isTrue()
+            socket.emit(ServerFrame.CallEnd(callId, reason))
+            runCurrent()
+            assertThat(audio.isRinging).isFalse()
+            assertThat(audio.ringbackStarts).isEqualTo(starts + 1)
+            advanceTimeBy(timings.lingerMillis + 1)
+            runCurrent()
+        }
+    }
+
+    @Test
+    fun theOutgoingGuardSilencesTheRingback() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = false)
+        runCurrent()
+        socket.emit(ServerFrame.CallRinging(outgoingCallId()))
+        runCurrent()
+        assertThat(audio.isRinging).isTrue()
+
+        advanceTimeBy(timings.outgoingGuardMillis + 1)
+        runCurrent()
+        assertThat(audio.isRinging).isFalse()
+    }
+
+    @Test
+    fun aRefusalSilencesTheRingbackAndNeverStartsItBeforeRinging() = runTest(dispatcher) {
+        // Refused after ringing (a server race): silenced.
+        manager.startCall(CHAT, PEER, video = false)
+        runCurrent()
+        var callId = outgoingCallId()
+        socket.emit(ServerFrame.CallRinging(callId))
+        runCurrent()
+        socket.emit(ServerFrame.Error(code = "peer_busy", message = "…", callId = callId))
+        runCurrent()
+        assertThat(audio.isRinging).isFalse()
+        assertThat(audio.ringbackStarts).isEqualTo(1)
+        advanceTimeBy(timings.lingerMillis + 1)
+        runCurrent()
+
+        // Refused before ringing: nothing ever sounded.
+        manager.startCall(CHAT, PEER, video = false)
+        runCurrent()
+        callId = outgoingCallId()
+        socket.emit(ServerFrame.Error(code = "peer_busy", message = "…", callId = callId))
+        runCurrent()
+        assertThat(audio.ringbackStarts).isEqualTo(1)
+        assertThat(audio.ringbackStops).isEqualTo(1)
+    }
+
+    @Test
+    fun anIncomingCallNeverRingsBack() = runTest(dispatcher) {
+        offer()
+        manager.accept()
+        runCurrent()
+        media.created.single().listener.onConnected()
+        runCurrent()
+        manager.hangUp()
+        runCurrent()
+        assertThat(audio.ringbackStarts).isEqualTo(0)
+        advanceTimeBy(timings.lingerMillis + 1)
+        runCurrent()
+
+        offer(callId = "6a1f0c3e-0000-4000-8000-000000000002")
+        manager.decline()
+        runCurrent()
+        assertThat(audio.ringbackStarts).isEqualTo(0)
+    }
+
     @Test
     fun cancellingWhileItRingsSendsCancel() = runTest(dispatcher) {
         manager.startCall(CHAT, PEER, video = false)
@@ -771,9 +897,31 @@ private class FakeCallAudio : CallAudio {
     override fun end() {
         ended += 1
         speakerOn = false
+        // The contract: end() silences the ringback too (AndroidCallAudio).
+        stopRingback()
     }
 
     override fun setSpeaker(on: Boolean) {
         speakerOn = on
+    }
+
+    /**
+     * The ringback's audible history: a start while it already rings and
+     * a stop while it does not are the idempotent no-ops the real track
+     * makes them, and are NOT counted — so `ringbackStarts` / `ringbackStops`
+     * read as what was heard.
+     */
+    var ringbackStarts = 0
+    var ringbackStops = 0
+    val isRinging: Boolean get() = ringbackStarts > ringbackStops
+
+    override fun startRingback() {
+        if (isRinging) return
+        ringbackStarts += 1
+    }
+
+    override fun stopRingback() {
+        if (!isRinging) return
+        ringbackStops += 1
     }
 }

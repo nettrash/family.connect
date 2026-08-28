@@ -115,6 +115,41 @@ struct CallManagerTests {
         }
     }
 
+    /// Records the ringback's starts and stops as the manager asks for
+    /// them — a stop with nothing ringing is the idempotent no-op it is
+    /// in the real player and is NOT recorded, so `events` reads as the
+    /// audible history.
+    @MainActor
+    final class FakeRingback: CallRingback {
+        var events: [String] = []
+        private(set) var isRinging = false
+        var activations = 0
+        var deactivations = 0
+        var resets = 0
+        /// Raw call counts, so the manager's own idempotency (one start
+        /// per ring) is pinned as well as the audible history.
+        var startCalls = 0
+        var stopCalls = 0
+        func start() {
+            startCalls += 1
+            guard !isRinging else { return }
+            isRinging = true
+            events.append("start")
+        }
+        func stop() {
+            stopCalls += 1
+            guard isRinging else { return }
+            isRinging = false
+            events.append("stop")
+        }
+        func audioSessionDidActivate() { activations += 1 }
+        func audioSessionDidDeactivate() { deactivations += 1 }
+        func callDidEnd() {
+            resets += 1
+            stop()
+        }
+    }
+
     @MainActor
     final class FakeBridge: CallSystemBridge {
         weak var manager: CallManager?
@@ -143,6 +178,7 @@ struct CallManagerTests {
         let manager = CallManager()
         let signaling = FakeSignaling()
         let media = FakeMedia()
+        let ringback = FakeRingback()
         var bridge: FakeBridge?
         var ensureConnectedCalls = 0
         var endedCalls = 0
@@ -152,6 +188,7 @@ struct CallManagerTests {
 
         init(bridge: Bool = false, microphone: Bool = true, camera: Bool = true) {
             manager.signaling = signaling
+            manager.ringback = ringback
             manager.makeMediaClient = { [weak self, media] _, video in
                 self?.mediaVideo.append(video)
                 return media
@@ -271,6 +308,122 @@ struct CallManagerTests {
         #expect(h.manager.callID == nil)
         #expect(h.phases.first == .outgoing(ringing: false))
         #expect(h.phases.last == .idle)
+    }
+
+    // MARK: - Ringback
+
+    @Test("ringback: sounds from call_ringing to the answer, and never again in that call")
+    func ringbackFollowsRinging() async throws {
+        let h = Harness()
+        h.manager.startCall(chatID: 42, peerUserID: 9)
+        let id = try #require(h.manager.callID)
+        await h.drain()
+        #expect(h.ringback.events.isEmpty, "placed, not yet ringing")
+        h.manager.handle(frame: .callRinging(callID: id))
+        #expect(h.ringback.events == ["start"])
+        #expect(h.ringback.startCalls == 1)
+        // A duplicate ringing frame is the same phase: no restart, not
+        // even a second call into the player.
+        h.manager.handle(frame: .callRinging(callID: id))
+        #expect(h.ringback.events == ["start"])
+        #expect(h.ringback.startCalls == 1)
+        h.manager.handle(frame: .callAnswer(callID: id, sdp: "v=0 remote answer"))
+        #expect(h.ringback.events == ["start", "stop"])
+        await h.drain()
+        h.media.emit(.connected)
+        h.manager.hangUp()
+        await h.drain()
+        #expect(h.ringback.events == ["start", "stop"], "connected and ended: silent")
+        #expect(h.ringback.startCalls == 1, "exactly one start for the whole call")
+        #expect(h.ringback.resets >= 1, "the idle reset forgets the session")
+    }
+
+    @Test("ringback: the far side ringing is reported to the system as 'connecting'")
+    func ringbackReportsConnecting() async throws {
+        let h = Harness(bridge: true)
+        h.manager.startCall(chatID: 42, peerUserID: 9)
+        let id = try #require(h.manager.callID)
+        await h.drain()
+        #expect(h.bridge?.events == ["outgoing:Anna"])
+        h.manager.handle(frame: .callRinging(callID: id))
+        #expect(h.bridge?.events == ["outgoing:Anna", "connecting"])
+    }
+
+    @Test("ringback: cancelling, a remote decline or timeout, and a refusal all silence it")
+    func ringbackStopsOnEveryExit() async throws {
+        // Cancel from this side.
+        do {
+            let h = Harness()
+            h.manager.startCall(chatID: 42, peerUserID: 9)
+            let id = try #require(h.manager.callID)
+            await h.drain()
+            h.manager.handle(frame: .callRinging(callID: id))
+            h.manager.hangUp()
+            #expect(h.ringback.events == ["start", "stop"])
+            await h.drain()
+            #expect(h.ringback.events == ["start", "stop"], "the idle reset adds nothing")
+        }
+        // The far side's decline / the server's timeout.
+        for wire in ["decline", "timeout"] {
+            let h = Harness()
+            h.manager.startCall(chatID: 42, peerUserID: 9)
+            let id = try #require(h.manager.callID)
+            await h.drain()
+            h.manager.handle(frame: .callRinging(callID: id))
+            h.manager.handle(frame: .callEnd(callID: id, reason: wire))
+            #expect(h.ringback.events == ["start", "stop"], Comment(rawValue: wire))
+        }
+        // A refusal after ringing (a server race) still silences it; a
+        // refusal BEFORE ringing never started it.
+        do {
+            let h = Harness()
+            h.manager.startCall(chatID: 42, peerUserID: 9)
+            let id = try #require(h.manager.callID)
+            await h.drain()
+            h.manager.handle(frame: .callRinging(callID: id))
+            h.manager.handle(frame: .error(code: "peer_busy", message: "no", clientMsgID: nil, callID: id))
+            #expect(h.ringback.events == ["start", "stop"])
+        }
+        do {
+            let h = Harness()
+            h.manager.startCall(chatID: 42, peerUserID: 9)
+            let id = try #require(h.manager.callID)
+            await h.drain()
+            h.manager.handle(frame: .error(code: "peer_busy", message: "no", clientMsgID: nil, callID: id))
+            #expect(h.ringback.events.isEmpty)
+        }
+    }
+
+    @Test("ringback: an incoming call never rings back, whether answered or declined")
+    func ringbackNeverIncoming() async throws {
+        do {
+            let h = Harness()
+            h.manager.handle(frame: offer(id: remoteID))
+            #expect(h.manager.phase == .incoming)
+            h.manager.acceptIncoming()
+            await h.drain()
+            h.media.emit(.connected)
+            h.manager.hangUp()
+            await h.drain()
+            #expect(h.ringback.events.isEmpty)
+        }
+        do {
+            let h = Harness()
+            h.manager.handle(frame: offer(id: remoteID))
+            h.manager.declineIncoming()
+            await h.drain()
+            #expect(h.ringback.events.isEmpty)
+        }
+    }
+
+    @Test("ringback: CallKit's activation and deactivation reach the player")
+    func ringbackHearsTheSession() async throws {
+        let h = Harness(bridge: true)
+        h.manager.startCall(chatID: 42, peerUserID: 9)
+        h.manager.systemDidActivateAudio()
+        #expect(h.ringback.activations == 1)
+        h.manager.systemDidDeactivateAudio()
+        #expect(h.ringback.deactivations == 1)
     }
 
     @Test("outgoing: hanging up while it rings is a cancel")

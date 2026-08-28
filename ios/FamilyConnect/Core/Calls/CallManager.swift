@@ -242,6 +242,10 @@ final class CallManager {
     var cameraGrantState: () -> Bool? = { CallManager.systemCameraGrantState() }
     /// Who a user id is, for the screen and the system UI.
     var resolvePeer: (Int64) -> (name: String, avatarVersion: Int64) = { _ in (String(localized: "Someone"), 0) }
+    /// What the caller hears while the far side rings (CallRingback).
+    /// Driven from `transition(to:)` and nowhere else, so no end path can
+    /// leave it sounding; a fake in tests.
+    var ringback: any CallRingback = RingbackPlayer()
     /// Bring the socket up (ChatSyncCoordinator.ensureConnected).
     var ensureConnected: () async -> Void = {}
     /// The call is over — the coordinator decides about the socket.
@@ -479,6 +483,14 @@ final class CallManager {
     /// the toggle draws. Idempotent; a no-op on the Mac's media client.
     func systemDidActivateAudio() {
         media?.setSpeaker(isSpeaker)
+        // A ringback armed before activation starts now (CallRingback).
+        ringback.audioSessionDidActivate()
+    }
+
+    /// CallKit deactivated the session (didDeactivate). Only the ringback
+    /// cares: WebRTC's own audio is told directly by CallKitController.
+    func systemDidDeactivateAudio() {
+        ringback.audioSessionDidDeactivate()
     }
 
     // MARK: - The push path
@@ -515,6 +527,11 @@ final class CallManager {
         case .callRinging(let id):
             guard id == callID, case .outgoing = phase else { return }
             transition(to: .outgoing(ringing: true))
+            // "Started connecting" is CallKit's word for the far side
+            // ringing (Speakerbox reports it exactly then); said here as
+            // well as at the answer so the system's call is not stuck at
+            // "dialling" for the whole ring.
+            if let callUUID { systemBridge?.reportOutgoingConnecting(callID: callUUID) }
 
         case .callAnswer(let id, let sdp):
             guard id == callID, case .outgoing = phase, let media else { return }
@@ -803,6 +820,15 @@ final class CallManager {
     private func transition(to next: Phase) {
         guard phase != next else { return }
         phase = next
+        // The ringback follows the phase and nothing else: it sounds for
+        // exactly the one phase in which somebody else's phone is ringing,
+        // and every other transition — answer, cancel, decline, timeout, a
+        // refusal, the reset — silences it. Both calls are idempotent.
+        if next == .outgoing(ringing: true) {
+            ringback.start()
+        } else {
+            ringback.stop()
+        }
         onPhaseChange(next)
     }
 
@@ -814,6 +840,9 @@ final class CallManager {
         media?.close()
         media = nil
         transition(to: .idle)
+        // The idle transition already stopped it; this also forgets the
+        // session state, so the next call waits for its OWN activation.
+        ringback.callDidEnd()
         direction = nil
         callID = nil
         callUUID = nil

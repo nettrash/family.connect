@@ -434,7 +434,11 @@ class CallManager @Inject constructor(
             is ServerFrame.CallOffer -> onOffer(frame)
             is ServerFrame.CallRinging -> {
                 val current = _state.value as? CallState.Outgoing ?: return
-                if (current.callId == frame.callId) _state.value = current.copy(ringing = true)
+                if (current.callId != frame.callId || current.ringing) return
+                _state.value = current.copy(ringing = true)
+                // The caller hears the far side ring from here until the
+                // answer (onAnswer) or any end (finish) silences it.
+                audio.startRingback()
             }
             is ServerFrame.CallAnswer -> onAnswer(frame)
             is ServerFrame.CallIce -> onIce(frame)
@@ -494,6 +498,9 @@ class CallManager @Inject constructor(
     private suspend fun onAnswer(frame: ServerFrame.CallAnswer) {
         val current = _state.value as? CallState.Outgoing ?: return
         if (current.callId != frame.callId) return
+        // Answered: the ringing is over, whatever the media does next —
+        // said BEFORE any early return below, so no path can leave it on.
+        audio.stopRingback()
         val client = media ?: return
         _state.value = CallState.Connecting(
             current.callId,
@@ -652,6 +659,10 @@ class CallManager @Inject constructor(
         guardJob = null
         media?.close()
         media = null
+        // end() silences the ringback too; said explicitly so a call that
+        // ends while it rings — cancel, decline, timeout, a refusal — reads
+        // as the stop it is.
+        audio.stopRingback()
         audio.end()
         _isMuted.value = false
         _isSpeaker.value = false
@@ -684,6 +695,7 @@ class CallManager @Inject constructor(
         guardJob = null
         media?.close()
         media = null
+        audio.stopRingback()
         offerSdp = null
         remoteDescriptionSet = false
         pendingRemoteCandidates.clear()

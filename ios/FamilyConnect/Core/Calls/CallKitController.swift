@@ -166,6 +166,7 @@ extension CallKitController: CXProviderDelegate {
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         Task { @MainActor in
             WebRTCClient.audioSessionDidDeactivate(audioSession)
+            self.manager?.systemDidDeactivateAudio()
         }
     }
 }
