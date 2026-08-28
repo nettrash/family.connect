@@ -376,3 +376,27 @@ fun isMediaOnly(entity: MessageEntity, isStreaming: Boolean = false): Boolean {
     val attachments = entity.attachmentList
     return attachments.isNotEmpty() && AttachmentAlbum.rows(attachments).isEmpty()
 }
+
+/**
+ * Whether a lone photo/video tile draws its hairline.
+ *
+ * ONE sentence covers all three surfaces: a media tile draws a hairline
+ * only where its own pixels are not already the edge — over a balloon, or
+ * before the picture has landed.
+ *
+ * The hairline was cut for a balloon ("so a pale photo does not melt into
+ * a pale balloon"), and on a BARE message there is no balloon to melt
+ * into: what is left is a frame around a picture, which is the thing the
+ * bare treatment exists to remove. But a tile with no picture yet is not a
+ * picture — it is a reserved rectangle holding a 14%→6% wash, and against
+ * the chat background its lower corners stop existing. So the stroke stays
+ * exactly as long as nothing else is drawing an edge.
+ *
+ * NOT the album's rule. A pile's cards keep their border always, because
+ * there it separates photo from PHOTO: at the overlap the front card's top
+ * edge is the one line between two shots of the same scene, and before
+ * bytes the two washes stack to within 0.002 alpha of each other. Same
+ * rule on iOS and macOS (`MessagePresentation.drawsHairline`), pinned by
+ * mirrored vectors.
+ */
+fun drawsHairline(onBalloon: Boolean, hasImage: Boolean): Boolean = onBalloon || !hasImage

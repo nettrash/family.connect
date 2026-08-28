@@ -10,6 +10,11 @@
 //  audio or location row keeps the balloon, because those are words and
 //  controls and need the surface.
 //
+//  Also pins the hairline rule that rides on it: a media tile strokes its
+//  edge only where its own pixels are not already the edge — over a
+//  balloon, or before the picture lands. The album pile is NOT this rule
+//  and always strokes: there the line separates photo from photo.
+//
 
 import Foundation
 import Testing
@@ -93,6 +98,19 @@ struct MediaOnlyTests {
             call: CallDTO(outcome: "missed"))))
         #expect(!MessagePresentation.isMediaOnly(
             Self.message(attachments: [Self.photo]), isStreaming: true))
+    }
+
+    @Test("a tile strokes its edge only over a balloon, or before its picture lands")
+    func hairlineRule() {
+        // In a balloon: always — that is what the stroke was cut for.
+        #expect(MessagePresentation.drawsHairline(onBalloon: true, hasImage: true))
+        #expect(MessagePresentation.drawsHairline(onBalloon: true, hasImage: false))
+        // Bare with a picture: the photo's own pixels ARE the edge, and a
+        // stroke there is a frame around a picture.
+        #expect(!MessagePresentation.drawsHairline(onBalloon: false, hasImage: true))
+        // Bare with nothing in it yet: a reserved rectangle holding a wash
+        // needs the only edge it has.
+        #expect(MessagePresentation.drawsHairline(onBalloon: false, hasImage: false))
     }
 
     @Test("a text message, and an empty one, are not media-only")

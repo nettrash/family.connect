@@ -9,6 +9,11 @@
  * a poll, a call, a body still arriving, or any file, audio or location
  * row keeps the balloon, because those are words and controls and need
  * the surface.
+ *
+ * Also pins the hairline rule that rides on it: a media tile strokes its
+ * edge only where its own pixels are not already the edge — over a
+ * balloon, or before the picture lands. The album pile is NOT this rule
+ * and always strokes: there the line separates photo from photo.
  */
 
 package me.nettrash.familyconnect.ui.chat
@@ -85,6 +90,18 @@ class MediaOnlyTest {
         assertThat(isMediaOnly(message(attachments = listOf(photo), pollJson = poll))).isFalse()
         assertThat(isMediaOnly(message(attachments = listOf(photo), callOutcome = "missed"))).isFalse()
         assertThat(isMediaOnly(message(attachments = listOf(photo)), isStreaming = true)).isFalse()
+    }
+
+    @Test
+    fun aTileStrokesItsEdgeOnlyOverABalloonOrBeforeItsPictureLands() {
+        // In a balloon: always — that is what the stroke was cut for.
+        assertThat(drawsHairline(onBalloon = true, hasImage = true)).isTrue()
+        assertThat(drawsHairline(onBalloon = true, hasImage = false)).isTrue()
+        // Bare with a picture: the photo's own pixels ARE the edge.
+        assertThat(drawsHairline(onBalloon = false, hasImage = true)).isFalse()
+        // Bare with nothing in it yet: a reserved rectangle holding a wash
+        // needs the only edge it has.
+        assertThat(drawsHairline(onBalloon = false, hasImage = false)).isTrue()
     }
 
     @Test

@@ -539,7 +539,8 @@ struct MacMessageRow: View {
             // own controls, so no open/heart pair here.
             MacAttachmentBlock(attachment: attachment, isMine: attachmentsOnTint)
         } else {
-            MacAttachmentBlock(attachment: attachment, isMine: attachmentsOnTint)
+            MacAttachmentBlock(
+                attachment: attachment, isMine: attachmentsOnTint, onBalloon: !isMediaOnly)
                 // Count 2 BEFORE count 1, and both as onTapGesture:
                 // that is what makes them exclusive. A bare
                 // single-click handler on a CHILD masks the
@@ -872,6 +873,9 @@ private struct MacAttachmentBlock: View {
     /// For CONTRAST: an own balloon is filled with the tint, so anything
     /// drawn in the accent colour there would be invisible.
     let isMine: Bool
+    /// False when this tile IS the message (a media-only row, no balloon).
+    /// Only the hairline reads it — MessagePresentation.drawsHairline.
+    var onBalloon: Bool = true
 
     @Environment(AttachmentStore.self) private var store
 
@@ -925,10 +929,14 @@ private struct MacAttachmentBlock: View {
                             .shadow(radius: 3)
                     }
                 }
-                // A hairline so a pale photo does not melt into a pale balloon.
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08)))
+                // A hairline only where the tile's own pixels are not
+                // already the edge (MessagePresentation.drawsHairline).
+                .overlay {
+                    if MessagePresentation.drawsHairline(onBalloon: onBalloon, hasImage: true) {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08))
+                    }
+                }
                 // Clickable, and on a Mac only the cursor says so.
                 .hoverCursor(.pointingHand)
         } else {
@@ -946,6 +954,16 @@ private struct MacAttachmentBlock: View {
                         ProgressView()
                     }
                 }
+                // A tile with no picture yet is NOT a picture: it is a
+                // reserved rectangle holding a wash, and its lower corners
+                // die against the window. This branch drew no hairline at
+                // all while the loaded one above drew one, so a Mac photo
+                // visibly GAINED an edge when its bytes landed. Both now
+                // answer to MessagePresentation.drawsHairline — which is
+                // unconditionally true here, because there is no picture.
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08)))
         }
     }
 }

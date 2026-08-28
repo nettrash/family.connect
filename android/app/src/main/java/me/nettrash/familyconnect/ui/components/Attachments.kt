@@ -108,6 +108,7 @@ import androidx.compose.ui.unit.dp
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.repo.AttachmentRepository
+import me.nettrash.familyconnect.ui.chat.drawsHairline
 import kotlin.math.sin
 
 val LocalAttachments = staticCompositionLocalOf<AttachmentRepository?> { null }
@@ -159,6 +160,13 @@ fun AttachmentGroup(
     onLongPress: () -> Unit = {},
     onDoubleTap: () -> Unit = {},
     showMapPreviews: Boolean = true,
+    /**
+     * False when the media IS the message — a media-only bubble, drawn with
+     * no balloon behind it. Only the lone thumbnail's hairline reads it
+     * ([drawsHairline]); threaded explicitly rather than reached for through
+     * a CompositionLocal, like every other dependency in this file.
+     */
+    onBalloon: Boolean = true,
 ) {
     val media = AttachmentAlbum.media(attachments)
     val rows = AttachmentAlbum.rows(attachments)
@@ -180,6 +188,7 @@ fun AttachmentGroup(
                 onLongPress = onLongPress,
                 onDoubleTap = onDoubleTap,
                 showMapPreviews = showMapPreviews,
+                onBalloon = onBalloon,
             )
         }
         rows.forEach { item ->
@@ -190,6 +199,10 @@ fun AttachmentGroup(
                 onLongPress = onLongPress,
                 onDoubleTap = onDoubleTap,
                 showMapPreviews = showMapPreviews,
+                // A row always keeps its balloon (a message carrying one is
+                // never media-only), so this is always true here — one rule
+                // passed everywhere rather than two rules to keep in step.
+                onBalloon = onBalloon,
             )
         }
     }
@@ -417,6 +430,8 @@ fun AttachmentBlock(
      * same trade the link previews make.
      */
     showMapPreviews: Boolean = true,
+    /** False when this tile IS the message — see [AttachmentGroup]. */
+    onBalloon: Boolean = true,
 ) {
     if (attachment.isLocation) {
         // A location has no bytes at all, so none of the download machinery
@@ -453,6 +468,7 @@ fun AttachmentBlock(
             onLongPress = onLongPress,
             onDoubleTap = onDoubleTap,
             modifier = modifier,
+            onBalloon = onBalloon,
         )
     }
 }
@@ -733,6 +749,8 @@ private fun MediaThumbnail(
     onLongPress: () -> Unit,
     onDoubleTap: () -> Unit,
     modifier: Modifier = Modifier,
+    /** False when this tile IS the message — see [AttachmentGroup]. */
+    onBalloon: Boolean = true,
 ) {
     val image = rememberAttachmentImage(attachment, preview = true)
         ?: rememberAttachmentImage(attachment, preview = false)
@@ -756,7 +774,22 @@ private fun MediaThumbnail(
                     ),
                 ),
             )
-            .border(1.dp, LocalContentColor.current.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
+            // A hairline only where the tile's own pixels are not already
+            // the edge — over a balloon, or before the picture lands
+            // ([drawsHairline] has the rule and the reason). `.then` so the
+            // stroke keeps its place in the chain: after the wash, before
+            // the click.
+            .then(
+                if (drawsHairline(onBalloon = onBalloon, hasImage = image != null)) {
+                    Modifier.border(
+                        1.dp,
+                        LocalContentColor.current.copy(alpha = 0.12f),
+                        RoundedCornerShape(14.dp),
+                    )
+                } else {
+                    Modifier
+                },
+            )
             .combinedClickable(
                 onClick = onOpen,
                 onLongClick = onLongPress,

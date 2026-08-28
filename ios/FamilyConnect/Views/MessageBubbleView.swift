@@ -723,7 +723,8 @@ struct MessageBubbleView: View {
                 onOpen: { onOpenAttachment(attachment) },
                 onLongPress: { onLongPress() },
                 onDoubleTap: { toggleQuickHeart() },
-                isMine: attachmentsOnTint)
+                isMine: attachmentsOnTint,
+                onBalloon: !isMediaOnly)
         } else {
             let media = AttachmentAlbum.media(of: attachments)
             let rows = AttachmentAlbum.rows(of: attachments)
@@ -741,7 +742,8 @@ struct MessageBubbleView: View {
                         onOpen: { onOpenAttachment(single) },
                         onLongPress: { onLongPress() },
                         onDoubleTap: { toggleQuickHeart() },
-                        isMine: attachmentsOnTint)
+                        isMine: attachmentsOnTint,
+                        onBalloon: !isMediaOnly)
                 }
                 ForEach(rows) { attachment in
                     AttachmentView(
@@ -749,7 +751,11 @@ struct MessageBubbleView: View {
                         onOpen: { onOpenAttachment(attachment) },
                         onLongPress: { onLongPress() },
                         onDoubleTap: { toggleQuickHeart() },
-                        isMine: attachmentsOnTint)
+                        isMine: attachmentsOnTint,
+                        // A row always keeps its balloon (isMediaOnly is
+                        // false whenever one is present), so this is
+                        // always true — one rule, passed everywhere.
+                        onBalloon: !isMediaOnly)
                 }
             }
         }

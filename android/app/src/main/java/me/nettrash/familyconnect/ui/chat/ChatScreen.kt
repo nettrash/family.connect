@@ -3242,6 +3242,7 @@ private fun BubbleContent(
                 streamUrl = streamUrl,
                 onLongPress = onTextLongPress,
                 onDoubleTap = onDoubleTap,
+                onBalloon = !mediaOnly,
             )
             if (entity.body.isNotEmpty()) Spacer(Modifier.height(6.dp))
         }

@@ -40,6 +40,12 @@ struct AttachmentView: View {
     /// drawing tint on tint — invisible. Everything inside a balloon has to
     /// take its colour from whatever is directly behind it.
     var isMine: Bool = false
+    /// False when this tile IS the message — a media-only bubble, drawn
+    /// with no balloon behind it. Only the hairline reads it
+    /// (MessagePresentation.drawsHairline): with no balloon there is
+    /// nothing for a pale photo to melt into, and the stroke would be a
+    /// frame around a picture.
+    var onBalloon: Bool = true
 
     @Environment(AttachmentStore.self) private var store
 
@@ -215,10 +221,15 @@ struct AttachmentView: View {
         }
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        // A hairline so a pale photo does not melt into a pale balloon.
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08)))
+        // A hairline only where the tile's own pixels are not already the
+        // edge — over a balloon, or before the picture lands
+        // (MessagePresentation.drawsHairline has the rule and the reason).
+        .overlay {
+            if MessagePresentation.drawsHairline(onBalloon: onBalloon, hasImage: image != nil) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08))
+            }
+        }
         .contentShape(Rectangle())
         // Count 2 BEFORE count 1, and both as onTapGesture: that is what
         // makes them exclusive. The double tap used to be a
