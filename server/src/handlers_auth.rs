@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
-use sqlx::Row;
+use sqlx::{PgConnection, Row};
 use time::OffsetDateTime;
 
 use crate::auth::{self, AuthUser};
@@ -237,6 +237,84 @@ pub async fn change_password(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// Hand a family on to its longest-standing remaining member.
+///
+/// The rule lives here rather than at either door because it is now reached
+/// from TWO — an owner deleting their account, and an owner LEAVING
+/// (`POST /families/leave`) — and two copies of a tie-break are two answers
+/// waiting to disagree.
+///
+/// Longest-standing means the earliest to join the family CHAT, ties broken
+/// by the lower user id, so every read of this question gives the same
+/// answer. A tombstone can never be chosen: it is neither in the family nor
+/// alive.
+///
+/// Asked twice, and the second time under a lock on the row it is about.
+/// The ordering read is a plain SELECT and proves nothing about a `users`
+/// row a transaction that has not committed yet is in the middle of
+/// changing — a member half way through leaving is still `family_id = F` to
+/// this snapshot. So the pick is re-checked with `FOR UPDATE` held on that
+/// one row: either it was never being changed, or this waits for the change
+/// and then sees it. A pick that fails the re-check is set aside and the
+/// next-longest-standing member tried, which is the same answer the
+/// ordering would have given had the leave landed a moment earlier.
+///
+/// `Ok(None)` means nobody is left to inherit. The CALLER decides what that
+/// means — deletion, for both of today's doors — and must satisfy itself
+/// that nobody remains before acting on it: this function can only see
+/// members who hold a `chat_members` row for the family chat, and a `users`
+/// row that names the family without one would be invisible here while
+/// still counting everywhere else.
+///
+/// The caller must already hold `FOR UPDATE` on the family row.
+pub(crate) async fn pass_ownership_on(
+    tx: &mut PgConnection,
+    family_id: i64,
+    departing_user_id: i64,
+) -> Result<Option<i64>, ApiError> {
+    let mut rejected: Vec<i64> = Vec::new();
+    loop {
+        let candidate: Option<i64> = sqlx::query_scalar(
+            "SELECT cm.user_id
+               FROM chat_members cm
+               JOIN chats c ON c.id = cm.chat_id
+               JOIN users u ON u.id = cm.user_id
+              WHERE c.family_id = $1 AND c.kind = 'family' AND cm.user_id <> $2
+                AND u.family_id = $1 AND u.deleted_at IS NULL
+                AND cm.user_id <> ALL($3)
+              ORDER BY cm.joined_at ASC, cm.user_id ASC
+              LIMIT 1",
+        )
+        .bind(family_id)
+        .bind(departing_user_id)
+        .bind(&rejected)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(candidate) = candidate else {
+            return Ok(None);
+        };
+        let locked = sqlx::query(
+            "SELECT family_id, deleted_at IS NULL AS alive
+               FROM users WHERE id = $1 FOR UPDATE",
+        )
+        .bind(candidate)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let still_here = locked.as_ref().is_some_and(|row| {
+            row.get::<Option<i64>, _>("family_id") == Some(family_id) && row.get::<bool, _>("alive")
+        });
+        if still_here {
+            sqlx::query("UPDATE families SET owner_user_id = $2 WHERE id = $1")
+                .bind(family_id)
+                .bind(candidate)
+                .execute(&mut *tx)
+                .await?;
+            return Ok(Some(candidate));
+        }
+        rejected.push(candidate);
+    }
+}
+
 /// `POST /me/delete` — permanently delete the calling account
 /// (docs/protocol.md, "Deleting an account").
 ///
@@ -375,70 +453,13 @@ pub async fn delete_account(
     let mut successor: Option<i64> = None;
     let mut family_to_delete: Option<i64> = None;
     if let Some(owned_family_id) = owned_family_id {
-        // Longest-standing means the earliest to join the family CHAT, ties
-        // broken by the lower user id, so every read of this question gives
-        // the same answer. A tombstone can never be chosen: it is neither
-        // in the family nor alive.
-        //
-        // Asked twice, and the second time under a lock on the row it is
-        // about. The ordering read is a plain SELECT and proves nothing
-        // about a `users` row a transaction that has not committed yet is
-        // in the middle of changing — a member half way through leaving is
-        // still `family_id = F` to this snapshot. So the pick is re-checked
-        // with `FOR UPDATE` held on that one row: either it was never being
-        // changed, or this waits for the change and then sees it. A pick
-        // that fails the re-check is set aside and the next-longest-standing
-        // member tried, which is the same answer the ordering would have
-        // given had the leave landed a moment earlier. Nobody left to try
-        // means the family goes, exactly as if they had been alone.
-        let mut rejected: Vec<i64> = Vec::new();
-        loop {
-            let candidate: Option<i64> = sqlx::query_scalar(
-                "SELECT cm.user_id
-                   FROM chat_members cm
-                   JOIN chats c ON c.id = cm.chat_id
-                   JOIN users u ON u.id = cm.user_id
-                  WHERE c.family_id = $1 AND c.kind = 'family' AND cm.user_id <> $2
-                    AND u.family_id = $1 AND u.deleted_at IS NULL
-                    AND cm.user_id <> ALL($3)
-                  ORDER BY cm.joined_at ASC, cm.user_id ASC
-                  LIMIT 1",
-            )
-            .bind(owned_family_id)
-            .bind(auth.user_id)
-            .bind(&rejected)
-            .fetch_optional(&mut *tx)
-            .await?;
-            let Some(candidate) = candidate else {
-                // Nobody else is here: the family is deleted in (f), once
-                // the rows that point into it have gone.
-                family_to_delete = Some(owned_family_id);
-                break;
-            };
-            let locked = sqlx::query(
-                "SELECT family_id, deleted_at IS NULL AS alive
-                   FROM users WHERE id = $1 FOR UPDATE",
-            )
-            .bind(candidate)
-            .fetch_optional(&mut *tx)
-            .await?;
-            let still_here = locked.as_ref().is_some_and(|row| {
-                row.get::<Option<i64>, _>("family_id") == Some(owned_family_id)
-                    && row.get::<bool, _>("alive")
-            });
-            if still_here {
-                sqlx::query("UPDATE families SET owner_user_id = $2 WHERE id = $1")
-                    .bind(owned_family_id)
-                    .bind(candidate)
-                    .execute(&mut *tx)
-                    .await?;
-                successor = Some(candidate);
-                break;
-            }
-            rejected.push(candidate);
+        successor = pass_ownership_on(&mut tx, owned_family_id, auth.user_id).await?;
+        if successor.is_none() {
+            // Nobody else is here: the family is deleted in (f), once the
+            // rows that point into it have gone.
+            family_to_delete = Some(owned_family_id);
         }
     }
-
     // (b) Their direct chats, both halves, and their private assistant
     //     thread — `kind = 'ai'` hangs off `user_a_id` too. The cascade
     //     takes chat_members, chat_reads, messages and with them
@@ -508,6 +529,20 @@ pub async fn delete_account(
     //     the constraint is what makes sure no push token outlives the
     //     account nobody remembered to think about it).
     sqlx::query("DELETE FROM user_avatars WHERE user_id = $1")
+        .bind(auth.user_id)
+        .execute(&mut *tx)
+        .await?;
+    //     The blocks this account MADE go with the avatar and the
+    //     birthday, because a preference is part of the account.
+    //
+    //     DELIBERATELY ONE-SIDED: the blocks made AGAINST it stay. Their
+    //     messages stay in the family chat under the "Deleted account"
+    //     tombstone, and somebody else's decision not to read them was
+    //     never this account's to revoke — least of all by leaving
+    //     (protocol.md, "Blocking a member"). The `member_blocks` CASCADE
+    //     on `users` never fires here, because 0023 SCRUBS this row rather
+    //     than deleting it, so both halves are this handler's to decide.
+    sqlx::query("DELETE FROM member_blocks WHERE blocker_user_id = $1")
         .bind(auth.user_id)
         .execute(&mut *tx)
         .await?;
@@ -790,6 +825,27 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             // off too. Always present, like `calls_enabled` (protocol.md,
             // "Video").
             "video_calls_enabled": state.cfg.calls.enabled && state.cfg.calls.video_enabled,
+            // The operator's ceiling on a family's size. ALWAYS present,
+            // for the reason `calls_enabled` is: an owner's cap picker
+            // draws its range from this instead of discovering
+            // `validation` at the moment somebody tries to set one
+            // (protocol.md, "Families").
+            "max_family_members": state.cfg.limits.max_family_members,
+            // ALWAYS present, `[]` when the caller has blocked nobody —
+            // the one read in this protocol where absence is not allowed
+            // to mean "leave what you hold alone". A list that vanished
+            // when it emptied would never tell a second device about the
+            // last unblock (protocol.md, `GET /me`).
+            //
+            // It rides here as well as on `GET /families/mine` because a
+            // block is a pair and not a membership: a caller with no
+            // family at all still holds blocks, and `/me` is step 1 of the
+            // documented resync.
+            "blocked_user_ids": crate::blocks::blocked_by(&state.pool, auth.user_id).await?,
+            // The operator's published contact, absent when unset. The
+            // honest escalation path for when the family's moderator is
+            // the problem (protocol.md, "Reporting a member").
+            "support_contact": state.cfg.server.support_contact,
         })),
     )
         .into_response())

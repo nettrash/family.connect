@@ -808,6 +808,15 @@ impl Config {
                  positions are stored as SMALLINT and clients lay albums out for ten"
             );
         }
+        // One is the fewest a family can have and still have an owner:
+        // `create_family` makes its creator member #1. A ceiling of 0 is
+        // not a locked-down server, it is a server where `POST /families`
+        // answers `family_full` to everybody — a code that endpoint does
+        // not document — and where every `PATCH` of a cap is refused with
+        // "between 1 and 0".
+        if self.limits.max_family_members < 1 {
+            anyhow::bail!("limits.max_family_members must be at least 1");
+        }
         if self.limits.default_page_size < 1 {
             anyhow::bail!("limits.default_page_size must be at least 1");
         }
@@ -1153,6 +1162,21 @@ mod tests {
     fn load_reports_a_missing_file_with_its_path() {
         let err = Config::load(Path::new("/nonexistent/family-connect/cfg.toml")).unwrap_err();
         assert!(format!("{err:#}").contains("reading config file"));
+    }
+
+    #[test]
+    fn validate_rejects_a_family_ceiling_below_one() {
+        // A ceiling of 0 boots happily and then answers `family_full` to
+        // every attempt to CREATE a family — an error that endpoint does
+        // not document, on a server nobody can use.
+        let mut cfg = Config::default();
+        cfg.limits.max_family_members = 0;
+        assert!(
+            cfg.validate().is_err(),
+            "a ceiling of zero must be refused at boot"
+        );
+        cfg.limits.max_family_members = 1;
+        assert!(cfg.validate().is_ok(), "one is a legal, if lonely, ceiling");
     }
 
     #[test]

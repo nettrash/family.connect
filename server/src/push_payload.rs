@@ -32,6 +32,12 @@ pub enum PushEvent {
     Joined {
         family_id: i64,
     },
+    /// A member reported another to the family owner (protocol.md,
+    /// "Reporting a member"). Never sent when the report names the owner
+    /// themselves — see `events::push_report_created`.
+    Report {
+        family_id: i64,
+    },
 }
 
 impl PushEvent {
@@ -42,6 +48,7 @@ impl PushEvent {
             PushEvent::BoardNote { .. } => "board_note",
             PushEvent::JoinRequest { .. } => "join_request",
             PushEvent::Joined { .. } => "joined",
+            PushEvent::Report { .. } => "report",
         }
     }
 
@@ -54,7 +61,9 @@ impl PushEvent {
             // All board notes collapse into one entry: several notes pinned
             // at once is one thing to look at, not five alerts.
             PushEvent::BoardNote { family_id, .. } => Some(format!("board-{family_id}")),
-            PushEvent::JoinRequest { .. } | PushEvent::Joined { .. } => None,
+            PushEvent::JoinRequest { .. } | PushEvent::Joined { .. } | PushEvent::Report { .. } => {
+                None
+            }
         }
     }
 }
@@ -225,6 +234,23 @@ pub fn board_note_notification(
 /// Compose the notification the family owner gets when a join request is
 /// created: title = the family name, body = `"<Display Name> asked to
 /// join"`.
+/// The owner's alert that somebody filed a report.
+///
+/// It carries NO reported text, regardless of `include_message_body`: the
+/// excerpt is the very content somebody asked to have looked at, and a lock
+/// screen is where it must not be readable. The body is the fixed English
+/// "New report", which the switch does not vary because there is nothing
+/// there to withhold (protocol.md, "Push notifications").
+pub fn report_notification(family_name: &str, family_id: i64, badge: i64) -> Notification {
+    Notification {
+        title: family_name.to_string(),
+        body: "New report".to_string(),
+        badge,
+        chat_unread: None,
+        event: PushEvent::Report { family_id },
+    }
+}
+
 pub fn join_request_notification(
     family_name: &str,
     requester_display_name: &str,
@@ -276,7 +302,9 @@ pub fn apns_payload(note: &Notification) -> Value {
             payload["family_id"] = json!(family_id);
             payload["note_id"] = json!(note_id);
         }
-        PushEvent::JoinRequest { family_id } | PushEvent::Joined { family_id } => {
+        PushEvent::JoinRequest { family_id }
+        | PushEvent::Joined { family_id }
+        | PushEvent::Report { family_id } => {
             payload["family_id"] = json!(family_id);
         }
     }
@@ -302,7 +330,9 @@ pub fn fcm_message(note: &Notification, push_token: &str) -> Value {
             data["family_id"] = json!(family_id.to_string());
             data["note_id"] = json!(note_id.to_string());
         }
-        PushEvent::JoinRequest { family_id } | PushEvent::Joined { family_id } => {
+        PushEvent::JoinRequest { family_id }
+        | PushEvent::Joined { family_id }
+        | PushEvent::Report { family_id } => {
             data["family_id"] = json!(family_id.to_string());
         }
     }

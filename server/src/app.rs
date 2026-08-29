@@ -11,7 +11,8 @@ use axum::routing::{delete, get, patch, post, put};
 use crate::state::AppState;
 use crate::{
     handlers_attachment, handlers_auth, handlers_avatar, handlers_board, handlers_call,
-    handlers_chat, handlers_device, handlers_family, handlers_poll, handlers_stats, ws,
+    handlers_chat, handlers_device, handlers_family, handlers_poll, handlers_report,
+    handlers_stats, ws,
 };
 
 /// Build the full application router for the given state. Used identically
@@ -103,6 +104,24 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/families/members/{user_id}/birthday",
             put(handlers_family::set_member_birthday)
                 .delete(handlers_family::delete_member_birthday),
+        )
+        // NOT owner-gated, unlike every other route on this path: any
+        // member may block any other, the owner included (protocol.md,
+        // "Blocking a member").
+        .route(
+            "/api/v1/families/members/{user_id}/block",
+            put(handlers_family::block_member).delete(handlers_family::unblock_member),
+        )
+        // Reporting: any member may file, only the owner may read or
+        // resolve — and a report naming the owner is never listed to them
+        // (protocol.md, "Reporting a member").
+        .route(
+            "/api/v1/families/reports",
+            post(handlers_report::create_report).get(handlers_report::list_reports),
+        )
+        .route(
+            "/api/v1/families/reports/{id}/resolve",
+            post(handlers_report::resolve_report),
         )
         // Chats & messages
         .route("/api/v1/chats", get(handlers_chat::list_chats))

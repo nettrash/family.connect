@@ -638,3 +638,207 @@ async fn deleting_an_account_fans_out_the_tombstone_and_closes_its_sockets() {
         "account deletion must never reach the push seam"
     );
 }
+
+/// **THE SILENCE PROPERTY.** A block reaches every connection of the
+/// BLOCKER and nobody else — above all not the person blocked, for whom
+/// nothing whatsoever changes (protocol.md, "Blocking a member").
+///
+/// This is the test the whole feature rests on. The one-element recipient
+/// list in `events::deliver_member_blocked` is the entire mechanism, and a
+/// later "helpful" widening of it would be silent in production and loud
+/// only here.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_block_reaches_only_the_blockers_own_devices() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, member_id) = ts.register("junior", "Junior").await;
+    let (third, _) = ts.register("cousin", "Cousin").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &invite_code, "joined").await;
+    ts.join(&third, &invite_code, "joined").await;
+
+    // The blocker on two devices, the blocked member, and a bystander.
+    let mut owner_phone = connect_ws(&ts, &owner).await;
+    let mut owner_mac = connect_ws(&ts, &owner).await;
+    let mut blocked_ws = connect_ws(&ts, &member).await;
+    let mut bystander_ws = connect_ws(&ts, &third).await;
+
+    let blocked = ts
+        .put(
+            &owner,
+            &format!("/families/members/{member_id}/block"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(blocked.status(), 204);
+
+    // BOTH of the blocker's devices learn it, so a block set on the phone
+    // is in force on the Mac without a resync.
+    for ws in [&mut owner_phone, &mut owner_mac] {
+        let frame = next_frame_of_type(ws, "member_blocked").await;
+        assert_eq!(frame["user_id"], member_id);
+        assert_eq!(frame["blocked"], true);
+        assert!(
+            frame.get("family_id").is_none(),
+            "a block is a pair, not a membership: {frame}"
+        );
+    }
+
+    // NOBODY ELSE. Not the person blocked — that is the whole feature —
+    // and not a bystander either.
+    assert_no_frame_of_type(
+        &mut blocked_ws,
+        "member_blocked",
+        Duration::from_millis(400),
+    )
+    .await;
+    assert_no_frame_of_type(
+        &mut bystander_ws,
+        "member_blocked",
+        Duration::from_millis(400),
+    )
+    .await;
+
+    // An unblock is the SAME frame with `false`, and is just as private.
+    let cleared = ts
+        .delete(&owner, &format!("/families/members/{member_id}/block"))
+        .await;
+    assert_eq!(cleared.status(), 204);
+    let frame = next_frame_of_type(&mut owner_phone, "member_blocked").await;
+    assert_eq!(frame["blocked"], false, "state, not an event: {frame}");
+    assert_no_frame_of_type(
+        &mut blocked_ws,
+        "member_blocked",
+        Duration::from_millis(400),
+    )
+    .await;
+}
+
+/// **THE TRANSPOSED-FILTER TEST.** The read/typing suppression is INWARD
+/// ONLY: a frame FROM somebody is not relayed TO anybody who blocked them.
+/// Written the other way round — the same one-line filter with its two
+/// arguments swapped — the BLOCKER's own reads and typing would stop
+/// reaching the person they blocked, and one member going quiet to exactly
+/// one other is a signal you can test for.
+///
+/// So this asserts the POSITIVE direction as loudly as the negative one:
+/// after A blocks B, A's frames still reach B byte-identically.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn read_and_typing_are_suppressed_inward_only() {
+    let ts = spawn_server().await;
+    let (blocker, _) = ts.register("owner", "Olive").await;
+    let (blocked, blocked_id) = ts.register("junior", "Junior").await;
+    let (_, invite_code) = ts.create_family(&blocker, "The Smiths").await;
+    ts.set_open_policy(&blocker).await;
+    ts.join(&blocked, &invite_code, "joined").await;
+    let chat_id = ts.family_chat_id(&blocker).await;
+
+    ts.put(
+        &blocker,
+        &format!("/families/members/{blocked_id}/block"),
+        json!({}),
+    )
+    .await;
+
+    let mut blocker_ws = connect_ws(&ts, &blocker).await;
+    let mut blocked_ws = connect_ws(&ts, &blocked).await;
+
+    // Seed a message so there is something to read.
+    let seeded: Value = ts
+        .post(
+            &blocker,
+            &format!("/chats/{chat_id}/messages"),
+            json!({"client_msg_id": Uuid::new_v4().to_string(), "body": "hello"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("message");
+    let seeded_id = seeded["message"]["id"].as_i64().expect("id");
+    let _ = next_frame_of_type(&mut blocked_ws, "message").await;
+
+    // INWARD: the blocked member reads and types; neither reaches the
+    // blocker.
+    ts.post(
+        &blocked,
+        &format!("/chats/{chat_id}/read"),
+        json!({"last_read_message_id": seeded_id}),
+    )
+    .await;
+    blocked_ws
+        .send(Message::Text(
+            json!({"type": "typing", "chat_id": chat_id})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("send typing");
+    assert_no_frame_of_type(&mut blocker_ws, "read", Duration::from_millis(400)).await;
+    assert_no_frame_of_type(&mut blocker_ws, "typing", Duration::from_millis(400)).await;
+
+    // OUTWARD: the blocker reads and types, and BOTH still reach the person
+    // they blocked, unchanged. This is the half a transposed filter breaks.
+    ts.post(
+        &blocker,
+        &format!("/chats/{chat_id}/read"),
+        json!({"last_read_message_id": seeded_id}),
+    )
+    .await;
+    let read = next_frame_of_type(&mut blocked_ws, "read").await;
+    assert_eq!(read["chat_id"], chat_id);
+    assert_eq!(read["last_read_message_id"], seeded_id);
+
+    blocker_ws
+        .send(Message::Text(
+            json!({"type": "typing", "chat_id": chat_id})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("send typing");
+    let typing = next_frame_of_type(&mut blocked_ws, "typing").await;
+    assert_eq!(
+        typing["chat_id"], chat_id,
+        "the blocker's own typing must still reach the blocked member"
+    );
+}
+
+/// The FRAME is not suppressed, only the push: a blocked member's message
+/// still arrives over the socket, because the hidden row has to have
+/// something to reveal and the read cursor only learns ids the server hands
+/// it.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_blocked_members_message_still_arrives_over_the_socket() {
+    let ts = spawn_server().await;
+    let (blocker, _) = ts.register("owner", "Olive").await;
+    let (blocked, blocked_id) = ts.register("junior", "Junior").await;
+    let (_, invite_code) = ts.create_family(&blocker, "The Smiths").await;
+    ts.set_open_policy(&blocker).await;
+    ts.join(&blocked, &invite_code, "joined").await;
+    let chat_id = ts.family_chat_id(&blocker).await;
+    ts.put(
+        &blocker,
+        &format!("/families/members/{blocked_id}/block"),
+        json!({}),
+    )
+    .await;
+
+    let mut blocker_ws = connect_ws(&ts, &blocker).await;
+    ts.post(
+        &blocked,
+        &format!("/chats/{chat_id}/messages"),
+        json!({"client_msg_id": Uuid::new_v4().to_string(), "body": "still delivered"}),
+    )
+    .await;
+
+    let frame = next_frame_of_type(&mut blocker_ws, "message").await;
+    assert_eq!(
+        frame["message"]["body"], "still delivered",
+        "history is never filtered — a short page reads as the end of the feed, \
+         and a frozen read marker is an oracle: {frame}"
+    );
+}

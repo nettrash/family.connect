@@ -93,7 +93,13 @@ Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
             NOT the ceiling, for the same reason absent "language" is not English. A cap has a
             real third state where a switch has none: "we never set one" is not "we set one
             equal to whatever the ceiling happens to be today", and the ceiling moves between
-            server restarts
+            server restarts. A client therefore holds TWO numbers — this one and
+            "max_family_members" from GET /me — and the door takes the LOWER of them. They
+            can disagree, and legitimately: a family that set 40 under a ceiling of 50 goes
+            on reporting 40 after the operator drops the ceiling to 10, because a stored cap
+            is never re-validated when the ceiling moves (that would make one config edit
+            lock owners out of their own settings screen). So a client shows this number as
+            the family's own setting and the lower of the two as the seats actually left
           — plus "language": "ru" when (and only when) the owner has chosen one; absent
             means unset, and unset is NOT English — see "The family's language"
           — "ai_history" is ALWAYS present, unlike the two above. It is a boolean with a

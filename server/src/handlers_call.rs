@@ -194,6 +194,31 @@ pub async fn offer(
         user_a
     };
 
+    // THE BLOCKER'S OWN DIRECTION: refused outright, and this is the one
+    // call error that only ever reaches the person who set the block.
+    if crate::blocks::blocks(&state.pool, auth.user_id, callee_id).await? {
+        return Err(ApiError::conflict(
+            codes::BLOCKED,
+            "you have blocked this member",
+        ));
+    }
+
+    // THE OTHER DIRECTION: the callee has blocked the caller. NOT refused —
+    // every cheap refusal is a tell the caller reads in their own call
+    // history. An API error writes no record where one has always
+    // appeared; an auto-decline writes `declined` instantly, at four in the
+    // morning, for ever; `peer_unreachable` is satisfiable only when the
+    // callee has no pushable device at all, which the caller can rule out
+    // by watching them post.
+    //
+    // So the call is parked and rings out for the full timeout, ending in
+    // the ordinary `missed` record — the only outcome indistinguishable
+    // from being ignored (protocol.md, "Blocking a member"). What the
+    // `suppressed` flag buys is that the CALLEE is not a party to it, so a
+    // loop of blocked offers cannot make them uncallable by the rest of
+    // the family.
+    let suppressed = crate::blocks::blocks(&state.pool, callee_id, auth.user_id).await?;
+
     // One call per person, on either side, before anything is rung.
     state
         .calls
@@ -205,6 +230,7 @@ pub async fn offer(
             conn_id,
             sdp.clone(),
             video,
+            suppressed,
         )
         .map_err(|busy| match busy {
             Busy::Caller => ApiError::conflict(codes::CALL_BUSY, "you are already on a call"),
@@ -220,7 +246,7 @@ pub async fn offer(
     // call as a cancel, which also tells any callee connection that already
     // saw the offer, and writes the missed record the callee can act on.
     match ring(
-        state, auth, conn_id, call_id, chat_id, callee_id, sdp, video,
+        state, auth, conn_id, call_id, chat_id, callee_id, sdp, video, suppressed,
     )
     .await
     {
@@ -245,6 +271,7 @@ async fn ring(
     callee_id: i64,
     sdp: String,
     video: bool,
+    suppressed: bool,
 ) -> Result<(), ApiError> {
     // Is the callee reachable at all — a socket, or a device that can be
     // woken? If neither, the offer cannot land: the caller is told, and the
@@ -269,23 +296,39 @@ async fn ring(
         sdp,
         video,
     };
-    state
-        .registry
-        .send_to_users(&[callee_id], &offer_frame)
-        .await;
-    events::push_incoming_call(
-        state,
-        callee_id,
-        crate::push_payload::CallPush {
-            call_id: call_id.to_string(),
-            chat_id,
-            from_user_id: auth.user_id,
-            caller_name,
-            video,
-            ring_timeout_secs: state.cfg.calls.ring_timeout_secs,
-        },
-    )
-    .await?;
+    //
+    // THE BLOCK IS APPLIED HERE, AT DELIVERY, AND NEVER AT THE DECISION.
+    // Everything above ran against the callee's REAL, unblocked state — so
+    // a blocked caller is told `peer_unreachable` exactly when the callee
+    // genuinely has nothing to reach, in the same second an unblocked
+    // caller would have been, and `peer_busy` exactly when they are
+    // genuinely on a call. Deciding earlier is a one-frame oracle: take
+    // the blocker's devices out of the candidate list first and the offer
+    // answers `peer_unreachable` instantly, while a control call to a
+    // third member rings for the full timeout.
+    //
+    // What is dropped here is total, and it has to be: no offer frame, no
+    // VoIP push, and — see `ws::call_replays` — no replay to a device that
+    // connects while this is still ringing.
+    if !suppressed {
+        state
+            .registry
+            .send_to_users(&[callee_id], &offer_frame)
+            .await;
+        events::push_incoming_call(
+            state,
+            callee_id,
+            crate::push_payload::CallPush {
+                call_id: call_id.to_string(),
+                chat_id,
+                from_user_id: auth.user_id,
+                caller_name,
+                video,
+                ring_timeout_secs: state.cfg.calls.ring_timeout_secs,
+            },
+        )
+        .await?;
+    }
 
     // Tell the caller it is ringing — on the connection the offer arrived
     // on, the only one that placed it.
@@ -411,9 +454,19 @@ pub async fn finish_call(state: &AppState, ended: Ended) {
         call_id: ended.call_id,
         reason: ended.reason.as_str().to_string(),
     };
+    // A suppressed call ends for the CALLER only. The callee was never
+    // told it rang, so a `call_end` would be a frame arriving out of
+    // nowhere — the loudest possible tell. The RECORD below is written
+    // either way: the call was accepted, it rang out, and the caller gets
+    // the ordinary `missed` entry (protocol.md, "Blocking a member").
+    let end_recipients: &[i64] = if ended.suppressed {
+        &[ended.caller_id]
+    } else {
+        &[ended.caller_id, ended.callee_id]
+    };
     state
         .registry
-        .send_to_users(&[ended.caller_id, ended.callee_id], &end_frame)
+        .send_to_users(end_recipients, &end_frame)
         .await;
     if let Err(err) = record_call(state, &ended).await {
         events::log_fanout_error("recording a server-ended call", Err(err));

@@ -128,6 +128,16 @@ pub struct Ended {
     /// Whether it was a VIDEO call — fixed at `begin`, carried through so
     /// the record says what kind of call it was (protocol.md, "Video").
     pub video: bool,
+    /// The callee never heard this call ring, because they had blocked the
+    /// caller. Carried out of the registry so `finish_call` knows not to
+    /// send them a `call_end` for a call they were never told about —
+    /// which would be a frame arriving out of nowhere, and the loudest
+    /// possible tell (protocol.md, "Blocking a member").
+    ///
+    /// The RECORD is written regardless: the call was accepted, it rang
+    /// out, and the caller gets the ordinary `missed` entry that makes the
+    /// whole thing indistinguishable from being ignored.
+    pub suppressed: bool,
 }
 
 /// Why an offer was refused: one call per person, on either side.
@@ -206,7 +216,29 @@ struct Call {
     /// A VIDEO call, decided at `begin` and never renegotiated: cameras
     /// toggle mid-call, the call's kind does not (protocol.md, "Video").
     video: bool,
+    /// The callee has BLOCKED the caller, so this call rings only
+    /// nominally: it is parked here so it can ring out and leave the
+    /// caller the ordinary `missed` record, but no frame and no push ever
+    /// reach the callee (protocol.md, "Blocking a member").
+    ///
+    /// The callee is therefore NOT a party to it — see [`Call::involves`],
+    /// which every busy scan goes through. Without that, a blocked person
+    /// could keep somebody uncallable by their whole family with a loop of
+    /// offers, and a third member calling them would be told `peer_busy`
+    /// for a call nobody is in.
+    suppressed: bool,
     phase: Phase,
+}
+
+impl Call {
+    /// Is `user` really a party to this call?
+    ///
+    /// The caller always is. The callee is too, UNLESS the call is
+    /// suppressed — in which case they have not been told it exists and
+    /// must not be treated as busy by it.
+    fn involves(&self, user: i64) -> bool {
+        self.caller_id == user || (self.callee_id == user && !self.suppressed)
+    }
 }
 
 #[derive(Debug)]
@@ -244,10 +276,7 @@ impl CallRegistry {
 
     /// Whether `user` is a party to any call in flight.
     pub fn is_busy(&self, user: i64) -> bool {
-        self.lock()
-            .calls
-            .values()
-            .any(|call| call.caller_id == user || call.callee_id == user)
+        self.lock().calls.values().any(|call| call.involves(user))
     }
 
     /// Start ringing. Refused when either party is on a call already —
@@ -262,18 +291,15 @@ impl CallRegistry {
         caller_conn: u64,
         offer_sdp: String,
         video: bool,
+        suppressed: bool,
     ) -> Result<(), Busy> {
         let mut inner = self.lock();
         for call in inner.calls.values() {
-            if call.id == call_id || call.caller_id == caller_id || call.callee_id == caller_id {
+            if call.id == call_id || call.involves(caller_id) {
                 return Err(Busy::Caller);
             }
         }
-        if inner
-            .calls
-            .values()
-            .any(|call| call.caller_id == callee_id || call.callee_id == callee_id)
-        {
+        if inner.calls.values().any(|call| call.involves(callee_id)) {
             return Err(Busy::Callee);
         }
         inner.calls.insert(
@@ -285,6 +311,7 @@ impl CallRegistry {
                 callee_id,
                 caller_conn,
                 video,
+                suppressed,
                 phase: Phase::Ringing {
                     since: Instant::now(),
                     offer_sdp,
@@ -373,7 +400,11 @@ impl CallRegistry {
         let ended = Self::ended(&call, by_user, reason);
         inner.recent_ends.push_back(RecentEnd {
             call_id,
-            callee_id: call.callee_id,
+            // A suppressed call records NO callee, so its `call_end` is
+            // never replayed to somebody who was never told it rang. `-1`
+            // matches no user; the row is still pushed so the window's
+            // eviction stays uniform.
+            callee_id: if call.suppressed { -1 } else { call.callee_id },
             reason: ended.reason,
             at: Instant::now(),
         });
@@ -417,6 +448,7 @@ impl CallRegistry {
             outcome,
             duration_secs,
             video: call.video,
+            suppressed: call.suppressed,
         }
     }
 
@@ -429,7 +461,15 @@ impl CallRegistry {
                 offer_sdp,
                 caller_candidates,
                 ..
-            } if call.callee_id == user => Some(PendingOffer {
+            }
+            // `involves` rather than a bare `callee_id ==`: a suppressed
+            // call must not be replayed to the callee either. This is the
+            // one path where a call frame reaches a user without passing
+            // through `handlers_call`, and without this test a device that
+            // connects mid-ring would be handed the offer the live path
+            // deliberately withheld — the block would hold until somebody
+            // opened their laptop.
+            if call.involves(user) && call.callee_id == user => Some(PendingOffer {
                 call_id: call.id,
                 chat_id: call.chat_id,
                 from_user_id: call.caller_id,
@@ -484,7 +524,9 @@ impl CallRegistry {
         for call in inner.calls.values() {
             if matches!(call.phase, Phase::Active { .. }) {
                 users.insert(call.caller_id);
-                users.insert(call.callee_id);
+                if !call.suppressed {
+                    users.insert(call.callee_id);
+                }
             }
         }
         users.into_iter().collect()
@@ -600,6 +642,7 @@ mod tests {
             conn,
             "offer".to_string(),
             false,
+            false,
         )
         .expect("begins");
     }
@@ -611,28 +654,85 @@ mod tests {
         assert!(reg.is_busy(7) && reg.is_busy(9) && !reg.is_busy(11));
         // The caller, from another device, is busy with their own call.
         assert_eq!(
-            reg.begin(id(2), 43, 7, 11, 101, "o".into(), false),
+            reg.begin(id(2), 43, 7, 11, 101, "o".into(), false, false),
             Err(Busy::Caller)
         );
         // Somebody ringing the callee is refused as peer busy.
         assert_eq!(
-            reg.begin(id(3), 44, 11, 9, 102, "o".into(), false),
+            reg.begin(id(3), 44, 11, 9, 102, "o".into(), false, false),
             Err(Busy::Callee)
         );
         // And somebody ringing the CALLER (who is a caller, not a callee)
         // is refused too: busy is about being on a call at all.
         assert_eq!(
-            reg.begin(id(4), 45, 11, 7, 102, "o".into(), false),
+            reg.begin(id(4), 45, 11, 7, 102, "o".into(), false, false),
             Err(Busy::Callee)
         );
         // A re-used id is the caller being on that call.
         assert_eq!(
-            reg.begin(id(1), 46, 13, 15, 103, "o".into(), false),
+            reg.begin(id(1), 46, 13, 15, 103, "o".into(), false, false),
             Err(Busy::Caller)
         );
         // Unrelated people call freely.
-        reg.begin(id(5), 47, 13, 15, 104, "o".into(), false)
+        reg.begin(id(5), 47, 13, 15, 104, "o".into(), false, false)
             .expect("an unrelated pair may talk");
+    }
+
+    /// A suppressed call — one the callee has blocked into — parks a real
+    /// call so it can ring out, but the CALLEE is not a party to it.
+    ///
+    /// Without this the block hands the blocked person a weapon: a loop of
+    /// offers keeps somebody uncallable by their whole family, and a third
+    /// member ringing them is told `peer_busy` for a call nobody is in.
+    #[test]
+    fn a_suppressed_call_does_not_make_the_callee_busy() {
+        let reg = CallRegistry::new();
+        reg.begin(id(1), 42, 7, 9, 100, "o".into(), false, true)
+            .expect("a suppressed call still begins");
+
+        // The CALLER is genuinely busy — they placed it, they see it
+        // ringing, and letting them place a second would tell them this
+        // one is not real.
+        assert!(reg.is_busy(7), "the caller is on a call");
+        assert_eq!(
+            reg.begin(id(2), 43, 7, 11, 101, "o".into(), false, false),
+            Err(Busy::Caller)
+        );
+
+        // The CALLEE is not busy at all.
+        assert!(!reg.is_busy(9), "the callee was never told this rang");
+        // They may place a call of their own...
+        reg.begin(id(3), 44, 9, 11, 102, "o".into(), false, false)
+            .expect("the callee may still call out");
+        // ...and a third member may ring them: no `peer_busy` on account
+        // of a call they cannot hear.
+        let reg2 = CallRegistry::new();
+        reg2.begin(id(1), 42, 7, 9, 100, "o".into(), false, true)
+            .expect("suppressed");
+        reg2.begin(id(4), 45, 11, 9, 103, "o".into(), false, false)
+            .expect("a third member reaches them regardless");
+    }
+
+    /// The replays are the one path where a call frame reaches a user
+    /// without passing through `handlers_call`, so the suppression has to
+    /// hold here too — otherwise the block lasts until the callee opens a
+    /// laptop and the offer is handed over late.
+    #[test]
+    fn a_suppressed_call_is_never_replayed_to_the_callee() {
+        let reg = CallRegistry::new();
+        reg.begin(id(1), 42, 7, 9, 100, "o".into(), false, true)
+            .expect("suppressed");
+        assert!(
+            reg.pending_offer_for(9).is_none(),
+            "a device connecting mid-ring must not be handed the withheld offer"
+        );
+        // The caller's own view is unaffected.
+        let ended = reg.end(id(1), None, EndReason::Timeout).expect("ends");
+        assert!(ended.suppressed, "the flag rides out with the call");
+        assert!(
+            reg.recent_ends_for(9).is_empty(),
+            "no call_end is replayed for a call the callee never heard"
+        );
     }
 
     #[test]
@@ -876,13 +976,13 @@ mod tests {
     #[test]
     fn a_video_call_carries_the_flag_through_replay_and_end() {
         let reg = CallRegistry::new();
-        reg.begin(id(1), 42, 7, 9, 100, "offer".to_string(), true)
+        reg.begin(id(1), 42, 7, 9, 100, "offer".to_string(), true, false)
             .expect("begins");
         assert!(reg.pending_offer_for(9).expect("ringing").video);
         let ended = reg.end(id(1), Some(7), EndReason::Cancel).expect("ended");
         assert!(ended.video, "the record must say what kind of call it was");
         // And a voice call stays a voice call.
-        reg.begin(id(2), 42, 7, 9, 100, "offer".to_string(), false)
+        reg.begin(id(2), 42, 7, 9, 100, "offer".to_string(), false, false)
             .expect("begins");
         assert!(!reg.pending_offer_for(9).expect("ringing").video);
         let ended = reg.end(id(2), Some(7), EndReason::Cancel).expect("ended");
