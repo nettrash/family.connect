@@ -436,7 +436,17 @@ pub fn build_unread_badge_query() -> &'static str {
      LEFT JOIN chat_reads cr ON cr.chat_id = m.chat_id AND cr.user_id = m.user_id
      WHERE m.user_id = $1
        AND msg.id > COALESCE(cr.last_read_message_id, 0)
-       AND msg.sender_id <> $1"
+       AND msg.sender_id <> $1
+       AND NOT EXISTS (
+             SELECT 1 FROM chats c
+              WHERE c.id = m.chat_id AND c.kind = 'direct'
+                AND EXISTS (
+                      SELECT 1 FROM member_blocks mb
+                       WHERE mb.blocker_user_id = $1
+                         AND mb.blocked_user_id =
+                             CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END
+                )
+       )"
 }
 
 /// The one SQL statement behind BOTH numbers a MESSAGE push carries: the
@@ -451,6 +461,17 @@ pub fn build_unread_badge_query() -> &'static str {
 /// also the one `GET /chats` measures its `unread_count` with, word for
 /// word: newer than my read marker (0 when I have never reported one), and
 /// not sent by me.
+///
+/// Both queries carry one further exclusion, at the CHAT level rather than
+/// the message level: a direct chat the recipient has blocked into
+/// contributes nothing to any unread count and nothing to the badge, because
+/// it is gone from every path they can reach it by and a badge they could
+/// never clear would itself be a quantity that moved when they blocked
+/// somebody (protocol.md, "Blocking a member").
+///
+/// The FAMILY chat is deliberately untouched: a hidden row there still
+/// counts, because the count is the other half of the read marker and
+/// projecting one without the other desynchronises them.
 pub fn build_message_unread_query() -> &'static str {
     "SELECT count(*) AS badge,
             count(*) FILTER (WHERE msg.chat_id = $2) AS chat_unread
@@ -459,7 +480,17 @@ pub fn build_message_unread_query() -> &'static str {
      LEFT JOIN chat_reads cr ON cr.chat_id = m.chat_id AND cr.user_id = m.user_id
      WHERE m.user_id = $1
        AND msg.id > COALESCE(cr.last_read_message_id, 0)
-       AND msg.sender_id <> $1"
+       AND msg.sender_id <> $1
+       AND NOT EXISTS (
+             SELECT 1 FROM chats c
+              WHERE c.id = m.chat_id AND c.kind = 'direct'
+                AND EXISTS (
+                      SELECT 1 FROM member_blocks mb
+                       WHERE mb.blocker_user_id = $1
+                         AND mb.blocked_user_id =
+                             CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END
+                )
+       )"
 }
 
 #[cfg(test)]
@@ -1073,10 +1104,22 @@ mod tests {
             query.contains("count(*) FILTER (WHERE msg.chat_id = $2)"),
             "the chat's count is a filter over the badge's rows, not a second query: {query}"
         );
+        // One TOP-LEVEL source, which is what "one round trip" means here.
+        // This used to count every "FROM" in the string; the hidden-DM
+        // exclusion added two correlated subqueries, which are still one
+        // statement, so the crude count started measuring the wrong thing.
+        // `FROM chat_members` is the source the badge is computed over and
+        // it appears exactly once — splitting this into two queries is
+        // still caught.
         assert_eq!(
-            query.matches("FROM").count(),
+            query.matches("FROM chat_members").count(),
             1,
             "both numbers come from one statement and one round trip: {query}"
+        );
+        assert_eq!(
+            query.matches("count(*)").count(),
+            2,
+            "exactly the badge and its filtered subset, never a second count: {query}"
         );
     }
 }

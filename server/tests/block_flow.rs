@@ -590,3 +590,446 @@ fn uuid() -> String {
     // A fresh v4 without pulling the crate into this file's imports.
     uuid::Uuid::new_v4().to_string()
 }
+
+/// **The blocker's hidden direct chat is closed on EVERY path they can
+/// reach it by** — not merely unlisted (protocol.md, "Blocking a member").
+///
+/// The family chat is deliberately the opposite: a hidden row there still
+/// arrives, still counts and still moves the read marker, because a
+/// filtered feed freezes that marker into an oracle. Here there is no
+/// hidden row to reveal and no cursor to freeze, so the chat is simply
+/// gone — and a badge the blocker could never clear would itself be a
+/// quantity that moved when they blocked somebody.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn the_blockers_hidden_direct_chat_is_closed_on_every_path() {
+    let ts = spawn_server().await;
+    let (owner, owner_id) = ts.register("owner", "Olive").await;
+    let (member, member_id) = ts.register("junior", "Junior").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &invite_code, "joined").await;
+
+    let opened: Value = ts
+        .post(&owner, "/chats/direct", json!({"user_id": member_id}))
+        .await
+        .json()
+        .await
+        .expect("direct chat");
+    let dm = opened["chat"]["id"].as_i64().expect("chat id");
+    ts.post_message(&member, dm, &uuid(), "before the block")
+        .await;
+
+    ts.put(
+        &owner,
+        &format!("/families/members/{member_id}/block"),
+        json!({}),
+    )
+    .await;
+
+    // Every REST path the blocker's client might still hold the id for.
+    assert_error(
+        ts.get(&owner, &format!("/chats/{dm}/messages")).await,
+        409,
+        "blocked",
+    )
+    .await;
+    assert_error(
+        ts.post(
+            &owner,
+            &format!("/chats/{dm}/messages"),
+            json!({"client_msg_id": uuid(), "body": "hello?"}),
+        )
+        .await,
+        409,
+        "blocked",
+    )
+    .await;
+    assert_error(
+        ts.post(
+            &owner,
+            &format!("/chats/{dm}/read"),
+            json!({"last_read_message_id": 1}),
+        )
+        .await,
+        409,
+        "blocked",
+    )
+    .await;
+
+    // The blocked member is refused NOTHING. A same-family DM that
+    // suddenly 409'd for them would announce the block outright.
+    assert_eq!(
+        ts.get(&member, &format!("/chats/{dm}/messages"))
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(
+        ts.post_message(&member, dm, &uuid(), "still sending")
+            .await
+            .status(),
+        201
+    );
+
+    // And the family chat is untouched for the blocker — the contrast that
+    // makes this rule a scoped exception rather than a general filter.
+    let family_chat = ts.family_chat_id(&owner).await;
+    assert_eq!(
+        ts.get(&owner, &format!("/chats/{family_chat}/messages"))
+            .await
+            .status(),
+        200,
+        "the family chat is never closed by a block"
+    );
+
+    // Unblocking restores every path at once, with the history intact.
+    ts.delete(&owner, &format!("/families/members/{member_id}/block"))
+        .await;
+    let restored: Value = ts
+        .get(&owner, &format!("/chats/{dm}/messages"))
+        .await
+        .json()
+        .await
+        .expect("messages");
+    let bodies: Vec<&str> = restored["messages"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|m| m["body"].as_str())
+        .collect();
+    assert!(
+        bodies.contains(&"before the block") && bodies.contains(&"still sending"),
+        "nothing was destroyed, only the blocker's way back in: {bodies:?}"
+    );
+    let _ = owner_id;
+}
+
+/// A hidden direct chat contributes nothing to the blocker's badge. The
+/// family chat still does — the count is the other half of the read marker,
+/// and projecting one without the other desynchronises them.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_hidden_direct_chat_counts_towards_no_badge() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, member_id) = ts.register("junior", "Junior").await;
+    let (aunt, _) = ts.register("aunt", "Aunt").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &invite_code, "joined").await;
+    ts.join(&aunt, &invite_code, "joined").await;
+
+    let opened: Value = ts
+        .post(&owner, "/chats/direct", json!({"user_id": member_id}))
+        .await
+        .json()
+        .await
+        .expect("direct chat");
+    let dm = opened["chat"]["id"].as_i64().expect("chat id");
+
+    ts.put(
+        &owner,
+        &format!("/families/members/{member_id}/block"),
+        json!({}),
+    )
+    .await;
+    register_device(&ts, &owner, "owner-device").await;
+
+    // Three unread in the hidden DM, then one from an unblocked member in
+    // the family chat — whose push carries the badge we read.
+    for _ in 0..3 {
+        ts.post_message(&member, dm, &uuid(), "unread").await;
+    }
+    let family_chat = ts.family_chat_id(&aunt).await;
+    ts.post_message(&aunt, family_chat, &uuid(), "visible")
+        .await;
+
+    let calls = wait_for_push_calls(&ts, 1).await;
+    let badge = calls
+        .iter()
+        .find(|c| c.devices.iter().any(|d| d.push_token == "owner-device"))
+        .map(|c| c.note.badge)
+        .expect("the owner was woken by the unblocked member");
+    assert_eq!(
+        badge, 1,
+        "only the family-chat message counts — a badge the blocker could \
+         never clear would be a quantity that moved when they blocked somebody"
+    );
+}
+
+/// **Nothing a blocked member reads names their blocker.** Every existing
+/// assertion on `blocked_user_ids` is made from the BLOCKER's own session,
+/// so a `blocked_by` widened to `blocker_user_id = $1 OR blocked_user_id =
+/// $1` — the plausible "a block is a pair" reading — would hand the blocked
+/// person the exact list of who blocked them, on the two endpoints every
+/// client bootstraps from, with the whole suite still green.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn nothing_a_blocked_member_reads_names_their_blocker() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, member_id) = ts.register("junior", "Junior").await;
+    let (bystander, _) = ts.register("cousin", "Cousin").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &invite_code, "joined").await;
+    ts.join(&bystander, &invite_code, "joined").await;
+
+    ts.put(
+        &owner,
+        &format!("/families/members/{member_id}/block"),
+        json!({}),
+    )
+    .await;
+
+    // Read everything as the BLOCKED member.
+    let me: Value = ts.get(&member, "/me").await.json().await.expect("me");
+    assert_eq!(
+        me["blocked_user_ids"],
+        json!([]),
+        "present and empty — never the list of who blocked them: {me}"
+    );
+    let mine: Value = ts
+        .get(&member, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("mine");
+    assert_eq!(mine["blocked_user_ids"], json!([]));
+    // Their roster, chat list and statistics are all untouched.
+    assert_eq!(mine["members"].as_array().map(Vec::len), Some(3));
+    let stats: Value = ts
+        .get(&member, "/families/mine/stats")
+        .await
+        .json()
+        .await
+        .expect("stats");
+    assert_eq!(stats["members"].as_array().map(Vec::len), Some(3));
+
+    // And a third party learns nothing either.
+    let theirs: Value = ts.get(&bystander, "/me").await.json().await.expect("me");
+    assert_eq!(theirs["blocked_user_ids"], json!([]));
+}
+
+/// Blocking ONE person hides ONE chat. Two independent one-line deletions
+/// in the `GET /chats` filter are each severe and each green today: dropping
+/// the peer test empties the blocker's entire DM list, and dropping the
+/// blocker test hides the chat from the wrong side.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_blocked_direct_chat_leaves_only_the_blockers_own_row() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (first, first_id) = ts.register("junior", "Junior").await;
+    let (second, second_id) = ts.register("cousin", "Cousin").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&first, &invite_code, "joined").await;
+    ts.join(&second, &invite_code, "joined").await;
+
+    // The owner holds TWO direct chats, and blocks only one peer.
+    ts.post(&owner, "/chats/direct", json!({"user_id": first_id}))
+        .await;
+    ts.post(&owner, "/chats/direct", json!({"user_id": second_id}))
+        .await;
+    ts.put(
+        &owner,
+        &format!("/families/members/{first_id}/block"),
+        json!({}),
+    )
+    .await;
+
+    let peers = |chats: &Value| -> Vec<i64> {
+        chats["chats"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter(|c| c["chat"]["kind"] == "direct")
+            .map(|c| c["chat"]["peer_user_id"].as_i64().expect("peer"))
+            .collect()
+    };
+
+    let mine: Value = ts.get(&owner, "/chats").await.json().await.expect("chats");
+    assert_eq!(
+        peers(&mine),
+        vec![second_id],
+        "exactly the blocked peer's row is gone, and only it: {mine}"
+    );
+
+    // The blocked peer's OWN list still holds the chat — the filter is on
+    // the blocker's side, not the chat's.
+    let theirs: Value = ts.get(&first, "/chats").await.json().await.expect("chats");
+    assert!(
+        !peers(&theirs).is_empty(),
+        "the blocked member's list is untouched: {theirs}"
+    );
+}
+
+/// A blocked member's BOARD NOTE does not wake the blocker — the seam the
+/// board tests never touch, because `board_flow.rs` mentions blocking
+/// nowhere.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_blocked_members_board_note_does_not_wake_the_blocker() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (noisy, noisy_id) = ts.register("junior", "Junior").await;
+    let (bystander, _) = ts.register("cousin", "Cousin").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&noisy, &invite_code, "joined").await;
+    ts.join(&bystander, &invite_code, "joined").await;
+    register_device(&ts, &owner, "owner-device").await;
+    register_device(&ts, &bystander, "bystander-device").await;
+
+    ts.put(
+        &owner,
+        &format!("/families/members/{noisy_id}/block"),
+        json!({}),
+    )
+    .await;
+
+    let posted = ts
+        .post(
+            &noisy,
+            "/families/mine/board/notes",
+            json!({"text": "on the wall", "color": "yellow", "x": 10, "y": 10}),
+        )
+        .await;
+    assert_eq!(posted.status(), 201);
+
+    let calls = wait_for_push_calls(&ts, 1).await;
+    let woken: Vec<String> = calls
+        .iter()
+        .flat_map(|c| c.devices.iter().map(|d| d.push_token.clone()))
+        .collect();
+    assert!(
+        woken.contains(&"bystander-device".to_string()),
+        "an unblocked member is still woken by a new note: {woken:?}"
+    );
+    assert!(
+        !woken.contains(&"owner-device".to_string()),
+        "the blocker is not woken by a blocked member's note: {woken:?}"
+    );
+}
+
+/// **A block never narrows the owner's MODERATION pushes.** A join request
+/// and a report wake the owner whoever they name, because being blocked by
+/// the moderator is not a way to stop being moderated (protocol.md, "Push
+/// notifications").
+///
+/// This is the exception to every other push gate in the system, and it
+/// exists because the tempting gate is wrong in exactly one direction: it
+/// would make the member an owner has stopped reading the member the owner
+/// is never told about — including by third parties.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_block_never_narrows_the_owners_moderation_pushes() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (nuisance, nuisance_id) = ts.register("junior", "Junior").await;
+    let (reporter, _) = ts.register("cousin", "Cousin").await;
+    let (applicant, _) = ts.register("stranger", "Stranger").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&nuisance, &invite_code, "joined").await;
+    ts.join(&reporter, &invite_code, "joined").await;
+    register_device(&ts, &owner, "owner-device").await;
+
+    // The owner stops reading the nuisance.
+    ts.put(
+        &owner,
+        &format!("/families/members/{nuisance_id}/block"),
+        json!({}),
+    )
+    .await;
+
+    // A REPORT about the blocked member still wakes the owner.
+    ts.post(
+        &reporter,
+        "/families/reports",
+        json!({"reported_user_id": nuisance_id, "reason": "harassment"}),
+    )
+    .await;
+    let calls = wait_for_push_calls(&ts, 1).await;
+    assert!(
+        calls.iter().any(|c| {
+            c.note.event.kind() == "report"
+                && c.devices.iter().any(|d| d.push_token == "owner-device")
+        }),
+        "a report about a blocked member must still wake the owner: {calls:?}"
+    );
+
+    // And a JOIN REQUEST does too. Switch to approval so one is created.
+    ts.patch(&owner, "/families/mine", json!({"join_policy": "approval"}))
+        .await;
+    ts.join(&applicant, &invite_code, "pending").await;
+    let calls = wait_for_push_calls(&ts, 2).await;
+    assert!(
+        calls.iter().any(|c| {
+            c.note.event.kind() == "join_request"
+                && c.devices.iter().any(|d| d.push_token == "owner-device")
+        }),
+        "a join request must wake the owner whoever it names: {calls:?}"
+    );
+}
+
+/// The report push reaches the owner, and never the owner it NAMES. One
+/// character — `==` to `!=` at the shield — both leaks the shielded report
+/// ("somebody in this family reported ME") and silences every ordinary one.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_report_pushes_the_owner_and_never_the_owner_it_names() {
+    let ts = spawn_server().await;
+    let (owner, owner_id) = ts.register("owner", "Olive").await;
+    let (reporter, _) = ts.register("junior", "Junior").await;
+    let (other, other_id) = ts.register("cousin", "Cousin").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&reporter, &invite_code, "joined").await;
+    ts.join(&other, &invite_code, "joined").await;
+    register_device(&ts, &owner, "owner-device").await;
+
+    // A report naming the OWNER pushes nobody.
+    ts.post(
+        &reporter,
+        "/families/reports",
+        json!({"reported_user_id": owner_id, "reason": "harassment"}),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        ts.push.calls().is_empty(),
+        "the owner must never be told somebody reported them: {:?}",
+        ts.push.calls()
+    );
+
+    // An ordinary report does.
+    ts.post(
+        &reporter,
+        "/families/reports",
+        json!({"reported_user_id": other_id, "reason": "spam"}),
+    )
+    .await;
+    let calls = wait_for_push_calls(&ts, 1).await;
+    let report_pushes: Vec<_> = calls
+        .iter()
+        .filter(|c| c.note.event.kind() == "report")
+        .collect();
+    assert_eq!(
+        report_pushes.len(),
+        1,
+        "exactly the ordinary one: {calls:?}"
+    );
+    assert!(
+        report_pushes[0]
+            .note
+            .body
+            .to_lowercase()
+            .contains("new report"),
+        "and it carries no reported text — the excerpt is the very content \
+         somebody asked to have looked at: {:?}",
+        report_pushes[0].note
+    );
+}

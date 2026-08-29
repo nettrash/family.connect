@@ -223,6 +223,29 @@ async fn fan_out_new_message(
     origin_conn: Option<u64>,
 ) -> Result<Vec<i64>, ApiError> {
     let members = chat_member_ids(&state.pool, message.chat_id).await?;
+    // In the FAMILY chat the frame is NEVER suppressed — the hidden row has
+    // to have something to reveal, and a filtered feed freezes the
+    // blocker's read marker into an oracle. A DIRECT chat the recipient has
+    // blocked into is the one exception: there is no hidden row there and
+    // no cursor to freeze, and the chat is gone from every path they can
+    // reach it by (protocol.md, "Blocking a member").
+    //
+    // So the filter is scoped to direct chats, where the only other member
+    // IS the sender. Widening it to every chat would suppress the family
+    // chat's frame and rebuild the very oracle the paragraph above forbids.
+    //
+    // The returned Vec is also the PUSH candidate list, so a recipient
+    // dropped here is dropped from both — which is right: a chat they
+    // cannot open must not wake them either.
+    let is_direct: bool = sqlx::query_scalar("SELECT kind = 'direct' FROM chats WHERE id = $1")
+        .bind(message.chat_id)
+        .fetch_one(&state.pool)
+        .await?;
+    let members = if is_direct {
+        without_blockers_of(state, message.sender_id, members).await?
+    } else {
+        members
+    };
     let frame = ServerFrame::Message {
         message: message.clone(),
     };
@@ -358,15 +381,14 @@ pub async fn push_join_request_created(
     owner_user_id: i64,
     requester_id: i64,
 ) -> Result<(), ApiError> {
-    // A block suppresses the ALERT and never the RECORD: the request is
-    // already committed and stays in `GET /families/join-requests`, so an
-    // owner who blocked somebody still finds them knocking when they next
-    // look. Silencing the push is what a block is for; losing the request
-    // would be the server deciding a family's membership on the strength
-    // of one member's rendering preference.
-    if crate::blocks::blocks(&state.pool, owner_user_id, requester_id).await? {
-        return Ok(());
-    }
+    // NO BLOCK GATE HERE, deliberately. A block never narrows the owner's
+    // MODERATION pushes: a join request wakes them whoever it names,
+    // because being blocked by the moderator is not a way to stop being
+    // moderated (protocol.md, "Push notifications").
+    //
+    // The tempting gate is the one every other push has, and it is wrong
+    // in exactly one direction: it would make the member an owner has
+    // stopped reading the member the owner is never told about.
     let live_sessions = state.registry.live_sessions(&[owner_user_id]).await;
     let devices = devices_for_users(&state.pool, &[owner_user_id]).await?;
     let devices = devices_to_wake(devices, &live_sessions, None);
@@ -411,12 +433,11 @@ pub async fn push_report_created(
         );
         return Ok(());
     }
-    // A block suppresses this alert like any other: an owner who blocked
-    // the reporter is not woken by them. The report still stands in
-    // `GET /families/reports` — a block silences, it never deletes.
-    if crate::blocks::blocks(&state.pool, owner_user_id, reported_user_id).await? {
-        return Ok(());
-    }
+    // NO BLOCK GATE HERE either, and for the same clause: a report wakes
+    // the owner whoever it names. An owner who could silence reports about
+    // a member by blocking them would be a moderator who had opted out of
+    // moderating, which is the one thing this whole feature exists to make
+    // impossible (protocol.md, "Push notifications").
     let live_sessions = state.registry.live_sessions(&[owner_user_id]).await;
     let devices = devices_for_users(&state.pool, &[owner_user_id]).await?;
     let devices = devices_to_wake(devices, &live_sessions, None);

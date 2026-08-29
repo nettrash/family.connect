@@ -121,7 +121,13 @@ pub async fn ensure_chat_access(
     user_id: i64,
 ) -> Result<(), ApiError> {
     let row = sqlx::query(
-        "SELECT (cm.user_id IS NOT NULL) AS is_member
+        "SELECT (cm.user_id IS NOT NULL) AS is_member,
+                (c.kind = 'direct' AND EXISTS (
+                     SELECT 1 FROM member_blocks mb
+                      WHERE mb.blocker_user_id = $2
+                        AND mb.blocked_user_id =
+                            CASE WHEN c.user_a_id = $2 THEN c.user_b_id ELSE c.user_a_id END
+                 )) AS blocked_peer
          FROM chats c
          LEFT JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = $2
          WHERE c.id = $1",
@@ -135,6 +141,23 @@ pub async fn ensure_chat_access(
         Some(row) if !row.get::<bool, _>("is_member") => Err(ApiError::forbidden(
             codes::NOT_CHAT_MEMBER,
             "you are not a member of this chat",
+        )),
+        // A direct chat the CALLER has blocked into is gone from every path
+        // they can reach it by, this one included: an id their client still
+        // holds answers `blocked` on reads, sends and read-marker posts
+        // (protocol.md, "Blocking a member").
+        //
+        // The family chat is deliberately untouched by this. There, a
+        // refusal would freeze the blocker's read marker at the id before a
+        // hidden message, and a marker that leaps forward the moment a
+        // third member posts is a perfect oracle. Here there is no hidden
+        // row to reveal and no cursor to freeze — the protocol says the
+        // three family-chat reasons "buy nothing" for a hidden DM — and the
+        // marker stopping where it stood IS the innocent explanation the
+        // feature rests on: somebody who has stopped opening your chat.
+        Some(row) if row.get::<bool, _>("blocked_peer") => Err(ApiError::conflict(
+            codes::BLOCKED,
+            "you have blocked this member",
         )),
         Some(_) => Ok(()),
     }

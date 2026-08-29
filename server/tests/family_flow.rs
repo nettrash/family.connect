@@ -1262,6 +1262,30 @@ async fn the_owner_decides_whether_a_mention_sees_the_family_chats_history() {
          because nobody has chosen one, and ai_history present because it always is"
     );
 
+    // The SAME pin with a cap set. The case above stays green whether or
+    // not `max_members` exists, because an unset cap serialises to no key —
+    // which is the strongest practical argument for the nullable design and
+    // also the reason it cannot, on its own, pin the field's presence.
+    let capped = ts
+        .patch(&owner, "/families/mine", json!({"max_members": 6}))
+        .await;
+    assert_eq!(capped.status(), 200);
+    let body: Value = capped.json().await.expect("patch is JSON");
+    let family = body["family"].clone();
+    assert_eq!(
+        family,
+        json!({
+            "id": family_id,
+            "name": "The Smiths",
+            "join_policy": "open",
+            "created_at": family["created_at"],
+            "invite_code": invite_code,
+            "max_members": 6,
+            "ai_history": false,
+        }),
+        "and the whole object again with a cap — one key more, nothing else moved"
+    );
+
     // Both places a client bootstraps from agree, which is the point of
     // /me carrying the same object.
     let me: Value = ts.get(&member, "/me").await.json().await.expect("me");

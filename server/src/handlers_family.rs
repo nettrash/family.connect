@@ -1627,6 +1627,19 @@ mod tests {
         assert_eq!(set.language, Some(Some("ru".to_string())));
     }
 
+    /// The third policy parses like the other two. A unit test on the
+    /// deserializer is not enough on its own — nothing here would notice a
+    /// missing migration 0030 — but it is what fails first when somebody
+    /// narrows the field to an enum of two.
+    #[test]
+    fn closed_is_a_join_policy_like_any_other() {
+        for policy in ["open", "approval", "closed"] {
+            let parsed: PatchFamilyRequest =
+                serde_json::from_str(&format!(r#"{{"join_policy": "{policy}"}}"#)).expect("parses");
+            assert_eq!(parsed.join_policy.as_deref(), Some(policy));
+        }
+    }
+
     /// An empty body is a valid no-op rather than a 400: every field is
     /// optional, and "which fields are present decides what happens" has to
     /// survive none of them being present.

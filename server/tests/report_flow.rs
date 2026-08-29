@@ -373,3 +373,146 @@ async fn reporting_yourself_a_stranger_a_bad_reason_or_an_unseen_message_is_refu
     assert_error(forbidden, 403, "not_family_owner").await;
     let _ = (owner, outsider);
 }
+
+/// An owner reads THEIR family's reports and nobody else's. Deleting the
+/// family predicate from the list and the resolve compiles, keeps the bind,
+/// and passes every single-family test in this file — while every owner on
+/// the box reads every other family's reports and their frozen quotations.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn an_owner_never_sees_another_familys_reports() {
+    let ts = spawn_server().await;
+    // Family A.
+    let (owner_a, _) = ts.register("olive", "Olive").await;
+    let (member_a, _) = ts.register("junior", "Junior").await;
+    let (target_a, target_a_id) = ts.register("cousin", "Cousin").await;
+    let (_, code_a) = ts.create_family(&owner_a, "The Smiths").await;
+    ts.set_open_policy(&owner_a).await;
+    ts.join(&member_a, &code_a, "joined").await;
+    ts.join(&target_a, &code_a, "joined").await;
+
+    // Family B, with a MESSAGE report so its excerpt is distinctive.
+    let (owner_b, _) = ts.register("bianca", "Bianca").await;
+    let (member_b, _) = ts.register("bruno", "Bruno").await;
+    let (target_b, target_b_id) = ts.register("bella", "Bella").await;
+    let (_, code_b) = ts.create_family(&owner_b, "The Joneses").await;
+    ts.set_open_policy(&owner_b).await;
+    ts.join(&member_b, &code_b, "joined").await;
+    ts.join(&target_b, &code_b, "joined").await;
+    let chat_b = ts.family_chat_id(&target_b).await;
+    let posted: Value = ts
+        .post_message(&target_b, chat_b, &uuid(), "a very distinctive utterance")
+        .await
+        .json()
+        .await
+        .expect("message");
+
+    let a_report: Value = ts
+        .post(
+            &member_a,
+            "/families/reports",
+            json!({"reported_user_id": target_a_id, "reason": "spam"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("json");
+    let a_id = a_report["report"]["id"].as_i64().expect("id");
+    let b_report: Value = ts
+        .post(
+            &member_b,
+            "/families/reports",
+            json!({
+                "reported_user_id": target_b_id,
+                "reason": "harassment",
+                "message_id": posted["message"]["id"]
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("json");
+    let b_id = b_report["report"]["id"].as_i64().expect("id");
+
+    // Owner A sees exactly one row, and B's excerpt appears nowhere in the
+    // response text at all.
+    let listed = ts.get(&owner_a, "/families/reports").await;
+    let raw = listed.text().await.expect("body");
+    let parsed: Value = serde_json::from_str(&raw).expect("json");
+    assert_eq!(parsed["reports"].as_array().map(Vec::len), Some(1));
+    assert_eq!(parsed["reports"][0]["id"], a_id);
+    assert!(
+        !raw.contains("a very distinctive utterance"),
+        "another family's frozen quotation must not appear: {raw}"
+    );
+
+    // Nor may owner A resolve B's report by guessing its id.
+    let poached = ts
+        .post(
+            &owner_a,
+            &format!("/families/reports/{b_id}/resolve"),
+            json!({}),
+        )
+        .await;
+    assert_error(poached, 409, "report_not_pending").await;
+    let b_list: Value = ts
+        .get(&owner_b, "/families/reports")
+        .await
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        b_list["reports"].as_array().map(Vec::len),
+        Some(1),
+        "B's report is untouched: {b_list}"
+    );
+}
+
+/// Only the OWNER may resolve. The existing suite asserts only the read
+/// half of "read or resolve", so narrowing `require_owner_family` to a bare
+/// membership check passes every report test.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn only_the_owner_may_resolve_a_report() {
+    let ts = spawn_server().await;
+    let (owner, reporter, _reporter_id, _other, other_id) = family_of_three(&ts).await;
+    let filed: Value = ts
+        .post(
+            &reporter,
+            "/families/reports",
+            json!({"reported_user_id": other_id, "reason": "spam"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("json");
+    let report_id = filed["report"]["id"].as_i64().expect("id");
+
+    let by_member = ts
+        .post(
+            &reporter,
+            &format!("/families/reports/{report_id}/resolve"),
+            json!({}),
+        )
+        .await;
+    assert_error(by_member, 403, "not_family_owner").await;
+
+    // Still open for the owner, who may.
+    let listed: Value = ts
+        .get(&owner, "/families/reports")
+        .await
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(listed["reports"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        ts.post(
+            &owner,
+            &format!("/families/reports/{report_id}/resolve"),
+            json!({})
+        )
+        .await
+        .status(),
+        204
+    );
+}
