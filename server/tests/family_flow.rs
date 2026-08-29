@@ -436,6 +436,78 @@ async fn a_language_outside_the_nine_is_refused_and_changes_nothing() {
 /// ALWAYS present, unlike the language: a boolean with a real default has
 /// no "unset" for a missing key to mean, and a client that had to guess one
 /// would be guessing about what leaves the server.
+/// `max_members` lives in FOUR separate `families` column lists — the shared
+/// SELECT, the create RETURNING, the patch RETURNING, and the fourth,
+/// hand-written SELECT behind `/me`. `FamilyRecord::from_row` reads them
+/// untyped, so a list that forgot the column is a runtime 500 from ONE
+/// endpoint and a green compile everywhere, which is why this walks all four
+/// rather than trusting the type checker.
+///
+/// It also pins the shape a cap has before anybody sets one: the key is
+/// ABSENT, not null and not the operator's ceiling. Absent means "this family
+/// never chose", and a client that saw the ceiling here could not tell that
+/// from a family that chose exactly it (protocol.md, "Families").
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn the_member_cap_is_absent_until_set_and_reads_from_all_four_column_lists() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+
+    // 1. the create RETURNING
+    let created: Value = ts
+        .post(&owner, "/families", json!({"name": "The Smiths"}))
+        .await
+        .json()
+        .await
+        .expect("create is JSON");
+    assert!(
+        created["family"].get("max_members").is_none(),
+        "a brand-new family has no cap of its own: {}",
+        created["family"]
+    );
+    let invite_code = created["family"]["invite_code"]
+        .as_str()
+        .expect("owner sees the code")
+        .to_string();
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &invite_code, "joined").await;
+
+    // 2. the shared SELECT_FAMILY, read by a non-owner
+    let mine: Value = ts
+        .get(&member, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("mine");
+    assert!(
+        mine["family"].get("max_members").is_none(),
+        "absent for a member too: {}",
+        mine["family"]
+    );
+
+    // 3. the patch RETURNING — a patch that does not mention the cap
+    let patched: Value = ts
+        .patch(&owner, "/families/mine", json!({"ai_history": false}))
+        .await
+        .json()
+        .await
+        .expect("patch is JSON");
+    assert!(
+        patched["family"].get("max_members").is_none(),
+        "a patch about something else leaves the cap alone and absent: {}",
+        patched["family"]
+    );
+
+    // 4. the fourth list: /me's own hand-written SELECT and Family literal
+    let me: Value = ts.get(&member, "/me").await.json().await.expect("me");
+    assert!(
+        me["family"].get("max_members").is_none(),
+        "/me must agree with /families/mine about the same family: {}",
+        me["family"]
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
 async fn the_owner_decides_whether_a_mention_sees_the_family_chats_history() {

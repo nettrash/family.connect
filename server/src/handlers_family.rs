@@ -113,6 +113,7 @@ struct FamilyRecord {
     invite_code: String,
     join_policy: String,
     language: Option<String>,
+    max_members: Option<i32>,
     ai_history: bool,
     owner_user_id: i64,
     created_at: OffsetDateTime,
@@ -126,6 +127,7 @@ impl FamilyRecord {
             invite_code: row.get("invite_code"),
             join_policy: row.get("join_policy"),
             language: row.get("language"),
+            max_members: row.get("max_members"),
             ai_history: row.get("ai_history"),
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
@@ -144,6 +146,9 @@ impl FamilyRecord {
             // the assistant answers the whole family in, so the whole
             // family sees it.
             language: self.language.clone(),
+            // Not owner-gated either: every member may see how many people
+            // their family admits, even though only the owner may set it.
+            max_members: self.max_members,
             // Not owner-gated either, and for a stronger reason than the
             // language: this decides what a member's own words may be used
             // for when somebody else mentions the assistant. Only the owner
@@ -153,8 +158,8 @@ impl FamilyRecord {
     }
 }
 
-const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, ai_history,
-                             owner_user_id, created_at FROM families";
+const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, max_members,
+                             ai_history, owner_user_id, created_at FROM families";
 
 async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, ApiError> {
     let row = sqlx::query(&format!("{SELECT_FAMILY} WHERE id = $1"))
@@ -277,7 +282,7 @@ pub async fn create_family(
         let inserted = sqlx::query(
             "INSERT INTO families (name, invite_code, owner_user_id)
              VALUES ($1, $2, $3)
-             RETURNING id, name, invite_code, join_policy, language, ai_history, owner_user_id,
+             RETURNING id, name, invite_code, join_policy, language, max_members, ai_history, owner_user_id,
                        created_at",
         )
         .bind(&name)
@@ -576,7 +581,7 @@ pub async fn patch_family(
              language = CASE WHEN $3 THEN $4 ELSE language END,
              ai_history = COALESCE($5, ai_history)
          WHERE id = $1
-         RETURNING id, name, invite_code, join_policy, language, ai_history, owner_user_id,
+         RETURNING id, name, invite_code, join_policy, language, max_members, ai_history, owner_user_id,
                    created_at",
     )
     .bind(family.id)
