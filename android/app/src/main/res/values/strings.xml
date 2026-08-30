@@ -173,6 +173,8 @@
     <string name="s_pasted_sound">Pasted sound</string>
     <string name="s_pasted_file">Pasted file</string>
     <string name="s_privacy">Privacy</string>
+    <string name="s_privacy_policy">Privacy policy</string>
+    <string name="s_support">Support</string>
     <string name="s_react">React</string>
     <string name="s_register">Register</string>
     <string name="s_remove">Remove</string>

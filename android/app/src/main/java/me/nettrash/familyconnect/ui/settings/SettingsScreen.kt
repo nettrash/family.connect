@@ -43,6 +43,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ExitToApp
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Cake
@@ -50,6 +51,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.AddAPhoto
 import androidx.compose.material.icons.outlined.ManageAccounts
 import androidx.compose.material.icons.outlined.PersonRemove
@@ -77,6 +79,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -122,6 +125,7 @@ fun SettingsScreen(
     val copiedLabel = stringResource(R.string.s_copied)
     val passwordChangedLabel = stringResource(R.string.s_password_changed)
     val clipboard = LocalClipboard.current
+    val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
@@ -484,6 +488,28 @@ fun SettingsScreen(
                 },
                 modifier = Modifier.clickable {
                     viewModel.setMapPreviewsEnabled(!state.mapPreviewsEnabled)
+                },
+            )
+            // Play's Data safety form takes the policy URL, but the policy
+            // has to be reachable from inside the app too — the iOS side
+            // carries the same two rows for guideline 5.1.1(i). These open
+            // in the browser rather than a WebView on purpose: the policy
+            // is a public page and a reader should be able to check the
+            // address bar for themselves. The /play/ pages, not /appstore/:
+            // they describe FCM and Google Maps, which is what this build
+            // actually uses.
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.s_privacy_policy)) },
+                leadingContent = { Icon(Icons.Outlined.Shield, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    uriHandler.openUri("https://nettrash.me/play/familyconnect/privacy.html")
+                },
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.s_support)) },
+                leadingContent = { Icon(Icons.AutoMirrored.Outlined.HelpOutline, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    uriHandler.openUri("https://nettrash.me/play/familyconnect/support.html")
                 },
             )
             HorizontalDivider(

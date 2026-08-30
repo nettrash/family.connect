@@ -10,14 +10,17 @@ Every item below is tracked as a GitHub issue under the [v1.0 — first App Stor
 ---
 ## Status update — 2026-08-30
 
-**Blocker #1 (Report/Block) is CLOSED IN CODE.** The other four blockers are untouched and still
-gate submission. The verdict below is the 2026-08-28 audit as it stood; everything in it is kept
-as the record of that date, and this section is the only thing that supersedes it.
+**Blockers #1 (Report/Block), #2 (privacy and support pages) and #3 (screenshots) are done.**
+#4 and #5 are untouched and still gate submission. The verdict below is the 2026-08-28 audit as
+it stood; everything in it is kept as the record of that date, and this section is the only thing
+that supersedes it.
 
-Revised verdict: **NOT READY — 4 blockers remain, all paperwork.** The one blocker that needed
-code is done, on all three platforms plus the server. The critical path's "DAYS 1-3 IN PARALLEL —
-THE LONG POLE" is complete; what is left is the policy/support pages, the App Privacy answers, the
-screenshots, and the stale `appstore.md`.
+Revised verdict: **NOT READY — 2 blockers remain, both paperwork.** Everything that needed code
+or artefacts is finished: Report/Block on all three clients plus the server, four published
+policy/support pages with in-app links on every client, and three screenshot sets (iPhone 6.9",
+iPad 13", Play phone) that regenerate from a script. What is left is `ios/docs/appstore.md`'s
+stale listing copy and review notes (#4) and the App Privacy answers (#5) — plus two things only
+you can do: deploy nettrash.me and paste the four URLs into the two consoles.
 
 ### What shipped for #1
 Built against the protocol first (`docs/protocol.md` amended before each change, and committed):
@@ -50,6 +53,21 @@ blocks-review defects that had been missed**, all since fixed:
 
 Test state at the time of writing: server 201 unit + 290 integration, iOS 648, Android 813, all
 four targets building, both string catalogues complete in nine languages.
+
+### What shipped for #2 and #3
+Detail is under each blocker below; the short version:
+
+- **#2** — four pages (an Apple pair and a Play pair, written separately because the platforms
+  collect different things), store cards on nettrash.me, and a Privacy Policy / Support row inside
+  iOS, macOS and Android settings. Android had no such rows at all before this pass.
+- **#3** — 18 screenshots: iPhone 6.9" ×6, iPad 13" ×6, Play phone ×6, all from one seeded
+  family and all reproducible from a script rather than by hand. The three Android shots committed
+  in August were deleted: they violated Play's 2:1 ratio rule and carried an alpha channel, and
+  the new capture path checks both before writing a file.
+
+**Everything about #3 is worth re-running rather than trusting.** The set is only as good as the
+seed, and the seed's photo album is generated gradients until somebody puts real photographs in
+`server/scripts/screenshot-photos/`.
 
 ### Still open, and deliberately not done
 - The `[registration]` server switch (#1's own text marks it optional).
@@ -228,7 +246,7 @@ Both archives CAN be produced today, and both pass Xcode's own `-validate-for-st
 </details>
 
 ---
-## Blockers (5 — 1 resolved, 4 remain)
+## Blockers (5 — 3 resolved, 2 remain)
 These gate submission. Ranked hardest first.
 
 ### 1. ~~No way to report content or block a member~~ — RESOLVED 2026-08-30 — [#1](https://github.com/nettrash/family.connect/issues/1)
@@ -242,8 +260,14 @@ unedited; closing the issue still needs #4's review notes and #2's published con
 
 **Fix.** Minimum that clears both hard legs: (1) a per-member Block reachable from the member roster and from a message — client-side hide plus a server-side mute so a blocked member's messages and calls do not arrive; (2) a Report action on a message and on a member posting to a new POST /api/v1/reports, with a stated response commitment in the App Review notes. Then rewrite the review notes to lead with the containment argument (invite-code-only membership, approval by default, no cross-family contact, owner can remove, member can leave) and to stop advertising "Registration is also fully open" (appstore.md:52) as a feature. If you want to shrink the surface further, add the `[registration]` server switch your own checklist already proposes (appstore.md:102) and close the box to strangers.
 
-### 2. No privacy policy page, no support page, and no in-app privacy link — the submission cannot be completed — [#2](https://github.com/nettrash/family.connect/issues/2)
+### 2. ~~No privacy policy page, no support page, and no in-app privacy link~~ — RESOLVED 2026-08-30 — [#2](https://github.com/nettrash/family.connect/issues/2)
 **Platform:** both · **Effort:** a day
+
+**Resolved.** Four pages now exist in the `nettrash-me` repo — `frontend/assets/appstore/familyconnect/{privacy,support}.html` for the Apple builds and `frontend/assets/play/familyconnect/{privacy,support}.html` for the Play build. They are not copies of each other: the Android pair names FCM rather than APNs, Google rather than Apple for map tiles, the `READ_MEDIA_*` storage permission rather than a Photos picker, and drops the Siri/iCloud paragraph, because a policy that describes the wrong platform's data flows is worse than none. Both pairs cover the two operating modes (the developer-run `fc.nettrash.me` the store build points at, vs. a self-hosted server), plaintext PostgreSQL storage, the retention window, the deletion semantics, STUN peer-IP exposure, and Azure OpenAI when `[ai]` is on. Store cards were added to `home.rs` and the two loose icon PNGs given explicit `copy-file` lines — `copy-dir` covered only the HTML directories, so the icons were reaching the site as 404s.
+
+In-app links are in place on all three clients: `SettingsView.swift:368` and `:371`, `MacSettingsView.swift:109` and `:112`, and the Android `SettingsScreen.kt` Privacy section, which had none until this pass and points at the `/play/` pair.
+
+**Left for you:** deploy nettrash.me, then paste the URLs into App Store Connect (App Information → Privacy Policy, and version metadata → Support URL) and into the Play Console listing. Also set `support_contact` on the live server — #1's report sheet shows it as the escalation path.
 
 **What.** Nothing for Family Connect exists on nettrash.me: frontend/assets/appstore/ contains only exchange, geo, md, scan, and a repo-wide grep for familyconnect / "family connect" returns zero files. No policy text is drafted anywhere in the family.connect repo either (`find` for *privacy*/*support* returns only ios/FamilyConnect/PrivacyInfo.xcprivacy, which is the API manifest, not a policy). Inside the app there is no privacy-policy link and no support contact on either platform — SettingsView.swift:312-327 and MacSettingsView.swift:95-110 have a section headed "Privacy" that is only the Link/Map preview toggles, and Localizable.xcstrings has no "Privacy Policy" key in any of the 9 languages. ios/docs/appstore.md:70 and :100 still carry the literal [SUPPORT_EMAIL] placeholder.
 
@@ -251,8 +275,23 @@ unedited; closing the issue still needs #4's review notes and #2's published con
 
 **Fix.** Write frontend/assets/appstore/familyconnect/{privacy,support}.html in the nettrash-me repo, modelled on scan/privacy.html, and add the card to frontend/src/components/home.rs. The policy must cover both modes explicitly (the developer-operated default server https://fc.nettrash.me that the store build ships pointed at, vs. a self-hosted server where you receive nothing) and name every category actually collected: message text, photos, videos, voice notes, arbitrary files, precise WGS-84 coordinates, avatars, username, display name, birthday day/month, APNs/PushKit tokens; plus plaintext storage in PostgreSQL (README.md:159 — do not imply E2E), server-side retention (retention_days default 100, which deletes messages AND their media), account-deletion semantics (POST /api/v1/me/delete scrubs the user but keeps family-chat messages as "Deleted account"), Google's public STUN default seeing peer IPs during calls, and Azure OpenAI if [ai] is enabled on your box. Then add a Privacy Policy row to SettingsView and MacSettingsView linking the published URL, and fill both URLs plus the support email in App Store Connect.
 
-### 3. No screenshots exist for any Apple device class, and iPad screenshots are mandatory because the binary declares device family 2 — [#3](https://github.com/nettrash/family.connect/issues/3)
+### 3. ~~No screenshots exist for any Apple device class~~ — RESOLVED for iOS/iPad/Play 2026-08-30, macOS still open — [#3](https://github.com/nettrash/family.connect/issues/3)
 **Platform:** both · **Effort:** a day
+
+**Resolved for the three sets that gate the iOS and Play submissions.** iPad was kept (`TARGETED_DEVICE_FAMILY` stays `"1,2"`), so all three sets exist:
+
+| Set | Where | Size | How to regenerate |
+| --- | --- | --- | --- |
+| iPhone 6.9" ×6 | `ios/docs/screenshots/iphone-6.9/` | 1320×2868 | `xcodebuild test -only-testing:FamilyConnectUITests/StoreScreenshotUITests`, then `ios/scripts/export-screenshots.sh` |
+| iPad 13" ×6 | `ios/docs/screenshots/ipad-13/` | 2064×2752 | same, `-destination` iPad Pro 13-inch (M4) |
+| Play phone ×6 | `android/fastlane/.../phoneScreenshots/` | 1080×1920 | `android/scripts/capture-play-screenshots.sh start` then `screens` |
+| Mac | **not captured** | — | `ios/scripts/capture-mac-screenshot.sh` (ready, needs you to drive the app) |
+
+All of it runs against one seeded family — `server/scripts/seed-store-screenshots.sh` builds "The Harpers": five members, a thirteen-message thread with reactions and replies, a four-photo album, a poll mid-vote, a shared location, four board notes and a direct chat, all backdated so the timestamps read like a week of family life rather than one minute of scripting.
+
+**The three Android screenshots that were committed in August are deleted, not updated.** They were 1344×2992 — a 2.226:1 ratio, past Play's 2:1 ceiling — and RGBA, where the spec asks for 24-bit with no alpha. Both faults came from the device they were taken on, so the capture script uses its own AVD pinned to 1080×1920 rather than resizing somebody's Pixel_8_Pro, and every shot is flattened and then checked against both rules before it is written. `featureGraphic.png` carried the same alpha channel and is now RGB (its alpha was fully opaque, so nothing was lost).
+
+**Left for you:** the Mac set, whenever macOS stops being held. Optionally drop real photographs into `server/scripts/screenshot-photos/` and re-run — with that directory empty the seeder generates gradients, which is what the album tiles in the current shots are.
 
 **What.** `find` for any *screenshot* path or any .png/.jpg outside Assets.xcassets returns exactly one hit in the whole repo: android/fastlane/metadata/android/en-US/images/phoneScreenshots (1344x2992, Compose UI, unusable for Apple). There is no fastlane/deliver setup under ios/. Meanwhile the shipped iOS archive's Info.plist carries UIDeviceFamily = [1, 2] and UISupportedInterfaceOrientations~ipad with all four orientations (project.pbxproj TARGETED_DEVICE_FAMILY = "1,2" in all 12 configurations), so the iPad slot is required in addition to iPhone. ios/docs/appstore.md's pre-submission checklist never mentions screenshots at all.
 

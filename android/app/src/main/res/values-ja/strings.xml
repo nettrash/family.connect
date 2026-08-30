@@ -70,6 +70,8 @@
     <string name="s_n_of_m">%1$d / %2$d</string>
     <string name="s_photo_or_video">写真またはビデオ</string>
     <string name="s_privacy">プライバシー</string>
+    <string name="s_privacy_policy">プライバシーポリシー</string>
+    <string name="s_support">サポート</string>
     <string name="s_react">リアクション</string>
     <string name="s_register">登録</string>
     <string name="s_remove">削除</string>
