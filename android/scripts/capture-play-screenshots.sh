@@ -467,6 +467,9 @@ print('%d %d' % max(ys)[::-1] if ys else '')
   ui_tap "Manage family" 4
   "$0" shot 05-family
 
+  # Back out to the chats list: set_map_previews walks in from there.
+  "$ADB" -s "$SERIAL" shell input keyevent 4; sleep 2
+  "$ADB" -s "$SERIAL" shell input keyevent 4; sleep 3
   set_map_previews on
   ui_tap "Settings" 4
   # Scrolled past the profile header on purpose: on Android that row
