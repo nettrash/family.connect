@@ -121,6 +121,8 @@ struct MacConversationView: View {
     /// True while the poll form is up. A sheet, sized in the view itself:
     /// a macOS sheet cannot be resized by the person using it.
     @State private var showPollComposer = false
+    /// Owned by the window rather than by a row, which scrolls away.
+    @State private var reportTarget: ReportTarget?
     /// One fix, on demand — never a running location service.
     @State private var locationProvider = LocationProvider()
 
@@ -188,6 +190,8 @@ struct MacConversationView: View {
     /// The row a quote jump just landed on, tinted briefly so the eye
     /// finds it in a wall of text — the phone's flag, same fade.
     @State private var highlightedMessageID: String?
+    /// Quote peeks, keyed by host + level. See MacMessageRow's props.
+    @State private var revealedQuoteIDs: Set<String> = []
 
     /// The two ways a chat can open. The phone's twin.
     private enum OpenAnchor: Equatable {
@@ -322,6 +326,20 @@ struct MacConversationView: View {
         // clipboard is the rule's answer, not this list's.
         .onPasteCommand(of: ClipboardAttachment.pasteCommandTypes) { _ in
             pasteFromClipboard()
+        }
+        .sheet(item: $reportTarget) { target in
+            ReportSheet(
+                target: target,
+                onSubmit: { reason in
+                    reportTarget = nil
+                    Task {
+                        await coordinator.report(
+                            reportedUserID: target.senderID,
+                            reason: reason.rawValue,
+                            messageID: target.messageID)
+                    }
+                },
+                onCancel: { reportTarget = nil })
         }
         .sheet(isPresented: $showPollComposer) {
             PollComposerView(
@@ -586,6 +604,23 @@ struct MacConversationView: View {
                                     othersReadUpTo: chat?.othersReadUpTo ?? 0),
                                 onReply: { beginReply(row.message) },
                                 onEdit: { beginEdit(row.message) },
+                                onReport: {
+                                    reportTarget = ReportTarget(
+                                        senderID: row.message.senderID,
+                                        senderName: senderName(for: row.message.senderID)
+                                            ?? String(localized: "Someone"),
+                                        messageID: row.message.serverID)
+                                },
+                                isReplyQuoteRevealed: revealedQuoteIDs.contains(
+                                    "\(row.message.localID)#reply"),
+                                isParentQuoteRevealed: revealedQuoteIDs.contains(
+                                    "\(row.message.localID)#parent"),
+                                onRevealQuote: { isReply in
+                                    revealedQuoteIDs.insert(
+                                        isReply
+                                            ? "\(row.message.localID)#reply"
+                                            : "\(row.message.localID)#parent")
+                                },
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
                                 onOpenAttachment: { attachment in
                                     if attachment.isFile {

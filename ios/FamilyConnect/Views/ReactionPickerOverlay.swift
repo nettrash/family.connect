@@ -137,45 +137,126 @@ struct MessageContextMenu: View {
     var canEdit: Bool = false
     /// A photo sent without a caption has nothing to copy.
     var canCopy: Bool = true
+    /// Somebody else's acked message, from a real member. Never the
+    /// assistant: its reserved account is deliberately absent from the
+    /// roster, so reporting or blocking it would name a non-member and the
+    /// server would refuse — a VISIBLE refusal in a feature whose whole
+    /// design is that every refusal is aimed at the blocker and looks
+    /// innocent.
+    var canReport: Bool = false
+    /// `nil` when blocking does not apply to this message at all (own, or
+    /// the assistant's); otherwise which way the row reads.
+    var blockState: BlockState?
+    var onReport: () -> Void = {}
+    var onBlock: () -> Void = {}
+    var onUnblock: () -> Void = {}
+
+    enum BlockState { case blocked, notBlocked }
+
+    /// The rows this menu draws, in order.
+    ///
+    /// ONE list, read by both the body and `size`. They used to be
+    /// separate — a sum of booleans here and a stack of `if`s there — and
+    /// that only added up because Share was UNCONDITIONAL and LAST: the
+    /// body emits a `Divider()` after every row except the last, so the
+    /// `(n - 1)` hairline term was exact only by that accident. Appending
+    /// anything after Share broke it two ways at once, a missing divider
+    /// (1pt, invisible) and a stale row count (45pt, not).
+    private enum Item: Hashable { case reply, edit, copy, share, report, block, unblock }
+
+    private static func items(
+        canReply: Bool, canEdit: Bool, canCopy: Bool, canReport: Bool, blockState: BlockState?
+    ) -> [Item] {
+        var items: [Item] = []
+        if canReply { items.append(.reply) }
+        if canEdit { items.append(.edit) }
+        if canCopy { items.append(.copy) }
+        items.append(.share)
+        if canReport { items.append(.report) }
+        switch blockState {
+        case .blocked: items.append(.unblock)
+        case .notBlocked: items.append(.block)
+        case nil: break
+        }
+        return items
+    }
 
     private static let rowHeight: CGFloat = 44
     private static let menuWidth: CGFloat = 220
 
     /// Exact rendered size — fixed-height rows and their hairlines. The
-    /// overlay needs the size up front to place the menu.
-    static func size(canReply: Bool, canEdit: Bool = false, canCopy: Bool = true) -> CGSize {
-        let rows = 1.0
-            + (canReply ? 1.0 : 0.0)
-            + (canEdit ? 1.0 : 0.0)
-            + (canCopy ? 1.0 : 0.0)
-        return CGSize(width: menuWidth, height: rowHeight * rows + (rows - 1))
+    /// overlay needs the size up front to place the menu, BEFORE layout, so
+    /// a row the body draws and this does not count mis-places the whole
+    /// panel with no error anywhere.
+    ///
+    /// The maximum is FIVE rows: `canEdit` requires the message to be the
+    /// reader's own and `canReport`/`blockState` require it not to be, so
+    /// Edit can never coexist with Report or Block.
+    static func size(
+        canReply: Bool,
+        canEdit: Bool = false,
+        canCopy: Bool = true,
+        canReport: Bool = false,
+        blockState: BlockState? = nil
+    ) -> CGSize {
+        let n = CGFloat(
+            items(
+                canReply: canReply, canEdit: canEdit, canCopy: canCopy,
+                canReport: canReport, blockState: blockState
+            ).count)
+        return CGSize(width: menuWidth, height: rowHeight * n + (n - 1))
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if canReply {
-                row("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
-                Divider()
+        let items = Self.items(
+            canReply: canReply, canEdit: canEdit, canCopy: canCopy,
+            canReport: canReport, blockState: blockState)
+        return VStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element) { index, item in
+                self.row(for: item)
+                // BETWEEN adjacent rows only — never after the last, which
+                // is what `size`'s `(n - 1)` counts.
+                if index < items.count - 1 { Divider() }
             }
-            if canEdit {
-                row("Edit", systemImage: "pencil", action: onEdit)
-                Divider()
-            }
-            if canCopy {
-                row("Copy", systemImage: "doc.on.doc", action: onCopy)
-                Divider()
-            }
-            // Share covers saving too: the sheet's own "Save Image" /
-            // "Save Video" put it in the library, and "Save to Files" puts
-            // it anywhere else. A second row would be the same action.
-            row("Share", systemImage: "square.and.arrow.up", action: onShare)
         }
         .frame(width: Self.menuWidth)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
     }
 
-    private func row(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+    /// Titles are BARE — "Report…", "Block", never "Block Anna". The
+    /// VStack is a hard 220pt with 16pt padding and a symbol, leaving about
+    /// 188pt, and `rowHeight` is a hard 44 so a truncated label cannot
+    /// recover onto a second line. A truncated destructive row is the one
+    /// place somebody must be certain what they are pressing; the member's
+    /// name goes in the confirmation, where there is room.
+    @ViewBuilder
+    private func row(for item: Item) -> some View {
+        switch item {
+        case .reply:
+            row("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
+        case .edit:
+            row("Edit", systemImage: "pencil", action: onEdit)
+        case .copy:
+            row("Copy", systemImage: "doc.on.doc", action: onCopy)
+        case .share:
+            // Share covers saving too: the sheet's own "Save Image" /
+            // "Save Video" put it in the library, and "Save to Files" puts
+            // it anywhere else. A second row would be the same action.
+            row("Share", systemImage: "square.and.arrow.up", action: onShare)
+        case .report:
+            row("Report…", systemImage: "exclamationmark.bubble", action: onReport)
+        case .block:
+            row("Block", systemImage: "hand.raised", action: onBlock, isDestructive: true)
+        case .unblock:
+            row("Unblock", systemImage: "hand.raised.slash", action: onUnblock)
+        }
+    }
+
+    private func row(
+        _ title: String, systemImage: String, action: @escaping () -> Void,
+        isDestructive: Bool = false
+    ) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -184,6 +265,7 @@ struct MessageContextMenu: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .foregroundStyle(isDestructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
     }
 }
 

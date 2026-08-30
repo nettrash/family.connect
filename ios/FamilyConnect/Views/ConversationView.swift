@@ -177,6 +177,22 @@ struct ConversationView: View {
     @State private var editTarget: (messageID: Int64, original: String)?
     /// Briefly tinted after a jump, so the eye lands on the right bubble.
     @State private var highlightedMessageID: String?
+    /// Rows peeked at, keyed by `message.localID`.
+    ///
+    /// A REVEAL IS A PEEK: per row, per device, never on the wire and never
+    /// stored. It lives here rather than in the bubble for two reasons —
+    /// `@State` inside a bubble is destroyed when the ~60-row window slides
+    /// the row out and back, which the protocol forbids ("a revealed row
+    /// stays revealed … including when newer messages arrive after it"),
+    /// and the jump gate needs to read it. `.id(chatID)` on the
+    /// navigationDestination tears this whole view down on a chat switch,
+    /// which is exactly "once on demand".
+    @State private var revealedMessageIDs: Set<String> = []
+    /// Quote levels peeked at, keyed by HOST + LEVEL — never by the quoted
+    /// message's id. The same blocked message quoted by three bubbles is
+    /// three independent peeks, and revealing a quote must not reveal the
+    /// row it points at.
+    @State private var revealedQuoteIDs: Set<String> = []
     /// True while a reply that was STARTED FROM HISTORY is being composed.
     ///
     /// Both pin rules below fire on the two things beginReply does — it
@@ -256,6 +272,8 @@ struct ConversationView: View {
     /// nil = no picker. Set/cleared inside withAnimation so the capsule
     /// springs in and out.
     @State private var reactionPickerID: String?
+    /// The member a report sheet is open for, if any.
+    @State private var reportTarget: ReportTarget?
     /// The bubble the "+" full emoji picker sheet is up for.
     @State private var fullPickerTarget: ReactionTarget?
     /// Text handed to the share sheet, nil while it is closed.
@@ -561,6 +579,23 @@ struct ConversationView: View {
                 guard isPinnedToBottom else { return }
                 pinToBottom(proxy, animated: false)
             }
+            .onChange(of: coordinator.blockedUserIDs) {
+                // A live `member_blocked` frame COLLAPSES every row of that
+                // sender in the window in one layout pass — the same
+                // problem as a link card landing, in reverse and at scale.
+                // The preserved pixel offset then throws a reader who was
+                // at the bottom into the middle of nowhere.
+                guard isPinnedToBottom else { return }
+                pinToBottom(proxy, animated: false)
+            }
+            .onChange(of: revealedMessageIDs) {
+                // And a reveal is the same thing the other way: a thin row
+                // becomes a full bubble with an album, a link card and two
+                // chip rows, which dwarfs every growth the three hooks
+                // above exist for.
+                guard isPinnedToBottom else { return }
+                pinToBottom(proxy, animated: false)
+            }
             .onChange(of: inputFocused) {
                 // The keyboard rising is an inset change, and the system's
                 // own avoidance is best-effort — deterministically pin the
@@ -604,6 +639,22 @@ struct ConversationView: View {
         // Grouped into one modifier: the chain here is long enough that
         // the type checker gives up on it as separate steps.
         .modifier(attachmentSurfaces)
+        .sheet(item: $reportTarget) { target in
+            ReportSheet(
+                target: target,
+                onSubmit: { reason in
+                    reportTarget = nil
+                    Task {
+                        await coordinator.report(
+                            reportedUserID: target.senderID,
+                            // The RAW value: the untranslated wire string,
+                            // never the label somebody reads.
+                            reason: reason.rawValue,
+                            messageID: target.messageID)
+                    }
+                },
+                onCancel: { reportTarget = nil })
+        }
         .sheet(item: $shareText) { share in
             ShareSheet(text: share.text)
         }
@@ -838,11 +889,45 @@ struct ConversationView: View {
                                     // no server id to react to, no failure
                                     // to retry.
                                     guard message.serverID != nil || message.state == .failed else { return }
+                                    // A hidden row opens nothing. One
+                                    // missing clause here is three leaks
+                                    // at once: the capsule floats over a
+                                    // placeholder, Copy puts the blocked
+                                    // body on the pasteboard, and Share
+                                    // hands the blocked attachment to the
+                                    // share sheet. Reveal is a TAP.
+                                    guard
+                                        !MessagePresentation.isHiddenByBlock(
+                                            message,
+                                            blockedUserIDs: coordinator.blockedUserIDs,
+                                            currentUserID: currentUserID)
+                                            || revealedMessageIDs.contains(message.localID)
+                                    else { return }
                                     withAnimation(.spring(duration: 0.3, bounce: 0.25)) {
                                         reactionPickerID = message.localID
                                     }
                                 },
-                                publishesAnchor: reactionPickerID == message.localID)
+                                publishesAnchor: reactionPickerID == message.localID,
+                                blockedUserIDs: coordinator.blockedUserIDs,
+                                isHiddenByBlock: MessagePresentation.isHiddenByBlock(
+                                    message,
+                                    blockedUserIDs: coordinator.blockedUserIDs,
+                                    currentUserID: currentUserID),
+                                isRevealed: revealedMessageIDs.contains(message.localID),
+                                // Never persisted, never sent, never
+                                // written to SwiftData: a peek is not a
+                                // fact anybody else may read.
+                                onReveal: { revealedMessageIDs.insert(message.localID) },
+                                isReplyQuoteRevealed: revealedQuoteIDs.contains(
+                                    "\(message.localID)#reply"),
+                                isParentQuoteRevealed: revealedQuoteIDs.contains(
+                                    "\(message.localID)#parent"),
+                                onRevealQuote: { level in
+                                    revealedQuoteIDs.insert(
+                                        level == .reply
+                                            ? "\(message.localID)#reply"
+                                            : "\(message.localID)#parent")
+                                })
                                 .id(message.localID)
                                 // A jumped-to bubble is briefly tinted, so
                                 // the eye lands on the right one in a wall
@@ -954,6 +1039,24 @@ struct ConversationView: View {
             await settleAtBottom(proxy: proxy)
             return
         }
+        // BEFORE the widen and before the highlight, and the order is
+        // load-bearing: the widen is the "page history in" half and the
+        // tint is the "flash" half, so a check placed after it fixes only
+        // one of the two. Without this, tapping a masked quote materialises
+        // up to 300 non-lazy rows and then tints a thin "Hidden"
+        // placeholder for 1.6 seconds — pointing the eye at exactly the
+        // thing the feature is hiding.
+        let target = messages[index]
+        // Bridged through the seam rather than hand-writing
+        // `blockedUserIDs.contains(target.senderID)`, which would drop the
+        // `senderID != currentUserID` guard `isHiddenByBlock` carries.
+        if MessagePresentation.isHiddenByBlock(
+            MessageSnapshot(target),
+            blockedUserIDs: coordinator.blockedUserIDs, currentUserID: currentUserID),
+            !revealedMessageIDs.contains(target.localID)
+        {
+            return
+        }
         let needed = UnreadAnchor.rowsToRender(distanceFromNewest: messages.count - 1 - index)
         guard needed <= Self.maxWindow else {
             openAnchor = .newest
@@ -1007,6 +1110,22 @@ struct ConversationView: View {
     /// its own or nobody holds one, or a thread sitting in a background
     /// window would overwrite what the scene the user IS looking at
     /// published — purely because a message landed in it.
+    /// **There is deliberately no block filter anywhere in this function,
+    /// and none in `markRead`.** The read marker advances THROUGH hidden
+    /// rows exactly as if they were visible.
+    ///
+    /// It is satisfied by construction — presence is three geometric and
+    /// lifecycle facts with no message identity in it, and `markRead`
+    /// targets the chat's newest server id, which is sender-agnostic — so
+    /// the absence of code here looks like an oversight and is not. The
+    /// failure mode is a well-meaning addition: filter hidden rows out of
+    /// the rendered list so the unread divider "looks right", or hold the
+    /// marker at an unrevealed row, and the client rebuilds the exact
+    /// oracle the server refuses one layer above it. A marker that freezes
+    /// at the id before a blocked message and then leaps forward the
+    /// moment a third member posts is a perfect, repeatable signal for the
+    /// blocked person watching the other end (protocol.md, "Blocking a
+    /// member").
     private func publishPresence() {
         let isFrontmost = scenePhase == .active
         guard isFrontmost || coordinator.presence == nil
@@ -1959,10 +2078,30 @@ struct ConversationView: View {
                         let attachment = message.attachmentSnapshot
                         // A photo sent without a caption has nothing to copy.
                         let canCopy = !message.body.isEmpty
+                        // Somebody else's message, from a real member.
+                        // NEVER the assistant: its reserved account is
+                        // deliberately absent from the roster, so blocking
+                        // it would name a non-member and the server would
+                        // refuse — a VISIBLE refusal in a feature whose
+                        // whole design is that refusals look innocent.
+                        let isOther = message.senderID != currentUserID
+                        let isAssistantSender = isAssistantChat
+                            || message.senderID == AppSettings.assistantUserID
+                        let canReport = isOther && !isAssistantSender && message.serverID != nil
+                        let blockState: MessageContextMenu.BlockState? =
+                            (isOther && !isAssistantSender)
+                            ? (coordinator.blockedUserIDs.contains(message.senderID)
+                                ? .blocked : .notBlocked)
+                            : nil
+                        // The SAME two values feed the size call and the
+                        // initializer below. Out of step, the overlay
+                        // places one menu and draws another.
                         let menuSize = MessageContextMenu.size(
                             canReply: canReply,
                             canEdit: canEdit,
-                            canCopy: canCopy)
+                            canCopy: canCopy,
+                            canReport: canReport,
+                            blockState: blockState)
                         floatingMenu(
                             size: menuSize,
                             over: rect,
@@ -2002,7 +2141,31 @@ struct ConversationView: View {
                                 },
                                 canReply: canReply,
                                 canEdit: canEdit,
-                                canCopy: canCopy)
+                                canCopy: canCopy,
+                                canReport: canReport,
+                                blockState: blockState,
+                                onReport: {
+                                    dismissReactionPicker()
+                                    reportTarget = ReportTarget(
+                                        senderID: message.senderID,
+                                        senderName: displayName(for: message.senderID)
+                                            ?? String(localized: "Someone"),
+                                        messageID: message.serverID)
+                                },
+                                // Through the coordinator's wrappers, never
+                                // `coordinator.api`: they own the
+                                // request-then-write ordering and the
+                                // direct-chat prune.
+                                onBlock: {
+                                    dismissReactionPicker()
+                                    let userID = message.senderID
+                                    Task { await coordinator.block(userID: userID) }
+                                },
+                                onUnblock: {
+                                    dismissReactionPicker()
+                                    let userID = message.senderID
+                                    Task { await coordinator.unblock(userID: userID) }
+                                })
                         }
                     }
                 }

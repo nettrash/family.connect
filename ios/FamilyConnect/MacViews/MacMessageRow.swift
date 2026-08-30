@@ -39,6 +39,18 @@ struct MacMessageRow: View {
     var isRead: Bool = false
     var onReply: () -> Void = {}
     var onEdit: () -> Void = {}
+    /// Ask the conversation to open the report sheet for this message's
+    /// sender. The row does not own the sheet: on the Mac it belongs to the
+    /// window, not to a row that scrolls away under it.
+    var onReport: () -> Void = {}
+    /// Quote peeks, owned by the conversation: the Mac thread renders a
+    /// SLIDING SUFFIX that drops old rows while the reader sits at the
+    /// bottom, so per-row `@State` would be destroyed in exactly the case
+    /// the protocol names — a revealed row staying revealed when newer
+    /// messages arrive after it.
+    var isReplyQuoteRevealed: Bool = false
+    var isParentQuoteRevealed: Bool = false
+    var onRevealQuote: (Bool) -> Void = { _ in }
     /// Clicking a quote asks to jump to the quoted message — the phone's
     /// `onTapQuote`, ported with the same best-effort contract: the
     /// receiver may do nothing when the target is not cached.
@@ -308,6 +320,38 @@ struct MacMessageRow: View {
                 coordinator.deleteLocalMessage(localID: message.localID)
             }
         }
+        // AFTER the failed block, not inside it: inside, Block would be
+        // unreachable on an unsent-but-visible message.
+        //
+        // A native contextMenu, so items append freely — there is no size
+        // arithmetic here, which is the one way the Mac menu is simpler
+        // than the iOS one. It is also NOT the same menu: the Mac has
+        // React / See who reacted / Try Again / Delete and no Share, and
+        // porting the iOS row set wholesale would smuggle a Share item
+        // onto the Mac that nobody asked for.
+        if isOtherMember {
+            Divider()
+            Button("Report…") { onReport() }
+            if coordinator.blockedUserIDs.contains(message.senderID) {
+                Button("Unblock") {
+                    let userID = message.senderID
+                    Task { await coordinator.unblock(userID: userID) }
+                }
+            } else {
+                Button("Block", role: .destructive) {
+                    let userID = message.senderID
+                    Task { await coordinator.block(userID: userID) }
+                }
+            }
+        }
+    }
+
+    /// Somebody else's message, from a real member — never the assistant,
+    /// whose reserved account is absent from the roster on purpose, so the
+    /// server would refuse a block naming it.
+    private var isOtherMember: Bool {
+        message.senderID != coordinator.currentUserID
+            && message.senderID != AppSettings.assistantUserID
     }
 
     @ViewBuilder
@@ -335,6 +379,10 @@ struct MacMessageRow: View {
                     quote: quote,
                     isMine: isMine,
                     nameFor: nameFor,
+                    isBlockedSender: { coordinator.blockedUserIDs.contains($0) },
+                    isReplyRevealed: isReplyQuoteRevealed,
+                    isParentRevealed: isParentQuoteRevealed,
+                    onRevealQuote: onRevealQuote,
                     onTapQuote: onTapQuote,
                     onDoubleTap: { quickHeart() })
             }
@@ -430,6 +478,11 @@ struct MacMessageRow: View {
                         poll.options.flatMap(\.votes).map { ($0, avatarVersionFor($0)) },
                         uniquingKeysWith: { first, _ in first }),
                     isMine: isMine && !isBare,
+                    // The Mac half. This poll is posted by an UNBLOCKED
+                    // member and voted in by a blocked one, so it has
+                    // nothing to do with the hidden-row branch and is the
+                    // easiest thing in the step to miss.
+                    blockedUserIDs: coordinator.blockedUserIDs,
                     onVote: { optionID in
                         Task { await coordinator.vote(localID: message.localID, optionID: optionID) }
                     },
@@ -788,6 +841,15 @@ private struct MacQuoteBlock: View {
     /// excerpt stacked on another excerpt with no names attached is
     /// unreadable — you cannot tell who said which half.
     let nameFor: (Int64) -> String
+    /// Whether a sender is blocked by this reader. A closure rather than
+    /// the coordinator: this is a private struct of plain `let` props with
+    /// no environment of its own.
+    let isBlockedSender: (Int64) -> Bool
+    /// Peeks, per level. Independent: revealing a quote never reveals the
+    /// row it points at.
+    let isReplyRevealed: Bool
+    let isParentRevealed: Bool
+    let onRevealQuote: (Bool) -> Void
     /// A click asks to jump to the quoted message.
     let onTapQuote: (Int64) -> Void
     /// A double-click is still the balloon's quick heart. The balloon's
@@ -805,12 +867,18 @@ private struct MacQuoteBlock: View {
                 // Context for the quote under it, so it is quieter and
                 // capped at one line.
                 if let parent = quote.parent {
-                    Text("\(nameFor(parent.senderID)): \(parent.excerpt)")
+                    Text(
+                        parentHidden
+                            ? MacQuoteBlock.hiddenCaption
+                            : "\(nameFor(parent.senderID)): \(parent.excerpt)")
                         .font(.caption2)
                         .lineLimit(1)
                         .opacity(0.55)
                 }
-                Text("\(nameFor(quote.senderID)): \(quote.excerpt)")
+                Text(
+                    replyHidden
+                        ? MacQuoteBlock.hiddenCaption
+                        : "\(nameFor(quote.senderID)): \(quote.excerpt)")
                     .font(.caption)
                     .lineLimit(2)
                     .opacity(0.85)
@@ -844,7 +912,13 @@ private struct MacQuoteBlock: View {
         // click; the 2-click recognizer claims the double. The phone's
         // pattern (MessageBubbleView's quote), verbatim.
         .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleTap() })
-        .onTapGesture { onTapQuote(quote.messageID) }
+        .onTapGesture {
+            if replyHidden || parentHidden {
+                onRevealQuote(replyHidden)
+            } else {
+                onTapQuote(quote.messageID)
+            }
+        }
         // The Mac quote had no accessibility at all; the phone's combined
         // element, spoken levels, trait AND explicit action come over as
         // one. The action is not decoration: a bare .onTapGesture
@@ -854,17 +928,45 @@ private struct MacQuoteBlock: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction { onTapQuote(quote.messageID) }
+        .accessibilityAction {
+            if replyHidden || parentHidden {
+                onRevealQuote(replyHidden)
+            } else {
+                onTapQuote(quote.messageID)
+            }
+        }
+    }
+
+    static let hiddenCaption = String(
+        localized: "Hidden — blocked member",
+        comment: "Stands in for a blocked member's message or quoted text")
+
+    /// The two levels are separately blockable — see the phone's
+    /// `quoteLevelHidden`.
+    private var replyHidden: Bool {
+        !isReplyRevealed && isBlockedSender(quote.senderID)
+    }
+    private var parentHidden: Bool {
+        guard let parent = quote.parent, !isParentRevealed else { return false }
+        return isBlockedSender(parent.senderID)
     }
 
     /// VoiceOver hears the same two levels the eye sees, innermost last —
     /// the phone's wording, through the same localized keys.
+    ///
+    /// The SAME separate-code-path leak the phone has, in its own function:
+    /// the server sends `excerpt` unchanged by design, so a masked level
+    /// still reads its 120 characters aloud unless it is masked here too.
     private var accessibilityText: String {
-        let head = String(
-            localized: "Replying to \(nameFor(quote.senderID)): \(quote.excerpt)")
+        let head =
+            replyHidden
+            ? String(localized: "Replying to a hidden message")
+            : String(localized: "Replying to \(nameFor(quote.senderID)): \(quote.excerpt)")
         guard let parent = quote.parent else { return head }
-        let tail = String(
-            localized: "which replied to \(nameFor(parent.senderID)): \(parent.excerpt)")
+        let tail =
+            parentHidden
+            ? String(localized: "which replied to a hidden message")
+            : String(localized: "which replied to \(nameFor(parent.senderID)): \(parent.excerpt)")
         return "\(head), \(tail)"
     }
 }
