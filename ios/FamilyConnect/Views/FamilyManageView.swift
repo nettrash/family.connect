@@ -365,7 +365,10 @@ struct FamilyManageView: View {
                         createdAt: family.createdAt,
                         inviteCode: newCode,
                         language: family.language,
-                        aiHistory: family.aiHistory)
+                        aiHistory: family.aiHistory,
+                        // Rotating a code changes nothing about the cap:
+                        // carry the one we hold, or this rebuild clears it.
+                        maxMembers: family.maxMembers)
                 }
             } catch {
                 model.errorText = String(localized: "Couldn't rotate the code. Try again.")
@@ -386,7 +389,12 @@ struct FamilyManageView: View {
                     createdAt: updated.createdAt,
                     inviteCode: updated.inviteCode ?? settingsModel.family?.inviteCode,
                     language: updated.language,
-                    aiHistory: updated.aiHistory)
+                    aiHistory: updated.aiHistory,
+                    // From the RESPONSE, not the held copy: unlike the
+                    // invite code, the cap is not owner-gated, so the
+                    // server's answer is complete and authoritative — and
+                    // an absent key here genuinely means "no cap".
+                    maxMembers: updated.maxMembers)
             } catch {
                 model.errorText = String(localized: "Couldn't change the policy. Try again.")
             }

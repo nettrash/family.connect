@@ -76,7 +76,10 @@ struct FamilyConnectApp: App {
             try? KeychainStore.delete(account: KeychainStore.tokenAccount)
         }
 
-        let schema = Schema([ChatEntity.self, MessageEntity.self, MemberEntity.self, NoteEntity.self])
+        let schema = Schema([
+            ChatEntity.self, MessageEntity.self, MemberEntity.self, NoteEntity.self,
+            BlockEntity.self,
+        ])
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
@@ -98,12 +101,21 @@ struct FamilyConnectApp: App {
                 let count = (try? container.mainContext.fetchCount(FetchDescriptor<ChatEntity>())) ?? 0
                 return count > 0
             }
+            session.applyBlockedIDs = { [weak coordinator] ids in
+                coordinator?.replaceBlocks(with: ids)
+            }
             session.clearChatStore = {
                 let context = container.mainContext
                 try? context.delete(model: MessageEntity.self)
                 try? context.delete(model: ChatEntity.self)
                 try? context.delete(model: MemberEntity.self)
                 try? context.delete(model: NoteEntity.self)
+                // The block list goes too, and that is safe rather than
+                // lossy: it is server state, replaced wholesale from
+                // `blocked_user_ids` on the very first `GET /me` after the
+                // next sign-in. Keeping it would leave one account's blocks
+                // in force for whoever signs in next on this device.
+                try? context.delete(model: BlockEntity.self)
                 try? context.save()
                 // This path deletes the rows directly rather than through
                 // the coordinator, so nothing here would otherwise take the

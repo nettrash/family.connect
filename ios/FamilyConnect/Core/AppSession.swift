@@ -132,6 +132,15 @@ final class AppSession {
     /// Gates the video-call button alone — voice calls sit behind
     /// `callsEnabled` exactly as before.
     private(set) var videoCallsEnabled = false
+    /// The operator's ceiling on a family's size, from `GET /me`. The range
+    /// an owner's cap picker draws itself from, rather than discovering a
+    /// `validation` error at the moment somebody saves. Nil on a server
+    /// that predates the cap.
+    private(set) var maxFamilyMembers: Int?
+    /// How to reach the operator, when they published anything. Shown on
+    /// the report screen: it is the escalation path for when the family's
+    /// own moderator is the problem.
+    private(set) var supportContact: String?
     /// Set when a pending join request silently disappeared from /me:
     /// FamilyGateView surfaces "your request was declined" once.
     var joinDeclined = false
@@ -273,6 +282,10 @@ final class AppSession {
     // Store side effects, injected at wiring time (see file header).
     var hasCachedChats: () -> Bool = { false }
     var clearChatStore: () -> Void = {}
+    /// Hand the block list to the store, wholesale. A closure for the
+    /// reason `clearChatStore` is one: the session owns the phase machine
+    /// and knows nothing about SwiftData.
+    var applyBlockedIDs: ([Int64]) -> Void = { _ in }
 
     /// Drops cached profile pictures. Wired alongside `clearChatStore`
     /// so a logout does not leave the previous account's faces in memory
@@ -358,6 +371,13 @@ final class AppSession {
         AppSettings.currentUserID = me.user.id
         callsEnabled = me.callsEnabled
         videoCallsEnabled = me.videoCallsEnabled
+        maxFamilyMembers = me.maxFamilyMembers
+        supportContact = me.supportContact
+        // Replaced wholesale on every /me, which is step 1 of the
+        // documented resync — so the block list is a step-1 fact and the
+        // `member_blocked` frame is a latency optimisation rather than the
+        // only delivery path (protocol.md, "Blocking a member").
+        applyBlockedIDs(me.blockedUserIDs)
         let wasActive = phase == .active
         let wasAwaiting = phase == .pendingApproval || AppSettings.joinPending
 

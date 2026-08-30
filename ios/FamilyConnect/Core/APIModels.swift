@@ -208,7 +208,7 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
 nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     let id: Int64
     let name: String
-    /// "open" | "approval"
+    /// "open" | "approval" | "closed"
     let joinPolicy: String
     let createdAt: Date?
     /// Present when (and only when) the caller is the owner.
@@ -217,6 +217,13 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// unset is not English (protocol.md, "The family's language"). The
     /// wire says so by omitting the key, so this must stay an Optional.
     let language: String?
+    /// The most members this family admits, as set by its owner, or nil
+    /// when they have never set one. Absent is NOT the operator's ceiling
+    /// (`MeResponse.maxFamilyMembers`): the ceiling lives in the server's
+    /// config and moves between restarts, so folding the two together
+    /// would make this family's own answer change when nobody in it
+    /// touched anything (protocol.md, "Families").
+    let maxMembers: Int?
     /// Whether a mention of `@ai` in the family chat is shown the last
     /// month of it. ALWAYS present on the wire — a switch has no "unset" —
     /// but `true` here is the fallback for a server that predates it.
@@ -229,6 +236,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         case createdAt = "created_at"
         case inviteCode = "invite_code"
         case language
+        case maxMembers = "max_members"
         case aiHistory = "ai_history"
     }
 
@@ -239,7 +247,14 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         createdAt: Date?,
         inviteCode: String?,
         language: String? = nil,
-        aiHistory: Bool = true
+        aiHistory: Bool = true,
+        // DELIBERATELY UNDEFAULTED, and last. A default here compiles
+        // cleanly at every field-by-field rebuild site and then silently
+        // resets the cap after a policy change, a code rotation or an
+        // assistant edit — the class of bug the invite-code merge comment
+        // in FamilyManageView already records happening once. Taking the
+        // compile errors is the point.
+        maxMembers: Int?
     ) {
         self.id = id
         self.name = name
@@ -247,6 +262,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.inviteCode = inviteCode
         self.language = language
+        self.maxMembers = maxMembers
         self.aiHistory = aiHistory
     }
 
@@ -264,6 +280,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
         inviteCode = try container.decodeIfPresent(String.self, forKey: .inviteCode)
         language = try container.decodeIfPresent(String.self, forKey: .language)
+        maxMembers = try container.decodeIfPresent(Int.self, forKey: .maxMembers)
         aiHistory = try container.decodeIfPresent(Bool.self, forKey: .aiHistory) ?? true
     }
 }
@@ -290,6 +307,52 @@ nonisolated struct JoinRequestDTO: Codable, Equatable, Sendable, Identifiable {
         case user
         case createdAt = "created_at"
     }
+}
+
+/// One report, as the family OWNER reads it (protocol.md, "Reporting a
+/// member").
+///
+/// Shaped after `JoinRequestDTO` because for the owner it IS the
+/// join-request screen: a queue of things somebody raised, each decided
+/// once and then off the list.
+nonisolated struct ReportDTO: Codable, Equatable, Sendable, Identifiable {
+    let id: Int64
+    let reporter: UserDTO
+    let reported: UserDTO
+    /// One of `spam`, `harassment`, `inappropriate`, `other` — a fixed list
+    /// so nine locales render a row from string resources rather than
+    /// shipping untranslated prose to a moderator. An unrecognised value is
+    /// kept as-is and drawn as "other" rather than failing the decode: a
+    /// newer server must never make an owner's inbox unreadable.
+    let reason: String
+    /// The message reported, when one was named AND it still exists.
+    /// Retention drops it; the excerpt outlives it, so a client draws the
+    /// excerpt always and offers to jump to the message only while this
+    /// survives.
+    let messageID: Int64?
+    /// The WHOLE reported body, frozen when the report was raised — the one
+    /// quotation in this protocol that is stored rather than recomputed,
+    /// because the author may edit it away and retention will sweep it.
+    let messageExcerpt: String?
+    let createdAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case reporter
+        case reported
+        case reason
+        case messageID = "message_id"
+        case messageExcerpt = "message_excerpt"
+        case createdAt = "created_at"
+    }
+}
+
+nonisolated struct ReportsResponse: Codable, Equatable, Sendable {
+    let reports: [ReportDTO]
+}
+
+nonisolated struct ReportResponse: Codable, Equatable, Sendable {
+    let report: ReportDTO
 }
 
 nonisolated struct ChatDTO: Codable, Equatable, Sendable {
@@ -780,6 +843,26 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// video — which is also the right answer there, it would refuse the
     /// offer with `video_calls_disabled`.
     var videoCallsEnabled: Bool = false
+    /// Everyone this caller has blocked. ALWAYS present on the wire and
+    /// `[]` when empty — the one read in this protocol where absence is
+    /// not allowed to mean "leave what you hold alone", because a list
+    /// that vanished when it emptied would never tell a second device
+    /// about the last unblock. It is a complete state-set, so a client
+    /// REPLACES what it stores with this (protocol.md, "Blocking a
+    /// member"). Defaulted to `[]` for a server that predates blocking,
+    /// which is also the right answer there.
+    var blockedUserIDs: [Int64] = []
+    /// The operator's ceiling on a family's size. ALWAYS present on a
+    /// current server, and the range an owner's cap picker draws itself
+    /// from rather than discovering a `validation` error when somebody
+    /// saves. Nil for a server that predates the cap, where there is no
+    /// ceiling to draw.
+    var maxFamilyMembers: Int?
+    /// How to reach the operator, absent when they published nothing. The
+    /// escalation path for when the family's own moderator is the problem
+    /// — a report naming the owner never reaches them (protocol.md,
+    /// "Reporting a member").
+    var supportContact: String?
 
     enum CodingKeys: String, CodingKey {
         case user
@@ -788,6 +871,9 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         case pendingJoinRequest = "pending_join_request"
         case callsEnabled = "calls_enabled"
         case videoCallsEnabled = "video_calls_enabled"
+        case blockedUserIDs = "blocked_user_ids"
+        case maxFamilyMembers = "max_family_members"
+        case supportContact = "support_contact"
     }
 
     init(
@@ -796,7 +882,10 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         role: String?,
         pendingJoinRequest: PendingJoinRequestDTO?,
         callsEnabled: Bool = false,
-        videoCallsEnabled: Bool = false
+        videoCallsEnabled: Bool = false,
+        blockedUserIDs: [Int64] = [],
+        maxFamilyMembers: Int? = nil,
+        supportContact: String? = nil
     ) {
         self.user = user
         self.family = family
@@ -804,6 +893,9 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         self.pendingJoinRequest = pendingJoinRequest
         self.callsEnabled = callsEnabled
         self.videoCallsEnabled = videoCallsEnabled
+        self.blockedUserIDs = blockedUserIDs
+        self.maxFamilyMembers = maxFamilyMembers
+        self.supportContact = supportContact
     }
 
     /// Hand-written for the reason every other defaulted field on this
@@ -816,6 +908,9 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         pendingJoinRequest = try container.decodeIfPresent(PendingJoinRequestDTO.self, forKey: .pendingJoinRequest)
         callsEnabled = try container.decodeIfPresent(Bool.self, forKey: .callsEnabled) ?? false
         videoCallsEnabled = try container.decodeIfPresent(Bool.self, forKey: .videoCallsEnabled) ?? false
+        blockedUserIDs = try container.decodeIfPresent([Int64].self, forKey: .blockedUserIDs) ?? []
+        maxFamilyMembers = try container.decodeIfPresent(Int.self, forKey: .maxFamilyMembers)
+        supportContact = try container.decodeIfPresent(String.self, forKey: .supportContact)
     }
 }
 
@@ -867,6 +962,25 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     /// Absent when the server has no assistant configured — which is the
     /// whole of the capability check.
     let assistant: AssistantDTO?
+    /// Everyone this caller has blocked. ALWAYS present on the wire and
+    /// `[]` when empty — the one read in this protocol where absence is
+    /// not allowed to mean "leave what you hold alone", because a list
+    /// that vanished when it emptied would never tell a second device
+    /// about the last unblock. It is a complete state-set, so a client
+    /// REPLACES what it stores with this (protocol.md, "Blocking a
+    /// member"). Defaulted to `[]` for a server that predates blocking,
+    /// which is also the right answer there.
+    let blockedUserIDs: [Int64]
+    /// Who would inherit this family if the owner left right now — present
+    /// for the OWNER only, and absent when they are the last member, which
+    /// is a DIFFERENT dialog: leaving then deletes the family.
+    ///
+    /// A PREDICTION, not a fact. Any join or leave changes the answer and
+    /// none of them raises a frame for it, so a client re-reads
+    /// `GET /families/mine` immediately before it shows the leave dialog
+    /// and never names a successor from a cached value (protocol.md,
+    /// `GET /families/mine`).
+    let nextOwnerUserID: Int64?
     /// The board cursor, omitted while the board has never been written to.
     /// It rides along on the call every client already makes on resync, so
     /// learning whether a board catch-up is needed costs no extra request.
@@ -878,6 +992,8 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         case formerMembers = "former_members"
         case assistant
         case maxBoardSeq = "max_board_seq"
+        case blockedUserIDs = "blocked_user_ids"
+        case nextOwnerUserID = "next_owner_user_id"
     }
 
     init(
@@ -885,8 +1001,12 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         members: [MemberDTO],
         formerMembers: [MemberDTO] = [],
         assistant: AssistantDTO? = nil,
-        maxBoardSeq: Int64? = nil
+        maxBoardSeq: Int64? = nil,
+        blockedUserIDs: [Int64] = [],
+        nextOwnerUserID: Int64? = nil
     ) {
+        self.blockedUserIDs = blockedUserIDs
+        self.nextOwnerUserID = nextOwnerUserID
         self.family = family
         self.members = members
         self.formerMembers = formerMembers
@@ -905,6 +1025,8 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         formerMembers = try container.decodeIfPresent([MemberDTO].self, forKey: .formerMembers) ?? []
         assistant = try container.decodeIfPresent(AssistantDTO.self, forKey: .assistant)
         maxBoardSeq = try container.decodeIfPresent(Int64.self, forKey: .maxBoardSeq)
+        blockedUserIDs = try container.decodeIfPresent([Int64].self, forKey: .blockedUserIDs) ?? []
+        nextOwnerUserID = try container.decodeIfPresent(Int64.self, forKey: .nextOwnerUserID)
     }
 }
 

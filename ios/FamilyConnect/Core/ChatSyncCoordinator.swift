@@ -550,6 +550,13 @@ final class ChatSyncCoordinator {
             // rather than at its next GET /me.
             applyFamilyOwner(familyID: familyID, userID: userID)
 
+        case .memberBlocked(let userID, let blocked):
+            // A state-set, not an event: an unblock is this same frame with
+            // `false`. It reaches this device and this account only — never
+            // the person blocked — so there is nothing to fan out and
+            // nothing to reconcile against a roster.
+            applyBlock(userID: userID, blocked: blocked)
+
         case .memberLeft(let userID):
             if userID == currentUserID {
                 // We were removed. Resync's /me reconcile routes the
@@ -2474,6 +2481,61 @@ final class ChatSyncCoordinator {
     /// its "Owner" badge from, and the session's `role` is what unlocks
     /// the owner-only screens — a client that has just been handed the
     /// family would otherwise wait for its next `GET /me` to find out.
+    /// Everyone this account has blocked, as the rest of the app reads it.
+    ///
+    /// Published rather than fetched at each call site because it is
+    /// consulted on nearly every row that draws a person, and a
+    /// `FetchDescriptor` per bubble is not a thing to do in a list.
+    private(set) var blockedUserIDs: Set<Int64> = []
+
+    /// Replace the whole set from a `blocked_user_ids` array.
+    ///
+    /// WHOLESALE, because the wire field is a complete state-set and never
+    /// a delta — which is also why the server always sends it, `[]`
+    /// included. Merging instead would leave an unblock made on another
+    /// device in force here for ever (protocol.md, "Blocking a member").
+    func replaceBlocks(with ids: [Int64]) {
+        let incoming = Set(ids)
+        guard let rows = try? modelContext.fetch(FetchDescriptor<BlockEntity>()) else { return }
+        var held: Set<Int64> = []
+        for row in rows {
+            if incoming.contains(row.userID) {
+                held.insert(row.userID)
+            } else {
+                modelContext.delete(row)
+            }
+        }
+        for id in incoming.subtracting(held) {
+            modelContext.insert(BlockEntity(userID: id))
+        }
+        blockedUserIDs = incoming
+        saveContext()
+    }
+
+    /// Apply one block or unblock — the `member_blocked` frame, and the
+    /// optimistic write behind the Block button.
+    func applyBlock(userID: Int64, blocked: Bool) {
+        let existing = try? modelContext.fetch(
+            FetchDescriptor<BlockEntity>(predicate: #Predicate { $0.userID == userID })
+        ).first
+        if blocked {
+            if existing == nil { modelContext.insert(BlockEntity(userID: userID)) }
+            blockedUserIDs.insert(userID)
+        } else {
+            if let existing { modelContext.delete(existing) }
+            blockedUserIDs.remove(userID)
+        }
+        saveContext()
+    }
+
+    /// Load the set from the store at launch, before the first sync — so a
+    /// cold start offline draws hidden rows hidden rather than briefly
+    /// showing everything.
+    func loadBlocksFromStore() {
+        guard let rows = try? modelContext.fetch(FetchDescriptor<BlockEntity>()) else { return }
+        blockedUserIDs = Set(rows.map(\.userID))
+    }
+
     private func applyFamilyOwner(familyID: Int64, userID: Int64) {
         // A frame about a family this device is not in is not ours to
         // apply; ignore it rather than rewriting a roster with it.
