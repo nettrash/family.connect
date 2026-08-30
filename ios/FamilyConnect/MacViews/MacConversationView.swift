@@ -530,7 +530,8 @@ struct MacConversationView: View {
                     at: index,
                     in: section.messages,
                     isFamilyChat: isFamily,
-                    currentUserID: me),
+                    currentUserID: me,
+                    blockedUserIDs: coordinator.blockedUserIDs),
                 isRunStart: previous?.senderID != message.senderID,
                 // The last of a run carries the time, so a burst of four
                 // messages is stamped once rather than four times.

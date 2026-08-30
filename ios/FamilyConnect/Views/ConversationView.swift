@@ -783,7 +783,8 @@ struct ConversationView: View {
                                     at: index,
                                     in: section.messages,
                                     isFamilyChat: isFamilyChat,
-                                    currentUserID: currentUserID),
+                                    currentUserID: currentUserID,
+                                    blockedUserIDs: coordinator.blockedUserIDs),
                                 senderName: displayName(for: message.senderID),
                                 senderID: message.senderID,
                                 senderAvatarVersion: avatarVersion(for: message.senderID),
@@ -796,7 +797,10 @@ struct ConversationView: View {
                                 reactionDetails: MessagePresentation.reactionDetails(
                                     message.reactions,
                                     names: memberNames,
-                                    currentUserID: currentUserID),
+                                    currentUserID: currentUserID,
+                                    // The CHIPS above are deliberately not
+                                    // given this: their count must not move.
+                                    blockedUserIDs: coordinator.blockedUserIDs),
                                 avatarVersions: avatarVersions,
                                 memberNames: memberNames,
                                 currentUserID: currentUserID,

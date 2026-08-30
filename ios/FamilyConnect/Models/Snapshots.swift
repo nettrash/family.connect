@@ -503,7 +503,10 @@ nonisolated enum MessagePresentation {
         in section: [MessageSnapshot],
         isFamilyChat: Bool,
         currentUserID: Int64,
-        blockedUserIDs: Set<Int64> = []
+        // UNDEFAULTED, deliberately. A default here compiles clean at every
+        // call site and silently draws a blocked member's name — the class
+        // of bug that has no compiler pressure behind it at all.
+        blockedUserIDs: Set<Int64>
     ) -> Bool {
         guard isFamilyChat, section.indices.contains(index) else { return false }
         let message = section[index]
@@ -608,7 +611,8 @@ nonisolated enum MessagePresentation {
         _ reactions: [ReactionSnapshot],
         names: [Int64: String],
         currentUserID: Int64,
-        blockedUserIDs: Set<Int64> = []
+        // Undefaulted for the reason above.
+        blockedUserIDs: Set<Int64>
     ) -> [ReactionDetail] {
         var order: [String] = []
         var others: [String: [String]] = [:]

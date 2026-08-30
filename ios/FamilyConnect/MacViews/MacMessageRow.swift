@@ -199,7 +199,9 @@ struct MacMessageRow: View {
             message.reactions,
             names: Dictionary(
                 uniqueKeysWithValues: message.reactions.map { ($0.userID, nameFor($0.userID)) }),
-            currentUserID: coordinator.currentUserID)
+            currentUserID: coordinator.currentUserID,
+            blockedUserIDs: coordinator.blockedUserIDs)
+        // The chips below are deliberately not given the blocked set.
         let chips = MessagePresentation.reactionChips(
             message.reactions, currentUserID: coordinator.currentUserID)
         return VStack(alignment: .leading, spacing: 8) {

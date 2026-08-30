@@ -93,7 +93,7 @@ struct MessageGroupingTests {
 
         let names: [Int64: String] = [9: "Anna", 11: "Bob", 13: "Cara"]
         let unfiltered = MessagePresentation.reactionDetails(
-            reactions, names: names, currentUserID: 7)
+            reactions, names: names, currentUserID: 7, blockedUserIDs: [])
         #expect(unfiltered[0].names == ["Anna", "Bob", "Cara"])
 
         let filtered = MessagePresentation.reactionDetails(
@@ -154,7 +154,7 @@ struct MessageGroupingTests {
             Self.snapshot(localID: "s:5", serverID: 5, senderID: 11, at: "2026-08-19T08:04:00Z"),
         ]
         let shows = section.indices.map {
-            MessagePresentation.showsSenderName(at: $0, in: section, isFamilyChat: true, currentUserID: 7)
+            MessagePresentation.showsSenderName(at: $0, in: section, isFamilyChat: true, currentUserID: 7, blockedUserIDs: [])
         }
         #expect(shows == [true, false, true, false, true])
     }
@@ -166,7 +166,7 @@ struct MessageGroupingTests {
             Self.snapshot(localID: "s:2", serverID: 2, senderID: 7, at: "2026-08-19T08:01:00Z"),
         ]
         for index in section.indices {
-            #expect(!MessagePresentation.showsSenderName(at: index, in: section, isFamilyChat: false, currentUserID: 7))
+            #expect(!MessagePresentation.showsSenderName(at: index, in: section, isFamilyChat: false, currentUserID: 7, blockedUserIDs: []))
         }
     }
 
@@ -271,7 +271,7 @@ struct MessageGroupingTests {
             ReactionSnapshot(userID: 12, emoji: "❤️"),
         ]
         let names: [Int64: String] = [9: "Anna", 11: "Ben", 12: "Kim"]
-        let details = MessagePresentation.reactionDetails(reactions, names: names, currentUserID: 7)
+        let details = MessagePresentation.reactionDetails(reactions, names: names, currentUserID: 7, blockedUserIDs: [])
         #expect(details == [
             ReactionDetail(emoji: "❤️", names: ["Anna", "Kim"], leadUserID: 9),
             ReactionDetail(emoji: "👍", names: ["Ben"], leadUserID: 11),
@@ -287,7 +287,7 @@ struct MessageGroupingTests {
             ReactionSnapshot(userID: 4, emoji: "❤️"),
         ]
         let chips = MessagePresentation.reactionChips(reactions, currentUserID: 2)
-        let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 2)
+        let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 2, blockedUserIDs: [])
         #expect(details.map(\.emoji) == chips.map(\.emoji))
     }
 
@@ -299,7 +299,7 @@ struct MessageGroupingTests {
         ]
         reactions.insert(ReactionSnapshot(userID: 7, emoji: "❤️"), at: position)
         let details = MessagePresentation.reactionDetails(
-            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7)
+            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7, blockedUserIDs: [])
         // "You" leads the names, so my own id leads the row.
         #expect(details == [
             ReactionDetail(emoji: "❤️", names: ["You", "Anna", "Ben"], leadUserID: 7),
@@ -314,7 +314,7 @@ struct MessageGroupingTests {
             ReactionSnapshot(userID: 11, emoji: "😂"),
         ]
         let details = MessagePresentation.reactionDetails(
-            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7)
+            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7, blockedUserIDs: [])
         #expect(details == [
             ReactionDetail(emoji: "👍", names: ["Anna"], leadUserID: 9),
             ReactionDetail(emoji: "😂", names: ["You", "Ben"], leadUserID: 7),
@@ -324,12 +324,12 @@ struct MessageGroupingTests {
     @Test("a reactor missing from the member list falls back to Someone")
     func reactionDetailsUnknownReactor() {
         let reactions = [ReactionSnapshot(userID: 99, emoji: "👍")]
-        let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 7)
+        let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 7, blockedUserIDs: [])
         #expect(details == [ReactionDetail(emoji: "👍", names: ["Someone"], leadUserID: 99)])
     }
 
     @Test("no reactions yield no details")
     func reactionDetailsEmpty() {
-        #expect(MessagePresentation.reactionDetails([], names: [:], currentUserID: 7).isEmpty)
+        #expect(MessagePresentation.reactionDetails([], names: [:], currentUserID: 7, blockedUserIDs: []).isEmpty)
     }
 }

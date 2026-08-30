@@ -2474,13 +2474,6 @@ final class ChatSyncCoordinator {
         saveContext()
     }
 
-    /// Apply a `family_owner` frame: the named user is the family's owner
-    /// from now on.
-    ///
-    /// Both halves matter. The roster row is what the members list draws
-    /// its "Owner" badge from, and the session's `role` is what unlocks
-    /// the owner-only screens — a client that has just been handed the
-    /// family would otherwise wait for its next `GET /me` to find out.
     /// Everyone this account has blocked, as the rest of the app reads it.
     ///
     /// Published rather than fetched at each call site because it is
@@ -2507,9 +2500,65 @@ final class ChatSyncCoordinator {
         }
         for id in incoming.subtracting(held) {
             modelContext.insert(BlockEntity(userID: id))
+            // A block made on ANOTHER device arrives here, never through
+            // `applyBlock` — so the prune has to happen on this path too or
+            // a cold start leaves the stale chat standing. Newly-arrived
+            // ids only: re-dropping `held` would delete the chat again on
+            // every `GET /me`.
+            dropDirectChat(peerUserID: id)
         }
         blockedUserIDs = incoming
         saveContext()
+    }
+
+    /// Block a member: the request FIRST, then the local write.
+    ///
+    /// Never optimistic, and that ordering is the point. An optimistic
+    /// block that then failed would hide rows the reader does not know are
+    /// hidden, in a feature with no error surface and no badge to notice —
+    /// they would simply stop seeing somebody and never learn why.
+    ///
+    /// Returns false when the request threw, having applied nothing.
+    @discardableResult
+    func block(userID: Int64) async -> Bool {
+        do {
+            try await api.blockMember(userID: userID)
+        } catch {
+            return false
+        }
+        applyBlock(userID: userID, blocked: true)
+        return true
+    }
+
+    /// Unblock, then RESYNC — because the direct chat this block pruned
+    /// locally comes back from `GET /chats`, not from anything held here.
+    /// That is the protocol's own recovery path: "unblocking puts the chat
+    /// back in `GET /chats` with its true `unread_count` and
+    /// `last_read_message_id`".
+    @discardableResult
+    func unblock(userID: Int64) async -> Bool {
+        do {
+            try await api.unblockMember(userID: userID)
+        } catch {
+            return false
+        }
+        applyBlock(userID: userID, blocked: false)
+        await resync()
+        return true
+    }
+
+    /// File a report. Nothing local changes: a report is a write to the
+    /// owner's inbox, and this reader's own view of the family does not
+    /// move because of it — blocking and reporting are independent.
+    @discardableResult
+    func report(reportedUserID: Int64, reason: String, messageID: Int64?) async -> Bool {
+        do {
+            _ = try await api.createReport(
+                reportedUserID: reportedUserID, reason: reason, messageID: messageID)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Apply one block or unblock — the `member_blocked` frame, and the
@@ -2521,6 +2570,16 @@ final class ChatSyncCoordinator {
         if blocked {
             if existing == nil { modelContext.insert(BlockEntity(userID: userID)) }
             blockedUserIDs.insert(userID)
+            // "For the blocker that chat is not merely unlisted; it is gone
+            // from every path they can reach it by" (protocol.md, "Blocking
+            // a member"). The server already refuses every request in it
+            // with `blocked`, which nothing in this app maps to a message —
+            // so a chat left in the store is one the reader can open and
+            // then watch fail silently.
+            //
+            // Only on the way IN. Unblocking does not put it back from
+            // here: `GET /chats` does, which is why `unblock` resyncs.
+            dropDirectChat(peerUserID: userID)
         } else {
             if let existing { modelContext.delete(existing) }
             blockedUserIDs.remove(userID)
@@ -2536,6 +2595,13 @@ final class ChatSyncCoordinator {
         blockedUserIDs = Set(rows.map(\.userID))
     }
 
+    /// Apply a `family_owner` frame: the named user is the family's owner
+    /// from now on.
+    ///
+    /// Both halves matter. The roster row is what the members list draws
+    /// its "Owner" badge from, and the session's `role` is what unlocks
+    /// the owner-only screens — a client that has just been handed the
+    /// family would otherwise wait for its next `GET /me` to find out.
     private func applyFamilyOwner(familyID: Int64, userID: Int64) {
         // A frame about a family this device is not in is not ours to
         // apply; ignore it rather than rewriting a roster with it.
