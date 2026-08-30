@@ -107,6 +107,8 @@
     <string name="s_pasted_sound">Налепљени звук</string>
     <string name="s_pasted_file">Налепљена датотека</string>
     <string name="s_privacy">Приватност</string>
+    <string name="s_privacy_policy">Политика приватности</string>
+    <string name="s_support">Подршка</string>
     <string name="s_react">Реагуј</string>
     <string name="s_register">Региструј се</string>
     <string name="s_remove">Уклони</string>

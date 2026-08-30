@@ -70,6 +70,8 @@
     <string name="s_n_of_m">%1$d de %2$d</string>
     <string name="s_photo_or_video">Foto o vídeo</string>
     <string name="s_privacy">Privacidad</string>
+    <string name="s_privacy_policy">Política de privacidad</string>
+    <string name="s_support">Soporte</string>
     <string name="s_react">Reaccionar</string>
     <string name="s_register">Registrarse</string>
     <string name="s_remove">Quitar</string>
