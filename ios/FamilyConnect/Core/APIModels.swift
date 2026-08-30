@@ -914,6 +914,17 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// The body of a `POST /families/leave` that handed the family on. Absent
+/// entirely when the answer was `204` — an ordinary member leaving, or the
+/// last one, which deletes the family instead of passing it.
+nonisolated struct LeaveFamilyResponse: Codable, Equatable, Sendable {
+    let newOwnerUserID: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case newOwnerUserID = "new_owner_user_id"
+    }
+}
+
 nonisolated struct FamilyResponse: Codable, Equatable, Sendable {
     let family: FamilyDTO
 }

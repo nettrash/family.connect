@@ -25233,6 +25233,960 @@
           }
         }
       }
+    },
+    "You've blocked %@. Unblock them from the family roster to call them." : {
+      "comment" : "Alert shown when the Phone app or Siri asked Family to call a blocked member; %@ is their display name.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Du hast %@ blockiert. Hebe die Blockierung in der Familienliste auf, um anzurufen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Has bloqueado a %@. Desbloquéalo en la lista de la familia para llamar."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vous avez bloqué %@. Débloquez cette personne dans la liste de la famille pour l’appeler."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@さんをブロックしています。通話するには家族リストでブロックを解除してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы заблокировали %@. Чтобы позвонить, разблокируйте участника в списке семьи."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Блокирали сте %@. Одблокирајте особу на списку породице да бисте је позвали."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Blokirali ste %@. Odblokirajte osobu na spisku porodice da biste je pozvali."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已屏蔽%@。请在家庭成员列表中解除屏蔽后再拨打。"
+          }
+        }
+      }
+    },
+    "this person" : {
+      "comment" : "Stands in for a blocked member whose name is not known.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "diese Person"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "esta persona"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "cette personne"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この人"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "этого участника"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ову особу"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ovu osobu"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此人"
+          }
+        }
+      }
+    },
+    "Nobody" : {
+      "comment" : "Join policy: the family admits no new members",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niemand"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nadie"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Personne"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "誰も参加できません"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Никто"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нико"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niko"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无人"
+          }
+        }
+      }
+    },
+    "Anyone with the invite code joins straight away." : {
+      "comment" : "Footer for the open join policy",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wer den Einladungscode hat, tritt sofort bei."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cualquiera con el código de invitación entra de inmediato."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toute personne disposant du code d’invitation rejoint immédiatement."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "招待コードを持っている人はすぐに参加できます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Любой, у кого есть код приглашения, вступает сразу."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Свако ко има позивни код одмах се придружује."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Svako ko ima pozivni kod odmah se pridružuje."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "任何拥有邀请码的人都会直接加入。"
+          }
+        }
+      }
+    },
+    "The invite code stops working — nobody new can join. Requests already waiting are unaffected, and you can still approve them." : {
+      "comment" : "Footer for the closed join policy",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Einladungscode funktioniert nicht mehr — niemand Neues kann beitreten. Bereits wartende Anfragen bleiben bestehen und können weiterhin bestätigt werden."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El código de invitación deja de funcionar: nadie nuevo puede unirse. Las solicitudes en espera no se ven afectadas y aún puedes aprobarlas."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le code d’invitation cesse de fonctionner — plus personne ne peut rejoindre. Les demandes déjà en attente ne changent pas et vous pouvez toujours les accepter."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "招待コードが無効になり、新しく参加できる人はいなくなります。すでに届いている申請はそのままで、引き続き承認できます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Код приглашения перестаёт работать — новые участники вступить не смогут. Уже поданные заявки сохраняются, и вы по-прежнему можете их одобрить."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Позивни код престаје да важи — нико нов не може да се придружи. Захтеви који већ чекају остају и даље можете да их одобрите."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozivni kod prestaje da važi — niko nov ne može da se pridruži. Zahtevi koji već čekaju ostaju i dalje možete da ih odobrite."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "邀请码将停止工作，无人可以加入。已在等待的申请不受影响，你仍然可以批准。"
+          }
+        }
+      }
+    },
+    "Member limit" : {
+      "comment" : "Section header for the family member cap",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitgliederlimit"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Límite de miembros"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Limite de membres"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メンバー数の上限"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Лимит участников"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ограничење чланова"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ograničenje članova"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "成员数量上限"
+          }
+        }
+      }
+    },
+    "Limit members" : {
+      "comment" : "Toggle that turns the family member cap on",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitglieder begrenzen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Limitar miembros"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Limiter les membres"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メンバー数を制限"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ограничить число участников"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ограничи чланове"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ograniči članove"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "限制成员数量"
+          }
+        }
+      }
+    },
+    "Most members" : {
+      "comment" : "Stepper label for the highest number of members allowed",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Höchstzahl"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Máximo de miembros"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nombre maximal"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最大人数"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Максимум участников"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Највише чланова"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najviše članova"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多成员"
+          }
+        }
+      }
+    },
+    "No limit of your own. This server allows up to %lld members in a family." : {
+      "comment" : "Footer when the owner has set no cap; %lld is the operator's ceiling",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kein eigenes Limit. Dieser Server erlaubt bis zu %lld Mitglieder pro Familie."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sin límite propio. Este servidor permite hasta %lld miembros en una familia."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aucune limite de votre part. Ce serveur autorise jusqu’à %lld membres par famille."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "独自の上限はありません。このサーバーでは家族あたり最大%lld人までです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Своего лимита нет. Этот сервер допускает до %lld участников в семье."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Немате сопствено ограничење. Овај сервер дозвољава највише %lld чланова у породици."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nemate sopstveno ograničenje. Ovaj server dozvoljava najviše %lld članova u porodici."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你没有设置上限。此服务器允许每个家庭最多 %lld 名成员。"
+          }
+        }
+      }
+    },
+    "%lld members now. Nobody new can join until somebody leaves; no one is removed." : {
+      "comment" : "Footer when the cap is at or below the current member count; %lld is that count",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktuell %lld Mitglieder. Niemand Neues kann beitreten, bis jemand geht; es wird niemand entfernt."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ahora hay %lld miembros. Nadie nuevo puede unirse hasta que alguien se vaya; no se expulsa a nadie."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld membres actuellement. Personne ne peut rejoindre tant que quelqu’un ne part pas ; personne n’est retiré."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "現在%lld人です。誰かが抜けるまで新しい人は参加できません。誰も削除されません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сейчас участников: %lld. Новые не смогут вступить, пока кто-нибудь не выйдет; никого не удаляют."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Тренутно има %lld чланова. Нико нов не може да се придружи док неко не оде; нико се не уклања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trenutno ima %lld članova. Niko nov ne može da se pridruži dok neko ne ode; niko se ne uklanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前有 %lld 名成员。在有人离开前无人可加入；不会移除任何人。"
+          }
+        }
+      }
+    },
+    "%lld of %lld seats used." : {
+      "comment" : "Footer showing members against the cap; first %lld is the count, second the cap",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld von %2$lld Plätzen belegt."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld de %2$lld plazas ocupadas."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld place(s) sur %2$lld utilisée(s)."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%2$lld人中%1$lld人が参加しています。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Занято %1$lld из %2$lld мест."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заузето %1$lld од %2$lld места."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zauzeto %1$lld od %2$lld mesta."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已使用 %2$lld 个名额中的 %1$lld 个。"
+          }
+        }
+      }
+    },
+    "Couldn't change the member limit. Try again." : {
+      "comment" : "Error when the cap PATCH failed",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Mitgliederlimit konnte nicht geändert werden. Bitte erneut versuchen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo cambiar el límite de miembros. Inténtalo de nuevo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de modifier la limite de membres. Réessayez."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メンバー数の上限を変更できませんでした。もう一度お試しください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось изменить лимит участников. Попробуйте ещё раз."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Није успело мењање ограничења чланова. Покушајте поново."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nije uspelo menjanje ograničenja članova. Pokušajte ponovo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法更改成员上限，请重试。"
+          }
+        }
+      }
+    },
+    "Ownership passed on" : {
+      "comment" : "Alert title after an owner leaves and the family passes to somebody",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Besitz übergeben"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Propiedad transferida"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Propriété transmise"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "オーナー権限を引き継ぎました"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Владелец сменился"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Власништво пренето"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vlasništvo preneto"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有权已转移"
+          }
+        }
+      }
+    },
+    "%@ is now the owner of the family." : {
+      "comment" : "Alert body naming the new owner; %@ is their display name",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ ist jetzt Besitzer:in der Familie."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ es ahora el propietario de la familia."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ est désormais propriétaire de la famille."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@さんが家族のオーナーになりました。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Теперь владелец семьи — %@."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ је сада власник породице."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ je sada vlasnik porodice."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@现在是这个家庭的所有者。"
+          }
+        }
+      }
+    },
+    "You're the only member left. Leaving deletes the family and everything in it." : {
+      "comment" : "Leave dialog for the last remaining member",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Du bist das letzte Mitglied. Wenn du gehst, werden die Familie und alle Inhalte gelöscht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eres el único miembro que queda. Si te vas, se eliminarán la familia y todo su contenido."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vous êtes le dernier membre. Partir supprime la famille et tout son contenu."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "残っているメンバーはあなただけです。退出すると家族とその中身がすべて削除されます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы последний участник. Если выйти, семья и всё её содержимое будут удалены."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ви сте једини преостали члан. Одласком се породица и све у њој бришу."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vi ste jedini preostali član. Odlaskom se porodica i sve u njoj brišu."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你是最后一名成员。离开将删除这个家庭及其中的所有内容。"
+          }
+        }
+      }
+    },
+    "%@ becomes the owner. You'll lose access to the family chat and your direct chats; your history returns if you rejoin." : {
+      "comment" : "Leave dialog for an owner handing the family on; %@ is the successor's name",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ wird Besitzer:in. Du verlierst den Zugriff auf den Familien-Chat und deine Direktchats; dein Verlauf kehrt zurück, wenn du wieder beitrittst."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ pasa a ser el propietario. Perderás el acceso al chat familiar y a tus chats directos; tu historial vuelve si te unes de nuevo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ devient propriétaire. Vous perdrez l’accès à la discussion familiale et à vos discussions directes ; votre historique revient si vous rejoignez."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@さんがオーナーになります。家族チャットと個別チャットにアクセスできなくなります。再参加すれば履歴は戻ります。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Владельцем станет %@. Вы потеряете доступ к семейному чату и личным чатам; история вернётся, если вы вступите снова."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ постаје власник. Изгубићете приступ породичном ћаскању и личним ћаскањима; историја се враћа ако се поново придружите."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ postaje vlasnik. Izgubićete pristup porodičnom ćaskanju i ličnim ćaskanjima; istorija se vraća ako se ponovo pridružite."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@将成为所有者。你将失去家庭聊天和私聊的访问权限；重新加入后历史记录会恢复。"
+          }
+        }
+      }
+    },
+    "The family is full. Raise the member limit or wait for somebody to leave — the request is still waiting." : {
+      "comment" : "Error when approving a join request would exceed the family's member cap.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Familie ist voll. Erhöhe das Mitgliederlimit oder warte, bis jemand geht — die Anfrage bleibt bestehen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La familia está llena. Aumenta el límite de miembros o espera a que alguien se vaya: la solicitud sigue en espera."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La famille est complète. Augmentez la limite de membres ou attendez qu’une place se libère — la demande reste en attente."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "家族の人数が上限に達しています。上限を上げるか、誰かが抜けるのをお待ちください。申請はそのまま残ります。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Семья заполнена. Увеличьте лимит участников или дождитесь, пока кто-нибудь выйдет — заявка останется в ожидании."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Породица је попуњена. Повећајте ограничење чланова или сачекајте да неко оде — захтев и даље чека."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Porodica je popunjena. Povećajte ograničenje članova ili sačekajte da neko ode — zahtev i dalje čeka."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "家庭成员已满。请提高成员上限或等待有人离开——该申请仍在等待中。"
+          }
+        }
+      }
+    },
+    "That family is full right now. Ask them to make room, then try the code again." : {
+      "comment" : "Error when joining a family that has reached its member cap.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese Familie ist derzeit voll. Bitte sie, Platz zu schaffen, und versuche den Code dann erneut."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esa familia está llena ahora mismo. Pídeles que hagan sitio y vuelve a probar el código."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette famille est complète pour le moment. Demandez-leur de faire de la place, puis réessayez le code."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "その家族は現在満員です。空きを作ってもらってから、もう一度コードをお試しください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эта семья сейчас заполнена. Попросите освободить место и попробуйте код ещё раз."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Та породица је тренутно попуњена. Замолите их да ослободе место па поново покушајте са кодом."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta porodica je trenutno popunjena. Zamolite ih da oslobode mesto pa ponovo pokušajte sa kodom."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该家庭目前已满。请让他们腾出名额后再试一次邀请码。"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

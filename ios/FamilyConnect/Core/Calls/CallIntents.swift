@@ -102,9 +102,33 @@ enum CallDonation {
             callCapability: video ? .videoCall : .audioCall)
         let interaction = INInteraction(intent: intent, response: nil)
         interaction.direction = .outgoing
+        // The handle, so one person's donations can be withdrawn on their
+        // own when they are blocked. Without a group there is no selective
+        // delete — only `deleteAll`, which would throw away everybody's.
+        interaction.groupIdentifier = handle
         interaction.donate { error in
             if let error {
                 AppLog.call.info("Call donation refused: \(String(describing: error))")
+            }
+        }
+    }
+
+    /// Withdraw the suggestions this app made about one person.
+    ///
+    /// A donation is the app's own statement to the system, and it goes on
+    /// being made in the app's name — in Siri's suggestions, in the Phone
+    /// app's sense of who Family can call — long after it stops being
+    /// true. Blocking somebody is exactly when it stops being true, so the
+    /// statement is retracted (docs/protocol.md, "Calls").
+    ///
+    /// Device hygiene, not part of the silence: it happens on the
+    /// blocker's own device and changes nothing anybody else can observe.
+    /// Nothing puts these back on unblock — they were suggestions, not
+    /// history, and the call RECORDS in the chat are untouched.
+    static func withdraw(peerUserID: Int64) {
+        INInteraction.delete(with: CallHandle.value(userID: peerUserID)) { error in
+            if let error {
+                AppLog.call.info("Call donation withdrawal refused: \(String(describing: error))")
             }
         }
     }

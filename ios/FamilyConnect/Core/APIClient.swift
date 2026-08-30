@@ -373,8 +373,25 @@ actor APIClient {
         try await requestVoid("POST", "/families/join-requests/\(id)/reject")
     }
 
-    func leaveFamily() async throws {
-        try await requestVoid("POST", "/families/leave")
+    /// Leave the family, and learn who inherited it.
+    ///
+    /// Two answers, not one: `204` when nothing passed on (an ordinary
+    /// member leaving, or the last member — the family goes with them),
+    /// and `200 {new_owner_user_id}` when the caller was the owner and
+    /// somebody remained. The id is what the leaving owner resolves
+    /// against the roster it STILL HOLDS to say who it went to, before
+    /// tearing that roster down (docs/protocol.md, `POST /families/leave`).
+    ///
+    /// An owner is never refused: `owner_cannot_leave` is retired and no
+    /// endpoint raises it any more.
+    func leaveFamily() async throws -> Int64? {
+        let (data, _) = try await perform("POST", "/families/leave", query: [], bodyData: nil)
+        // A 204 has no body at all, and a 200 has one — so an empty
+        // payload is the ordinary case here rather than a malformed
+        // answer, and must not be decoded as a failure.
+        guard !data.isEmpty else { return nil }
+        let response: LeaveFamilyResponse? = try? decodeResponse(data)
+        return response?.newOwnerUserID
     }
 
     func removeMember(userID: Int64) async throws {

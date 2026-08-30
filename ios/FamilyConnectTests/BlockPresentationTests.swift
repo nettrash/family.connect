@@ -86,6 +86,12 @@ struct BlockPresentationTests {
     ///
     /// The arithmetic is `44 * n + (n - 1)`: fixed-height rows and the
     /// hairlines BETWEEN them. Share is always drawn, so `n` is never zero.
+    /// iOS ONLY, and gated so the whole suite can build for macOS. The
+    /// Mac draws its menu with a native `.contextMenu`, which measures
+    /// itself — `MessageContextMenu` does not exist over there, and one
+    /// ungated reference to it kept every OTHER test in this target from
+    /// ever running on the Mac.
+    #if os(iOS)
     @Test("the menu's height matches the rows it actually draws")
     func menuSizeMatchesTheRowsTheBodyActuallyDraws() {
         func height(_ n: Int) -> CGFloat { 44 * CGFloat(n) + CGFloat(n - 1) }
@@ -126,4 +132,5 @@ struct BlockPresentationTests {
         // place somebody must be certain what they are pressing.
         #expect(MessageContextMenu.size(canReply: true).width == 220)
     }
+    #endif
 }

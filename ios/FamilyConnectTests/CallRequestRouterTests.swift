@@ -25,9 +25,12 @@ struct CallRequestRouterTests {
     ]
     private let active: Set<Int64> = [7, 9, 11, 12]
 
-    private var directory: CallRequestRouter.Directory {
+    private var directory: CallRequestRouter.Directory { directory(blocked: []) }
+
+    private func directory(blocked: Set<Int64>) -> CallRequestRouter.Directory {
         CallRequestRouter.Directory(
             isActiveMember: { self.active.contains($0) },
+            isBlocked: { blocked.contains($0) },
             roster: { self.roster },
             linkedMember: { ["contact-anna": 7, "contact-gone": 3][$0] },
             memberByPhone: { number in ContactLink.phonesMatch(number, "+1 555 123 4567") ? 7 : (ContactLink.phonesMatch(number, "+381 64 000 0000") ? 3 : nil) },
@@ -106,5 +109,59 @@ struct CallRequestRouterTests {
         #expect(CallRequestRouter.match(name: "Bob", in: roster) == .none)
         #expect(CallRequestRouter.match(name: "   ", in: roster) == .none)
         #expect(CallRequestRouter.match(name: "Anna", in: []) == .none)
+    }
+
+    // MARK: - Blocked members (docs/protocol.md, "Calls")
+
+    /// EVERY road in, because the OS offers all four and a block that held
+    /// on three of them would be a call placed from the fourth.
+    @Test("a blocked member is refused whichever evidence names them")
+    func blockedByEveryRoad() {
+        let blocked = directory(blocked: [7])
+        // 1. Our own handle, which Siri already resolved.
+        #expect(CallRequestRouter.resolve(request(.generic("familyconnect:7")), in: blocked) == .blocked(7))
+        // 2. A linked device contact — a contact card's call button.
+        #expect(CallRequestRouter.resolve(request(nil, contact: "contact-anna"), in: blocked) == .blocked(7))
+        // 2b. The number and the e-mail a Favorites entry carries.
+        #expect(CallRequestRouter.resolve(request(.phoneNumber("+1 555 123 4567")), in: blocked) == .blocked(7))
+        #expect(CallRequestRouter.resolve(request(.emailAddress("anna@example.com")), in: blocked) == .blocked(7))
+        // 3. A name — what a Recents row shows for an unlinked member.
+        #expect(CallRequestRouter.resolve(request(.generic("Anna Smith")), in: blocked) == .blocked(7))
+    }
+
+    /// The same five roads with NOBODY blocked, so the test above is
+    /// pinned to the block and not to some other reason each road failed.
+    @Test("the same requests still call when the member is not blocked")
+    func unblockedControl() {
+        #expect(CallRequestRouter.resolve(request(.generic("familyconnect:7")), in: directory) == .member(7))
+        #expect(CallRequestRouter.resolve(request(nil, contact: "contact-anna"), in: directory) == .member(7))
+        #expect(CallRequestRouter.resolve(request(.phoneNumber("+1 555 123 4567")), in: directory) == .member(7))
+        #expect(CallRequestRouter.resolve(request(.emailAddress("anna@example.com")), in: directory) == .member(7))
+        #expect(CallRequestRouter.resolve(request(.generic("Anna Smith")), in: directory) == .member(7))
+    }
+
+    /// Blocking one of two "Anna"s answers the question Siri would have
+    /// asked. Blocking BOTH is a block, not a choice.
+    @Test("blocking resolves an ambiguous name, or refuses it outright")
+    func blockingDisambiguates() {
+        // Anna Smith (7) and Anna-Maria Jones (9) both match "Anna".
+        #expect(CallRequestRouter.resolve(request(.generic("Anna")), in: directory)
+            == .needsChoice(contactIdentifier: nil, name: "Anna"))
+        #expect(CallRequestRouter.resolve(request(.generic("Anna")), in: directory(blocked: [7])) == .member(9))
+        #expect(CallRequestRouter.resolve(request(.generic("Anna")), in: directory(blocked: [9])) == .member(7))
+        // Both blocked: there is nobody to call and nothing to ask.
+        let bothBlocked = CallRequestRouter.resolve(request(.generic("Anna")), in: directory(blocked: [7, 9]))
+        #expect(bothBlocked == .blocked(7) || bothBlocked == .blocked(9))
+    }
+
+    /// A blocked member must never come back as `.unknown`: that is the
+    /// answer for somebody the app cannot identify, and it sends the
+    /// blocker to re-link a contact that is already linked.
+    @Test("blocked is never reported as unknown")
+    func blockedIsNotUnknown() {
+        #expect(CallRequestRouter.resolve(request(.generic("familyconnect:7")), in: directory(blocked: [7])) != .unknown)
+        // And somebody genuinely unidentifiable still IS unknown, so the
+        // distinction is real rather than a case that never fires.
+        #expect(CallRequestRouter.resolve(request(.phoneNumber("+44 20 7946 0000")), in: directory(blocked: [7])) == .unknown)
     }
 }

@@ -42,6 +42,8 @@ import me.nettrash.familyconnect.data.net.dto.PollOptionDto
 import me.nettrash.familyconnect.data.net.dto.PollsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
+import me.nettrash.familyconnect.data.net.dto.ReportResponse
+import me.nettrash.familyconnect.data.net.dto.ReportsResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
 import me.nettrash.familyconnect.data.net.dto.JoinRequestsResponse
 import me.nettrash.familyconnect.data.net.dto.JoinResponse
@@ -108,6 +110,15 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
 
     override suspend fun setFamilyStatus(status: FamilyStatus) {
         _state.value = _state.value.copy(familyStatus = status)
+    }
+
+    /** Every write, in order — so a test can prove the EMPTY set was sent. */
+    val blockedWrites = mutableListOf<Set<Long>>()
+
+    override suspend fun setBlockedUserIds(ids: Collection<Long>) {
+        val next = ids.toSet()
+        blockedWrites += next
+        _state.value = _state.value.copy(blockedUserIds = next)
     }
 
     override suspend fun setProfile(
@@ -587,8 +598,61 @@ class FakeFamilyApi : FamilyApi {
     override suspend fun approve(requestId: Long): ApiResult<ApproveResponse> = approveResult
 
     override suspend fun reject(requestId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
-    override suspend fun leave(): ApiResult<Unit> = ApiResult.Ok(Unit)
+    /** Who `leave()` reports as the successor; null = nobody inherited. */
+    var leaveSuccessorId: Long? = null
+    var leaveResult: ApiResult<Long?>? = null
+
+    override suspend fun leave(): ApiResult<Long?> =
+        leaveResult ?: ApiResult.Ok(leaveSuccessorId)
+
     override suspend fun removeMember(userId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
+
+    /** Every cap this fake was told to set, in order; null = cleared. */
+    val memberCaps = mutableListOf<Int?>()
+    var setMemberCapResult: ApiResult<FamilyResponse>? = null
+
+    override suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse> {
+        memberCaps += cap
+        return setMemberCapResult
+            ?: ApiResult.NetworkError(IllegalStateException("unscripted setMemberCap"))
+    }
+
+    /** Every block/unblock this fake saw: (userId, blocked). */
+    val blocks = mutableListOf<Pair<Long, Boolean>>()
+    var blockResult: ApiResult<Unit> = ApiResult.Ok(Unit)
+
+    override suspend fun blockMember(userId: Long): ApiResult<Unit> {
+        blocks += userId to true
+        return blockResult
+    }
+
+    override suspend fun unblockMember(userId: Long): ApiResult<Unit> {
+        blocks += userId to false
+        return blockResult
+    }
+
+    /** Every report raised through this fake. */
+    val reportsRaised = mutableListOf<Triple<Long, String, Long?>>()
+    var reportResult: ApiResult<ReportResponse>? = null
+    var reportsResult: ApiResult<ReportsResponse> = ApiResult.Ok(ReportsResponse(emptyList()))
+    val resolvedReports = mutableListOf<Long>()
+
+    override suspend fun report(
+        reportedUserId: Long,
+        reason: String,
+        messageId: Long?,
+    ): ApiResult<ReportResponse> {
+        reportsRaised += Triple(reportedUserId, reason, messageId)
+        return reportResult
+            ?: ApiResult.NetworkError(IllegalStateException("unscripted report"))
+    }
+
+    override suspend fun reports(): ApiResult<ReportsResponse> = reportsResult
+
+    override suspend fun resolveReport(reportId: Long): ApiResult<Unit> {
+        resolvedReports += reportId
+        return ApiResult.Ok(Unit)
+    }
 
     /** Every reset this fake saw: (userId, newPassword). */
     val passwordResets = mutableListOf<Pair<Long, String>>()
@@ -965,11 +1029,13 @@ fun testChatRepository(
     messageDao: MessageDao,
     socket: ChatSocket,
     scope: CoroutineScope,
+    settings: SettingsRepository = FakeSettingsRepository(),
 ): ChatRepository = ChatRepository(
     chatApi,
     chatDao,
     messageDao,
     socket,
     UnreadNotifications(RuntimeEnvironment.getApplication(), chatDao, scope),
+    settings,
     scope,
 )

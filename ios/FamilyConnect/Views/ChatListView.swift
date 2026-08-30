@@ -294,6 +294,10 @@ struct ChatListView: View {
             isActiveMember: { id in
                 members.contains { $0.userID == id && !$0.isCurrentUser && !$0.hasLeft && !$0.accountDeleted }
             },
+            // NOT folded into the gate above: a blocked member is still
+            // active — still on the roster, still nameable — and the two
+            // questions have different right answers everywhere else.
+            isBlocked: { coordinator.blockedUserIDs.contains($0) },
             roster: {
                 members.filter { !$0.isCurrentUser && !$0.hasLeft && !$0.accountDeleted }
                     .map { CallRequestRouter.Candidate(userID: $0.userID, name: $0.resolvedDisplayName) }
@@ -307,6 +311,16 @@ struct ChatListView: View {
         case .needsChoice(let contactIdentifier, let contactName):
             dismissSheets()
             linkingCall = LinkingCall(contactIdentifier: contactIdentifier, contactName: contactName, handle: request.handle, video: request.video)
+        case .blocked(let userID):
+            // The OS goes on offering a handle the app will not act on —
+            // a Recents row, a Favorites entry, a contact card's call
+            // button all outlive the block. Saying so is safe: this
+            // refusal reaches nobody but the person who set the block.
+            let name = members.first { $0.userID == userID }?.resolvedDisplayName
+                ?? String(localized: "this person", comment: "Stands in for a blocked member whose name is not known.")
+            callRequestError = String(
+                localized: "You've blocked \(name). Unblock them from the family roster to call them.",
+                comment: "Alert shown when the Phone app or Siri asked Family to call a blocked member; %@ is their display name.")
         case .unknown:
             callRequestError = String(localized: "Family doesn't know who that is. Link the contact to a family member from the roster first.", comment: "Alert shown when the Phone app or Siri asked Family to call somebody the app cannot match to a family member.")
         }

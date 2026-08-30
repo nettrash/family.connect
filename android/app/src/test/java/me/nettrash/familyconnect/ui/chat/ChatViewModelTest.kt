@@ -91,6 +91,13 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import java.time.ZoneOffset
+import me.nettrash.familyconnect.data.repo.FamilyRepository
+import me.nettrash.familyconnect.data.repo.SessionRepository
+import me.nettrash.familyconnect.testutil.FakeFamilyApi
+import me.nettrash.familyconnect.testutil.FakeAuthApi
+import me.nettrash.familyconnect.testutil.FakeTokenStore
+import me.nettrash.familyconnect.testutil.RecordingWiper
+import kotlinx.coroutines.flow.MutableSharedFlow
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -149,7 +156,25 @@ class ChatViewModelTest {
         unreadCount: Int = 0,
         myLastReadId: Long? = null,
     ): ChatViewModel {
-        chatRepository = testChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
+        chatRepository = testChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope, settings)
+        // Only ever asked to block / unblock / report here; the fakes
+        // under it are enough for that.
+        val familyRepository = FamilyRepository(
+            familyApi = FakeFamilyApi(),
+            authApi = FakeAuthApi(),
+            memberDao = db.memberDao(),
+            settings = settings,
+            sessionRepository = SessionRepository(
+                authApi = FakeAuthApi(),
+                tokenStore = FakeTokenStore("tok"),
+                settings = settings,
+                wiper = RecordingWiper(),
+                unauthorizedEvents = MutableSharedFlow(),
+                scope = repoScope,
+            ),
+            socket = socket,
+            scope = repoScope,
+        )
         messageRepository = MessageRepository(
             chatApi = chatApi,
             attachmentApi = attachmentApi,
@@ -186,6 +211,7 @@ class ChatViewModelTest {
             appContext = RuntimeEnvironment.getApplication(),
             savedStateHandle = SavedStateHandle(mapOf("chatId" to CHAT)),
             messageRepository = messageRepository,
+            familyRepository = familyRepository,
             chatRepository = chatRepository,
             settings = settings,
             socket = socket,

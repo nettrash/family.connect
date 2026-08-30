@@ -334,4 +334,24 @@
     <plurals name="s_use_at_least_characters">
         <item quantity="other">至少使用 %1$d 个字符。</item>
     </plurals>
+    <string name="e_leave_failed">暂时无法退出，请重试。</string>
+    <string name="s_leave_family_explanation_owner">%1$s将成为所有者。你将失去家庭聊天和私聊的访问权限；重新加入后历史记录会恢复。</string>
+    <string name="s_leave_family_explanation_last">你是最后一名成员。离开将删除这个家庭及其中的所有内容。</string>
+    <string name="s_ownership_passed_on">所有权已转移</string>
+    <string name="s_ownership_passed_to">%1$s现在是这个家庭的所有者。</string>
+    <string name="s_hidden_blocked_member">已隐藏 — 已屏蔽的成员</string>
+    <string name="s_replying_to_hidden">回复一条已隐藏的消息</string>
+    <string name="s_which_replied_to_hidden">该消息回复了一条已隐藏的消息</string>
+    <string name="s_report">举报</string>
+    <string name="s_report_ellipsis">举报…</string>
+    <string name="s_block">屏蔽</string>
+    <string name="s_unblock">取消屏蔽</string>
+    <string name="s_report_member_title">为什么举报%1$s？</string>
+    <string name="s_report_reason_spam">垃圾信息</string>
+    <string name="s_report_reason_harassment">骚扰</string>
+    <string name="s_report_reason_inappropriate">不当内容</string>
+    <string name="s_report_reason_other">其他原因</string>
+    <string name="s_report_disclosure">你的家庭所有者将看到此举报、你的姓名以及消息内容。</string>
+    <string name="e_block_failed">暂时无法更改，请重试。</string>
+    <string name="e_report_failed">举报发送失败，请重试。</string>
 </resources>

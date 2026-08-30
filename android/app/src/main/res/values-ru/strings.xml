@@ -346,4 +346,24 @@
         <item quantity="many">Не менее %1$d символов.</item>
         <item quantity="other">Не менее %1$d символов.</item>
     </plurals>
+    <string name="e_leave_failed">Сейчас не удалось выйти. Попробуйте ещё раз.</string>
+    <string name="s_leave_family_explanation_owner">Владельцем станет %1$s. Вы потеряете доступ к семейному чату и личным чатам; история вернётся, если вы вступите снова.</string>
+    <string name="s_leave_family_explanation_last">Вы последний участник. Если выйти, семья и всё её содержимое будут удалены.</string>
+    <string name="s_ownership_passed_on">Владелец сменился</string>
+    <string name="s_ownership_passed_to">Теперь владелец семьи — %1$s.</string>
+    <string name="s_hidden_blocked_member">Скрыто — заблокированный участник</string>
+    <string name="s_replying_to_hidden">Ответ на скрытое сообщение</string>
+    <string name="s_which_replied_to_hidden">которое было ответом на скрытое сообщение</string>
+    <string name="s_report">Пожаловаться</string>
+    <string name="s_report_ellipsis">Пожаловаться…</string>
+    <string name="s_block">Заблокировать</string>
+    <string name="s_unblock">Разблокировать</string>
+    <string name="s_report_member_title">Почему вы жалуетесь на %1$s?</string>
+    <string name="s_report_reason_spam">Спам</string>
+    <string name="s_report_reason_harassment">Оскорбления</string>
+    <string name="s_report_reason_inappropriate">Неприемлемый контент</string>
+    <string name="s_report_reason_other">Другое</string>
+    <string name="s_report_disclosure">Владелец семьи увидит эту жалобу, ваше имя и текст сообщения.</string>
+    <string name="e_block_failed">Сейчас не удалось изменить. Попробуйте ещё раз.</string>
+    <string name="e_report_failed">Не удалось отправить жалобу. Попробуйте ещё раз.</string>
 </resources>

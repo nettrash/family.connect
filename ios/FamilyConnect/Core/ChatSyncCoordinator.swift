@@ -2513,6 +2513,7 @@ final class ChatSyncCoordinator {
             // ids only: re-dropping `held` would delete the chat again on
             // every `GET /me`.
             dropDirectChat(peerUserID: id)
+            withdrawCallDonations(peerUserID: id)
         }
         blockedUserIDs = incoming
         saveContext()
@@ -2587,11 +2588,25 @@ final class ChatSyncCoordinator {
             // Only on the way IN. Unblocking does not put it back from
             // here: `GET /chats` does, which is why `unblock` resyncs.
             dropDirectChat(peerUserID: userID)
+            withdrawCallDonations(peerUserID: userID)
         } else {
             if let existing { modelContext.delete(existing) }
             blockedUserIDs.remove(userID)
         }
         saveContext()
+    }
+
+    /// Retract the call suggestions this app donated about one person.
+    ///
+    /// iOS only, and not because macOS forgot: `Intents` donation is where
+    /// Siri's suggestions and the Phone app's sense of who Family can call
+    /// come from, and the Mac has neither surface. Called on BOTH block
+    /// paths — the local one and a block made on another device — for
+    /// newly-blocked ids only (docs/protocol.md, "Calls").
+    private func withdrawCallDonations(peerUserID: Int64) {
+        #if os(iOS)
+        CallDonation.withdraw(peerUserID: peerUserID)
+        #endif
     }
 
     /// Load the set from the store at launch, before the first sync — so a

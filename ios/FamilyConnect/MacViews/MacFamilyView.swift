@@ -41,6 +41,11 @@ struct MacFamilyView: View {
     @State private var busy = false
     @State private var errorText: String?
     @State private var resetting: MemberDTO?
+    /// The stepper's own cap while the debounced write is in flight; nil
+    /// whenever the server's answer is the one to trust.
+    @State private var capDraft: Int?
+    /// The pending cap write, cancelled and replaced on every tap.
+    @State private var capCommit: Task<Void, Never>?
     /// The member whose birthday the owner is editing; nil while closed.
     @State private var editingBirthday: MemberDTO?
 
@@ -52,6 +57,8 @@ struct MacFamilyView: View {
                 if session.isOwner {
                     inviteSection
                     if !requests.isEmpty { requestsSection }
+                    policySection
+                    capSection
                     if let family = session.family {
                         // The same two sections the phone shows, from the
                         // same file — a setting changed on one device has
@@ -133,6 +140,133 @@ struct MacFamilyView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Who may join, and how many. Net-new on the Mac: this window has
+    /// shown the invite code since it was written but never what the code
+    /// DOES, so an owner working from a desk could hand out a code and had
+    /// no way to say who it let in — or to shut the door.
+    private var policySection: some View {
+        Section("Join policy") {
+            Picker("New members", selection: policyBinding) {
+                Text("Join immediately").tag("open")
+                Text("Need approval").tag("approval")
+                Text("Nobody").tag("closed")
+            }
+            Text(policyFooter)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var policyBinding: Binding<String> {
+        Binding(
+            get: { session.family?.joinPolicy ?? "open" },
+            set: { policy in
+                guard policy != session.family?.joinPolicy else { return }
+                run {
+                    let updated = try await coordinator.api.setJoinPolicy(policy)
+                    await MainActor.run { session.applyFamily(merged(updated)) }
+                }
+            })
+    }
+
+    /// One line per policy — "Nobody" needs the two things the others do
+    /// not: the code stops working, and the requests already waiting are
+    /// untouched (docs/protocol.md,
+    /// `POST /families/join-requests/{id}/approve`).
+    private var policyFooter: LocalizedStringKey {
+        switch session.family?.joinPolicy {
+        case "approval": "With approval, join requests wait here until you approve them."
+        case "closed": "The invite code stops working — nobody new can join. Requests already waiting are unaffected, and you can still approve them."
+        default: "Anyone with the invite code joins straight away."
+        }
+    }
+
+    @ViewBuilder
+    private var capSection: some View {
+        if let ceiling = session.maxFamilyMembers {
+            Section("Member limit") {
+                Toggle("Limit members", isOn: capEnabledBinding(ceiling: ceiling))
+                if let cap = draftCap {
+                    Stepper(value: capBinding(ceiling: ceiling), in: 1...ceiling) {
+                        LabeledContent("Most members", value: cap.formatted())
+                    }
+                }
+                Text(capFooter(ceiling: ceiling))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var draftCap: Int? { capDraft ?? session.family?.maxMembers }
+
+    private func capEnabledBinding(ceiling: Int) -> Binding<Bool> {
+        Binding(
+            get: { draftCap != nil },
+            set: { on in
+                // Turning it on freezes the family where it stands. A cap
+                // at or below the current size is legal and acts as a
+                // freeze rather than being refused (docs/protocol.md,
+                // `PATCH /families/mine`).
+                let seed = MemberCap.seed(memberCount: members.count, ceiling: ceiling)
+                capDraft = on ? seed : nil
+                commitCap(on ? seed : nil)
+            })
+    }
+
+    private func capBinding(ceiling: Int) -> Binding<Int> {
+        Binding(
+            get: { draftCap ?? MemberCap.seed(memberCount: members.count, ceiling: ceiling) },
+            set: { value in
+                let clamped = MemberCap.clamp(value, ceiling: ceiling)
+                capDraft = clamped
+                commitCap(clamped)
+            })
+    }
+
+    /// One PATCH at the end of a stepper drag, not one per tap.
+    private func commitCap(_ cap: Int?) {
+        capCommit?.cancel()
+        capCommit = Task {
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            do {
+                let updated = try await coordinator.api.setMemberCap(cap)
+                session.applyFamily(merged(updated))
+                capDraft = nil
+            } catch {
+                capDraft = nil
+                errorText = String(localized: "Couldn't change the member limit. Try again.")
+            }
+        }
+    }
+
+    private func capFooter(ceiling: Int) -> LocalizedStringKey {
+        switch MemberCap.state(cap: draftCap, memberCount: members.count, ceiling: ceiling) {
+        case .openToCeiling(let ceiling):
+            "No limit of your own. This server allows up to \(ceiling) members in a family."
+        case .frozen(let count):
+            "\(count) members now. Nobody new can join until somebody leaves; no one is removed."
+        case .room(let count, let cap):
+            "\(count) of \(cap) seats used."
+        }
+    }
+
+    /// A PATCH answers without the invite code unless the caller is the
+    /// owner, so keep the one already held rather than blanking the field
+    /// this window draws.
+    private func merged(_ updated: FamilyDTO) -> FamilyDTO {
+        FamilyDTO(
+            id: updated.id,
+            name: updated.name,
+            joinPolicy: updated.joinPolicy,
+            createdAt: updated.createdAt,
+            inviteCode: updated.inviteCode ?? session.family?.inviteCode,
+            language: updated.language,
+            aiHistory: updated.aiHistory,
+            maxMembers: updated.maxMembers)
     }
 
     private var requestsSection: some View {
@@ -254,15 +388,30 @@ struct MacFamilyView: View {
         }
     }
 
+    /// Its own Task rather than `run`, which flattens every failure into
+    /// one sentence. Approval has a refusal worth naming: the cap is
+    /// re-checked here because the roster can fill between a request and
+    /// the decision, and the request stays PENDING when it does — a full
+    /// family is a temporary condition, not a decision (docs/protocol.md,
+    /// `POST /families/join-requests/{id}/approve`).
     private func decide(_ request: JoinRequestDTO, approve: Bool) {
-        run {
-            if approve {
-                _ = try await coordinator.api.approveJoinRequest(id: request.id)
-            } else {
-                try await coordinator.api.rejectJoinRequest(id: request.id)
+        busy = true
+        errorText = nil
+        Task {
+            defer { busy = false }
+            do {
+                if approve {
+                    _ = try await coordinator.api.approveJoinRequest(id: request.id)
+                } else {
+                    try await coordinator.api.rejectJoinRequest(id: request.id)
+                }
+                await coordinator.resync()
+                requests = (try? await coordinator.api.joinRequests()) ?? []
+            } catch APIError.conflict(let code, _) where code == "family_full" {
+                errorText = String(localized: "The family is full. Raise the member limit or wait for somebody to leave — the request is still waiting.", comment: "Error when approving a join request would exceed the family's member cap.")
+            } catch {
+                errorText = String(localized: "That didn't work. Try again.")
             }
-            await coordinator.resync()
-            requests = (try? await coordinator.api.joinRequests()) ?? []
         }
     }
 

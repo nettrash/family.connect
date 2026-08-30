@@ -52,6 +52,12 @@ nonisolated enum CallRequestRouter {
 
     enum Resolution: Equatable, Sendable {
         case member(Int64)
+        /// The request names somebody the caller has BLOCKED. Not
+        /// `.unknown`: the app knows exactly who this is, and saying it
+        /// does not would send the blocker to re-link a contact that is
+        /// already linked (docs/protocol.md, "Calls"). The refusal reaches
+        /// nobody but the blocker, so it can be said plainly.
+        case blocked(Int64)
         /// The person has to say who is meant. With a contact identifier
         /// the answer is kept as a link (ContactLinks); without one — a
         /// name two members share — it is just this call's choice.
@@ -65,6 +71,11 @@ nonisolated enum CallRequestRouter {
     /// membership cannot ring somebody who is gone.
     struct Directory {
         var isActiveMember: (Int64) -> Bool
+        /// Separate from `isActiveMember` on purpose. A blocked member is
+        /// still active — still on the roster, still nameable, still the
+        /// author of messages that need a name — so folding the two would
+        /// make every other caller of the roster gate wrong.
+        var isBlocked: (Int64) -> Bool
         var roster: () -> [Candidate]
         var linkedMember: (_ contactIdentifier: String) -> Int64?
         var memberByPhone: (String) -> Int64?
@@ -73,25 +84,40 @@ nonisolated enum CallRequestRouter {
 
     static func resolve(_ request: CallRequest, in directory: Directory) -> Resolution {
         let active = { (id: Int64?) -> Int64? in id.flatMap { directory.isActiveMember($0) ? $0 : nil } }
+        // Every road out of here goes through this, so a member identified
+        // by ANY of the four kinds of evidence gets the same answer.
+        let reached = { (id: Int64) -> Resolution in
+            directory.isBlocked(id) ? .blocked(id) : .member(id)
+        }
         // 1. Ours.
         if case .generic(let value)? = request.handle, let id = CallHandle.userID(from: value) {
-            return active(id).map { .member($0) } ?? .unknown
+            return active(id).map(reached) ?? .unknown
         }
         // 2. The contact, or its number / e-mail, through the links.
         if let contact = request.contactIdentifier, !contact.isEmpty, let id = active(directory.linkedMember(contact)) {
-            return .member(id)
+            return reached(id)
         }
         switch request.handle {
         case .phoneNumber(let number)?:
-            if let id = active(directory.memberByPhone(number)) { return .member(id) }
+            if let id = active(directory.memberByPhone(number)) { return reached(id) }
         case .emailAddress(let email)?:
-            if let id = active(directory.memberByEmail(email)) { return .member(id) }
+            if let id = active(directory.memberByEmail(email)) { return reached(id) }
         case .generic(let name)?:
             // 3. A name — the handle of an unlinked member.
             let roster = directory.roster().filter { directory.isActiveMember($0.userID) }
             switch match(name: name, in: roster) {
-            case .one(let member): return .member(member.userID)
-            case .several: return .needsChoice(contactIdentifier: request.contactIdentifier, name: name)
+            case .one(let member): return reached(member.userID)
+            case .several(let members):
+                // "Anna" with two Annas is Siri's question to ask — unless
+                // blocking has already answered it. One callable Anna left
+                // is not ambiguous, and none left is a block rather than a
+                // choice (docs/protocol.md, "Calls").
+                let callable = members.filter { !directory.isBlocked($0.userID) }
+                if callable.count == 1 { return .member(callable[0].userID) }
+                if let onlyBlocked = callable.isEmpty ? members.first : nil {
+                    return .blocked(onlyBlocked.userID)
+                }
+                return .needsChoice(contactIdentifier: request.contactIdentifier, name: name)
             case .none: break
             }
         case nil:

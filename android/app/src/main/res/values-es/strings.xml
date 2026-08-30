@@ -342,4 +342,24 @@
         <item quantity="many">Usa al menos %1$d caracteres.</item>
         <item quantity="other">Usa al menos %1$d caracteres.</item>
     </plurals>
+    <string name="e_leave_failed">No se pudo salir ahora mismo. Inténtalo de nuevo.</string>
+    <string name="s_leave_family_explanation_owner">%1$s pasa a ser el propietario. Perderás el acceso al chat familiar y a tus chats directos; tu historial vuelve si te unes de nuevo.</string>
+    <string name="s_leave_family_explanation_last">Eres el único miembro que queda. Si te vas, se eliminarán la familia y todo su contenido.</string>
+    <string name="s_ownership_passed_on">Propiedad transferida</string>
+    <string name="s_ownership_passed_to">%1$s es ahora el propietario de la familia.</string>
+    <string name="s_hidden_blocked_member">Oculto: miembro bloqueado</string>
+    <string name="s_replying_to_hidden">Respondiendo a un mensaje oculto</string>
+    <string name="s_which_replied_to_hidden">que respondía a un mensaje oculto</string>
+    <string name="s_report">Denunciar</string>
+    <string name="s_report_ellipsis">Denunciar…</string>
+    <string name="s_block">Bloquear</string>
+    <string name="s_unblock">Desbloquear</string>
+    <string name="s_report_member_title">¿Por qué denuncias a %1$s?</string>
+    <string name="s_report_reason_spam">Spam</string>
+    <string name="s_report_reason_harassment">Acoso</string>
+    <string name="s_report_reason_inappropriate">Contenido inapropiado</string>
+    <string name="s_report_reason_other">Otra cosa</string>
+    <string name="s_report_disclosure">El propietario de tu familia verá esta denuncia, tu nombre y el texto del mensaje.</string>
+    <string name="e_block_failed">No se pudo cambiar ahora mismo. Inténtalo de nuevo.</string>
+    <string name="e_report_failed">No se pudo enviar la denuncia. Inténtalo de nuevo.</string>
 </resources>

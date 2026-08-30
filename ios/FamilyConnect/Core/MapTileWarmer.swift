@@ -48,11 +48,29 @@ enum MapTileWarmer {
     /// visible location either, so making one here would be the leak
     /// inverted — the only device on the family's network asking Apple
     /// about a coordinate it refuses to draw.
+    /// WHICH coordinates this row should ask for, separated from the
+    /// asking so the rule can be tested. `MKMapSnapshotter` reports
+    /// nothing a test can see — it either contacts Apple or it does not —
+    /// so a `warm` that both decided and fired would leave the two rules
+    /// that matter (the setting, and asking once) resting on inspection.
+    ///
+    /// Pure, and takes `alreadyWarmed` rather than reading the store, so a
+    /// test can ask about the second visit without staging the first.
+    nonisolated static func coordinatesToWarm(
+        attachments: [AttachmentDTO],
+        mapPreviewsEnabled: Bool,
+        alreadyWarmed: Bool
+    ) -> [(latitude: Double, longitude: Double)] {
+        guard mapPreviewsEnabled, !alreadyWarmed else { return [] }
+        return attachments.compactMap(\.coordinate)
+    }
+
     @MainActor
     static func warm(localID: String, attachments: [AttachmentDTO]) {
-        guard AppSettings.mapPreviewsEnabled else { return }
-        guard !warmed.contains(localID) else { return }
-        let points = attachments.compactMap(\.coordinate)
+        let points = coordinatesToWarm(
+            attachments: attachments,
+            mapPreviewsEnabled: AppSettings.mapPreviewsEnabled,
+            alreadyWarmed: warmed.contains(localID))
         guard !points.isEmpty else { return }
         warmed.insert(localID)
         for point in points {

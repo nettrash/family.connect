@@ -334,4 +334,24 @@
     <plurals name="s_use_at_least_characters">
         <item quantity="other">%1$d 文字以上にしてください。</item>
     </plurals>
+    <string name="e_leave_failed">今は退出できませんでした。もう一度お試しください。</string>
+    <string name="s_leave_family_explanation_owner">%1$sさんがオーナーになります。家族チャットと個別チャットにアクセスできなくなります。再参加すれば履歴は戻ります。</string>
+    <string name="s_leave_family_explanation_last">残っているメンバーはあなただけです。退出すると家族とその中身がすべて削除されます。</string>
+    <string name="s_ownership_passed_on">オーナー権限を引き継ぎました</string>
+    <string name="s_ownership_passed_to">%1$sさんが家族のオーナーになりました。</string>
+    <string name="s_hidden_blocked_member">非表示 — ブロックしたメンバー</string>
+    <string name="s_replying_to_hidden">非表示のメッセージへの返信</string>
+    <string name="s_which_replied_to_hidden">非表示のメッセージに返信したもの</string>
+    <string name="s_report">報告</string>
+    <string name="s_report_ellipsis">報告…</string>
+    <string name="s_block">ブロック</string>
+    <string name="s_unblock">ブロックを解除</string>
+    <string name="s_report_member_title">%1$sさんを報告する理由は？</string>
+    <string name="s_report_reason_spam">スパム</string>
+    <string name="s_report_reason_harassment">嫌がらせ</string>
+    <string name="s_report_reason_inappropriate">不適切な内容</string>
+    <string name="s_report_reason_other">その他</string>
+    <string name="s_report_disclosure">家族のオーナーがこの報告、あなたの名前、メッセージ本文を確認します。</string>
+    <string name="e_block_failed">今は変更できませんでした。もう一度お試しください。</string>
+    <string name="e_report_failed">報告を送信できませんでした。もう一度お試しください。</string>
 </resources>

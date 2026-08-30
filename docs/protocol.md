@@ -1205,6 +1205,27 @@ they placed — a blocked caller who could place two calls at once has been told
 reverse direction — the blocker calling somebody they blocked — is refused with `blocked`, which
 only ever reaches the blocker.
 
+A client does not need to be told this to know it: it holds its own block list, so it leaves a
+blocked member out of every place a call can START — the conversation's call button, and the roster
+gate an OS call request resolves through. The OS surfaces are the ones that matter, because they
+OUTLIVE the block: a Recents row, a contact card's call button, a Favorites entry and Siri all go on
+offering a handle the app will no longer act on, and a client that resolved one anyway would place
+the call, take the refusal and then have to explain it. When a request does arrive for a blocked
+member the honest answer is that they have been blocked, offered to the blocker alone; it must not
+be the answer given for a person the app cannot identify, which sends somebody to re-link a contact
+that is already linked. Where a spoken name matches several members and only one of them is
+callable, that one is called — the ambiguity Siri would ask about is not ambiguous once the blocked
+half of it is out.
+
+What the app itself PUT on those surfaces, it takes back. A client that tells the operating system
+about the calls it places — so the system can suggest them later — withdraws that person's entries
+when they are blocked, because the suggestion is the app's own statement and goes on being made in
+the app's name long after it stops being true. This is device hygiene and not part of the silence:
+it happens entirely on the blocker's own device, changes nothing any other member can observe, and
+is not the same claim as "no entry in the operating system's call log", which is about a call that
+was never delivered. Unblocking does not put the old entries back — they were suggestions, not
+history, and the record of the calls themselves is untouched.
+
 **What is NOT hidden, and why.** Reactions, poll votes and message edits keep flowing, and the
 client hides the identity. One frame is serialised once and sent to every connection, so
 per-recipient content is structurally impossible on the socket; and a REST projection the socket

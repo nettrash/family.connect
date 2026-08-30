@@ -335,4 +335,24 @@
         <item quantity="few">Користи бар %1$d знака.</item>
         <item quantity="other">Користи бар %1$d знакова.</item>
     </plurals>
+    <string name="e_leave_failed">Тренутно није успело напуштање. Покушајте поново.</string>
+    <string name="s_leave_family_explanation_owner">%1$s постаје власник. Изгубићете приступ породичном ћаскању и личним ћаскањима; историја се враћа ако се поново придружите.</string>
+    <string name="s_leave_family_explanation_last">Ви сте једини преостали члан. Одласком се породица и све у њој бришу.</string>
+    <string name="s_ownership_passed_on">Власништво пренето</string>
+    <string name="s_ownership_passed_to">%1$s је сада власник породице.</string>
+    <string name="s_hidden_blocked_member">Сакривено — блокирани члан</string>
+    <string name="s_replying_to_hidden">Одговор на сакривену поруку</string>
+    <string name="s_which_replied_to_hidden">која је одговарала на сакривену поруку</string>
+    <string name="s_report">Пријави</string>
+    <string name="s_report_ellipsis">Пријави…</string>
+    <string name="s_block">Блокирај</string>
+    <string name="s_unblock">Одблокирај</string>
+    <string name="s_report_member_title">Зашто пријављујете корисника %1$s?</string>
+    <string name="s_report_reason_spam">Нежељене поруке</string>
+    <string name="s_report_reason_harassment">Узнемиравање</string>
+    <string name="s_report_reason_inappropriate">Неприкладан садржај</string>
+    <string name="s_report_reason_other">Нешто друго</string>
+    <string name="s_report_disclosure">Власник породице ће видети ову пријаву, ваше име и текст поруке.</string>
+    <string name="e_block_failed">Тренутно није успела промена. Покушајте поново.</string>
+    <string name="e_report_failed">Пријава није послата. Покушајте поново.</string>
 </resources>

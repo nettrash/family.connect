@@ -335,4 +335,24 @@
         <item quantity="few">Koristi bar %1$d znaka.</item>
         <item quantity="other">Koristi bar %1$d znakova.</item>
     </plurals>
+    <string name="e_leave_failed">Trenutno nije uspelo napuštanje. Pokušajte ponovo.</string>
+    <string name="s_leave_family_explanation_owner">%1$s postaje vlasnik. Izgubićete pristup porodičnom ćaskanju i ličnim ćaskanjima; istorija se vraća ako se ponovo pridružite.</string>
+    <string name="s_leave_family_explanation_last">Vi ste jedini preostali član. Odlaskom se porodica i sve u njoj brišu.</string>
+    <string name="s_ownership_passed_on">Vlasništvo preneto</string>
+    <string name="s_ownership_passed_to">%1$s je sada vlasnik porodice.</string>
+    <string name="s_hidden_blocked_member">Sakriveno — blokirani član</string>
+    <string name="s_replying_to_hidden">Odgovor na sakrivenu poruku</string>
+    <string name="s_which_replied_to_hidden">koja je odgovarala na sakrivenu poruku</string>
+    <string name="s_report">Prijavi</string>
+    <string name="s_report_ellipsis">Prijavi…</string>
+    <string name="s_block">Blokiraj</string>
+    <string name="s_unblock">Odblokiraj</string>
+    <string name="s_report_member_title">Zašto prijavljujete korisnika %1$s?</string>
+    <string name="s_report_reason_spam">Neželjene poruke</string>
+    <string name="s_report_reason_harassment">Uznemiravanje</string>
+    <string name="s_report_reason_inappropriate">Neprikladan sadržaj</string>
+    <string name="s_report_reason_other">Nešto drugo</string>
+    <string name="s_report_disclosure">Vlasnik porodice će videti ovu prijavu, vaše ime i tekst poruke.</string>
+    <string name="e_block_failed">Trenutno nije uspela promena. Pokušajte ponovo.</string>
+    <string name="e_report_failed">Prijava nije poslata. Pokušajte ponovo.</string>
 </resources>

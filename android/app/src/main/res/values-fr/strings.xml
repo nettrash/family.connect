@@ -342,4 +342,24 @@
         <item quantity="many">Utilise au moins %1$d caractères.</item>
         <item quantity="other">Utilise au moins %1$d caractères.</item>
     </plurals>
+    <string name="e_leave_failed">Impossible de quitter pour le moment. Réessayez.</string>
+    <string name="s_leave_family_explanation_owner">%1$s devient propriétaire. Vous perdrez l\'accès à la discussion familiale et à vos discussions directes ; votre historique revient si vous rejoignez.</string>
+    <string name="s_leave_family_explanation_last">Vous êtes le dernier membre. Partir supprime la famille et tout son contenu.</string>
+    <string name="s_ownership_passed_on">Propriété transmise</string>
+    <string name="s_ownership_passed_to">%1$s est désormais propriétaire de la famille.</string>
+    <string name="s_hidden_blocked_member">Masqué — membre bloqué</string>
+    <string name="s_replying_to_hidden">En réponse à un message masqué</string>
+    <string name="s_which_replied_to_hidden">qui répondait à un message masqué</string>
+    <string name="s_report">Signaler</string>
+    <string name="s_report_ellipsis">Signaler…</string>
+    <string name="s_block">Bloquer</string>
+    <string name="s_unblock">Débloquer</string>
+    <string name="s_report_member_title">Pourquoi signalez-vous %1$s ?</string>
+    <string name="s_report_reason_spam">Spam</string>
+    <string name="s_report_reason_harassment">Harcèlement</string>
+    <string name="s_report_reason_inappropriate">Contenu inapproprié</string>
+    <string name="s_report_reason_other">Autre chose</string>
+    <string name="s_report_disclosure">Le propriétaire de votre famille verra ce signalement, votre nom et le texte du message.</string>
+    <string name="e_block_failed">Impossible de modifier cela pour le moment. Réessayez.</string>
+    <string name="e_report_failed">Impossible d\'envoyer le signalement. Réessayez.</string>
 </resources>

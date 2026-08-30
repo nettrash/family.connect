@@ -24,6 +24,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import me.nettrash.familyconnect.data.repo.FamilyStatus
@@ -43,6 +44,18 @@ data class SettingsState(
     val myUsername: String? = null,
     val myDisplayName: String? = null,
     val familyName: String? = null,
+    /**
+     * Everybody this account has blocked. Account-scoped and cleared with
+     * the session, then restored wholesale from the next `GET /me` — a
+     * block is server state, not a device preference.
+     *
+     * Deliberately NOT a column on `members`: `upsertRoster` writes whole
+     * rows and would reset the flag on every refresh, `wipeAll()` fires
+     * when the caller leaves a family (and a block is a pair, not a
+     * membership), and a blocked id may name somebody with no roster row
+     * at all — somebody who left, was deleted, or shares no family.
+     */
+    val blockedUserIds: Set<Long> = emptySet(),
     /** My own profile-picture version; 0 = no picture. */
     val myAvatarVersion: Long = 0,
     /** Last FCM registration token seen — device-scoped, survives logout. */
@@ -153,6 +166,21 @@ interface SettingsRepository {
     /** Record what `GET /me` said about VIDEO calls on this server. */
     suspend fun setVideoCallsEnabled(enabled: Boolean)
 
+    /**
+     * REPLACE the caller's block list with what the server just said.
+     *
+     * A complete state-set and never a delta, so the empty set is a real
+     * value that MUST be written: `blocked_user_ids` is "the one read in
+     * this protocol where absence is not allowed to mean 'leave what you
+     * hold alone'" (docs/protocol.md, `GET /me`). A guard skipping the
+     * empty case is exactly the bug the protocol names — the last unblock
+     * would never reach a second device.
+     *
+     * That is the OPPOSITE of the rule the roster follows, where an absent
+     * field never wipes a stored one. Do not copy that idiom here.
+     */
+    suspend fun setBlockedUserIds(ids: Collection<Long>)
+
     suspend fun resetKeepingServerUrl()
 }
 
@@ -163,6 +191,12 @@ class DataStoreSettingsRepository @Inject constructor(
 
     private object Keys {
         val SERVER_URL = stringPreferencesKey("server_url")
+        /**
+         * Stored as strings because Preferences DataStore has no
+         * `Set<Long>` key type. Order carries no meaning, so a set rather
+         * than a joined string.
+         */
+        val BLOCKED_USER_IDS = stringSetPreferencesKey("blocked_user_ids")
         val FAMILY_STATUS = stringPreferencesKey("family_status")
         val MY_USER_ID = longPreferencesKey("my_user_id")
         val MY_USERNAME = stringPreferencesKey("my_username")
@@ -197,6 +231,12 @@ class DataStoreSettingsRepository @Inject constructor(
             myAvatarVersion = prefs[Keys.MY_AVATAR_VERSION] ?: 0,
             pushToken = prefs[Keys.PUSH_TOKEN],
             pushDeviceId = prefs[Keys.PUSH_DEVICE_ID],
+            // `toLongOrNull` rather than `toLong`: a corrupt entry must
+            // not throw inside the map every screen collects.
+            blockedUserIds = prefs[Keys.BLOCKED_USER_IDS]
+                ?.mapNotNull(String::toLongOrNull)
+                ?.toSet()
+                .orEmpty(),
             linkPreviewsEnabled = prefs[Keys.LINK_PREVIEWS_DISABLED] != true,
             boardCursor = prefs[Keys.BOARD_CURSOR] ?: 0L,
             boardSeenNoteId = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L,
@@ -293,6 +333,11 @@ class DataStoreSettingsRepository @Inject constructor(
 
     override suspend fun setVideoCallsEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.VIDEO_CALLS_ENABLED] = enabled }
+    }
+
+    override suspend fun setBlockedUserIds(ids: Collection<Long>) {
+        // Unconditional, empty set included. See the interface.
+        dataStore.edit { it[Keys.BLOCKED_USER_IDS] = ids.map(Long::toString).toSet() }
     }
 
     override suspend fun resetKeepingServerUrl() {

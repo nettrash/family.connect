@@ -218,6 +218,29 @@ sealed interface ChatListItem {
 
     data class MessageItem(
         val entity: MessageEntity,
+        /**
+         * Its sender is blocked, so the row draws the placeholder and the
+         * timestamp and nothing else (docs/protocol.md, "Blocking a
+         * member").
+         *
+         * A FLAG rather than an omission: the row stays in the list. The
+         * server delivers a blocked member's messages unfiltered on
+         * purpose, and a client that dropped them would break history
+         * paging and freeze its own read marker at the id before the
+         * hidden one — which then leaps forward the moment a third member
+         * posts, a perfect repeatable oracle for the blocked person
+         * watching the other end.
+         */
+        val isHiddenByBlock: Boolean = false,
+        /**
+         * The QUOTED message's author is blocked. Independent of both
+         * [isHiddenByBlock] and [isParentHidden]: a reply by an unblocked
+         * member to a blocked one, whose own parent is a third person, is
+         * the ordinary shape that needs all three answered separately.
+         */
+        val isReplyHidden: Boolean = false,
+        /** The quote's own parent, one level down, has a blocked author. */
+        val isParentHidden: Boolean = false,
         val showSenderName: Boolean,
         val senderName: String?,
         val showTimestamp: Boolean,
@@ -289,6 +312,11 @@ fun buildChatItems(
     firstUnreadServerId: Long? = null,
     /** What the divider says. Ignored while [firstUnreadServerId] is null. */
     newMessageCount: Int = 0,
+    /**
+     * Everybody the reader has blocked. Defaulted so every existing call
+     * site and test compiles untouched.
+     */
+    blockedUserIds: Set<Long> = emptySet(),
 ): List<ChatListItem> {
     val items = ArrayList<ChatListItem>(messagesNewestFirst.size + 8)
     messagesNewestFirst.forEachIndexed { index, message ->
@@ -305,9 +333,27 @@ fun buildChatItems(
             newer.senderId != message.senderId ||
             TimeFormat.bubbleTime(newer.createdAt, zone) != TimeFormat.bubbleTime(message.createdAt, zone)
 
+        // The run boundaries above are computed over the UNFILTERED
+        // sequence, and deliberately: run GROUPING is unchanged by hiding,
+        // so a hidden bubble still counts as its sender's run and the next
+        // visible message from somebody else still gets its caption.
+        // Filtering hidden rows out before this point would silently merge
+        // two runs and drop that caption.
+        val hidden = BlockedMessageRule.isHidden(message.senderId, myUserId, blockedUserIds)
+
         items += ChatListItem.MessageItem(
             entity = message,
-            showSenderName = isFamilyChat && message.senderId != myUserId && startsRun,
+            isHiddenByBlock = hidden,
+            isReplyHidden = BlockedMessageRule.isQuoteHidden(
+                message.replySenderId, myUserId, blockedUserIds,
+            ),
+            isParentHidden = BlockedMessageRule.isQuoteHidden(
+                message.replyParentSenderId, myUserId, blockedUserIds,
+            ),
+            // A hidden row draws no name and no avatar. The flag above is
+            // what the bubble reads; this keeps the two from disagreeing
+            // if some other surface reads `showSenderName` alone.
+            showSenderName = !hidden && isFamilyChat && message.senderId != myUserId && startsRun,
             senderName = if (message.senderId == assistantUserId) {
                 assistantName
             } else {
