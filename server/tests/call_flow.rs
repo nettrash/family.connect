@@ -1143,3 +1143,102 @@ async fn a_suppressed_call_leaves_the_callee_reachable_by_everybody_else() {
         "the only offer that reaches them is the unblocked one: {offer}"
     );
 }
+
+/// The BLOCKER calling somebody they blocked is refused outright — the one
+/// call error that only ever reaches the person who set the block.
+///
+/// TWO guards produce this refusal independently, and the test survives
+/// losing either one: the explicit check in `offer`, and
+/// `ensure_chat_access`, which the offer path calls first and which closes
+/// a hidden direct chat on every path. That redundancy is deliberate — a
+/// block leaking on the call path is worth belts and braces — so this test
+/// pins the BEHAVIOUR and goes red only when both are gone, which is
+/// verified rather than assumed.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn the_blocker_calling_the_blocked_is_refused() {
+    let ts = spawn_server().await;
+    let (owner, _owner_id, member, member_id) = family_of_two(&ts).await;
+    let chat_id = direct_chat(&ts, &owner, member_id).await;
+    register_device(&ts, &member, "ios", "callee-voip").await;
+
+    ts.put(
+        &owner,
+        &format!("/families/members/{member_id}/block"),
+        json!({}),
+    )
+    .await;
+
+    let mut caller = connect_ws(&ts, &owner).await;
+    let mut callee = connect_ws(&ts, &member).await;
+    let call_id = uuid();
+    send_frame(
+        &mut caller,
+        json!({"type": "call_offer", "call_id": call_id, "chat_id": chat_id, "sdp": "v=0"}),
+    )
+    .await;
+
+    let err = next_frame_of_type(&mut caller, "error").await;
+    assert_eq!(err["code"], "blocked", "the blocker is told why: {err}");
+
+    // Nothing reached the other side, and no record was written for a call
+    // that never happened.
+    assert_no_frame_of_type(&mut callee, "call_offer", Duration::from_millis(400)).await;
+    assert!(
+        ts.push.call_pushes().is_empty(),
+        "no VoIP push for a refused offer: {:?}",
+        ts.push.call_pushes()
+    );
+    assert_no_frame_of_type(&mut caller, "message", Duration::from_millis(300)).await;
+}
+
+/// A blocked caller is told the callee's REAL state, in the same second an
+/// unblocked caller would be. The block is applied at DELIVERY and never at
+/// the decision — deciding earlier turns `peer_unreachable` into a one-frame
+/// oracle, because a blocked caller alone would rings out for the full
+/// timeout where everybody else is refused instantly.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_blocked_caller_is_told_the_callees_real_state() {
+    let ts = spawn_server_with_config(|cfg| cfg.calls.ring_timeout_secs = 30).await;
+    let (owner, owner_id) = ts.register("owner", "Olive").await;
+    let (member, member_id) = ts.register("junior", "Junior").await;
+    let (control, _control_id) = ts.register("cousin", "Cousin").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &invite_code, "joined").await;
+    ts.join(&control, &invite_code, "joined").await;
+
+    let blocked_dm = direct_chat(&ts, &owner, member_id).await;
+    let control_dm = direct_chat(&ts, &control, member_id).await;
+    // The member blocks the OWNER, and holds no socket and no device.
+    ts.put(
+        &member,
+        &format!("/families/members/{owner_id}/block"),
+        json!({}),
+    )
+    .await;
+
+    let mut blocked_caller = connect_ws(&ts, &owner).await;
+    let mut control_caller = connect_ws(&ts, &control).await;
+
+    // (a) genuinely unreachable: both callers get the SAME answer.
+    send_frame(
+        &mut blocked_caller,
+        json!({"type": "call_offer", "call_id": uuid(), "chat_id": blocked_dm, "sdp": "v=0"}),
+    )
+    .await;
+    let blocked_err = next_frame_of_type(&mut blocked_caller, "error").await;
+    send_frame(
+        &mut control_caller,
+        json!({"type": "call_offer", "call_id": uuid(), "chat_id": control_dm, "sdp": "v=0"}),
+    )
+    .await;
+    let control_err = next_frame_of_type(&mut control_caller, "error").await;
+    assert_eq!(
+        blocked_err["code"], control_err["code"],
+        "sameness is the assertion, not the code: a blocked caller must learn \
+         exactly what everybody else learns, when they learn it — {blocked_err} vs {control_err}"
+    );
+    assert_eq!(blocked_err["code"], "peer_unreachable");
+}

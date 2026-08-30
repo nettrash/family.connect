@@ -119,14 +119,35 @@ async fn a_member_may_block_the_owner() {
     let me: Value = ts.get(&member, "/me").await.json().await.expect("me");
     assert_eq!(me["blocked_user_ids"], json!([owner_id]));
 
-    // And the owner's own powers are untouched by being blocked.
-    let mine: Value = ts
-        .get(&owner, "/families/mine")
+    // And the owner's own powers are untouched by being blocked — a block
+    // is a rendering preference, never a governance action. Reading the
+    // join policy back proved nothing; exercising the powers does.
+    let (member_id, _) = (ts.user_id(&member).await, ());
+    assert_eq!(
+        ts.post(
+            &owner,
+            &format!("/families/members/{member_id}/password"),
+            json!({"new_password": "a-new-password"})
+        )
         .await
-        .json()
-        .await
-        .expect("mine");
-    assert_eq!(mine["family"]["join_policy"], "open");
+        .status(),
+        204,
+        "the owner may still reset the password of somebody who blocked them"
+    );
+    assert_eq!(
+        ts.post(&owner, "/families/invite-code/rotate", json!({}))
+            .await
+            .status(),
+        200,
+        "and still rotate the code"
+    );
+    assert_eq!(
+        ts.delete(&owner, &format!("/families/members/{member_id}"))
+            .await
+            .status(),
+        204,
+        "and still remove them"
+    );
 }
 
 /// The refusals, all of them aimed at the caller.
@@ -267,8 +288,26 @@ async fn account_deletion_takes_the_blocks_it_made_and_leaves_the_rest() {
         "a block made against a deleted account is not theirs to revoke: {me}"
     );
 
-    // And the third member, whom the leaver had blocked, is untouched —
-    // the row that went was the departed account's own preference.
+    // And read the asymmetry straight off the table, because the endpoint
+    // cannot see it: `third`'s list is [] whether or not the leaver's block
+    // was deleted — they were the BLOCKED party, never the blocker.
+    let made: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM member_blocks WHERE blocker_user_id = $1")
+            .bind(leaver_id)
+            .fetch_one(&ts.state.pool)
+            .await
+            .expect("count blocks made");
+    let against: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM member_blocks WHERE blocked_user_id = $1")
+            .bind(leaver_id)
+            .fetch_one(&ts.state.pool)
+            .await
+            .expect("count blocks against");
+    assert_eq!(made, 0, "the blocks the account MADE went with it");
+    assert_eq!(
+        against, 1,
+        "the block made AGAINST it stands — never theirs to revoke by leaving"
+    );
     let me: Value = ts.get(&third, "/me").await.json().await.expect("me");
     assert_eq!(me["blocked_user_ids"], json!([]));
     assert_ne!(owner_id, leaver_id);
@@ -561,11 +600,25 @@ async fn stats_drop_the_blocked_members_row_but_not_the_totals() {
         .json()
         .await
         .expect("stats");
-    assert_eq!(
-        after["members"].as_array().map(Vec::len),
-        Some(1),
-        "the blocked member's row is gone: {after}"
+    let ids = |v: &Value| -> Vec<i64> {
+        v["members"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|m| {
+                m["user_id"]
+                    .as_i64()
+                    .or_else(|| m["id"].as_i64())
+                    .expect("id")
+            })
+            .collect()
+    };
+    assert!(
+        !ids(&after).contains(&member_id),
+        "the blocked member's row is gone — by identity, not by a count that \
+         a `<>` typo would also satisfy: {after}"
     );
+    assert_eq!(ids(&after).len(), 1, "and only theirs: {after}");
     assert_eq!(
         after["totals"]["messages"], 2,
         "totals are the FAMILY's numbers and are never projected: {after}"
@@ -583,7 +636,11 @@ async fn stats_drop_the_blocked_members_row_but_not_the_totals() {
         .json()
         .await
         .expect("stats");
-    assert_eq!(theirs["members"].as_array().map(Vec::len), Some(2));
+    assert!(
+        ids(&theirs).contains(&member_id),
+        "a third party sees the unprojected view: {theirs}"
+    );
+    assert_eq!(ids(&theirs).len(), 2);
 }
 
 fn uuid() -> String {
@@ -1032,4 +1089,117 @@ async fn a_report_pushes_the_owner_and_never_the_owner_it_names() {
          somebody asked to have looked at: {:?}",
         report_pushes[0].note
     );
+}
+
+/// **The family chat is never projected per caller.** A hidden row still
+/// arrives, still counts toward `unread_count`, may still be
+/// `last_message`, and the blocker's read marker still advances THROUGH it.
+///
+/// Filtering any of that would freeze the marker at the id before a blocked
+/// message — and a marker that leaps forward the moment a third member
+/// posts is a perfect, repeatable oracle for the blocked person watching
+/// the other end.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn the_family_chat_row_and_history_are_never_projected() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (noisy, noisy_id) = ts.register("junior", "Junior").await;
+    let (cousin, _) = ts.register("cousin", "Cousin").await;
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&noisy, &invite_code, "joined").await;
+    ts.join(&cousin, &invite_code, "joined").await;
+    let chat_id = ts.family_chat_id(&owner).await;
+
+    let mut ids = Vec::new();
+    for n in 0..3 {
+        let m: Value = ts
+            .post_message(&noisy, chat_id, &uuid(), &format!("before {n}"))
+            .await
+            .json()
+            .await
+            .expect("m");
+        ids.push(m["message"]["id"].as_i64().expect("id"));
+    }
+    ts.put(
+        &owner,
+        &format!("/families/members/{noisy_id}/block"),
+        json!({}),
+    )
+    .await;
+    for n in 0..3 {
+        let m: Value = ts
+            .post_message(&noisy, chat_id, &uuid(), &format!("after {n}"))
+            .await
+            .json()
+            .await
+            .expect("m");
+        ids.push(m["message"]["id"].as_i64().expect("id"));
+    }
+    ts.post_message(&cousin, chat_id, &uuid(), "from the cousin")
+        .await;
+
+    // HISTORY: all seven, the blocked member's ids present and contiguous.
+    let history: Value = ts
+        .get(&owner, &format!("/chats/{chat_id}/messages?limit=50"))
+        .await
+        .json()
+        .await
+        .expect("messages");
+    let got: Vec<i64> = history["messages"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|m| m["id"].as_i64().expect("id"))
+        .collect();
+    assert_eq!(
+        got.len(),
+        7,
+        "the server never filters history — a short page reads as the end of \
+         the feed and freezes the read cursor: {history}"
+    );
+    for id in &ids {
+        assert!(got.contains(id), "hidden id {id} still delivered: {got:?}");
+    }
+
+    // THE CHAT ROW: the count is the other half of the read marker, so it
+    // counts hidden rows too, and the preview may be a hidden member's.
+    let chats: Value = ts.get(&owner, "/chats").await.json().await.expect("chats");
+    let row = chats["chats"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|c| c["chat"]["id"] == chat_id)
+        .expect("the family row")
+        .clone();
+    assert_eq!(row["unread_count"], 7, "every message counts: {row}");
+
+    // THE MARKER: it advances through a hidden message, and the count
+    // follows it down.
+    let marked = ts
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/read"),
+            json!({"last_read_message_id": ids[4]}),
+        )
+        .await;
+    assert_eq!(
+        marked.status(),
+        204,
+        "reading through a hidden row is allowed"
+    );
+    let chats: Value = ts.get(&owner, "/chats").await.json().await.expect("chats");
+    let row = chats["chats"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|c| c["chat"]["id"] == chat_id)
+        .expect("the family row")
+        .clone();
+    assert_eq!(
+        row["last_read_message_id"], ids[4],
+        "the marker landed on a hidden id: {row}"
+    );
+    assert_eq!(row["unread_count"], 2, "and the count followed it: {row}");
 }

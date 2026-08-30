@@ -731,9 +731,14 @@ async fn read_and_typing_are_suppressed_inward_only() {
     let ts = spawn_server().await;
     let (blocker, _) = ts.register("owner", "Olive").await;
     let (blocked, blocked_id) = ts.register("junior", "Junior").await;
+    // A THIRD member, whose socket is what distinguishes "drop the people
+    // who blocked this sender" from "drop everybody". In a two-person
+    // family the surviving recipient list is empty either way.
+    let (bystander, _) = ts.register("cousin", "Cousin").await;
     let (_, invite_code) = ts.create_family(&blocker, "The Smiths").await;
     ts.set_open_policy(&blocker).await;
     ts.join(&blocked, &invite_code, "joined").await;
+    ts.join(&bystander, &invite_code, "joined").await;
     let chat_id = ts.family_chat_id(&blocker).await;
 
     ts.put(
@@ -745,6 +750,7 @@ async fn read_and_typing_are_suppressed_inward_only() {
 
     let mut blocker_ws = connect_ws(&ts, &blocker).await;
     let mut blocked_ws = connect_ws(&ts, &blocked).await;
+    let mut bystander_ws = connect_ws(&ts, &bystander).await;
 
     // Seed a message so there is something to read.
     let seeded: Value = ts
@@ -778,6 +784,16 @@ async fn read_and_typing_are_suppressed_inward_only() {
         .expect("send typing");
     assert_no_frame_of_type(&mut blocker_ws, "read", Duration::from_millis(400)).await;
     assert_no_frame_of_type(&mut blocker_ws, "typing", Duration::from_millis(400)).await;
+    // ...but the BYSTANDER, who blocked nobody, receives both. This is what
+    // separates a filter that drops the blockers from one that drops the
+    // whole recipient list.
+    let seen = next_frame_of_type(&mut bystander_ws, "read").await;
+    assert_eq!(
+        seen["user_id"], blocked_id,
+        "relayed to everyone else: {seen}"
+    );
+    let typing_seen = next_frame_of_type(&mut bystander_ws, "typing").await;
+    assert_eq!(typing_seen["user_id"], blocked_id);
 
     // OUTWARD: the blocker reads and types, and BOTH still reach the person
     // they blocked, unchanged. This is the half a transposed filter breaks.
@@ -841,4 +857,63 @@ async fn a_blocked_members_message_still_arrives_over_the_socket() {
         "history is never filtered — a short page reads as the end of the feed, \
          and a frozen read marker is an oracle: {frame}"
     );
+}
+
+/// An owner's leave tells the family who owns it now — and the ORDER is
+/// load-bearing: `family_owner` before `member_left`, so no client ever
+/// momentarily holds a family whose `owner_user_id` names nobody in
+/// `members`.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn an_owners_leave_tells_the_family_who_owns_it_now() {
+    let ts = spawn_server().await;
+    let (owner, owner_id) = ts.register("owner", "Olive").await;
+    let (first, first_id) = ts.register("junior", "Junior").await;
+    let (second, _) = ts.register("cousin", "Cousin").await;
+    let (family_id, invite_code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&first, &invite_code, "joined").await;
+    ts.join(&second, &invite_code, "joined").await;
+
+    let mut successor_ws = connect_ws(&ts, &first).await;
+    let mut other_ws = connect_ws(&ts, &second).await;
+
+    let left = ts.post(&owner, "/families/leave", json!({})).await;
+    assert_eq!(left.status(), 200);
+
+    // Read in ARRIVAL order on the successor's socket: the first of the two
+    // frames must be family_owner.
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..2 {
+        let deadline = tokio::time::Instant::now() + FRAME_WAIT;
+        loop {
+            let message = tokio::time::timeout_at(deadline, successor_ws.next())
+                .await
+                .expect("timed out waiting for a membership frame")
+                .expect("socket closed")
+                .expect("socket errored");
+            if let Message::Text(text) = message {
+                let value: Value = serde_json::from_str(text.as_str()).expect("JSON");
+                let kind = value["type"].as_str().unwrap_or_default().to_string();
+                if kind == "family_owner" {
+                    assert_eq!(value["user_id"], first_id, "longest-standing inherits");
+                    assert_eq!(value["family_id"], family_id);
+                }
+                if kind == "family_owner" || kind == "member_left" {
+                    seen.push(kind);
+                    break;
+                }
+            }
+        }
+    }
+    assert_eq!(
+        seen,
+        vec!["family_owner".to_string(), "member_left".to_string()],
+        "ownership must land BEFORE the departure, or a client holds a family \
+         owned by somebody who is not in it"
+    );
+
+    // The other member is told the owner left too.
+    let left_frame = next_frame_of_type(&mut other_ws, "member_left").await;
+    assert_eq!(left_frame["user_id"], owner_id);
 }

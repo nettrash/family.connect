@@ -1334,3 +1334,59 @@ async fn the_owner_decides_whether_a_mention_sees_the_family_chats_history() {
         "and the language survived"
     );
 }
+
+/// The operator's ceiling binds at the APPROVAL doors too, for a family
+/// that never set a cap of its own. Both existing ceiling tests go through
+/// the OPEN door, so passing `i64::MAX` at either approval-path call site
+/// leaves the suite green while a ceiling of two admits everybody.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn the_operators_ceiling_binds_at_the_approval_doors() {
+    let ts = spawn_server_with_config(|cfg| cfg.limits.max_family_members = 2).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (second, _) = ts.register("junior", "Junior").await;
+    let (third, _) = ts.register("cousin", "Cousin").await;
+    // DEFAULT approval policy, and no max_members set at all.
+    let (_, invite_code) = ts.create_family(&owner, "The Smiths").await;
+
+    // Fill the second seat through the approval door.
+    ts.join(&second, &invite_code, "pending").await;
+    let requests: Value = ts
+        .get(&owner, "/families/join-requests")
+        .await
+        .json()
+        .await
+        .expect("requests");
+    let id = requests["requests"][0]["id"].as_i64().expect("id");
+    assert_eq!(
+        ts.post(
+            &owner,
+            &format!("/families/join-requests/{id}/approve"),
+            json!({})
+        )
+        .await
+        .status(),
+        200
+    );
+
+    // Now full at the ceiling: the REQUEST door refuses and queues nothing.
+    let refused = ts
+        .post(
+            &third,
+            "/families/join",
+            json!({"invite_code": invite_code}),
+        )
+        .await;
+    assert_error(refused, 409, "family_full").await;
+    let after: Value = ts
+        .get(&owner, "/families/join-requests")
+        .await
+        .json()
+        .await
+        .expect("requests");
+    assert_eq!(
+        after["requests"].as_array().map(Vec::len),
+        Some(0),
+        "the ceiling collects no request either: {after}"
+    );
+}
