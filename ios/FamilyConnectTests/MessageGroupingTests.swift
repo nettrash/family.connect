@@ -42,6 +42,69 @@ struct MessageGroupingTests {
             state: state)
     }
 
+    // MARK: - Hidden rows and run grouping
+
+    /// A hidden row draws no name, and the RUN GROUPING is unchanged: the
+    /// hidden bubble still counts as its sender's run, so the next visible
+    /// message from somebody else still gets its caption.
+    @Test("a hidden row draws no name and does not merge the runs around it")
+    func hiddenRowKeepsRunGrouping() {
+        let section = [
+            Self.snapshot(localID: "s:1", serverID: 1, senderID: 9, at: "2026-08-19T10:00:00Z"),
+            Self.snapshot(localID: "s:2", serverID: 2, senderID: 11, at: "2026-08-19T10:01:00Z"),
+            Self.snapshot(localID: "s:3", serverID: 3, senderID: 9, at: "2026-08-19T10:02:00Z"),
+        ]
+        let blocked: Set<Int64> = [11]
+        let shows = { (i: Int) in
+            MessagePresentation.showsSenderName(
+                at: i, in: section, isFamilyChat: true, currentUserID: 7,
+                blockedUserIDs: blocked)
+        }
+        #expect(shows(0), "first bubble of the section names its sender")
+        #expect(!shows(1), "a hidden row draws the placeholder and nothing else")
+        #expect(
+            shows(2),
+            "9 is named again: the hidden bubble still counted as 11's run, and treating it as absent would merge s:3 into s:1's run and drop the caption")
+    }
+
+    @Test("own messages are never hidden, even by a corrupt block list")
+    func ownMessagesAreNeverHidden() {
+        let mine = Self.snapshot(localID: "s:1", serverID: 1, senderID: 7, at: "2026-08-19T10:00:00Z")
+        #expect(
+            !MessagePresentation.isHiddenByBlock(mine, blockedUserIDs: [7], currentUserID: 7),
+            "blocking yourself is refused server-side; this is the belt and braces")
+    }
+
+    // MARK: - Reactions: the count never moves
+
+    /// The load-bearing asymmetry: a chip keeps its COUNT and the popover
+    /// drops the identity. A count that moved when you blocked somebody
+    /// would tell the blocked person they had been.
+    @Test("a blocked reactor keeps their count and loses their name")
+    func blockedReactorKeepsTheCount() {
+        let reactions = [
+            ReactionSnapshot(userID: 9, emoji: "❤️"),
+            ReactionSnapshot(userID: 11, emoji: "❤️"),
+            ReactionSnapshot(userID: 13, emoji: "❤️"),
+        ]
+        let chips = MessagePresentation.reactionChips(reactions, currentUserID: 7)
+        #expect(chips.count == 1)
+        #expect(chips[0].count == 3, "integers are not presence")
+
+        let names: [Int64: String] = [9: "Anna", 11: "Bob", 13: "Cara"]
+        let unfiltered = MessagePresentation.reactionDetails(
+            reactions, names: names, currentUserID: 7)
+        #expect(unfiltered[0].names == ["Anna", "Bob", "Cara"])
+
+        let filtered = MessagePresentation.reactionDetails(
+            reactions, names: names, currentUserID: 7, blockedUserIDs: [11])
+        #expect(filtered[0].names == ["Anna", "Cara"], "the identity goes")
+        // And the chip is computed from the SAME list and is unchanged, so
+        // the popover deliberately names fewer people than the chip counts.
+        let chipsAgain = MessagePresentation.reactionChips(reactions, currentUserID: 7)
+        #expect(chipsAgain[0].count == 3, "the chip still reads 3")
+    }
+
     // MARK: - Day sections
 
     @Test("messages either side of midnight land in different sections")

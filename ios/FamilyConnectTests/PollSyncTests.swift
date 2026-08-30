@@ -25,6 +25,47 @@ import Testing
 @Suite("Poll sync")
 struct PollSyncTests {
 
+    // MARK: - Blocking hides the voter, never the arithmetic
+
+    /// **The bars do not move.** A blocked member's vote goes on counting:
+    /// `fraction`, `voterIDs` and the "N of M voted" line are all untouched,
+    /// and only the faces are filtered.
+    ///
+    /// Filtering the votes into the snapshot instead — one list that both
+    /// the faces and the sums read — is the tempting shape and the wrong
+    /// one: it makes the bars stop summing to the total and turns every
+    /// count on the poll into a signal the blocked person can read.
+    @Test("a blocked voter loses their face and keeps their vote")
+    func blockedVoterKeepsTheirVote() {
+        let poll = PollSnapshot(
+            pollSeq: 1,
+            closed: false,
+            options: [
+                PollOptionSnapshot(id: 1, text: "Pizza", votes: [9, 11]),
+                PollOptionSnapshot(id: 2, text: "Pasta", votes: [13]),
+            ])
+        let blocked: Set<Int64> = [11]
+
+        // ARITHMETIC — identical with and without the block.
+        #expect(PollPresentation.fraction(of: poll.options[0], in: poll) == 2.0 / 3.0)
+        #expect(PollPresentation.fraction(of: poll.options[1], in: poll) == 1.0 / 3.0)
+        #expect(PollPresentation.voterIDs(in: poll) == [9, 11, 13])
+        #expect(
+            poll.options.reduce(0) { $0 + $1.votes.count } == 3,
+            "three votes cast, whoever the reader has blocked")
+
+        // IDENTITY — only the faces are filtered.
+        #expect(
+            PollPresentation.drawableVoters(of: poll.options[0], blockedUserIDs: blocked) == [9],
+            "the blocked voter's face goes")
+        #expect(
+            PollPresentation.drawableVoters(of: poll.options[1], blockedUserIDs: blocked) == [13],
+            "and nobody else's does")
+        #expect(
+            PollPresentation.drawableVoters(of: poll.options[0], blockedUserIDs: []) == [9, 11],
+            "with no block, the full list")
+    }
+
     private static let serverDate = ISO8601DateFormatter().date(from: "2026-08-19T17:05:00Z")!
 
     // MARK: - Harness
