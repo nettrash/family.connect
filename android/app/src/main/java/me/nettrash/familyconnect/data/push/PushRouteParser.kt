@@ -8,6 +8,7 @@
  *   {"kind": "message", "chat_id": "42", ...} → Chat(42)
  *   {"kind": "board_note", "family_id": …, "note_id": …} → Board
  *   {"kind": "join_request", "family_id": …}  → JoinRequests (owner-only push)
+ *   {"kind": "report", "family_id": …}        → Reports (owner-only push)
  *   {"kind": "joined", "family_id": …}        → ChatList
  *   {"kind": "call", "call_id": …, …}          → Call — the call screen
  *                                                (docs/protocol.md,
@@ -35,6 +36,15 @@ sealed interface PendingRoute {
     data class Chat(val chatId: Long) : PendingRoute
     data object Board : PendingRoute
     data object JoinRequests : PendingRoute
+
+    /**
+     * kind "report" — the owner's moderation inbox.
+     *
+     * A report raises a push and NO WebSocket frame, exactly as a join
+     * request does, so this push is the owner's only live signal that one
+     * arrived (docs/protocol.md, "Reporting a member").
+     */
+    data object Reports : PendingRoute
     data object ChatList : PendingRoute
 
     /** The call screen; [answer] when the tap was the notification's Answer button. */
@@ -77,6 +87,7 @@ object PushRouteParser {
         "message" -> data[KEY_CHAT_ID]?.toLongOrNull()?.let { PendingRoute.Chat(it) }
         "board_note" -> PendingRoute.Board
         "join_request" -> PendingRoute.JoinRequests
+        "report" -> PendingRoute.Reports
         "joined" -> PendingRoute.ChatList
         KIND_CALL -> PendingRoute.Call(answer = data[KEY_CALL_ACTION] == ACTION_ANSWER)
         else -> null

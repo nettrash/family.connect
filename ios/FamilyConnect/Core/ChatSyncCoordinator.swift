@@ -487,6 +487,13 @@ final class ChatSyncCoordinator {
                 // Our own read relayed back (or from another device).
                 chat.myLastReadID = max(chat.myLastReadID, lastReadMessageID)
             } else {
+                // Stored in EVERY chat kind, drawn in only one. In a family
+                // chat this is roster data that no bubble may draw
+                // (docs/protocol.md, "Frames") — `MessagePresentation.isRead`
+                // is the gate, and it takes `isFamilyChat` undefaulted so a
+                // new surface cannot start drawing it by accident. Keeping
+                // the value is deliberate: it is a real fact about the
+                // roster, and dropping it here would only move the question.
                 chat.othersReadUpTo = max(chat.othersReadUpTo, lastReadMessageID)
             }
             saveContext()
@@ -549,6 +556,13 @@ final class ChatSyncCoordinator {
             // just become the owner gains the owner-only screens now
             // rather than at its next GET /me.
             applyFamilyOwner(familyID: familyID, userID: userID)
+
+        case .memberBlocked(let userID, let blocked):
+            // A state-set, not an event: an unblock is this same frame with
+            // `false`. It reaches this device and this account only — never
+            // the person blocked — so there is nothing to fan out and
+            // nothing to reconcile against a roster.
+            applyBlock(userID: userID, blocked: blocked)
 
         case .memberLeft(let userID):
             if userID == currentUserID {
@@ -2465,6 +2479,142 @@ final class ChatSyncCoordinator {
         member.birthdayMonth = nil
         member.birthdayDay = nil
         saveContext()
+    }
+
+    /// Everyone this account has blocked, as the rest of the app reads it.
+    ///
+    /// Published rather than fetched at each call site because it is
+    /// consulted on nearly every row that draws a person, and a
+    /// `FetchDescriptor` per bubble is not a thing to do in a list.
+    private(set) var blockedUserIDs: Set<Int64> = []
+
+    /// Replace the whole set from a `blocked_user_ids` array.
+    ///
+    /// WHOLESALE, because the wire field is a complete state-set and never
+    /// a delta — which is also why the server always sends it, `[]`
+    /// included. Merging instead would leave an unblock made on another
+    /// device in force here for ever (protocol.md, "Blocking a member").
+    func replaceBlocks(with ids: [Int64]) {
+        let incoming = Set(ids)
+        guard let rows = try? modelContext.fetch(FetchDescriptor<BlockEntity>()) else { return }
+        var held: Set<Int64> = []
+        for row in rows {
+            if incoming.contains(row.userID) {
+                held.insert(row.userID)
+            } else {
+                modelContext.delete(row)
+            }
+        }
+        for id in incoming.subtracting(held) {
+            modelContext.insert(BlockEntity(userID: id))
+            // A block made on ANOTHER device arrives here, never through
+            // `applyBlock` — so the prune has to happen on this path too or
+            // a cold start leaves the stale chat standing. Newly-arrived
+            // ids only: re-dropping `held` would delete the chat again on
+            // every `GET /me`.
+            dropDirectChat(peerUserID: id)
+            withdrawCallDonations(peerUserID: id)
+        }
+        blockedUserIDs = incoming
+        saveContext()
+    }
+
+    /// Block a member: the request FIRST, then the local write.
+    ///
+    /// Never optimistic, and that ordering is the point. An optimistic
+    /// block that then failed would hide rows the reader does not know are
+    /// hidden, in a feature with no error surface and no badge to notice —
+    /// they would simply stop seeing somebody and never learn why.
+    ///
+    /// Returns false when the request threw, having applied nothing.
+    @discardableResult
+    func block(userID: Int64) async -> Bool {
+        do {
+            try await api.blockMember(userID: userID)
+        } catch {
+            return false
+        }
+        applyBlock(userID: userID, blocked: true)
+        return true
+    }
+
+    /// Unblock, then RESYNC — because the direct chat this block pruned
+    /// locally comes back from `GET /chats`, not from anything held here.
+    /// That is the protocol's own recovery path: "unblocking puts the chat
+    /// back in `GET /chats` with its true `unread_count` and
+    /// `last_read_message_id`".
+    @discardableResult
+    func unblock(userID: Int64) async -> Bool {
+        do {
+            try await api.unblockMember(userID: userID)
+        } catch {
+            return false
+        }
+        applyBlock(userID: userID, blocked: false)
+        await resync()
+        return true
+    }
+
+    /// File a report. Nothing local changes: a report is a write to the
+    /// owner's inbox, and this reader's own view of the family does not
+    /// move because of it — blocking and reporting are independent.
+    @discardableResult
+    func report(reportedUserID: Int64, reason: String, messageID: Int64?) async -> Bool {
+        do {
+            _ = try await api.createReport(
+                reportedUserID: reportedUserID, reason: reason, messageID: messageID)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Apply one block or unblock — the `member_blocked` frame, and the
+    /// optimistic write behind the Block button.
+    func applyBlock(userID: Int64, blocked: Bool) {
+        let existing = try? modelContext.fetch(
+            FetchDescriptor<BlockEntity>(predicate: #Predicate { $0.userID == userID })
+        ).first
+        if blocked {
+            if existing == nil { modelContext.insert(BlockEntity(userID: userID)) }
+            blockedUserIDs.insert(userID)
+            // "For the blocker that chat is not merely unlisted; it is gone
+            // from every path they can reach it by" (protocol.md, "Blocking
+            // a member"). The server already refuses every request in it
+            // with `blocked`, which nothing in this app maps to a message —
+            // so a chat left in the store is one the reader can open and
+            // then watch fail silently.
+            //
+            // Only on the way IN. Unblocking does not put it back from
+            // here: `GET /chats` does, which is why `unblock` resyncs.
+            dropDirectChat(peerUserID: userID)
+            withdrawCallDonations(peerUserID: userID)
+        } else {
+            if let existing { modelContext.delete(existing) }
+            blockedUserIDs.remove(userID)
+        }
+        saveContext()
+    }
+
+    /// Retract the call suggestions this app donated about one person.
+    ///
+    /// iOS only, and not because macOS forgot: `Intents` donation is where
+    /// Siri's suggestions and the Phone app's sense of who Family can call
+    /// come from, and the Mac has neither surface. Called on BOTH block
+    /// paths — the local one and a block made on another device — for
+    /// newly-blocked ids only (docs/protocol.md, "Calls").
+    private func withdrawCallDonations(peerUserID: Int64) {
+        #if os(iOS)
+        CallDonation.withdraw(peerUserID: peerUserID)
+        #endif
+    }
+
+    /// Load the set from the store at launch, before the first sync — so a
+    /// cold start offline draws hidden rows hidden rather than briefly
+    /// showing everything.
+    func loadBlocksFromStore() {
+        guard let rows = try? modelContext.fetch(FetchDescriptor<BlockEntity>()) else { return }
+        blockedUserIDs = Set(rows.map(\.userID))
     }
 
     /// Apply a `family_owner` frame: the named user is the family's owner

@@ -228,6 +228,15 @@ fun AppNavHost(
                     } else {
                         navController.popBackStack(Routes.CHAT_LIST, inclusive = false)
                     }
+                PendingRoute.Reports ->
+                    // The inbox is a section of the family admin screen,
+                    // so this is the same destination as a join request —
+                    // and degrades the same way for a non-owner.
+                    if (isOwner) {
+                        navController.navigate(Routes.FAMILY_ADMIN)
+                    } else {
+                        navController.popBackStack(Routes.CHAT_LIST, inclusive = false)
+                    }
                 PendingRoute.ChatList ->
                     // Already the start destination — just unwind to it.
                     navController.popBackStack(Routes.CHAT_LIST, inclusive = false)

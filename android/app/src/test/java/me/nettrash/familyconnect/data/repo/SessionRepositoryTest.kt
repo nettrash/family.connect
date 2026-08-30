@@ -223,6 +223,53 @@ class SessionRepositoryTest {
 
     // -- Auth flow ------------------------------------------------------------------------
 
+    /**
+     * `blocked_user_ids` is "the one read in this protocol where absence is
+     * not allowed to mean 'leave what you hold alone'" (docs/protocol.md,
+     * `GET /me`). A guard skipping the empty case is the bug that clause
+     * exists to prevent: the last unblock would never reach a second
+     * device, and the block would appear to be stuck on forever.
+     */
+    @Test
+    fun refreshMeReplacesTheBlockListEvenWhenItArrivesEmpty() = runTest(dispatcher) {
+        val repository = newRepository()
+        settings.setServerUrl("https://chat.example.com")
+        settings.setBlockedUserIds(setOf(11L, 14L))
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(
+                user = userDto(7, "anna"),
+                family = family,
+                role = "member",
+                blockedUserIds = emptyList(),
+            ),
+        )
+
+        repository.refreshMe()
+
+        assertThat(settings.current.blockedUserIds).isEmpty()
+        // And it was WRITTEN, not merely left alone by luck.
+        assertThat(settings.blockedWrites.last()).isEmpty()
+    }
+
+    /** The ordinary direction, so the test above is pinned to emptiness. */
+    @Test
+    fun refreshMeStoresTheBlockListItIsGiven() = runTest(dispatcher) {
+        val repository = newRepository()
+        settings.setServerUrl("https://chat.example.com")
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(
+                user = userDto(7, "anna"),
+                family = family,
+                role = "member",
+                blockedUserIds = listOf(11L, 14L),
+            ),
+        )
+
+        repository.refreshMe()
+
+        assertThat(settings.current.blockedUserIds).containsExactly(11L, 14L)
+    }
+
     @Test
     fun loginStoresTokenRefreshesMeAndRegistersDevice() = runTest(dispatcher) {
         val repository = newRepository()

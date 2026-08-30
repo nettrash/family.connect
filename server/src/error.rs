@@ -24,15 +24,29 @@ pub mod codes {
     pub const USERNAME_TAKEN: &str = "username_taken";
     pub const VALIDATION: &str = "validation";
     pub const ALREADY_IN_FAMILY: &str = "already_in_family";
+    pub const FAMILY_FULL: &str = "family_full";
     pub const NOT_IN_FAMILY: &str = "not_in_family";
     pub const NOT_FAMILY_OWNER: &str = "not_family_owner";
     pub const INVALID_INVITE_CODE: &str = "invalid_invite_code";
     pub const JOIN_REQUEST_PENDING: &str = "join_request_pending";
     pub const JOIN_REQUEST_NOT_PENDING: &str = "join_request_not_pending";
     pub const USER_ALREADY_IN_FAMILY: &str = "user_already_in_family";
+    /// RETIRED: no endpoint raises this any more. An owner who leaves now
+    /// hands the family on rather than being refused (protocol.md,
+    /// `POST /families/leave`). The constant stays because clients that
+    /// predate the hand-off still branch on it, and a code deleted here is
+    /// a code somebody deletes from a client still talking to an old
+    /// server.
     pub const OWNER_CANNOT_LEAVE: &str = "owner_cannot_leave";
     pub const CANNOT_REMOVE_OWNER: &str = "cannot_remove_owner";
     pub const CANNOT_DM_SELF: &str = "cannot_dm_self";
+    pub const CANNOT_BLOCK_SELF: &str = "cannot_block_self";
+    /// Raised only ever TOWARDS the blocker — never towards the person they
+    /// blocked, who must not be able to tell (protocol.md, "Blocking a
+    /// member").
+    pub const BLOCKED: &str = "blocked";
+    pub const CANNOT_REPORT_SELF: &str = "cannot_report_self";
+    pub const REPORT_NOT_PENDING: &str = "report_not_pending";
     pub const NOT_SAME_FAMILY: &str = "not_same_family";
     pub const USER_NOT_FOUND: &str = "user_not_found";
     pub const CHAT_NOT_FOUND: &str = "chat_not_found";

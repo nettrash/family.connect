@@ -570,8 +570,20 @@ fun SettingsScreen(
             onDismissRequest = { confirmLeave = false },
             title = { Text(stringResource(R.string.s_leave_the_family)) },
             text = {
+                // Three readers, three sentences. An owner is never
+                // refused — they hand the family on — so the dialog says
+                // who to, and an owner standing alone is told the family
+                // goes with them (docs/protocol.md, `POST /families/leave`).
+                // Bound to a local first: `state` is a delegated property,
+                // so a smart cast off `state.nextOwnerName` is refused.
+                val successor = state.nextOwnerName
                 Text(
-                    stringResource(R.string.s_leave_family_explanation),
+                    when {
+                        !state.isOwner -> stringResource(R.string.s_leave_family_explanation)
+                        successor != null ->
+                            stringResource(R.string.s_leave_family_explanation_owner, successor)
+                        else -> stringResource(R.string.s_leave_family_explanation_last)
+                    },
                 )
             },
             confirmButton = {
@@ -586,6 +598,20 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { confirmLeave = false }) {
                     Text(stringResource(R.string.s_cancel))
+                }
+            },
+        )
+    }
+
+    // Where the family went, shown before this screen goes away.
+    state.handedOverTo?.let { newOwner ->
+        AlertDialog(
+            onDismissRequest = { viewModel.acknowledgeHandOver() },
+            title = { Text(stringResource(R.string.s_ownership_passed_on)) },
+            text = { Text(stringResource(R.string.s_ownership_passed_to, newOwner)) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.acknowledgeHandOver() }) {
+                    Text(stringResource(R.string.s_close))
                 }
             },
         )

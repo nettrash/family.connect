@@ -25,6 +25,91 @@ import Testing
 @Suite("Poll sync")
 struct PollSyncTests {
 
+    // MARK: - Blocking hides the voter, never the arithmetic
+
+    /// **The bars do not move.** A blocked member's vote goes on counting:
+    /// `fraction`, `voterIDs` and the "N of M voted" line are all untouched,
+    /// and only the faces are filtered.
+    ///
+    /// Filtering the votes into the snapshot instead — one list that both
+    /// the faces and the sums read — is the tempting shape and the wrong
+    /// one: it makes the bars stop summing to the total and turns every
+    /// count on the poll into a signal the blocked person can read.
+    /// The "+N" overflow marker is computed from the DRAWABLE list, not
+    /// the raw one. From the raw list it prints "+3" beside two visible
+    /// faces — a per-option readout of exactly how many blocked people
+    /// chose that option, which is worse than the faces it replaced.
+    @Test("the overflow chip counts the faces actually drawn")
+    func overflowChipCountsDrawableFaces() {
+        // Six voters on one option, four of them blocked. maxFaces is 3.
+        let option = PollOptionSnapshot(id: 1, text: "Pizza", votes: [9, 10, 11, 12, 13, 14])
+        let blocked: Set<Int64> = [10, 12, 13, 14]
+        let drawable = PollPresentation.drawableVoters(of: option, blockedUserIDs: blocked)
+
+        #expect(drawable == [9, 11], "two survive")
+        #expect(drawable.count <= 3, "and they fit under the cap, so no chip is drawn at all")
+        // From the raw list the view would have drawn "+3" beside two
+        // faces, announcing the four blocked votes it was hiding.
+        #expect(option.votes.count - 3 == 3, "which is the number that must never be shown")
+    }
+
+    /// An option only blocked members chose draws NO faces row at all. The
+    /// row carries a pinned height and a leading inset, so gating on the
+    /// raw list reserves an empty band under exactly that option —
+    /// positional information about which one they picked.
+    @Test("an option voted for only by blocked members draws no faces row")
+    func optionVotedOnlyByBlockedDrawsNoFaces() {
+        let poll = PollSnapshot(
+            pollSeq: 1,
+            closed: false,
+            options: [
+                PollOptionSnapshot(id: 1, text: "Pizza", votes: [9]),
+                PollOptionSnapshot(id: 2, text: "Pasta", votes: [11, 12]),
+            ])
+        let blocked: Set<Int64> = [11, 12]
+
+        #expect(
+            PollPresentation.drawableVoters(of: poll.options[1], blockedUserIDs: blocked).isEmpty,
+            "no faces to draw, so the row is not laid out at all")
+        #expect(
+            !PollPresentation.drawableVoters(of: poll.options[0], blockedUserIDs: blocked).isEmpty,
+            "and the other option is untouched")
+        // The BAR still shows Pasta ahead, because the arithmetic never
+        // moved: two votes to one.
+        #expect(PollPresentation.fraction(of: poll.options[1], in: poll) == 2.0 / 3.0)
+    }
+
+    @Test("a blocked voter loses their face and keeps their vote")
+    func blockedVoterKeepsTheirVote() {
+        let poll = PollSnapshot(
+            pollSeq: 1,
+            closed: false,
+            options: [
+                PollOptionSnapshot(id: 1, text: "Pizza", votes: [9, 11]),
+                PollOptionSnapshot(id: 2, text: "Pasta", votes: [13]),
+            ])
+        let blocked: Set<Int64> = [11]
+
+        // ARITHMETIC — identical with and without the block.
+        #expect(PollPresentation.fraction(of: poll.options[0], in: poll) == 2.0 / 3.0)
+        #expect(PollPresentation.fraction(of: poll.options[1], in: poll) == 1.0 / 3.0)
+        #expect(PollPresentation.voterIDs(in: poll) == [9, 11, 13])
+        #expect(
+            poll.options.reduce(0) { $0 + $1.votes.count } == 3,
+            "three votes cast, whoever the reader has blocked")
+
+        // IDENTITY — only the faces are filtered.
+        #expect(
+            PollPresentation.drawableVoters(of: poll.options[0], blockedUserIDs: blocked) == [9],
+            "the blocked voter's face goes")
+        #expect(
+            PollPresentation.drawableVoters(of: poll.options[1], blockedUserIDs: blocked) == [13],
+            "and nobody else's does")
+        #expect(
+            PollPresentation.drawableVoters(of: poll.options[0], blockedUserIDs: []) == [9, 11],
+            "with no block, the full list")
+    }
+
     private static let serverDate = ISO8601DateFormatter().date(from: "2026-08-19T17:05:00Z")!
 
     // MARK: - Harness

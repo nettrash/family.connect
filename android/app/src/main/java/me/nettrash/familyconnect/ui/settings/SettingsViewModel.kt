@@ -94,6 +94,16 @@ class SettingsViewModel @Inject constructor(
         val birthday: BirthdayDto? = null,
         /** True while a settings write is in flight. */
         val busy: Boolean = false,
+        /**
+         * Who would inherit if the owner left right now — a PREDICTION,
+         * and only ever read straight after a fresh `GET /families/mine`.
+         * Null for a plain member, and null for an owner who is the LAST
+         * member, which is a different dialog: leaving deletes the family
+         * (docs/protocol.md, `GET /families/mine`).
+         */
+        val nextOwnerName: String? = null,
+        /** Who the family actually went to, once it has gone. */
+        val handedOverTo: String? = null,
         val uploadingAvatar: Boolean = false,
         val avatarError: String? = null,
     )
@@ -149,6 +159,13 @@ class SettingsViewModel @Inject constructor(
             if (snapshot.status == FamilyStatus.MEMBER || snapshot.status == FamilyStatus.OWNER) {
                 familyRepository.refreshMine().okOrNull()?.let { mine ->
                     val myRow = mine.members.firstOrNull { it.id == snapshot.myUserId }
+                    // Resolved against THIS response's roster rather than
+                    // the stored one: the prediction and the names that
+                    // explain it have to come from the same read, or the
+                    // dialog can name somebody who left between them.
+                    val successor = mine.nextOwnerUserId?.let { id ->
+                        mine.members.firstOrNull { it.id == id }?.displayName
+                    }
                     _state.update {
                         it.copy(
                             familyName = mine.family.name,
@@ -156,6 +173,7 @@ class SettingsViewModel @Inject constructor(
                             inviteCode = mine.family.inviteCode,
                             joinPolicy = mine.family.joinPolicy,
                             birthday = myRow?.birthday,
+                            nextOwnerName = successor,
                         )
                     }
                 }
@@ -300,21 +318,29 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Dismiss the hand-off report. Nothing else to undo: the family state
+     * is already down and the nav host has already rerouted — this only
+     * takes the sentence off the screen.
+     */
+    fun acknowledgeHandOver() {
+        _state.update { it.copy(handedOverTo = null) }
+    }
+
     fun leaveFamily() {
         viewModelScope.launch {
             when (val result = familyRepository.leave()) {
-                // Success: SessionRepository emitted RemovedFromFamily —
-                // the nav host reroutes; nothing to do here.
-                is ApiResult.Ok -> Unit
+                // An owner who leaves hands the family on and is told to
+                // whom; everybody else simply leaves. Either way
+                // SessionRepository has emitted RemovedFromFamily and the
+                // nav host reroutes, so the name is shown on the way out.
+                is ApiResult.Ok -> _state.update { it.copy(handedOverTo = result.value) }
+                // No `owner_cannot_leave` branch: that error is RETIRED
+                // and no endpoint raises it any more. The app used to
+                // explain a rule the server had stopped enforcing
+                // (docs/protocol.md, `POST /families/leave`).
                 is ApiResult.HttpError -> _state.update {
-                    it.copy(
-                        error = if (result.code == "owner_cannot_leave") {
-                            "As the owner you can only leave once every other " +
-                                "member is removed — the family dissolves with you."
-                        } else {
-                            result.message ?: "Couldn't leave the family"
-                        },
-                    )
+                    it.copy(error = result.message ?: appContext.getString(R.string.e_leave_failed))
                 }
                 is ApiResult.NetworkError ->
                     _state.update { it.copy(error = appContext.getString(R.string.e_unreachable)) }

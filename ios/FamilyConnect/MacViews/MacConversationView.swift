@@ -121,6 +121,8 @@ struct MacConversationView: View {
     /// True while the poll form is up. A sheet, sized in the view itself:
     /// a macOS sheet cannot be resized by the person using it.
     @State private var showPollComposer = false
+    /// Owned by the window rather than by a row, which scrolls away.
+    @State private var reportTarget: ReportTarget?
     /// One fix, on demand — never a running location service.
     @State private var locationProvider = LocationProvider()
 
@@ -188,6 +190,13 @@ struct MacConversationView: View {
     /// The row a quote jump just landed on, tinted briefly so the eye
     /// finds it in a wall of text — the phone's flag, same fade.
     @State private var highlightedMessageID: String?
+    /// Quote peeks, keyed by host + level. See MacMessageRow's props.
+    @State private var revealedQuoteIDs: Set<String> = []
+    /// Rows peeked at. Owned here rather than by a row for the reason the
+    /// quote peeks are: this thread renders a SLIDING SUFFIX that drops old
+    /// rows while the reader sits at the bottom, so per-row `@State` dies
+    /// in exactly the case the protocol names.
+    @State private var revealedMessageIDs: Set<String> = []
 
     /// The two ways a chat can open. The phone's twin.
     private enum OpenAnchor: Equatable {
@@ -256,10 +265,20 @@ struct MacConversationView: View {
 
     private var chat: ChatEntity? { chats.first }
 
+    /// The family chat draws no "seen" tick — the marker there is a max
+    /// over N members and means nobody. See `MessagePresentation.isRead`.
+    private var isFamilyChat: Bool { chat?.kind == "family" }
+
     /// Whether there is somebody to ring from here (docs/protocol.md,
     /// "Voice calls"): a direct chat, on a server that has calls on.
     private var canCall: Bool {
         session.callsEnabled && chat?.kind == "direct" && chat?.peerUserID != nil
+            // The blocker calling somebody they blocked is refused with
+            // `blocked`, so the button does not offer it. Defence in depth
+            // behind the direct-chat prune: if the prune landed this is
+            // unreachable, and if it did not this stops the one visible
+            // refusal.
+            && !(chat?.peerUserID.map { coordinator.blockedUserIDs.contains($0) } ?? false)
     }
 
     private func startCall() {
@@ -322,6 +341,20 @@ struct MacConversationView: View {
         // clipboard is the rule's answer, not this list's.
         .onPasteCommand(of: ClipboardAttachment.pasteCommandTypes) { _ in
             pasteFromClipboard()
+        }
+        .sheet(item: $reportTarget) { target in
+            ReportSheet(
+                target: target,
+                onSubmit: { reason in
+                    reportTarget = nil
+                    Task {
+                        await coordinator.report(
+                            reportedUserID: target.senderID,
+                            reason: reason.rawValue,
+                            messageID: target.messageID)
+                    }
+                },
+                onCancel: { reportTarget = nil })
         }
         .sheet(isPresented: $showPollComposer) {
             PollComposerView(
@@ -514,6 +547,9 @@ struct MacConversationView: View {
         let showsSenderName: Bool
         let isRunStart: Bool
         let isRunEnd: Bool
+        /// Computed here rather than at the call site: the row builder is
+        /// already a big enough expression for the type checker.
+        let isHiddenByBlock: Bool
         var id: String { message.localID }
     }
 
@@ -530,11 +566,16 @@ struct MacConversationView: View {
                     at: index,
                     in: section.messages,
                     isFamilyChat: isFamily,
-                    currentUserID: me),
+                    currentUserID: me,
+                    blockedUserIDs: coordinator.blockedUserIDs),
                 isRunStart: previous?.senderID != message.senderID,
                 // The last of a run carries the time, so a burst of four
                 // messages is stamped once rather than four times.
-                isRunEnd: next?.senderID != message.senderID)
+                isRunEnd: next?.senderID != message.senderID,
+                isHiddenByBlock: MessagePresentation.isHiddenByBlock(
+                    message,
+                    blockedUserIDs: coordinator.blockedUserIDs,
+                    currentUserID: me))
         }
     }
 
@@ -582,9 +623,32 @@ struct MacConversationView: View {
                                 isRunEnd: row.isRunEnd,
                                 isRead: MessagePresentation.isRead(
                                     row.message,
-                                    othersReadUpTo: chat?.othersReadUpTo ?? 0),
+                                    othersReadUpTo: chat?.othersReadUpTo ?? 0,
+                                    isFamilyChat: isFamilyChat),
                                 onReply: { beginReply(row.message) },
                                 onEdit: { beginEdit(row.message) },
+                                onReport: {
+                                    reportTarget = ReportTarget(
+                                        senderID: row.message.senderID,
+                                        senderName: senderName(for: row.message.senderID)
+                                            ?? String(localized: "Someone"),
+                                        messageID: row.message.serverID)
+                                },
+                                isHiddenByBlock: row.isHiddenByBlock,
+                                isRevealed: revealedMessageIDs.contains(row.message.localID),
+                                onReveal: {
+                                    revealedMessageIDs.insert(row.message.localID)
+                                },
+                                isReplyQuoteRevealed: revealedQuoteIDs.contains(
+                                    "\(row.message.localID)#reply"),
+                                isParentQuoteRevealed: revealedQuoteIDs.contains(
+                                    "\(row.message.localID)#parent"),
+                                onRevealQuote: { isReply in
+                                    revealedQuoteIDs.insert(
+                                        isReply
+                                            ? "\(row.message.localID)#reply"
+                                            : "\(row.message.localID)#parent")
+                                },
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
                                 onOpenAttachment: { attachment in
                                     if attachment.isFile {
@@ -979,6 +1043,19 @@ struct MacConversationView: View {
     private func jumpToMessage(_ serverID: Int64, proxy: ScrollViewProxy) {
         guard let index = messages.firstIndex(where: { $0.serverID == serverID }) else { return }
         let target = messages[index]
+        // BEFORE the widen, and the Mac's widen is the worse of the two:
+        // up to `maxWindow` non-lazy rows in one layout pass, the hang this
+        // file was rewritten to avoid. Jumping to a hidden row would also
+        // tint a thin placeholder for 1.6 seconds, pointing the eye at the
+        // thing the feature is hiding.
+        if MessagePresentation.isHiddenByBlock(
+            MessageSnapshot(target),
+            blockedUserIDs: coordinator.blockedUserIDs,
+            currentUserID: coordinator.currentUserID),
+            !revealedMessageIDs.contains(target.localID)
+        {
+            return
+        }
 
         let needed = messages.count - index + Self.jumpMargin
         // The window is a SUFFIX and the rows are non-lazy, so reaching a

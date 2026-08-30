@@ -12,6 +12,16 @@
 # production: nginx terminates TLS and proxies /api/v1 (including the
 # WebSocket upgrade) to this address — see nginx/family-connect.conf.
 bind = "127.0.0.1:8080"
+# How a member reaches YOU, the operator — an email address, a URL, a
+# sentence. Served to the apps on GET /me and shown on their report screen.
+#
+# It exists because a family's owner is its moderator, and the owner is
+# sometimes the problem: a report naming the owner never reaches them
+# (protocol.md, "Reporting a member"), so there has to be somewhere else to
+# go. Leave it unset and the apps draw no escalation line at all, which is
+# honest for a family server run by somebody in the family — and not honest
+# for a server strangers can register on.
+# support_contact = "family-admin@example.com"
 
 [database]
 # PostgreSQL connection parameters. The server opens a pool of at most
@@ -64,6 +74,20 @@ max_attachment_bytes = 104857600
 # attachment is just an ordinary message. Note the size ceiling above is per
 # ATTACHMENT, so one message can in principle carry ten times that.
 max_attachments_per_message = 10
+# The CEILING on what a family owner may set as their own member cap, and the
+# cap that binds at the join door for a family that has set none.
+#
+# This is YOUR runaway guard, not the number the apps show: an owner sets
+# their family's own max_members in the app, and may only set it lower than
+# this. Fifty is a generous family — three generations plus in-laws is nearer
+# thirty — and the point of the ceiling is that one family cannot decide to
+# be ten thousand people on your box.
+#
+# Lowering it never invalidates a family that is already larger, and existing
+# caps are not re-checked against it: a family whose cap was legal when it
+# was set stays editable, or one edit here locks owners out of their own
+# settings screen.
+max_family_members = 50
 # Largest preview (the downscaled photo or a video's poster frame). Small on
 # purpose: it is drawn in a chat bubble.
 max_preview_bytes = 2097152

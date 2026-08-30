@@ -12,6 +12,7 @@
 pub mod ai;
 pub mod app;
 pub mod auth;
+pub mod blocks;
 pub mod calls;
 pub mod config;
 pub mod db;
@@ -27,6 +28,7 @@ pub mod handlers_chat;
 pub mod handlers_device;
 pub mod handlers_family;
 pub mod handlers_poll;
+pub mod handlers_report;
 pub mod handlers_stats;
 pub mod mentions;
 pub mod migrate;

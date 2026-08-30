@@ -341,6 +341,19 @@ pub struct ServerConfig {
     /// terminates TLS and proxies to this address.
     #[serde(default = "default_bind")]
     pub bind: String,
+
+    /// How a member reaches the operator — an email address, a URL, a
+    /// sentence. Served to clients on `GET /me` as `support_contact` and
+    /// shown on the report screen.
+    ///
+    /// It exists because the family owner is the moderator, and the owner
+    /// is sometimes the problem: a report naming them never reaches them
+    /// (protocol.md, "Reporting a member"), so there has to be somewhere
+    /// else to go. `None` when unset, and the key is then absent from
+    /// `GET /me` rather than empty — a client draws no escalation line at
+    /// all rather than an address nobody reads.
+    #[serde(default)]
+    pub support_contact: Option<String>,
 }
 
 /// `[database]` — PostgreSQL connection parameters.
@@ -446,6 +459,20 @@ pub struct LimitsConfig {
     /// feature anyone asked for.
     #[serde(default = "default_max_board_notes")]
     pub max_board_notes: i64,
+
+    /// The CEILING on what a family owner may set as their own
+    /// `max_members`, and the cap that binds at the join door for a family
+    /// that has set none. It is an operator's runaway guard, in the sense
+    /// `max_board_notes` is — NOT the number the apps show, which is the
+    /// family's own `max_members` (protocol.md, "Families").
+    ///
+    /// Lowering it never invalidates a family that is already larger, and
+    /// stored caps are deliberately NOT re-validated against it at boot: a
+    /// family whose cap was legal when it was set must stay patchable, or
+    /// an operator editing one line of config locks owners out of their own
+    /// settings screen.
+    #[serde(default = "default_max_family_members")]
+    pub max_family_members: i64,
 
     /// Page size for GET /chats/{id}/messages when the client sends none.
     #[serde(default = "default_default_page_size")]
@@ -648,6 +675,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             bind: default_bind(),
+            support_contact: None,
         }
     }
 }
@@ -682,6 +710,7 @@ impl Default for LimitsConfig {
             max_poll_options: default_max_poll_options(),
             max_poll_option_chars: default_max_poll_option_chars(),
             max_board_notes: default_max_board_notes(),
+            max_family_members: default_max_family_members(),
             max_attachment_bytes: default_max_attachment_bytes(),
             max_attachments_per_message: default_max_attachments_per_message(),
             max_preview_bytes: default_max_preview_bytes(),
@@ -778,6 +807,15 @@ impl Config {
                 "limits.max_attachments_per_message must be at most 100 — attachment \
                  positions are stored as SMALLINT and clients lay albums out for ten"
             );
+        }
+        // One is the fewest a family can have and still have an owner:
+        // `create_family` makes its creator member #1. A ceiling of 0 is
+        // not a locked-down server, it is a server where `POST /families`
+        // answers `family_full` to everybody — a code that endpoint does
+        // not document — and where every `PATCH` of a cap is refused with
+        // "between 1 and 0".
+        if self.limits.max_family_members < 1 {
+            anyhow::bail!("limits.max_family_members must be at least 1");
         }
         if self.limits.default_page_size < 1 {
             anyhow::bail!("limits.default_page_size must be at least 1");
@@ -940,6 +978,10 @@ fn default_retention_days() -> i64 {
 
 fn default_max_board_notes() -> i64 {
     500
+}
+
+fn default_max_family_members() -> i64 {
+    50
 }
 
 fn default_default_page_size() -> i64 {
@@ -1120,6 +1162,21 @@ mod tests {
     fn load_reports_a_missing_file_with_its_path() {
         let err = Config::load(Path::new("/nonexistent/family-connect/cfg.toml")).unwrap_err();
         assert!(format!("{err:#}").contains("reading config file"));
+    }
+
+    #[test]
+    fn validate_rejects_a_family_ceiling_below_one() {
+        // A ceiling of 0 boots happily and then answers `family_full` to
+        // every attempt to CREATE a family — an error that endpoint does
+        // not document, on a server nobody can use.
+        let mut cfg = Config::default();
+        cfg.limits.max_family_members = 0;
+        assert!(
+            cfg.validate().is_err(),
+            "a ceiling of zero must be refused at boot"
+        );
+        cfg.limits.max_family_members = 1;
+        assert!(cfg.validate().is_ok(), "one is a legal, if lonely, ceiling");
     }
 
     #[test]

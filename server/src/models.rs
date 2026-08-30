@@ -125,6 +125,13 @@ pub struct UserBrief {
 }
 
 /// `Member` object: a user in the context of their family, with role.
+///
+/// It carries NOTHING about blocking, deliberately. Whether one member has
+/// blocked another depends on who is READING, and this object also travels
+/// inside the `member_deleted` frame, which is serialized once and sent to
+/// many — so a per-reader field cannot exist here. The caller's own list
+/// rides on `GET /me` and `GET /families/mine` as `blocked_user_ids`
+/// instead (protocol.md, "Blocking a member").
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Member {
     pub id: i64,
@@ -153,7 +160,7 @@ pub struct Member {
 pub struct Family {
     pub id: i64,
     pub name: String,
-    /// `"open"` or `"approval"`.
+    /// `"open"`, `"approval"` or `"closed"`.
     pub join_policy: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -165,6 +172,17 @@ pub struct Family {
     /// "The family's language".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// The most members this family admits, as set by its owner, or absent
+    /// when the owner has never set one (protocol.md, "Families").
+    ///
+    /// An `Option` for the reason `language` is one and `ai_history` is
+    /// not: a cap has a real third state where a switch has none. Absent
+    /// means "we never set one", which is NOT "we set one equal to the
+    /// operator's ceiling" — the ceiling lives in config and moves between
+    /// boots, so folding the two together would make the family's own
+    /// answer change when nobody in it touched anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_members: Option<i32>,
     /// Whether an `@ai` mention in the family chat is shown the recent
     /// history of that chat (protocol.md, "Mentioning the assistant in the
     /// family chat"). Owner-set, `true` by default.
@@ -175,6 +193,36 @@ pub struct Family {
     /// above are options because "never chosen" is a state that means
     /// something there; here it is not.
     pub ai_history: bool,
+}
+
+/// `Report` object as listed for the owner (protocol.md, "Reporting a
+/// member").
+///
+/// Shaped after [`JoinRequest`] — an id, the people, a timestamp — because
+/// for the owner it IS the join-request screen: a queue of things somebody
+/// raised, each decided once and then off the list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Report {
+    pub id: i64,
+    pub reporter: User,
+    pub reported: User,
+    /// One of `"spam"`, `"harassment"`, `"inappropriate"`, `"other"` — a
+    /// fixed list, so nine locales can render a row from string resources
+    /// rather than shipping untranslated prose to a moderator.
+    pub reason: String,
+    /// The message reported, when one was named AND it still exists.
+    /// Retention drops it; `message_excerpt` outlives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<i64>,
+    /// The WHOLE reported body, frozen when the report was raised. The one
+    /// quotation in this protocol that is stored rather than recomputed:
+    /// the author may edit the body away through the ordinary author-only
+    /// path, and retention deletes the message outright, and either would
+    /// otherwise leave the owner an empty screen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_excerpt: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
 }
 
 /// `JoinRequest` object as listed for the owner.
@@ -849,6 +897,7 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             invite_code: None,
             language: None,
+            max_members: None,
             ai_history: true,
         };
         let json = serde_json::to_value(&family).expect("serialize");
@@ -870,6 +919,7 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             invite_code: None,
             language: None,
+            max_members: None,
             ai_history: true,
         };
         assert_eq!(
@@ -890,6 +940,7 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             invite_code: Some("ABCD2345".to_string()),
             language: Some("ru".to_string()),
+            max_members: None,
             ai_history: true,
         };
         assert_eq!(
@@ -899,6 +950,99 @@ mod tests {
                 "created_at": "2026-08-19T17:03:12Z",
                 "invite_code": "ABCD2345", "language": "ru", "ai_history": true
             })
+        );
+    }
+
+    /// A cap the owner HAS set rides on the object for every member, not
+    /// just the owner — the apps draw "8 of 12" from it. Absent means the
+    /// family never set one; it does NOT mean the operator's ceiling.
+    #[test]
+    fn a_family_with_a_member_cap_carries_it_for_everyone() {
+        let family = Family {
+            id: 3,
+            name: "The Smiths".to_string(),
+            join_policy: "closed".to_string(),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+            invite_code: None,
+            language: None,
+            max_members: Some(12),
+            ai_history: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&family).expect("serialize"),
+            serde_json::json!({
+                "id": 3, "name": "The Smiths", "join_policy": "closed",
+                "created_at": "2026-08-19T17:03:12Z",
+                "max_members": 12, "ai_history": true
+            })
+        );
+    }
+
+    fn a_reporter() -> User {
+        User {
+            id: 7,
+            username: "anna".to_string(),
+            display_name: "Anna".to_string(),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+            avatar_version: 0,
+            birthday: None,
+            deleted: false,
+        }
+    }
+
+    fn a_reported() -> User {
+        User {
+            id: 9,
+            username: "bob".to_string(),
+            display_name: "Bob".to_string(),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+            avatar_version: 0,
+            birthday: None,
+            deleted: false,
+        }
+    }
+
+    /// A report that names a PERSON carries neither key — and carries them
+    /// as ABSENT, not null, the way the invite code is absent.
+    #[test]
+    fn a_person_report_omits_the_message_keys_entirely() {
+        let report = Report {
+            id: 4,
+            reporter: a_reporter(),
+            reported: a_reported(),
+            reason: "harassment".to_string(),
+            message_id: None,
+            message_excerpt: None,
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+        };
+        let json = serde_json::to_value(&report).expect("serialize");
+        assert!(
+            json.get("message_id").is_none() && json.get("message_excerpt").is_none(),
+            "both message keys must be absent, not null: {json}"
+        );
+    }
+
+    /// Retention drops `message_id` and leaves the excerpt standing. That
+    /// is the whole reason the excerpt is stored rather than recomputed, so
+    /// pin the shape: an owner opening this report still reads what was
+    /// said, and simply cannot jump to it.
+    #[test]
+    fn a_swept_message_report_keeps_its_excerpt_without_an_id() {
+        let report = Report {
+            id: 4,
+            reporter: a_reporter(),
+            reported: a_reported(),
+            reason: "inappropriate".to_string(),
+            message_id: None,
+            message_excerpt: Some("dinner at 7?".to_string()),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+        };
+        let json = serde_json::to_value(&report).expect("serialize");
+        assert!(json.get("message_id").is_none(), "id must be gone: {json}");
+        assert_eq!(
+            json.get("message_excerpt").and_then(|v| v.as_str()),
+            Some("dinner at 7?"),
+            "the excerpt outlives the message: {json}"
         );
     }
 

@@ -289,6 +289,18 @@ class SessionRepository @Inject constructor(
                 settings.setProfile(me.user.id, me.user.username, me.user.displayName, me.user.avatarVersion)
                 settings.setCallsEnabled(me.callsEnabled)
                 settings.setVideoCallsEnabled(me.videoCallsEnabled)
+                // The AUTHORITATIVE apply. `/me` is step 1 of the resync,
+                // it is the only one on the login path, and it is the only
+                // one a caller with NO family reaches at all — a block is a
+                // pair and not a membership, so somebody outside a family
+                // still holds blocks that `GET /families/mine` would answer
+                // `not_in_family` about (docs/protocol.md, `GET /me`).
+                //
+                // Before the status/teardown logic below, which is where
+                // `wipeAll()` lives.
+                settings.setBlockedUserIds(me.blockedUserIds)
+                settings.setMaxFamilyMembers(me.maxFamilyMembers)
+                settings.setSupportContact(me.supportContact)
                 val next = when {
                     me.family != null ->
                         if (me.role == "owner") FamilyStatus.OWNER else FamilyStatus.MEMBER

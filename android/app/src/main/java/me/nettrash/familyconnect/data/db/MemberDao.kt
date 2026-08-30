@@ -63,6 +63,15 @@ interface MemberDao {
     )
     fun observeActiveMembers(): Flow<List<MemberEntity>>
 
+    /**
+     * One member's display name, or null when this device holds no row for
+     * them. Tombstones included on purpose — a departing owner's successor
+     * is by definition still here, but a name is better than nothing if
+     * the roster is mid-resync.
+     */
+    @Query("SELECT displayName FROM members WHERE userId = :userId LIMIT 1")
+    suspend fun displayName(userId: Long): String?
+
     @Upsert
     suspend fun upsertAll(members: List<MemberEntity>)
 

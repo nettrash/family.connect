@@ -82,6 +82,10 @@ struct BoardView: View {
                             note: note,
                             isMine: note.authorID == currentUserID,
                             authorName: displayName(for: note.authorID),
+                            isHiddenByBlock: MessagePresentation.isNoteHiddenByBlock(
+                                authorID: note.authorID,
+                                blockedUserIDs: coordinator.blockedUserIDs,
+                                currentUserID: currentUserID),
                             boardSize: geometry.size,
                             onMoved: { fraction in
                                 Task { await coordinator.updateNote(id: note.noteID, x: fraction.x, y: fraction.y) }
@@ -174,11 +178,19 @@ private struct StickyNote: View {
     let note: NoteEntity
     let isMine: Bool
     let authorName: String
+    /// Its author is blocked, so the note draws the placeholder and no
+    /// author line — content included (docs/protocol.md, "Board").
+    let isHiddenByBlock: Bool
     let boardSize: CGSize
     let onMoved: (CGPoint) -> Void
     let onTap: () -> Void
 
     @State private var drag: CGSize = .zero
+    /// A peek, not a setting: per note, per device, never on the wire and
+    /// never stored, and gone on the next launch.
+    @State private var isRevealed = false
+
+    private var isHidden: Bool { isHiddenByBlock && !isRevealed }
 
     /// A top-left corner held inside the board, so no part of the note is
     /// off-screen whatever its size.
@@ -203,14 +215,19 @@ private struct StickyNote: View {
             side: side, board: boardSize)
 
         VStack(alignment: .leading, spacing: 6) {
-            Text(note.text)
+            (isHidden ? Text("Hidden — blocked member") : Text(note.text))
                 .font(size.font)
-                .foregroundStyle(.black.opacity(0.85))
+                .foregroundStyle(.black.opacity(isHidden ? 0.45 : 0.85))
+                .italic(isHidden)
                 .lineLimit(size.lineLimit)
             Spacer(minLength: 0)
-            Text(authorName)
-                .font(.caption2)
-                .foregroundStyle(.black.opacity(0.5))
+            // No author line at all while hidden — not an empty one, which
+            // would still say a note came from somebody.
+            if !isHidden {
+                Text(authorName)
+                    .font(.caption2)
+                    .foregroundStyle(.black.opacity(0.5))
+            }
         }
         .padding(10)
         .frame(width: side, height: side, alignment: .topLeading)
@@ -237,13 +254,26 @@ private struct StickyNote: View {
                     drag = .zero
                     onMoved(CGPoint(x: x, y: y))
                 })
-        .onTapGesture { onTap() }
+        // The FIRST tap on a hidden note reveals it and does nothing
+        // else. Falling through to `onTap` would open the note editor,
+        // which draws the very text the note is hiding.
+        .onTapGesture { if isHidden { isRevealed = true } else { onTap() } }
         // A bare gesture publishes no accessibility action — measured, see
         // ZZAXProbeTests — so the note declares its own.
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(isMine ? "Your note: \(note.text)" : "Note from \(authorName): \(note.text)")
+        .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onTap() }
+    }
+
+    /// What VoiceOver reads. A hidden note announces that it is hidden and
+    /// stops: reading the text aloud would defeat the whole thing for the
+    /// one reader most dependent on the label being honest.
+    private var accessibilityText: Text {
+        if isHidden { return Text("Hidden note from a blocked member") }
+        return isMine
+            ? Text("Your note: \(note.text)")
+            : Text("Note from \(authorName): \(note.text)")
     }
 
     /// A degree or two of tilt, derived from the id so a note keeps the

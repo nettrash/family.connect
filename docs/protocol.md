@@ -45,17 +45,20 @@ Non-2xx responses carry:
 
 `code` is a stable machine-readable string; `message` is a human-readable English sentence.
 Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `validation`,
-`already_in_family`, `not_in_family`, `not_family_owner`, `invalid_invite_code`,
-`join_request_pending`, `join_request_not_pending`, `user_already_in_family`,
-`owner_cannot_leave`, `cannot_remove_owner`, `cannot_dm_self`, `not_same_family`,
-`user_not_found`, `chat_not_found`, `not_chat_member`, `message_empty`, `message_too_long`,
-`message_not_found`, `not_message_author`, `invalid_emoji`, `note_not_found`,
-`not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_language`, `board_full`,
-`invalid_pagination`,
-`device_not_found`, `invalid_poll`, `poll_closed`,
-`calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`, `peer_busy`, `peer_unreachable`,
-`avatar_too_large`, `invalid_image`, `attachment_too_large`, `invalid_attachment`,
-`attachment_not_found`, `attachment_already_used`, `internal`.
+`already_in_family`, `family_full`, `not_in_family`, `not_family_owner`, `invalid_invite_code`,
+`join_request_pending`, `join_request_not_pending`, `user_already_in_family`, `owner_cannot_leave`,
+`cannot_remove_owner`, `cannot_dm_self`, `cannot_block_self`, `blocked`, `cannot_report_self`,
+`report_not_pending`, `not_same_family`, `user_not_found`, `chat_not_found`, `not_chat_member`,
+`message_empty`, `message_too_long`, `message_not_found`, `not_message_author`, `invalid_emoji`,
+`note_not_found`, `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_language`,
+`board_full`, `invalid_pagination`, `device_not_found`, `invalid_poll`, `poll_closed`,
+`calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`,
+`peer_busy`, `peer_unreachable`, `avatar_too_large`, `invalid_image`, `attachment_too_large`,
+`invalid_attachment`, `attachment_not_found`, `attachment_already_used`, `internal`.
+
+`owner_cannot_leave` is RETIRED: no endpoint raises it any more (see `POST /families/leave`). It
+stays listed because clients that predate the hand-off still branch on it, and a code that vanishes
+from this document is a code somebody deletes from a client that is still talking to an old server.
 
 ## Objects
 
@@ -75,15 +78,55 @@ Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|m
             appears in "former_members" (see GET /families/mine) and exists there for one
             reason — so a client can still put a name to the messages, notes and reactions
             it left behind
-Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval", "created_at": "…",
-           "ai_history": true}
+          — a Member carries NOTHING about blocking, deliberately. Whether one member has
+            blocked another depends on WHO IS READING, and this object also travels inside
+            the "member_deleted" frame, which is serialised once and sent to many — the same
+            rule the Polls section states for "did I vote". The caller's own list rides on
+            GET /me and GET /families/mine as "blocked_user_ids" instead, which is also the
+            only shape that can CARRY a blocked former member — resolving that id to a
+            name is the client's job, and may not be possible (see "Blocking a member")
+Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
+           "created_at": "…", "ai_history": true}
           — plus "invite_code": "ABCD2345" when (and only when) the caller is the owner
+          — plus "max_members": 8 when (and only when) the owner has set a cap. ABSENT means
+            the family has no cap of its own and only the operator's ceiling binds — absent is
+            NOT the ceiling, for the same reason absent "language" is not English. A cap has a
+            real third state where a switch has none: "we never set one" is not "we set one
+            equal to whatever the ceiling happens to be today", and the ceiling moves between
+            server restarts. A client therefore holds TWO numbers — this one and
+            "max_family_members" from GET /me — and the door takes the LOWER of them. They
+            can disagree, and legitimately: a family that set 40 under a ceiling of 50 goes
+            on reporting 40 after the operator drops the ceiling to 10, because a stored cap
+            is never re-validated when the ceiling moves (that would make one config edit
+            lock owners out of their own settings screen). So a client shows this number as
+            the family's own setting and the lower of the two as the seats actually left
           — plus "language": "ru" when (and only when) the owner has chosen one; absent
             means unset, and unset is NOT English — see "The family's language"
           — "ai_history" is ALWAYS present, unlike the two above. It is a boolean with a
             real default (true), so there is no "unset" for a missing key to mean and a
             client never has to guess one — see "Mentioning the assistant in the family chat"
 JoinRequest {"id": 12, "user": {User}, "created_at": "…"}
+Report    {"id": 4, "reporter": {User}, "reported": {User},
+           "reason": "spam|harassment|inappropriate|other", "created_at": "…"}
+          — plus "message_id": 1338 when (and only when) one message was named AND that
+            message still exists
+          — plus "message_excerpt": "…" when (and only when) one message was named. This is
+            the WHOLE body, FROZEN at the moment the report was raised, named for
+            symmetry with "reply_to.excerpt" and, unlike it, never CUT — a moderator
+            judging a message has to see all of it — and it is the one quotation in
+            this protocol that is STORED rather than recomputed. Two things would
+            otherwise leave the owner an empty screen: the author may edit the body afterwards
+            through the ordinary author-only path, which has no time limit, and retention
+            deletes the message outright. "message_id" is dropped once retention has swept
+            that message; the excerpt stays, so a client draws the excerpt always and offers
+            to jump to the message only while the id survives
+          — plus "message_attachments": [{"kind": "photo", "name": null}] when (and only when) the
+            reported message carried any, trimmed exactly as a chat-list preview is: kind and name,
+            no dimensions and no coordinates. A photo sent without a caption has an empty body, and
+            "inappropriate" is very often exactly that message — the excerpt is then the empty
+            string (present, because a message was named) and this is the only thing on the row that
+            says what was reported. The bytes are not copied, so a client offers to open the
+            attachment only while "message_id" survives, exactly as it offers the jump
 Chat      {"id": 42, "kind": "family|direct|ai", "title": "The Smiths", "peer_user_id": 9|null}
           — "title" is the family name for the family chat, the peer's display name for direct,
             and the assistant's name for "ai";
@@ -325,6 +368,24 @@ its votes go with them.
 Each family has exactly one board: a wall of sticker notes anyone in the family can add to and
 rearrange. Notes are not messages — they carry no unread count and never appear in a chat.
 
+A block hides a note's CONTENT and its author from the blocker, and nothing else about the board
+changes. In particular the split rule stands: position is everyone's, so a blocked member may still
+move a note the blocker wrote and the blocker's board still rearranges. Refusing the move would be a
+tell, and there is no refusal here that a blocked person could not otherwise explain. The note
+ceiling (`board_full`) is a fact about the FAMILY and is never projected per reader: a note the
+blocker hides still occupies its slot — any quantity a third member can measure must mean the same
+thing for everybody.
+
+A hidden note keeps its slot, its size, its colour and its tilt, and draws the same "Hidden —
+blocked member" placeholder a hidden row does, with no author line under it. It reveals on ONE TAP,
+the same peek a hidden row gets: per note, per device, never on the wire, never stored, and gone on
+the next launch. The reveal is not a nicety here but the only safe answer to the tap, because the
+tap already does something — it opens the note editor, which would put the text on screen that the
+note was hiding, and a client that merely made hidden notes inert would still leak them through
+every other way in. Dragging is unchanged whether a note is hidden or revealed: position is
+everyone's, and a note that could not be tidied because of who wrote it is a difference the blocker
+has to explain to themselves every time they touch the wall.
+
 **A NEW note does notify.** This reverses the original "raise no notification": a board nobody is
 told about is a board nobody reads, and a note pinned to the family wall is exactly the kind of
 thing meant to be seen. Only CREATION notifies. Edits, moves and deletes do not — tidying the wall
@@ -485,9 +546,12 @@ Two things did NOT widen with it, and neither of them is a setting anybody can t
   above. The family chat never reaches a private thread and a private thread never reaches the
   family chat — the two surfaces cannot see each other's history in either direction, whatever the
   family has chosen. A member's own words stay theirs.
-- **A direct chat is never consulted by anything.** Not by a mention, not by a private thread, at
-  any setting, ever. Two people talking one-to-one are the one conversation in this protocol that
-  nothing else reads.
+- **A direct chat is never consulted by the ASSISTANT.** Not by a mention, not by a private thread,
+  at any setting, ever. Two people talking one-to-one are the one conversation in this protocol that
+  no OTHER conversation reads. The one thing that can ever lift a line out of a direct chat is the
+  person who received it, deliberately, by reporting it: that excerpt reaches the family owner — or,
+  when the report names the owner, the operator's log instead — and nobody else, and it is frozen
+  there (see "Reporting a member").
 
 Talking to it is an ordinary send — `POST /chats/{id}/messages` — and what comes back is ordinary
 too. The server:
@@ -707,6 +771,15 @@ A server with no assistant configured ignores `@ai` completely: it is three char
 text, stored and delivered like any other, and `GET /families/mine` carries no `assistant` field to
 suggest otherwise.
 
+
+**A block does not reach the assistant.** The family-chat history a mention is shown is built once,
+for a mention that is usually not the blocker's, and its answer is posted as a real message the WHOLE
+family reads. Filtering it per-asker would therefore change the text everybody sees, and the omission
+would be inferable by the very person the block is meant to be silent towards; refusing `@ai`
+outright to a member who has blocked somebody would be visible to the whole family. So the transcript
+is not filtered. A block hides bubbles; it does not edit the assistant's memory, and a client should
+say so where it offers the block.
+
 ### Photos, videos, audio, files and locations
 
 A message may carry attachments — up to ten of them: photos, videos, audio, files, in any mix.
@@ -827,8 +900,10 @@ decided once, at send time, and never changes, exactly like a reply. Adding it l
 mutation path and a sequence cursor of its own, and would be a new section here.
 
 An attachment belongs to whoever uploaded it until a message claims it, and to that message's chat
-afterwards. Before it is claimed only the uploader may read it; after, every member of the chat
-may. An attachment can be claimed once — by one message, alongside up to nine others: a second message naming it is `attachment_already_used`, and the same id twice in one `attachment_ids` array is `invalid_attachment`.
+afterwards. Before it is claimed only the uploader may read it; after, every member of the chat may.
+An attachment can be claimed once — by one message, alongside up to nine others: a second message
+naming it is `attachment_already_used`, and the same id twice in one `attachment_ids` array is
+`invalid_attachment`.
 **Unclaimed attachments are deleted after 24 hours** — a send the user abandoned must not leave
 100 MB on the server forever.
 
@@ -864,6 +939,17 @@ before this was introduced have no hash and keep a file each.
 
 `GET /families/mine/stats` — what the family has actually sent, for every member to see. Not
 owner-only: it is a shared curiosity, and the same numbers go to everyone.
+
+A member the caller has blocked is omitted from the per-member rows: a leaderboard row naming
+somebody whose every bubble is a hidden row is exactly the presence a block is meant to remove, and
+this is a per-caller response so the server can leave them out. The TOTALS are not projected —
+including `totals.members` — for the same reason the board ceiling is not: they are the family's
+numbers, and a number two members can compare must be one number.
+
+One consequence is worth stating, because a client will otherwise draw it wrong: the rows no longer
+add up to the totals, and the gap IS the block. A client must never derive a total by summing the
+rows, nor a member's share by dividing into that sum — the totals are the family's number, and the
+rows are what this caller may see of it.
 
 ```json
 {"generated_at": "…",
@@ -922,10 +1008,12 @@ password, and it cannot be undone.
 
 **The person is erased; the words stay.** Everything that identifies the account is destroyed —
 the username (which becomes available for somebody else to register), the password, the profile
-picture, the birthday, every session and every device row, and with them every push token. What
-survives is what the family said to each other: the member's messages in the family chat, the notes
-they pinned to the board, and the reactions they left, all of them still attributed to a row that
-now reads "Deleted account" and can never be signed into again.
+picture, the birthday, the blocks it MADE, every session and every device row, and with them every
+push token. The blocks made AGAINST it survive: somebody else's decision not to read those messages
+was never the departing account's to revoke (see "Blocking a member"). What survives is what the
+family said to each other: the member's messages in the family chat, the notes they pinned to the
+board, and the reactions they left, all of them still attributed to a row that now reads "Deleted
+account" and can never be signed into again.
 
 That asymmetry is the whole design, and the alternative is worse. A family chat is a shared record,
 and destroying one member's half of it punches holes in everybody else's: replies answer messages
@@ -954,12 +1042,14 @@ draws only `members`.
 **An owner may delete too, and the family survives.** If they are the last member, the family is
 deleted with them — its chat, its board, its attachments and its invite code. If anybody else is
 still there, **ownership passes to the longest-standing remaining member** and everything else stays
-exactly as it was. This is the one place this protocol changes `families.owner_user_id` without the
-owner naming a successor, and it is deliberate: the alternative is an endpoint that can refuse, and
-an account somebody cannot delete because of who else is in their family is exactly the dead end the
-guideline exists to forbid. Longest-standing means the earliest to join the family chat, ties broken
-by the lower user id, so the answer is the same on every read. The new owner is told by a
-`family_owner` frame and finds out the ordinary way on their next `GET /me` regardless.
+exactly as it was. These are the two places this protocol changes `families.owner_user_id` without
+the owner naming a successor — an owner deleting their account, and an owner LEAVING (`POST
+/families/leave`, which reaches this same rule by the other door) — and it is deliberate in both:
+the alternative is an endpoint that can refuse, and an account somebody cannot delete because of who
+else is in their family is exactly the dead end the guideline exists to forbid. Longest-standing
+means the earliest to join the family chat, ties broken by the lower user id, so the answer is the
+same on every read. The new owner is told by a `family_owner` frame and finds out the ordinary way
+on their next `GET /me` regardless.
 
 Every device the account was signed in on is signed out: the sessions are deleted, their sockets
 close with `4401`, and their device rows go with them, so nothing is pushed to a phone whose account
@@ -971,6 +1061,254 @@ sends `member_deleted` to those peers, without a `family_id`.
 Nothing is scheduled and nothing is reversible. There is no grace period, no "deactivated" state and
 no way to cancel: a deletion that has not happened yet is a deletion an operator has to be trusted
 to carry out, and this server would rather be believed.
+
+### Blocking a member
+
+Any member may block any other member of their own family, **the owner included**. The owner has no
+special standing here and is not consulted: a block is a personal rendering-and-notification
+preference, not a governance action. The owner's administrative powers are untouched by being
+blocked, and a report still reaches them, because a report is a write to a table and not a message
+the blocker has to read. A block affordance is weakest exactly where the person you want to stop
+reading is the one with power, so this is the case it is built for.
+
+**It is server-side.** A block survives a reinstall and suppresses push. A client-only block is a
+block a new phone forgets, and it cannot stop a notification arriving while the app is not running.
+
+**It is silent.** The blocked person is never told. Nothing in their app changes, no frame and no
+push reaches them about it, no object they can read carries the fact, and every refusal this feature
+introduces is aimed at the BLOCKER and never at the blocked. Where a blocked person's action must be
+stopped, the outcome they see is one that already has an innocent explanation — being ignored —
+never a new error. That is why the caller's own list rides on their own `GET /me` and never on a
+broadcast object.
+
+**What a block cannot hide.** Three things, named here so that no implementation tries to close them
+and no client promises otherwise. The first is TIMING: a blocker is no longer woken, so when they
+answer a blocked member changes shape — nothing at three in the morning, nothing while the app is
+shut — and no amount of protocol removes that without removing the feature. It is accepted, and it
+must NOT be masked by pushing to the blocker anyway. The second is the OPERATOR: a block is silent
+towards a member using the apps and cannot be silent towards whoever administers the server, who
+reads the table directly and, on a self-hosted family server, is very often the family owner — the
+person this feature exists to be usable against. The guarantee is that no NEW signal reaches a
+member, not that nothing at all can be inferred by anybody over months, and a client should not
+imply more than that where it offers the block. It is also the honest reason `support_contact`
+exists (see "Reporting a member"). The third is the FROZEN MARKER in a hidden direct chat: the
+blocker's read marker there stops where it stood and their typing stops with it (see "Direct chats"
+below), which the blocked member can see. That one is deliberate and is the innocent explanation
+this whole feature rests on — somebody who has stopped opening your chat — and it is the ONLY
+surface where a blocker's own behaviour goes visibly still, because in the family chat their `read`
+and `typing` frames go on reaching that member byte-identically.
+
+**The family chat keeps the message and hides it.** A blocked member's message is replaced by a
+thin, tappable "Hidden — blocked member" row that reveals ONCE on demand. It is not deleted:
+deleting it would break reply chains, because a quote is recomputed on every read, and it reads as
+data loss. A revealed row is FULLY interactive — reply, react, vote — because a reveal that was
+read-only would make the blocker's behaviour towards that thread deterministic and observable.
+
+**A reveal is a peek, not a setting.** It is per row and per DEVICE, it is never on the wire and
+never stored server-side, and it does not survive a restart — nothing about who has looked at what
+may become a fact another device or another person can read. A revealed row stays revealed for as
+long as it lives in that client's list, including when newer messages arrive after it and when a
+`message_edited` frame rewrites its body. A hidden row draws the placeholder and the timestamp and
+nothing else: no display name, no avatar, no attachment thumbnail, no reaction chips — all of them
+come back with the reveal. And revealing changes nothing on the wire: no frame, no request, and no
+movement of the read marker, which advances THROUGH hidden rows as they scroll past whether they
+were revealed or not. A client that held its marker at an unrevealed row would rebuild oracle (c)
+below on its own side, one layer above the server.
+
+**A hidden row still fetches, and draws none of it.** A client resolves a hidden message's link
+preview, its map tiles, its attachment preview and its sender's avatar exactly as it would for a
+visible row, on the same schedule, and discards every result until the row is revealed — and it
+fetches nothing a visible row would not have fetched yet, so a 90 MB video is no more downloaded
+here than it is there. Not fetching is an oracle the server cannot close: a link preview and a map
+tile are requests to a THIRD party, and the poster of a link owns that server's log, so a family
+that is one distinct fetcher short from the day somebody blocked them has said so out loud,
+repeatably and on demand. One wasted request per hidden row is the cheaper half of that trade. A
+client's link-preview setting decides the fetch for every row alike and is never evaluated per
+sender.
+
+**A quote of a blocked member is hidden too, and only by the client.** A `reply_to` — or the
+`parent` one level under it — whose `sender_id` is blocked draws as the same "Hidden — blocked
+member" treatment as a row does, on every surface that draws a quote, and reveals under the same
+one-tap rule; the quoting message above it is untouched and stays readable. The server sends the
+excerpt unchanged, because it recomputes quotes on every read for everybody and a per-reader excerpt
+is the projection this section has already refused. Without the rule the block is defeated by the
+most ordinary thing in the chat: anybody replying to a blocked member carries 120 characters of them
+into a bubble that is not hidden, and the assistant does it on every `@ai` a blocked member sends —
+its answer is a real message from an unblocked sender quoting exactly the mention that asked (see
+"Mentioning the assistant in the family chat").
+
+**It follows that the server still DELIVERS.** A blocked member's message reaches the blocker over
+the socket and over REST, unfiltered, exactly as before. What the server suppresses is the PUSH and
+the direct chat. Three separate reasons the history must never be filtered, written down here so a
+later optimisation does not undo them: (a) the reveal would have nothing to read; (b) history is a
+keyset-paginated feed, and a filtered page is a SHORT page, which every client reads as the end of
+the feed; (c) a client's read cursor only ever learns message ids the server actually handed it, so
+a filtered page would FREEZE the blocker's read marker at the id before the blocked message — and a
+frozen marker that leaps forward the moment a third member posts is a perfect, repeatable oracle for
+the blocked person watching the other end.
+
+**Read markers and typing keep flowing OUTWARD.** The blocker goes on marking read THROUGH hidden
+rows exactly as if they were visible, and goes on sending typing frames as before. What is
+suppressed is only what reaches the blocker INWARD: a typing frame or a read frame FROM a blocked
+member is not relayed TO them. Suppressing the outward direction instead — the same one-line filter
+with its two arguments transposed — is a flawless leak, so an implementation must be tested
+POSITIVELY: in the FAMILY chat, after A blocks B, A's read frame and A's typing frame still reach
+B, byte-identical. The hidden direct chat is the one exception, stated under "Direct chats" below:
+there the blocker's own marker and typing stop, because the chat is gone from every path they can
+reach it by.
+
+**Direct chats.** The blocker may not open a direct chat with somebody they have blocked (`blocked`,
+409), and that chat no longer appears in the blocker's `GET /chats`. The refusal is ASYMMETRIC on
+purpose: the blocked person may go on creating and sending into the chat exactly as before, and
+their messages simply reach nobody. `POST /chats/direct` refuses today for four reasons — yourself,
+no such user, not in your family, and not in a family at all — every one of which a member of the
+same family can rule out about somebody they can see posting, so a refusal in that direction would
+have no innocent reading at all. The chat's history is not destroyed; only the blocker's way back
+into it, and unblocking returns it whole. For the blocker that chat is not merely unlisted; it is
+gone from every path they can reach it by. No `message` frame from it reaches their connections, it
+contributes nothing to any unread count and nothing to the APNs `badge`, and `GET
+/chats/{id}/messages`, `POST /chats/{id}/read` and a send by an id their client still holds all
+answer `blocked` — 409 on REST, an `error` frame carrying the `client_msg_id` on the socket. There
+is no hidden ROW to reveal here and no read cursor to freeze, so the three reasons above, which are
+reasons about the FAMILY chat, buy nothing; and a badge the blocker could never clear would itself
+be a quantity that moved when they blocked somebody. Their read marker in that chat therefore stops
+where it stood and their typing stops with it. That is the one thing the blocked person can see, and
+it is the innocent explanation this whole feature is built on — somebody who has stopped opening
+your chat. Having the server advance the marker on the blocker's behalf would be worse, not better:
+a marker that answers every message within milliseconds, at four in the morning, is not a person
+reading. Unblocking puts the chat back in `GET /chats` with its true `unread_count` and
+`last_read_message_id`, and a client pages it from `after_id = <the highest id it still holds>`, or
+from the newest page if it holds none.
+
+**Calls.** A call the blocked person places never rings the blocker: no `call_offer` frame, no VoIP
+push, no ring, no entry in the operating system's call log. It is not refused, and it is not
+declined. It RINGS OUT for the full ring timeout (`[calls] ring_timeout_secs`, 45 s by default — the
+same one every other unanswered call uses) and ends with `timeout`, leaving the caller the same
+`missed` record they would get from a phone nobody picked up: the only outcome indistinguishable
+from being ignored. **The block is applied at DELIVERY and never at the decision.** The server works
+out what to answer the caller — `call_ringing`, `peer_busy`, `peer_unreachable` — from the callee's
+REAL, unblocked state, and only then drops the frames on the floor. So a blocked caller is told
+`peer_busy` exactly when the callee is genuinely on a call, and `peer_unreachable` exactly when they
+genuinely have neither a socket nor a wakeable device, in the same second an unblocked caller would
+have been told it. Either other ordering is a one-frame oracle: removing the blocker's devices from
+the candidate list FIRST makes the offer answer `peer_unreachable` instantly, and suppressing those
+refusals instead makes a blocked caller the one person whose call rings out for 45 s at three in the
+morning while a control call to a third member is refused at once. The suppression is TOTAL and
+covers every frame of that call towards the blocker — the offer, the live and the buffered
+`call_ice`, the `call_end` the server sends when the call rings out or the caller cancels, and the
+registration-time replay to a device that connects while it is still ringing (see "Late arrivals"),
+which would otherwise ring the blocker's freshly-woken phone for a call nobody was supposed to hear.
+While such a call is pending the CALLEE is not busy: they may place a call, and a third member
+calling them is not told `peer_busy`, or a blocked person could keep somebody uncallable by the
+whole family with a loop of offers. The CALLER is busy for it exactly as they would be for any call
+they placed — a blocked caller who could place two calls at once has been told something. The
+reverse direction — the blocker calling somebody they blocked — is refused with `blocked`, which
+only ever reaches the blocker.
+
+A client does not need to be told this to know it: it holds its own block list, so it leaves a
+blocked member out of every place a call can START — the conversation's call button, and the roster
+gate an OS call request resolves through. The OS surfaces are the ones that matter, because they
+OUTLIVE the block: a Recents row, a contact card's call button, a Favorites entry and Siri all go on
+offering a handle the app will no longer act on, and a client that resolved one anyway would place
+the call, take the refusal and then have to explain it. When a request does arrive for a blocked
+member the honest answer is that they have been blocked, offered to the blocker alone; it must not
+be the answer given for a person the app cannot identify, which sends somebody to re-link a contact
+that is already linked. Where a spoken name matches several members and only one of them is
+callable, that one is called — the ambiguity Siri would ask about is not ambiguous once the blocked
+half of it is out.
+
+What the app itself PUT on those surfaces, it takes back. A client that tells the operating system
+about the calls it places — so the system can suggest them later — withdraws that person's entries
+when they are blocked, because the suggestion is the app's own statement and goes on being made in
+the app's name long after it stops being true. This is device hygiene and not part of the silence:
+it happens entirely on the blocker's own device, changes nothing any other member can observe, and
+is not the same claim as "no entry in the operating system's call log", which is about a call that
+was never delivered. Unblocking does not put the old entries back — they were suggestions, not
+history, and the record of the calls themselves is untouched.
+
+**What is NOT hidden, and why.** Reactions, poll votes and message edits keep flowing, and the
+client hides the identity. One frame is serialised once and sent to every connection, so
+per-recipient content is structurally impossible on the socket; and a REST projection the socket
+could not match would make the two transports disagree about what the chat contains. So: a reaction
+chip keeps its COUNT and drops the blocked reactor from the who-reacted list; a poll keeps its
+tallies and its bars and drops the blocked voter's face and name, and the "N of M voted" line a
+client draws from the roster does not move, because the roster does not move (see "Polls": the vote
+lists go out whole and every client counts them itself). Integers are not presence, and a count that
+changed when you blocked somebody would tell you they had reacted. A board NOTE is the one object
+where the client hides the CONTENT as well as the author: a note is a piece of writing pinned to a
+shared wall with no bubble to collapse into a hidden row, and leaving the text up while dropping the
+name would hide nothing that mattered (see "Board"). Every roster the server sends is COMPLETE — a
+blocked member is still in `members`, still in a poll's vote lists, still nameable, still a person
+whose old messages need a name — and the server projects per caller in exactly TWO
+places — the statistics leaderboard, because a row there is a ranking rather than an identity, and
+the blocker's own chat list, where a blocked direct chat is not returned at all (see `GET /chats`
+and "Family
+statistics"). What a client does with a complete roster is its own business, with one steer: leave a
+blocked member out of the picker that starts a new direct chat, rather than letting the tap answer
+`blocked`.
+
+**A block is a pair, not a membership.** It survives one of them leaving the family and the two of
+them meeting again. It is not scoped to a family and never lapses on a rejoin. A client draws the
+list from the names it already holds — `members`, then `former_members` — and falls back to the
+English placeholder "Blocked user" for an id it can resolve from neither, which happens for exactly
+one reason: the block outlived that person's membership. There is no endpoint that turns an
+arbitrary user id into a name, and adding one would be a user directory, which this product
+deliberately does not have (see "Reporting a member").
+
+**Account deletion is asymmetric.** Deleting an account destroys the blocks it MADE, along with the
+avatar and the birthday, because a preference is part of the account. It does NOT destroy the blocks
+made AGAINST it: those messages stay in the family chat, and somebody else's decision not to read
+them was never the departing account's to revoke.
+
+### Reporting a member
+
+The owner is the moderator. That follows from the containment this product already has:
+invite-code-only membership, approval by default, no cross-family contact, no user directory, and an
+owner who can already remove a member, reset their password, rotate the code and close the family.
+
+A report names a PERSON, or ONE MESSAGE of theirs, and carries a `reason` from a fixed list of four
+— `spam`, `harassment`, `inappropriate`, `other`. Fixed rather than free text because this is a
+nine-language product with a nine-language owner, and a report row a moderator cannot read is not a
+report.
+
+The excerpt is FROZEN, and this is the one place the recompute rule inverts. Everywhere else a
+quotation is rebuilt on every read; here it is stored, for two reasons that both end with the owner
+opening an empty screen: the author may EDIT the body away through the ordinary author-only path,
+which has no time limit, and retention DELETES the message outright. `message_id` disappears when
+retention takes the message; the excerpt does not, so a client draws the excerpt always and offers
+to jump to the message only while the id survives.
+
+**A message in a DIRECT chat may be reported**, and that is deliberate: a private conversation is
+exactly where harassment happens, and the excerpt is the whole of the evidence. It is the one way
+anything from a direct chat reaches a third person in this protocol, and it takes the deliberate act
+of the person who received it — so a client offers the affordance in a direct chat, and SAYS where
+it offers it that the message and its text will be shown to the family owner. Somebody who reports a
+message without knowing that has been surprised by their own app.
+
+A report is identified by `(reporter, reported, message_id)`, so a double tap is not two rows in the
+owner's list while a second message of the same member IS a second report — the rule and the reason
+for it are on `POST /families/reports`.
+
+A report raises a PUSH to the owner and NO WebSocket frame — exactly as a join request does. The
+owner reads the list on their next visit.
+
+**A report ABOUT the owner never reaches the owner.** It is stored, it is logged at WARN for the
+operator, and it is omitted from `GET /families/reports`. Otherwise the single most likely case for
+a member who needs a report mechanism at all ends with the owner reading, by name, exactly who
+complained about them. The reporter's `201` is byte-identical either way, so the response never says
+whether the owner was shielded. For the same reason `Report.id` carries no ordering and is not a
+sequence anybody can count in: an owner who sees ids 4, 6 and 7 in their own inbox has been told
+that report 5 exists and, by elimination on a family whose other reports they can all see, roughly
+what it must be about. A shield a gap in the numbering undoes is not a shield. The operator's
+published contact travels on `GET /me` as `support_contact` for the same reason: it is the honest
+escalation path when the moderator is the problem.
+
+Resolving is the owner's, and says nothing about what they did. This protocol has removing a member,
+resetting a password and closing the family; it does not have deleting somebody else's message.
+
+Blocking and reporting are independent. Reporting does not block, blocking does not report, and the
+owner's inbox NEVER shows who blocked whom — a family owner is often a parent and the blocked person
+is often in the same house, which is the exact case the silence exists for.
 
 ### Voice calls
 
@@ -998,7 +1336,11 @@ first, which it needed anyway to write.
 
 **One call per person.** A person who is ringing, being rung, or talking is busy. A second
 `call_offer` from them is `call_busy`; an offer TO them is `peer_busy`. Both are refused before
-anything is rung, and neither writes a record — nothing happened.
+anything is rung, and neither writes a record — nothing happened. The one exception is a call that
+is ringing only nominally because the callee has blocked the caller: it does not make the CALLEE
+busy. They may place calls of their own while it rings out, and an offer to them is never
+`peer_busy` on account of it — otherwise a blocked person could keep somebody uncallable by the
+whole family with a loop of offers (see "Blocking a member").
 
 #### Identity: the client names the call
 
@@ -1047,8 +1389,10 @@ tracking which of a person's devices is doing what.
    relays it, with the same reason, to every connection of both parties except the one it came
    from, and writes the record.
 
-The server ends a call on its own in three cases, and each reaches both parties as a `call_end`
-with the reason named: **`timeout`** when nobody has answered within the ring timeout (45 s by
+The server ends a call on its own in three cases, and each reaches both parties as a `call_end` with
+the reason named — both parties meaning both who were told of the call at all, so a callee who never
+received the offer because they had blocked the caller receives no `call_end` for it either (see
+"Blocking a member"): **`timeout`** when nobody has answered within the ring timeout (45 s by
 default); **`cancel`** when the connection that placed the call closes while it is still ringing —
 the caller's app was killed, or its socket blipped, and nothing on the far side should ring for
 somebody who is no longer there; and **`failed`** when a call that was answered has had NEITHER
@@ -1084,14 +1428,16 @@ own after the ring timeout.
 
 #### The record
 
-Every call that was rung writes ONE message into the direct chat: sender = the caller,
+Every call the server ACCEPTED writes ONE message into the direct chat: sender = the caller,
 `client_msg_id` = the `call_id`, and a `call` object with the outcome. `completed` is a call that
 was answered and hung up; `missed` is one that was never answered — rung out, cancelled, or the
 callee was nowhere to be reached; `declined` is one the callee refused; `failed` is one whose media
 never came up or died. `duration_secs` is present when — and only when — the call was ever
 answered, measured on the server's clock from the answer to the end, so `failed` may carry one and
-`missed` never does. A refused offer (`call_busy`, `peer_busy`, a chat of the wrong kind) writes
-nothing: nobody was rung.
+`missed` never does. A refused offer (`call_busy`, `peer_busy`, `blocked`, a chat of the wrong kind) writes
+nothing: nothing was accepted. A call the callee never heard because they had blocked the caller WAS
+accepted and writes the ordinary `missed` record — that record is the entire point of letting it
+ring out, and a call that vanished instead of being missed is the tell (see "Blocking a member").
 
 **The body is the English placeholder** `"Voice call"`, or `"Missed voice call"` for a `missed`
 one, in exactly the way a deleted account's `display_name` is the English placeholder "Deleted
@@ -1099,7 +1445,9 @@ account": a client that knows the `call` object draws its OWN wording from the o
 duration and which side of the call it was on, and never shows the body; a client that predates
 calls shows a readable line rather than a blank bubble. The chat-list preview carries the `call`
 object for the same reason, so no client with the feature ever has to fall back to English there.
-The record is a message in every other respect — it counts as unread for the callee, it can be
+The record is a message in every other respect — it counts as unread for the callee, except in a
+direct chat the callee has blocked into, which contributes nothing to any unread count (see
+"Blocking a member"); it can be
 replied to and reacted to, retention takes it — with one exception: **it cannot be edited.**
 `PATCH` on it is `validation`. The author-only rule would otherwise let a caller write anything
 into a line that other clients render as "Voice call".
@@ -1170,11 +1518,11 @@ carries the flag so the incoming UI is a camera one — see "Incoming calls".
 | `POST /auth/login` | `{username, password}` → `200 {token, user: User}`. Error: `invalid_credentials` (401). |
 | `POST /auth/logout` | (auth) → `204`. Revokes the calling session and closes its sockets. |
 | `POST /me/password` | (auth) `{current_password, new_password}` → `204`. Changing your own password requires proving you know the current one — a live session is not proof, because an unattended unlocked phone is exactly what this protects against. Every OTHER session of yours is revoked and its sockets closed; the calling session survives, so the device making the change stays signed in. Errors: `invalid_credentials` (401, wrong current password), `validation` (new password under 8 characters). |
-| `POST /me/delete` | (auth) `{password}` → `204`. **Permanently deletes the calling account** (see "Deleting an account"). The password is required for the same reason `POST /me/password` requires it — a live session is not proof, and an unattended unlocked phone is exactly what this protects against. A `POST` rather than a `DELETE /me`, because the request carries a body and RFC 9110 gives content on a DELETE no defined semantics; this is a self-hosted product behind whatever proxy an operator runs, and `POST /families/leave` already sets the house precedent for a destructive self-service action with a body. Always succeeds for an authenticated caller who knows their password: an owner with other members hands ownership on rather than being refused. Errors: `invalid_credentials` (401, wrong password), `validation` (no password given). |
+| `POST /me/delete` | (auth) `{password}` → `204`. **Permanently deletes the calling account** (see "Deleting an account"). The password is required for the same reason `POST /me/password` requires it — a live session is not proof, and an unattended unlocked phone is exactly what this protects against. A `POST` rather than a `DELETE /me`, because the request carries a body and RFC 9110 gives content on a DELETE no defined semantics; this is a self-hosted product behind whatever proxy an operator runs, and `POST /families/leave` already sets the house precedent for a destructive self-service action with a body. Always succeeds for an authenticated caller who knows their password: an owner with other members hands ownership on rather than being refused. The successor is NOT named in the response, unlike `POST /families/leave`: the caller's sessions are about to be destroyed and every socket closed, so there is nobody left to show a name to. The successor learns of it by `family_owner`, and the rest of the family on their next read. Errors: `invalid_credentials` (401, wrong password), `validation` (no password given). |
 | `PUT /me/birthday` | (auth) `{month, day}` → `200 {user: User}`. Your own birthday: a day and a month, no year (see "Birthdays"). Replaces whatever was there. Errors: `validation` (a month outside 1–12, or a day that month does not have). |
 | `DELETE /me/birthday` | (auth) → `204`. Clears it. Idempotent — clearing a birthday nobody set is still `204`. |
 | `POST /families/members/{id}/password` | (owner) `{new_password}` → `204`. The owner resets a member's password WITHOUT knowing the current one — the whole point is that the member has forgotten it. ALL of that member's sessions are revoked and their sockets closed, so every device they are signed in on returns to login; that is what makes a reset a recovery rather than a convenience. The owner cannot target themselves here (`POST /me/password` is for that), and a user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
-| `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null, calls_enabled: bool, video_calls_enabled: bool}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. `calls_enabled` is ALWAYS present and says whether this server signals calls at all (`[calls] enabled`); a client hides its call button when it is false — see "Voice calls". `video_calls_enabled` is ALWAYS present too and gates the video-call button alone (`[calls] video_enabled`) — see "Video". |
+| `GET /me` | (auth) → `200 {user: User, family: Family\|null, role: "owner"\|"member"\|null, pending_join_request: {family_id, family_name, created_at}\|null, calls_enabled: bool, video_calls_enabled: bool, max_family_members: 50}`. `pending_join_request` is the caller's live join request, if any — a client that was waiting and sees neither `family` nor `pending_join_request` knows the request was rejected. `calls_enabled` is ALWAYS present and says whether this server signals calls at all (`[calls] enabled`); a client hides its call button when it is false — see "Voice calls". `video_calls_enabled` is ALWAYS present too and gates the video-call button alone (`[calls] video_enabled`) — see "Video". `max_family_members` is ALWAYS present too and is the operator's ceiling on a family's size, so an owner's cap picker draws its range from it instead of discovering `validation` at the moment somebody tries to set one — the same reason `calls_enabled` is there instead of `calls_disabled` arriving when somebody wants to talk. Plus `blocked_user_ids: [11, 14]`, the caller's own block list, ALWAYS present and `[]` when they have blocked nobody — the one read in this protocol where absence is not allowed to mean "leave what you hold alone", for the same reason reactions stay present as `[]`: a list that vanished when it emptied would never tell a second device about the last unblock, and the standing rule everywhere else is that an absent field clears nothing. It is a complete state-set and never a delta, so a client replaces what it stores with what arrives. It rides here as well as on `GET /families/mine` because a block is a pair and not a membership: a caller with no family at all is answered `not_in_family` by that endpoint and still holds blocks, and `/me` is step 1 of the documented resync — which is what makes the list a step-1 fact and the `member_blocked` frame a latency optimisation rather than the only delivery path. Plus `support_contact: "…"`, the operator's published contact (`[server] support_contact`), absent when unset; clients show it on the report screen — see "Reporting a member". It is free text, at most 256 characters, in whatever form the operator configured; clients draw it VERBATIM, selectable and copyable, and never linkify it — an operator may write an address, a URL or a sentence, and three apps guessing differently about which it is would be worse than three apps showing the same text. |
 
 ### Profile pictures
 
@@ -1196,17 +1544,22 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | Method & path | Body → Response |
 |---|---|
 | `POST /families` | `{name}` (1–64 chars) → `201 {family: Family}`. Caller becomes owner; the family chat is created automatically. Error: `already_in_family`. |
-| `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`. |
-| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, assistant: {user_id, display_name, mention}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. `family.invite_code` present for the owner only. Error: `not_in_family`. |
+| `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). A family whose policy is `closed` admits nobody: the invite code answers `invalid_invite_code` (404), byte-identical to a code that never existed, so a shut door tells a stranger nothing — the same non-enumeration reasoning the avatar and password-reset endpoints follow. A family that is full answers `family_full` (409) — full meaning at its own `max_members`, or at the operator's ceiling when it has set none, because a valve that limited only what an owner may TYPE would hold nothing shut. The checks run in order — closed, then already in a family, then a pending request, then full — so a closed family answers `invalid_invite_code` whatever else is true of it, and under policy `approval` this door is where the REQUEST is created and the cap is read there too, then read again at approval. `family_full` does admit that the code is real, and that is the one thing this endpoint tells a stranger: the alternative is telling an invited member their code is invalid on the day the family filled up, which costs a real person a real join, where a closed family's code may be years old and in anybody's hands. Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`, `family_full` (409). |
+| `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, assistant: {user_id, display_name, mention}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
-| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval", language?: "ru"\|null, ai_history?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language, while leaving the key out entirely leaves it alone — the one place in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"). Errors: `not_family_owner` (403), `validation` (a `join_policy` that is neither), `invalid_language`. |
+| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, or a `max_members` outside 1..ceiling), `invalid_language`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
-| `POST /families/join-requests/{id}/approve` | (owner) → `200 {member: Member}`. Errors: `join_request_not_pending`, `user_already_in_family`. |
+| `POST /families/join-requests/{id}/approve` | (owner) → `200 {member: Member}`. The cap is re-checked here, because the roster can fill between a request and the decision: `family_full` (409), which leaves the request PENDING — a full family is a temporary condition and not a decision, and the owner may approve it again once a seat frees. The cap counts the rows in `members`, the owner included; `former_members` do not count, and a pending request reserves nothing — three members, a cap of four and two pending requests means the first approval succeeds and the second is `family_full`. Closing the family does NOT touch requests that were already pending, and the owner may still approve them — closing is about the invite code, and an approval is the deliberate act of the person who closed it. Errors: `join_request_not_pending`, `user_already_in_family`, `family_full` (409). |
 | `POST /families/join-requests/{id}/reject` | (owner) → `204`. Error: `join_request_not_pending`. |
-| `POST /families/leave` | → `204`. The owner may leave only as the sole member (the family is then deleted); otherwise `409 owner_cannot_leave`. Leaving removes the caller from the family chat and their direct chats; history is retained and resurfaces on rejoin. |
+| `POST /families/leave` | → `204`, or `200 {new_owner_user_id: 11}` when the caller was the owner and the family passed to somebody. **An owner who leaves hands the family on**; they are never refused. The successor is the longest-standing remaining member — the same rule defined once under "Deleting an account", and reached now from two doors rather than one. If nobody remains, the family is deleted with them exactly as before, and the answer is `204`. Leaving removes the caller from the family chat and their direct chats; history is retained and resurfaces on rejoin. The successor is told by a `family_owner` frame. That frame is sent BEFORE the departing owner's `member_left`, so no client ever momentarily holds a family whose `owner_user_id` names nobody in `members`. The leaving owner resolves `new_owner_user_id` against the roster it still holds, tells the user who inherited, and only then tears its family state down; a member sitting in their own leave dialog when `family_owner` arrives dismisses it and re-presents it from a fresh `GET /families/mine`, because both the successor and the consequences of leaving have just changed under them. `owner_cannot_leave` is no longer raised by this or any other endpoint. |
 | `DELETE /families/members/{user_id}` | (owner) → `204`. Error: `cannot_remove_owner`. |
 | `PUT /families/members/{user_id}/birthday` | (owner) `{month, day}` → `200 {member: Member}`. The owner filling in a birthday for a member of their own family — a parent for a child, typically. The owner MAY name themselves here, unlike the password reset: there is no proof being skipped (see "Birthdays"). A user outside the family is `not_same_family` whether or not they exist. Errors: `not_family_owner` (403), `not_same_family` (403), `validation`. |
 | `DELETE /families/members/{user_id}/birthday` | (owner) → `204`. Clears it. Idempotent. Same errors. |
+| `PUT /families/members/{user_id}/block` | → `204`. The caller stops seeing this member. Any member may block any other member of their own family, the OWNER INCLUDED — the owner has no special standing here and is not consulted. Idempotent: blocking somebody already blocked is still `204`. **The blocked member is never told** and nothing in their app changes (see "Blocking a member"). A user outside the family is `not_same_family` whether or not they exist — the same refusal, and for the same reason, as the password reset. Errors: `not_in_family` (409), `cannot_block_self` (400), `not_same_family` (403). |
+| `DELETE /families/members/{user_id}/block` | → `204`. Unblocks. Idempotent — clearing a block nobody set is still `204`. Unblocking is scoped to the CALLER'S OWN list and not to the roster: any id in `blocked_user_ids` may be cleared, including one that has since left the family or deleted its account, so `not_same_family` is NOT raised here and neither is `not_in_family` — a block is a pair and not a membership, and a caller with no family at all may still clear one. A block the blocker cannot lift would be a permanent entry on their own screen and a block that silently came back to life on a rejoin (see "Blocking a member"). Error: `cannot_block_self` (400), kept for symmetry with the `PUT`. |
+| `POST /families/reports` | `{reported_user_id, reason, message_id?}` → `201 {report: Report}`, or `200 {report: Report}` when an open report by this caller against this member already exists. `reason` is one of `spam`, `harassment`, `inappropriate`, `other`. `message_id` must name a message in a chat the caller is in AND have been sent by `reported_user_id`; anything else — including a real message in a chat the caller cannot see — is `message_not_found`, so the endpoint never confirms an id exists elsewhere, exactly as `reply_to_message_id` does not. A report is identified by `(reporter, reported, message_id)`, with a null `message_id` for one that names a person rather than a message; raising one that matches an OPEN row returns that row and creates nothing, whatever `reason` was sent — the stored reason is not overwritten. So a double tap is not two rows in the owner's list, while reporting a second message of the same member IS a second report, which is what a moderator needs in order to see a pattern. The excerpt is frozen here (see "Reporting a member"). Errors: `not_in_family` (409), `cannot_report_self` (400), `not_same_family` (403), `message_not_found` (404), `validation`. |
+| `GET /families/reports` | (owner) → `200 {reports: [Report]}`, open only, oldest first — shaped exactly as `GET /families/join-requests`. Reports naming the owner themselves are NOT listed (see "Reporting a member"). Open reports are capped per family at the page maximum (200); the oldest are what the owner sees, and a family that has hit the ceiling has a moderation problem rather than a pagination problem. Error: `not_family_owner` (403). |
+| `POST /families/reports/{id}/resolve` | (owner) → `204`. Takes it off the list; what "dealt with" MEANS is the owner's business. Idempotent for the owner's own inbox: resolving a report they have already resolved is still `204`, because a double tap and a retry after a timeout that actually worked are the same request twice and neither is an error. `report_not_pending` (409) is kept for what the owner may not see at all — a report of another family, or one that names the owner — one answer for both, so the endpoint never confirms an id exists elsewhere. Errors: `not_family_owner` (403), `report_not_pending` (409). |
 
 ### Attachments
 
@@ -1231,17 +1584,17 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachments` (and the legacy `attachment`), trimmed exactly as before — kind and name, no dimensions, no coordinates — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. |
-| `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self`, `not_same_family`, `user_not_found`. |
-| `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. Errors: `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
+| `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachments` (and the legacy `attachment`), trimmed exactly as before — kind and name, no dimensions, no coordinates — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. A direct chat with somebody the caller has blocked is NOT listed, for the blocker alone, and comes back whole on unblock — nothing about it is deleted (see "Blocking a member"); it contributes nothing to `unread_count` anywhere and nothing to the APNs `badge`, because there is nothing here for a client to count. Nothing else on this row is projected per caller: in the family chat a blocked member's message still moves `unread_count` and may still BE `last_message`, because the count is the other half of the read marker and projecting one without the other desynchronises them — and a count that changed when you blocked somebody is a quantity the blocked person's own behaviour can be tested against. A client draws such a preview as the hidden row rather than as text, with no sender name, and it is not revealable from the list. |
+| `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self` (400), `not_in_family` (409, the caller belongs to no family), `not_same_family` (409), `user_not_found` (404). Plus `blocked` (409) when the CALLER has blocked this member. Only that direction refuses: somebody who has been blocked may go on opening and sending into the chat exactly as before, and it is the blocker who no longer sees it (see "Blocking a member"). |
+| `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
+| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
 | `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/edits` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {messages: [Message]}` ordered by `edit_seq` ascending — the edit catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `PUT /chats/{id}/messages/{mid}/vote` | `{option_id: 5}` → `200 {message_id, poll: {Poll}}`. Sets the caller's choice on a poll — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or clear). One choice per member; there is no multiple choice. Re-PUT of the option already held is a no-op: no seq bump, no fan-out. Errors: `invalid_poll` (400 — no such option on this poll), `poll_closed` (409), `message_not_found` (404 — no such poll *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/vote` | → `200 {message_id, poll: {Poll}}`. Retracts the caller's vote; idempotent (retracting nothing returns the current state unchanged and burns no seq). Errors: `poll_closed` (409), `message_not_found`, `not_chat_member`, `chat_not_found`. |
 | `POST /chats/{id}/messages/{mid}/poll/close` | → `200 {message_id, poll: {Poll}}`. Author only, one-way. Closing a closed poll is a no-op with no seq bump. Errors: `not_message_author` (403), `message_not_found`, `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/polls` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {polls: [{message_id, poll: {Poll}}]}` ordered by `poll_seq` ascending — the poll catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/read` | `{last_read_message_id}` → `204`. Monotonic — the server keeps the max ever reported. |
+| `POST /chats/{id}/read` | `{last_read_message_id}` → `204`. Monotonic — the server keeps the max ever reported. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `chat_not_found`, `not_chat_member`. |
 | `PUT /chats/{id}/messages/{mid}/reaction` | `{emoji}` → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Sets or replaces the caller's reaction on the message — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or remove). One reaction per user per message. Emoji: trimmed, non-empty, ≤ 32 bytes UTF-8. Re-PUT of the current emoji is a no-op: no seq bump, no fan-out. Errors: `invalid_emoji`, `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `DELETE /chats/{id}/messages/{mid}/reaction` | → `200 {message_id, reaction_seq, reactions: [Reaction]}`. Removes the caller's reaction; idempotent (deleting nothing returns the current state unchanged). Same errors minus `invalid_emoji`. |
 | `GET /chats/{id}/reactions` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {message_reactions: [{message_id, reaction_seq, reactions: [Reaction]}]}` ordered by `reaction_seq` ascending — the reaction catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
@@ -1309,6 +1662,7 @@ the other, or both, and the receiving stack accepts whichever it was given.)
 {"type": "member_deleted", "family_id": 3, "member": {Member with "deleted": true}}
                           — "family_id" absent when the account belonged to no family
 {"type": "family_owner",  "family_id": 3, "user_id": 9}
+{"type": "member_blocked", "user_id": 11, "blocked": true}
 {"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
                      "reactions": [{"user_id": 9, "emoji": "❤️"}]}
 {"type": "message_edited", "message": {Message}}
@@ -1355,8 +1709,29 @@ stored one. A `member_left` frame is sent alongside it, so a client that predate
 least fixes its roster and merely goes on showing the old name against old messages.
 
 `family_owner` names the family's new owner and reaches every member of the family. It is sent when
-an owner deletes their account and ownership passes on (see "Deleting an account"); a client that
-receives it for itself gains the owner's screens immediately rather than at its next `GET /me`.
+an owner LEAVES or deletes their account and ownership passes on (see "Deleting an account" and
+`POST /families/leave`); a client that receives it for itself gains the owner's screens immediately
+rather than at its next `GET /me`.
+
+`member_blocked` is delivered to every connection of the BLOCKER and to NOBODY else. It is the only
+frame in this protocol about ANOTHER member that reaches one person's own devices, stops there, and
+reports a fact the recipient alone established — `call_ringing` answers a single connection and an
+`answered_elsewhere` `call_end` reaches one person's other devices, but both are about a call that
+person is already in. That is exactly what makes blocking silent: nothing about a block ever reaches
+the person blocked. `blocked` is a boolean carrying full current state rather than an event, so an
+unblock is the same frame with `false` and a client applies it as a state-set, the idiom `reaction`
+and `poll` use. It carries NO `family_id`: a block is a pair, not a membership. It has NO sequence
+value, and deliberately — the four sequences that exist do so because `after_id` is `WHERE id >
+cursor` and cannot see a change to an OLDER row, so an offline client would never learn of it; but
+the whole block list is re-read in full from a per-caller endpoint on every resync, so there is no
+catch-up feed to cursor and nothing to miss. It never notifies and never counts as unread. A REPORT
+raises no frame at all: the owner is pushed, exactly as for a join request, and reads the list on
+their next visit. It is delivered to the acting device as well, whose `PUT` or `DELETE` is answered
+by a bodiless `204`; a client may apply the change optimistically, because the frame carries full
+state and cannot conflict with it. A no-op — blocking somebody already blocked — emits nothing,
+exactly as a re-PUT reaction does. It is ordered against `message` frames on the same socket, so a
+message serialised before the block arrives before it: a client that draws that message and hides it
+on the following frame is behaving correctly.
 
 `poll` carries a poll's full current state to every member of the chat, the voter's own connections
 included — the voter's own request is answered by its HTTP response. It never notifies and never
@@ -1384,6 +1759,21 @@ apply it under the same rule the board catch-up uses: a note is written only whe
   with an error per keystroke, and answering only for chats that exist would turn the indicator into
   a way to enumerate chat ids. The membership check runs AFTER the throttle, so a client sending a
   chat id it has no business with cannot turn every keystroke into a database round trip.
+  A client folds an incoming `read` into a displayed "seen" marker only in a DIRECT chat, where
+  there is exactly one peer and the marker means one person. In the family chat a `read` frame is
+  roster data that no bubble draws: a per-member seen state over N members is a row of faces nobody
+  asked for, and a per-member ABSENCE is precisely what a blocker's suppressed inward frames would
+  put on screen. `typing` is drawn in both kinds. This is written down as a rule rather than left to
+  each client because it is a behaviour change for one of them, and two apps that disagree about it
+  disagree in public. One recipient is also missing from the relay: a `read` or a `typing` frame from
+  a member is not relayed to anybody who has blocked them. The filter is on the RECIPIENT and never
+  on the sender — the blocker's own `read` and `typing` frames still reach the blocked member
+  byte-identically in the FAMILY chat, which is the positive test "Blocking a member" demands. A
+  `read` or a `typing` frame naming a DIRECT chat the sender has blocked into is **dropped in
+  silence** — no relay and no `error` frame, the same answer this bullet already gives a `typing`
+  frame naming a chat the sender does not belong to. Dropped rather than answered, and specified
+  here rather than left to each client, because a blocker whose two phones disagreed about whether
+  to keep sending would show the blocked member one marker that moves and one that does not.
 - **Reactions**: the `reaction` frame carries the message's **full current reaction state**
   (never a delta), so it is idempotent and ordering races resolve locally: a client applies it
   only when `reaction_seq` is greater than the last value it stored for that message. It goes
@@ -1405,8 +1795,14 @@ apply it under the same rule the board catch-up uses: a note is written only whe
 - **Calls**: the whole signalling exchange is under "Voice calls"; the transport rules are
   these. `call_offer` is answered on the ORIGINATING connection with `call_ringing` or an
   `error` carrying the `call_id` (`calls_disabled`, `invalid_call` for a chat that is not
-  direct, `chat_not_found`, `not_chat_member`, `call_busy`, `peer_busy`, `peer_unreachable`
-  when the callee has neither a socket nor a device that can be woken). `call_answer` for a call
+  direct, `chat_not_found`, `not_chat_member`, `call_busy`, `peer_busy`, `blocked`
+  when the CALLER has blocked the callee — the one call error aimed at the person who set the block,
+  so it can never reach the person it is about — and `peer_unreachable` when the callee has neither a
+  socket nor a device that can be woken). A block never changes WHICH of these answers an offer: the
+  callee's busyness and reachability are computed on their real state and the block is applied one
+  step later, at delivery, so an offer to somebody who has blocked the caller is answered
+  `call_ringing` exactly when it otherwise would have been, and rings out to `timeout` (see
+  "Blocking a member"). `call_answer` for a call
   the server does not hold, or from someone who is not its callee, is `call_not_found` /
   `invalid_call`. `call_ice` and `call_end` naming an unknown call are **dropped in silence**:
   the first is noise-level and the second is a client tidying up after a restart, and neither
@@ -1418,7 +1814,12 @@ apply it under the same rule the board catch-up uses: a note is written only whe
   pings, and treat a missing `pong` as a dead connection.
 - **Best-effort delivery**: the socket is a live wire, not a queue. A slow client's socket is
   dropped; REST is the source of truth. On every (re)connect a client must resync:
-  1. `GET /me` — reconcile membership.
+  1. `GET /me` — reconcile membership, and REPLACE the stored block list with `blocked_user_ids`.
+     Then `GET /families/mine`, unless step 1 says the caller has no family: the roster,
+     `former_members`, `next_owner_user_id` and `max_board_seq` live only there, and nothing else
+     replays a roster change missed while offline — a join, a leave, a birthday, the join policy,
+     the member cap and the family's language either raise no frame at all or raise one a sleeping
+     client did not get.
   2. `GET /chats` — chat list, previews, authoritative unread counts, and the caller's own
      read marker per chat.
   3. Per chat: `GET /chats/{id}/messages?after_id=<max known message id>` looped until a short
@@ -1497,11 +1898,33 @@ Neither is a case of "the server cannot tell", which is why neither gets the ben
 A signed-out phone showing family message bodies on its lock screen is not a redundant banner; it
 is a leak, and it lasts until somebody notices.
 
-Five events push: a **new message** (to every chat member but the sender), a **new board note** (to
+Six events push: a **new message** (to every chat member but the sender), a **new board note** (to
 every family member but the author), a **join request created** (to the family owner), a **join
-request approved** (to the requester), and an **incoming call** (to the callee — see below) — each
-of them narrowed device by device by the rule above. Typing, reads, reactions, note moves and
-edits, and other frames never push.
+request approved** (to the requester), an **incoming call** (to the callee — see below), and a
+**report created** (to the family owner, unless the report names the owner — see "Reporting a
+member") — each of them narrowed device by device by the rule above. Typing, reads, reactions, note
+moves and edits, and other frames never push.
+
+**A block removes a candidate before the per-device rule runs.** A member is not woken for a message
+(a poll included — a poll IS a message and pushes as one), a board note or a call from somebody they
+have blocked. A block never narrows the owner's MODERATION pushes: a join request and a report wake
+the owner whoever they name, because being blocked by the moderator is not a way to stop being
+moderated (see "Blocking a member"). This is a per-RECIPIENT
+narrowing one level ABOVE the existing per-device gate: the device rule narrows a candidate list
+device by device, and the block removes the candidate first. It applies to the SENDER of the
+message, and to one further case: a message from the ASSISTANT whose `reply_to` names a blocked
+member, because its answer to a blocked member's `@ai` would otherwise light up the blocker's phone
+for a thread they cannot read. It stops there, deliberately. Suppressing every reply that quotes a
+blocked member would silence pushes written by people the blocker has NOT blocked, and would hand
+the blocked member a way to do it on purpose: post something reply-worthy, wait for a third member
+to quote it, and the blocker's phone stays dark for a message they were meant to see. A block is
+about one member's own words.
+
+**In the family chat the frame is NOT suppressed, only the push.** The message still arrives over
+the socket, because the "Hidden — blocked member" row has to have something to reveal, and because a
+client's read cursor only learns ids the server handed it. The one exception is a direct chat the
+recipient has blocked into, where the frame is suppressed too — there is no hidden row to reveal
+there and no read cursor to freeze (see "Blocking a member").
 
 A poll is a message and pushes exactly once, as one, with its question for a body — there is no
 "Anna started a poll" alert, because the question is more useful than the fact. Votes, retractions
@@ -1526,6 +1949,13 @@ message ids. Title `"<Family> — <Author>"`, body the note's text (or `"New not
 `include_message_body = false`, the same switch that governs message bodies). Tapping it opens the
 board.
 
+A report pushes to the family owner with `"kind": "report"` and `family_id`, and never carries the
+reported text, regardless of `include_message_body`: the excerpt is the very content somebody asked
+to have looked at, and a lock screen is where it must not be readable. Title is the family name and
+body the fixed English "New report", which `include_message_body` does not vary because there is
+nothing there to withhold. Tapping it opens the owner's report inbox. A report naming the owner
+pushes to nobody (see "Reporting a member").
+
 A message carrying attachments MAY have an empty body — which is how photos are normally sent —
 and an alert showing a name above a blank line says nothing arrived. Such a message pushes what
 arrived instead: for ONE attachment, `"Photo"`, `"Video"`, `"Audio"`, the file's name, or a
@@ -1548,7 +1978,8 @@ APNs (token-based auth, HTTP/2): headers `apns-topic` = bundle id, `apns-push-ty
 SYSTEM puts on the icon while the app is not running; a running client derives its own icon badge
 from its store instead, because the server pushes only to a device with no live socket and can
 therefore never correct a foregrounded app's number. Join events use `"kind": "join_request"` /
-`"kind": "joined"` with `family_id` instead of chat/message ids.)
+`"kind": "joined"`, and a report `"kind": "report"`, all three with `family_id` instead of
+chat/message ids.)
 
 FCM (HTTP v1): notification + data so the system tray renders when the app is dead, while a
 foregrounded app — its own socket live — is never pushed at all:
@@ -1564,8 +1995,8 @@ foregrounded app — its own socket live — is never pushed at all:
 
 `notification_count` is the recipient's unread count **in the chat this push is about**, not the
 total `badge` carries. It is a number rather than a string — the everything-is-a-string rule applies
-to `data` only — and it rides on `message` pushes alone, omitted from `board_note`, `join_request`
-and `joined`.
+to `data` only — and it rides on `message` pushes alone, omitted from `board_note`, `join_request`,
+`joined` and `report`.
 
 Per chat rather than total, because Android has no icon-badge API at all: the only number an app can
 offer a launcher is `Notification.number`, and a launcher that draws one SUMS it across the app's
@@ -1577,7 +2008,8 @@ appears at all is the launcher's decision and not the app's: several draw a plai
 count, and that is a correct rendering of the same data.
 
 Tapping a notification opens the chat named by `chat_id` (or the board for `board_note`, the
-join-requests screen for `join_request`, the chat list for `joined`).
+join-requests screen for `join_request`, the chat list for `joined`, the report inbox for
+`report`).
 
 ### Incoming calls
 
@@ -1639,6 +2071,7 @@ unregistered deletes the row, as an ordinary push would.
 | Limit | Default |
 |---|---|
 | Message body | 4000 chars |
+| Members in one family | no per-family cap by default; `limits.max_family_members` (default 50) is the operator's ceiling and binds at the join door for EVERY family, capped or not — an owner's `max_members` may only be lower, and is the control the apps show |
 | Reaction emoji | 32 bytes UTF-8 (fixed) |
 | Page size | 50 default / 200 max |
 | HTTP body | 16 KiB (except `PUT /me/avatar`) |

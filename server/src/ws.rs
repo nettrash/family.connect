@@ -167,6 +167,26 @@ pub enum ServerFrame {
         family_id: i64,
         user_id: i64,
     },
+    /// A block this caller set or cleared, delivered to EVERY CONNECTION OF
+    /// THE BLOCKER AND TO NOBODY ELSE.
+    ///
+    /// The one-element recipient list is the whole mechanism of silence:
+    /// nothing about a block ever reaches the person blocked, so there is
+    /// no frame, no push and no readable object they could test for
+    /// (protocol.md, "Blocking a member").
+    ///
+    /// `blocked` carries full current state rather than an event, so an
+    /// unblock is this same frame with `false` and a client applies it as a
+    /// state-set — the idiom `Reaction` and `Poll` use. No `family_id`: a
+    /// block is a pair, not a membership, and it outlives either of them
+    /// leaving. No sequence value either, and deliberately: the four
+    /// sequences exist because `after_id` cannot see a change to an OLDER
+    /// row, but the whole block list is re-read from a per-caller endpoint
+    /// on every resync, so there is no catch-up feed to cursor.
+    MemberBlocked {
+        user_id: i64,
+        blocked: bool,
+    },
     /// A message's full current reaction state — state transfer, never a
     /// delta, so delivery order races resolve client-side by comparing
     /// `reaction_seq`.
@@ -1180,6 +1200,34 @@ mod tests {
         assert_serializes_to(
             &frame,
             r#"{"type": "family_owner", "family_id": 3, "user_id": 9}"#,
+        );
+    }
+
+    /// The block frame carries state, not an event: an unblock is the same
+    /// frame with `false`. And it carries NO `family_id` — a block is a
+    /// pair, not a membership (protocol.md, "Blocking a member").
+    #[test]
+    fn member_blocked_frame_matches_the_protocol_shape() {
+        let blocked = ServerFrame::MemberBlocked {
+            user_id: 11,
+            blocked: true,
+        };
+        assert_serializes_to(
+            &blocked,
+            r#"{"type": "member_blocked", "user_id": 11, "blocked": true}"#,
+        );
+        let unblocked = ServerFrame::MemberBlocked {
+            user_id: 11,
+            blocked: false,
+        };
+        assert_serializes_to(
+            &unblocked,
+            r#"{"type": "member_blocked", "user_id": 11, "blocked": false}"#,
+        );
+        let json = serde_json::to_value(&blocked).expect("serializes");
+        assert!(
+            json.get("family_id").is_none(),
+            "a block is a pair, not a membership: {json}"
         );
     }
 

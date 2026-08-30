@@ -259,6 +259,29 @@ class WsFrameSerdeTest {
     }
 
     @Test
+    fun memberBlockedFrameRoundTrips() {
+        assertRoundTrips(
+            """{"type": "member_blocked", "user_id": 11, "blocked": true}""",
+            ServerFrame.MemberBlocked(userId = 11, blocked = true),
+        )
+    }
+
+    /**
+     * The `false` case is the one that proves neither field was given a
+     * Kotlin default: `encodeDefaults = false` would drop `"blocked":
+     * false` from the re-encoded form and this round-trip would fail. An
+     * unblock is the same frame carrying full current state, not a
+     * different frame (docs/protocol.md, "Blocking a member").
+     */
+    @Test
+    fun anUnblockIsTheSameFrameCarryingFalse() {
+        assertRoundTrips(
+            """{"type": "member_blocked", "user_id": 11, "blocked": false}""",
+            ServerFrame.MemberBlocked(userId = 11, blocked = false),
+        )
+    }
+
+    @Test
     fun reactionFrameRoundTrips() {
         // protocol.md, "Server → client" — the frame carries the FULL
         // current reaction state, never a delta.

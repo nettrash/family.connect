@@ -110,6 +110,8 @@ fun ChatListScreen(
     val avatarVersions by viewModel.avatarVersions.collectAsStateWithLifecycle()
     val newNoteCount by viewModel.newNoteCount.collectAsStateWithLifecycle()
     val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
+    val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
+    val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
     val socketState by viewModel.socketState.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     var showPicker by remember { mutableStateOf(false) }
@@ -233,6 +235,8 @@ fun ChatListScreen(
                         items(chatList, key = { it.id }) { chat ->
                             ChatRow(
                                 chat = chat,
+                                previewHidden = chat.lastMessageSenderId
+                                    ?.let { it != myUserId && it in blockedUserIds } == true,
                                 onClick = { onOpenChat(chat.id) },
                                 peerAvatarVersion = chat.peerUserId
                                     ?.let { avatarVersions[it] } ?: 0L,
@@ -290,6 +294,18 @@ fun ChatListScreen(
 @Composable
 private fun ChatRow(
     chat: ChatEntity,
+    /**
+     * Whether the last message came from somebody blocked, in which case
+     * the preview is the placeholder rather than their text.
+     *
+     * The row still counts and still sorts by that message: in the family
+     * chat a blocked member's message keeps moving `unread_count` and may
+     * still BE `last_message`, because the count is the other half of the
+     * read marker and a count that changed when you blocked somebody is a
+     * quantity their own behaviour can be tested against
+     * (docs/protocol.md, `GET /chats`).
+     */
+    previewHidden: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     /** The peer's profile-picture version; 0 for the family chat. */
@@ -326,7 +342,12 @@ private fun ChatRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = chat.lastMessageBody ?: stringResource(R.string.s_no_messages_yet),
+                // Not revealable from here: the peek is a per-ROW gesture
+                // in the thread, and a chat list has no row to reveal.
+                text = when {
+                    previewHidden -> stringResource(R.string.s_hidden_blocked_member)
+                    else -> chat.lastMessageBody ?: stringResource(R.string.s_no_messages_yet)
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (hasUnread) {
                     MaterialTheme.colorScheme.onSurface

@@ -86,8 +86,25 @@ async fn deliver_board_note_inner(
         return Ok(());
     }
 
-    // Same rule as messages: device by device, and never the author.
+    // Same rule as messages: device by device, and never the author — and
+    // never somebody who has blocked the author. AFTER the fan-out above,
+    // so the FRAME still reaches everybody and the blocker's client has a
+    // note to hide rather than a gap (protocol.md, "Blocking a member").
     let author_id = note.author_id;
+    let members: Vec<i64> = match author_id {
+        Some(author_id) => {
+            let blocked_recipients =
+                crate::blocks::blockers_of(&state.pool, author_id, &members).await?;
+            members
+                .into_iter()
+                .filter(|id| !blocked_recipients.contains(id))
+                .collect()
+        }
+        None => members,
+    };
+    if members.is_empty() {
+        return Ok(());
+    }
     let live_sessions = state.registry.live_sessions(&members).await;
     let devices = devices_for_users(&state.pool, &members).await?;
     let devices = devices_to_wake(devices, &live_sessions, author_id);
@@ -206,6 +223,29 @@ async fn fan_out_new_message(
     origin_conn: Option<u64>,
 ) -> Result<Vec<i64>, ApiError> {
     let members = chat_member_ids(&state.pool, message.chat_id).await?;
+    // In the FAMILY chat the frame is NEVER suppressed — the hidden row has
+    // to have something to reveal, and a filtered feed freezes the
+    // blocker's read marker into an oracle. A DIRECT chat the recipient has
+    // blocked into is the one exception: there is no hidden row there and
+    // no cursor to freeze, and the chat is gone from every path they can
+    // reach it by (protocol.md, "Blocking a member").
+    //
+    // So the filter is scoped to direct chats, where the only other member
+    // IS the sender. Widening it to every chat would suppress the family
+    // chat's frame and rebuild the very oracle the paragraph above forbids.
+    //
+    // The returned Vec is also the PUSH candidate list, so a recipient
+    // dropped here is dropped from both — which is right: a chat they
+    // cannot open must not wake them either.
+    let is_direct: bool = sqlx::query_scalar("SELECT kind = 'direct' FROM chats WHERE id = $1")
+        .bind(message.chat_id)
+        .fetch_one(&state.pool)
+        .await?;
+    let members = if is_direct {
+        without_blockers_of(state, message.sender_id, members).await?
+    } else {
+        members
+    };
     let frame = ServerFrame::Message {
         message: message.clone(),
     };
@@ -224,6 +264,52 @@ async fn push_message_to(
     if candidates.is_empty() {
         return Ok(());
     }
+
+    // A BLOCK REMOVES A CANDIDATE BEFORE THE PER-DEVICE RULE RUNS. This is
+    // a per-RECIPIENT narrowing one level above the device gate below: the
+    // device rule narrows a candidate list device by device, and the block
+    // takes the candidate out of it first (protocol.md, "Push
+    // notifications").
+    //
+    // Here rather than in `fan_out_new_message`, deliberately: the FRAME is
+    // not suppressed, only the push. The message still arrives over the
+    // socket, because the "Hidden — blocked member" row has to have
+    // something to reveal, and because a client's read cursor only ever
+    // learns ids the server handed it — a filtered feed would freeze the
+    // blocker's read marker at the id before the blocked message, and a
+    // marker that leaps forward the moment a third member posts is a
+    // perfect oracle for the blocked person watching the other end.
+    //
+    // TWO senders are consulted, not one. The obvious filter — "drop
+    // whoever blocked message.sender_id" — leaves a hole the assistant
+    // walks straight through: when a blocked member mentions `@ai`, the
+    // answer is a real message whose sender is the ASSISTANT, quoting the
+    // mention. Without the second test that answer lights up the blocker's
+    // phone for a thread they cannot read. `ReplyTo` already carries
+    // `sender_id`, so this costs no query on the common path.
+    //
+    // It stops at those two. Suppressing every reply that quotes a blocked
+    // member would silence pushes written by people the blocker has NOT
+    // blocked, and hand the blocked member a way to do it on purpose.
+    let candidates = {
+        let mut blocked_recipients =
+            crate::blocks::blockers_of(&state.pool, message.sender_id, &candidates).await?;
+        if let Some(reply_to) = message.reply_to.as_ref()
+            && reply_to.sender_id != message.sender_id
+        {
+            blocked_recipients.extend(
+                crate::blocks::blockers_of(&state.pool, reply_to.sender_id, &candidates).await?,
+            );
+        }
+        let candidates: Vec<i64> = candidates
+            .into_iter()
+            .filter(|id| !blocked_recipients.contains(id))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        candidates
+    };
 
     // The live-session snapshot is taken BEFORE the device rows are read,
     // and that order is the safe one: a socket that comes up in between is
@@ -295,6 +381,14 @@ pub async fn push_join_request_created(
     owner_user_id: i64,
     requester_id: i64,
 ) -> Result<(), ApiError> {
+    // NO BLOCK GATE HERE, deliberately. A block never narrows the owner's
+    // MODERATION pushes: a join request wakes them whoever it names,
+    // because being blocked by the moderator is not a way to stop being
+    // moderated (protocol.md, "Push notifications").
+    //
+    // The tempting gate is the one every other push has, and it is wrong
+    // in exactly one direction: it would make the member an owner has
+    // stopped reading the member the owner is never told about.
     let live_sessions = state.registry.live_sessions(&[owner_user_id]).await;
     let devices = devices_for_users(&state.pool, &[owner_user_id]).await?;
     let devices = devices_to_wake(devices, &live_sessions, None);
@@ -308,6 +402,50 @@ pub async fn push_join_request_created(
     let badge = unread_badge(&state.pool, owner_user_id).await?;
     let note =
         push_payload::join_request_notification(family_name, &requester_name, family_id, badge);
+    spawn_notify(state, vec![(devices, note)]);
+    Ok(())
+}
+
+/// Push the family owner when a report is filed — device by device, the
+/// same rule a join request follows.
+///
+/// **A report that names the OWNER is never pushed to them.** It is stored
+/// and logged at WARN for the operator instead. Otherwise the single most
+/// likely case for a member who needs the report mechanism at all ends with
+/// the owner reading, by name, exactly who complained about them
+/// (protocol.md, "Reporting a member").
+///
+/// The caller's `201` is identical either way, so the response never says
+/// whether the owner was shielded.
+pub async fn push_report_created(
+    state: &AppState,
+    family_id: i64,
+    family_name: &str,
+    owner_user_id: i64,
+    reported_user_id: i64,
+) -> Result<(), ApiError> {
+    if reported_user_id == owner_user_id {
+        tracing::warn!(
+            family_id,
+            owner_user_id,
+            "a report naming the family owner was filed — it is stored and \
+             visible to the operator only, never to the owner"
+        );
+        return Ok(());
+    }
+    // NO BLOCK GATE HERE either, and for the same clause: a report wakes
+    // the owner whoever it names. An owner who could silence reports about
+    // a member by blocking them would be a moderator who had opted out of
+    // moderating, which is the one thing this whole feature exists to make
+    // impossible (protocol.md, "Push notifications").
+    let live_sessions = state.registry.live_sessions(&[owner_user_id]).await;
+    let devices = devices_for_users(&state.pool, &[owner_user_id]).await?;
+    let devices = devices_to_wake(devices, &live_sessions, None);
+    if devices.is_empty() {
+        return Ok(());
+    }
+    let badge = unread_badge(&state.pool, owner_user_id).await?;
+    let note = push_payload::report_notification(family_name, family_id, badge);
     spawn_notify(state, vec![(devices, note)]);
     Ok(())
 }
@@ -610,6 +748,33 @@ fn spawn_notify_call(state: &AppState, devices: Vec<DevicePush>, call: CallPush)
 /// Relay a read marker to the *other* members of the chat (all connections
 /// of the reader are excluded — protocol.md relays read/typing to other
 /// members only; the reader's own devices resync over REST).
+/// Drop, from `recipients`, anybody who has blocked `actor`.
+///
+/// **INWARD ONLY, and the direction is the whole point.** This removes
+/// people from the audience of somebody they blocked. Written the other way
+/// round — removing the BLOCKED person from the audience of the blocker —
+/// it becomes a flawless leak: their read receipts and typing indicators
+/// would stop arriving, and one person quietly going silent to exactly one
+/// other is a signal you can test for.
+///
+/// The same one-line filter with its two arguments transposed is the bug,
+/// which is why every caller needs a POSITIVE test that the blocker's own
+/// frames still reach the blocked person byte-identically.
+async fn without_blockers_of(
+    state: &AppState,
+    actor: i64,
+    recipients: Vec<i64>,
+) -> Result<Vec<i64>, ApiError> {
+    let blockers = crate::blocks::blockers_of(&state.pool, actor, &recipients).await?;
+    if blockers.is_empty() {
+        return Ok(recipients);
+    }
+    Ok(recipients
+        .into_iter()
+        .filter(|id| !blockers.contains(id))
+        .collect())
+}
+
 pub async fn deliver_read(
     state: &AppState,
     chat_id: i64,
@@ -617,6 +782,10 @@ pub async fn deliver_read(
     last_read_message_id: i64,
 ) -> Result<(), ApiError> {
     let recipients = others(chat_member_ids(&state.pool, chat_id).await?, reader_id);
+    // A read frame FROM somebody is not relayed TO anybody who blocked
+    // them. The blocker's own reads still reach everybody, this member
+    // included — see `without_blockers_of`.
+    let recipients = without_blockers_of(state, reader_id, recipients).await?;
     let frame = ServerFrame::Read {
         chat_id,
         user_id: reader_id,
@@ -668,6 +837,8 @@ pub async fn deliver_typing(
     typist_id: i64,
 ) -> Result<(), ApiError> {
     let recipients = others(chat_member_ids(&state.pool, chat_id).await?, typist_id);
+    // Inward only, exactly as for reads.
+    let recipients = without_blockers_of(state, typist_id, recipients).await?;
     let frame = ServerFrame::Typing {
         chat_id,
         user_id: typist_id,
@@ -744,6 +915,29 @@ pub async fn deliver_member_deleted(
 /// this queries and hears about their own promotion. Like `member_joined`
 /// it never pushes — a client that was asleep learns the same thing from
 /// its next `GET /me`.
+/// Tell the BLOCKER's own devices that a block changed.
+///
+/// The recipient list is one person on purpose, and that is the entire
+/// mechanism of silence — see [`ServerFrame::MemberBlocked`]. Anyone
+/// editing this must not "helpfully" widen it: the blocked member learning
+/// of it is the one outcome the feature exists to prevent.
+pub async fn deliver_member_blocked(
+    state: &AppState,
+    blocker_user_id: i64,
+    blocked_user_id: i64,
+    blocked: bool,
+) -> Result<(), ApiError> {
+    let frame = ServerFrame::MemberBlocked {
+        user_id: blocked_user_id,
+        blocked,
+    };
+    state
+        .registry
+        .send_to_users(&[blocker_user_id], &frame)
+        .await;
+    Ok(())
+}
+
 pub async fn deliver_family_owner(
     state: &AppState,
     family_id: i64,

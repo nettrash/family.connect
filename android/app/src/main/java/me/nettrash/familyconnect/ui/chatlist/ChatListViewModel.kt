@@ -92,9 +92,25 @@ class ChatListViewModel @Inject constructor(
      * it is drawing faces on existing rows, including a direct chat with
      * somebody who has since gone.
      */
+    /**
+     * Who the reader has blocked, and their own id — the chat list needs
+     * both to decide whether a row's preview is somebody else's hidden
+     * message.
+     */
+    val blockedUserIds: StateFlow<Set<Long>> = settings.state.map { it.blockedUserIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    val myUserId: StateFlow<Long?> = settings.state.map { it.myUserId }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     val pickableMembers: StateFlow<List<MemberEntity>> =
         combine(familyRepository.observeActiveMembers(), settings.state) { members, s ->
-            members.filter { it.userId != s.myUserId }
+            // Blocked members are left OUT rather than left in to have the
+            // tap answered `blocked` — the protocol's own steer for what a
+            // client does with a complete roster (docs/protocol.md,
+            // "Blocking a member"). The roster itself is untouched: they
+            // are still nameable everywhere a name is needed.
+            members.filter { it.userId != s.myUserId && it.userId !in s.blockedUserIds }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /**

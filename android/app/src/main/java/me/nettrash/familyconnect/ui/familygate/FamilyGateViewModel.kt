@@ -116,6 +116,16 @@ class FamilyGateViewModel @Inject constructor(
                         // that IS the pending state, go wait on it.
                         "join_request_pending" ->
                             it.copy(busy = false, outcome = Outcome.PENDING)
+                        // The one thing this endpoint tells a stranger, and
+                        // deliberately: telling an invited member their
+                        // code is invalid on the day the family filled up
+                        // costs a real person a real join. A CLOSED family
+                        // is different and needs nothing here — it answers
+                        // `invalid_invite_code`, byte-identical to a code
+                        // that never existed (docs/protocol.md,
+                        // `POST /families/join`).
+                        "family_full" ->
+                            it.copy(busy = false, codeError = appContext.getString(R.string.e_family_full_join))
                         else -> it.copy(
                             busy = false,
                             generalError = result.message ?: appContext.getString(R.string.e_join_failed),
