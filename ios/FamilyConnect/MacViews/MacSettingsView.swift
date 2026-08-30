@@ -103,6 +103,15 @@ struct MacSettingsView: View {
                         .onChange(of: mapPreviewsEnabled) { _, newValue in
                             AppSettings.mapPreviewsEnabled = newValue
                         }
+                    // Guideline 5.1.1(i) wants the policy reachable from
+                    // inside the app, and the Mac app is its own listing
+                    // with its own review — so it needs its own link.
+                    Link(destination: URL(string: "https://nettrash.me/appstore/familyconnect/privacy.html")!) {
+                        Label("Privacy Policy", systemImage: "hand.raised")
+                    }
+                    Link(destination: URL(string: "https://nettrash.me/appstore/familyconnect/support.html")!) {
+                        Label("Support", systemImage: "questionmark.circle")
+                    }
                 } header: {
                     Text("Privacy")
                 } footer: {

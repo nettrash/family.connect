@@ -360,6 +360,17 @@ struct SettingsView: View {
                 .onChange(of: mapPreviewsEnabled) { _, newValue in
                     AppSettings.mapPreviewsEnabled = newValue
                 }
+            // Guideline 5.1.1(i) requires the privacy policy to be
+            // reachable from INSIDE the app, not only from the store
+            // listing. A `Link` rather than an in-app browser: the policy
+            // is a public page and the system browser is where a reader
+            // can check the address bar for themselves.
+            Link(destination: URL(string: "https://nettrash.me/appstore/familyconnect/privacy.html")!) {
+                Label("Privacy Policy", systemImage: "hand.raised")
+            }
+            Link(destination: URL(string: "https://nettrash.me/appstore/familyconnect/support.html")!) {
+                Label("Support", systemImage: "questionmark.circle")
+            }
         } header: {
             Text("Privacy")
         } footer: {
