@@ -374,4 +374,7 @@
     <string name="e_resolve_report_failed">无法标记为已处理，请重试。</string>
     <string name="s_if_the_problem_is_the_owner">如果问题出在所有者身上</string>
     <string name="s_operator_published_contact">此服务器的运营者公布了该联系方式。</string>
+    <string name="s_report_member">举报%1$s</string>
+    <string name="s_block_member">屏蔽%1$s</string>
+    <string name="s_unblock_member">取消屏蔽%1$s</string>
 </resources>

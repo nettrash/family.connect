@@ -45,6 +45,8 @@ struct MacFamilyView: View {
     /// member: `reload` returns early before it would ever be fetched.
     @State private var reports: [ReportDTO] = []
     @State private var resolvingReports: Set<Int64> = []
+    /// The member being reported from the roster, if any.
+    @State private var reportingMember: MemberEntity?
     /// The stepper's own cap while the debounced write is in flight; nil
     /// whenever the server's answer is the one to trust.
     @State private var capDraft: Int?
@@ -93,6 +95,13 @@ struct MacFamilyView: View {
         }
         .frame(width: 520, height: 520)
         .task { await reload() }
+        .sheet(item: $reportingMember) { member in
+            ReportSheet(
+                target: ReportTarget(
+                    senderID: member.userID, senderName: member.displayName, messageID: nil),
+                onSubmit: { reason in report(member, reason: reason) },
+                onCancel: { reportingMember = nil })
+        }
         .sheet(item: $resetting) { member in
             ResetPasswordView(member: member)
                 .frame(width: 420)
@@ -318,6 +327,31 @@ struct MacFamilyView: View {
         }
     }
 
+    private func setBlocked(_ member: MemberEntity, blocked: Bool) {
+        Task {
+            let ok = blocked
+                ? await coordinator.block(userID: member.userID)
+                : await coordinator.unblock(userID: member.userID)
+            // Never optimistic: a block that failed silently would hide
+            // rows the reader does not know are hidden.
+            if !ok {
+                errorText = String(localized: "Couldn't change that right now. Try again.")
+            }
+        }
+    }
+
+    private func report(_ member: MemberEntity, reason: ReportReason) {
+        reportingMember = nil
+        Task {
+            // A PERSON, not a message: `messageID` is nil.
+            let ok = await coordinator.report(
+                reportedUserID: member.userID, reason: reason.rawValue, messageID: nil)
+            if !ok {
+                errorText = String(localized: "Couldn't send the report. Try again.")
+            }
+        }
+    }
+
     private func resolve(_ report: ReportDTO) {
         resolvingReports.insert(report.id)
         run {
@@ -388,6 +422,24 @@ struct MacFamilyView: View {
                     }
                     if !member.isCurrentUser {
                         Button("Message") { openDirect(member) }
+                        // NOT owner tools, unlike everything below: the
+                        // whole point of these two is a member with no
+                        // other recourse, and the person they need them for
+                        // may BE the owner. Any member may block any other,
+                        // the owner included (docs/protocol.md, "Blocking a
+                        // member").
+                        //
+                        // On the roster as well as on a message, because a
+                        // member row is where somebody looks for what they
+                        // can do about a PERSON — and it is the only way to
+                        // report one without singling out a message.
+                        Button("Report…") { reportingMember = member }
+                        if coordinator.blockedUserIDs.contains(member.userID) {
+                            Button("Unblock") { setBlocked(member, blocked: false) }
+                        } else {
+                            Button("Block") { setBlocked(member, blocked: true) }
+                                .foregroundStyle(.red)
+                        }
                     }
                     // Owner tools. The birthday editor is offered on
                     // EVERY row, the owner's own included, because the

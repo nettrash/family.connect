@@ -42,6 +42,8 @@ struct FamilyManageView: View {
     @State private var capDraft: Int?
     /// The pending cap write, cancelled and replaced on every tap.
     @State private var capCommit: Task<Void, Never>?
+    /// The member being reported from the roster, if any.
+    @State private var reportingMember: MemberDTO?
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @State private var model = FamilyManageModel()
     /// The member whose password the owner is resetting; nil while closed.
@@ -75,6 +77,12 @@ struct FamilyManageView: View {
             membersSection
         }
         .navigationTitle(session.isOwner ? "Manage Family" : "Family Members")
+        .sheet(item: $reportingMember) { member in
+            ReportSheet(
+                target: ReportTarget(senderID: member.id, senderName: member.displayName, messageID: nil),
+                onSubmit: { reason in report(member, reason: reason) },
+                onCancel: { reportingMember = nil })
+        }
         .sheet(item: $resettingPassword) { member in
             ResetPasswordView(member: member)
         }
@@ -418,6 +426,38 @@ struct FamilyManageView: View {
                                 Label("Unlink Contact", systemImage: "person.crop.circle.badge.xmark")
                             }
                         }
+                        Divider()
+                        // Report and Block are NOT owner actions, and this
+                        // is the one place in this screen where that
+                        // matters: the whole point of them is a member with
+                        // no other recourse, and the person they need them
+                        // for may BE the owner. Any member may block any
+                        // other, the owner included (protocol.md,
+                        // "Blocking a member").
+                        //
+                        // Reachable from the roster as well as from a
+                        // message, because a member row is where somebody
+                        // looks for what they can do about a PERSON — and
+                        // it is the only way to report one without singling
+                        // out a message of theirs.
+                        Button {
+                            reportingMember = member
+                        } label: {
+                            Label("Report…", systemImage: "flag")
+                        }
+                        if coordinator.blockedUserIDs.contains(member.id) {
+                            Button {
+                                setBlocked(member, blocked: false)
+                            } label: {
+                                Label("Unblock", systemImage: "lock.open")
+                            }
+                        } else {
+                            Button(role: .destructive) {
+                                setBlocked(member, blocked: true)
+                            } label: {
+                                Label("Block", systemImage: "nosign")
+                            }
+                        }
                     }
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -547,6 +587,34 @@ struct FamilyManageView: View {
                     maxMembers: updated.maxMembers)
             } catch {
                 model.errorText = String(localized: "Couldn't change the policy. Try again.")
+            }
+        }
+    }
+
+    private func setBlocked(_ member: MemberDTO, blocked: Bool) {
+        Task {
+            let ok = blocked
+                ? await coordinator.block(userID: member.id)
+                : await coordinator.unblock(userID: member.id)
+            // Never optimistic: a block that failed silently would hide
+            // rows the reader does not know are hidden, in a feature with
+            // no error surface and no badge to notice it by.
+            if !ok {
+                model.errorText = String(localized: "Couldn't change that right now. Try again.")
+            }
+        }
+    }
+
+    private func report(_ member: MemberDTO, reason: ReportReason) {
+        reportingMember = nil
+        Task {
+            // A PERSON, not a message: `messageID` is nil, which is what
+            // makes this the only way to report somebody without singling
+            // out one thing they said.
+            let ok = await coordinator.report(
+                reportedUserID: member.id, reason: reason.rawValue, messageID: nil)
+            if !ok {
+                model.errorText = String(localized: "Couldn't send the report. Try again.")
             }
         }
     }

@@ -90,6 +90,9 @@
     <string name="s_reported_by">%1$s reported %2$s</string>
     <string name="s_mark_as_handled">Mark as handled</string>
     <string name="e_resolve_report_failed">Couldn\'t mark that as handled. Try again.</string>
+    <string name="s_report_member">Report %1$s</string>
+    <string name="s_block_member">Block %1$s</string>
+    <string name="s_unblock_member">Unblock %1$s</string>
     <string name="s_hidden_blocked_member">Hidden — blocked member</string>
     <string name="s_leave_family">Leave family</string>
     <string name="s_leave_the_family">Leave the family?</string>

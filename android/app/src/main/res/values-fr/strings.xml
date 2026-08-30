@@ -382,4 +382,7 @@
     <string name="e_resolve_report_failed">Impossible de marquer comme traité. Réessayez.</string>
     <string name="s_if_the_problem_is_the_owner">Si le problème vient du propriétaire</string>
     <string name="s_operator_published_contact">L’opérateur de ce serveur a publié ce contact.</string>
+    <string name="s_report_member">Signaler %1$s</string>
+    <string name="s_block_member">Bloquer %1$s</string>
+    <string name="s_unblock_member">Débloquer %1$s</string>
 </resources>

@@ -374,4 +374,7 @@
     <string name="e_resolve_report_failed">対応済みにできませんでした。もう一度お試しください。</string>
     <string name="s_if_the_problem_is_the_owner">問題がオーナー本人の場合</string>
     <string name="s_operator_published_contact">このサーバーの運営者がこの連絡先を公開しています。</string>
+    <string name="s_report_member">%1$sさんを報告</string>
+    <string name="s_block_member">%1$sさんをブロック</string>
+    <string name="s_unblock_member">%1$sさんのブロックを解除</string>
 </resources>

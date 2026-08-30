@@ -375,4 +375,7 @@
     <string name="e_resolve_report_failed">Nije uspelo označavanje kao rešeno. Pokušajte ponovo.</string>
     <string name="s_if_the_problem_is_the_owner">Ako je problem sam vlasnik</string>
     <string name="s_operator_published_contact">Operator ovog servera objavio je ovaj kontakt.</string>
+    <string name="s_report_member">Prijavi %1$s</string>
+    <string name="s_block_member">Blokiraj %1$s</string>
+    <string name="s_unblock_member">Odblokiraj %1$s</string>
 </resources>

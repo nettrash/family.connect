@@ -117,6 +117,11 @@ import me.nettrash.familyconnect.util.MemberCap
 import androidx.annotation.StringRes
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.background
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.outlined.Block
+import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material3.LocalContentColor
+import me.nettrash.familyconnect.ui.components.ReportSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -125,6 +130,8 @@ fun FamilyAdminScreen(
     viewModel: FamilyAdminViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
+    val supportContact by viewModel.supportContact.collectAsStateWithLifecycle()
     val members by viewModel.members.collectAsStateWithLifecycle()
     val isOwner by viewModel.isOwner.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
@@ -143,6 +150,7 @@ fun FamilyAdminScreen(
     var resetTarget by remember { mutableStateOf<MemberEntity?>(null) }
     /// The member whose birthday the owner is editing — their own row included.
     var birthdayTarget by remember { mutableStateOf<MemberEntity?>(null) }
+    var reportTarget by remember { mutableStateOf<MemberEntity?>(null) }
     var pickingLanguage by remember { mutableStateOf(false) }
 
     // Rows hide-and-shrink the moment an approve/reject/remove is fired,
@@ -646,8 +654,54 @@ fun FamilyAdminScreen(
                                 )
                             },
                             trailingContent = {
+                                Row {
+                                    // OUTSIDE the isOwner gate below, and
+                                    // that is the point: the whole purpose
+                                    // of these two is a member with no
+                                    // other recourse, and the person they
+                                    // need them for may BE the owner. Any
+                                    // member may block any other, the owner
+                                    // included (docs/protocol.md,
+                                    // "Blocking a member").
+                                    //
+                                    // On the roster as well as on a
+                                    // message, because a member row is
+                                    // where somebody looks for what they
+                                    // can do about a PERSON — and it is
+                                    // the only way to report one without
+                                    // singling out a message of theirs.
+                                    if (member.userId != myUserId) {
+                                        IconButton(
+                                            onClick = { reportTarget = member },
+                                            enabled = !state.busy,
+                                        ) {
+                                            Icon(
+                                                Icons.Outlined.Flag,
+                                                contentDescription = stringResource(
+                                                    R.string.s_report_member, member.displayName,
+                                                ),
+                                            )
+                                        }
+                                        val isBlocked = member.userId in blockedUserIds
+                                        IconButton(
+                                            onClick = { viewModel.setBlocked(member.userId, !isBlocked) },
+                                            enabled = !state.busy,
+                                        ) {
+                                            Icon(
+                                                if (isBlocked) Icons.Outlined.LockOpen else Icons.Outlined.Block,
+                                                contentDescription = stringResource(
+                                                    if (isBlocked) R.string.s_unblock_member else R.string.s_block_member,
+                                                    member.displayName,
+                                                ),
+                                                tint = if (isBlocked) {
+                                                    LocalContentColor.current
+                                                } else {
+                                                    MaterialTheme.colorScheme.error
+                                                },
+                                            )
+                                        }
+                                    }
                                 if (isOwner) {
-                                    Row {
                                         // Every row, the owner's own
                                         // included: the roster endpoint
                                         // accepts the owner naming
@@ -696,7 +750,7 @@ fun FamilyAdminScreen(
                                                 )
                                             }
                                         }
-                                    }
+                                }
                                 }
                             },
                         )
@@ -729,6 +783,17 @@ fun FamilyAdminScreen(
             },
         )
     }
+    reportTarget?.let { member ->
+        ReportSheet(
+            displayName = member.displayName,
+            supportContact = supportContact,
+            onDismiss = { reportTarget = null },
+            onSubmit = { reason ->
+                viewModel.reportMember(member.userId, reason) { reportTarget = null }
+            },
+        )
+    }
+
 
     confirmRemove?.let { member ->
         // Resolved here: the confirm button's onClick is not a composable scope.

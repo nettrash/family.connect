@@ -378,4 +378,7 @@
     <string name="e_resolve_report_failed">Das konnte nicht als erledigt markiert werden. Bitte erneut versuchen.</string>
     <string name="s_if_the_problem_is_the_owner">Wenn das Problem der Besitzer ist</string>
     <string name="s_operator_published_contact">Der Betreiber dieses Servers hat diesen Kontakt veröffentlicht.</string>
+    <string name="s_report_member">%1$s melden</string>
+    <string name="s_block_member">%1$s blockieren</string>
+    <string name="s_unblock_member">Blockierung von %1$s aufheben</string>
 </resources>

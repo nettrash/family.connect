@@ -215,6 +215,53 @@ class FamilyAdminViewModel @Inject constructor(
         }
     }
 
+    /** The operator's published contact, for the report sheet. */
+    val supportContact: StateFlow<String?> = settings.state.map { it.supportContact }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Everybody this reader has blocked, for the roster's Block/Unblock. */
+    val blockedUserIds: StateFlow<Set<Long>> = settings.state.map { it.blockedUserIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    /**
+     * Block or unblock one member from the roster.
+     *
+     * NOT owner-gated, unlike everything else on this screen: any member
+     * may block any other, the owner included (docs/protocol.md, "Blocking
+     * a member"). The request first, then the local write — never
+     * optimistic.
+     */
+    fun setBlocked(userId: Long, blocked: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val result = if (blocked) familyRepository.block(userId) else familyRepository.unblock(userId)
+            _state.update {
+                it.copy(
+                    busy = false,
+                    error = if (result is ApiResult.Ok) null else appContext.getString(R.string.e_block_failed),
+                )
+            }
+        }
+    }
+
+    /**
+     * Report a PERSON — `messageId` is null, which is what makes the roster
+     * the only way to report somebody without singling out one message.
+     */
+    fun reportMember(userId: Long, reason: String, onDone: () -> Unit) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val result = familyRepository.report(userId, reason, messageId = null)
+            _state.update {
+                it.copy(
+                    busy = false,
+                    error = if (result is ApiResult.Ok<*>) null else appContext.getString(R.string.e_report_failed),
+                )
+            }
+            if (result is ApiResult.Ok<*>) onDone()
+        }
+    }
+
     fun setJoinPolicy(policy: String) {
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null) }
