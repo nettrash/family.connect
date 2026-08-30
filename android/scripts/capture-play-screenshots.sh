@@ -203,7 +203,11 @@ ui_tap() {
     sleep 1
     i=$((i + 1))
   done
-  [ -n "$coords" ] || { echo "ui_tap: never found '$1'" >&2; exit 1; }
+  if [ -z "$coords" ]; then
+    echo "ui_tap: never found '$1'. What is on screen instead:" >&2
+    ui_dump | grep -o 'text="[^"]\{1,40\}"' | sort -u | head -20 >&2
+    exit 1
+  fi
   # shellcheck disable=SC2086
   "$ADB" -s "$SERIAL" shell input tap $coords
   sleep "${2:-2}"
@@ -233,7 +237,64 @@ ui_type() {
   sleep 3
 }
 
+# The "scroll to newest" chevron is not a timed toast — it is a
+# far-from-newest affordance that stays up until the list is close to the
+# bottom again, and it lands right on the poll's vote avatars. Waiting it
+# out does not work (measured: still up after 85s). How far a swipe travels
+# depends on fling momentum, which varies with machine load, so the same
+# swipe sequence sometimes ends past the threshold and sometimes not.
+# Nudging down until the chevron is gone converges on a well-defined
+# position instead of hoping the flings land the same way twice.
+hide_chevron() {
+  local i=0
+  while [ $i -lt 6 ] && ui_find "Scroll to newest" >/dev/null 2>&1; do
+    "$ADB" -s "$SERIAL" shell input swipe 540 1200 540 1020 600
+    sleep 2
+    i=$((i + 1))
+  done
+  sleep 2
+}
+
 ui_swipe() { "$ADB" -s "$SERIAL" shell input swipe "$1" "$2" "$3" "$4" 400; sleep "${5:-2}"; }
+
+# Set the Map Previews switch to on/off, reading its current state rather
+# than blind-toggling so a re-run is idempotent.
+#
+# WHY IT IS TURNED OFF FOR THE THREAD SHOTS. The shared-location card in
+# the seeded thread renders as an empty grey grid here: the MAPS_API_KEY in
+# local.properties is restricted to a signing certificate the debug build
+# does not use, and the SDK says so —
+#   E/Google Android Maps SDK: Authorization failure.
+# Photographing that is photographing a bug. With previews off the same
+# location draws as a pin card carrying its place name, which is a state
+# the app genuinely offers and describes in its own settings copy. It is
+# turned back on before the settings shot so the listing does not imply
+# the app ships with maps disabled. Once the key authorises this build,
+# drop the two set_map_previews calls and the grid becomes a real map.
+set_map_previews() {
+  local want="$1" state
+  ui_tap "Settings" 3
+  ui_swipe 540 1400 540 900 3
+  state="$(ui_dump | python3 -c "
+import sys, re
+xml = sys.stdin.read()
+# The switch is the checkable node nearest below the Map Previews label.
+m = re.search(r'text=\"Map [Pp]reviews\"', xml)
+if not m:
+    print('unknown'); raise SystemExit
+tail = xml[m.end():]
+c = re.search(r'checkable=\"true\" checked=\"(true|false)\"', tail)
+print(c.group(1) if c else 'unknown')
+")"
+  if [ "$state" = "unknown" ]; then
+    echo "  (could not read the Map Previews switch — leaving it alone)"
+  elif { [ "$want" = "off" ] && [ "$state" = "true" ]; } ||
+       { [ "$want" = "on" ] && [ "$state" = "false" ]; }; then
+    ui_tap "Map Previews" 2
+  fi
+  "$ADB" -s "$SERIAL" shell input keyevent 4
+  sleep 3
+}
 
 case "${1:-}" in
 start)
@@ -333,10 +394,15 @@ screens)
   mkdir -p "$OUT"
 
   echo "resetting the app…"
+  # A downward swipe that lands on the launcher instead of the app opens
+  # the notification shade, which then covers everything and makes every
+  # subsequent ui_find fail with a misleading "never found <field>".
+  # Collapse it before starting rather than debugging that twice.
+  "$ADB" -s "$SERIAL" shell cmd statusbar collapse >/dev/null 2>&1 || true
   "$ADB" -s "$SERIAL" shell pm clear "$APP_ID" >/dev/null
   demo_on
   "$ADB" -s "$SERIAL" shell am start -n "$APP_ID/.MainActivity" >/dev/null
-  sleep 6
+  sleep 8
 
   echo "connecting to ${SERVER}…"
   ui_tap "Server address"
@@ -375,22 +441,21 @@ print('%d %d' % max(ys)[::-1] if ys else '')
   # The runtime notification prompt only appears on a cleared install.
   ui_tap_if "Allow" 6
 
+  set_map_previews off
+
   echo "capturing…"
   "$0" shot 01-chats
 
   ui_tap "The Harpers" 5
   ui_tap_if "Scroll to newest" 3
   ui_swipe 540 700 540 1500 3
-  # The last swipe of a run settles for 10s, not 2: the "scroll to newest"
-  # chevron floats over the thread while scrolling and fades only after
-  # about eight idle seconds, and it lands on top of the poll's vote
-  # avatars. 6s was measured to be not quite enough.
-  ui_swipe 540 700 540 1500 10
+  ui_swipe 540 700 540 1500 3
+  hide_chevron
   "$0" shot 02-family-chat
 
   ui_swipe 540 1400 540 850 2
-  ui_swipe 540 1300 540 950 2
-  ui_swipe 540 1000 540 1140 10
+  ui_swipe 540 1300 540 950 3
+  hide_chevron
   "$0" shot 03-photos-and-poll
 
   "$ADB" -s "$SERIAL" shell input keyevent 4; sleep 3
@@ -402,7 +467,8 @@ print('%d %d' % max(ys)[::-1] if ys else '')
   ui_tap "Manage family" 4
   "$0" shot 05-family
 
-  "$ADB" -s "$SERIAL" shell input keyevent 4; sleep 3
+  set_map_previews on
+  ui_tap "Settings" 4
   # Scrolled past the profile header on purpose: on Android that row
   # renders "@nora - <server address>", which in this harness is the
   # emulator's 10.0.2.2 loopback alias and has no business in a listing.
