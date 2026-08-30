@@ -111,6 +111,10 @@ import me.nettrash.familyconnect.util.Clock
 import me.nettrash.familyconnect.util.resolvedDisplayNames
 import java.io.File
 import javax.inject.Inject
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import me.nettrash.familyconnect.data.repo.FamilyRepository
+import me.nettrash.familyconnect.data.net.ApiResult
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -131,6 +135,7 @@ class ChatViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val messageRepository: MessageRepository,
     private val chatRepository: ChatRepository,
+    private val familyRepository: FamilyRepository,
     private val settings: SettingsRepository,
     private val socket: ChatSocket,
     private val clock: Clock,
@@ -213,6 +218,66 @@ class ChatViewModel @Inject constructor(
      */
     val callsEnabled: StateFlow<Boolean> = settings.state.map { it.callsEnabled }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /**
+     * One-shot, already-localised messages for the screen to toast.
+     *
+     * A SharedFlow with no replay: these are transient reports about an
+     * action that has just failed, and a replayed one would fire again on
+     * every recomposition after a rotation.
+     */
+    private val _transientMessages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val transientMessages: SharedFlow<String> = _transientMessages
+
+    /**
+     * Everybody this reader has blocked, for the menu's Block/Unblock row.
+     * The message LIST does not need this — `buildChatItems` already folds
+     * it into each item — but the menu asks about one sender at a time.
+     */
+    val blockedUserIds: StateFlow<Set<Long>> = settings.state.map { it.blockedUserIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    /** The operator's published contact, for the report sheet. */
+    val supportContact: StateFlow<String?> = settings.state.map { it.supportContact }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * Block or unblock one member.
+     *
+     * The request first, then the local write — never optimistic (see
+     * FamilyRepository.block). A failure surfaces as an error rather than
+     * silently hiding rows the reader does not know are hidden.
+     */
+    fun setBlocked(userId: Long, blocked: Boolean) {
+        viewModelScope.launch {
+            val result = if (blocked) {
+                familyRepository.block(userId)
+            } else {
+                familyRepository.unblock(userId)
+            }
+            if (result !is ApiResult.Ok<*>) {
+                _transientMessages.tryEmit(appContext.getString(R.string.e_block_failed))
+            }
+        }
+    }
+
+    /**
+     * Report a member, optionally naming one of their messages.
+     *
+     * Raising a report that matches an OPEN one returns that row and
+     * creates nothing, so a double tap is not two rows in the owner's
+     * list — which is why this needs no local de-duplication.
+     */
+    fun report(reportedUserId: Long, reason: String, messageId: Long?, onDone: () -> Unit) {
+        viewModelScope.launch {
+            val result = familyRepository.report(reportedUserId, reason, messageId)
+            if (result is ApiResult.Ok<*>) {
+                onDone()
+            } else {
+                _transientMessages.tryEmit(appContext.getString(R.string.e_report_failed))
+            }
+        }
+    }
 
     /**
      * Whether it also allows VIDEO calls (`GET /me` → video_calls_enabled,
@@ -335,6 +400,9 @@ class ChatViewModel @Inject constructor(
             familyMemberCount = memberCount,
             firstUnreadServerId = (anchor as? OpenAnchor.Message)?.serverId,
             newMessageCount = (anchor as? OpenAnchor.Message)?.newCount ?: 0,
+            // Rides in on `settings.state`, which is already the third
+            // flow here — the combine is at its five-flow ceiling.
+            blockedUserIds = settingsState.blockedUserIds,
         )
     }
         .onEach { _initialLoadSettled.value = true }

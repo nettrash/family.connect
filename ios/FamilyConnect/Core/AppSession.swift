@@ -132,6 +132,15 @@ final class AppSession {
     /// Gates the video-call button alone — voice calls sit behind
     /// `callsEnabled` exactly as before.
     private(set) var videoCallsEnabled = false
+    /// The operator's ceiling on a family's size, from `GET /me`. The range
+    /// an owner's cap picker draws itself from, rather than discovering a
+    /// `validation` error at the moment somebody saves. Nil on a server
+    /// that predates the cap.
+    private(set) var maxFamilyMembers: Int?
+    /// How to reach the operator, when they published anything. Shown on
+    /// the report screen: it is the escalation path for when the family's
+    /// own moderator is the problem.
+    private(set) var supportContact: String?
     /// Set when a pending join request silently disappeared from /me:
     /// FamilyGateView surfaces "your request was declined" once.
     var joinDeclined = false
@@ -273,6 +282,10 @@ final class AppSession {
     // Store side effects, injected at wiring time (see file header).
     var hasCachedChats: () -> Bool = { false }
     var clearChatStore: () -> Void = {}
+    /// Hand the block list to the store, wholesale. A closure for the
+    /// reason `clearChatStore` is one: the session owns the phase machine
+    /// and knows nothing about SwiftData.
+    var applyBlockedIDs: ([Int64]) -> Void = { _ in }
 
     /// Drops cached profile pictures. Wired alongside `clearChatStore`
     /// so a logout does not leave the previous account's faces in memory
@@ -358,6 +371,13 @@ final class AppSession {
         AppSettings.currentUserID = me.user.id
         callsEnabled = me.callsEnabled
         videoCallsEnabled = me.videoCallsEnabled
+        maxFamilyMembers = me.maxFamilyMembers
+        supportContact = me.supportContact
+        // Replaced wholesale on every /me, which is step 1 of the
+        // documented resync — so the block list is a step-1 fact and the
+        // `member_blocked` frame is a latency optimisation rather than the
+        // only delivery path (protocol.md, "Blocking a member").
+        applyBlockedIDs(me.blockedUserIDs)
         let wasActive = phase == .active
         let wasAwaiting = phase == .pendingApproval || AppSettings.joinPending
 
@@ -486,12 +506,27 @@ final class AppSession {
 
     /// Throws `.conflict(code: "owner_cannot_leave", …)` for a non-sole
     /// owner — SettingsView shows the explanatory alert.
-    func leaveFamily() async throws {
-        try await api.leaveFamily()
+    /// Leave the family, and answer with the NAME of whoever inherited it
+    /// — or nil when nobody did.
+    ///
+    /// `resolveName` runs BEFORE the purge, and that ordering is the whole
+    /// point of taking a closure instead of returning the raw id:
+    /// `purge(.leftFamily)` wipes the roster the id has to be looked up
+    /// in, so a caller resolving afterwards would always name nobody. The
+    /// protocol says it in the same order — the leaving owner "resolves
+    /// `new_owner_user_id` against the roster it still holds, tells the
+    /// user who inherited, and only then tears its family state down"
+    /// (docs/protocol.md, `POST /families/leave`).
+    ///
+    /// An owner is never refused. `owner_cannot_leave` is retired.
+    func leaveFamily(resolveName: (Int64) -> String?) async throws -> String? {
+        let successor = try await api.leaveFamily()
+        let name = successor.flatMap(resolveName)
         purge(.leftFamily)
         family = nil
         role = nil
         phase = .needsFamily
+        return name
     }
 
     func logout() async {
@@ -547,10 +582,18 @@ final class AppSession {
     /// client that has just become the owner gains the owner-only screens
     /// immediately instead of at its next `GET /me`; everybody else's
     /// `role` is corrected to "member" for the same reason.
+    /// Bumped every time a `family_owner` frame lands. `role` is not
+    /// enough on its own: ownership moving between two OTHER members
+    /// leaves it untouched, and a leave dialog open at that moment is
+    /// still naming a successor that has just changed under it
+    /// (docs/protocol.md, `POST /families/leave`).
+    private(set) var familyOwnerGeneration = 0
+
     func applyFamilyOwner(userID: Int64) {
         guard family != nil else { return }
         let me = currentUser?.id ?? AppSettings.currentUserID
         role = (userID == me) ? "owner" : "member"
+        familyOwnerGeneration &+= 1
     }
 
     // MARK: - Purge

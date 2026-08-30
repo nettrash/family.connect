@@ -39,6 +39,7 @@ struct ChatListView: View {
     @State private var showsNewChat = false
     @State private var showsSettings = false
     @State private var showsJoinRequests = false
+    @State private var showsReports = false
     @State private var showsBoard = false
     /// Files were shared into the app and are waiting for a chat: the
     /// picker sheet is up. See ShareImport.
@@ -183,6 +184,9 @@ struct ChatListView: View {
             .sheet(isPresented: $showsJoinRequests) {
                 JoinRequestsSheet()
             }
+            .sheet(isPresented: $showsReports) {
+                NavigationStack { ReportInboxView() }
+            }
             .sheet(isPresented: $showsBoard) {
                 BoardView()
             }
@@ -294,6 +298,10 @@ struct ChatListView: View {
             isActiveMember: { id in
                 members.contains { $0.userID == id && !$0.isCurrentUser && !$0.hasLeft && !$0.accountDeleted }
             },
+            // NOT folded into the gate above: a blocked member is still
+            // active — still on the roster, still nameable — and the two
+            // questions have different right answers everywhere else.
+            isBlocked: { coordinator.blockedUserIDs.contains($0) },
             roster: {
                 members.filter { !$0.isCurrentUser && !$0.hasLeft && !$0.accountDeleted }
                     .map { CallRequestRouter.Candidate(userID: $0.userID, name: $0.resolvedDisplayName) }
@@ -307,6 +315,16 @@ struct ChatListView: View {
         case .needsChoice(let contactIdentifier, let contactName):
             dismissSheets()
             linkingCall = LinkingCall(contactIdentifier: contactIdentifier, contactName: contactName, handle: request.handle, video: request.video)
+        case .blocked(let userID):
+            // The OS goes on offering a handle the app will not act on —
+            // a Recents row, a Favorites entry, a contact card's call
+            // button all outlive the block. Saying so is safe: this
+            // refusal reaches nobody but the person who set the block.
+            let name = members.first { $0.userID == userID }?.resolvedDisplayName
+                ?? String(localized: "this person", comment: "Stands in for a blocked member whose name is not known.")
+            callRequestError = String(
+                localized: "You've blocked \(name). Unblock them from the family roster to call them.",
+                comment: "Alert shown when the Phone app or Siri asked Family to call a blocked member; %@ is their display name.")
         case .unknown:
             callRequestError = String(localized: "Family doesn't know who that is. Link the contact to a family member from the roster first.", comment: "Alert shown when the Phone app or Siri asked Family to call somebody the app cannot match to a family member.")
         }
@@ -373,6 +391,15 @@ struct ChatListView: View {
             showsSettings = false
             path = []
             showsJoinRequests = true
+        case .reports:
+            // Owner-only, like the requests above: a member who somehow
+            // gets this push stays on the list rather than being sent to a
+            // screen the server would refuse them.
+            guard session.isOwner else { return }
+            showsNewChat = false
+            showsSettings = false
+            path = []
+            showsReports = true
         case .chatList:
             // "joined" and unknown kinds: this list is the destination.
             break
@@ -403,7 +430,27 @@ private struct JoinRequestsSheet: View {
 /// One chat row: initials avatar, title, preview, relative time, unread
 /// badge. Stock components + semantic colors throughout.
 struct ChatRowView: View {
+    @Environment(ChatSyncCoordinator.self) private var coordinator
     let chat: ChatEntity
+
+    /// The chat-list preview, with a blocked sender's last message replaced
+    /// by the placeholder.
+    ///
+    /// The COUNT is deliberately untouched: in the family chat a blocked
+    /// member's message still moves `unreadCount` and may still be the last
+    /// message, because the count is the other half of the read marker and
+    /// projecting one without the other desynchronises them.
+    private func previewText(for chat: ChatEntity) -> String {
+        if let sender = chat.lastMessageSenderID,
+            sender != coordinator.currentUserID,
+            coordinator.blockedUserIDs.contains(sender)
+        {
+            return String(localized: "Hidden — blocked member")
+        }
+        // `??` makes this a String, and Text(String) is verbatim — the
+        // fallback has to be localized by hand.
+        return chat.lastMessagePreview ?? String(localized: "No messages yet")
+    }
     /// Profile-picture version of the direct chat's peer; 0 for the
     /// family chat and for anyone without a picture.
     var peerAvatarVersion: Int64 = 0
@@ -425,7 +472,13 @@ struct ChatRowView: View {
                     .lineLimit(1)
                 // `??` makes this a String, and Text(String) is verbatim —
                 // the fallback has to be localized by hand.
-                Text(chat.lastMessagePreview ?? String(localized: "No messages yet"))
+                // A preview from a blocked sender draws the placeholder
+                // and no sender name — protocol.md settles this in the
+                // `GET /chats` row, and it is the app's most-visited
+                // screen, so leaving it unmasked defeats the block outright.
+                // NOT revealable from the list: the peek belongs to the
+                // thread, and no gesture is wanted here.
+                Text(previewText(for: chat))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)

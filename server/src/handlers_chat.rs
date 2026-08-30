@@ -121,7 +121,13 @@ pub async fn ensure_chat_access(
     user_id: i64,
 ) -> Result<(), ApiError> {
     let row = sqlx::query(
-        "SELECT (cm.user_id IS NOT NULL) AS is_member
+        "SELECT (cm.user_id IS NOT NULL) AS is_member,
+                (c.kind = 'direct' AND EXISTS (
+                     SELECT 1 FROM member_blocks mb
+                      WHERE mb.blocker_user_id = $2
+                        AND mb.blocked_user_id =
+                            CASE WHEN c.user_a_id = $2 THEN c.user_b_id ELSE c.user_a_id END
+                 )) AS blocked_peer
          FROM chats c
          LEFT JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = $2
          WHERE c.id = $1",
@@ -135,6 +141,23 @@ pub async fn ensure_chat_access(
         Some(row) if !row.get::<bool, _>("is_member") => Err(ApiError::forbidden(
             codes::NOT_CHAT_MEMBER,
             "you are not a member of this chat",
+        )),
+        // A direct chat the CALLER has blocked into is gone from every path
+        // they can reach it by, this one included: an id their client still
+        // holds answers `blocked` on reads, sends and read-marker posts
+        // (protocol.md, "Blocking a member").
+        //
+        // The family chat is deliberately untouched by this. There, a
+        // refusal would freeze the blocker's read marker at the id before a
+        // hidden message, and a marker that leaps forward the moment a
+        // third member posts is a perfect oracle. Here there is no hidden
+        // row to reveal and no cursor to freeze — the protocol says the
+        // three family-chat reasons "buy nothing" for a hidden DM — and the
+        // marker stopping where it stood IS the innocent explanation the
+        // feature rests on: somebody who has stopped opening your chat.
+        Some(row) if row.get::<bool, _>("blocked_peer") => Err(ApiError::conflict(
+            codes::BLOCKED,
+            "you have blocked this member",
         )),
         Some(_) => Ok(()),
     }
@@ -1104,12 +1127,16 @@ pub async fn list_chats(
     if let Err(error) = crate::handlers_ai::ensure_ai_chat(&state, auth.user_id).await {
         tracing::warn!(%error, "could not ensure the assistant chat");
     }
-    let rows = sqlx::query(
+    // The other end of a direct chat, from $1's point of view. Written
+    // once because it is now needed THREE times in this one statement —
+    // the projected column, the display-name join, and the block filter —
+    // and three copies of a CASE that has to agree is a bug waiting for
+    // somebody to edit two of them.
+    const PEER: &str = "CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END";
+    let rows = sqlx::query(&format!(
         "SELECT c.id AS chat_id, c.kind,
                 f.name AS family_name,
-                CASE WHEN c.kind = 'direct' THEN
-                    CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END
-                END AS peer_user_id,
+                CASE WHEN c.kind = 'direct' THEN {PEER} END AS peer_user_id,
                 pu.display_name AS peer_display_name,
                 lm.id AS last_id, lm.sender_id AS last_sender_id,
                 lm.client_msg_id AS last_client_msg_id, lm.body AS last_body,
@@ -1129,7 +1156,7 @@ pub async fn list_chats(
          JOIN families f ON f.id = c.family_id
          LEFT JOIN users pu
                 ON c.kind = 'direct'
-               AND pu.id = CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END
+               AND pu.id = {PEER}
          LEFT JOIN chat_reads cr ON cr.chat_id = c.id AND cr.user_id = $1
          LEFT JOIN LATERAL (
              -- The BARE last message. Its attachments are hydrated after
@@ -1154,8 +1181,22 @@ pub async fn list_chats(
                AND msg.sender_id <> $1
          ) uc ON TRUE
          WHERE m.user_id = $1
-         ORDER BY COALESCE(lm.id, 0) DESC, c.id",
-    )
+           -- A direct chat with somebody the caller has blocked is not
+           -- listed, FOR THE BLOCKER ALONE, and comes back whole on
+           -- unblock — nothing about it is deleted (protocol.md,
+           -- \"Blocking a member\"). Nothing else on this row is projected
+           -- per caller: in the family chat a blocked member's message
+           -- still moves `unread_count` and may still be `last_message`,
+           -- because the count is the other half of the read marker and
+           -- projecting one without the other desynchronises them.
+           AND NOT EXISTS (
+               SELECT 1 FROM member_blocks mb
+                WHERE mb.blocker_user_id = $1
+                  AND c.kind = 'direct'
+                  AND mb.blocked_user_id = {PEER}
+           )
+         ORDER BY COALESCE(lm.id, 0) DESC, c.id"
+    ))
     .bind(auth.user_id)
     .fetch_all(&state.pool)
     .await?;
@@ -1312,6 +1353,23 @@ pub async fn direct_chat(
         return Err(ApiError::conflict(
             codes::NOT_SAME_FAMILY,
             "this user is not in your family",
+        ));
+    }
+    // ONE DIRECTION ONLY: the caller may not open a chat with somebody THEY
+    // blocked. Somebody who has BEEN blocked goes on opening and sending
+    // into the chat exactly as before, and their messages simply reach
+    // nobody (protocol.md, "Blocking a member").
+    //
+    // Refusing the other way round would have no innocent reading at all.
+    // This endpoint refuses today for four reasons — yourself, no such
+    // user, not in your family, not in a family at all — every one of which
+    // a member of the same family can rule out about somebody they can see
+    // posting. A same-family DM that suddenly 409s has no other
+    // explanation, so it would announce the block outright.
+    if crate::blocks::blocks(&state.pool, auth.user_id, req.user_id).await? {
+        return Err(ApiError::conflict(
+            codes::BLOCKED,
+            "you have blocked this member",
         ));
     }
 

@@ -20,7 +20,9 @@ import Testing
 struct SessionLogicTests {
 
     private static let user = UserDTO(id: 7, username: "anna", displayName: "Anna", createdAt: nil)
-    private static let family = FamilyDTO(id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil)
+    private static let family = FamilyDTO(
+        id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil,
+        maxMembers: nil)
     private static let pending = PendingJoinRequestDTO(familyID: 3, familyName: "The Smiths", createdAt: nil)
 
     @Test("family present → active (regardless of prior waiting)")
@@ -92,7 +94,9 @@ struct SessionLogicTests {
 struct AppSessionTransitionTests {
 
     private static let user = UserDTO(id: 7, username: "anna", displayName: "Anna", createdAt: nil)
-    private static let family = FamilyDTO(id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil)
+    private static let family = FamilyDTO(
+        id: 3, name: "The Smiths", joinPolicy: "open", createdAt: nil, inviteCode: nil,
+        maxMembers: nil)
 
     /// Spy-instrumented session against a never-hit API client.
     @MainActor
@@ -120,6 +124,62 @@ struct AppSessionTransitionTests {
         session.clearAvatarCache = { spies.avatarCacheCleared += 1 }
         session.deregisterDevice = { spies.deregistered += 1 }
         return (session, spies)
+    }
+
+    // MARK: - Leaving a family
+
+    /// The ordering that makes the hand-off message possible at all.
+    ///
+    /// `purge(.leftFamily)` wipes the roster the successor's id has to be
+    /// looked up in, so resolving after it would always name nobody. The
+    /// protocol states the order — the leaving owner "resolves
+    /// `new_owner_user_id` against the roster it still holds, tells the
+    /// user who inherited, and only then tears its family state down"
+    /// (docs/protocol.md, `POST /families/leave`) — and nothing about the
+    /// code makes it obvious, which is why it is pinned here.
+    @Test("the successor is resolved BEFORE the family state is torn down")
+    func leaveResolvesBeforeTearingDown() async throws {
+        let host = "session-leave-owner.test"
+        StubURLProtocol.register(host: host) { _ in
+            .json(200, #"{"new_owner_user_id": 11}"#)
+        }
+        defer { StubURLProtocol.unregister(host: host) }
+        let (session, spies) = makeSession(api: APIClient(
+            serverURL: URL(string: "https://\(host)")!,
+            session: StubURLProtocol.makeSession()))
+
+        var clearedWhenResolved: Int?
+        let name = try await session.leaveFamily { id in
+            clearedWhenResolved = spies.chatStoreCleared
+            return id == 11 ? "Kid" : nil
+        }
+
+        #expect(name == "Kid")
+        #expect(clearedWhenResolved == 0, "the roster must still be standing when the id is resolved")
+        #expect(spies.chatStoreCleared == 1, "and torn down once the name is in hand")
+        #expect(session.phase == .needsFamily)
+    }
+
+    /// An ordinary member leaving gets `204` and no body. Nothing is
+    /// named, and the teardown happens all the same.
+    @Test("a member leaving names nobody, and still leaves")
+    func leaveWithoutSuccessor() async throws {
+        let host = "session-leave-member.test"
+        StubURLProtocol.register(host: host) { _ in .empty(204) }
+        defer { StubURLProtocol.unregister(host: host) }
+        let (session, spies) = makeSession(api: APIClient(
+            serverURL: URL(string: "https://\(host)")!,
+            session: StubURLProtocol.makeSession()))
+
+        var resolverCalls = 0
+        let name = try await session.leaveFamily { _ in
+            resolverCalls += 1
+            return "Should never be asked"
+        }
+
+        #expect(name == nil)
+        #expect(resolverCalls == 0, "there is no id to resolve, so nothing to ask about")
+        #expect(spies.chatStoreCleared == 1)
     }
 
     private func resetGlobals() {

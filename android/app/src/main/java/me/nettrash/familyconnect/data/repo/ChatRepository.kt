@@ -49,6 +49,8 @@ package me.nettrash.familyconnect.data.repo
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -60,6 +62,7 @@ import me.nettrash.familyconnect.data.net.ChatApi
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
+import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.data.net.ws.SocketState
 import me.nettrash.familyconnect.data.push.UnreadNotifications
 import me.nettrash.familyconnect.di.AppScope
@@ -84,6 +87,14 @@ class ChatRepository @Inject constructor(
      * and the badge has to be watching from then on.
      */
     private val unreadNotifications: UnreadNotifications,
+    /**
+     * Watched, not asked. Every path that can change the block list —
+     * the `member_blocked` frame, `GET /me`, `GET /families/mine` and a
+     * local block — lands in this one store, so observing it prunes the
+     * chat in all four cases, including the two a frame handler would miss
+     * (the socket down, and a cold start after a block made elsewhere).
+     */
+    private val settings: SettingsRepository,
     @param:AppScope private val scope: CoroutineScope,
 ) {
 
@@ -157,6 +168,7 @@ class ChatRepository @Inject constructor(
     // the very first dispatch after construction, and a lambda reading a
     // property whose initializer has not run yet sees null.
     init {
+        watchBlocks()
         scope.launch {
             socket.frames.collect { frame ->
                 // A peer deleted their account, so the direct chat with
@@ -353,6 +365,52 @@ class ChatRepository @Inject constructor(
      * screen, and an attachment is cached under its own id, never a
      * chat's.
      */
+    /**
+     * Remove the direct chat with one person from THIS device.
+     *
+     * "For the blocker that chat is not merely unlisted; it is gone from
+     * every path they can reach it by" (docs/protocol.md, "Blocking a
+     * member"). The server already refuses every request in it with
+     * `blocked` (409), which nothing in this app maps to a message — so a
+     * row left standing is one the reader can open and then watch fail in
+     * silence.
+     *
+     * Nothing re-adds it while the block stands: `GET /chats` does not list
+     * a blocked direct chat for the blocker, so the prune in
+     * [refreshChats] keeps it gone. Unblocking makes the server list it
+     * again and the next refresh brings it back whole.
+     *
+     * Routed through the same funnel as every other local removal, and
+     * keyed on the peer, so the family and assistant chats can never be
+     * reached from here.
+     */
+    suspend fun removeDirectChatsWith(userId: Long) {
+        for (chatId in chatDao.directChatIdsWith(userId)) {
+            deleteDirectChat(chatId)
+        }
+    }
+
+    /**
+     * Keep the store free of direct chats with anyone blocked.
+     *
+     * Prunes the whole set on every emission rather than diffing against
+     * the previous one: [removeDirectChatsWith] resolves ids through
+     * `directChatIdsWith` and is a no-op once the row is gone, so this is
+     * idempotent and needs no memory of what changed. Unblocking removes
+     * the id from the set, and `refreshChats` brings the chat back because
+     * the server starts listing it again.
+     */
+    private fun watchBlocks() {
+        scope.launch {
+            settings.state
+                .map { it.blockedUserIds }
+                .distinctUntilChanged()
+                .collect { blocked ->
+                    for (userId in blocked) removeDirectChatsWith(userId)
+                }
+        }
+    }
+
     private suspend fun deleteDirectChat(chatId: Long) {
         messageDao.deleteByChat(chatId)
         chatDao.deleteById(chatId)

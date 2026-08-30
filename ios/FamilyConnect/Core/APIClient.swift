@@ -235,11 +235,18 @@ actor APIClient {
         var joinPolicy: String?
         var language: String??
         var aiHistory: Bool?
+        /// The same double Optional the language uses, and for the same
+        /// reason: the outer is "was this field touched", the inner is the
+        /// value, and a real JSON `null` CLEARS the cap. These are the two
+        /// places in this protocol where sending a null means something a
+        /// missing key does not.
+        var maxMembers: Int??
 
         enum CodingKeys: String, CodingKey {
             case joinPolicy = "join_policy"
             case language
             case aiHistory = "ai_history"
+            case maxMembers = "max_members"
         }
 
         func encode(to encoder: Encoder) throws {
@@ -256,6 +263,13 @@ actor APIClient {
                 }
             }
             try container.encodeIfPresent(aiHistory, forKey: .aiHistory)
+            if let maxMembers {
+                if let cap = maxMembers {
+                    try container.encode(cap, forKey: .maxMembers)
+                } else {
+                    try container.encodeNil(forKey: .maxMembers)
+                }
+            }
         }
     }
 
@@ -263,6 +277,69 @@ actor APIClient {
         let response: FamilyResponse = try await request(
             "PATCH", "/families/mine", body: FamilyPatchRequest(joinPolicy: policy))
         return response.family
+    }
+
+    /// Owner-only: the most members this family admits. `nil` CLEARS the
+    /// cap, which is NOT the same as setting it to the operator's ceiling
+    /// — see FamilyPatchRequest.
+    ///
+    /// Its own method rather than a parameter on `setJoinPolicy`, so a
+    /// patch carries exactly one field. That rule is worth keeping: a
+    /// request that sent two would make "which of these did the user
+    /// actually change" a question the server has to guess at.
+    func setMemberCap(_ cap: Int?) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(maxMembers: .some(cap)))
+        return response.family
+    }
+
+    /// Block a member of this family. Any member may block any other, the
+    /// OWNER INCLUDED — there is no owner check here and that is the point
+    /// (protocol.md, "Blocking a member").
+    func blockMember(userID: Int64) async throws {
+        try await requestVoid("PUT", "/families/members/\(userID)/block")
+    }
+
+    /// Unblock. Idempotent, and deliberately raises no membership error:
+    /// any id on the caller's own list may be cleared, including one that
+    /// has since left the family, or the blocker holds a permanent entry
+    /// they cannot remove.
+    func unblockMember(userID: Int64) async throws {
+        try await requestVoid("DELETE", "/families/members/\(userID)/block")
+    }
+
+    /// File a report. `messageID` names one message of theirs, or nil to
+    /// report the person. Raising the same report twice answers 200 with
+    /// the open row rather than creating a second.
+    func createReport(reportedUserID: Int64, reason: String, messageID: Int64?) async throws -> ReportDTO {
+        struct Body: Encodable {
+            let reportedUserID: Int64
+            let reason: String
+            let messageID: Int64?
+            enum CodingKeys: String, CodingKey {
+                case reportedUserID = "reported_user_id"
+                case reason
+                case messageID = "message_id"
+            }
+        }
+        let response: ReportResponse = try await request(
+            "POST", "/families/reports",
+            body: Body(reportedUserID: reportedUserID, reason: reason, messageID: messageID))
+        return response.report
+    }
+
+    /// Owner-only: the open reports, oldest first. Reports naming the owner
+    /// themselves are not listed — see protocol.md, "Reporting a member".
+    func reports() async throws -> [ReportDTO] {
+        let response: ReportsResponse = try await request("GET", "/families/reports")
+        return response.reports
+    }
+
+    /// Owner-only: take a report off the list. What "dealt with" MEANS is
+    /// the owner's business; this protocol has removing a member, resetting
+    /// a password and closing the family, not deleting somebody's message.
+    func resolveReport(id: Int64) async throws {
+        try await requestVoid("POST", "/families/reports/\(id)/resolve")
     }
 
     /// Owner-only: the language `@ai` answers in when it is asked in the
@@ -296,8 +373,25 @@ actor APIClient {
         try await requestVoid("POST", "/families/join-requests/\(id)/reject")
     }
 
-    func leaveFamily() async throws {
-        try await requestVoid("POST", "/families/leave")
+    /// Leave the family, and learn who inherited it.
+    ///
+    /// Two answers, not one: `204` when nothing passed on (an ordinary
+    /// member leaving, or the last member — the family goes with them),
+    /// and `200 {new_owner_user_id}` when the caller was the owner and
+    /// somebody remained. The id is what the leaving owner resolves
+    /// against the roster it STILL HOLDS to say who it went to, before
+    /// tearing that roster down (docs/protocol.md, `POST /families/leave`).
+    ///
+    /// An owner is never refused: `owner_cannot_leave` is retired and no
+    /// endpoint raises it any more.
+    func leaveFamily() async throws -> Int64? {
+        let (data, _) = try await perform("POST", "/families/leave", query: [], bodyData: nil)
+        // A 204 has no body at all, and a 200 has one — so an empty
+        // payload is the ordinary case here rather than a malformed
+        // answer, and must not be decoded as a failure.
+        guard !data.isEmpty else { return nil }
+        let response: LeaveFamilyResponse? = try? decodeResponse(data)
+        return response?.newOwnerUserID
     }
 
     func removeMember(userID: Int64) async throws {

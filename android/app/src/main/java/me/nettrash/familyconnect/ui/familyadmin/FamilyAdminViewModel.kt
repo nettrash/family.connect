@@ -35,6 +35,7 @@ import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import javax.inject.Inject
+import me.nettrash.familyconnect.data.net.dto.ReportDto
 
 @HiltViewModel
 class FamilyAdminViewModel @Inject constructor(
@@ -57,6 +58,16 @@ class FamilyAdminViewModel @Inject constructor(
 
     data class UiState(
         val requests: List<JoinRequestDto> = emptyList(),
+        /**
+         * The owner's moderation list, oldest first and open only.
+         *
+         * Never contains a report ABOUT the owner: the server omits those
+         * from `GET /families/reports` entirely, so there is nothing to
+         * filter here. And it never says who blocked whom — blocking and
+         * reporting are independent (docs/protocol.md, "Reporting a
+         * member").
+         */
+        val reports: List<ReportDto> = emptyList(),
         val inviteCode: String? = null,
         val joinPolicy: String = "open",
         /**
@@ -67,6 +78,12 @@ class FamilyAdminViewModel @Inject constructor(
         val language: String? = null,
         /** Whether a mention carries the chat's recent history. */
         val aiHistory: Boolean = true,
+        /** The owner's own cap, or null for none of their own. */
+        val maxMembers: Int? = null,
+        /** The operator's ceiling; null on a server too old to say. */
+        val ceiling: Int? = null,
+        /** Live members, for the caption and the seed. */
+        val memberCount: Int = 0,
         val busy: Boolean = false,
         val error: String? = null,
     )
@@ -106,6 +123,9 @@ class FamilyAdminViewModel @Inject constructor(
                         joinPolicy = mine.family.joinPolicy,
                         language = mine.family.language,
                         aiHistory = mine.family.aiHistory,
+                        maxMembers = mine.family.maxMembers,
+                        memberCount = mine.members.size,
+                        ceiling = settings.state.first().maxFamilyMembers,
                     )
                 }
             }
@@ -113,6 +133,9 @@ class FamilyAdminViewModel @Inject constructor(
             // member is a guaranteed 403, which would paint an error over
             // a screen that is otherwise perfectly useful to them.
             if (settings.state.first().familyStatus == FamilyStatus.OWNER) {
+                familyRepository.reports().okOrNull()?.let { response ->
+                    _state.update { it.copy(reports = response.reports) }
+                }
                 loadRequests()
             }
         }
@@ -145,6 +168,97 @@ class FamilyAdminViewModel @Inject constructor(
                 is ApiResult.NetworkError ->
                     _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
             }
+        }
+    }
+
+    /**
+     * Set or clear the family's member cap.
+     *
+     * `null` CLEARS it, which is NOT the same as setting it to the
+     * operator's ceiling — the request carries a real JSON null for that
+     * (docs/protocol.md, `PATCH /families/mine`).
+     */
+    fun setMemberCap(cap: Int?) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setMemberCap(cap)) {
+                is ApiResult.Ok ->
+                    _state.update { it.copy(busy = false, maxMembers = result.value.family.maxMembers) }
+                is ApiResult.HttpError ->
+                    _state.update { it.copy(busy = false, error = result.message ?: appContext.getString(R.string.e_member_limit_failed)) }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Take one report off the list.
+     *
+     * Says nothing about what the owner DID: this protocol has removing a
+     * member, resetting a password and closing the family; it does not
+     * have deleting somebody else's message. Idempotent server-side, so a
+     * double tap and a retry after a timeout are the same request twice
+     * and neither is an error.
+     */
+    fun resolveReport(reportId: Long) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.resolveReport(reportId)) {
+                is ApiResult.Ok ->
+                    _state.update { s -> s.copy(busy = false, reports = s.reports.filterNot { it.id == reportId }) }
+                is ApiResult.HttpError ->
+                    _state.update { it.copy(busy = false, error = result.message ?: appContext.getString(R.string.e_resolve_report_failed)) }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /** The operator's published contact, for the report sheet. */
+    val supportContact: StateFlow<String?> = settings.state.map { it.supportContact }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Everybody this reader has blocked, for the roster's Block/Unblock. */
+    val blockedUserIds: StateFlow<Set<Long>> = settings.state.map { it.blockedUserIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    /**
+     * Block or unblock one member from the roster.
+     *
+     * NOT owner-gated, unlike everything else on this screen: any member
+     * may block any other, the owner included (docs/protocol.md, "Blocking
+     * a member"). The request first, then the local write — never
+     * optimistic.
+     */
+    fun setBlocked(userId: Long, blocked: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val result = if (blocked) familyRepository.block(userId) else familyRepository.unblock(userId)
+            _state.update {
+                it.copy(
+                    busy = false,
+                    error = if (result is ApiResult.Ok) null else appContext.getString(R.string.e_block_failed),
+                )
+            }
+        }
+    }
+
+    /**
+     * Report a PERSON — `messageId` is null, which is what makes the roster
+     * the only way to report somebody without singling out one message.
+     */
+    fun reportMember(userId: Long, reason: String, onDone: () -> Unit) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val result = familyRepository.report(userId, reason, messageId = null)
+            _state.update {
+                it.copy(
+                    busy = false,
+                    error = if (result is ApiResult.Ok<*>) null else appContext.getString(R.string.e_report_failed),
+                )
+            }
+            if (result is ApiResult.Ok<*>) onDone()
         }
     }
 
@@ -262,7 +376,22 @@ class FamilyAdminViewModel @Inject constructor(
             when (val result = block()) {
                 is ApiResult.Ok -> onSuccess()
                 is ApiResult.HttpError ->
-                    _state.update { it.copy(error = result.message ?: appContext.getString(R.string.e_action_failed)) }
+                    _state.update {
+                        it.copy(
+                            error = when (result.code) {
+                                // The cap is re-checked at approval,
+                                // because the roster can fill between a
+                                // request and the decision. The request
+                                // stays PENDING — a full family is a
+                                // temporary condition, not a decision — so
+                                // say that rather than something the owner
+                                // cannot act on (docs/protocol.md,
+                                // `POST /families/join-requests/{id}/approve`).
+                                "family_full" -> appContext.getString(R.string.e_family_full_approve)
+                                else -> result.message ?: appContext.getString(R.string.e_action_failed)
+                            },
+                        )
+                    }
                 is ApiResult.NetworkError ->
                     _state.update { it.copy(error = appContext.getString(R.string.e_unreachable)) }
             }

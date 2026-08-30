@@ -401,3 +401,88 @@ async fn retention_zero_disables_the_sweep() {
         .expect("JSON");
     assert_eq!(page["messages"].as_array().expect("array").len(), 1);
 }
+
+/// **The sweep must survive a reported message aging out.**
+///
+/// `member_reports.message_id` is `ON DELETE SET NULL` so retention can keep
+/// sweeping. If the person-report index were predicated on `message_id IS
+/// NULL` alone, that SET NULL would collide a swept MESSAGE report with the
+/// reporter's open PERSON report about the same member — and the collision
+/// surfaces inside the sweep's own unqualified `DELETE FROM messages`, so
+/// the hourly sweep dies for the WHOLE SERVER, permanently and silently,
+/// the first time anybody reports both a member and one of their messages.
+///
+/// The excerpt is what survives, and it is also the discriminator that
+/// keeps the two rows apart (migration 0029).
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_swept_message_keeps_its_report_and_does_not_break_the_sweep() {
+    let server = spawn_server_with_config(|cfg| cfg.limits.retention_days = 30).await;
+    let (owner, _) = server.register("owner", "Olive").await;
+    let (reporter, _) = server.register("junior", "Junior").await;
+    let (target, target_id) = server.register("cousin", "Cousin").await;
+    let (_, invite_code) = server.create_family(&owner, "The Smiths").await;
+    server.set_open_policy(&owner).await;
+    server.join(&reporter, &invite_code, "joined").await;
+    server.join(&target, &invite_code, "joined").await;
+    let chat_id = server.family_chat_id(&target).await;
+
+    let posted: Value = server
+        .post_message(&target, chat_id, &Uuid::new_v4().to_string(), "the words")
+        .await
+        .json()
+        .await
+        .expect("message");
+    let message_id = posted["message"]["id"].as_i64().expect("id");
+
+    // BOTH kinds of report from the same reporter about the same member —
+    // the pair that collides.
+    server
+        .post(
+            &reporter,
+            "/families/reports",
+            json!({"reported_user_id": target_id, "reason": "spam"}),
+        )
+        .await;
+    server
+        .post(
+            &reporter,
+            "/families/reports",
+            json!({
+                "reported_user_id": target_id,
+                "reason": "harassment",
+                "message_id": message_id
+            }),
+        )
+        .await;
+
+    age(&server, message_id, 60).await;
+    // THE ASSERTION THE MUTATION BREAKS: the sweep completes at all.
+    let swept = family_connect::handlers_chat::sweep_expired_messages(&server.state)
+        .await
+        .expect("the sweep must not die on a reported message");
+    assert!(swept > 0, "the aged message was swept");
+
+    // Both reports survive; the swept one keeps its frozen excerpt and
+    // loses only the pointer.
+    let listed: Value = server
+        .get(&owner, "/families/reports")
+        .await
+        .json()
+        .await
+        .expect("reports");
+    let rows = listed["reports"].as_array().expect("array");
+    assert_eq!(rows.len(), 2, "both reports stand: {listed}");
+    let swept_row = rows
+        .iter()
+        .find(|r| r["reason"] == "harassment")
+        .expect("the message report");
+    assert_eq!(
+        swept_row["message_excerpt"], "the words",
+        "the excerpt outlives the message: {swept_row}"
+    );
+    assert!(
+        swept_row.get("message_id").is_none(),
+        "and the pointer is gone, so a client offers no jump: {swept_row}"
+    );
+}

@@ -152,7 +152,9 @@ struct FamilyAssistantSettings: View {
                     createdAt: updated.createdAt,
                     inviteCode: updated.inviteCode ?? family.inviteCode,
                     language: updated.language,
-                    aiHistory: updated.aiHistory))
+                    aiHistory: updated.aiHistory,
+                    // The server's answer, as above.
+                    maxMembers: updated.maxMembers))
             } catch APIError.forbidden {
                 errorText = String(localized: "Only the family owner can change this.")
             } catch {

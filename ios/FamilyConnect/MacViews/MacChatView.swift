@@ -217,6 +217,11 @@ struct MacChatView: View {
             // Owner-only; a member who somehow gets this push stays put.
             guard session.isOwner else { return }
             showingFamily = true
+        case .reports:
+            // The Mac's report inbox is a section of the same Family
+            // sheet, so this is the same destination.
+            guard session.isOwner else { return }
+            showingFamily = true
         case .chatList:
             break // Already here.
         }
@@ -244,6 +249,26 @@ struct MacChatView: View {
 
 /// One sidebar row: who, the last thing said, when, and what is unread.
 private struct MacChatRow: View {
+    @Environment(ChatSyncCoordinator.self) private var coordinator
+
+    /// The chat-list preview, with a blocked sender's last message replaced
+    /// by the placeholder.
+    ///
+    /// The COUNT is deliberately untouched: in the family chat a blocked
+    /// member's message still moves `unreadCount` and may still be the last
+    /// message, because the count is the other half of the read marker and
+    /// projecting one without the other desynchronises them.
+    private func previewText(for chat: ChatEntity) -> String {
+        if let sender = chat.lastMessageSenderID,
+            sender != coordinator.currentUserID,
+            coordinator.blockedUserIDs.contains(sender)
+        {
+            return String(localized: "Hidden — blocked member")
+        }
+        // `??` makes this a String, and Text(String) is verbatim — the
+        // fallback has to be localized by hand.
+        return chat.lastMessagePreview ?? String(localized: "No messages yet")
+    }
     let chat: ChatEntity
     let peerAvatarVersion: Int64
 
@@ -274,7 +299,13 @@ private struct MacChatRow: View {
                 HStack(spacing: 6) {
                     // `??` makes this a String, and Text(String) is
                     // verbatim — the fallback has to be localized by hand.
-                    Text(chat.lastMessagePreview ?? String(localized: "No messages yet"))
+                    // A preview from a blocked sender draws the placeholder
+                    // and no sender name — protocol.md settles this in the
+                    // `GET /chats` row, and it is the app's most-visited
+                    // screen, so leaving it unmasked defeats the block outright.
+                    // NOT revealable from the list: the peek belongs to the
+                    // thread, and no gesture is wanted here.
+                    Text(previewText(for: chat))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

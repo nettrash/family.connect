@@ -91,6 +91,13 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import java.time.ZoneOffset
+import me.nettrash.familyconnect.data.repo.FamilyRepository
+import me.nettrash.familyconnect.data.repo.SessionRepository
+import me.nettrash.familyconnect.testutil.FakeFamilyApi
+import me.nettrash.familyconnect.testutil.FakeAuthApi
+import me.nettrash.familyconnect.testutil.FakeTokenStore
+import me.nettrash.familyconnect.testutil.RecordingWiper
+import kotlinx.coroutines.flow.MutableSharedFlow
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -99,6 +106,8 @@ class ChatViewModelTest {
     private companion object {
         const val ME = 7L
         const val PEER = 9L
+        /** A third member, so a block can be about one person and not the set. */
+        const val OTHER = 12L
         const val CHAT = 42L
         val ZONE: ZoneOffset = ZoneOffset.UTC
 
@@ -149,7 +158,25 @@ class ChatViewModelTest {
         unreadCount: Int = 0,
         myLastReadId: Long? = null,
     ): ChatViewModel {
-        chatRepository = testChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
+        chatRepository = testChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope, settings)
+        // Only ever asked to block / unblock / report here; the fakes
+        // under it are enough for that.
+        val familyRepository = FamilyRepository(
+            familyApi = FakeFamilyApi(),
+            authApi = FakeAuthApi(),
+            memberDao = db.memberDao(),
+            settings = settings,
+            sessionRepository = SessionRepository(
+                authApi = FakeAuthApi(),
+                tokenStore = FakeTokenStore("tok"),
+                settings = settings,
+                wiper = RecordingWiper(),
+                unauthorizedEvents = MutableSharedFlow(),
+                scope = repoScope,
+            ),
+            socket = socket,
+            scope = repoScope,
+        )
         messageRepository = MessageRepository(
             chatApi = chatApi,
             attachmentApi = attachmentApi,
@@ -186,6 +213,7 @@ class ChatViewModelTest {
             appContext = RuntimeEnvironment.getApplication(),
             savedStateHandle = SavedStateHandle(mapOf("chatId" to CHAT)),
             messageRepository = messageRepository,
+            familyRepository = familyRepository,
             chatRepository = chatRepository,
             settings = settings,
             socket = socket,
@@ -743,6 +771,41 @@ class ChatViewModelTest {
         runCurrent()
 
         assertThat(chatApi.postedReads).containsExactly(CHAT to 31L)
+        itemsSubscription.cancel()
+    }
+
+    /**
+     * The read marker runs THROUGH a blocked member's messages.
+     *
+     * A marker parked below the hidden row would leap forward the moment a
+     * third member posted, and that leap is a repeatable oracle for the
+     * blocked person watching the other end — reason (c) in
+     * docs/protocol.md's "It follows that the server still DELIVERS",
+     * rebuilt by the client one layer above the server.
+     *
+     * The blocked member sends LAST, which is the only arrangement that
+     * can catch this: with an ordinary message on top, the marker reaches
+     * the right answer through it and a client that skipped hidden rows
+     * would still look correct.
+     */
+    @Test
+    fun theReadMarkerRunsThroughABlockedMembersMessages() = runTest(dispatcher) {
+        settings.setBlockedUserIds(setOf(PEER))
+        val viewModel = newViewModel()
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(true)
+        viewModel.setSettled()
+        runCurrent()
+
+        messageRepository.applyServerMessage(messageDto(id = 40, chatId = CHAT, senderId = OTHER), live = false)
+        messageRepository.applyServerMessage(messageDto(id = 41, chatId = CHAT, senderId = PEER), live = false)
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+
+        // 41, the hidden one — not 40.
+        assertThat(chatApi.postedReads).contains(CHAT to 41L)
         itemsSubscription.cancel()
     }
 

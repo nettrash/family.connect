@@ -146,6 +146,9 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.Block
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -222,6 +225,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -282,6 +286,15 @@ import me.nettrash.familyconnect.ui.components.EmptyState
 import me.nettrash.familyconnect.ui.components.OfflineBanner
 import me.nettrash.familyconnect.util.TimeFormat
 import kotlin.math.roundToInt
+import androidx.annotation.StringRes
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.RadioButton
+import androidx.compose.foundation.text.selection.SelectionContainer
+import me.nettrash.familyconnect.ui.components.ReportSheet
+import androidx.compose.runtime.mutableStateSetOf
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 
 /**
  * The long-pressed message plus its bubble's window bounds — the
@@ -293,6 +306,20 @@ import kotlin.math.roundToInt
 private data class ReactionPickerTarget(
     val item: ChatListItem.MessageItem,
     val anchorBounds: Rect,
+)
+
+/**
+ * Who is being reported, and about what.
+ *
+ * [messageId] names one message; null reports the PERSON. Captured when
+ * the sheet opens rather than read back when it is submitted, because the
+ * row underneath can be edited or swept while the sheet is up — and the
+ * report is about what was there when somebody objected to it.
+ */
+private data class ReportTarget(
+    val userId: Long,
+    val displayName: String,
+    val messageId: Long?,
 )
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -366,6 +393,19 @@ fun ChatScreen(
     // The message the floating capsule is open for, and the one the "+"
     // full-picker sheet is open for. Both are transient snapshots.
     var pickerTarget by remember { mutableStateOf<ReactionPickerTarget?>(null) }
+    var reportTarget by remember { mutableStateOf<ReportTarget?>(null) }
+    // Held by the SCREEN, not by the row. A reveal is a peek — per row,
+    // per device, never on the wire and never stored — but "per row" has
+    // to survive the row leaving the LazyColumn and coming back, or
+    // scrolling away silently re-hides what somebody chose to look at.
+    // Cleared with the screen, which is what makes it not a setting.
+    val revealedMessages = remember { mutableStateSetOf<String>() }
+    // Stands in for a sender the roster cannot name — somebody who left,
+    // or a roster still catching up.
+    val memberFallbackName = stringResource(R.string.s_someone)
+
+    val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
+    val supportContact by viewModel.supportContact.collectAsStateWithLifecycle()
     var fullPickerTarget by remember { mutableStateOf<ChatListItem.MessageItem?>(null) }
     val listState = rememberLazyListState()
     // Set by tapping a quote, or by the opening anchor; cleared once the
@@ -406,6 +446,14 @@ fun ChatScreen(
     val savedToGalleryLabel = stringResource(R.string.s_saved_to_gallery)
     val preparingLabel = stringResource(R.string.s_preparing)
     val context = LocalContext.current
+    // A failed block or report has no other surface: the menu has already
+    // closed and nothing on screen changed, so without this the tap would
+    // read as having worked.
+    LaunchedEffect(Unit) {
+        viewModel.transientMessages.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // The system photo picker: no permission, no gallery access — it
     // hands back the picked Uris and nothing else, which is the whole
@@ -1063,6 +1111,8 @@ fun ChatScreen(
                                 is ChatListItem.NewMessagesDivider ->
                                     NewMessagesDividerRow(item.count)
                                 is ChatListItem.MessageItem -> MessageBubble(
+                                    blockedUserIds = blockedUserIds,
+                                    revealedMessages = revealedMessages,
                                     item = item,
                                     chat = chat,
                                     isMine = item.entity.senderId == myUserId,
@@ -1331,7 +1381,48 @@ fun ChatScreen(
                     context.startActivity(Intent.createChooser(send, null))
                 }
             },
+            onReport = {
+                val entity = target.item.entity
+                pickerTarget = null
+                reportTarget = ReportTarget(
+                    userId = entity.senderId,
+                    // Resolved OUTSIDE the lambda: `context.getString` in a
+                    // composable is what LocalContextGetResourceValueCall
+                    // exists to catch, and the fallback is the same for
+                    // every sender anyway.
+                    displayName = target.item.senderName ?: memberFallbackName,
+                    messageId = entity.serverId,
+                )
+            },
+            onToggleBlock = {
+                val entity = target.item.entity
+                val wasBlocked = entity.senderId in blockedUserIds
+                pickerTarget = null
+                viewModel.setBlocked(entity.senderId, blocked = !wasBlocked)
+            },
+            blockedUserIds = blockedUserIds,
+            assistantUserId = assistantUserId,
+            isAiChat = chat?.kind == "ai",
             onDismiss = { pickerTarget = null },
+        )
+    }
+
+    reportTarget?.let { target ->
+        ReportSheet(
+            displayName = target.displayName,
+            supportContact = supportContact,
+            // From a bubble, so a message is always named.
+            isAboutMessage = target.messageId != null,
+            onDismiss = { reportTarget = null },
+            onSubmit = { reason ->
+                viewModel.report(
+                    reportedUserId = target.userId,
+                    reason = reason,
+                    messageId = target.messageId,
+                ) {
+                    reportTarget = null
+                }
+            },
         )
     }
 
@@ -1419,6 +1510,14 @@ private fun ReactionPickerPopup(
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onSave: () -> Unit,
+    onReport: () -> Unit,
+    onToggleBlock: () -> Unit,
+    /** Everybody the reader has blocked, for the Block/Unblock label. */
+    blockedUserIds: Set<Long>,
+    /** The assistant's reserved account, which may be neither blocked nor reported. */
+    assistantUserId: Long?,
+    /** Whether this is the assistant's own chat, where every sender is it. */
+    isAiChat: Boolean,
     onDismiss: () -> Unit,
 ) {
     val atWindowOrigin = remember {
@@ -1456,6 +1555,10 @@ private fun ReactionPickerPopup(
         var containerSize by remember { mutableStateOf(IntSize.Zero) }
         var capsuleSize by remember { mutableStateOf(IntSize.Zero) }
         var menuSize by remember { mutableStateOf(IntSize.Zero) }
+    // Which page the menu shows. Reset with the popup, so a reader who
+    // left it on Safety does not reopen into Safety on another message,
+    // one tap from Block.
+    var onSafetyPage by remember { mutableStateOf(false) }
         val density = LocalDensity.current
         val margin = with(density) { 12.dp.roundToPx() }
         val gap = with(density) { 8.dp.roundToPx() }
@@ -1537,6 +1640,18 @@ private fun ReactionPickerPopup(
                 exit = fadeOut() + scaleOut(),
                 modifier = Modifier.offset { IntOffset(menuX, menuY) },
             ) {
+                // Two pages in the same measured panel: Safety swaps the
+                // rows, `onSizeChanged` re-measures, and the placement
+                // arithmetic above follows for free.
+                if (onSafetyPage) {
+                    MessageSafetyMenu(
+                        isSenderBlocked = target.item.entity.senderId in blockedUserIds,
+                        onBack = { onSafetyPage = false },
+                        onReport = { exitThen(onReport) },
+                        onToggleBlock = { exitThen(onToggleBlock) },
+                        modifier = Modifier.onSizeChanged { menuSize = it },
+                    )
+                } else {
                 MessageContextMenu(
                     onReply = { exitThen(onReply) },
                     onEdit = { exitThen(onEdit) },
@@ -1558,7 +1673,24 @@ private fun ReactionPickerPopup(
                         target.item.entity.serverId != null &&
                         target.item.entity.senderId == myUserId,
                     canCopy = target.item.entity.body.isNotEmpty(),
+                    // Somebody else's message, and one the server can name.
+                    // Never my own: `cannot_report_self` refuses that, and
+                    // blocking yourself is refused too.
+                    //
+                    // NEVER THE ASSISTANT either. Its reserved account
+                    // belongs to no family (`family_id IS NULL`), so both
+                    // endpoints answer `not_same_family` — and a VISIBLE
+                    // refusal is exactly what this feature may not produce.
+                    // iOS and macOS exclude it the same way; without this
+                    // the three apps disagree in public on every `@ai`
+                    // answer.
+                    canModerate = target.item.entity.serverId != null &&
+                        target.item.entity.senderId != myUserId &&
+                        target.item.entity.senderId != assistantUserId &&
+                        !isAiChat,
+                    showSafety = { onSafetyPage = true },
                 )
+                }
             }
         }
     }
@@ -1676,6 +1808,14 @@ private fun MessageContextMenu(
     canCopy: Boolean = true,
     /** Photos and videos only — what the gallery will take. */
     canSave: Boolean = false,
+    /**
+     * Somebody else's message, so it can be reported and its sender
+     * blocked. Never true on my own — reporting yourself is refused
+     * (`cannot_report_self`) and blocking yourself likewise.
+     */
+    canModerate: Boolean = false,
+    /** Open the Safety page. */
+    showSafety: () -> Unit = {},
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -1727,6 +1867,68 @@ private fun MessageContextMenu(
                 icon = Icons.Outlined.Share,
                 onClick = onShare,
             )
+            if (canModerate) {
+                // Report and Block live one level down, under Safety —
+                // matching iOS and macOS. The panel MEASURES itself here
+                // (Modifier.onSizeChanged at the popup), so swapping the
+                // rows needs no arithmetic; iOS has to compute both pages'
+                // heights by hand.
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_safety),
+                    icon = Icons.Outlined.Shield,
+                    onClick = showSafety,
+                )
+            }
+        }
+    }
+}
+
+/** The Safety page of [MessageContextMenu]: Report and Block, plus the way back. */
+@Composable
+private fun MessageSafetyMenu(
+    isSenderBlocked: Boolean,
+    onBack: () -> Unit,
+    onReport: () -> Unit,
+    onToggleBlock: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 3.dp,
+        shadowElevation = 6.dp,
+        modifier = modifier.width(IntrinsicSize.Max),
+    ) {
+        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+            // First, so the way out is the first thing to find and the two
+            // destructive rows are not where the finger already was.
+            MessageContextMenuItem(
+                label = stringResource(R.string.s_back),
+                icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                onClick = onBack,
+            )
+            MessageContextMenuItem(
+                label = stringResource(R.string.s_report_ellipsis),
+                icon = Icons.Outlined.Flag,
+                onClick = onReport,
+                tint = MaterialTheme.colorScheme.error,
+            )
+            MessageContextMenuItem(
+                label = if (isSenderBlocked) {
+                    stringResource(R.string.s_unblock)
+                } else {
+                    stringResource(R.string.s_block)
+                },
+                icon = if (isSenderBlocked) Icons.Outlined.LockOpen else Icons.Outlined.Block,
+                onClick = onToggleBlock,
+                // Unblocking is not destructive — it gives something
+                // back — so only the Block direction is tinted.
+                tint = if (isSenderBlocked) {
+                    LocalContentColor.current
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
         }
     }
 }
@@ -1736,6 +1938,7 @@ private fun MessageContextMenuItem(
     label: String,
     icon: ImageVector,
     onClick: () -> Unit,
+    tint: Color = LocalContentColor.current,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -1745,8 +1948,8 @@ private fun MessageContextMenuItem(
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
-        Text(text = label, style = MaterialTheme.typography.bodyLarge)
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        Text(text = label, style = MaterialTheme.typography.bodyLarge, color = tint)
     }
 }
 
@@ -1963,6 +2166,13 @@ private fun MessageBubble(
     item: ChatListItem.MessageItem,
     chat: ChatEntity?,
     isMine: Boolean,
+    /** Handed down for the who-reacted list; the row's own hiding is on [item]. */
+    blockedUserIds: Set<Long>,
+    /**
+     * The rows the reader has peeked at, held by the screen so a reveal
+     * survives the row scrolling out of the list and back.
+     */
+    revealedMessages: MutableSet<String>,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
     myUserId: Long?,
@@ -2033,7 +2243,16 @@ private fun MessageBubble(
     // below: an 18dp balloon corner over the tile's own 14dp corner at
     // zero inset would shave the tile into a shape neither of them has.
     val mediaOnly = remember(entity, isStreaming) { isMediaOnly(entity, isStreaming) }
-    val surfaceShape = if (mediaOnly) RectangleShape else bubbleShape
+    // A reveal is a PEEK, not a setting: per row and per device, never on
+    // the wire, never stored, and gone on the next launch. Keyed on the
+    // message so a recycled row cannot inherit somebody else's reveal, and
+    // held by the SCREEN so scrolling away does not undo it
+    // (docs/protocol.md, "Blocking a member").
+    val isHidden = item.isHiddenByBlock && item.key !in revealedMessages
+    // A hidden row is never bare and never media-shaped: it draws one line
+    // of placeholder text in an ordinary balloon, whatever the message
+    // underneath it turns out to be.
+    val surfaceShape = if (mediaOnly && !isHidden) RectangleShape else bubbleShape
     // MARKDOWN FIRST, and the order is load-bearing. Markdown DELETES
     // characters (`**`, backticks, `](url)`), so detecting links over the
     // raw body and drawing the rendered one would leave every link after
@@ -2123,13 +2342,24 @@ private fun MessageBubble(
                     Modifier.combinedClickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = {},
+                        // Normally a no-op. On a HIDDEN row it is the
+                        // reveal — one tap, and nothing else happens: no
+                        // frame, no request, and no movement of the read
+                        // marker, which advances through hidden rows as
+                        // they scroll past whether they were revealed or
+                        // not (docs/protocol.md, "Blocking a member").
+                        onClick = { if (isHidden) revealedMessages.add(item.key) },
                         // Double-tap = the quick heart (Tapback idiom),
                         // through the same toggle path as the capsule,
                         // so a second double-tap removes it. onClick is
                         // a no-op, so the double-tap wait delays nothing.
+                        // Refused while hidden: hearting a message you
+                        // cannot read is not something to make easy, and
+                        // the reaction would be visible to its sender.
                         onDoubleClick = {
-                            entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
+                            if (!isHidden) {
+                                entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
+                            }
                         },
                         onLongClick = { onLongPress(item, bubbleBounds) },
                     )
@@ -2143,7 +2373,7 @@ private fun MessageBubble(
                 .padding(vertical = 2.dp),
             horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
         ) {
-            if (item.showSenderName) {
+            if (item.showSenderName && !isHidden) {
                 // The sender's face rides the name line at the head of a
                 // run rather than in a gutter beside every bubble: the
                 // thread's layout — and the run-corner geometry above —
@@ -2180,7 +2410,7 @@ private fun MessageBubble(
             // emoji-only, and media-only (which also drops the inset and
             // the clip — see `surfaceShape`). One flag for both, so
             // nothing adapts to one half of the rule and not the other.
-            val isBare = isEmojiOnly || mediaOnly
+            val isBare = (isEmojiOnly || mediaOnly) && !isHidden
             Surface(
                 shape = surfaceShape,
                 color = when {
@@ -2198,6 +2428,8 @@ private fun MessageBubble(
                 BubbleContent(
                     entity = entity,
                     item = item,
+                    isHidden = isHidden,
+                    blockedUserIds = blockedUserIds,
                     chat = chat,
                     isMine = isMine,
                     isStreaming = isStreaming,
@@ -2303,6 +2535,10 @@ private fun QuoteBlock(
     isMine: Boolean,
     /** The second level, already resolved to "<name>: <excerpt>", or null. */
     parentLine: String? = null,
+    /** The quoted author is blocked, so neither name nor excerpt is drawn. */
+    replyHidden: Boolean = false,
+    /** The second level's author is blocked. Independent of [replyHidden]. */
+    parentHidden: Boolean = false,
     onClick: () -> Unit,
     onDoubleClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -2314,10 +2550,20 @@ private fun QuoteBlock(
     val accent = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
     // Resolved here, not inside `semantics` — that lambda is not
     // composable, and the sentence is localised like the visible one.
-    val quoteDescription = if (parentLine == null) {
-        stringResource(R.string.s_replying_to_excerpt, authorName, excerpt)
+    // TalkBack gets the SAME masking the screen does. Reading the name
+    // and excerpt aloud would defeat the whole thing for the one reader
+    // most dependent on the label being honest — and this label is
+    // pre-resolved from `authorName`/`excerpt`, so masking only the
+    // visible text would have left it leaking.
+    val replyPhrase = if (replyHidden) {
+        stringResource(R.string.s_replying_to_hidden)
     } else {
-        stringResource(R.string.s_replying_to_excerpt_with_parent, authorName, excerpt, parentLine)
+        stringResource(R.string.s_replying_to_excerpt, authorName, excerpt)
+    }
+    val quoteDescription = when {
+        parentLine == null -> replyPhrase
+        parentHidden -> "$replyPhrase, ${stringResource(R.string.s_which_replied_to_hidden)}"
+        else -> stringResource(R.string.s_replying_to_excerpt_with_parent, authorName, excerpt, parentLine)
     }
     Row(
         modifier = Modifier
@@ -2400,6 +2646,11 @@ private val RoundedRectangle6 = RoundedCornerShape(6.dp)
 @Composable
 private fun ReactionChipsRow(
     item: ChatListItem.MessageItem,
+    /**
+     * Filters the WHO-REACTED list only. The chip's count comes from
+     * [buildReactionChips] and is deliberately not filtered.
+     */
+    blockedUserIds: Set<Long>,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
     myUserId: Long?,
@@ -2450,6 +2701,7 @@ private fun ReactionChipsRow(
             myUserId = myUserId ?: -1L,
             youLabel = youLabel,
             memberFallback = { memberTemplate.format(it) },
+            blockedUserIds = blockedUserIds,
         )
     }
     Box(modifier = Modifier.onGloballyPositioned { rowLeft[0] = it.boundsInWindow().left }) {
@@ -3083,6 +3335,14 @@ private fun PollComposerSheet(
 private fun BubbleContent(
     entity: MessageEntity,
     item: ChatListItem.MessageItem,
+    /**
+     * Draw the placeholder instead of the message. NOT `item.isHiddenByBlock`
+     * directly: the bubble folds the per-device reveal into it, and this
+     * view must never see one without the other.
+     */
+    isHidden: Boolean,
+    /** For the who-reacted list, which drops blocked reactors by name. */
+    blockedUserIds: Set<Long>,
     chat: ChatEntity?,
     isMine: Boolean,
     /** The assistant is still writing into this row. */
@@ -3159,6 +3419,42 @@ private fun BubbleContent(
         modifier = if (mediaOnly) Modifier else Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.Start,
     ) {
+        // Everything above the timestamp is skipped while hidden — no
+        // body, no quote, no attachment, no poll, no link preview, no
+        // reaction chips. The timestamp below STAYS: "a hidden row draws
+        // the placeholder AND the timestamp, and nothing else"
+        // (docs/protocol.md, "Blocking a member").
+        if (isHidden) {
+            // ASK FOR WHAT A VISIBLE ROW WOULD ASK FOR, AND DRAW NONE OF IT.
+            //
+            // This is the requirement with no compile-time signal and no
+            // visual one. The natural implementation simply stops
+            // fetching, reads as obviously correct, and rebuilds the
+            // oracle protocol.md spends a paragraph refusing: a link
+            // preview is a request to a THIRD party, the poster of the
+            // link owns that host's log, and a family that is one distinct
+            // fetcher short from the day somebody blocked them has said so
+            // out loud, repeatably and on demand.
+            //
+            // The link preview alone, and deliberately: attachments and
+            // avatars reach the family's OWN server, whose operator can
+            // see everything anyway, so skipping those loses defence in
+            // depth rather than the oracle itself. `previewsEnabled` still
+            // decides it — the setting "decides the fetch for every row
+            // alike and is never evaluated per sender".
+            val hiddenPreviewUrl = remember(blocks) {
+                MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
+            }
+            if (hiddenPreviewUrl != null && previewsEnabled) {
+                LaunchedEffect(hiddenPreviewUrl) { onRequestPreview(hiddenPreviewUrl) }
+            }
+            Text(
+                text = stringResource(R.string.s_hidden_blocked_member),
+                style = MaterialTheme.typography.bodyMedium,
+                fontStyle = FontStyle.Italic,
+                color = LocalContentColor.current.copy(alpha = 0.62f),
+            )
+        } else {
         // The quote sits inside the balloon, above the reply's own text —
         // same placement as iOS.
         val quotedId = entity.replyToMessageId
@@ -3170,23 +3466,44 @@ private fun BubbleContent(
             // reply, or its own parent has been swept by retention.
             val parentSender = entity.replyParentSenderId
             val parentExcerpt = entity.replyParentExcerpt
+            // The two levels mask INDEPENDENTLY. A reply by an unblocked
+            // member to a blocked one, whose own parent is a third person,
+            // is the ordinary shape that proves it: one flag for both gets
+            // this wrong in both directions — over-masking a readable
+            // parent, or leaking a blocked reply.
+            val replyHidden = item.isReplyHidden
+            val parentHidden = item.isParentHidden
+            val hiddenLabel = stringResource(R.string.s_hidden_blocked_member)
             val parentLine = if (parentSender != null && parentExcerpt != null) {
-                val name = when (parentSender) {
-                    myUserId -> stringResource(R.string.s_you)
-                    else -> memberNames[parentSender] ?: stringResource(R.string.s_someone)
+                if (parentHidden) {
+                    // No name and no text: the placeholder is the whole
+                    // line, or the excerpt carries 120 characters of a
+                    // blocked member into a bubble that is not hidden.
+                    hiddenLabel
+                } else {
+                    val name = when (parentSender) {
+                        myUserId -> stringResource(R.string.s_you)
+                        else -> memberNames[parentSender] ?: stringResource(R.string.s_someone)
+                    }
+                    "$name: $parentExcerpt"
                 }
-                "$name: $parentExcerpt"
             } else {
                 null
             }
             QuoteBlock(
-                authorName = when (quotedSender) {
-                    myUserId -> stringResource(R.string.s_you)
-                    else -> memberNames[quotedSender] ?: stringResource(R.string.s_someone)
+                authorName = if (replyHidden) {
+                    hiddenLabel
+                } else {
+                    when (quotedSender) {
+                        myUserId -> stringResource(R.string.s_you)
+                        else -> memberNames[quotedSender] ?: stringResource(R.string.s_someone)
+                    }
                 },
-                excerpt = quotedExcerpt,
+                excerpt = if (replyHidden) "" else quotedExcerpt,
                 isMine = isMine,
                 parentLine = parentLine,
+                replyHidden = replyHidden,
+                parentHidden = parentHidden,
                 onClick = { onTapQuote(quotedId) },
                 onDoubleClick = onDoubleTap,
                 onLongClick = onTextLongPress,
@@ -3375,6 +3692,7 @@ private fun BubbleContent(
             Box(modifier = Modifier.align(if (isMine) Alignment.End else Alignment.Start)) {
                 ReactionChipsRow(
                     item = item,
+                    blockedUserIds = blockedUserIds,
                     memberNames = memberNames,
                     memberAvatars = memberAvatars,
                     myUserId = myUserId,
@@ -3383,6 +3701,8 @@ private fun BubbleContent(
                 )
             }
         }
+        }
+
         if (item.showTimestamp || isMine) {
             Spacer(Modifier.size(2.dp))
             Row(

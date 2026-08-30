@@ -40,6 +40,8 @@ import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.di.AppScope
 import javax.inject.Inject
 import javax.inject.Singleton
+import me.nettrash.familyconnect.data.net.dto.ReportResponse
+import me.nettrash.familyconnect.data.net.dto.ReportsResponse
 
 @Singleton
 class FamilyRepository @Inject constructor(
@@ -118,11 +120,74 @@ class FamilyRepository @Inject constructor(
                             )
                         }
                     }
+                    // Reaches only the blocker's own connections, so
+                    // there is nobody else's state to consider. A
+                    // state-set, not an event: an unblock is this same
+                    // frame with `false` (docs/protocol.md, "Blocking a
+                    // member"). A latency optimisation over the full list
+                    // on `/me`, so it goes through the same store.
+                    is ServerFrame.MemberBlocked ->
+                        applyBlockLocally(frame.userId, frame.blocked)
                     else -> Unit
                 }
             }
         }
     }
+
+    /**
+     * Fold one id into the stored block list.
+     *
+     * Read-modify-write of the whole set, because [SettingsRepository]
+     * owns it as a complete state-set and there is exactly one function in
+     * the app that writes it.
+     */
+    private suspend fun applyBlockLocally(userId: Long, blocked: Boolean) {
+        val current = settings.state.first().blockedUserIds
+        val next = if (blocked) current + userId else current - userId
+        if (next != current) settings.setBlockedUserIds(next)
+    }
+
+    /**
+     * Block a member. ANY member may block any other, the OWNER INCLUDED.
+     *
+     * The request FIRST, then the local write — never optimistic. An
+     * optimistic block that then failed would hide rows the reader does not
+     * know are hidden, in a feature with no error surface and no badge to
+     * notice it by.
+     */
+    suspend fun block(userId: Long): ApiResult<Unit> =
+        familyApi.blockMember(userId).also {
+            if (it is ApiResult.Ok) applyBlockLocally(userId, blocked = true)
+        }
+
+    /**
+     * Report a member, optionally naming one of their messages.
+     *
+     * Nothing local changes: a report is a message to the family's owner,
+     * not a state this device holds. Raising one that matches an OPEN
+     * report returns that row and creates nothing, so a double tap is not
+     * two rows in the owner's list (docs/protocol.md, "Reporting a
+     * member").
+     */
+    /** Owner-only: the open reports, oldest first. */
+    suspend fun reports(): ApiResult<ReportsResponse> = familyApi.reports()
+
+    /** Owner-only: take one report off the list. */
+    suspend fun resolveReport(reportId: Long): ApiResult<Unit> = familyApi.resolveReport(reportId)
+
+    /** The most members this family admits; null CLEARS the cap. */
+    suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse> = familyApi.setMemberCap(cap)
+
+    suspend fun report(
+        reportedUserId: Long,
+        reason: String,
+        messageId: Long?,
+    ): ApiResult<ReportResponse> = familyApi.report(reportedUserId, reason, messageId)
+
+    suspend fun unblock(userId: Long): ApiResult<Unit> =
+        familyApi.unblockMember(userId).also {
+            if (it is ApiResult.Ok) applyBlockLocally(userId, blocked = false)
+        }
 
     /** Everyone ever seen — the name-resolution feed. */
     fun observeMembers(): Flow<List<MemberEntity>> = memberDao.observeMembers()
@@ -199,6 +264,12 @@ class FamilyRepository @Inject constructor(
                 result.value.assistant?.userId,
                 result.value.assistant?.displayName,
             )
+            // The second apply of the same complete state-set. Idempotent
+            // and last-writer-wins, which is why the fixed resync order
+            // (/me, then /families/mine) needs no coordination — and why
+            // this runs harmlessly on the many foreground refreshes that
+            // also call this method.
+            settings.setBlockedUserIds(result.value.blockedUserIds)
         }
         return result
     }
@@ -327,14 +398,33 @@ class FamilyRepository @Inject constructor(
     suspend fun reject(requestId: Long): ApiResult<Unit> =
         familyApi.reject(requestId)
 
-    suspend fun leave(): ApiResult<Unit> {
-        val result = familyApi.leave()
-        if (result is ApiResult.Ok) {
-            // History is retained server-side and resurfaces on rejoin
-            // (protocol) — but locally these chats aren't ours to show.
-            sessionRepository.onRemovedFromFamily()
+    /**
+     * Leave the family, and answer with the NAME of whoever inherited it —
+     * or null when nobody did.
+     *
+     * The lookup happens BEFORE the local teardown, and that ordering is
+     * the whole reason the resolution lives here rather than in the
+     * caller: `onRemovedFromFamily` clears the roster the id has to be
+     * looked up in, so resolving afterwards would always name nobody.
+     * The protocol states it in the same order — the leaving owner
+     * "resolves `new_owner_user_id` against the roster it still holds,
+     * tells the user who inherited, and only then tears its family state
+     * down" (docs/protocol.md, `POST /families/leave`).
+     *
+     * An owner is never refused; `owner_cannot_leave` is retired.
+     */
+    suspend fun leave(): ApiResult<String?> {
+        return when (val result = familyApi.leave()) {
+            is ApiResult.Ok -> {
+                val name = result.value?.let { memberDao.displayName(it) }
+                // History is retained server-side and resurfaces on rejoin
+                // (protocol) — but locally these chats aren't ours to show.
+                sessionRepository.onRemovedFromFamily()
+                ApiResult.Ok(name)
+            }
+            is ApiResult.HttpError -> result
+            is ApiResult.NetworkError -> result
         }
-        return result
     }
 
     /**
