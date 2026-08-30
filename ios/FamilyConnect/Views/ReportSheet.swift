@@ -53,6 +53,7 @@ nonisolated enum ReportReason: String, CaseIterable, Identifiable {
 }
 
 struct ReportSheet: View {
+    @Environment(AppSession.self) private var session
     let target: ReportTarget
     let onSubmit: (ReportReason) -> Void
     let onCancel: () -> Void
@@ -88,6 +89,29 @@ struct ReportSheet: View {
                         Text(
                             "Your family owner will be told you reported this member.",
                             comment: "Report sheet disclosure")
+                    }
+                }
+                // The honest escalation path for the case this whole
+                // feature is weakest at: the moderator IS the owner, so a
+                // report about them never reaches them (docs/protocol.md,
+                // "Reporting a member"). Absent when the operator has set
+                // no contact, and then the section goes with it rather
+                // than standing empty.
+                if let supportContact = session.supportContact, !supportContact.isEmpty {
+                    Section {
+                        // VERBATIM, selectable, and never linkified: an
+                        // operator may write an address, a URL or a whole
+                        // sentence, and three apps guessing differently
+                        // about which it is would be worse than three apps
+                        // showing the same text.
+                        Text(verbatim: supportContact)
+                            .textSelection(.enabled)
+                    } header: {
+                        Text("If the problem is the owner", comment: "Report sheet: the operator's own contact")
+                    } footer: {
+                        Text(
+                            "This server's operator published this contact.",
+                            comment: "Report sheet: explains where the support contact came from")
                     }
                 }
             }

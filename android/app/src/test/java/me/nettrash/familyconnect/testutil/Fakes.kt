@@ -115,6 +115,14 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
     /** Every write, in order — so a test can prove the EMPTY set was sent. */
     val blockedWrites = mutableListOf<Set<Long>>()
 
+    override suspend fun setMaxFamilyMembers(limit: Int?) {
+        _state.value = _state.value.copy(maxFamilyMembers = limit)
+    }
+
+    override suspend fun setSupportContact(contact: String?) {
+        _state.value = _state.value.copy(supportContact = contact)
+    }
+
     override suspend fun setBlockedUserIds(ids: Collection<Long>) {
         val next = ids.toSet()
         blockedWrites += next

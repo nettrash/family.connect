@@ -19,6 +19,35 @@ class CallBackRegistryTest {
         override fun write(value: String?) { this.value = value }
     }
 
+    /**
+     * Blocking somebody takes their entries out of the system dialer's
+     * reach — and leaves everybody else's alone, which is the half that
+     * would break if this filtered on the wrong field.
+     */
+    @Test
+    fun forgetDropsOnlyThatPersonsEntries() {
+        val registry = CallBackRegistry(MemoryStore())
+        registry.remember(CallBackEntry(uuid = "a", chatId = 1, peerUserId = 9, video = false))
+        registry.remember(CallBackEntry(uuid = "b", chatId = 2, peerUserId = 11, video = true))
+        registry.remember(CallBackEntry(uuid = "c", chatId = 3, peerUserId = 9, video = false))
+
+        registry.forget(peerUserId = 9)
+
+        assertThat(registry.all().map { it.uuid }).containsExactly("b")
+        assertThat(registry.find("a")).isNull()
+        assertThat(registry.find("c")).isNull()
+    }
+
+    @Test
+    fun forgettingSomebodyWithNoEntriesChangesNothing() {
+        val registry = CallBackRegistry(MemoryStore())
+        registry.remember(CallBackEntry(uuid = "a", chatId = 1, peerUserId = 9, video = false))
+
+        registry.forget(peerUserId = 12)
+
+        assertThat(registry.all().map { it.uuid }).containsExactly("a")
+    }
+
     @Test
     fun rememberAndFind() {
         val store = MemoryStore()

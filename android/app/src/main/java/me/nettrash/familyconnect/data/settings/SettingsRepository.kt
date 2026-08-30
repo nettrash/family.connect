@@ -22,6 +22,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -56,6 +57,24 @@ data class SettingsState(
      * at all — somebody who left, was deleted, or shares no family.
      */
     val blockedUserIds: Set<Long> = emptySet(),
+    /**
+     * The operator's ceiling on a family's size. Null on a server too old
+     * to report it, and the cap control then hides rather than inventing a
+     * bound to draw.
+     */
+    val maxFamilyMembers: Int? = null,
+    /**
+     * The operator's published contact, absent when unset. Shown on the
+     * report screen: it is the honest escalation path for the case this
+     * feature is weakest at — a report ABOUT the owner never reaches the
+     * owner (docs/protocol.md, "Reporting a member").
+     *
+     * Free text, at most 256 characters. Drawn VERBATIM and never
+     * linkified: an operator may write an address, a URL or a sentence,
+     * and three apps guessing differently about which it is would be worse
+     * than three apps showing the same text.
+     */
+    val supportContact: String? = null,
     /** My own profile-picture version; 0 = no picture. */
     val myAvatarVersion: Long = 0,
     /** Last FCM registration token seen — device-scoped, survives logout. */
@@ -181,6 +200,12 @@ interface SettingsRepository {
      */
     suspend fun setBlockedUserIds(ids: Collection<Long>)
 
+    /** Record what `GET /me` said the operator's family-size ceiling is. */
+    suspend fun setMaxFamilyMembers(limit: Int?)
+
+    /** Record the operator's published support contact, or clear it. */
+    suspend fun setSupportContact(contact: String?)
+
     suspend fun resetKeepingServerUrl()
 }
 
@@ -197,6 +222,8 @@ class DataStoreSettingsRepository @Inject constructor(
          * than a joined string.
          */
         val BLOCKED_USER_IDS = stringSetPreferencesKey("blocked_user_ids")
+        val MAX_FAMILY_MEMBERS = intPreferencesKey("max_family_members")
+        val SUPPORT_CONTACT = stringPreferencesKey("support_contact")
         val FAMILY_STATUS = stringPreferencesKey("family_status")
         val MY_USER_ID = longPreferencesKey("my_user_id")
         val MY_USERNAME = stringPreferencesKey("my_username")
@@ -233,6 +260,8 @@ class DataStoreSettingsRepository @Inject constructor(
             pushDeviceId = prefs[Keys.PUSH_DEVICE_ID],
             // `toLongOrNull` rather than `toLong`: a corrupt entry must
             // not throw inside the map every screen collects.
+            maxFamilyMembers = prefs[Keys.MAX_FAMILY_MEMBERS],
+            supportContact = prefs[Keys.SUPPORT_CONTACT],
             blockedUserIds = prefs[Keys.BLOCKED_USER_IDS]
                 ?.mapNotNull(String::toLongOrNull)
                 ?.toSet()
@@ -338,6 +367,18 @@ class DataStoreSettingsRepository @Inject constructor(
     override suspend fun setBlockedUserIds(ids: Collection<Long>) {
         // Unconditional, empty set included. See the interface.
         dataStore.edit { it[Keys.BLOCKED_USER_IDS] = ids.map(Long::toString).toSet() }
+    }
+
+    override suspend fun setMaxFamilyMembers(limit: Int?) {
+        dataStore.edit { prefs ->
+            if (limit == null) prefs.remove(Keys.MAX_FAMILY_MEMBERS) else prefs[Keys.MAX_FAMILY_MEMBERS] = limit
+        }
+    }
+
+    override suspend fun setSupportContact(contact: String?) {
+        dataStore.edit { prefs ->
+            if (contact.isNullOrEmpty()) prefs.remove(Keys.SUPPORT_CONTACT) else prefs[Keys.SUPPORT_CONTACT] = contact
+        }
     }
 
     override suspend fun resetKeepingServerUrl() {

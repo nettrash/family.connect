@@ -363,4 +363,23 @@
     <string name="e_block_failed">Impossible de modifier cela pour le moment. Réessayez.</string>
     <string name="e_report_failed">Impossible d\'envoyer le signalement. Réessayez.</string>
     <string name="s_hidden_note_from_blocked">Note masquée d’un membre bloqué</string>
+    <string name="s_closed">Fermée</string>
+    <string name="s_join_closed_caption">Le code d’invitation cesse de fonctionner — plus personne ne peut rejoindre. Les demandes déjà en attente ne changent pas et vous pouvez toujours les accepter.</string>
+    <string name="s_member_limit">Limite de membres</string>
+    <string name="s_limit_members">Limiter les membres</string>
+    <string name="s_most_members">Nombre maximal</string>
+    <string name="s_member_limit_none">Aucune limite de votre part. Ce serveur autorise jusqu’à %1$d membres par famille.</string>
+    <string name="s_member_limit_frozen">%1$d membres actuellement. Personne ne peut rejoindre tant que quelqu’un ne part pas ; personne n’est retiré.</string>
+    <string name="s_member_limit_room">%1$d place(s) sur %2$d utilisée(s).</string>
+    <string name="s_decrease">Diminuer</string>
+    <string name="s_increase">Augmenter</string>
+    <string name="e_member_limit_failed">Impossible de modifier la limite de membres. Réessayez.</string>
+    <string name="e_family_full_approve">La famille est complète. Augmentez la limite de membres ou attendez qu’une place se libère — la demande reste en attente.</string>
+    <string name="e_family_full_join">Cette famille est complète pour le moment. Demandez-leur de faire de la place, puis réessayez le code.</string>
+    <string name="s_reports">Signalements</string>
+    <string name="s_reported_by">%1$s a signalé %2$s</string>
+    <string name="s_mark_as_handled">Marquer comme traité</string>
+    <string name="e_resolve_report_failed">Impossible de marquer comme traité. Réessayez.</string>
+    <string name="s_if_the_problem_is_the_owner">Si le problème vient du propriétaire</string>
+    <string name="s_operator_published_contact">L’opérateur de ce serveur a publié ce contact.</string>
 </resources>

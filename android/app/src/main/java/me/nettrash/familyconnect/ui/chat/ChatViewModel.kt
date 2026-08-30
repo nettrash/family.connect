@@ -237,6 +237,10 @@ class ChatViewModel @Inject constructor(
     val blockedUserIds: StateFlow<Set<Long>> = settings.state.map { it.blockedUserIds }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
+    /** The operator's published contact, for the report sheet. */
+    val supportContact: StateFlow<String?> = settings.state.map { it.supportContact }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     /**
      * Block or unblock one member.
      *

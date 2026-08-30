@@ -111,6 +111,12 @@ import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
 import me.nettrash.familyconnect.ui.components.EmptyState
 import me.nettrash.familyconnect.ui.components.ErrorCard
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Remove
+import me.nettrash.familyconnect.util.MemberCap
+import androidx.annotation.StringRes
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.background
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -331,6 +337,73 @@ fun FamilyAdminScreen(
                 )
                 SectionDivider()
 
+                // -- Reports -----------------------------------------------------------
+                // The owner is the moderator. Above the policy controls
+                // because a report is somebody waiting on an answer, while
+                // the settings below are not.
+                if (state.reports.isNotEmpty()) {
+                    Text(
+                        text = stringResource(R.string.s_reports),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
+                    )
+                    state.reports.forEach { report ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                text = stringResource(reportReasonLabel(report.reason)),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                text = stringResource(
+                                    R.string.s_reported_by,
+                                    report.reporter.displayName,
+                                    report.reported.displayName,
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            // Drawn ALWAYS when present, and never
+                            // truncated: it is frozen precisely because the
+                            // author may edit the body away and retention
+                            // will sweep the message, and an owner judging
+                            // a message has to see all of it.
+                            report.messageExcerpt?.takeIf { it.isNotEmpty() }?.let { excerpt ->
+                                SelectionContainer {
+                                    Text(
+                                        text = excerpt,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 4.dp)
+                                            .background(
+                                                MaterialTheme.colorScheme.surfaceContainerHighest,
+                                                RoundedCornerShape(6.dp),
+                                            )
+                                            .padding(8.dp),
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                            ) {
+                                TextButton(
+                                    enabled = !state.busy,
+                                    onClick = { viewModel.resolveReport(report.id) },
+                                ) {
+                                    Text(stringResource(R.string.s_mark_as_handled))
+                                }
+                            }
+                        }
+                    }
+                    SectionDivider()
+                }
+
                 // -- Join policy ------------------------------------------------------
                 Text(
                     text = stringResource(R.string.s_join_policy),
@@ -346,7 +419,7 @@ fun FamilyAdminScreen(
                     SegmentedButton(
                         selected = state.joinPolicy == "open",
                         onClick = { viewModel.setJoinPolicy("open") },
-                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
                         enabled = !state.busy,
                     ) {
                         Text(stringResource(R.string.s_open))
@@ -354,21 +427,118 @@ fun FamilyAdminScreen(
                     SegmentedButton(
                         selected = state.joinPolicy == "approval",
                         onClick = { viewModel.setJoinPolicy("approval") },
-                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
                         enabled = !state.busy,
                     ) {
                         Text(stringResource(R.string.s_approval))
                     }
+                    SegmentedButton(
+                        selected = state.joinPolicy == "closed",
+                        onClick = { viewModel.setJoinPolicy("closed") },
+                        shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
+                        enabled = !state.busy,
+                    ) {
+                        Text(stringResource(R.string.s_closed))
+                    }
                 }
                 Text(
+                    // "Closed" needs two things said that the other two do
+                    // not: the code stops working, and the requests already
+                    // waiting are untouched and can still be approved
+                    // (docs/protocol.md, approve). An owner closing the
+                    // family to stop new arrivals should not be left
+                    // wondering whether they just rejected the queue.
                     text = stringResource(
-                        if (state.joinPolicy == "open") R.string.s_join_open_caption else R.string.s_join_approval_caption,
+                        when (state.joinPolicy) {
+                            "approval" -> R.string.s_join_approval_caption
+                            "closed" -> R.string.s_join_closed_caption
+                            else -> R.string.s_join_open_caption
+                        },
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
                 SectionDivider()
+
+                // -- Member limit ------------------------------------------------------
+                // Hidden entirely when the server does not report a
+                // ceiling: there is nothing sensible to bound the stepper
+                // by, and inventing a number would be worse than omitting
+                // the control.
+                state.ceiling?.let { ceiling ->
+                    Text(
+                        text = stringResource(R.string.s_member_limit),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.s_limit_members),
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Switch(
+                            checked = state.maxMembers != null,
+                            enabled = !state.busy,
+                            onCheckedChange = { on ->
+                                // Turning it on freezes the family where it
+                                // stands, which is what reaching for this
+                                // almost always means in the moment.
+                                viewModel.setMemberCap(
+                                    if (on) MemberCap.seed(state.memberCount, ceiling) else null,
+                                )
+                            },
+                        )
+                    }
+                    state.maxMembers?.let { cap ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.s_most_members),
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(
+                                enabled = !state.busy && cap > 1,
+                                onClick = { viewModel.setMemberCap(MemberCap.clamp(cap - 1, ceiling)) },
+                            ) {
+                                Icon(Icons.Outlined.Remove, contentDescription = stringResource(R.string.s_decrease))
+                            }
+                            Text(text = "$cap", style = MaterialTheme.typography.titleMedium)
+                            IconButton(
+                                enabled = !state.busy && cap < ceiling,
+                                onClick = { viewModel.setMemberCap(MemberCap.clamp(cap + 1, ceiling)) },
+                            ) {
+                                Icon(Icons.Outlined.Add, contentDescription = stringResource(R.string.s_increase))
+                            }
+                        }
+                    }
+                    Text(
+                        text = when (val capState = MemberCap.state(state.maxMembers, state.memberCount, ceiling)) {
+                            is MemberCap.State.OpenToCeiling ->
+                                stringResource(R.string.s_member_limit_none, capState.ceiling)
+                            is MemberCap.State.Frozen ->
+                                stringResource(R.string.s_member_limit_frozen, capState.memberCount)
+                            is MemberCap.State.Room ->
+                                stringResource(R.string.s_member_limit_room, capState.memberCount, capState.cap)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                    SectionDivider()
+                }
 
                 // -- Family language ---------------------------------------------------
                 Text(
@@ -812,6 +982,19 @@ private fun LanguagePickerDialog(
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_close)) }
         },
     )
+}
+
+/**
+ * A wire reason to its label. An UNRECOGNISED value falls back to "other"
+ * rather than failing: a newer server must never make an owner's inbox
+ * unreadable (docs/protocol.md, "Reporting a member").
+ */
+@StringRes
+private fun reportReasonLabel(reason: String): Int = when (reason) {
+    "spam" -> R.string.s_report_reason_spam
+    "harassment" -> R.string.s_report_reason_harassment
+    "inappropriate" -> R.string.s_report_reason_inappropriate
+    else -> R.string.s_report_reason_other
 }
 
 @Composable

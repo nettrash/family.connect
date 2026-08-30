@@ -367,4 +367,23 @@
     <string name="e_block_failed">Сейчас не удалось изменить. Попробуйте ещё раз.</string>
     <string name="e_report_failed">Не удалось отправить жалобу. Попробуйте ещё раз.</string>
     <string name="s_hidden_note_from_blocked">Скрытая заметка от заблокированного участника</string>
+    <string name="s_closed">Закрыта</string>
+    <string name="s_join_closed_caption">Код приглашения перестаёт работать — новые участники вступить не смогут. Уже поданные заявки сохраняются, и вы по-прежнему можете их одобрить.</string>
+    <string name="s_member_limit">Лимит участников</string>
+    <string name="s_limit_members">Ограничить число участников</string>
+    <string name="s_most_members">Максимум участников</string>
+    <string name="s_member_limit_none">Своего лимита нет. Этот сервер допускает до %1$d участников в семье.</string>
+    <string name="s_member_limit_frozen">Сейчас участников: %1$d. Новые не смогут вступить, пока кто-нибудь не выйдет; никого не удаляют.</string>
+    <string name="s_member_limit_room">Занято %1$d из %2$d мест.</string>
+    <string name="s_decrease">Уменьшить</string>
+    <string name="s_increase">Увеличить</string>
+    <string name="e_member_limit_failed">Не удалось изменить лимит участников. Попробуйте ещё раз.</string>
+    <string name="e_family_full_approve">Семья заполнена. Увеличьте лимит участников или дождитесь, пока кто-нибудь выйдет — заявка останется в ожидании.</string>
+    <string name="e_family_full_join">Эта семья сейчас заполнена. Попросите освободить место и попробуйте код ещё раз.</string>
+    <string name="s_reports">Жалобы</string>
+    <string name="s_reported_by">%1$s пожаловался(ась) на %2$s</string>
+    <string name="s_mark_as_handled">Отметить как обработанную</string>
+    <string name="e_resolve_report_failed">Не удалось отметить как обработанную. Попробуйте ещё раз.</string>
+    <string name="s_if_the_problem_is_the_owner">Если проблема — сам владелец</string>
+    <string name="s_operator_published_contact">Оператор этого сервера опубликовал этот контакт.</string>
 </resources>

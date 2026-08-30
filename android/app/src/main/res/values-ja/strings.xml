@@ -355,4 +355,23 @@
     <string name="e_block_failed">今は変更できませんでした。もう一度お試しください。</string>
     <string name="e_report_failed">報告を送信できませんでした。もう一度お試しください。</string>
     <string name="s_hidden_note_from_blocked">ブロックしたメンバーの非表示のメモ</string>
+    <string name="s_closed">締切</string>
+    <string name="s_join_closed_caption">招待コードが無効になり、新しく参加できる人はいなくなります。すでに届いている申請はそのままで、引き続き承認できます。</string>
+    <string name="s_member_limit">メンバー数の上限</string>
+    <string name="s_limit_members">メンバー数を制限</string>
+    <string name="s_most_members">最大人数</string>
+    <string name="s_member_limit_none">独自の上限はありません。このサーバーでは家族あたり最大%1$d人までです。</string>
+    <string name="s_member_limit_frozen">現在%1$d人です。誰かが抜けるまで新しい人は参加できません。誰も削除されません。</string>
+    <string name="s_member_limit_room">%2$d人中%1$d人が参加しています。</string>
+    <string name="s_decrease">減らす</string>
+    <string name="s_increase">増やす</string>
+    <string name="e_member_limit_failed">メンバー数の上限を変更できませんでした。もう一度お試しください。</string>
+    <string name="e_family_full_approve">家族の人数が上限に達しています。上限を上げるか、誰かが抜けるのをお待ちください。申請はそのまま残ります。</string>
+    <string name="e_family_full_join">その家族は現在満員です。空きを作ってもらってから、もう一度コードをお試しください。</string>
+    <string name="s_reports">報告</string>
+    <string name="s_reported_by">%1$sさんが%2$sさんを報告しました</string>
+    <string name="s_mark_as_handled">対応済みにする</string>
+    <string name="e_resolve_report_failed">対応済みにできませんでした。もう一度お試しください。</string>
+    <string name="s_if_the_problem_is_the_owner">問題がオーナー本人の場合</string>
+    <string name="s_operator_published_contact">このサーバーの運営者がこの連絡先を公開しています。</string>
 </resources>

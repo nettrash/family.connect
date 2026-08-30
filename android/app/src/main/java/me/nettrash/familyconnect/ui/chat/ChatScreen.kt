@@ -290,6 +290,7 @@ import androidx.annotation.StringRes
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.RadioButton
+import androidx.compose.foundation.text.selection.SelectionContainer
 
 /**
  * The long-pressed message plus its bubble's window bounds — the
@@ -330,6 +331,13 @@ private enum class ReportReason(val wire: String, @StringRes val label: Int) {
 @Composable
 private fun ReportSheet(
     displayName: String,
+    /**
+     * The operator's published contact, or null when unset. The honest
+     * escalation path for the case this feature is weakest at: a report
+     * ABOUT the owner never reaches the owner (docs/protocol.md,
+     * "Reporting a member").
+     */
+    supportContact: String?,
     onDismiss: () -> Unit,
     onSubmit: (String) -> Unit,
 ) {
@@ -376,6 +384,25 @@ private fun ReportSheet(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (!supportContact.isNullOrEmpty()) {
+                HorizontalDivider()
+                Text(
+                    text = stringResource(R.string.s_if_the_problem_is_the_owner),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                // VERBATIM, selectable, never linkified: an operator may
+                // write an address, a URL or a whole sentence, and three
+                // apps guessing differently about which it is would be
+                // worse than three apps showing the same text.
+                SelectionContainer {
+                    Text(text = supportContact, style = MaterialTheme.typography.bodyMedium)
+                }
+                Text(
+                    text = stringResource(R.string.s_operator_published_contact),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
@@ -485,6 +512,7 @@ fun ChatScreen(
     val memberFallbackName = stringResource(R.string.s_someone)
 
     val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
+    val supportContact by viewModel.supportContact.collectAsStateWithLifecycle()
     var fullPickerTarget by remember { mutableStateOf<ChatListItem.MessageItem?>(null) }
     val listState = rememberLazyListState()
     // Set by tapping a quote, or by the opening anchor; cleared once the
@@ -1486,6 +1514,7 @@ fun ChatScreen(
     reportTarget?.let { target ->
         ReportSheet(
             displayName = target.displayName,
+            supportContact = supportContact,
             onDismiss = { reportTarget = null },
             onSubmit = { reason ->
                 viewModel.report(

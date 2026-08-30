@@ -41,6 +41,10 @@ struct MacFamilyView: View {
     @State private var busy = false
     @State private var errorText: String?
     @State private var resetting: MemberDTO?
+    /// The owner's moderation list, oldest first. Stays empty for a plain
+    /// member: `reload` returns early before it would ever be fetched.
+    @State private var reports: [ReportDTO] = []
+    @State private var resolvingReports: Set<Int64> = []
     /// The stepper's own cap while the debounced write is in flight; nil
     /// whenever the server's answer is the one to trust.
     @State private var capDraft: Int?
@@ -57,6 +61,7 @@ struct MacFamilyView: View {
                 if session.isOwner {
                     inviteSection
                     if !requests.isEmpty { requestsSection }
+                    if !reports.isEmpty { reportsSection }
                     policySection
                     capSection
                     if let family = session.family {
@@ -269,6 +274,61 @@ struct MacFamilyView: View {
             maxMembers: updated.maxMembers)
     }
 
+    /// The owner's moderation inbox, inline rather than behind a sheet: a
+    /// report carries a whole frozen message body, and a Mac sheet cannot
+    /// be resized to read one.
+    ///
+    /// Never shows who blocked whom. Blocking and reporting are
+    /// independent, and a family owner is often a parent while the blocked
+    /// person is often in the same house — the exact case the silence
+    /// exists for (docs/protocol.md, "Reporting a member").
+    private var reportsSection: some View {
+        Section("Reports") {
+            ForEach(reports) { report in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(ReportReason(rawValue: report.reason)?.label ?? ReportReason.other.label)
+                        .font(.headline)
+                    Text("\(report.reporter.displayName) reported \(report.reported.displayName)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    // Drawn ALWAYS when present, and never truncated: it is
+                    // frozen precisely because the author may edit the body
+                    // away and retention will sweep the message, and an
+                    // owner judging a message has to see all of it.
+                    if let excerpt = report.messageExcerpt, !excerpt.isEmpty {
+                        Text(excerpt)
+                            .font(.callout)
+                            .padding(6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                            .textSelection(.enabled)
+                    }
+                    HStack {
+                        Spacer()
+                        // Says nothing about what the owner DID: this
+                        // protocol has removing a member, resetting a
+                        // password and closing the family, not deleting
+                        // somebody else's message.
+                        Button("Mark as handled") { resolve(report) }
+                            .disabled(busy || resolvingReports.contains(report.id))
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func resolve(_ report: ReportDTO) {
+        resolvingReports.insert(report.id)
+        run {
+            try await coordinator.api.resolveReport(id: report.id)
+            await MainActor.run {
+                reports.removeAll { $0.id == report.id }
+                resolvingReports.remove(report.id)
+            }
+        }
+    }
+
     private var requestsSection: some View {
         Section("Join requests") {
             ForEach(requests) { request in
@@ -369,6 +429,10 @@ struct MacFamilyView: View {
         }
         inviteCode = session.family?.inviteCode
         requests = (try? await coordinator.api.joinRequests()) ?? []
+        // Owner-only, like the requests above: a plain member never gets
+        // here (`reload` returns early for them), so the 403 is unreachable
+        // rather than swallowed.
+        reports = (try? await coordinator.api.reports()) ?? []
     }
 
     private func openDirect(_ member: MemberEntity) {

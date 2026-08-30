@@ -41,6 +41,7 @@ import me.nettrash.familyconnect.di.AppScope
 import javax.inject.Inject
 import javax.inject.Singleton
 import me.nettrash.familyconnect.data.net.dto.ReportResponse
+import me.nettrash.familyconnect.data.net.dto.ReportsResponse
 
 @Singleton
 class FamilyRepository @Inject constructor(
@@ -168,6 +169,15 @@ class FamilyRepository @Inject constructor(
      * two rows in the owner's list (docs/protocol.md, "Reporting a
      * member").
      */
+    /** Owner-only: the open reports, oldest first. */
+    suspend fun reports(): ApiResult<ReportsResponse> = familyApi.reports()
+
+    /** Owner-only: take one report off the list. */
+    suspend fun resolveReport(reportId: Long): ApiResult<Unit> = familyApi.resolveReport(reportId)
+
+    /** The most members this family admits; null CLEARS the cap. */
+    suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse> = familyApi.setMemberCap(cap)
+
     suspend fun report(
         reportedUserId: Long,
         reason: String,

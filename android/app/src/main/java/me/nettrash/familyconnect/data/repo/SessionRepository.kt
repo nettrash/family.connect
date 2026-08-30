@@ -299,6 +299,8 @@ class SessionRepository @Inject constructor(
                 // Before the status/teardown logic below, which is where
                 // `wipeAll()` lives.
                 settings.setBlockedUserIds(me.blockedUserIds)
+                settings.setMaxFamilyMembers(me.maxFamilyMembers)
+                settings.setSupportContact(me.supportContact)
                 val next = when {
                     me.family != null ->
                         if (me.role == "owner") FamilyStatus.OWNER else FamilyStatus.MEMBER

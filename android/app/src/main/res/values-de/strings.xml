@@ -359,4 +359,23 @@
     <string name="e_block_failed">Das ließ sich gerade nicht ändern. Bitte erneut versuchen.</string>
     <string name="e_report_failed">Die Meldung ließ sich nicht senden. Bitte erneut versuchen.</string>
     <string name="s_hidden_note_from_blocked">Ausgeblendete Notiz eines blockierten Mitglieds</string>
+    <string name="s_closed">Geschlossen</string>
+    <string name="s_join_closed_caption">Der Einladungscode funktioniert nicht mehr — niemand Neues kann beitreten. Bereits wartende Anfragen bleiben bestehen und können weiterhin bestätigt werden.</string>
+    <string name="s_member_limit">Mitgliederlimit</string>
+    <string name="s_limit_members">Mitglieder begrenzen</string>
+    <string name="s_most_members">Höchstzahl</string>
+    <string name="s_member_limit_none">Kein eigenes Limit. Dieser Server erlaubt bis zu %1$d Mitglieder pro Familie.</string>
+    <string name="s_member_limit_frozen">Aktuell %1$d Mitglieder. Niemand Neues kann beitreten, bis jemand geht; es wird niemand entfernt.</string>
+    <string name="s_member_limit_room">%1$d von %2$d Plätzen belegt.</string>
+    <string name="s_decrease">Verringern</string>
+    <string name="s_increase">Erhöhen</string>
+    <string name="e_member_limit_failed">Das Mitgliederlimit konnte nicht geändert werden. Bitte erneut versuchen.</string>
+    <string name="e_family_full_approve">Die Familie ist voll. Erhöhe das Mitgliederlimit oder warte, bis jemand geht — die Anfrage bleibt bestehen.</string>
+    <string name="e_family_full_join">Diese Familie ist derzeit voll. Bitte sie, Platz zu schaffen, und versuche den Code dann erneut.</string>
+    <string name="s_reports">Meldungen</string>
+    <string name="s_reported_by">%1$s hat %2$s gemeldet</string>
+    <string name="s_mark_as_handled">Als erledigt markieren</string>
+    <string name="e_resolve_report_failed">Das konnte nicht als erledigt markiert werden. Bitte erneut versuchen.</string>
+    <string name="s_if_the_problem_is_the_owner">Wenn das Problem der Besitzer ist</string>
+    <string name="s_operator_published_contact">Der Betreiber dieses Servers hat diesen Kontakt veröffentlicht.</string>
 </resources>

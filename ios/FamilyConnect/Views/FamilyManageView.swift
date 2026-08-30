@@ -62,6 +62,7 @@ struct FamilyManageView: View {
             if session.isOwner {
                 requestsSection
                 inviteSection
+                reportsSection
                 policySection
                 capSection
                 if let family = settingsModel.family {
@@ -231,6 +232,23 @@ struct FamilyManageView: View {
                 guard newPolicy != settingsModel.family?.joinPolicy else { return }
                 setPolicy(newPolicy)
             })
+    }
+
+    /// The owner's moderation inbox.
+    ///
+    /// A link rather than an inline list: a report carries a whole frozen
+    /// message body, and an owner with several of them would push the
+    /// invite code and the policy controls off the screen.
+    private var reportsSection: some View {
+        Section {
+            NavigationLink {
+                ReportInboxView()
+            } label: {
+                Label("Reports", systemImage: "flag")
+            }
+        } footer: {
+            Text("Members can report a message or a person to you.")
+        }
     }
 
     /// The operator's ceiling — the most this server lets ANY family hold.

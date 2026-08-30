@@ -106,6 +106,8 @@ class ChatViewModelTest {
     private companion object {
         const val ME = 7L
         const val PEER = 9L
+        /** A third member, so a block can be about one person and not the set. */
+        const val OTHER = 12L
         const val CHAT = 42L
         val ZONE: ZoneOffset = ZoneOffset.UTC
 
@@ -769,6 +771,41 @@ class ChatViewModelTest {
         runCurrent()
 
         assertThat(chatApi.postedReads).containsExactly(CHAT to 31L)
+        itemsSubscription.cancel()
+    }
+
+    /**
+     * The read marker runs THROUGH a blocked member's messages.
+     *
+     * A marker parked below the hidden row would leap forward the moment a
+     * third member posted, and that leap is a repeatable oracle for the
+     * blocked person watching the other end — reason (c) in
+     * docs/protocol.md's "It follows that the server still DELIVERS",
+     * rebuilt by the client one layer above the server.
+     *
+     * The blocked member sends LAST, which is the only arrangement that
+     * can catch this: with an ordinary message on top, the marker reaches
+     * the right answer through it and a client that skipped hidden rows
+     * would still look correct.
+     */
+    @Test
+    fun theReadMarkerRunsThroughABlockedMembersMessages() = runTest(dispatcher) {
+        settings.setBlockedUserIds(setOf(PEER))
+        val viewModel = newViewModel()
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(true)
+        viewModel.setSettled()
+        runCurrent()
+
+        messageRepository.applyServerMessage(messageDto(id = 40, chatId = CHAT, senderId = OTHER), live = false)
+        messageRepository.applyServerMessage(messageDto(id = 41, chatId = CHAT, senderId = PEER), live = false)
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+
+        // 41, the hidden one — not 40.
+        assertThat(chatApi.postedReads).contains(CHAT to 41L)
         itemsSubscription.cancel()
     }
 
