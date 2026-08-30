@@ -429,16 +429,21 @@ struct MacMessageRow: View {
         // onto the Mac that nobody asked for.
         if isOtherMember {
             Divider()
-            Button("Report…") { onReport() }
-            if coordinator.blockedUserIDs.contains(message.senderID) {
-                Button("Unblock") {
-                    let userID = message.senderID
-                    Task { await coordinator.unblock(userID: userID) }
-                }
-            } else {
-                Button("Block", role: .destructive) {
-                    let userID = message.senderID
-                    Task { await coordinator.block(userID: userID) }
+            // Grouped under Safety, matching the phone and the roster. A
+            // native submenu here, unlike iOS's paged custom panel: an
+            // AppKit context menu nests on its own.
+            Menu("Safety") {
+                Button("Report…") { onReport() }
+                if coordinator.blockedUserIDs.contains(message.senderID) {
+                    Button("Unblock") {
+                        let userID = message.senderID
+                        Task { await coordinator.unblock(userID: userID) }
+                    }
+                } else {
+                    Button("Block", role: .destructive) {
+                        let userID = message.senderID
+                        Task { await coordinator.block(userID: userID) }
+                    }
                 }
             }
         }

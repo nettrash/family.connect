@@ -150,6 +150,11 @@ struct MessageContextMenu: View {
     var onReport: () -> Void = {}
     var onBlock: () -> Void = {}
     var onUnblock: () -> Void = {}
+    /// Which page to draw, owned by the caller so the panel's placement
+    /// and its contents cannot disagree.
+    var page: Page = .main
+    /// Ask the caller to change pages.
+    var onPage: (Page) -> Void = { _ in }
 
     enum BlockState { case blocked, notBlocked }
 
@@ -162,23 +167,44 @@ struct MessageContextMenu: View {
     /// `(n - 1)` hairline term was exact only by that accident. Appending
     /// anything after Share broke it two ways at once, a missing divider
     /// (1pt, invisible) and a stale row count (45pt, not).
-    private enum Item: Hashable { case reply, edit, copy, share, report, block, unblock }
+    private enum Item: Hashable { case reply, edit, copy, share, safety, back, report, block, unblock }
+
+    /// Which page the menu is showing.
+    ///
+    /// HOISTED to the caller rather than held here, and that is the same
+    /// rule the size/initializer pair already follows: the overlay places
+    /// the panel from `size(...)` BEFORE this view lays out, so a page it
+    /// cannot see is a panel placed for one row count and drawn with
+    /// another.
+    enum Page: Hashable { case main, safety }
 
     private static func items(
-        canReply: Bool, canEdit: Bool, canCopy: Bool, canReport: Bool, blockState: BlockState?
+        canReply: Bool, canEdit: Bool, canCopy: Bool, canReport: Bool,
+        blockState: BlockState?, page: Page
     ) -> [Item] {
-        var items: [Item] = []
-        if canReply { items.append(.reply) }
-        if canEdit { items.append(.edit) }
-        if canCopy { items.append(.copy) }
-        items.append(.share)
-        if canReport { items.append(.report) }
-        switch blockState {
-        case .blocked: items.append(.unblock)
-        case .notBlocked: items.append(.block)
-        case nil: break
+        let hasSafety = canReport || blockState != nil
+        switch page {
+        case .main:
+            var items: [Item] = []
+            if canReply { items.append(.reply) }
+            if canEdit { items.append(.edit) }
+            if canCopy { items.append(.copy) }
+            items.append(.share)
+            if hasSafety { items.append(.safety) }
+            return items
+        case .safety:
+            // `back` first: on a page reached by a tap, the way out is the
+            // first thing to find, and it keeps the two destructive rows
+            // away from where the finger already was.
+            var items: [Item] = [.back]
+            if canReport { items.append(.report) }
+            switch blockState {
+            case .blocked: items.append(.unblock)
+            case .notBlocked: items.append(.block)
+            case nil: break
+            }
+            return items
         }
-        return items
     }
 
     private static let rowHeight: CGFloat = 44
@@ -197,12 +223,13 @@ struct MessageContextMenu: View {
         canEdit: Bool = false,
         canCopy: Bool = true,
         canReport: Bool = false,
-        blockState: BlockState? = nil
+        blockState: BlockState? = nil,
+        page: Page = .main
     ) -> CGSize {
         let n = CGFloat(
             items(
                 canReply: canReply, canEdit: canEdit, canCopy: canCopy,
-                canReport: canReport, blockState: blockState
+                canReport: canReport, blockState: blockState, page: page
             ).count)
         return CGSize(width: menuWidth, height: rowHeight * n + (n - 1))
     }
@@ -210,7 +237,7 @@ struct MessageContextMenu: View {
     var body: some View {
         let items = Self.items(
             canReply: canReply, canEdit: canEdit, canCopy: canCopy,
-            canReport: canReport, blockState: blockState)
+            canReport: canReport, blockState: blockState, page: page)
         return VStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element) { index, item in
                 self.row(for: item)
@@ -244,6 +271,14 @@ struct MessageContextMenu: View {
             // "Save Video" put it in the library, and "Save to Files" puts
             // it anywhere else. A second row would be the same action.
             row("Share", systemImage: "square.and.arrow.up", action: onShare)
+        case .safety:
+            // Groups Report and Block one level down. The label is a
+            // NOUN for the area rather than either verb, so neither
+            // action's name is visible until it opens — the App Review
+            // notes have to say where these live (docs/appstore.md).
+            row("Safety", systemImage: "shield", action: { onPage(.safety) })
+        case .back:
+            row("Back", systemImage: "chevron.backward", action: { onPage(.main) })
         case .report:
             row("Report…", systemImage: "exclamationmark.bubble", action: onReport)
         case .block:

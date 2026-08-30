@@ -272,6 +272,9 @@ struct ConversationView: View {
     /// nil = no picker. Set/cleared inside withAnimation so the capsule
     /// springs in and out.
     @State private var reactionPickerID: String?
+    /// Which page the message menu is showing. Owned here, not by the
+    /// menu, so `MessageContextMenu.size` and the menu itself agree.
+    @State private var menuPage: MessageContextMenu.Page = .main
     /// The member a report sheet is open for, if any.
     @State private var reportTarget: ReportTarget?
     /// The bubble the "+" full emoji picker sheet is up for.
@@ -2108,7 +2111,8 @@ struct ConversationView: View {
                             canEdit: canEdit,
                             canCopy: canCopy,
                             canReport: canReport,
-                            blockState: blockState)
+                            blockState: blockState,
+                            page: menuPage)
                         floatingMenu(
                             size: menuSize,
                             over: rect,
@@ -2172,7 +2176,9 @@ struct ConversationView: View {
                                     dismissReactionPicker()
                                     let userID = message.senderID
                                     Task { await coordinator.unblock(userID: userID) }
-                                })
+                                },
+                                page: menuPage,
+                                onPage: { menuPage = $0 })
                         }
                     }
                 }
@@ -2280,6 +2286,10 @@ struct ConversationView: View {
         withAnimation(.spring(duration: 0.3, bounce: 0.25)) {
             reactionPickerID = nil
         }
+        // Every menu opens on its first page. Without this a reader who
+        // left it on Safety last time reopens into Safety on an unrelated
+        // message, one tap from Block.
+        menuPage = .main
     }
 
     // MARK: - Actions

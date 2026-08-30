@@ -440,6 +440,7 @@ struct FamilyManageView: View {
                             }
                         }
                         Divider()
+                        // Grouped under Safety, matching the message menu.
                         // Report and Block are NOT owner actions, and this
                         // is the one place in this screen where that
                         // matters: the whole point of them is a member with
@@ -453,23 +454,27 @@ struct FamilyManageView: View {
                         // looks for what they can do about a PERSON — and
                         // it is the only way to report one without singling
                         // out a message of theirs.
-                        Button {
-                            reportingMember = member
-                        } label: {
-                            Label("Report…", systemImage: "flag")
-                        }
-                        if coordinator.blockedUserIDs.contains(member.id) {
+                        Menu {
                             Button {
-                                setBlocked(member, blocked: false)
+                                reportingMember = member
                             } label: {
-                                Label("Unblock", systemImage: "lock.open")
+                                Label("Report…", systemImage: "flag")
                             }
-                        } else {
-                            Button(role: .destructive) {
-                                setBlocked(member, blocked: true)
-                            } label: {
-                                Label("Block", systemImage: "nosign")
+                            if coordinator.blockedUserIDs.contains(member.id) {
+                                Button {
+                                    setBlocked(member, blocked: false)
+                                } label: {
+                                    Label("Unblock", systemImage: "lock.open")
+                                }
+                            } else {
+                                Button(role: .destructive) {
+                                    setBlocked(member, blocked: true)
+                                } label: {
+                                    Label("Block", systemImage: "nosign")
+                                }
                             }
+                        } label: {
+                            Label("Safety", systemImage: "shield")
                         }
                     }
                 }

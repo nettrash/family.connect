@@ -375,9 +375,8 @@
     <string name="e_resolve_report_failed">Није успело означавање као решено. Покушајте поново.</string>
     <string name="s_if_the_problem_is_the_owner">Ако је проблем сам власник</string>
     <string name="s_operator_published_contact">Оператор овог сервера објавио је овај контакт.</string>
-    <string name="s_report_member">Пријави %1$s</string>
-    <string name="s_block_member">Блокирај %1$s</string>
-    <string name="s_unblock_member">Одблокирај %1$s</string>
     <string name="s_report_disclosure_person">Власник породице ће сазнати да сте пријавили овог члана.</string>
     <string name="s_reports_empty">Чланови могу да вам пријаве поруку или особу.</string>
+    <string name="s_safety">Безбедност</string>
+    <string name="s_safety_for">Безбедносне опције за %1$s</string>
 </resources>

@@ -122,6 +122,8 @@ import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material3.LocalContentColor
 import me.nettrash.familyconnect.ui.components.ReportSheet
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.foundation.layout.Box
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -683,34 +685,58 @@ fun FamilyAdminScreen(
                                     // the only way to report one without
                                     // singling out a message of theirs.
                                     if (member.userId != myUserId) {
-                                        IconButton(
-                                            onClick = { reportTarget = member },
-                                            enabled = !state.busy,
-                                        ) {
-                                            Icon(
-                                                Icons.Outlined.Flag,
-                                                contentDescription = stringResource(
-                                                    R.string.s_report_member, member.displayName,
-                                                ),
-                                            )
+                                        // One Safety button opening a menu,
+                                        // matching the message menu and both
+                                        // Apple platforms. On a roster row it
+                                        // also keeps the destructive action
+                                        // off the row itself, where Birthday
+                                        // and Remove sit a few points away.
+                                        var safetyOpen by remember(member.userId) {
+                                            mutableStateOf(false)
                                         }
                                         val isBlocked = member.userId in blockedUserIds
-                                        IconButton(
-                                            onClick = { viewModel.setBlocked(member.userId, !isBlocked) },
-                                            enabled = !state.busy,
-                                        ) {
-                                            Icon(
-                                                if (isBlocked) Icons.Outlined.LockOpen else Icons.Outlined.Block,
-                                                contentDescription = stringResource(
-                                                    if (isBlocked) R.string.s_unblock_member else R.string.s_block_member,
-                                                    member.displayName,
-                                                ),
-                                                tint = if (isBlocked) {
-                                                    LocalContentColor.current
-                                                } else {
-                                                    MaterialTheme.colorScheme.error
-                                                },
-                                            )
+                                        Box {
+                                            IconButton(
+                                                onClick = { safetyOpen = true },
+                                                enabled = !state.busy,
+                                            ) {
+                                                Icon(
+                                                    Icons.Outlined.Shield,
+                                                    contentDescription = stringResource(
+                                                        R.string.s_safety_for, member.displayName,
+                                                    ),
+                                                )
+                                            }
+                                            DropdownMenu(
+                                                expanded = safetyOpen,
+                                                onDismissRequest = { safetyOpen = false },
+                                            ) {
+                                                DropdownMenuItem(
+                                                    text = { Text(stringResource(R.string.s_report_ellipsis)) },
+                                                    onClick = {
+                                                        safetyOpen = false
+                                                        reportTarget = member
+                                                    },
+                                                )
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            text = stringResource(
+                                                                if (isBlocked) R.string.s_unblock else R.string.s_block,
+                                                            ),
+                                                            color = if (isBlocked) {
+                                                                LocalContentColor.current
+                                                            } else {
+                                                                MaterialTheme.colorScheme.error
+                                                            },
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        safetyOpen = false
+                                                        viewModel.setBlocked(member.userId, !isBlocked)
+                                                    },
+                                                )
+                                            }
                                         }
                                     }
                                 if (isOwner) {

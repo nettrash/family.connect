@@ -442,13 +442,22 @@ struct MacFamilyView: View {
                         // member row is where somebody looks for what they
                         // can do about a PERSON — and it is the only way to
                         // report one without singling out a message.
-                        Button("Report…") { reportingMember = member }
-                        if coordinator.blockedUserIDs.contains(member.userID) {
-                            Button("Unblock") { setBlocked(member, blocked: false) }
-                        } else {
-                            Button("Block") { setBlocked(member, blocked: true) }
-                                .foregroundStyle(.red)
+                        // A Menu rather than two buttons, matching the
+                        // message menu — and on a roster row it also keeps
+                        // the destructive action off the row itself, where
+                        // Message sits a few points away.
+                        Menu("Safety") {
+                            Button("Report…") { reportingMember = member }
+                            if coordinator.blockedUserIDs.contains(member.userID) {
+                                Button("Unblock") { setBlocked(member, blocked: false) }
+                            } else {
+                                Button("Block", role: .destructive) {
+                                    setBlocked(member, blocked: true)
+                                }
+                            }
                         }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
                     }
                     // Owner tools. The birthday editor is offered on
                     // EVERY row, the owner's own included, because the

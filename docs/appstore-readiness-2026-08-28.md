@@ -6,6 +6,60 @@ should-fix. 148 raw findings → 114 verified → 111 survived, 3 refuted. Skept
 final severity is the *lowest* any verifier landed on.
 Every item below is tracked as a GitHub issue under the [v1.0 — first App Store release](https://github.com/nettrash/family.connect/milestone/2) milestone.
 
+
+---
+## Status update — 2026-08-30
+
+**Blocker #1 (Report/Block) is CLOSED IN CODE.** The other four blockers are untouched and still
+gate submission. The verdict below is the 2026-08-28 audit as it stood; everything in it is kept
+as the record of that date, and this section is the only thing that supersedes it.
+
+Revised verdict: **NOT READY — 4 blockers remain, all paperwork.** The one blocker that needed
+code is done, on all three platforms plus the server. The critical path's "DAYS 1-3 IN PARALLEL —
+THE LONG POLE" is complete; what is left is the policy/support pages, the App Privacy answers, the
+screenshots, and the stale `appstore.md`.
+
+### What shipped for #1
+Built against the protocol first (`docs/protocol.md` amended before each change, and committed):
+
+- **Block** — from a message menu AND from a member roster row, on iOS, macOS and Android.
+  Deliberately NOT owner-gated on any surface: the person a member needs to block may BE the
+  owner. Client-side hiding plus server-side suppression of pushes, calls and the direct chat.
+- **Report** — on a message and on a person, four fixed reasons, with a mandatory disclosure
+  saying what the owner will see. The person-level report is reachable only from the roster,
+  which is why the roster entry point mattered.
+- **The owner's inbox** — `GET /families/reports` listed and resolvable on all three platforms,
+  drawn even when empty so an owner learns it exists before the first report arrives.
+- **`support_contact`** — shown on the report sheet as the escalation path for the case the
+  feature is weakest at: a report about the owner never reaches the owner.
+- Plus the three family controls the work depended on: a per-family member cap, a `closed` join
+  policy, and owner hand-off on leave.
+
+### Verified by adversarial audit, not by assertion
+A 6-agent audit was run specifically to falsify the claim that #1 was complete. It found **five
+blocks-review defects that had been missed**, all since fixed:
+
+1. `calls.rs::add_candidate` relayed a suppressed call's live ICE candidates to the blocker.
+2. `handlers_call::end` fanned `call_end` to both parties — `finish_call` had the correct filter
+   and the comment explaining it a few lines away; the client-initiated path never got it.
+3. iOS `loadBlocksFromStore()` had zero call sites, so an offline cold start drew blocked content.
+4. iOS block/report errors rendered only inside the owner-gated join-requests section, so the
+   non-owner who most needs them saw nothing on failure.
+5. Android hidden rows armed no link-preview fetch — the third-party-log oracle the protocol
+   forbids, closed on iOS and not ported.
+
+Test state at the time of writing: server 201 unit + 290 integration, iOS 648, Android 813, all
+four targets building, both string catalogues complete in nine languages.
+
+### Still open, and deliberately not done
+- The `[registration]` server switch (#1's own text marks it optional).
+- `Report.message_id` is decoded on both platforms but no client offers the protocol's "jump to
+  the message"; the frozen excerpt is always drawn, which is the part that matters.
+- The review notes still need the containment argument and must stop advertising "Registration is
+  also fully open" — that is **#4**, not #1.
+- Guideline 1.2's "published contact information" leg needs **#2**, and an operator has to
+  actually configure `support_contact`.
+
 ---
 ## Verdict
 No — neither platform can be submitted today, but the reason is almost entirely paperwork and one missing feature, not the binary. The app itself is in genuinely good shape: both shipping configurations build clean, 615 unit tests pass on iOS and 607 on macOS, both archives sign and pass Xcode's -validate-for-store, the server is live with a working coturn relay, and account deletion is fully implemented despite what your own doc says. What is missing is everything that surrounds the binary: there is no privacy policy or support page anywhere for this app (both are required App Store Connect fields, so the submission literally cannot be completed), no screenshots, no Report/Block anywhere in a messenger that ships against an openly-registerable server you operate, and ios/docs/appstore.md is a stale draft describing a text-only app with literal [DEMO_USER] placeholders in the review notes. iOS is roughly 3-5 working days from submittable, with the Report/Block work the long pole. macOS is further out and differently blocked: it has no listing copy, no Mac screenshots, no macOS release procedure documented anywhere, plus two one-line entitlement bugs (push silently disabled, Save… a dead button) — my recommendation is to hold macOS and ship iOS first.
@@ -174,11 +228,13 @@ Both archives CAN be produced today, and both pass Xcode's own `-validate-for-st
 </details>
 
 ---
-## Blockers (5)
+## Blockers (5 — 1 resolved, 4 remain)
 These gate submission. Ranked hardest first.
 
-### 1. No way to report content or block a member, in a UGC messenger on an openly-registerable server you operate — [#1](https://github.com/nettrash/family.connect/issues/1)
-**Platform:** both · **Effort:** multiple days
+### 1. ~~No way to report content or block a member~~ — RESOLVED 2026-08-30 — [#1](https://github.com/nettrash/family.connect/issues/1)
+**Platform:** both · **Effort:** multiple days · **Status: code complete on iOS, macOS, Android and the server.**
+See "Status update — 2026-08-30" above. The finding below is the 2026-08-28 record and is left
+unedited; closing the issue still needs #4's review notes and #2's published contact.
 
 **What.** There is no Report, no Block, no mute and no content filtering anywhere in the client or the protocol. Repo-wide greps over ios/FamilyConnect (including all 447 keys of Localizable.xcstrings) and server/src/app.rs's full 44-route table return nothing; the only moderation control is owner-only member removal (ios/FamilyConnect/Views/FamilyManageView.swift:281-291, gated on `session.isOwner, member.role != "owner"`). A non-owner being harassed can only leave the family (SettingsView.swift:297) or delete their account, and the family owner cannot be removed by anyone. Registration on the shipped default server is completely ungated (server/src/handlers_auth.rs:114-155 — no invite, no email, no allowlist, no config switch), and your own review script hands the reviewer an instant-join invite code into a seeded family that already contains other people's message history.
 
@@ -376,7 +432,9 @@ TONIGHT (2-3 hours, all independent of everything else): (1) Rewrite ios/docs/ap
 
 DAY 1 — THE POLICY, WHICH GATES THE MOST: write and publish frontend/assets/appstore/familyconnect/{privacy,support}.html on nettrash.me (model them on scan/privacy.html), add the home.rs card, and add a Privacy Policy link row to SettingsView and MacSettingsView. Nothing downstream can start until this text exists: the App Store Connect record cannot be created without the URL, the App Privacy questionnaire answers are derived from the same decisions, and the age-rating answers ride along. Finish the day by filling the App Privacy questionnaire (the corrected 7-type Linked=true list, not appstore.md:101's two types) and mirroring it into PrivacyInfo.xcprivacy.
 
-DAYS 1-3 IN PARALLEL — THE LONG POLE: build Report and Block. This is independent code and should start the same morning as the policy work, not after it. Minimum that clears Guideline 1.2's two code-only legs: a per-member block (server-side mute so a blocked member's messages and calls never arrive, plus client-side hide) reachable from the member roster and from a message, and a Report action on a message and on a member posting to a new endpoint. Both surfaces need the iOS and macOS menus. Budget 2-3 days including tests and the Android-side protocol note.
+DAYS 1-3 IN PARALLEL — THE LONG POLE: **DONE 2026-08-30 — see the status update at the top.** Built on all three
+platforms plus the server, and adversarially audited afterwards (five missed defects found and fixed).
+The path below is left as written; what it describes now exists. Original text: build Report and Block. This is independent code and should start the same morning as the policy work, not after it. Minimum that clears Guideline 1.2's two code-only legs: a per-member block (server-side mute so a blocked member's messages and calls never arrive, plus client-side hide) reachable from the member roster and from a message, and a Report action on a message and on a member posting to a new endpoint. Both surfaces need the iOS and macOS menus. Budget 2-3 days including tests and the Android-side protocol note.
 
 DAY 4 — AFTER THE UI IS FINAL: screenshots. They have to come last because adding Report/Block changes the menus you are photographing, and because you want the seeded demo family to be the content in frame. Capture the 6.9" iPhone set (iPhone 16 Pro Max or 16 Plus — NOT iPhone 16 Pro, which is the 6.3" class) and, if you keep TARGETED_DEVICE_FAMILY = "1,2", the 13" iPad set on iPad Pro 13-inch (M4). If you decide tonight to drop iPad, this is a half-day instead of a day.
 

@@ -107,27 +107,47 @@ struct BlockPresentationTests {
             MessageContextMenu.size(canReply: true, canEdit: true, canCopy: true).height
                 == height(4))
 
-        // Somebody else's: Reply + Copy + Share + Report + Block. FIVE is
-        // the maximum — `canEdit` needs the message to be the reader's own
-        // and report/block need it not to be, so Edit can never coexist
-        // with them.
+        // Somebody else's, MAIN page: Reply + Copy + Share + Safety. The
+        // two moderation rows now live one level down, so this is FOUR
+        // however many of them there are.
         #expect(
             MessageContextMenu.size(
                 canReply: true, canCopy: true, canReport: true, blockState: .notBlocked
-            ).height == height(5))
-        // Already blocked: Unblock takes Block's slot, not an extra one.
+            ).height == height(4))
         #expect(
             MessageContextMenu.size(
                 canReply: true, canCopy: true, canReport: true, blockState: .blocked
-            ).height == height(5))
-        // Report without a block state, and a block state without report,
-        // are each one row.
+            ).height == height(4))
+        // Report alone and a block state alone each still raise Safety,
+        // and each is still one row on this page.
         #expect(
             MessageContextMenu.size(canReply: true, canCopy: true, canReport: true).height
                 == height(4))
         #expect(
             MessageContextMenu.size(canReply: true, canCopy: true, blockState: .notBlocked).height
                 == height(4))
+
+        // The SAFETY page: Back + Report + Block. Its height is what the
+        // overlay places the panel by once the page changes, so it is
+        // pinned here for the same reason the main page is — a row the
+        // body draws and `size` does not count mis-places the whole panel
+        // with no error anywhere.
+        #expect(
+            MessageContextMenu.size(
+                canReply: true, canCopy: true, canReport: true,
+                blockState: .notBlocked, page: .safety
+            ).height == height(3))
+        // Unblock takes Block's slot, not an extra one.
+        #expect(
+            MessageContextMenu.size(
+                canReply: true, canCopy: true, canReport: true,
+                blockState: .blocked, page: .safety
+            ).height == height(3))
+        // And with only one of the two available, the page is Back + it.
+        #expect(
+            MessageContextMenu.size(
+                canReply: true, canCopy: true, canReport: true, page: .safety
+            ).height == height(2))
         // The width never varies — a truncated destructive row is the one
         // place somebody must be certain what they are pressing.
         #expect(MessageContextMenu.size(canReply: true).width == 220)

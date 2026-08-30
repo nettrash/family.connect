@@ -293,6 +293,8 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.foundation.text.selection.SelectionContainer
 import me.nettrash.familyconnect.ui.components.ReportSheet
 import androidx.compose.runtime.mutableStateSetOf
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 
 /**
  * The long-pressed message plus its bubble's window bounds — the
@@ -1553,6 +1555,10 @@ private fun ReactionPickerPopup(
         var containerSize by remember { mutableStateOf(IntSize.Zero) }
         var capsuleSize by remember { mutableStateOf(IntSize.Zero) }
         var menuSize by remember { mutableStateOf(IntSize.Zero) }
+    // Which page the menu shows. Reset with the popup, so a reader who
+    // left it on Safety does not reopen into Safety on another message,
+    // one tap from Block.
+    var onSafetyPage by remember { mutableStateOf(false) }
         val density = LocalDensity.current
         val margin = with(density) { 12.dp.roundToPx() }
         val gap = with(density) { 8.dp.roundToPx() }
@@ -1634,6 +1640,18 @@ private fun ReactionPickerPopup(
                 exit = fadeOut() + scaleOut(),
                 modifier = Modifier.offset { IntOffset(menuX, menuY) },
             ) {
+                // Two pages in the same measured panel: Safety swaps the
+                // rows, `onSizeChanged` re-measures, and the placement
+                // arithmetic above follows for free.
+                if (onSafetyPage) {
+                    MessageSafetyMenu(
+                        isSenderBlocked = target.item.entity.senderId in blockedUserIds,
+                        onBack = { onSafetyPage = false },
+                        onReport = { exitThen(onReport) },
+                        onToggleBlock = { exitThen(onToggleBlock) },
+                        modifier = Modifier.onSizeChanged { menuSize = it },
+                    )
+                } else {
                 MessageContextMenu(
                     onReply = { exitThen(onReply) },
                     onEdit = { exitThen(onEdit) },
@@ -1670,10 +1688,9 @@ private fun ReactionPickerPopup(
                         target.item.entity.senderId != myUserId &&
                         target.item.entity.senderId != assistantUserId &&
                         !isAiChat,
-                    isSenderBlocked = target.item.entity.senderId in blockedUserIds,
-                    onReport = onReport,
-                    onToggleBlock = onToggleBlock,
+                    showSafety = { onSafetyPage = true },
                 )
+                }
             }
         }
     }
@@ -1797,10 +1814,8 @@ private fun MessageContextMenu(
      * (`cannot_report_self`) and blocking yourself likewise.
      */
     canModerate: Boolean = false,
-    /** Whether the sender is ALREADY blocked, so the row says Unblock. */
-    isSenderBlocked: Boolean = false,
-    onReport: () -> Unit = {},
-    onToggleBlock: () -> Unit = {},
+    /** Open the Safety page. */
+    showSafety: () -> Unit = {},
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -1853,31 +1868,67 @@ private fun MessageContextMenu(
                 onClick = onShare,
             )
             if (canModerate) {
-                // Last, and destructive-coloured: the two rows somebody
-                // must be certain they meant to press.
+                // Report and Block live one level down, under Safety —
+                // matching iOS and macOS. The panel MEASURES itself here
+                // (Modifier.onSizeChanged at the popup), so swapping the
+                // rows needs no arithmetic; iOS has to compute both pages'
+                // heights by hand.
                 MessageContextMenuItem(
-                    label = stringResource(R.string.s_report_ellipsis),
-                    icon = Icons.Outlined.Flag,
-                    onClick = onReport,
-                    tint = MaterialTheme.colorScheme.error,
-                )
-                MessageContextMenuItem(
-                    label = if (isSenderBlocked) {
-                        stringResource(R.string.s_unblock)
-                    } else {
-                        stringResource(R.string.s_block)
-                    },
-                    icon = if (isSenderBlocked) Icons.Outlined.LockOpen else Icons.Outlined.Block,
-                    onClick = onToggleBlock,
-                    // Unblocking is not destructive — it gives something
-                    // back — so only the Block direction is tinted.
-                    tint = if (isSenderBlocked) {
-                        LocalContentColor.current
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    },
+                    label = stringResource(R.string.s_safety),
+                    icon = Icons.Outlined.Shield,
+                    onClick = showSafety,
                 )
             }
+        }
+    }
+}
+
+/** The Safety page of [MessageContextMenu]: Report and Block, plus the way back. */
+@Composable
+private fun MessageSafetyMenu(
+    isSenderBlocked: Boolean,
+    onBack: () -> Unit,
+    onReport: () -> Unit,
+    onToggleBlock: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 3.dp,
+        shadowElevation = 6.dp,
+        modifier = modifier.width(IntrinsicSize.Max),
+    ) {
+        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+            // First, so the way out is the first thing to find and the two
+            // destructive rows are not where the finger already was.
+            MessageContextMenuItem(
+                label = stringResource(R.string.s_back),
+                icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                onClick = onBack,
+            )
+            MessageContextMenuItem(
+                label = stringResource(R.string.s_report_ellipsis),
+                icon = Icons.Outlined.Flag,
+                onClick = onReport,
+                tint = MaterialTheme.colorScheme.error,
+            )
+            MessageContextMenuItem(
+                label = if (isSenderBlocked) {
+                    stringResource(R.string.s_unblock)
+                } else {
+                    stringResource(R.string.s_block)
+                },
+                icon = if (isSenderBlocked) Icons.Outlined.LockOpen else Icons.Outlined.Block,
+                onClick = onToggleBlock,
+                // Unblocking is not destructive — it gives something
+                // back — so only the Block direction is tinted.
+                tint = if (isSenderBlocked) {
+                    LocalContentColor.current
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
         }
     }
 }
