@@ -403,7 +403,27 @@ private struct JoinRequestsSheet: View {
 /// One chat row: initials avatar, title, preview, relative time, unread
 /// badge. Stock components + semantic colors throughout.
 struct ChatRowView: View {
+    @Environment(ChatSyncCoordinator.self) private var coordinator
     let chat: ChatEntity
+
+    /// The chat-list preview, with a blocked sender's last message replaced
+    /// by the placeholder.
+    ///
+    /// The COUNT is deliberately untouched: in the family chat a blocked
+    /// member's message still moves `unreadCount` and may still be the last
+    /// message, because the count is the other half of the read marker and
+    /// projecting one without the other desynchronises them.
+    private func previewText(for chat: ChatEntity) -> String {
+        if let sender = chat.lastMessageSenderID,
+            sender != coordinator.currentUserID,
+            coordinator.blockedUserIDs.contains(sender)
+        {
+            return String(localized: "Hidden — blocked member")
+        }
+        // `??` makes this a String, and Text(String) is verbatim — the
+        // fallback has to be localized by hand.
+        return chat.lastMessagePreview ?? String(localized: "No messages yet")
+    }
     /// Profile-picture version of the direct chat's peer; 0 for the
     /// family chat and for anyone without a picture.
     var peerAvatarVersion: Int64 = 0
@@ -425,7 +445,13 @@ struct ChatRowView: View {
                     .lineLimit(1)
                 // `??` makes this a String, and Text(String) is verbatim —
                 // the fallback has to be localized by hand.
-                Text(chat.lastMessagePreview ?? String(localized: "No messages yet"))
+                // A preview from a blocked sender draws the placeholder
+                // and no sender name — protocol.md settles this in the
+                // `GET /chats` row, and it is the app's most-visited
+                // screen, so leaving it unmasked defeats the block outright.
+                // NOT revealable from the list: the peek belongs to the
+                // thread, and no gesture is wanted here.
+                Text(previewText(for: chat))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)

@@ -15,6 +15,32 @@ import Testing
 @Suite("Block presentation")
 struct BlockPresentationTests {
 
+    // MARK: - Board notes
+
+    /// The note is the one object where the CONTENT goes as well as the
+    /// author, so this pins the predicate the two boards draw from.
+    @Test("a blocked member's note is hidden; nobody else's is")
+    func blockedAuthorsNoteIsHidden() {
+        let me: Int64 = 7
+        #expect(MessagePresentation.isNoteHiddenByBlock(
+            authorID: 11, blockedUserIDs: [11], currentUserID: me))
+        // An unblocked author, with somebody else blocked: the block must
+        // be about the AUTHOR and not merely about the set being non-empty.
+        #expect(!MessagePresentation.isNoteHiddenByBlock(
+            authorID: 12, blockedUserIDs: [11], currentUserID: me))
+        #expect(!MessagePresentation.isNoteHiddenByBlock(
+            authorID: 12, blockedUserIDs: [], currentUserID: me))
+    }
+
+    /// Blocking yourself is refused by the server, so this is a guard
+    /// against a corrupt store rather than a real case — but a board that
+    /// hid your own notes would be the most alarming possible bug.
+    @Test("your own note is never hidden, even if the set says otherwise")
+    func ownNoteIsNeverHidden() {
+        #expect(!MessagePresentation.isNoteHiddenByBlock(
+            authorID: 7, blockedUserIDs: [7], currentUserID: 7))
+    }
+
     // MARK: - Quote masking
 
     /// The two quote levels are INDEPENDENTLY blockable, and the shape that

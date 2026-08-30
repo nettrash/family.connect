@@ -305,6 +305,12 @@ struct ConversationView: View {
     /// Whether there is somebody to ring from here.
     private var canCall: Bool {
         session.callsEnabled && chat?.kind == "direct" && chat?.peerUserID != nil
+            // The blocker calling somebody they blocked is refused with
+            // `blocked`, so the button does not offer it. Defence in depth
+            // behind the direct-chat prune: if the prune landed this is
+            // unreachable, and if it did not this stops the one visible
+            // refusal.
+            && !(chat?.peerUserID.map { coordinator.blockedUserIDs.contains($0) } ?? false)
     }
 
     private func startCall() {
@@ -841,7 +847,8 @@ struct ConversationView: View {
                                 senderAvatarVersion: avatarVersion(for: message.senderID),
                                 isRead: MessagePresentation.isRead(
                                     message,
-                                    othersReadUpTo: chat?.othersReadUpTo ?? 0),
+                                    othersReadUpTo: chat?.othersReadUpTo ?? 0,
+                                    isFamilyChat: isFamilyChat),
                                 reactionChips: MessagePresentation.reactionChips(
                                     message.reactions,
                                     currentUserID: currentUserID),

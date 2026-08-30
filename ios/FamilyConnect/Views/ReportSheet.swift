@@ -63,7 +63,7 @@ struct ReportSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("Reason", selection: $reason) {
+                    Picker(String(localized: "Reason", comment: "Report sheet: the picker's label"), selection: $reason) {
                         ForEach(ReportReason.allCases) { reason in
                             Text(reason.label).tag(reason)
                         }
@@ -72,7 +72,8 @@ struct ReportSheet: View {
                         .pickerStyle(.inline)
                     #endif
                 } header: {
-                    Text("Why are you reporting \(target.senderName)?")
+                    Text("Why are you reporting \(target.senderName)?",
+                         comment: "Report sheet header; %@ is the member's display name")
                 } footer: {
                     // MANDATORY, and it is a protocol requirement rather
                     // than a nicety: "somebody who reports a message
@@ -90,13 +91,13 @@ struct ReportSheet: View {
                     }
                 }
             }
-            .navigationTitle(Text("Report"))
+            .navigationTitle(Text("Report", comment: "Report sheet title and its confirm button"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Report") { onSubmit(reason) }
+                    Button(String(localized: "Report", comment: "Report sheet title and its confirm button")) { onSubmit(reason) }
                 }
             }
         }

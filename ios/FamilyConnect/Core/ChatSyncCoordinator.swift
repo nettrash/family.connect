@@ -487,6 +487,13 @@ final class ChatSyncCoordinator {
                 // Our own read relayed back (or from another device).
                 chat.myLastReadID = max(chat.myLastReadID, lastReadMessageID)
             } else {
+                // Stored in EVERY chat kind, drawn in only one. In a family
+                // chat this is roster data that no bubble may draw
+                // (docs/protocol.md, "Frames") — `MessagePresentation.isRead`
+                // is the gate, and it takes `isFamilyChat` undefaulted so a
+                // new surface cannot start drawing it by accident. Keeping
+                // the value is deliberate: it is a real fact about the
+                // roster, and dropping it here would only move the question.
                 chat.othersReadUpTo = max(chat.othersReadUpTo, lastReadMessageID)
             }
             saveContext()

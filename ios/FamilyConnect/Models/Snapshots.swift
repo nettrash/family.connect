@@ -487,6 +487,30 @@ nonisolated enum MessagePresentation {
         return blockedUserIDs.contains(message.senderID)
     }
 
+    /// Whether a board note draws as the "Hidden — blocked member" note.
+    ///
+    /// The note is the ONE object where a block hides the content as well
+    /// as the author (docs/protocol.md, "Board"): a note is a piece of
+    /// writing pinned to a shared wall with no bubble to collapse into a
+    /// hidden row, so dropping only the name would hide nothing that
+    /// mattered. Everything a third member can measure stays put — the
+    /// slot, the size, the colour, the tilt — because a note the blocker
+    /// hides still occupies its slot and `board_full` is never projected
+    /// per reader.
+    ///
+    /// Deliberately NOT `isHiddenByBlock` overloaded on a note: the two
+    /// take different arguments and mean different things about content,
+    /// and one name for both invites passing a note where a message is
+    /// meant.
+    static func isNoteHiddenByBlock(
+        authorID: Int64,
+        blockedUserIDs: Set<Int64>,
+        currentUserID: Int64
+    ) -> Bool {
+        guard authorID != currentUserID else { return false }
+        return blockedUserIDs.contains(authorID)
+    }
+
     /// Whether the sender's name caption shows above a bubble.
     ///
     /// Rules: only in the family chat (a direct chat has exactly one other
@@ -520,7 +544,26 @@ nonisolated enum MessagePresentation {
     /// Whether an own message counts as read by someone else: it must be
     /// confirmed (has a server id) and covered by the highest read marker
     /// any other member reported. Pending/failed messages are never read.
-    static func isRead(_ message: MessageSnapshot, othersReadUpTo: Int64) -> Bool {
+    ///
+    /// NEVER TRUE IN THE FAMILY CHAT (docs/protocol.md, "Frames"): a `read`
+    /// frame folds into a displayed "seen" marker only in a DIRECT chat,
+    /// where there is exactly one peer and the marker means one person.
+    /// `othersReadUpTo` is a MAX over every other member, so in a family
+    /// chat the tick means "whoever is furthest ahead has got this far" —
+    /// a sentence about nobody. It has to go for the block to be silent:
+    /// inward `read` frames from a blocked member are not relayed, so that
+    /// max would stop incorporating them, and a tick that slowed down the
+    /// day you blocked somebody draws a per-member ABSENCE on screen.
+    ///
+    /// `isFamilyChat` is deliberately UNDEFAULTED. A default would let a
+    /// new surface draw the family tick by saying nothing, which is exactly
+    /// how this shipped wrong the first time.
+    static func isRead(
+        _ message: MessageSnapshot,
+        othersReadUpTo: Int64,
+        isFamilyChat: Bool
+    ) -> Bool {
+        guard !isFamilyChat else { return false }
         guard let serverID = message.serverID else { return false }
         return serverID <= othersReadUpTo
     }

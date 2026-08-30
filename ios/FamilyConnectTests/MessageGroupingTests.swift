@@ -175,15 +175,28 @@ struct MessageGroupingTests {
     @Test("read = confirmed and covered by the others' marker")
     func readPredicate() {
         let confirmed = Self.snapshot(localID: "s:10", serverID: 10, senderID: 7, at: "2026-08-19T08:00:00Z")
-        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 10))
-        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 99))
-        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 9))
+        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 10, isFamilyChat: false))
+        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 99, isFamilyChat: false))
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 9, isFamilyChat: false))
     }
 
     @Test("pending messages are never read (no serverID yet)")
     func pendingNeverRead() {
         let pending = Self.snapshot(localID: "c:x", serverID: nil, senderID: 7, at: "2026-08-19T08:00:00Z", state: .pending)
-        #expect(!MessagePresentation.isRead(pending, othersReadUpTo: .max))
+        #expect(!MessagePresentation.isRead(pending, othersReadUpTo: .max, isFamilyChat: false))
+    }
+
+    @Test("the family chat NEVER draws a seen tick, however far the marker ran")
+    func familyChatNeverRead() {
+        let confirmed = Self.snapshot(localID: "s:10", serverID: 10, senderID: 7, at: "2026-08-19T08:00:00Z")
+        // The direct-chat answers from `readPredicate`, asked again with the
+        // one argument changed: every one of them flips to false. A `read`
+        // frame is roster data in a family chat and no bubble draws it
+        // (docs/protocol.md, "Frames"), because `othersReadUpTo` is a max
+        // over N members and would quietly stop counting a blocked one.
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 10, isFamilyChat: true))
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 99, isFamilyChat: true))
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: .max, isFamilyChat: true))
     }
 
     // MARK: - Reaction chips

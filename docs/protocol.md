@@ -376,6 +376,16 @@ ceiling (`board_full`) is a fact about the FAMILY and is never projected per rea
 blocker hides still occupies its slot — any quantity a third member can measure must mean the same
 thing for everybody.
 
+A hidden note keeps its slot, its size, its colour and its tilt, and draws the same "Hidden —
+blocked member" placeholder a hidden row does, with no author line under it. It reveals on ONE TAP,
+the same peek a hidden row gets: per note, per device, never on the wire, never stored, and gone on
+the next launch. The reveal is not a nicety here but the only safe answer to the tap, because the
+tap already does something — it opens the note editor, which would put the text on screen that the
+note was hiding, and a client that merely made hidden notes inert would still leak them through
+every other way in. Dragging is unchanged whether a note is hidden or revealed: position is
+everyone's, and a note that could not be tidied because of who wrote it is a difference the blocker
+has to explain to themselves every time they touch the wall.
+
 **A NEW note does notify.** This reverses the original "raise no notification": a board nobody is
 told about is a board nobody reads, and a note pinned to the family wall is exactly the kind of
 thing meant to be seen. Only CREATION notifies. Edits, moves and deletes do not — tidying the wall

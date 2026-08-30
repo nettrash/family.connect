@@ -43,6 +43,11 @@ struct MacMessageRow: View {
     /// sender. The row does not own the sheet: on the Mac it belongs to the
     /// window, not to a row that scrolls away under it.
     var onReport: () -> Void = {}
+    /// This row's sender is blocked. Decided by the conversation through
+    /// `MessagePresentation.isHiddenByBlock`.
+    var isHiddenByBlock: Bool = false
+    var isRevealed: Bool = false
+    var onReveal: () -> Void = {}
     /// Quote peeks, owned by the conversation: the Mac thread renders a
     /// SLIDING SUFFIX that drops old rows while the reader sits at the
     /// bottom, so per-row `@State` would be destroyed in exactly the case
@@ -66,6 +71,12 @@ struct MacMessageRow: View {
     /// Shared preview cache — asking it for a link's state is what starts
     /// the (single, app-wide) fetch for that link.
     @Environment(LinkPreviewLoader.self) private var previewLoader
+    /// Held only so a HIDDEN row can arm the attachment fetch a visible one
+    /// does — the row itself draws no attachments, `MacAttachmentBlock` and
+    /// `MacAlbumStack` do. Optional for the reason the phone's is: the
+    /// non-optional form traps when absent, and this store needs an
+    /// `APIClient` to build.
+    @Environment(AttachmentStore.self) private var attachmentStore: AttachmentStore?
     /// The environment's own openURL, captured BEFORE this row overrides
     /// it: the override defers into this, never into itself.
     @Environment(\.openURL) private var systemOpenURL
@@ -97,10 +108,81 @@ struct MacMessageRow: View {
             style: .continuous)
     }
 
+    /// Drawn as the collapsed placeholder right now.
+    private var isHidden: Bool { isHiddenByBlock && !isRevealed }
+
+    /// The Mac's collapsed stand-in. A SINGLE click reveals.
+    ///
+    /// No count-2 gesture here, deliberately: reacting to a hidden message
+    /// is exactly what a hidden row must not offer, and a child tap
+    /// gesture beside a parent double-click re-creates the child-wins bug
+    /// this file documents twice. (The thread is a ScrollView over a plain
+    /// VStack rather than a List, so the "List rows lose clicks" trap does
+    /// not apply here.)
+    private var hiddenRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "hand.raised.slash")
+            Text("Hidden — blocked member")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .quaternarySystemFill)))
+        .contentShape(Rectangle())
+        .help("Click to show")
+        .onTapGesture { onReveal() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("Hidden message from a blocked member. Click to show it."))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onReveal() }
+        .task(id: hasBeenVisible) { armRemoteFetches() }
+    }
+
+    /// Ask for what a visible row would ask for, and draw none of it — the
+    /// requirement with no compile-time and no visual signal (protocol.md,
+    /// "Blocking a member").
+    ///
+    /// No avatar arm here, unlike the phone: a Mac message row draws no
+    /// sender avatar at all, so there is no call site to preserve and no
+    /// differential to leak. The MAP is armed, because this row does draw
+    /// one — see MapTileWarmer.
+    private func armRemoteFetches() {
+        _ = linkPreview
+        if let attachmentStore {
+            _ = attachmentStore.generation
+            for attachment in message.attachments where !attachment.isFile {
+                // The store directly: `AttachmentView` is iOS-only.
+                // `preview: true` — a hidden row fetches nothing a visible
+                // row would not have fetched yet, so the poster frame and
+                // never the 90 MB video.
+                _ = attachmentStore.image(id: attachment.id, preview: true)
+            }
+        }
+        // The map has no loader to ask — the `Map` view IS the request,
+        // and a hidden row never builds one. See MapTileWarmer. Hidden
+        // only: a visible row has already asked by drawing its map, and a
+        // row that fetched twice is as distinguishable as one that did not
+        // fetch at all.
+        if isHidden {
+            MapTileWarmer.warm(localID: message.localID, attachments: message.attachments)
+        }
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
             if isMine { Spacer(minLength: 80) }
             VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
+                // The run-corner geometry below and the `isRunStart` top
+                // padding are deliberately NOT fed `isHidden`: run GROUPING
+                // is unchanged by hiding, so a hidden bubble still counts
+                // as its sender's run and the next visible message from
+                // somebody else still gets its caption.
+                if isHidden {
+                    hiddenRow
+                } else {
                 if showsSenderName, let senderName {
                     Text(senderName)
                         .font(.caption.weight(.medium))
@@ -126,6 +208,7 @@ struct MacMessageRow: View {
                             handleLinkClick(url)
                             return .handled
                         })
+                }
                 if message.state == .failed {
                     // A send that failed is the one thing here the user has
                     // to act on, so it says so in place rather than only
@@ -139,7 +222,14 @@ struct MacMessageRow: View {
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 2)
-                } else if showsTimestamp {
+                } else if showsTimestamp || isHidden {
+                    // UNCONDITIONAL on a hidden row, unlike a visible one.
+                    // `showsTimestamp` is fed by `isRunEnd`, so only the
+                    // last row of a run carries a time — and three
+                    // consecutive messages from a blocked member would draw
+                    // three placeholders, two of them literally nothing.
+                    // "A hidden row draws the placeholder and the timestamp
+                    // and nothing else.
                     HStack(spacing: 4) {
                         if message.isEdited {
                             Text("edited")
@@ -254,7 +344,10 @@ struct MacMessageRow: View {
     }
 
     private func quickHeart() {
-        guard message.serverID != nil else { return }
+        // The function, not just the balloon branch: `handleLinkClick`
+        // reaches here too, so guarding only the gesture would leave a
+        // reachable path to reacting to a hidden message.
+        guard !isHidden, message.serverID != nil else { return }
         Task {
             await coordinator.toggleReaction(
                 localID: message.localID,
@@ -281,7 +374,11 @@ struct MacMessageRow: View {
         // React needs a SERVER id — the endpoint is
         // `…/messages/{id}/reaction` — so there is nothing to react to
         // until the message is acked. Hiding it is correct, not a gap.
-        let acked = message.serverID != nil
+        let acked = message.serverID != nil && !isHidden
+        // A hidden row offers Report and Unblock and nothing else. Copy in
+        // particular would put the blocked body on the pasteboard, which is
+        // the same leak the phone's long-press gate closes.
+        if !isHidden {
         if acked {
             Menu("React") {
                 ForEach(MessagePresentation.quickReactions, id: \.self) { emoji in
@@ -313,7 +410,8 @@ struct MacMessageRow: View {
                 NSPasteboard.general.setString(message.body, forType: .string)
             }
         }
-        if message.state == .failed {
+        }
+        if message.state == .failed && !isHidden {
             Divider()
             Button("Try Again") { coordinator.retry(localID: message.localID) }
             Button("Delete", role: .destructive) {
@@ -960,12 +1058,14 @@ private struct MacQuoteBlock: View {
     private var accessibilityText: String {
         let head =
             replyHidden
-            ? String(localized: "Replying to a hidden message")
+            ? String(localized: "Replying to a hidden message",
+                       comment: "VoiceOver: a quote whose author is blocked")
             : String(localized: "Replying to \(nameFor(quote.senderID)): \(quote.excerpt)")
         guard let parent = quote.parent else { return head }
         let tail =
             parentHidden
-            ? String(localized: "which replied to a hidden message")
+            ? String(localized: "which replied to a hidden message",
+                       comment: "VoiceOver: the second quote level, when ITS author is blocked")
             : String(localized: "which replied to \(nameFor(parent.senderID)): \(parent.excerpt)")
         return "\(head), \(tail)"
     }

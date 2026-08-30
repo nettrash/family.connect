@@ -261,6 +261,16 @@ struct MessageBubbleView: View {
     /// `preview: true`, because a hidden row "fetches nothing a visible row
     /// would not have fetched yet" — the poster frame, never the 90 MB
     /// video.
+    ///
+    /// MAP TILES ARE ARMED TOO, and they are the one fetch here that needs
+    /// a road of its own. The other three have a loader whose first ask
+    /// starts the request, so calling it is enough; a map has no loader —
+    /// the `Map` view IS the request, and the `if isHidden` branch below
+    /// is exclusive, so a hidden location row never builds one. Hence
+    /// `MapTileWarmer`, which makes the same request through
+    /// `MKMapSnapshotter` and discards the image. protocol.md names map
+    /// tiles in the same breath as the link preview, and the doc decides
+    /// this rather than a judgement about whose server log is readable.
     private func armRemoteFetches() {
         // Unconditional, and the load-bearing one: this is the request that
         // leaves the family's own server.
@@ -276,6 +286,14 @@ struct MessageBubbleView: View {
         }
         if senderAvatarVersion > 0, let avatars {
             _ = avatars.image(userID: senderID, version: senderAvatarVersion)
+        }
+        // HIDDEN ONLY, unlike the three above. Those go through loaders
+        // that dedupe, so asking twice costs nothing; a snapshotter does
+        // not, and a visible row has already asked by drawing its map. A
+        // row that fetched twice would be as distinguishable as one that
+        // did not fetch at all.
+        if isHidden {
+            MapTileWarmer.warm(localID: message.localID, attachments: message.attachments)
         }
     }
 
@@ -638,12 +656,14 @@ struct MessageBubbleView: View {
     ) -> String {
         let head =
             replyHidden
-            ? String(localized: "Replying to a hidden message")
+            ? String(localized: "Replying to a hidden message",
+                       comment: "VoiceOver: a quote whose author is blocked")
             : String(localized: "Replying to \(quoteAuthorName(quote)): \(quote.excerpt)")
         guard let parent = quote.parent else { return head }
         let tail =
             parentHidden
-            ? String(localized: "which replied to a hidden message")
+            ? String(localized: "which replied to a hidden message",
+                       comment: "VoiceOver: the second quote level, when ITS author is blocked")
             : String(
                 localized:
                     "which replied to \(quoteAuthorName(senderID: parent.senderID)): \(parent.excerpt)")

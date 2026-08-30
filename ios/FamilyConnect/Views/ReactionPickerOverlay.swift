@@ -253,8 +253,14 @@ struct MessageContextMenu: View {
         }
     }
 
+    /// `LocalizedStringKey`, NOT `String`. With a `String` variable
+    /// `Label(_:systemImage:)` picks the VERBATIM `StringProtocol`
+    /// overload, so every row here drew English in all nine languages —
+    /// invisibly, because the keys exist in the catalogue anyway, having
+    /// been extracted from the Mac's native `Button("Reply")` calls. The
+    /// same trap `LocationAttachmentView` records for `Text`.
     private func row(
-        _ title: String, systemImage: String, action: @escaping () -> Void,
+        _ title: LocalizedStringKey, systemImage: String, action: @escaping () -> Void,
         isDestructive: Bool = false
     ) -> some View {
         Button(action: action) {
