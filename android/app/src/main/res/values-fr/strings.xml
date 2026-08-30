@@ -362,4 +362,5 @@
     <string name="s_report_disclosure">Le propriétaire de votre famille verra ce signalement, votre nom et le texte du message.</string>
     <string name="e_block_failed">Impossible de modifier cela pour le moment. Réessayez.</string>
     <string name="e_report_failed">Impossible d\'envoyer le signalement. Réessayez.</string>
+    <string name="s_hidden_note_from_blocked">Note masquée d’un membre bloqué</string>
 </resources>

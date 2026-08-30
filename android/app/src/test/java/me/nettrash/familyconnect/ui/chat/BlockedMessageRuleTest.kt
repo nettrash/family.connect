@@ -18,6 +18,9 @@ import com.google.common.truth.Truth.assertThat
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import org.junit.Test
+import me.nettrash.familyconnect.data.net.dto.ReactionDto
+import me.nettrash.familyconnect.data.net.dto.PollDto
+import me.nettrash.familyconnect.data.net.dto.PollOptionDto
 
 class BlockedMessageRuleTest {
 
@@ -152,6 +155,61 @@ class BlockedMessageRuleTest {
         assertThat(runFlags(withBlocks)).isEqualTo(runFlags(without))
         // And the unblocked sender still gets its caption.
         assertThat(withBlocks.first { it.entity.serverId == 3L }.showSenderName).isTrue()
+    }
+
+    // MARK: - What does NOT change
+
+    /**
+     * A chip keeps its COUNT and drops the blocked reactor from the
+     * who-reacted list. Integers are not presence: a count that changed
+     * when you blocked somebody would tell you they had reacted.
+     */
+    @Test
+    fun aReactionKeepsItsCountAndLosesTheName() {
+        val reactions = listOf(
+            ReactionDto(userId = other, emoji = "❤️"),
+            ReactionDto(userId = blocked, emoji = "❤️"),
+        )
+        val chips = buildReactionChips(reactions, myUserId = me)
+        assertThat(chips.single().count).isEqualTo(2)
+
+        val details = buildReactionDetails(
+            reactions = reactions,
+            names = mapOf(other to "Someone", blocked to "Blocked One"),
+            myUserId = me,
+            blockedUserIds = setOf(blocked),
+        )
+        assertThat(details.single().names).containsExactly("Someone")
+    }
+
+    /**
+     * A poll keeps its tallies and its bars and drops the blocked voter's
+     * face and name. The denominator comes from the roster, which does not
+     * move either.
+     */
+    @Test
+    fun aPollKeepsItsTallyAndLosesTheFace() {
+        val poll = PollDto(
+            pollSeq = 1,
+            closed = false,
+            options = listOf(
+                PollOptionDto(id = 1, text = "Pizza", votes = listOf(other, blocked)),
+                PollOptionDto(id = 2, text = "Pasta", votes = emptyList()),
+            ),
+        )
+        val view = buildPollView(
+            poll = poll,
+            myUserId = me,
+            names = mapOf(other to "Someone", blocked to "Blocked One"),
+            familySize = 4,
+            blockedUserIds = setOf(blocked),
+        )
+        val pizza = view.options.first { it.id == 1L }
+        assertThat(pizza.count).isEqualTo(2)
+        assertThat(pizza.voters.map { it.userId }).containsExactly(other)
+        // The "N of M voted" footer is roster arithmetic and unmoved.
+        assertThat(view.votedCount).isEqualTo(2)
+        assertThat(view.familySize).isEqualTo(4)
     }
 
     // MARK: - Quotes, which mask independently

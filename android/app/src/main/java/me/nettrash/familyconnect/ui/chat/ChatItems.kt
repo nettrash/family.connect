@@ -110,6 +110,14 @@ fun buildReactionDetails(
      */
     youLabel: String = "You",
     memberFallback: (Long) -> String = { "Member $it" },
+    /**
+     * Everybody the reader has blocked. A chip keeps its COUNT and drops
+     * the blocked reactor from this list: integers are not presence, and a
+     * count that changed when you blocked somebody would tell you they had
+     * reacted (docs/protocol.md, "Blocking a member"). So this filters and
+     * [buildReactionChips] deliberately does not.
+     */
+    blockedUserIds: Set<Long> = emptySet(),
 ): List<ReactionDetail> {
     if (reactions.isEmpty()) return emptyList()
     val othersByEmoji = LinkedHashMap<String, MutableList<String>>()
@@ -118,7 +126,7 @@ fun buildReactionDetails(
         val others = othersByEmoji.getOrPut(reaction.emoji) { mutableListOf() }
         if (reaction.userId == myUserId) {
             mine += reaction.emoji
-        } else {
+        } else if (!BlockedMessageRule.isHidden(reaction.userId, myUserId, blockedUserIds)) {
             others += names[reaction.userId] ?: memberFallback(reaction.userId)
         }
     }
@@ -184,6 +192,8 @@ fun buildPollView(
     myUserId: Long,
     names: Map<Long, String>,
     familySize: Int = 0,
+    /** Whose face and name a blocked reader may not draw. */
+    blockedUserIds: Set<Long> = emptySet(),
 ): PollView {
     val total = poll.totalVotes
     return PollView(
@@ -199,10 +209,16 @@ fun buildPollView(
             PollOptionView(
                 id = option.id,
                 text = option.text,
+                // The tally and the bar are computed from the WHOLE vote
+                // list, blocked voters included, and the "N of M voted"
+                // footer below likewise: a poll keeps its tallies and its
+                // bars and drops only the blocked voter's face and name.
                 count = option.votes.size,
                 fraction = if (total > 0) option.votes.size.toFloat() / total else 0f,
                 isMine = mine,
-                voters = ordered.map { PollVoter(it, names[it] ?: "Member $it") },
+                voters = BlockedMessageRule
+                    .drawableVoters(ordered, myUserId, blockedUserIds)
+                    .map { PollVoter(it, names[it] ?: "Member $it") },
             )
         },
         closed = poll.closed,
@@ -370,6 +386,7 @@ fun buildChatItems(
                     myUserId = myUserId,
                     names = memberNames,
                     familySize = familyMemberCount,
+                    blockedUserIds = blockedUserIds,
                 )
             },
             isRunStart = startsRun,

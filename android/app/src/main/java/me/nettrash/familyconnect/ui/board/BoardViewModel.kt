@@ -46,6 +46,10 @@ class BoardViewModel @Inject constructor(
     val notes: StateFlow<List<NoteEntity>> = boardRepository.observeNotes()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** Whose notes hide their content as well as their author. */
+    val blockedUserIds: StateFlow<Set<Long>> = settings.state.map { it.blockedUserIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
     val myUserId: StateFlow<Long?> = settings.state
         .map { it.myUserId }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)

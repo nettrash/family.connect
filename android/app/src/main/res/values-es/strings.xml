@@ -362,4 +362,5 @@
     <string name="s_report_disclosure">El propietario de tu familia verá esta denuncia, tu nombre y el texto del mensaje.</string>
     <string name="e_block_failed">No se pudo cambiar ahora mismo. Inténtalo de nuevo.</string>
     <string name="e_report_failed">No se pudo enviar la denuncia. Inténtalo de nuevo.</string>
+    <string name="s_hidden_note_from_blocked">Nota oculta de un miembro bloqueado</string>
 </resources>

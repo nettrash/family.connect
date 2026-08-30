@@ -354,4 +354,5 @@
     <string name="s_report_disclosure">家族のオーナーがこの報告、あなたの名前、メッセージ本文を確認します。</string>
     <string name="e_block_failed">今は変更できませんでした。もう一度お試しください。</string>
     <string name="e_report_failed">報告を送信できませんでした。もう一度お試しください。</string>
+    <string name="s_hidden_note_from_blocked">ブロックしたメンバーの非表示のメモ</string>
 </resources>

@@ -358,4 +358,5 @@
     <string name="s_report_disclosure">Der Besitzer eurer Familie sieht diese Meldung, deinen Namen und den Nachrichtentext.</string>
     <string name="e_block_failed">Das ließ sich gerade nicht ändern. Bitte erneut versuchen.</string>
     <string name="e_report_failed">Die Meldung ließ sich nicht senden. Bitte erneut versuchen.</string>
+    <string name="s_hidden_note_from_blocked">Ausgeblendete Notiz eines blockierten Mitglieds</string>
 </resources>

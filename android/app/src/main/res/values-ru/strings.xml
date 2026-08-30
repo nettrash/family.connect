@@ -366,4 +366,5 @@
     <string name="s_report_disclosure">Владелец семьи увидит эту жалобу, ваше имя и текст сообщения.</string>
     <string name="e_block_failed">Сейчас не удалось изменить. Попробуйте ещё раз.</string>
     <string name="e_report_failed">Не удалось отправить жалобу. Попробуйте ещё раз.</string>
+    <string name="s_hidden_note_from_blocked">Скрытая заметка от заблокированного участника</string>
 </resources>

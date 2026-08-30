@@ -355,4 +355,5 @@
     <string name="s_report_disclosure">Vlasnik porodice će videti ovu prijavu, vaše ime i tekst poruke.</string>
     <string name="e_block_failed">Trenutno nije uspela promena. Pokušajte ponovo.</string>
     <string name="e_report_failed">Prijava nije poslata. Pokušajte ponovo.</string>
+    <string name="s_hidden_note_from_blocked">Sakrivena beleška blokiranog člana</string>
 </resources>

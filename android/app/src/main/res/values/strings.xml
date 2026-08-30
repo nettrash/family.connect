@@ -70,6 +70,7 @@
     <string name="s_report_reason_inappropriate">Inappropriate content</string>
     <string name="s_report_reason_other">Something else</string>
     <string name="s_report_disclosure">Your family owner will see this report, your name, and the message text.</string>
+    <string name="s_hidden_note_from_blocked">Hidden note from a blocked member</string>
     <string name="s_hidden_blocked_member">Hidden — blocked member</string>
     <string name="s_leave_family">Leave family</string>
     <string name="s_leave_the_family">Leave the family?</string>

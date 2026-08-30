@@ -354,4 +354,5 @@
     <string name="s_report_disclosure">你的家庭所有者将看到此举报、你的姓名以及消息内容。</string>
     <string name="e_block_failed">暂时无法更改，请重试。</string>
     <string name="e_report_failed">举报发送失败，请重试。</string>
+    <string name="s_hidden_note_from_blocked">来自已屏蔽成员的隐藏便签</string>
 </resources>

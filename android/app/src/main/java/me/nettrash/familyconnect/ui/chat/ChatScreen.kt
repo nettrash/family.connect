@@ -1190,6 +1190,7 @@ fun ChatScreen(
                                 is ChatListItem.NewMessagesDivider ->
                                     NewMessagesDividerRow(item.count)
                                 is ChatListItem.MessageItem -> MessageBubble(
+                                    blockedUserIds = blockedUserIds,
                                     item = item,
                                     chat = chat,
                                     isMine = item.entity.senderId == myUserId,
@@ -2175,6 +2176,8 @@ private fun MessageBubble(
     item: ChatListItem.MessageItem,
     chat: ChatEntity?,
     isMine: Boolean,
+    /** Handed down for the who-reacted list; the row's own hiding is on [item]. */
+    blockedUserIds: Set<Long>,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
     myUserId: Long?,
@@ -2431,6 +2434,7 @@ private fun MessageBubble(
                     entity = entity,
                     item = item,
                     isHidden = isHidden,
+                    blockedUserIds = blockedUserIds,
                     chat = chat,
                     isMine = isMine,
                     isStreaming = isStreaming,
@@ -2647,6 +2651,11 @@ private val RoundedRectangle6 = RoundedCornerShape(6.dp)
 @Composable
 private fun ReactionChipsRow(
     item: ChatListItem.MessageItem,
+    /**
+     * Filters the WHO-REACTED list only. The chip's count comes from
+     * [buildReactionChips] and is deliberately not filtered.
+     */
+    blockedUserIds: Set<Long>,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
     myUserId: Long?,
@@ -2697,6 +2706,7 @@ private fun ReactionChipsRow(
             myUserId = myUserId ?: -1L,
             youLabel = youLabel,
             memberFallback = { memberTemplate.format(it) },
+            blockedUserIds = blockedUserIds,
         )
     }
     Box(modifier = Modifier.onGloballyPositioned { rowLeft[0] = it.boundsInWindow().left }) {
@@ -3336,6 +3346,8 @@ private fun BubbleContent(
      * view must never see one without the other.
      */
     isHidden: Boolean,
+    /** For the who-reacted list, which drops blocked reactors by name. */
+    blockedUserIds: Set<Long>,
     chat: ChatEntity?,
     isMine: Boolean,
     /** The assistant is still writing into this row. */
@@ -3662,6 +3674,7 @@ private fun BubbleContent(
             Box(modifier = Modifier.align(if (isMine) Alignment.End else Alignment.Start)) {
                 ReactionChipsRow(
                     item = item,
+                    blockedUserIds = blockedUserIds,
                     memberNames = memberNames,
                     memberAvatars = memberAvatars,
                     myUserId = myUserId,
