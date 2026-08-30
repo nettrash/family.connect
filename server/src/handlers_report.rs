@@ -248,13 +248,21 @@ pub async fn list_reports(
     let family = crate::handlers_family::require_owner_family(&state, &auth).await?;
     // Reports naming the OWNER are not listed. See
     // `events::push_report_created` for why.
+    // Capped at the page maximum, oldest first: "a family that has hit the
+    // ceiling has a moderation problem rather than a pagination problem"
+    // (protocol.md, `GET /families/reports`). The cap is here rather than
+    // at creation on purpose — refusing to STORE a report would tell the
+    // reporter something about how many others there are, and would lose
+    // the evidence a moderator needs most on the worst day.
     let rows = sqlx::query(&format!(
         "{SELECT_REPORT} WHERE r.family_id = $1 AND r.status = 'open'
            AND r.reported_user_id <> $2
-         ORDER BY r.id ASC"
+         ORDER BY r.id ASC
+         LIMIT $3"
     ))
     .bind(family)
     .bind(auth.user_id)
+    .bind(i64::from(state.cfg.limits.max_page_size))
     .fetch_all(&state.pool)
     .await?;
     let reports: Vec<Report> = rows.iter().map(report_from_row).collect();

@@ -94,6 +94,12 @@ struct FamilyConnectApp: App {
             let coordinator = ChatSyncCoordinator(modelContainer: container)
             let session = AppSession(api: coordinator.api)
             coordinator.bind(session: session)
+            // BEFORE the first sync, and that ordering is the whole point:
+            // `blocked_user_ids` only arrives with `GET /me`, so a cold
+            // start — offline, or just slow — would draw every blocked
+            // member's messages in full until it landed. The store already
+            // holds the answer from last time; this is what reads it.
+            coordinator.loadBlocksFromStore()
 
             // Store side effects for the phase machine, wired as closures
             // so AppSession itself stays SwiftData-free (and testable).

@@ -75,10 +75,23 @@ internal fun ReportSheet(
      * "Reporting a member").
      */
     supportContact: String?,
+    /**
+     * Whether one MESSAGE is being reported, rather than the person.
+     *
+     * The disclosure has to say which: a person-level report from the
+     * roster names no message, and promising the owner will see "the
+     * message text" would be telling the reporter something untrue about
+     * what they are about to share. iOS and macOS branch the same way.
+     */
+    isAboutMessage: Boolean,
     onDismiss: () -> Unit,
     onSubmit: (String) -> Unit,
 ) {
-    var reason by remember { mutableStateOf(ReportReason.SPAM) }
+    // HARASSMENT, matching iOS and macOS. Not spam: the reason somebody
+    // reaches for in the moment this feature exists for is the one that
+    // should already be selected, and three apps opening on different
+    // answers is a difference a moderator sees in their inbox.
+    var reason by remember { mutableStateOf(ReportReason.HARASSMENT) }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -117,7 +130,13 @@ internal fun ReportSheet(
                 }
             }
             Text(
-                text = stringResource(R.string.s_report_disclosure),
+                text = stringResource(
+                    if (isAboutMessage) {
+                        R.string.s_report_disclosure
+                    } else {
+                        R.string.s_report_disclosure_person
+                    },
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

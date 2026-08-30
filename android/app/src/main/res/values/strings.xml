@@ -93,6 +93,8 @@
     <string name="s_report_member">Report %1$s</string>
     <string name="s_block_member">Block %1$s</string>
     <string name="s_unblock_member">Unblock %1$s</string>
+    <string name="s_report_disclosure_person">Your family owner will be told you reported this member.</string>
+    <string name="s_reports_empty">Members can report a message or a person to you.</string>
     <string name="s_hidden_blocked_member">Hidden — blocked member</string>
     <string name="s_leave_family">Leave family</string>
     <string name="s_leave_the_family">Leave the family?</string>

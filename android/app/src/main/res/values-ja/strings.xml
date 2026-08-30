@@ -377,4 +377,6 @@
     <string name="s_report_member">%1$sさんを報告</string>
     <string name="s_block_member">%1$sさんをブロック</string>
     <string name="s_unblock_member">%1$sさんのブロックを解除</string>
+    <string name="s_report_disclosure_person">あなたがこのメンバーを報告したことが家族のオーナーに伝わります。</string>
+    <string name="s_reports_empty">メンバーはメッセージや人物をあなたに報告できます。</string>
 </resources>

@@ -377,4 +377,6 @@
     <string name="s_report_member">举报%1$s</string>
     <string name="s_block_member">屏蔽%1$s</string>
     <string name="s_unblock_member">取消屏蔽%1$s</string>
+    <string name="s_report_disclosure_person">你的家庭所有者会知道你举报了这名成员。</string>
+    <string name="s_reports_empty">成员可以向你举报某条消息或某个人。</string>
 </resources>

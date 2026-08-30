@@ -217,6 +217,11 @@ struct MacChatView: View {
             // Owner-only; a member who somehow gets this push stays put.
             guard session.isOwner else { return }
             showingFamily = true
+        case .reports:
+            // The Mac's report inbox is a section of the same Family
+            // sheet, so this is the same destination.
+            guard session.isOwner else { return }
+            showingFamily = true
         case .chatList:
             break // Already here.
         }

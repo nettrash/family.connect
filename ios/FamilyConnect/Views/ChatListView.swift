@@ -39,6 +39,7 @@ struct ChatListView: View {
     @State private var showsNewChat = false
     @State private var showsSettings = false
     @State private var showsJoinRequests = false
+    @State private var showsReports = false
     @State private var showsBoard = false
     /// Files were shared into the app and are waiting for a chat: the
     /// picker sheet is up. See ShareImport.
@@ -182,6 +183,9 @@ struct ChatListView: View {
             }
             .sheet(isPresented: $showsJoinRequests) {
                 JoinRequestsSheet()
+            }
+            .sheet(isPresented: $showsReports) {
+                NavigationStack { ReportInboxView() }
             }
             .sheet(isPresented: $showsBoard) {
                 BoardView()
@@ -387,6 +391,15 @@ struct ChatListView: View {
             showsSettings = false
             path = []
             showsJoinRequests = true
+        case .reports:
+            // Owner-only, like the requests above: a member who somehow
+            // gets this push stays on the list rather than being sent to a
+            // screen the server would refuse them.
+            guard session.isOwner else { return }
+            showsNewChat = false
+            showsSettings = false
+            path = []
+            showsReports = true
         case .chatList:
             // "joined" and unknown kinds: this list is the destination.
             break

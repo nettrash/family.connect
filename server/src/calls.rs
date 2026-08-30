@@ -348,6 +348,16 @@ impl CallRegistry {
     /// replay to a late callee device; the callee's are never buffered —
     /// the caller has been connected since the offer. A candidate for an
     /// unknown call, or from somebody who is not a party, goes nowhere.
+    ///
+    /// A SUPPRESSED call relays nothing towards the callee. The suppression
+    /// is total and covers "the live and the buffered `call_ice`" as well
+    /// as the offer (protocol.md, "Blocking a member"): a blocked caller
+    /// goes on gathering candidates for the full ring timeout, exactly as
+    /// they would against a phone nobody picks up, and every one of them
+    /// stops here. The candidates are still BUFFERED above, because
+    /// buffering is what a late device replay reads and that replay is
+    /// itself suppressed — dropping them at the buffer instead would make
+    /// this depend on two places agreeing.
     pub fn add_candidate(
         &self,
         call_id: Uuid,
@@ -357,6 +367,7 @@ impl CallRegistry {
         let mut inner = self.lock();
         let call = inner.calls.get_mut(&call_id)?;
         if from_user == call.caller_id {
+            let suppressed = call.suppressed;
             if let Phase::Ringing {
                 caller_candidates, ..
             } = &mut call.phase
@@ -365,6 +376,9 @@ impl CallRegistry {
                     caller_candidates.remove(0);
                 }
                 caller_candidates.push(candidate);
+            }
+            if suppressed {
+                return None;
             }
             Some(Relay {
                 to_user: call.callee_id,
@@ -711,6 +725,69 @@ mod tests {
             .expect("suppressed");
         reg2.begin(id(4), 45, 11, 9, 103, "o".into(), false, false)
             .expect("a third member reaches them regardless");
+    }
+
+    /// A blocked caller goes on gathering ICE candidates for the whole
+    /// ring timeout, exactly as they would against a phone nobody picks
+    /// up. Every one of them must stop at the server.
+    ///
+    /// The suppression is TOTAL and covers "the live and the buffered
+    /// `call_ice`" as well as the offer (protocol.md, "Blocking a
+    /// member"). Relaying them would put frames on the blocker's socket
+    /// for a call they were never told about — and a client that logged or
+    /// counted them would have the block in its hands.
+    #[test]
+    fn a_suppressed_calls_ice_candidates_are_never_relayed_to_the_callee() {
+        let reg = CallRegistry::new();
+        reg.begin(id(1), 42, 7, 9, 100, "o".into(), false, true)
+            .expect("suppressed");
+        assert!(
+            reg.add_candidate(id(1), 7, candidate(1)).is_none(),
+            "a suppressed caller's candidate relays nowhere",
+        );
+
+        // The control: the SAME call unsuppressed relays to the callee, so
+        // the test above is pinned to the flag and not to some other
+        // reason the relay declined.
+        let open = CallRegistry::new();
+        open.begin(id(2), 42, 7, 9, 100, "o".into(), false, false)
+            .expect("an ordinary call");
+        assert_eq!(
+            open.add_candidate(id(2), 7, candidate(1)).map(|r| r.to_user),
+            Some(9),
+        );
+    }
+
+    /// The blocked caller hanging up while it rings is the path a client
+    /// takes, not the sweeper — and it used to fan `call_end` to both
+    /// parties unconditionally.
+    ///
+    /// A `call_end` for a call the callee never heard ring is a frame
+    /// arriving out of nowhere: the loudest possible tell. The caller
+    /// still gets it, and still gets the ordinary `missed` record, because
+    /// their experience must stay identical to ringing a phone nobody
+    /// picks up.
+    #[test]
+    fn a_suppressed_call_ends_for_the_caller_alone() {
+        let reg = CallRegistry::new();
+        reg.begin(id(1), 42, 7, 9, 100, "o".into(), false, true)
+            .expect("suppressed");
+        let ended = reg
+            .end(id(1), Some(7), EndReason::Hangup)
+            .expect("the caller may give up");
+        assert!(
+            ended.suppressed,
+            "the flag has to survive out of the registry, or the handler cannot filter on it",
+        );
+
+        // The control, again: an ordinary call ends for both.
+        let open = CallRegistry::new();
+        open.begin(id(2), 42, 7, 9, 100, "o".into(), false, false)
+            .expect("an ordinary call");
+        let ended = open
+            .end(id(2), Some(7), EndReason::Hangup)
+            .expect("ends");
+        assert!(!ended.suppressed);
     }
 
     /// The replays are the one path where a call frame reaches a user

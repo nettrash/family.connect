@@ -385,4 +385,6 @@
     <string name="s_report_member">Signaler %1$s</string>
     <string name="s_block_member">Bloquer %1$s</string>
     <string name="s_unblock_member">Débloquer %1$s</string>
+    <string name="s_report_disclosure_person">Le propriétaire de votre famille saura que vous avez signalé ce membre.</string>
+    <string name="s_reports_empty">Les membres peuvent vous signaler un message ou une personne.</string>
 </resources>

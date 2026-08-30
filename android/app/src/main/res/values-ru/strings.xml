@@ -389,4 +389,6 @@
     <string name="s_report_member">Пожаловаться на %1$s</string>
     <string name="s_block_member">Заблокировать %1$s</string>
     <string name="s_unblock_member">Разблокировать %1$s</string>
+    <string name="s_report_disclosure_person">Владелец семьи узнает, что вы пожаловались на этого участника.</string>
+    <string name="s_reports_empty">Участники могут пожаловаться вам на сообщение или на человека.</string>
 </resources>

@@ -385,4 +385,6 @@
     <string name="s_report_member">Denunciar a %1$s</string>
     <string name="s_block_member">Bloquear a %1$s</string>
     <string name="s_unblock_member">Desbloquear a %1$s</string>
+    <string name="s_report_disclosure_person">Se informará al propietario de tu familia de que has denunciado a este miembro.</string>
+    <string name="s_reports_empty">Los miembros pueden denunciarte un mensaje o una persona.</string>
 </resources>

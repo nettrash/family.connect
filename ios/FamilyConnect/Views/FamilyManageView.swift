@@ -177,11 +177,6 @@ struct FamilyManageView: View {
             }
         } header: {
             Text("Join requests")
-        } footer: {
-            if let error = model.errorText {
-                Label(error, systemImage: "xmark.circle")
-                    .foregroundStyle(.red)
-            }
         }
     }
 
@@ -372,7 +367,25 @@ struct FamilyManageView: View {
 
     @ViewBuilder
     private var membersSection: some View {
-        Section("Members") {
+        // The error rides HERE, not on the owner-only join-requests
+        // section it used to: Report and Block are the two actions on this
+        // screen a plain member can take, and a failure they cannot see is
+        // a block they believe is in force and is not.
+        Section {
+            membersRows
+        } header: {
+            Text("Members")
+        } footer: {
+            if let error = model.errorText {
+                Label(error, systemImage: "xmark.circle")
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var membersRows: some View {
+        Group {
             ForEach(settingsModel.members, id: \.id) { member in
                 HStack(spacing: 12) {
                     InitialsAvatar(

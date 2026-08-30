@@ -63,7 +63,7 @@ struct MacFamilyView: View {
                 if session.isOwner {
                     inviteSection
                     if !requests.isEmpty { requestsSection }
-                    if !reports.isEmpty { reportsSection }
+                    reportsSection
                     policySection
                     capSection
                     if let family = session.family {
@@ -293,6 +293,15 @@ struct MacFamilyView: View {
     /// exists for (docs/protocol.md, "Reporting a member").
     private var reportsSection: some View {
         Section("Reports") {
+            // Drawn even when empty, and deliberately: an owner who has
+            // never received a report otherwise has no surface anywhere
+            // naming the inbox, and would not know the feature exists
+            // until the first one arrives.
+            if reports.isEmpty {
+                Text("Members can report a message or a person to you.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             ForEach(reports) { report in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(ReportReason(rawValue: report.reason)?.label ?? ReportReason.other.label)

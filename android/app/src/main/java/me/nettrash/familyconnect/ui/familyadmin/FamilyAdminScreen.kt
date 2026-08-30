@@ -349,13 +349,25 @@ fun FamilyAdminScreen(
                 // The owner is the moderator. Above the policy controls
                 // because a report is somebody waiting on an answer, while
                 // the settings below are not.
-                if (state.reports.isNotEmpty()) {
+                if (isOwner) {
                     Text(
                         text = stringResource(R.string.s_reports),
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
                     )
+                    // Drawn even when empty: an owner who has never
+                    // received a report otherwise has no surface anywhere
+                    // naming the inbox, and would not know it exists until
+                    // the first one arrives.
+                    if (state.reports.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.s_reports_empty),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        )
+                    }
                     state.reports.forEach { report ->
                         Column(
                             modifier = Modifier
@@ -787,6 +799,8 @@ fun FamilyAdminScreen(
         ReportSheet(
             displayName = member.displayName,
             supportContact = supportContact,
+            // From the roster: the PERSON, with no message named.
+            isAboutMessage = false,
             onDismiss = { reportTarget = null },
             onSubmit = { reason ->
                 viewModel.reportMember(member.userId, reason) { reportTarget = null }

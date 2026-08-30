@@ -432,13 +432,25 @@ pub async fn end(
         call_id,
         reason: ended.reason.as_str().to_string(),
     };
+    // The SAME rule `finish_call` applies to a server-ended call, and it
+    // has to be here too: this is the path a blocked caller takes when
+    // they give up and hang up while it is still ringing. The callee was
+    // never told the call existed, so a `call_end` would be a frame
+    // arriving out of nowhere — the loudest possible tell. The suppression
+    // is total and covers "the `call_end` the server sends when the call
+    // rings out or the caller cancels" (protocol.md, "Blocking a member").
+    //
+    // The caller still gets it, and still gets the ordinary `missed`
+    // record below: their experience must stay identical to ringing a
+    // phone nobody picks up.
+    let end_recipients: &[i64] = if ended.suppressed {
+        &[ended.caller_id]
+    } else {
+        &[ended.caller_id, ended.callee_id]
+    };
     state
         .registry
-        .fan_out(
-            &[ended.caller_id, ended.callee_id],
-            &end_frame,
-            Some(conn_id),
-        )
+        .fan_out(end_recipients, &end_frame, Some(conn_id))
         .await;
     if let Err(err) = record_call(state, &ended).await {
         events::log_fanout_error("recording a call ended by a client", Err(err));

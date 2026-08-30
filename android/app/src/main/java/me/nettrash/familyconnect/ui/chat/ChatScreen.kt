@@ -292,6 +292,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.RadioButton
 import androidx.compose.foundation.text.selection.SelectionContainer
 import me.nettrash.familyconnect.ui.components.ReportSheet
+import androidx.compose.runtime.mutableStateSetOf
 
 /**
  * The long-pressed message plus its bubble's window bounds — the
@@ -391,6 +392,12 @@ fun ChatScreen(
     // full-picker sheet is open for. Both are transient snapshots.
     var pickerTarget by remember { mutableStateOf<ReactionPickerTarget?>(null) }
     var reportTarget by remember { mutableStateOf<ReportTarget?>(null) }
+    // Held by the SCREEN, not by the row. A reveal is a peek — per row,
+    // per device, never on the wire and never stored — but "per row" has
+    // to survive the row leaving the LazyColumn and coming back, or
+    // scrolling away silently re-hides what somebody chose to look at.
+    // Cleared with the screen, which is what makes it not a setting.
+    val revealedMessages = remember { mutableStateSetOf<String>() }
     // Stands in for a sender the roster cannot name — somebody who left,
     // or a roster still catching up.
     val memberFallbackName = stringResource(R.string.s_someone)
@@ -1103,6 +1110,7 @@ fun ChatScreen(
                                     NewMessagesDividerRow(item.count)
                                 is ChatListItem.MessageItem -> MessageBubble(
                                     blockedUserIds = blockedUserIds,
+                                    revealedMessages = revealedMessages,
                                     item = item,
                                     chat = chat,
                                     isMine = item.entity.senderId == myUserId,
@@ -1391,6 +1399,8 @@ fun ChatScreen(
                 viewModel.setBlocked(entity.senderId, blocked = !wasBlocked)
             },
             blockedUserIds = blockedUserIds,
+            assistantUserId = assistantUserId,
+            isAiChat = chat?.kind == "ai",
             onDismiss = { pickerTarget = null },
         )
     }
@@ -1399,6 +1409,8 @@ fun ChatScreen(
         ReportSheet(
             displayName = target.displayName,
             supportContact = supportContact,
+            // From a bubble, so a message is always named.
+            isAboutMessage = target.messageId != null,
             onDismiss = { reportTarget = null },
             onSubmit = { reason ->
                 viewModel.report(
@@ -1500,6 +1512,10 @@ private fun ReactionPickerPopup(
     onToggleBlock: () -> Unit,
     /** Everybody the reader has blocked, for the Block/Unblock label. */
     blockedUserIds: Set<Long>,
+    /** The assistant's reserved account, which may be neither blocked nor reported. */
+    assistantUserId: Long?,
+    /** Whether this is the assistant's own chat, where every sender is it. */
+    isAiChat: Boolean,
     onDismiss: () -> Unit,
 ) {
     val atWindowOrigin = remember {
@@ -1642,8 +1658,18 @@ private fun ReactionPickerPopup(
                     // Somebody else's message, and one the server can name.
                     // Never my own: `cannot_report_self` refuses that, and
                     // blocking yourself is refused too.
+                    //
+                    // NEVER THE ASSISTANT either. Its reserved account
+                    // belongs to no family (`family_id IS NULL`), so both
+                    // endpoints answer `not_same_family` — and a VISIBLE
+                    // refusal is exactly what this feature may not produce.
+                    // iOS and macOS exclude it the same way; without this
+                    // the three apps disagree in public on every `@ai`
+                    // answer.
                     canModerate = target.item.entity.serverId != null &&
-                        target.item.entity.senderId != myUserId,
+                        target.item.entity.senderId != myUserId &&
+                        target.item.entity.senderId != assistantUserId &&
+                        !isAiChat,
                     isSenderBlocked = target.item.entity.senderId in blockedUserIds,
                     onReport = onReport,
                     onToggleBlock = onToggleBlock,
@@ -2091,6 +2117,11 @@ private fun MessageBubble(
     isMine: Boolean,
     /** Handed down for the who-reacted list; the row's own hiding is on [item]. */
     blockedUserIds: Set<Long>,
+    /**
+     * The rows the reader has peeked at, held by the screen so a reveal
+     * survives the row scrolling out of the list and back.
+     */
+    revealedMessages: MutableSet<String>,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
     myUserId: Long?,
@@ -2163,10 +2194,10 @@ private fun MessageBubble(
     val mediaOnly = remember(entity, isStreaming) { isMediaOnly(entity, isStreaming) }
     // A reveal is a PEEK, not a setting: per row and per device, never on
     // the wire, never stored, and gone on the next launch. Keyed on the
-    // message so a recycled row cannot inherit somebody else's reveal
+    // message so a recycled row cannot inherit somebody else's reveal, and
+    // held by the SCREEN so scrolling away does not undo it
     // (docs/protocol.md, "Blocking a member").
-    var isRevealed by remember(item.key) { mutableStateOf(false) }
-    val isHidden = item.isHiddenByBlock && !isRevealed
+    val isHidden = item.isHiddenByBlock && item.key !in revealedMessages
     // A hidden row is never bare and never media-shaped: it draws one line
     // of placeholder text in an ordinary balloon, whatever the message
     // underneath it turns out to be.
@@ -2266,7 +2297,7 @@ private fun MessageBubble(
                         // marker, which advances through hidden rows as
                         // they scroll past whether they were revealed or
                         // not (docs/protocol.md, "Blocking a member").
-                        onClick = { if (isHidden) isRevealed = true },
+                        onClick = { if (isHidden) revealedMessages.add(item.key) },
                         // Double-tap = the quick heart (Tapback idiom),
                         // through the same toggle path as the capsule,
                         // so a second double-tap removes it. onClick is
@@ -3343,6 +3374,29 @@ private fun BubbleContent(
         // the placeholder AND the timestamp, and nothing else"
         // (docs/protocol.md, "Blocking a member").
         if (isHidden) {
+            // ASK FOR WHAT A VISIBLE ROW WOULD ASK FOR, AND DRAW NONE OF IT.
+            //
+            // This is the requirement with no compile-time signal and no
+            // visual one. The natural implementation simply stops
+            // fetching, reads as obviously correct, and rebuilds the
+            // oracle protocol.md spends a paragraph refusing: a link
+            // preview is a request to a THIRD party, the poster of the
+            // link owns that host's log, and a family that is one distinct
+            // fetcher short from the day somebody blocked them has said so
+            // out loud, repeatably and on demand.
+            //
+            // The link preview alone, and deliberately: attachments and
+            // avatars reach the family's OWN server, whose operator can
+            // see everything anyway, so skipping those loses defence in
+            // depth rather than the oracle itself. `previewsEnabled` still
+            // decides it — the setting "decides the fetch for every row
+            // alike and is never evaluated per sender".
+            val hiddenPreviewUrl = remember(blocks) {
+                MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
+            }
+            if (hiddenPreviewUrl != null && previewsEnabled) {
+                LaunchedEffect(hiddenPreviewUrl) { onRequestPreview(hiddenPreviewUrl) }
+            }
             Text(
                 text = stringResource(R.string.s_hidden_blocked_member),
                 style = MaterialTheme.typography.bodyMedium,

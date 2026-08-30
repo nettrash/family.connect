@@ -378,4 +378,6 @@
     <string name="s_report_member">Prijavi %1$s</string>
     <string name="s_block_member">Blokiraj %1$s</string>
     <string name="s_unblock_member">Odblokiraj %1$s</string>
+    <string name="s_report_disclosure_person">Vlasnik porodice će saznati da ste prijavili ovog člana.</string>
+    <string name="s_reports_empty">Članovi mogu da vam prijave poruku ili osobu.</string>
 </resources>
