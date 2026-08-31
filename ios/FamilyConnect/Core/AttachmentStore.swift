@@ -45,11 +45,19 @@ final class AttachmentStore {
     /// pixels anyone sees. Matches Android's DISPLAY_PIXELS.
     static let displayPixels = 1440
 
-    init(api: APIClient) {
+    /// `directory` is a test seam, in the same spirit as `APIClient`'s
+    /// injected `URLSession`: the app passes nothing and gets the caches
+    /// folder, while a test gives each case its own empty directory so one
+    /// case's cached bytes cannot answer another's fetch.
+    init(api: APIClient, directory: URL? = nil) {
         self.api = api
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        directory = caches.appendingPathComponent("attachments", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if let directory {
+            self.directory = directory
+        } else {
+            let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            self.directory = caches.appendingPathComponent("attachments", isDirectory: true)
+        }
+        try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
     }
 
     private func key(_ id: Int64, preview: Bool) -> String {
@@ -87,22 +95,53 @@ final class AttachmentStore {
         inFlight.insert(key)
         Task { [weak self] in
             guard let self else { return }
-            let data = try? await api.attachmentData(id: id, preview: preview)
-            inFlight.remove(key)
-            guard let data,
-                  let decoded = PlatformImage.decode(data, maxPixels: Self.displayPixels)
-            else {
-                // A 404 is final (no preview, or not ours to see); a
-                // transport failure is not, but distinguishing them here
-                // would need the error, and a scroll away and back retries
-                // anyway once the hot entry is gone.
-                missing.insert(key)
-                return
+            do {
+                // nil = a real 404: no preview, or not ours to see.
+                let data = try await api.attachmentData(id: id, preview: preview)
+                finish(key, data: data, settled: true)
+            } catch {
+                // A timeout, a refused connection or a 5xx says nothing
+                // about whether the bytes exist. Marking the key missing
+                // here is what left a permanent spinner on every photo
+                // whose fetch happened to land during an outage: the gate
+                // in `image(id:preview:)` sits in front of the disk cache
+                // as well as the fetch, and nothing cleared it short of a
+                // logout. Only a real answer settles a key.
+                finish(key, data: nil, settled: false)
             }
+        }
+    }
+
+    /// - Parameter settled: whether the answer is final. Only a real 404 is.
+    private func finish(_ key: String, data: Data?, settled: Bool) {
+        inFlight.remove(key)
+        if let data, let decoded = PlatformImage.decode(data, maxPixels: Self.displayPixels) {
             try? data.write(to: fileURL(key), options: .atomic)
             remember(key, PlatformImage.view(decoded))
             generation &+= 1
+        } else if settled {
+            // Remember the miss: an attachment with no preview must not be
+            // re-requested on every render pass.
+            missing.insert(key)
         }
+        // Deliberately NOT bumping `generation` on an unsettled failure.
+        // The bump re-renders every view drawing this key, each of which
+        // calls back in and starts the fetch again — which offline is a
+        // tight loop rather than a retry. Recovery is driven by the socket
+        // reconnecting instead; see `retryAfterReconnect()`.
+    }
+
+    /// The socket came back, so the network did. Forget what failed while
+    /// it was gone and let the views ask again.
+    ///
+    /// This clears real 404s too, exactly as the Android counterpart does
+    /// (`AttachmentRepository.kt`, `connectivity.onAvailable`): re-checking
+    /// a genuinely absent preview costs one request that 404s again, and
+    /// keeping two sets apart to save it is not worth the divergence.
+    func retryAfterReconnect() {
+        guard !missing.isEmpty else { return }
+        missing.removeAll()
+        generation &+= 1
     }
 
     /// Put bytes we already hold into the cache.

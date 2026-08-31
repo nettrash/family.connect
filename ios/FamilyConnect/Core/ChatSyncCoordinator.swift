@@ -412,6 +412,10 @@ final class ChatSyncCoordinator {
         switch event {
         case .connected:
             connectionState = .connected
+            // Photos whose fetch failed while the network was gone are held
+            // back by a `missing` gate that nothing else clears; a reconnect
+            // is the signal that retrying them is worth it.
+            attachmentStore?.retryAfterReconnect()
             Task { await self.resync() }
         case .disconnected:
             // The socket's own loop is retrying; "offline" is reserved for
