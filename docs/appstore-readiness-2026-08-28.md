@@ -10,17 +10,32 @@ Every item below is tracked as a GitHub issue under the [v1.0 — first App Stor
 ---
 ## Status update — 2026-08-30
 
-**Blockers #1 (Report/Block), #2 (privacy and support pages) and #3 (screenshots) are done.**
-#4 and #5 are untouched and still gate submission. The verdict below is the 2026-08-28 audit as
+**All five blockers are closed in code.** What remains is provisioning and paperwork that needs
+nettrash's servers, accounts and decisions — no further code change is required to submit. The verdict below is the 2026-08-28 audit as
 it stood; everything in it is kept as the record of that date, and this section is the only thing
 that supersedes it.
 
-Revised verdict: **NOT READY — 2 blockers remain, both paperwork.** Everything that needed code
-or artefacts is finished: Report/Block on all three clients plus the server, four published
-policy/support pages with in-app links on every client, and three screenshot sets (iPhone 6.9",
-iPad 13", Play phone) that regenerate from a script. What is left is `ios/docs/appstore.md`'s
-stale listing copy and review notes (#4) and the App Privacy answers (#5) — plus two things only
-you can do: deploy nettrash.me and paste the four URLs into the two consoles.
+Revised verdict: **NO CODE BLOCKERS LEFT — the remaining work is yours.** Report/Block ships on
+all three clients and the server; four policy and support pages are published with in-app links on
+every client; three screenshot sets (iPhone 6.9", iPad 13", Play phone) regenerate from scripts;
+`appstore.md` is rewritten against the shipped feature set with every character limit measured; and
+`PrivacyInfo.xcprivacy` declares what the app actually collects, with the two required-reason
+categories it needs to clear upload validation.
+
+Your queue, in the order it blocks things:
+
+1. Provision the two demo accounts and the seeded reviewer family on fc.nettrash.me, and fill the
+   five placeholders in `appstore.md`.
+2. Read the live `config.toml` and write six values into the review notes instead of assuming the
+   defaults: `[ai]`, `[calls] enabled`/`video_enabled`, `retention_days`, `stun_urls`,
+   `turn_urls`/`turn_secret`, and `include_message_body`. `[ai]` gates three separate answers.
+3. Set `support_contact` — it is the only escalation path the app draws for a report about the
+   family owner, and it ships commented out.
+4. Deploy nettrash.me, then paste the Support and Privacy Policy URLs into both consoles.
+5. File the App Privacy form against the constants listed in `appstore.md`, and answer export
+   compliance.
+6. Decide the iPad question, the store name, and whether open registration on your box is
+   acceptable at launch.
 
 ### What shipped for #1
 Built against the protocol first (`docs/protocol.md` amended before each change, and committed):
@@ -246,7 +261,7 @@ Both archives CAN be produced today, and both pass Xcode's own `-validate-for-st
 </details>
 
 ---
-## Blockers (5 — 3 resolved, 2 remain)
+## Blockers (5 — 5 resolved in code; provisioning and the console form remain)
 These gate submission. Ranked hardest first.
 
 ### 1. ~~No way to report content or block a member~~ — RESOLVED 2026-08-30 — [#1](https://github.com/nettrash/family.connect/issues/1)
@@ -299,8 +314,49 @@ All of it runs against one seeded family — `server/scripts/seed-store-screensh
 
 **Fix.** Seed the reviewer family with content worth photographing (a family thread, a photo album, a voice message, a poll, a call record), then capture the 6.9" iPhone set on iPhone 16 Pro Max or 16 Plus (NOT iPhone 16 Pro — that is the 6.3" class and is rejected for the 6.9" slot) and the 13" iPad set on iPad Pro 13-inch (M4). Screenshots are required only for the primary localization, not all 9. If you decide iPad is not ready, set TARGETED_DEVICE_FAMILY = "1" instead and the iPad slot disappears.
 
-### 4. ios/docs/appstore.md is a stale draft: the listing copy is false and the review notes still contain literal placeholders — [#4](https://github.com/nettrash/family.connect/issues/4)
+### 4. ~~ios/docs/appstore.md is a stale draft~~ — REWRITTEN 2026-08-30, provisioning still outstanding — [#4](https://github.com/nettrash/family.connect/issues/4)
 **Platform:** both · **Effort:** hours
+
+**Rewritten in full against the shipped feature set**, with every claim traced to code rather than
+carried forward. The file now states and enforces the character limits App Store Connect applies at
+entry — Promotional Text 168/170, Description 3985/4000, Keywords 95/100, App Review notes
+3730/4000 — all measured against the installed file, not estimated. The old Notes for App Review
+would have been 18,224 characters against a 4,000-character field, so the section is split into a
+paste-verbatim block and a reviewer walkthrough that stays in the repo.
+
+Four things changed the submission, not just the prose:
+
+1. **Guideline 1.2 framing.** Both the draft description and the draft notes opened by volunteering
+   that no content is scanned automatically. 1.2 asks UGC apps for a filtering method, so that is a
+   written admission against the requirement. The file now leads with containment — no feed, no
+   discovery, no directory, contact bounded by a membership the owner controls — and presents
+   Report, Block, the owner's inbox and member removal as the response.
+2. **The child-audience signal is gone.** "kids" as a keyword and "grandparents to kids" opening the
+   description presented an unfiltered messenger as child-directed, which invites a 1.3 and
+   age-rating problem.
+3. **Calls are not family-gated.** A direct chat outlives family membership, so the gate is
+   direct-chat membership. The claim that every path to a person is family-gated was false.
+4. **No unconditional relay claim.** `turn_urls` defaults empty and `config.rs` says calls that
+   cannot connect directly simply fail, so every relay sentence is now conditional on the operator
+   having wired one.
+
+Three defects surfaced while fact-checking, all now checklist items in that file:
+
+- **ITMS-91053 at upload.** `MediaPrep.swift:468` calls `attributesOfItem(atPath:)`, a
+  required-reason API, and `PrivacyInfo.xcprivacy` declares no `NSPrivacyAccessedAPICategoryFileTimestamp`
+  entry. This fails before a human sees the build.
+- **A reported caption-less photo freezes an empty excerpt** in the owner's report inbox, because the
+  server freezes `messages.body`, which is empty for a media message with no caption — and
+  `protocol.md` promises a `message_attachments` field the query never selects. That is exactly the
+  path a reviewer probing 1.2 walks.
+- **`PrivacyInfo.xcprivacy` declares an empty `NSPrivacyCollectedDataTypes`** — the binary asserts it
+  collects nothing while the notes say the developer holds the data. Apple compares the two.
+
+**Left for you:** provision the two demo accounts and the seeded reviewer family on fc.nettrash.me
+and substitute the five placeholders; read the live `config.toml` and write six values into the
+notes rather than assuming defaults (`[ai]`, `[calls] enabled`/`video_enabled`, `retention_days`,
+`stun_urls`, `turn_urls`/`turn_secret`, `include_message_body`); and settle export compliance, the
+age rating, the iPad question and the store name.
 
 **What.** The file was last touched 2026-08-20, 76 commits ago, before media, calls, the share extension and macOS landed. It states "the honest limits of version 1: text messages only. Voice and video calls are planned" (:31), "Text messages only in this version." (:66), "photos and other media, and voice/video calls... not here yet" (:80), and "no third-party SDKs of any kind" (:31, :63) — the last flatly false, since project.pbxproj:1050 embeds stasel/WebRTC 151.0.0 and WebRTC.framework is in both archives' Frameworks dir. It opens with a "BLOCKER before submitting (guideline 5.1.1(v))" banner saying account deletion does not exist, and repeats it as unchecked checklist item :96 — both stale, since server/src/app.rs:41 routes POST /api/v1/me/delete and DeleteAccountView.swift ships on both platforms. Six placeholders remain unfilled: [DEMO_USER]/[DEMO_PASS] (:49), [DEMO_USER_2]/[DEMO_PASS_2] (:50), [INVITE_CODE] (:57), [SUPPORT_EMAIL] (:70).
 
@@ -308,7 +364,35 @@ All of it runs against one seeded family — `server/scripts/seed-store-screensh
 
 **Fix.** Rewrite Description, Keywords, Promotional Text, Beta App Description, What to Test and the Notes for App Review against the shipped feature set: family + 1:1 chats, photos/videos/albums with a viewer, voice messages, file attachments, the Share Extension, location sharing, polls, boards, reactions, replies, edits, read receipts, typing indicators, offline history, push, and P2P voice AND video calls with CallKit. Replace "no third-party SDKs of any kind" with the accurate line (no ads/analytics/tracking; one third-party library, Google's WebRTC, used only as the call media engine). Delete the account-deletion blockquote (:5-8) and checklist item (:96), and fix :60, which wrongly says deletion removes the account "and its messages" — the server scrubs the user and keeps family-chat messages as "Deleted account". Extend HOW TO REVIEW to walk media, a voice message, a poll, location, the Share Extension and a two-device call, and to explain the camera/mic/location/local-network prompts. Then provision the two demo accounts plus a seeded reviewer family on fc.nettrash.me and substitute every placeholder, including the owner credentials in App Review Information.
 
-### 5. App Privacy answers are a mandatory submission gate and the answer written down in your own doc is wrong — [#5](https://github.com/nettrash/family.connect/issues/5)
+### 5. ~~App Privacy answers are a mandatory submission gate and the answer written down in your own doc is wrong~~ — CODE DONE 2026-08-30, form is yours to file — [#5](https://github.com/nettrash/family.connect/issues/5)
+
+**`PrivacyInfo.xcprivacy` now tells the truth**, and is verified present in a built bundle with ten
+data types — message bodies, photos/videos, audio, other user content, precise location, user id,
+device id, name, other data (the birthday) and product interaction — all Linked, none Tracking, all
+App Functionality. `ios/docs/appstore.md` lists the same constants so the manifest and the console
+answers cannot drift apart.
+
+**Two defects were fixed that the issue did not know about**, both found by checking Apple's
+documentation rather than trusting the audit's own summary:
+
+- The manifest declared **no `NSPrivacyAccessedAPICategoryFileTimestamp` entry at all**, while
+  `MediaPrep.fileSize(of:)` calls `FileManager.attributesOfItem(atPath:)` on every attachment and
+  recording path. An undeclared required-reason API is an **ITMS-91053 rejection at upload** — the
+  build would never have reached a human reviewer. Now declared with `DDA9.1` (app container) and
+  `C617.1` (a file the person picked).
+- The User defaults reason was **`CA92.1`, the App Group code**, for defaults the app does not
+  share — it uses `UserDefaults.standard` and shares no suite with the Share Extension. Corrected
+  to `54BD.1`.
+
+Worth noting how nearly this went wrong: the sub-agents that researched it reported `C617.1` as the
+app-container reason and `DDA9.1` as something else, which is backwards, and recommended `3B52.1` —
+which is the reason for a *third-party SDK* acting on the app's behalf. Fetching Apple's own
+documentation JSON settled it. Do not take reason codes from memory.
+
+**Left for you:** file the form in App Store Connect against the list in `appstore.md`, and settle
+the two inputs the repo cannot answer — whether `[ai]` is enabled on fc.nettrash.me (it changes the
+disclosure, the policy text and the age rating), and export compliance now that WebRTC ships
+BoringSSL, which puts the app outside the "only Apple's encryption" exemption.
 **Platform:** both · **Effort:** hours
 
 **What.** The App Privacy questionnaire must be completed before a version can be submitted. ios/docs/appstore.md:101 prescribes declaring only "User Content (messages) and User ID (username)" and asserts "Data Not Linked to You is reasonable since no email/phone/real name is required". Both halves are wrong for the shipping build: Release-nettrash bakes in FC_DEFAULT_SERVER_URL = https://fc.nettrash.me (project.pbxproj:769), a server you operate, and the app uploads photos/videos, voice notes, arbitrary files, precise coordinates (docs/protocol.md:788 sends latitude/longitude/accuracy_m), avatars, birthdays and push tokens to it — all keyed to a persistent server account, which is what "linked" means regardless of whether an email was required. The shipped ios/FamilyConnect/PrivacyInfo.xcprivacy tells the same wrong story with `NSPrivacyCollectedDataTypes` as an empty array.
