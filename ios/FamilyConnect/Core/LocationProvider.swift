@@ -44,12 +44,72 @@ final class LocationProvider: NSObject {
 
     /// How long to wait before giving up. A first fix indoors can take a
     /// while; beyond this the honest answer is "could not".
-    private static let timeout: Duration = .seconds(20)
+    private static let defaultTimeout: Duration = .seconds(20)
+
+    /// Overridable so a test can reach the timeout branch — the one that
+    /// decides between "here is the coarse fix I did get" and "could not
+    /// find your location" — without sitting out twenty real seconds.
+    var timeout: Duration = LocationProvider.defaultTimeout
 
     /// Good enough to stop waiting. A hundred metres names a street, which
     /// is what "where are you?" is asking — holding out for ten would keep
     /// somebody staring at a spinner indoors for no benefit.
-    private static let goodEnoughMetres: CLLocationAccuracy = 100
+    static let goodEnoughMetres: CLLocationAccuracy = 100
+
+    /// How old a fix may be and still answer the question.
+    ///
+    /// CoreLocation hands over its cached last-known position the instant
+    /// updates start, and that fix can be hours old and miles away. Sending
+    /// one into a family chat — where the whole point is "here is where I am
+    /// now" — is the location failure that actually matters. Two minutes is
+    /// Android's `FRESH_ENOUGH_MS`, kept identical on purpose.
+    static let freshEnough: TimeInterval = 2 * 60
+
+    /// What to do with one delivery from CoreLocation.
+    ///
+    /// Pure and static so the rule can be tested: neither half of it was
+    /// covered before, and both halves were wrong — the accuracy bar was
+    /// dead code, and there was no freshness rule at all.
+    nonisolated enum Verdict: Equatable {
+        /// Good enough to answer with now.
+        case accept
+        /// Fresh, but coarser than the bar. Worth holding in case something
+        /// better arrives, and worth sending at the timeout rather than
+        /// failing.
+        case hold
+        /// Not an answer at all: no fix yet, or a cached position old enough
+        /// that sending it would say something untrue.
+        case ignore
+    }
+
+    nonisolated static func judge(
+        accuracy: CLLocationAccuracy,
+        age: TimeInterval,
+        goodEnough: CLLocationAccuracy = LocationProvider.goodEnoughMetres,
+        freshEnough: TimeInterval = LocationProvider.freshEnough
+    ) -> Verdict {
+        // Negative accuracy is CoreLocation's way of saying "no fix yet".
+        guard accuracy >= 0 else { return .ignore }
+        // Staleness rejects outright, and is checked BEFORE accuracy: a
+        // pinpoint fix from an hour ago is precisely wrong, which is worse
+        // than roughly right.
+        guard age <= freshEnough else { return .ignore }
+        return accuracy <= goodEnough ? .accept : .hold
+    }
+
+    /// The best fix seen so far that was fresh but not accurate enough.
+    ///
+    /// Why keep it at all: enforcing the accuracy bar by REJECTING coarse
+    /// fixes would turn "±150 m" into "Could not find your location", which
+    /// is worse than the imprecision — and worse than Android, which has no
+    /// accuracy bar and returns whatever it gets. So the bar decides how
+    /// long to keep looking, not whether to answer: a good fix finishes the
+    /// wait immediately, a coarse one is held, and the timeout sends the
+    /// best held rather than failing.
+    /// Kept with its accuracy: `Fix.accuracyM` is optional because Android
+    /// can genuinely not know, and comparing optionals here would be
+    /// gymnastics over a value this path always has.
+    private(set) var bestSoFar: (fix: Fix, accuracy: CLLocationAccuracy)?
 
     private let manager = CLLocationManager()
     private var waiters: [CheckedContinuation<Fix, Error>] = []
@@ -89,10 +149,18 @@ final class LocationProvider: NSObject {
         // — a composer stuck on "Preparing…" and a location manager left
         // sampling for the life of the view. Routing the timeout through
         // the one teardown path resumes every waiter AND stops the manager.
+        let waitFor = timeout
         let deadline = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.timeout)
+            try? await Task.sleep(for: waitFor)
             guard !Task.isCancelled, let self else { return }
-            self.finish(with: .failure(Failure.unavailable))
+            // A coarse fix beats no fix: if anything fresh arrived while we
+            // held out for something better, send that rather than telling
+            // the reader their location could not be found.
+            if let best = self.bestSoFar {
+                self.finish(with: .success(best.fix))
+            } else {
+                self.finish(with: .failure(Failure.unavailable))
+            }
         }
         defer { deadline.cancel() }
         return try await awaitFix()
@@ -116,6 +184,30 @@ final class LocationProvider: NSObject {
         }
     }
 
+    /// Apply `judge` to one delivery. Separate from the delegate so tests
+    /// can hand it a fix of any age and accuracy — CoreLocation will not
+    /// manufacture a two-hour-old one on demand.
+    func deliver(
+        accuracy: CLLocationAccuracy, age: TimeInterval,
+        latitude: Double, longitude: Double
+    ) {
+        let verdict = Self.judge(accuracy: accuracy, age: age)
+        guard verdict != .ignore else { return }
+
+        let fix = Fix(
+            latitude: latitude, longitude: longitude,
+            accuracyM: Int(accuracy.rounded()))
+
+        if verdict == .accept {
+            finish(with: .success(fix))
+        } else {
+            // Coarse but fresh: keep the best one seen. The timeout sends it
+            // rather than reporting a failure.
+            guard bestSoFar.map({ accuracy < $0.accuracy }) ?? true else { return }
+            bestSoFar = (fix, accuracy)
+        }
+    }
+
     /// Resume everybody waiting and stop the manager.
     ///
     /// The ONE way a wait ends — a fix, a denial, the timeout, or the
@@ -126,6 +218,9 @@ final class LocationProvider: NSObject {
         // manager left running is a battery cost with no purpose.
         manager.stopUpdatingLocation()
         isRunning = false
+        // Per-wait, not per-provider: the next "where are you?" must not be
+        // answered with a fix held from the last one.
+        bestSoFar = nil
         let pending = waiters
         waiters = []
         for continuation in pending {
@@ -141,17 +236,13 @@ extension LocationProvider: CLLocationManagerDelegate {
         guard let newest = locations.last else { return }
         let accuracy = newest.horizontalAccuracy
         let coordinate = newest.coordinate
+        // Read here, not after the hop: `CLLocation` is not Sendable, so
+        // only the values it holds may cross.
+        let age = -newest.timestamp.timeIntervalSinceNow
         Task { @MainActor in
-            // A negative horizontal accuracy means the coordinate is not
-            // valid at all — CoreLocation's way of saying "no fix yet".
-            guard accuracy >= 0 else { return }
-            guard accuracy <= Self.goodEnoughMetres || !self.waiters.isEmpty else { return }
-            self.finish(
-                with: .success(
-                    Fix(
-                        latitude: coordinate.latitude,
-                        longitude: coordinate.longitude,
-                        accuracyM: Int(accuracy.rounded()))))
+            self.deliver(
+                accuracy: accuracy, age: age,
+                latitude: coordinate.latitude, longitude: coordinate.longitude)
         }
     }
 
