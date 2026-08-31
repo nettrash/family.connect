@@ -291,6 +291,8 @@ final class AppSession {
     /// so a logout does not leave the previous account's faces in memory
     /// for the next one.
     var clearAvatarCache: () -> Void = {}
+    /// Set by the app: drops in-flight and failed media sends, files included.
+    var clearMediaOutbox: (() -> Void)?
     /// Best-effort push deregistration (PushRegistrar.deregister), also
     /// injected at wiring time so the phase machine stays UIKit-free.
     /// logout() awaits it BEFORE /auth/logout, because DELETE /devices
@@ -610,6 +612,9 @@ final class AppSession {
         if scope.wipesChatData {
             clearChatStore()
             clearAvatarCache()
+            // A media send still in the outbox belongs to the family that
+            // just went — the same scope as the roster and the chat store.
+            clearMediaOutbox?()
             // Member ↔ contact links name members of the family that just
             // went — family-scoped like the roster, not defaults-scoped,
             // so they go with it on a kick or a leave as well.
