@@ -56,7 +56,16 @@ final class CallKitController: NSObject, CallSystemBridge {
         let link = ContactLinks.shared.link(for: peerUserID)
         let action = CXStartCallAction(call: callID, handle: Self.handle(peerName: peerName, link: link))
         action.isVideo = isVideo
-        request(action)
+        request(action) {
+            // A refused START is the case that produced this whole bug: no
+            // system call exists, so there is no system UI to end the call
+            // from, and the later `requestEnd` will be refused too. That
+            // second refusal is now handled — the manager ends the call
+            // in-app — so the call remains usable through the app's own UI
+            // rather than becoming untouchable. Logged loudly because it
+            // also means no Recents entry and no lock-screen controls.
+            AppLog.push.error("CallKit refused to start the call; it runs in-app only")
+        }
         CallDonation.donate(peerUserID: peerUserID, peerName: peerName, video: isVideo, contactIdentifier: link?.contactIdentifier)
     }
 
@@ -133,19 +142,28 @@ final class CallKitController: NSObject, CallSystemBridge {
         provider.reportCall(with: callID, endedAt: nil, reason: mapped)
     }
 
-    func requestAnswer(callID: UUID) {
-        request(CXAnswerCallAction(call: callID))
+    func requestAnswer(callID: UUID, onRefused: @escaping () -> Void) {
+        request(CXAnswerCallAction(call: callID), onRefused: onRefused)
     }
 
-    func requestEnd(callID: UUID) {
-        request(CXEndCallAction(call: callID))
+    func requestEnd(callID: UUID, onRefused: @escaping () -> Void) {
+        request(CXEndCallAction(call: callID), onRefused: onRefused)
     }
 
-    private func request(_ action: CXAction) {
+    /// Perform a system action, and TELL THE CALLER IF IT WAS REFUSED.
+    ///
+    /// This used to log the error and drop it. That is what made the in-app
+    /// Hang Up inert whenever CallKit declined the transaction — which it
+    /// does when another app owns the system call, when the provider has
+    /// just been reset, or when a carrier call is up. With no system call UI
+    /// to end it from either, the call stayed up with a live microphone.
+    private func request(_ action: CXAction, onRefused: @escaping () -> Void) {
         callController.request(CXTransaction(action: action)) { error in
-            if let error {
-                AppLog.push.error("CallKit transaction failed: \(String(describing: error))")
-            }
+            guard let error else { return }
+            AppLog.push.error("CallKit transaction failed: \(String(describing: error))")
+            // Back to the main actor: the manager's state machine lives
+            // there, and this completion arrives on an arbitrary queue.
+            Task { @MainActor in onRefused() }
         }
     }
 }
