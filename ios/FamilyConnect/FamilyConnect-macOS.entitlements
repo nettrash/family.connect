@@ -21,8 +21,22 @@
 	  Push. Same note as the iOS entitlements: "development" is what
 	  source carries, and Xcode rewrites it to "production" when an
 	  archive is exported.
+
+	  THE KEY NAME IS NOT THE iOS ONE. macOS spells this
+	  `com.apple.developer.aps-environment`; iOS spells it `aps-environment`.
+	  Both Mac provisioning profiles grant the macOS spelling only — the
+	  development profile with "development", the store profile with
+	  "production" — so a request for the iOS key matches nothing and Xcode
+	  drops it while signing, WITHOUT failing the build. That is how build
+	  100 reached TestFlight with no push entitlement of any spelling in the
+	  binary: a quit Mac was never woken, while in-app banners kept working
+	  because ChatNotifier raises those locally off the live socket, so
+	  nothing looked broken from inside the app.
+
+	  Check the product, not this file, after touching it:
+	      codesign -d --entitlements - --xml <FamilyConnect.app> | plutil -p -
 	-->
-	<key>aps-environment</key>
+	<key>com.apple.developer.aps-environment</key>
 	<string>development</string>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>

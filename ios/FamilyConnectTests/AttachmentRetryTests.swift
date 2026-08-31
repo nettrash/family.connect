@@ -59,9 +59,11 @@ struct AttachmentRetryTests {
 
         // First look: nothing yet, and a fetch that is about to fail.
         #expect(store.image(id: 1, preview: true) == nil)
-        // Both attempts of the first fetch must land before we judge it.
+        // Both attempts of the first fetch must land, AND the store must
+        // have processed the failure, before the second look means anything.
         await waitUntil { StubURLProtocol.requests(host: host).count >= 2 }
-        await waitUntil { store.image(id: 1, preview: true) == nil }
+        await waitUntil { !store.isFetching(id: 1, preview: true) }
+        #expect(store.image(id: 1, preview: true) == nil)
 
         // Second look: the key must NOT have been written off, so this
         // starts another fetch rather than short-circuiting forever.
@@ -83,8 +85,12 @@ struct AttachmentRetryTests {
 
         let store = try makeStore(host: host, session: StubURLProtocol.makeSession())
 
+        let settledAt = store.generation
         #expect(store.image(id: 2, preview: true) == nil)
-        await waitUntil { StubURLProtocol.requests(host: host).count >= 1 }
+        // Wait for the ANSWER to be processed, not merely sent: a request is
+        // logged when it starts, and asserting on that raced the store on
+        // macOS while passing on iOS by luck.
+        await waitUntil { store.generation != settledAt }
         let afterFirst = StubURLProtocol.requests(host: host).count
 
         // Several more render passes must not produce more requests.
@@ -109,8 +115,11 @@ struct AttachmentRetryTests {
 
         let store = try makeStore(host: host, session: StubURLProtocol.makeSession())
 
+        let settledAt = store.generation
         #expect(store.image(id: 3, preview: true) == nil)
-        await waitUntil { StubURLProtocol.requests(host: host).count >= 1 }
+        // The 404 has landed once `generation` moves; only then is the key
+        // in `missing` and the reconnect actually undoing something.
+        await waitUntil { store.generation != settledAt }
         // Settled: further looks ask nothing.
         for _ in 0..<3 { _ = store.image(id: 3, preview: true) }
         let beforeReconnect = StubURLProtocol.requests(host: host).count
