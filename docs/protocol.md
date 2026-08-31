@@ -876,6 +876,17 @@ are accepted). `accuracy_m` is the radius in metres the sending device believed 
 is **absent when it did not know** — which a client draws as a plain pin rather than as perfect
 precision. `name` is an optional label somebody typed ("Home", "The restaurant"), 1–255 characters.
 
+**Freshness is the sending client's job, and both clients apply the same bar.** Every platform hands
+an app its cached last-known position the instant location updates start, and that fix can be hours
+old and miles away. Sent into a thread that asked "where are you?", it is precisely wrong, which is
+worse than roughly right — so **a fix older than two minutes is never sent**. The client keeps
+waiting, and says it could not find a location rather than answering with a stale one. Accuracy runs
+the other way: a coarse fix is worth sending as long as `accuracy_m` says so honestly, so the
+accuracy a client holds out for decides how long it keeps looking, not whether it answers at all,
+and a client that times out sends the best fresh fix it managed to get. None of this is visible on
+the wire — it is what makes "decided at send time", below, mean the moment somebody pressed send
+rather than whenever the device last happened to know where it was.
+
 Consequences of having no bytes, all of them deliberate:
 
 - `GET /attachments/{id}` on a location is `invalid_attachment` (400). There is nothing to serve;
