@@ -1239,7 +1239,7 @@ struct ConversationView: View {
                         }
                     }
                     Button {
-                        Task { await recorder.start() }
+                        Task { await startRecording() }
                     } label: {
                         Label("Record Audio", systemImage: "mic")
                     }
@@ -1736,6 +1736,20 @@ struct ConversationView: View {
     private func restore(_ handoff: ComposerHandoff) {
         if model.draft.isEmpty { model.draft = handoff.caption }
         if replyDraft == nil { replyDraft = handoff.replyTo }
+    }
+
+    /// Start a voice note, and SAY SO IF IT DOES NOT START.
+    ///
+    /// The recorder has always recorded its failure; nothing read it, so a
+    /// denied microphone made this button do nothing at all. The two causes
+    /// get different sentences on purpose — pointing somebody at Settings
+    /// for a permission they already granted wastes their time, and the
+    /// location path next door already draws exactly this distinction.
+    private func startRecording() async {
+        await recorder.start()
+        if let failure = recorder.failure {
+            mediaState = .failed(AudioRecorder.message(for: failure))
+        }
     }
 
     /// EVERY paste door on this screen, and the only one.

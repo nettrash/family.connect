@@ -1260,7 +1260,7 @@ struct MacConversationView: View {
                         Label("Paste", systemImage: "doc.on.clipboard")
                     }
                     Button {
-                        Task { await recorder.start() }
+                        Task { await startRecording() }
                     } label: {
                         Label("Record Audio", systemImage: "mic")
                     }
@@ -1909,6 +1909,19 @@ struct MacConversationView: View {
         // the next reader out of history for somebody else's message.
         restoreComposer(caption: recovered.caption, quote: recovered.replyTo)
         mediaNotice = .failed(String(localized: "Couldn't send that."))
+    }
+
+    /// Start a voice note, and say so if it does not start. Same reasoning
+    /// as the phone: the recorder recorded its failure and nobody read it,
+    /// so a denied microphone made this button silently inert.
+    ///
+    /// The Settings sentence differs by platform — a Mac has no Settings
+    /// app — so it names System Settings and where the switch lives.
+    private func startRecording() async {
+        await recorder.start()
+        if let failure = recorder.failure {
+            mediaNotice = .failed(AudioRecorder.message(for: failure))
+        }
     }
 
     private func restoreComposer(caption: String, quote: ReplyToDTO?) {
