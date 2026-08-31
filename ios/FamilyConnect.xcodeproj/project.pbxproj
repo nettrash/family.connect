@@ -542,6 +542,7 @@
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
@@ -595,6 +596,7 @@
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
@@ -804,6 +806,7 @@
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
