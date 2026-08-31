@@ -41,4 +41,43 @@ class BackoffPolicy(
     fun reset() {
         attempt = 0
     }
+
+    companion object {
+        /**
+         * How long a connection must last before its next drop is treated as
+         * bad luck rather than a broken endpoint.
+         *
+         * Ten seconds: an accept-then-close returns in milliseconds and can
+         * never reach it, while a genuine connection on a slow network earns
+         * its reset well inside one heartbeat.
+         */
+        const val DURABLE_AFTER_MILLIS: Long = 10_000L
+
+        /**
+         * Whether a finished connection earned its reset.
+         *
+         * REACHING [SocketState.Open] IS NOT ENOUGH, and that distinction is
+         * the point. A proxy can accept the upgrade and drop immediately; so
+         * can this app's own server, which kicks a connection whose send
+         * queue overflows with code 1001. Resetting on Open meant every such
+         * cycle restarted at random(0..1s), so the ceiling never climbed and
+         * the socket reconnected about twice a second indefinitely — each
+         * reconnect firing a full resync and a push-token check.
+         *
+         * Judging by DURATION distinguishes the two without asking the
+         * endpoint anything: a connection that carried traffic for a while
+         * was real, one that died on arrival was not.
+         *
+         * @param openedElapsedMillis SystemClock.elapsedRealtime() when the
+         *   socket opened, or null if it never did.
+         */
+        fun earnsReset(
+            openedElapsedMillis: Long?,
+            nowElapsedMillis: Long,
+            durableAfterMillis: Long = DURABLE_AFTER_MILLIS,
+        ): Boolean {
+            if (openedElapsedMillis == null) return false
+            return nowElapsedMillis - openedElapsedMillis >= durableAfterMillis
+        }
+    }
 }

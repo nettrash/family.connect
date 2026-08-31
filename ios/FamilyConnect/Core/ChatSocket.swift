@@ -76,6 +76,18 @@ actor ChatSocket {
     private var backoff: ReconnectBackoff
     private var suspended = false
     private var isConnected = false
+    /// When the current connection's handshake completed, or nil when there
+    /// is none. Read once at teardown to decide whether it earned a reset.
+    private var connectedAt: Date?
+
+    /// How long a connection must last before its next drop is treated as
+    /// bad luck rather than a broken endpoint.
+    ///
+    /// Ten seconds: long enough that an accept-then-close cannot reach it
+    /// (those return in milliseconds), short enough that a genuine
+    /// connection on a slow network still earns its reset well inside one
+    /// heartbeat interval.
+    static let durableAfter: TimeInterval = 10
     /// Last time the connection proved alive (pong or any inbound frame).
     private var lastAliveAt = Date.distantPast
 
@@ -176,7 +188,16 @@ actor ChatSocket {
                 try await task.send(.string(ClientFrame.ping.encodedString()))
                 isConnected = true
                 lastAliveAt = Date()
-                backoff.reset()
+                // NOT `backoff.reset()`. A completed handshake proves the
+                // upgrade happened, not that the connection is usable: a
+                // proxy — or this app's own server, which kicks a connection
+                // whose send queue overflows with code 1001 — can accept and
+                // drop immediately. Resetting here made every such cycle
+                // start again from random(0…1)s, so the ceiling never grew
+                // and the socket reconnected about twice a second forever,
+                // each one firing a full resync. The backoff is forgiven at
+                // teardown instead, and only if the connection LASTED.
+                connectedAt = Date()
                 continuation.yield(.connected)
                 AppLog.socket.info("Socket connected")
                 startHeartbeat(task)
@@ -192,6 +213,16 @@ actor ChatSocket {
             self.task = nil
             let wasConnected = isConnected
             isConnected = false
+            // Durability, judged only now that the connection is over. A
+            // connection that carried traffic for a while was real, so the
+            // next drop starts cheap; one that died on arrival leaves the
+            // ceiling where it was, and repeated arrivals-and-deaths climb
+            // it towards the 30s cap the way an unreachable server does.
+            if ReconnectBackoff.earnsReset(
+                connectedAt: connectedAt, durableAfter: Self.durableAfter) {
+                backoff.reset()
+            }
+            connectedAt = nil
             if wasConnected { continuation.yield(.disconnected) }
 
             if sessionIsGone {

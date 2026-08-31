@@ -52,4 +52,29 @@ nonisolated struct ReconnectBackoff: Sendable {
     mutating func reset() {
         attempt = 0
     }
+
+    /// Whether a finished connection earned its reset.
+    ///
+    /// A COMPLETED HANDSHAKE IS NOT ENOUGH, and that distinction is the
+    /// whole point. A proxy can accept the upgrade and drop the connection
+    /// immediately; so can this app's own server, which kicks a connection
+    /// whose send queue overflows. Forgiving the ceiling at handshake meant
+    /// every one of those cycles restarted at random(0…1)s, so the ceiling
+    /// never climbed and the socket reconnected roughly twice a second
+    /// indefinitely — each reconnect firing a full resync.
+    ///
+    /// Judging by DURATION instead makes the two cases distinguishable
+    /// without asking the endpoint anything: a connection that carried
+    /// traffic for a while was real, and one that died on arrival was not.
+    ///
+    /// - Parameter connectedAt: when the handshake completed, or nil if no
+    ///   connection was ever established (a refused dial earns nothing).
+    static func earnsReset(
+        connectedAt: Date?,
+        now: Date = Date(),
+        durableAfter: TimeInterval
+    ) -> Bool {
+        guard let connectedAt else { return false }
+        return now.timeIntervalSince(connectedAt) >= durableAfter
+    }
 }
