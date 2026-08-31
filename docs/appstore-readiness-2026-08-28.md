@@ -78,6 +78,13 @@ four targets building, both string catalogues complete in nine languages.
   `generation` on failure — would have made a tight refetch loop offline, so it was not followed.
   652 iOS tests pass, and the regression test was mutation-checked: the first version passed
   against the bug, because `APIClient.perform` retries a transient GET once internally.
+- **#8 — macOS "Save a copy" was a dead button.** The sandbox granted only
+  `files.user-selected.read-only` while the viewer wrote through an NSSavePanel, and both
+  `FileManager` calls were `try?`, so a refusal looked exactly like a click that never registered.
+  The grant is now `user-selected.read-write` (verified in a signed product) and the writes are a
+  do/catch that raises an alert; the separate no-bytes path, which killed the same button for a
+  different reason, now reports too. Proving the write end to end needs a signed sandboxed run
+  under the real bundle id, which shares state with the everyday app — one manual Save settles it.
 - **#7 — macOS shipped with no push entitlement.** `FamilyConnect-macOS.entitlements` requested the
   iOS key `aps-environment`; both Mac profiles grant only `com.apple.developer.aps-environment`
   (development on the dev profile, production on the store one), so Xcode dropped it while signing
