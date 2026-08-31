@@ -78,6 +78,14 @@ four targets building, both string catalogues complete in nine languages.
   `generation` on failure — would have made a tight refetch loop offline, so it was not followed.
   652 iOS tests pass, and the regression test was mutation-checked: the first version passed
   against the bug, because `APIClient.perform` retries a transient GET once internally.
+- **#9 — every upload landed in "Missing Compliance".** `ITSAppUsesNonExemptEncryption` was absent
+  from both plists, so the questionnaire had to be answered by hand once per platform per build.
+  `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO` is now set on all three app-target
+  configurations and verified as `false` in both built bundles (and correctly absent from the share
+  extension). The answer is **nettrash's**, taken deliberately: the app adds no crypto of its own,
+  but WebRTC bundles BoringSSL for DTLS-SRTP, so the "only Apple's encryption" basis the sibling
+  apps rely on does not transfer — the reasoning is written up under **Export compliance** in
+  `ios/docs/appstore.md`.
 - **#8 — macOS "Save a copy" was a dead button.** The sandbox granted only
   `files.user-selected.read-only` while the viewer wrote through an NSSavePanel, and both
   `FileManager` calls were `try?`, so a refusal looked exactly like a click that never registered.
