@@ -47,6 +47,10 @@ struct MacConversationView: View {
     let chatID: Int64
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
+
+    /// Owns a media send from the moment it starts; see MediaOutbox.
+
+    @Environment(MediaOutbox.self) private var outbox
     /// For `callsEnabled` — whether this server rings anybody at all.
     @Environment(AppSession.self) private var session
     @Environment(CallManager.self) private var calls
@@ -720,6 +724,9 @@ struct MacConversationView: View {
             // with nothing left to release it. See the note there; it ends
             // in a permanently and silently read conversation.
             .task(id: chatID) {
+                // Recovery first; see the phone's note on why the set wins
+                // over the parked text.
+                recoverFailedSend()
                 if draft.isEmpty, let parked = ComposerDrafts.take(for: chatID) {
                     draft = parked
                 }
@@ -787,6 +794,12 @@ struct MacConversationView: View {
                         systemImage: "bubble.left.and.bubble.right",
                         description: Text("Say something to get started."))
                 }
+            }
+            // A send for this chat failed. Whichever composer is on screen
+            // adopts it — including this one right after its own send
+            // failed, which is how the in-place restore happens now.
+            .onChange(of: outbox.failedCount(for: chatID)) {
+                recoverFailedSend()
             }
             .onChange(of: composerHeight) {
                 // The composer just grew or shrank into the thread. Re-pin,
@@ -1815,6 +1828,16 @@ struct MacConversationView: View {
         replyDraft = nil
         staged = []
         mediaNotice = .busy(String(localized: "Sending…"))
+        // The outbox owns the set from here — before the first byte, not
+        // from the failure branch. Same reasoning as the phone: between
+        // clearing `staged` and the failure returning, the set belongs to
+        // nobody but a running Task, and this window is wider on the Mac,
+        // where a sidebar selection can replace the view at any moment.
+        let token = outbox.begin(
+            chatID: chatID,
+            caption: caption,
+            replyTo: quote,
+            prepared: items.map(\.prepared))
         // A media send IS a send: `composerIsBusy` and `canSend` read
         // this, so the attach menu, the paste door and a second Send
         // stay closed until the upload resolves — the same gate the
@@ -1840,27 +1863,54 @@ struct MacConversationView: View {
                         String(localized: "Uploading \(index) of \(total)…"))
                 })
             if sent {
+                // `sendMedia` consumed the files; only the entry is left.
+                outbox.finish(token)
                 mediaNotice = nil
             } else {
+                // Marked, NOT taken. A take removes the entry whether or
+                // not this view still exists, and on the Mac it very often
+                // does not — the sidebar replaces it. Observation decides
+                // who adopts it; see `.onChange` on the outbox below.
+                outbox.fail(token)
+                // Disarm the pin HERE, not as a side effect of adoption.
+                // This branch is the only place that knows for certain no
+                // row is coming; recovery may be declined or deferred, and
+                // a pin left armed pulls the next reader out of history for
+                // somebody else's message. Idempotent with the disarm in
+                // `restoreComposer`.
+                owesSendPin = false
                 mediaNotice = .failed(String(localized: "Couldn't send that."))
-                // Through the guarded restore, which is also what disarms
-                // the pin: no row is coming, and one left armed would yank
-                // the next reader out of history for somebody else's
-                // message.
-                restoreComposer(caption: caption, quote: quote)
-                // Put the attachments back too — ALL of them: `sendMedia`
-                // consumes the temp files only on whole-send success, so
-                // after a failure every file is still on disk and the
-                // retry offers exactly the set that was composed; ids
-                // uploaded but never claimed are left to the server's 24h
-                // sweep of unclaimed attachments.
-                staged = items + staged
             }
         }
     }
 
     /// Put the composer back when the send never happened — but never over
     /// something typed in the meantime.
+    /// Adopt a send that failed with nobody left to hand it back to.
+    ///
+    /// On the Mac this is the common case, not the edge one: the sidebar's
+    /// `.id(selectedChatID)` replaces this view whenever the reader clicks
+    /// another chat, so an upload started here routinely outlives it.
+    ///
+    /// Only into an empty composer, and never over a share import — that
+    /// arrives through `consumeShareImport()` in the same `.task` and is
+    /// what the reader is actually looking at.
+    private func recoverFailedSend() {
+        // Only `staged` gates this — see the phone's note: requiring an
+        // empty draft lost the photos of anyone who typed while uploading.
+        guard staged.isEmpty,
+              session.shareImportTarget == nil,
+              let waiting = outbox.mostRecentFailed(for: chatID),
+              let recovered = outbox.take(waiting.id)
+        else { return }
+        staged = recovered.prepared.map { StagedAttachment(prepared: $0) }
+        // Through `restoreComposer`, which is also what disarms the send
+        // pin: no row is coming for this set, and a pin left armed pulls
+        // the next reader out of history for somebody else's message.
+        restoreComposer(caption: recovered.caption, quote: recovered.replyTo)
+        mediaNotice = .failed(String(localized: "Couldn't send that."))
+    }
+
     private func restoreComposer(caption: String, quote: ReplyToDTO?) {
         if draft.isEmpty { draft = caption }
         if replyDraft == nil { replyDraft = quote }

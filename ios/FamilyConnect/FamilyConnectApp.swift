@@ -67,6 +67,7 @@ struct FamilyConnectApp: App {
     /// the cache away every time anything above it changed.
     private let avatars: AvatarStore?
     private let attachments: AttachmentStore?
+    private let outbox: MediaOutbox?
 
     init() {
         // UI-test hook: launch with a clean slate so the smoke test can
@@ -211,6 +212,15 @@ struct FamilyConnectApp: App {
             self.pushRegistrar = registrar
             let avatars = AvatarStore(api: coordinator.api)
             let attachments = AttachmentStore(api: coordinator.api)
+            // App-scoped on purpose: it owns sends that outlive the view
+            // that started them, which is the whole point of it.
+            let outbox = MediaOutbox()
+            // A set composed in one account must never reach the next.
+            session.clearMediaOutbox = { outbox.purgeAll() }
+            // Files left by a process killed mid-upload have no owner and
+            // nothing else will ever look at them; this is the only cleanup
+            // that survives a kill.
+            _ = MediaOutbox.sweepOrphans(keeping: outbox.liveFileURLs)
             coordinator.bind(attachmentStore: attachments)
             // Logout wipes the store; faces must go with it, or the next
             // account inherits this one's.
@@ -222,6 +232,7 @@ struct FamilyConnectApp: App {
             avatars.onUnauthorized = { [weak session] in session?.handleUnauthorized() }
             self.avatars = avatars
             self.attachments = attachments
+            self.outbox = outbox
         } else {
             self.session = nil
             self.coordinator = nil
@@ -234,6 +245,7 @@ struct FamilyConnectApp: App {
             #endif
             self.avatars = nil
             self.attachments = nil
+            self.outbox = nil
         }
     }
 
@@ -258,6 +270,7 @@ struct FamilyConnectApp: App {
                     .environment(previewLoader)
                     .environment(avatars ?? AvatarStore(api: coordinator.api))
                     .environment(attachments ?? AttachmentStore(api: coordinator.api))
+                    .environment(outbox ?? MediaOutbox())
             }
         case .failure(let error):
             StoreErrorView(error: error)
