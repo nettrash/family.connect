@@ -492,6 +492,30 @@ pub struct LimitsConfig {
     #[serde(default = "default_max_avatar_bytes")]
     pub max_avatar_bytes: usize,
 
+    /// Free space on the attachments filesystem that uploads may not eat
+    /// into, in bytes. 0 disables the check.
+    ///
+    /// This is a floor for the DATABASE, not a budget for attachments.
+    /// PostgreSQL usually shares the filesystem and handles a full disk far
+    /// less gracefully than a refused upload does — so uploads stop while
+    /// there is still room, and the family is told `storage_full` (507)
+    /// rather than the server falling over.
+    #[serde(default = "default_min_free_disk_bytes")]
+    pub min_free_disk_bytes: u64,
+
+    /// How many password hashes may run at once.
+    ///
+    /// `Argon2::default()` allocates 19 MiB per hash, and a bare
+    /// `#[tokio::main]` gives the blocking pool 512 threads — so an
+    /// unbounded login flood can ask for ~9.7 GiB and take the process out.
+    /// Both unauthenticated auth endpoints reach this (login deliberately
+    /// hashes even for an unknown username, to close a timing oracle), so
+    /// the bound is what stops a stranger choosing how much memory the
+    /// server allocates. Waiting requests queue rather than being refused
+    /// — arrival RATE is nginx's `limit_req` to control, not this.
+    #[serde(default = "default_max_password_hashes_in_flight")]
+    pub max_password_hashes_in_flight: usize,
+
     /// Outbound frames buffered per WebSocket before the connection is
     /// declared too slow and dropped.
     #[serde(default = "default_ws_send_queue")]
@@ -720,6 +744,8 @@ impl Default for LimitsConfig {
             max_page_size: default_max_page_size(),
             max_body_bytes: default_max_body_bytes(),
             max_avatar_bytes: default_max_avatar_bytes(),
+            min_free_disk_bytes: default_min_free_disk_bytes(),
+            max_password_hashes_in_flight: default_max_password_hashes_in_flight(),
             ws_send_queue: default_ws_send_queue(),
             ws_ping_interval_secs: default_ws_ping_interval_secs(),
             ws_idle_timeout_secs: default_ws_idle_timeout_secs(),
@@ -998,6 +1024,20 @@ fn default_max_body_bytes() -> usize {
 
 /// 256 KiB — comfortably above the ~512px square JPEG both clients
 /// upload, and far below anything worth storing in a family database.
+/// 2 GiB. Room for PostgreSQL to keep working — WAL, autovacuum, a base
+/// backup — after uploads have stopped. An operator on a large volume can
+/// raise it; 0 turns the check off.
+fn default_min_free_disk_bytes() -> u64 {
+    2 * 1024 * 1024 * 1024
+}
+
+/// Eight concurrent argon2 hashes is ~152 MiB at 19 MiB each — a bound a
+/// small VPS survives, and still enough concurrency that a family of
+/// twenty all signing in at once notices nothing.
+fn default_max_password_hashes_in_flight() -> usize {
+    8
+}
+
 fn default_max_avatar_bytes() -> usize {
     262_144
 }

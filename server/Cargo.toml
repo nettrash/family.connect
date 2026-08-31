@@ -113,6 +113,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 bytes = "1"
 futures-util = "0.3"
 
+# statvfs(3), for the free-space floor that keeps uploads from filling the
+# disk PostgreSQL lives on. Already in the tree transitively (tokio, rand);
+# naming it here is what makes the one syscall callable. No wrapper crate:
+# `nix` and `rustix` are large surfaces to add for a single struct.
+libc = "0.2"
+
 # CLI
 clap = { version = "4", features = ["derive"] }
 
