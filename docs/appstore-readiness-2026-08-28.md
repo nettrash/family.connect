@@ -300,13 +300,24 @@ In-app links are in place on all three clients: `SettingsView.swift:368` and `:3
 | iPhone 6.9" ×6 | `ios/docs/screenshots/iphone-6.9/` | 1320×2868 | `xcodebuild test -only-testing:FamilyConnectUITests/StoreScreenshotUITests`, then `ios/scripts/export-screenshots.sh` |
 | iPad 13" ×6 | `ios/docs/screenshots/ipad-13/` | 2064×2752 | same, `-destination` iPad Pro 13-inch (M4) |
 | Play phone ×6 | `android/fastlane/.../phoneScreenshots/` | 1080×1920 | `android/scripts/capture-play-screenshots.sh start` then `screens` |
-| Mac | **not captured** | — | `ios/scripts/capture-mac-screenshot.sh` (ready, needs you to drive the app) |
+| Mac ×4 | `ios/docs/screenshots/mac/` | 2560×1600 | `ios/scripts/capture-mac-screenshot.sh start`, then `shot <name> [window]` |
 
 All of it runs against one seeded family — `server/scripts/seed-store-screenshots.sh` builds "The Harpers": five members, a thirteen-message thread with reactions and replies, a four-photo album, a poll mid-vote, a shared location, four board notes and a direct chat, all backdated so the timestamps read like a week of family life rather than one minute of scripting.
 
 **The three Android screenshots that were committed in August are deleted, not updated.** They were 1344×2992 — a 2.226:1 ratio, past Play's 2:1 ceiling — and RGBA, where the spec asks for 24-bit with no alpha. Both faults came from the device they were taken on, so the capture script uses its own AVD pinned to 1080×1920 rather than resizing somebody's Pixel_8_Pro, and every shot is flattened and then checked against both rules before it is written. `featureGraphic.png` carried the same alpha channel and is now RGB (its alpha was fully opaque, so nothing was lost).
 
-**Left for you:** the Mac set, whenever macOS stops being held. Optionally drop real photographs into `server/scripts/screenshot-photos/` and re-run — with that directory empty the seeder generates gradients, which is what the album tiles in the current shots are.
+**The Mac set now exists too** — four shots at 2560×1600 (family chat, board, family, settings),
+captured from a build with a throwaway bundle id so signing it into the demo server could not touch
+the real app's preferences, Keychain or cache. Two things are worth knowing before that set is
+used. A window-only capture holds the window's own pixels and nothing behind it, so the translucent
+header and footer bars of the Family and Settings sheets render flat grey; the board's grey canvas
+is NOT that artefact — it is `Color(nsColor: .underPageBackgroundColor)` and genuinely grey. And
+the direct-chat screen could not be reached: the SwiftUI sidebar exposes no rows to accessibility
+and ignores both synthetic clicks and arrow keys, so there is no fifth shot rather than a
+mislabelled duplicate of the first.
+
+**Left for you:** retake the two sheet screens by hand if the Mac listing ships, since only a
+screen-region capture renders those materials correctly. Optionally drop real photographs into `server/scripts/screenshot-photos/` and re-run — with that directory empty the seeder generates gradients, which is what the album tiles in the current shots are.
 
 **What.** `find` for any *screenshot* path or any .png/.jpg outside Assets.xcassets returns exactly one hit in the whole repo: android/fastlane/metadata/android/en-US/images/phoneScreenshots (1344x2992, Compose UI, unusable for Apple). There is no fastlane/deliver setup under ios/. Meanwhile the shipped iOS archive's Info.plist carries UIDeviceFamily = [1, 2] and UISupportedInterfaceOrientations~ipad with all four orientations (project.pbxproj TARGETED_DEVICE_FAMILY = "1,2" in all 12 configurations), so the iPad slot is required in addition to iPhone. ios/docs/appstore.md's pre-submission checklist never mentions screenshots at all.
 
