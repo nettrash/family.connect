@@ -54,7 +54,8 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `board_full`, `invalid_pagination`, `device_not_found`, `invalid_poll`, `poll_closed`,
 `calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`,
 `peer_busy`, `peer_unreachable`, `avatar_too_large`, `invalid_image`, `attachment_too_large`,
-`invalid_attachment`, `attachment_not_found`, `attachment_already_used`, `internal`.
+`invalid_attachment`, `attachment_not_found`, `attachment_already_used`, `storage_full`,
+`internal`.
 
 `owner_cannot_leave` is RETIRED: no endpoint raises it any more (see `POST /families/leave`). It
 stays listed because clients that predate the hand-off still branch on it, and a code that vanishes
@@ -923,6 +924,20 @@ applies only to a message with neither.
 
 Size ceiling: **100 MB** by default (`limits.max_attachment_bytes`), and the preview has its own
 much smaller ceiling. Over either is `attachment_too_large` (413).
+
+**A server with no room left answers `storage_full` (507) and stores nothing.** This is not a limit
+on the sender and shrinking the photo will not help — it says the operator's disk is nearly full,
+and a client says so rather than telling somebody their picture is too big. The operator sets a
+floor of free space (`limits.min_free_disk_bytes`) that uploads may not eat into; the check runs
+BEFORE the body is read, so a full disk costs a refused request rather than 100 MB of writing that
+has to be undone, and it is deliberately a floor rather than "until the disk is full" because the
+thing that must not run out of room is the DATABASE, which usually shares the filesystem and fails
+far less gracefully than a refused upload. Setting the floor to 0 disables the check.
+
+A `507` is the one refusal in this protocol that says nothing about the request: the same upload
+sent a minute later, after the operator has freed something, succeeds unchanged. Clients therefore
+neither cancel the send nor drop the picture — they keep it and let the sender retry, exactly as
+they would for a network failure.
 
 For `kind=photo` and `kind=video` the accepted types are `image/jpeg`, `image/png`, `image/heic`,
 `image/heif`, `video/mp4` and `video/quicktime`; a type outside that list, a type that contradicts

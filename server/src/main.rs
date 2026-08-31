@@ -60,6 +60,11 @@ async fn main() -> Result<()> {
         "config loaded"
     );
 
+    // Bound argon2 before anything can serve a request: both endpoints that
+    // hash are unauthenticated, and 19 MiB per hash across a 512-thread
+    // blocking pool is how an unbounded login flood OOMs this process.
+    family_connect::auth::configure_hash_concurrency(cfg.limits.max_password_hashes_in_flight);
+
     let pool = db::connect(&cfg.database).await?;
     migrate::run(&pool).await.context("running migrations")?;
 

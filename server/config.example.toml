@@ -74,6 +74,35 @@ max_attachment_bytes = 104857600
 # attachment is just an ordinary message. Note the size ceiling above is per
 # ATTACHMENT, so one message can in principle carry ten times that.
 max_attachments_per_message = 10
+# Free space on the attachments filesystem that uploads may not eat into
+# (2 GiB). Set 0 to disable.
+#
+# This is a floor for PostgreSQL, not a budget for photos. The database
+# usually shares this filesystem and copes with a full disk far worse than a
+# refused upload does, so uploads stop while there is still room and the
+# sender is told `storage_full` (507) — a refusal that says the SERVER is
+# out of space, not that their picture was too big.
+#
+# The check runs before the body is read and uses Content-Length when the
+# client sent one; the write is capped at max_attachment_bytes regardless,
+# so the worst an absent length can do is overshoot this floor by one
+# attachment. Raise it if you run anything else on the volume, and see
+# `docs/operations.md` for putting attachments on their own filesystem,
+# which is the stronger version of this guarantee.
+min_free_disk_bytes = 2147483648
+# How many password hashes may run at once.
+#
+# argon2id allocates 19 MiB per hash, and both endpoints that reach it are
+# unauthenticated — login hashes even for a username that does not exist, on
+# purpose, so that an unknown user and a wrong password cannot be told apart
+# by timing. Without this bound the blocking pool's 512 threads can be made
+# to ask for ~9.7 GiB, which is a stranger choosing when your server dies.
+#
+# Eight is ~152 MiB at peak and far more concurrency than a family produces.
+# Requests over the bound WAIT rather than being refused; how many are
+# allowed to arrive in the first place is nginx's `limit_req` (see
+# nginx/family-connect.conf), and the two are meant to be used together.
+max_password_hashes_in_flight = 8
 # The CEILING on what a family owner may set as their own member cap, and the
 # cap that binds at the join door for a family that has set none.
 #

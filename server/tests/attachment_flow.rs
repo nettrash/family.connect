@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{TestServer, assert_error, spawn_server};
+use common::{TestServer, assert_error, spawn_server, spawn_server_with_config};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -1878,4 +1878,78 @@ async fn a_page_of_albums_does_not_duplicate_messages() {
         Some(sent[2][0]),
         "and the legacy first element beside it"
     );
+}
+
+/// The free-space floor, end to end.
+///
+/// The unit tests pin the arithmetic; what they cannot see is whether the
+/// handler ever CALLS it. A check that is correct and unreachable looks
+/// identical to a working one from inside `storage.rs`, and this is a guard
+/// whose whole job is to be there on the one night the disk fills up.
+///
+/// The floor is set to u64::MAX so every filesystem is "full", which is the
+/// only way to test this without actually filling a disk.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_full_disk_refuses_uploads_with_storage_full() {
+    let server = spawn_server_with_config(|cfg| {
+        cfg.limits.min_free_disk_bytes = u64::MAX;
+    })
+    .await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    assert_error(
+        upload(&server, &owner, "?kind=photo", "image/jpeg", jpeg_bytes(64)).await,
+        507,
+        "storage_full",
+    )
+    .await;
+
+    // Nothing written and nothing recorded — the refusal happens BEFORE the
+    // body is read, which is the point of checking early.
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments")
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("count");
+    assert_eq!(rows, 0, "a refused upload must leave no row behind");
+}
+
+/// A location has no bytes, so a full disk must not stop somebody sharing
+/// where they are. It is three numbers in a query string.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_full_disk_still_accepts_a_location() {
+    let server = spawn_server_with_config(|cfg| {
+        cfg.limits.min_free_disk_bytes = u64::MAX;
+    })
+    .await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let response = upload(
+        &server,
+        &owner,
+        "?kind=location&latitude=55.7558&longitude=37.6173&accuracy_m=12",
+        "",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        201,
+        "a location costs the disk nothing and must not be refused"
+    );
+}
+
+/// The documented off switch has to actually switch it off.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_zero_floor_lets_uploads_through() {
+    let server = spawn_server_with_config(|cfg| {
+        cfg.limits.min_free_disk_bytes = 0;
+    })
+    .await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let response = upload(&server, &owner, "?kind=photo", "image/jpeg", jpeg_bytes(64)).await;
+    assert_eq!(response.status(), 201);
 }

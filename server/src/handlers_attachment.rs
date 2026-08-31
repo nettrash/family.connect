@@ -30,6 +30,7 @@ use crate::auth::AuthUser;
 use crate::error::{ApiError, codes};
 use crate::models::Attachment;
 use crate::state::AppState;
+use crate::storage::Storage;
 
 #[derive(Debug, Deserialize)]
 pub struct UploadParams {
@@ -182,6 +183,40 @@ async fn upload_location(
 
 /// `POST /attachments` — stream a photo, video, piece of audio or file to
 /// disk, or record a location, which has no bytes at all.
+/// Refuse before reading a body when storing it would take the filesystem
+/// below the operator's free-space floor.
+///
+/// Checked HERE rather than after the write for the obvious reason — a full
+/// disk should cost a refused request, not 100 MB written and then undone
+/// — and it uses `Content-Length` as the size when the client sent one.
+/// Without one the check degrades to "is there already less than the floor
+/// free", which is the honest answer for a body of unknown length: the
+/// write itself is capped at `max_attachment_bytes`, so the worst a lying
+/// or absent length can do is overshoot the floor by one attachment, and
+/// the floor is sized in gigabytes precisely so that margin is affordable.
+fn check_free_space(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let floor = state.cfg.limits.min_free_disk_bytes;
+    if floor == 0 {
+        return Ok(());
+    }
+    let incoming = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let free = state.storage.free_bytes();
+    if Storage::would_breach_floor(free, incoming, floor) {
+        tracing::warn!(
+            free_bytes = free,
+            incoming_bytes = incoming,
+            floor_bytes = floor,
+            "refusing an upload: the attachments filesystem is near full"
+        );
+        return Err(ApiError::storage_full());
+    }
+    Ok(())
+}
+
 pub async fn upload_attachment(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -194,6 +229,11 @@ pub async fn upload_attachment(
     if params.kind.as_deref() == Some(Attachment::KIND_LOCATION) {
         return upload_location(&state, auth.user_id, &params).await;
     }
+
+    // After the location branch on purpose: a location is three numbers in
+    // a query string and costs the disk nothing, so a nearly-full server
+    // still accepts one.
+    check_free_space(&state, &headers)?;
 
     let mime = headers
         .get(header::CONTENT_TYPE)
@@ -407,6 +447,7 @@ pub async fn upload_preview(
             "a preview must be image/jpeg",
         ));
     }
+    check_free_space(&state, &headers)?;
 
     // Uploader only, and only before the row is claimed or after — either
     // way it is theirs; a member who did not upload it has no business

@@ -1,0 +1,19 @@
+# Nightly backup.
+#
+# 03:20 rather than 03:00: every cron job on every box in the world runs on
+# the hour, and this one shares a disk with PostgreSQL.
+
+[Unit]
+Description=Nightly family-connect backup
+Documentation=https://github.com/nettrash/family.connect
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+# A box that was off at 03:20 backs up when it next comes up, rather than
+# skipping the night entirely.
+Persistent=true
+# Spread the load if anything else is on the same schedule.
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
