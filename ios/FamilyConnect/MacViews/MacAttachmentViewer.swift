@@ -32,6 +32,8 @@ struct MacAttachmentViewer: View {
     /// 1 = the whole picture fits the window. Above that it is scrollable.
     @State private var zoom: CGFloat = 1
     @State private var busy = false
+    /// Set when a save fails, so the refusal is visible rather than silent.
+    @State private var saveFailure: String?
 
     init(album: AttachmentAlbum) {
         _album = State(initialValue: album)
@@ -55,6 +57,13 @@ struct MacAttachmentViewer: View {
             .id(attachment.id)
             .frame(minWidth: 480, minHeight: 360)
             .navigationTitle(title)
+            .alert("Couldn't save that file",
+                   isPresented: Binding(get: { saveFailure != nil },
+                                        set: { if !$0 { saveFailure = nil } })) {
+                Button("OK", role: .cancel) { saveFailure = nil }
+            } message: {
+                if let saveFailure { Text(saveFailure) }
+            }
             .toolbar {
                 ToolbarItem {
                     if busy { ProgressView().controlSize(.small) }
@@ -156,15 +165,32 @@ struct MacAttachmentViewer: View {
         Task {
             busy = true
             defer { busy = false }
-            guard let source = await coordinator.localFileURL(for: attachment) else { return }
+            guard let source = await coordinator.localFileURL(for: attachment) else {
+                // The other way this button goes dead: no bytes to copy,
+                // because the fetch failed or the server has nothing. Say
+                // so rather than returning into silence.
+                saveFailure = String(localized: "The file could not be downloaded.")
+                return
+            }
             let panel = NSSavePanel()
             panel.nameFieldStringValue = attachment.name
                 ?? ChatSyncCoordinator.fallbackName(for: attachment)
             guard panel.runModal() == .OK, let destination = panel.url else { return }
-            // Replace rather than fail: the panel already asked about
-            // overwriting, and the person said yes.
-            try? FileManager.default.removeItem(at: destination)
-            try? FileManager.default.copyItem(at: source, to: destination)
+            do {
+                // Replace rather than fail: the panel already asked about
+                // overwriting, and the person said yes. A missing file is
+                // the normal case, so only a real removal failure counts.
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: source, to: destination)
+            } catch {
+                // Never swallow this. Both calls used to be `try?`, so when
+                // the sandbox refused the write the button did nothing and
+                // said nothing — the failure looked exactly like a click
+                // that had not registered.
+                saveFailure = error.localizedDescription
+            }
         }
     }
 
