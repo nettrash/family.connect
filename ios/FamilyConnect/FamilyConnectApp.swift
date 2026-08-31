@@ -24,6 +24,7 @@
 
 import SwiftData
 import SwiftUI
+import os
 
 @main
 struct FamilyConnectApp: App {
@@ -86,8 +87,37 @@ struct FamilyConnectApp: App {
             isStoredInMemoryOnly: false,
             cloudKitDatabase: .none
         )
-        let result = Result {
+        // One delete-and-retry before giving up. A store that will not open
+        // is not a disaster here: every row in it is a CACHE of something
+        // the server still has, which is exactly what the error view has
+        // always told people. What WAS a disaster is the state this
+        // replaces — a permanent dead end on every launch, whose only
+        // suggested escape (reinstall) does not even clear the store on
+        // macOS, where the app is sandboxed and its container survives
+        // deleting the app.
+        //
+        // Deliberately unconditional on the error: SwiftData reports a
+        // corrupt file, a failed migration and an unreadable directory in
+        // ways that are not worth pattern-matching, and the recovery is the
+        // same for all of them. Anything genuinely unrecoverable — a full
+        // disk, a broken sandbox — fails the retry too and still lands on
+        // the error view.
+        var result = Result {
             try ModelContainer(for: schema, configurations: [configuration])
+        }
+        if case .failure(let first) = result {
+            AppLog.app.error(
+                "Message store would not open (\(String(describing: first), privacy: .public)); deleting it and retrying once")
+            Self.deleteStore(at: configuration.url)
+            result = Result {
+                try ModelContainer(for: schema, configurations: [configuration])
+            }
+            if case .failure(let second) = result {
+                AppLog.app.error(
+                    "Message store still would not open after a reset (\(String(describing: second), privacy: .public))")
+            } else {
+                AppLog.app.info("Message store reset; the cache will re-download")
+            }
         }
         self.containerResult = result
 
@@ -392,6 +422,55 @@ extension Notification.Name {
 /// Shown when the SwiftData store can't be opened — recoverable messaging
 /// instead of a crash. Stock components + semantic colors so it renders
 /// correctly in both appearances without a custom palette.
+/// Remove a SwiftData store and its sidecars.
+///
+/// SQLite keeps a write-ahead log and a shared-memory file beside the
+/// database — `default.store-wal` and `default.store-shm`, the suffix
+/// appended to the WHOLE filename rather than replacing the extension —
+/// and leaving either behind can reproduce the very failure the delete is
+/// meant to clear. A missing one is not an error.
+///
+/// This throws away nothing that cannot be re-downloaded: the store holds
+/// chats, messages, members, notes and blocks, every one of which the
+/// server can send again. That is the same promise the error view has
+/// always made to the reader.
+extension FamilyConnectApp {
+    static func storeFiles(for url: URL) -> [URL] {
+        let directory = url.deletingLastPathComponent()
+        let name = url.lastPathComponent
+        return [url] + ["-wal", "-shm"].map {
+            directory.appendingPathComponent(name + $0)
+        }
+    }
+
+    static func deleteStore(at url: URL) {
+        for path in storeFiles(for: url) {
+            try? FileManager.default.removeItem(at: path)
+        }
+    }
+}
+
+/// What to tell someone whose message store will not open, even after the
+/// app has already deleted it and rebuilt it once.
+///
+/// Platform-specific because the escape hatch is. On iOS, deleting the app
+/// takes its container with it. On macOS the app is sandboxed and its store
+/// lives in ~/Library/Containers, which SURVIVES deleting the app — so the
+/// reinstall advice this replaces was not merely unhelpful there, it was
+/// wrong, and it was the only thing the view offered.
+///
+/// Not nested in the view: the view is private, and this sentence is worth a
+/// test — getting it wrong is invisible until somebody is already stuck.
+enum StoreErrorAdvice {
+    static var text: String {
+        #if os(macOS)
+        String(localized: "Family Connect already tried resetting the store and it still won't open. Quit and reopen the app; if that doesn't help, remove its folder in ~/Library/Containers. Your messages are safe on the family server and will re-download.")
+        #else
+        String(localized: "Family Connect already tried resetting the store and it still won't open. Reinstall the app to start fresh. Your messages are safe on the family server and will re-download.")
+        #endif
+    }
+}
+
 private struct StoreErrorView: View {
     let error: Error
 
@@ -410,7 +489,7 @@ private struct StoreErrorView: View {
                     .multilineTextAlignment(.center)
             }
             .padding(.horizontal, 32)
-            Text("Reinstall Family Connect to start fresh. Your messages are safe on the family server and will re-download.")
+            Text(StoreErrorAdvice.text)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
