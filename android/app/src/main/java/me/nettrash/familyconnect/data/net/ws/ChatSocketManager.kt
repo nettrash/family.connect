@@ -35,6 +35,7 @@
 
 package me.nettrash.familyconnect.data.net.ws
 
+import android.os.SystemClock
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.CoroutineScope
@@ -118,7 +119,16 @@ class ChatSocketManager @Inject constructor(
                 socket.connect(ServerUrlNormalizer.wsUrl(serverUrl), token)
                 val settled = socket.state.first { it != SocketState.Connecting }
                 if (settled == SocketState.Open) {
-                    backoff.reset()
+                    // NOT backoff.reset() here. Reaching Open proves the
+                    // upgrade happened, not that the connection is usable: a
+                    // proxy — or our own server, which kicks a connection
+                    // whose send queue overflows with code 1001 — can accept
+                    // and drop at once. Resetting on Open restarted the
+                    // ceiling every cycle, so it never climbed and the socket
+                    // reconnected roughly twice a second forever, resyncing
+                    // each time. Forgiveness is judged at the drop, on how
+                    // long the connection lasted.
+                    val openedAt = SystemClock.elapsedRealtime()
                     // The wire may have been dark for any amount of time —
                     // REST is the truth, go fetch it.
                     runCatching { syncEngine.resync() }
@@ -128,6 +138,13 @@ class ChatSocketManager @Inject constructor(
                     // on rotation, not on every connect).
                     runCatching { pushTokenRepository.registerCurrentToken() }
                     socket.state.first { it == SocketState.Disconnected }
+                    if (BackoffPolicy.earnsReset(
+                            openedElapsedMillis = openedAt,
+                            nowElapsedMillis = SystemClock.elapsedRealtime(),
+                        )
+                    ) {
+                        backoff.reset()
+                    }
                 }
                 if (!isActive) break
 
