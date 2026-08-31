@@ -78,6 +78,25 @@ four targets building, both string catalogues complete in nine languages.
   `generation` on failure — would have made a tight refetch loop offline, so it was not followed.
   652 iOS tests pass, and the regression test was mutation-checked: the first version passed
   against the bug, because `APIClient.perform` retries a transient GET once internally.
+- **#10 — `attributesOfItemAtPath:` undeclared (ITMS-91053).** Already fixed by the #5 work, before
+  the issue was picked up: `PrivacyInfo.xcprivacy` gained an
+  `NSPrivacyAccessedAPICategoryFileTimestamp` entry, and it ships in both built bundles. Re-verified
+  against the ARCHIVE binaries rather than the source — the selector is present once in the iOS
+  device archive and twice in the macOS one, while the iOS **simulator** build shows zero, which is
+  why simulator evidence cannot settle this question. A full sweep of both archives for every
+  required-reason symbol (file timestamp, system boot time, disk space, active keyboards, user
+  defaults) found only the two categories the manifest already declares, so nothing else is exposed.
+
+  **⚠️ The issue text has the reason codes inverted, and following it would reintroduce the bug.**
+  It says "C617.1 (files in the app container)". Apple's own documentation says the opposite:
+  **`DDA9.1`** is the app container / app group / CloudKit container, and **`C617.1`** is a file the
+  person specifically granted access to, such as through a document picker. The manifest declares
+  **both**, because both paths exist — `MediaPrep.fileSize(of:)` stats a recording in the container
+  *and* a document-picker URL. Declaring only C617.1, as the issue asks, would leave the majority of
+  call sites undeclared. (`3B52.1` is deliberately absent: that is the reason for a third-party SDK
+  acting on the app's behalf.) The same inversion appeared in the research for #5 — take these codes
+  from Apple's docs JSON, never from a summary.
+
 - **#9 — every upload landed in "Missing Compliance".** `ITSAppUsesNonExemptEncryption` was absent
   from both plists, so the questionnaire had to be answered by hand once per platform per build.
   `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO` is now set on all three app-target
