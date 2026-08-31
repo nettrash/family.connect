@@ -1,22 +1,42 @@
 # Family Connect
 
-A self-hosted chat for one household — or several. The server runs on your own Ubuntu box,
-the iOS and Android apps talk only to it, and no third party ever sees a message. One server
-instance can host multiple families; each user belongs to exactly one family, every family has
-a single all-members chat, and any two members of the same family can talk one-to-one. Text
-messages in v1; the protocol is shaped so voice/video call signaling can be added later without
-breaking older clients.
+A self-hosted chat for one household — or several. The server runs on your own Ubuntu box and
+the iOS, macOS and Android apps talk only to it. One server instance can host multiple families;
+each user belongs to exactly one family, every family has a single all-members chat, and any two
+members of the same family can talk one-to-one.
+
+Messages, photos, videos, voice notes, files, locations, polls, a family board, birthdays, and
+one-to-one voice and video calls. See `CHANGELOG` for the full list.
+
+**Who can see your messages.** The database is yours and the apps talk to no other server for
+chat — but "self-hosted" is not the same as "nothing ever leaves", and it is worth being exact
+about the four places where something does. Every one of them is yours to switch off:
+
+| | Default | What the other party gets |
+|---|---|---|
+| **Push notifications** | on if you configure APNs/FCM | With `[push] include_message_body = true` — **the default** — the message text is in the notification, so Apple or Google see it. Set it to `false` for "New message" instead. With no `[push.apns]`/`[push.fcm]` section, nothing is sent at all. |
+| **STUN for calls** | **on**, pointing at Google | `stun_urls` defaults to `stun:stun.l.google.com:19302`, because a voice feature that only works on one Wi-Fi network is not a voice feature. A STUN request only asks "what is my public address" — no content — but it does tell that server a device's address. Point it at your own coturn, or empty it. |
+| **A TURN relay for calls** | off | Carries the *encrypted* media of a call that could not connect directly. It cannot read it, and it never touches messages. |
+| **The assistant** | off | What a member types to it goes to whichever provider you configured. `docs/protocol.md` enumerates exactly what is sent; nothing outside that list is. |
+
+Turn all four off and nothing leaves the box — at the cost of lock-screen previews and of calls
+between different networks. Messages are stored in plaintext in *your* PostgreSQL: the model is
+"your household, your box", not end-to-end encryption.
 
 ## Repository layout
 
 ```
 family.connect/
 ├── docs/
-│   └── protocol.md        # REST + WebSocket contract — the single source of truth
-├── server/                # Rust server (Axum + PostgreSQL), systemd + nginx artifacts
-├── ios/                   # SwiftUI client, iOS 17+ (FamilyConnect.xcodeproj)
+│   ├── protocol.md        # REST + WebSocket contract — the single source of truth
+│   └── operations.md      # running the server: limits, backups, restore, monitoring
+├── server/                # Rust server (Axum + PostgreSQL), systemd + nginx + ops artifacts
+├── ios/                   # SwiftUI client for iOS 17+ AND macOS 14+, one universal
+│                          # target (FamilyConnect.xcodeproj)
 ├── android/               # Jetpack Compose client, Android 8+ (Gradle, :app)
+├── tools/i18n/            # translation helper scripts
 ├── CHANGELOG              # plain-text release history
+├── CODEOWNERS             # review ownership
 └── LICENSE                # MIT
 ```
 
@@ -26,9 +46,11 @@ family.connect/
   families, chats and messages; migrations run automatically at startup. Realtime delivery is
   a WebSocket fan-out; REST is the source of truth clients resync from after any disconnect.
   Sessions are opaque bearer tokens (only their SHA-256 hashes are stored). Push notifications
-  are a hook in v1: device tokens are collected and delivery events logged, but nothing is sent
-  until an APNs/FCM transport is configured in a later version.
-- **Clients** (`ios/`, `android/`): Telegram-simple. First run asks for the server address,
+  are delivered for real: APNs (including PushKit VoIP, which is what makes an incoming call
+  ring) and FCM. A platform with no credentials configured falls back to logging the
+  notification it would have sent, so a server without push keys works unchanged.
+- **Clients** (`ios/`, `android/`): Telegram-simple. The Apple target builds one app for both
+  iPhone and Mac. First run asks for the server address,
   then register or log in, then create a family or join one with an invite code (family owners
   choose whether a code joins immediately or requires their approval). Both apps cache history
   locally, send optimistically with retry, and resync over REST whenever the socket reconnects.
@@ -52,7 +74,7 @@ cd android
 # iOS
 cd ios
 xcodebuild test -project FamilyConnect.xcodeproj -scheme FamilyConnect \
-  -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=NO
 ```
 
 ## Store builds with a predefined server
@@ -134,8 +156,13 @@ sudo nginx -t && sudo systemctl reload nginx
 # place (adds the 443 listener, certificates, and the HTTP→HTTPS redirect):
 sudo certbot --nginx -d chat.yourdomain.tld
 
-# 8. Smoke test
-curl https://chat.example.com/api/v1/healthz        # → {"status":"ok"}
+# 8. Backups — see docs/operations.md for the settings and the restore
+sudo install -m 0755 server/ops/family-connect-backup.sh /usr/local/bin/
+sudo install -m 0644 server/ops/family-connect-backup.{service,timer} /etc/systemd/system/
+sudo systemctl enable --now family-connect-backup.timer
+
+# 9. Smoke test
+curl https://chat.yourdomain.tld/api/v1/healthz     # → {"status":"ok"}
 journalctl -u family-connect -f                     # logs
 ```
 
@@ -155,9 +182,18 @@ journalctl -u family-connect -f                     # logs
 - Passwords are argon2id hashes; session tokens are 256-bit random values stored only as
   SHA-256 hashes, with sliding 180-day expiry and instant revocation on logout.
 - The systemd unit runs as a dedicated non-login user with a hardened sandbox
-  (`ProtectSystem=strict`, `NoNewPrivileges`, restricted address families and syscalls).
-- Messages are stored in plaintext in *your* PostgreSQL — the privacy model is "your household,
-  your box", not end-to-end encryption.
+  (`ProtectSystem=strict`, `NoNewPrivileges`, restricted address families and syscalls) and
+  cgroup memory limits.
+- The shipped nginx site rate-limits the two unauthenticated endpoints that hash a password,
+  and the server bounds how many argon2 hashes run at once. Both matter more than they look:
+  login hashes even for a username that does not exist, to keep an unknown user and a wrong
+  password indistinguishable by timing.
+- Uploads stop before the disk does (`limits.min_free_disk_bytes`), so a filling attachments
+  directory cannot take PostgreSQL down with it.
+- Storage is plaintext in *your* PostgreSQL, per "Who can see your messages" above.
+- **Read `docs/operations.md` before putting this on the public internet.** It covers the
+  limits above, backups (a database dump alone is *not* a complete backup — the attachment
+  bytes live on disk), a tested restore procedure, and what to monitor.
 
 ## License
 

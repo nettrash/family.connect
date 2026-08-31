@@ -1,3 +1,81 @@
+2026-08-31          v1.0.0
+
+                    First release, and the first accurate entry in
+                    this file: the v0.1.0 note below was written at
+                    the initial commit and never touched again, so
+                    it describes a much smaller product than the one
+                    that shipped. Everything here is in addition to
+                    it.
+
+                    MESSAGES. Replies, editing, emoji reactions,
+                    read markers, typing indicators, unread counts
+                    and mentions. Photos, videos, voice notes, files
+                    and locations — sent alone or as an album of up
+                    to ten — with per-family deduplication, so the
+                    same picture sent twice is stored once. Polls. A
+                    family board of sticky notes. Birthdays. A
+                    per-family language.
+
+                    CALLS. One-to-one voice and video between family
+                    members: peer-to-peer WebRTC, with the server
+                    passing offers, answers and ICE candidates and
+                    never media. They ring like real calls — CallKit
+                    on iOS, Telecom on Android — and an optional
+                    TURN relay covers networks that will not carry a
+                    direct connection. Video can be turned off
+                    separately from voice, because a relay sized for
+                    voice is not sized for video.
+
+                    PUSH NOTIFICATIONS ACTUALLY DELIVER. v0.1.0
+                    collected device tokens and logged what it would
+                    have sent; this release ships working APNs (with
+                    PushKit VoIP for incoming calls) and FCM
+                    transports. Note the default: [push]
+                    include_message_body = true puts the message
+                    text into the notification, which means Apple or
+                    Google see it. Set it to false if that is not
+                    the trade you want.
+
+                    AN OPTIONAL ASSISTANT. Off unless the operator
+                    fills in [ai]. Each member gets one private
+                    assistant chat that no other member can read,
+                    and the assistant can also be mentioned by name
+                    in the family chat. What leaves the server is
+                    enumerated in docs/protocol.md and nothing else
+                    does — but it does leave the server, to
+                    whichever provider the operator configured.
+
+                    SAFETY AND MODERATION. Any member can block
+                    another, silently, without the blocked member
+                    being told. Any member can report a member or a
+                    specific message to the family owner. Owners can
+                    reset a member's password, choose whether an
+                    invite code joins immediately or needs approval,
+                    close the family entirely, and cap its size.
+                    Ownership passes on rather than trapping an
+                    owner who wants to leave.
+
+                    ACCOUNTS AND HISTORY. Permanent account
+                    deletion, profile pictures, family statistics,
+                    and a retention sweep that deletes messages and
+                    their attachments past a configurable age.
+
+                    APPS. A native macOS app alongside iOS, from one
+                    universal build (iOS 17+, macOS 14+), plus the
+                    Android app (Android 8+).
+
+                    SERVER. Thirty migrations, applied at startup.
+                    Rate limiting at nginx on the two
+                    unauthenticated argon2 endpoints, a bound on
+                    concurrent password hashes, cgroup memory
+                    limits, and a free-space floor that refuses
+                    uploads before PostgreSQL runs out of room. A
+                    backup script and timer, and a tested restore
+                    procedure, in docs/operations.md.
+
+                    The server binary is 1.0.0. It reported 0.1.0
+                    throughout all of the above.
+
 2026-08-19          v0.1.0
 
                     Initial version. Self-hosted family chat: Rust
