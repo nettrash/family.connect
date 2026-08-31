@@ -476,7 +476,11 @@ labels rather than against this list.
   `MediaPrep.fileSize(of:)`, and the category is required for that API even though only `.size` is
   read. This entry was **missing entirely**, which is an **ITMS-91053 rejection at upload**, before
   a human ever opens the build. `3B52.1` is deliberately absent: it is the reason for a third-party
-  SDK acting on the app's behalf.
+  SDK acting on the app's behalf. **Do not "correct" `DDA9.1` to `C617.1` for the container case** —
+  issue #10 asks for exactly that and has the two codes the wrong way round; Apple's documentation
+  defines `DDA9.1` as the app container and `C617.1` as a user-selected file. Both are declared here
+  because both paths exist. Verified in the ARCHIVE binaries, where the selector appears once on iOS
+  and twice on macOS; the simulator build shows none, so it cannot be used to check this.
 
 Two disclosures sit alongside the label rather than inside it, and the privacy policy has to carry them.
 
