@@ -1444,6 +1444,24 @@ final class ChatSyncCoordinator {
         onItemStart: ((Int, Int) -> Void)? = nil
     ) async -> Bool {
         guard !prepared.isEmpty else { return false }
+        // Held awake for the duration: a send in flight is not persisted
+        // anywhere (see UploadLifeline), so being suspended mid-upload
+        // loses it outright. This buys the seconds an upload already
+        // running needs to land when the sender switches apps.
+        return await UploadLifeline.withLifeline {
+            await self.performSendMedia(
+                prepared, caption: caption, replyTo: replyTo,
+                in: chatID, onItemStart: onItemStart)
+        }
+    }
+
+    private func performSendMedia(
+        _ prepared: [MediaPrep.Prepared],
+        caption: String,
+        replyTo: ReplyToDTO?,
+        in chatID: Int64,
+        onItemStart: ((Int, Int) -> Void)?
+    ) async -> Bool {
         var uploaded: [AttachmentDTO] = []
         for (index, item) in prepared.enumerated() {
             onItemStart?(index + 1, prepared.count)
