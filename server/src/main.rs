@@ -20,7 +20,7 @@ use family_connect::state::AppState;
 use family_connect::{app, calls, db, handlers_attachment, handlers_chat, migrate, push};
 
 #[derive(Parser, Debug)]
-#[command(name = "family-connect", about = "Self-hosted family chat server")]
+#[command(name = "family-connect", version, about = "Self-hosted family chat server")]
 struct Cli {
     /// Path to the TOML configuration file.
     #[arg(short, long, default_value = "/etc/family-connect/config.toml")]

@@ -1,6 +1,6 @@
 [package]
 name = "family-connect"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 authors = ["nettrash <nettrash@nettrash.me>"]
 description = "Self-hosted family chat server: REST + WebSocket API over PostgreSQL (protocol v1)"
