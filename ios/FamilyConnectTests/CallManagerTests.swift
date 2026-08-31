@@ -168,12 +168,27 @@ struct CallManagerTests {
             events.append(hasVideo ? "incoming:\(peerName):video" : "incoming:\(peerName)")
         }
         func reportEnded(callID: UUID, reason: CallEndReason) { events.append("ended:\(reason.rawValue)") }
-        func requestAnswer(callID: UUID) {
+        /// When true the fake refuses every transaction, the way CallKit
+        /// does when another app owns the system call or the provider has
+        /// just been reset.
+        var refusesTransactions = false
+
+        func requestAnswer(callID: UUID, onRefused: @escaping () -> Void) {
             events.append("requestAnswer")
+            if refusesTransactions {
+                events.append("refused")
+                onRefused()
+                return
+            }
             manager?.systemDidAnswer()
         }
-        func requestEnd(callID: UUID) {
+        func requestEnd(callID: UUID, onRefused: @escaping () -> Void) {
             events.append("requestEnd")
+            if refusesTransactions {
+                events.append("refused")
+                onRefused()
+                return
+            }
             manager?.systemDidEnd()
         }
     }
@@ -703,6 +718,58 @@ struct CallManagerTests {
         #expect(!bridge.events.contains("ended:hangup"))
         await h.drain()
         #expect(h.signaling.ends == ["\(remoteID):hangup"])
+    }
+
+    /// THE BUG. CallKit refuses a transaction — another app owns the system
+    /// call, the provider was just reset, a carrier call is up — and the
+    /// refusal used to be logged and dropped. With no system call UI to end
+    /// from either, the in-app Hang Up did nothing and the call stayed up
+    /// with the microphone live until the far side hung up or the app was
+    /// force-quit. The guard timer is cancelled once media connects, so
+    /// nothing else was coming to save it.
+    @Test("a refused end still ends the call, so Hang Up is never inert")
+    func refusedEndStillHangsUp() async throws {
+        let h = Harness(bridge: true)
+        let bridge = try #require(h.bridge)
+        h.manager.handle(frame: offer(id: remoteID))
+        h.manager.acceptIncoming()
+        await h.drain()
+        h.media.emit(.connected)
+        // If this fails the call was already over and the rest of the test
+        // would be measuring nothing.
+        #expect(h.signaling.ends.isEmpty,
+                "the call ended before the refusal could be tested; phase was \(String(describing: h.manager.phase))")
+
+        bridge.refusesTransactions = true
+        h.manager.hangUp()
+        await h.drain()
+
+        #expect(bridge.events.contains("refused"))
+        // Asserted on the WIRE, not the phase: `.ended` is shown briefly and
+        // then returns to `.idle`, so a phase check here passes or fails on
+        // timing. Telling the far side is the durable consequence, and the
+        // one that matters — without it they sit in a call alone while this
+        // side holds a live microphone.
+        #expect(h.signaling.ends == ["\(remoteID):hangup"],
+                "the system refused and nothing ended the call")
+    }
+
+    /// The ringing side had a working exit already (`declineIncoming` does
+    /// not go through the bridge), but ANSWERING did — so a refused answer
+    /// left a call ringing that could not be picked up.
+    @Test("a refused answer still answers the call")
+    func refusedAnswerStillAnswers() async throws {
+        let h = Harness(bridge: true)
+        let bridge = try #require(h.bridge)
+        h.manager.handle(frame: offer(id: remoteID))
+        bridge.refusesTransactions = true
+
+        h.manager.acceptIncoming()
+
+        #expect(bridge.events.contains("refused"))
+        #expect(h.manager.phase != .incoming,
+                "the system refused and the call stayed ringing with no way in")
+        await h.drain()
     }
 
     @Test("with a system bridge, an outgoing call is reported at each step and a remote end is reported back")
