@@ -123,12 +123,27 @@ final class AttachmentStore {
             // Remember the miss: an attachment with no preview must not be
             // re-requested on every render pass.
             missing.insert(key)
+            // A 404 IS a fetch landing, which is what `generation` means, so
+            // it bumps like a success does — and safely, because the key is
+            // now gated: the redraw this causes calls back in and gets nil
+            // without starting anything. AvatarStore's `finish` bumps
+            // unconditionally for the same reason.
+            generation &+= 1
         }
-        // Deliberately NOT bumping `generation` on an unsettled failure.
-        // The bump re-renders every view drawing this key, each of which
-        // calls back in and starts the fetch again — which offline is a
-        // tight loop rather than a retry. Recovery is driven by the socket
-        // reconnecting instead; see `retryAfterReconnect()`.
+        // The UNSETTLED case is the one that must stay silent. Bumping
+        // there re-renders every view drawing this key, each of which calls
+        // back in and starts the fetch again — which offline is a tight loop
+        // rather than a retry, because nothing gates the key. Recovery is
+        // driven by the socket reconnecting instead; see
+        // `retryAfterReconnect()`.
+    }
+
+    /// Whether a fetch for this key is still running. Test-facing: an
+    /// unsettled failure bumps nothing observable by design, so this is the
+    /// only way to wait for one to have been processed rather than merely
+    /// sent.
+    func isFetching(id: Int64, preview: Bool) -> Bool {
+        inFlight.contains(key(id, preview: preview))
     }
 
     /// The socket came back, so the network did. Forget what failed while

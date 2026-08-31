@@ -69,6 +69,23 @@ blocks-review defects that had been missed**, all since fixed:
 Test state at the time of writing: server 201 unit + 290 integration, iOS 648, Android 813, all
 four targets building, both string catalogues complete in nine languages.
 
+### Should-fix items closed since
+
+- **#6 — photos stopped loading permanently after one transient error.** `AttachmentStore` now
+  settles a key only on a real 404; a thrown transport error leaves it retryable, and recovery is
+  driven by the socket reconnect (`ChatSyncCoordinator.handle(.connected)`), mirroring what
+  `AttachmentRepository.kt` already did on Android. The issue's own prescription — bump
+  `generation` on failure — would have made a tight refetch loop offline, so it was not followed.
+  652 iOS tests pass, and the regression test was mutation-checked: the first version passed
+  against the bug, because `APIClient.perform` retries a transient GET once internally.
+- **#7 — macOS shipped with no push entitlement.** `FamilyConnect-macOS.entitlements` requested the
+  iOS key `aps-environment`; both Mac profiles grant only `com.apple.developer.aps-environment`
+  (development on the dev profile, production on the store one), so Xcode dropped it while signing
+  without failing the build. Renamed, and confirmed present in a signed product via
+  `codesign -d --entitlements`. **Not yet proven end to end:** one real alert push has to be seen
+  arriving at a quit Mac before any listing copy claims it, since the server also needs working
+  APNs credentials for the macOS platform row.
+
 ### What shipped for #2 and #3
 Detail is under each blocker below; the short version:
 

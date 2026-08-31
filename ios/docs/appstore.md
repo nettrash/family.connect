@@ -462,7 +462,7 @@ Second, third-party destinations. Two are reached by default and cannot be switc
 
 macOS is one platform on one app record, sharing the bundle id `me.nettrash.FamilyConnect` — never a second record and never a second bundle id. It is held for the first release, and these must land before it is added, so that nobody adds the platform by accident during the iOS submission:
 
-- [ ] **[code]** Fix the entitlement key spelling. `FamilyConnect-macOS.entitlements:25` uses the iOS `aps-environment`; macOS needs `com.apple.developer.aps-environment`. The wrong key is filtered out at signing rather than rejected, so nothing fails loudly — a quit Mac simply receives nothing at all, which is exactly the case the Mac review notes would otherwise describe as working.
+- [x] **[code]** The entitlement key spelling is FIXED (2026-08-31). `FamilyConnect-macOS.entitlements` now declares `com.apple.developer.aps-environment`, which is the spelling both Mac profiles actually grant — the development profile with "development", the store profile with "production"; neither ever granted the iOS key. Verified in the PRODUCT, not the source: a signed Debug build now shows `"com.apple.developer.aps-environment" => "development"` under `codesign -d --entitlements - --xml`. **This does not yet license Variant B of the Mac copy** — that still needs one real alert push seen arriving at a quit Mac.
 - [ ] **[code]** Fix or remove "Save a copy" in the Mac attachment viewer. The sandbox grants only `files.user-selected.read-only`, there is no read-write entitlement anywhere, and the copy is wrapped in `try?` so a failure is silent. Verify on a signed build before any Mac screenshot or review note shows that button.
 - [ ] **[code]** Set `ENABLE_HARDENED_RUNTIME`. It is absent from every configuration — optional for the Mac App Store, mandatory for Developer ID notarisation.
 - [ ] **[code]** Produce Mac screenshots. `ios/docs/screenshots/mac/` does not exist, and the UI-test harness is iOS-only, so `ios/scripts/capture-mac-screenshot.sh` is the route.
@@ -490,7 +490,7 @@ None of the following can be settled from this repository — each depends on th
 - **Calls must be on at fc.nettrash.me.** Both texts promise voice and video; the buttons are gated on `calls_enabled` and `video_calls_enabled` from `GET /me`. If either is off on the live box, the Calls group is untestable and the promise is false.
 - **TURN wiring — the relay sentence depends on it (issue #18).** coturn 4.6.1 is deployed and healthy on the box, but `handlers_call.rs` only emits a TURN entry when `[calls] turn_urls` is non-empty, and a `turn_secret` that does not byte-match coturn's `static-auth-secret` fails silently at allocate time. Check both. If `turn_urls` is empty the relay sentence is FALSE — with no relay a call that cannot connect directly simply fails (`config.rs`, `turn_urls`). Either wire TURN and place one real relayed call, or delete "Where a direct path is blocked, our relay carries the stream instead" from the beta description. Never restore an unconditional "the call never touches the server".
 - **APNs environment (issue #18) — this decides whether the NOTIFICATIONS group works at all.** If `[push.apns] environment` is "sandbox", every alert push to a TestFlight build returns BadDeviceToken, the server treats that as permanently dead and deletes the device row, and PushRegistrar only re-POSTs when the OS token changes — so the tester never gets another push without reinstalling. Confirm `environment = "production"` and `bundle_id = "me.nettrash.FamilyConnect"`, and send one real alert push and one VoIP push to a TestFlight build before inviting anybody.
-- **Mac push (issue #7).** "A Mac that is quit receives nothing" holds only while `FamilyConnect-macOS.entitlements` still uses the iOS spelling `aps-environment`; macOS wants `com.apple.developer.aps-environment`, so the key is stripped at signing and the shipped Mac app carries no push entitlement. If the rename lands before the build is cut, delete that sentence and the first Mac tester point — otherwise the text tells testers to ignore a working feature. (The "rings" half stays true either way: there is no PushKit on macOS.)
+- **Mac push (issue #7) — the entitlement is FIXED as of 2026-08-31**, renamed to `com.apple.developer.aps-environment` and confirmed present in a signed build. The tester note saying a quit Mac receives nothing is therefore about the OLD build (100) and should be dropped from any build cut after this change — but only once one real push has been seen arriving, because the entitlement alone does not prove delivery. The "rings" half stays true either way: there is no PushKit on macOS and a Mac is never woken for a call.
 - **The AI assistant is not mentioned anywhere above, on purpose.** `[ai]` defaults to disabled and the clients hide `@ai` when the server reports no assistant, and whether it is configured on the live box is unknown here. Check it; if it is on, both texts need a paragraph — including that an `@ai` mention in the family chat sends other members' words to the operator's Azure OpenAI, and that `ai_history` defaults to on.
 - **Retention.** The server sweeps messages *and their photos, videos, voice notes and files* older than `retention_days` (default 100). Check the live value; if it is not 0, testers should be told their history has an expiry date, because nothing in the app says so.
 - **Siri and Apple Watch.** The Contacts sentence deliberately claims only the contact card. No code requests Siri authorisation, and whether the call intents reach the app unprompted is unverified. Watch answering is standard CallKit behaviour but nothing here covers it — no entitlement, no test — and the shipping build logs and discards every `CXTransaction` error with no completion, so a refused `CXStartCallAction` leaves the in-app Hang Up dead. Verify on a real device and a paired Watch before either claim goes into the text.
@@ -511,12 +511,20 @@ things the iOS copy says are false here and must never appear in Mac copy: takin
 inside a chat, anything about CallKit, Siri, contact-card calling or the lock screen, and
 notifications arriving while the app is closed.
 
-**A quit Mac receives nothing.** Verified against every signed macOS archive in
-`~/Library/Developer/Xcode/Archives`: none carries an `aps-environment` key in either spelling, so
-the Mac binary has no push entitlement and macOS never issues it a device token. Separately, and
-by protocol design, a Mac is never woken for a call. The copy below is written to be true of the
-build as it stands; if the entitlement is fixed, the honest-limits paragraph and the review notes
-both need their notification sentence revisited, and the alternative wording is in the checklist.
+**A quit Mac receives nothing — in every build shipped so far.** Verified against every signed
+macOS archive in `~/Library/Developer/Xcode/Archives`: none carries an `aps-environment` key in
+either spelling, so those binaries have no push entitlement and macOS never issued them a device
+token. **The cause is fixed as of 2026-08-31** (issue #7): the entitlement is renamed to the macOS
+spelling `com.apple.developer.aps-environment` and now survives signing, confirmed in the product.
+
+The copy below still says a quit Mac is not notified, and stays that way deliberately. A correct
+entitlement makes push *possible*, not *proven* — the server must also hold APNs credentials that
+work for this bundle id against the macOS platform row, and nobody has yet watched a push arrive at
+a quit Mac. The alternative paragraph is written out as Variant B in the checklist; switch to it
+after seeing one, not before.
+
+Separately, and by protocol design, a Mac is never woken for a CALL. No entitlement changes that,
+so every sentence about ringing stays true whichever variant ships.
 
 ### macOS Promotional Text (163/170 chars)
 
@@ -806,10 +814,7 @@ No ads, no analytics, no tracking — so the only way we learn about a problem i
   Privacy answers need revisiting — an `@ai` mention in the family chat sends other members'
   recent transcript, because `families.ai_history` defaults to true. If it is OFF, say so in the
   review notes: the server is open source and a reviewer can read `ai.rs`.
-- [ ] **[code]** If the `com.apple.developer.aps-environment` fix lands, replace the Mac
-  honest-limits sentence with: *"A Mac rings only while the app is running — it is never woken for
-  a call, by design — though messages still reach it when it is closed."* Until then the shipped
-  wording stands, and it was verified against every signed archive.
+- [ ] **[nettrash]** The `com.apple.developer.aps-environment` fix HAS landed and is verified in a signed binary. What is left before the Mac honest-limits sentence changes to Variant B: send one real alert push to a QUIT Mac and watch it arrive. Until that is seen, the shipped wording stays as it is — the entitlement makes push possible, not proven.
 - [ ] **[nettrash]** Re-shoot or retouch two Mac screenshots before they go on a public page.
   `04-settings.png` carries the grey material bars **and** a "Link Previews" row bisected by the
   footer. `03-family.png`'s bars render white, but it publishes the invite code `CR2WJQ2V` — a
@@ -860,7 +865,7 @@ That takes the Description to 3,842 characters. In What to Test, the four depend
 
 Each item below is tagged **[code]** (a change in this repository) or **[nettrash]** (his App Store Connect account, his server, or his call), as in the iOS checklist.
 
-- [ ] **[code]** Fix the entitlement key spelling — the item the copy above hangs on. `FamilyConnect-macOS.entitlements:25` uses the iOS `aps-environment`; macOS wants `com.apple.developer.aps-environment`. Because the wrong key is filtered out at signing rather than refused, the shipped Mac app simply carries no push entitlement and a quit Mac receives nothing at all. Fixing it does **not** make a Mac ring: `docs/protocol.md:1606` says a Mac never registers a VoIP token and is never rung by push, which is protocol design and not a signing accident. Whatever happens here, the "a call rings only while the app is running" half of the copy stays true.
+- [x] **[code]** The entitlement rename is DONE and verified in a signed binary (2026-08-31). The copy still uses **Variant A**: the second half of Variant B's condition — one real alert push arriving at a quit Mac — has not been observed, and the entitlement is necessary but not sufficient (the server also has to hold APNs credentials that work for this bundle id on the macOS platform row). Send one, then switch.
 - [ ] **[code]** Fix or remove "Save a copy" in the Mac attachment viewer, and re-word the two places the texts above ask testers about it. `MacAttachmentViewer.swift:167` runs `try? FileManager.default.copyItem(at: source, to: destination)` after an `NSSavePanel`, but the sandbox grants only `com.apple.security.files.user-selected.read-only` and there is no read-write entitlement anywhere in the file — so a refused write returns nothing and the button appears to succeed. The `try?` on the preceding `removeItem` hides the same failure. Verify on a **signed, sandboxed** build: a development build run outside the sandbox will not reproduce it. Until it is verified, "Save a copy" must not appear in a Mac screenshot or a review note as a working feature — which is exactly why What to Test asks a tester to go and look in the folder.
 - [ ] **[code]** Set `ENABLE_HARDENED_RUNTIME`. It is absent from every configuration in `project.pbxproj` — optional for a Mac App Store submission, mandatory the moment anything is distributed with Developer ID and notarised. Setting it now costs nothing and removes a surprise from a later direct-download build.
 - [ ] **[nettrash]** Upload the four Mac screenshots from `ios/docs/screenshots/mac/` — `01-family-chat.png`, `02-board.png`, `03-family.png`, `04-settings.png`, all 2560×1600, which is one of the sizes App Store Connect accepts for Mac. Two carry a known cosmetic flaw and should be looked at before they go up: in `03-family.png` and `04-settings.png` the sheet's material bars render as flat grey, because the capture takes the window alone and a vibrancy material with no backdrop behind it has nothing to blur. That is a capture artefact, not a bug in the app, but it is what a customer sees on the product page — either re-shoot those two over a desktop backdrop, or accept them knowingly.
