@@ -262,7 +262,7 @@ pub async fn list_reports(
     ))
     .bind(family)
     .bind(auth.user_id)
-    .bind(i64::from(state.cfg.limits.max_page_size))
+    .bind(state.cfg.limits.max_page_size)
     .fetch_all(&state.pool)
     .await?;
     let reports: Vec<Report> = rows.iter().map(report_from_row).collect();

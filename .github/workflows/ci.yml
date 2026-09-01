@@ -1,0 +1,491 @@
+name: CI
+
+# One workflow for all three stacks (issue #20). Until this existed, the only
+# automated coverage that ran was whatever someone remembered to type: every
+# server integration test is #[ignore]d behind a live PostgreSQL, so a bare
+# `cargo test` exits 0 having run 212 of 505 tests and skipped the only
+# coverage /auth/*, /me/delete, /devices, /attachments and /calls/ice have.
+#
+# The rule this file is built around: an exit code is not a result. Each job
+# reads back how many tests actually EXECUTED and fails if that number
+# collapses, because every silent-skip failure mode here (a mistyped
+# -only-testing suite, a Postgres that never came up, a forgotten
+# --include-ignored, a Gradle task that matched no variant) is green otherwise.
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:  # Enable manual triggering
+
+# `"**"`, not the Rust siblings' `"*"` and emphatically not the Apple/Android
+# siblings' `[ master, main ]`: the default branch is master, but all release
+# work lives on `v1.0` (39 commits ahead) and `main` is stale. A master-only
+# filter would produce a green badge for a branch nobody is working on --
+# issue #20's own complaint, one level up. `*` would also skip any future
+# branch with a slash in the name; `**` does not.
+#
+# There is deliberately NO `pull_request:` trigger. Paired with `push: "**"` it
+# would run everything a second time for each commit on a branch with a PR
+# open -- and it could not be deduped, because `github.ref` is
+# `refs/heads/<branch>` on a push but `refs/pull/<n>/merge` on a PR, so the two
+# runs land in different concurrency groups and neither cancels the other.
+# (That doubling is visible in pgc's own run history; it is free there because
+# pgc is public. This repo is private, where the macOS lane bills at 10x.)
+# Since branch protection is unavailable on the free plan, a PR check could
+# never be required anyway -- so the push run is the one that does the work.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Which stacks does this push actually touch?
+  #
+  # This exists for one reason: money. The repo is private on the free plan
+  # (2,000 minutes/month) and macOS bills at 10x, so the iOS lane costs on the
+  # order of 100-180 billed minutes per run. The three stacks live in disjoint
+  # directories, so gating on paths keeps the expensive lane honest -- it still
+  # runs on every ios/** change, including on v1.0 -- while a server-only
+  # commit stops paying for it.
+  #
+  # Be clear-eyed about what this does NOT fix: at the observed rate (117
+  # commits in 30 days, 93 of them touching ios/) the iOS lane still runs ~90
+  # times a month, several times over the allowance. Running every lane on
+  # every push regardless is a deliberate choice, made knowing the month's
+  # minutes will run out; the alternatives considered and rejected were making
+  # the repo public (Actions is free there) and moving iOS to a nightly
+  # schedule. Revisit here if the overage stops being acceptable.
+  #
+  # Two shared paths force all three lanes: docs/protocol.md, because it is the
+  # binding wire contract every stack implements, and this workflow itself.
+  # Nothing else outside the stack directories does -- the CHANGELOG, the
+  # README and the dated audit report under docs/ cannot change a build, and
+  # that audit file alone accounts for 9 of the last 40 commits, so treating
+  # every doc as shared would make this gate fire almost never.
+  #
+  # Fail open, never closed: if the diff base cannot be resolved (a brand-new
+  # branch, a force push, a manual dispatch) every job runs. Done with plain
+  # git rather than a filter action so it adds no dependency.
+  changes:
+    name: What changed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      server: ${{ steps.filter.outputs.server }}
+      android: ${{ steps.filter.outputs.android }}
+      ios: ${{ steps.filter.outputs.ios }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        run: |
+          base='${{ github.event.before }}'
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "No usable diff base ($base) -- running every job."
+            printf 'server=true\nandroid=true\nios=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only "$base" '${{ github.sha }}')
+          echo "Changed files:"; echo "$files" | sed 's/^/  /'
+          if echo "$files" | grep -q -E '^(docs/protocol\.md|\.github/)'; then
+            echo "A shared path changed (the protocol contract or CI itself) -- running every job."
+            printf 'server=true\nandroid=true\nios=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for stack in server android ios; do
+            if echo "$files" | grep -q -E "^$stack/"; then
+              echo "$stack=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$stack=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+          echo "Decision:"; cat "$GITHUB_OUTPUT"
+
+  server:
+    name: Server (Rust)
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-24.04  # pinned: `ubuntu-latest` is mid-migration to 26.04
+    timeout-minutes: 45    # the siblings set none; see the note on the test step
+
+    # The harness creates and drops a scratch database per test, so it needs a
+    # role with CREATEDB (the image's `postgres` superuser is fine) and
+    # PostgreSQL >= 13 for `DROP DATABASE ... WITH (FORCE)`.
+    #
+    # pgc hand-rolls its container with `docker run` because its publication
+    # tests need wal_level=logical set at server start. Nothing here needs a
+    # server-side setting, so the simpler `services:` form is enough -- the
+    # difference between the two repos is deliberate, not an oversight.
+    #
+    # The health check is load-bearing: the harness's first act is a connect
+    # with a 5s acquire timeout and NO retry, so without it the first test
+    # binary races initdb and panics.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned rather than `stable`. The clippy step below is -D warnings, so
+      # an unpinned toolchain turns "rustc shipped a new lint" into a red build
+      # with no commit to blame. 1.95.0 is what these gates were verified
+      # green on; bump it deliberately.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: Check format
+        run: cd ${{ github.workspace }}/server ; cargo fmt --all -- --check
+
+      # -D warnings, which the Rust siblings do NOT use -- they run clippy bare.
+      # It is safe as of the commit that added this file: the tree was clean
+      # under it across all 24 targets, once the one useless_conversion in
+      # handlers_report.rs was dropped in that same commit. A NEW rustc lint is
+      # what would break this, which is why the toolchain above is pinned.
+      # --all-features is deliberately absent: the crate declares no [features],
+      # so it would be a no-op that implies coverage which does not exist.
+      - name: Check clippy
+        run: cd ${{ github.workspace }}/server ; cargo clippy --all-targets --locked -- -D warnings
+
+      # Split from the test step so a compile error reads as a compile error.
+      - name: Build
+        run: cd ${{ github.workspace }}/server ; cargo build --locked --all-targets --verbose
+
+      # --include-ignored is the entire point of this job. Plain `cargo test`
+      # runs the 212 unit tests and SKIPS all 293 integration tests while
+      # exiting 0; `-- --ignored` runs the 293 and silently drops the 212.
+      # Only --include-ignored runs both.
+      #
+      # Do NOT parallelise the test binaries (nextest, --test-threads up): each
+      # test holds a scratch pool, and forcing all 22 integration binaries to
+      # run at once exhausts the container's max_connections=100 -- which
+      # surfaces as "assertion left: 500, right: 201" on registration, i.e. it
+      # masquerades as a product bug. Cargo's sequential default is why this
+      # suite passes. Likewise do not set RUSTFLAGS or override the profile:
+      # [profile.dev.package.rsa] opt-level = 3 keeps the push tests' RSA-2048
+      # keygen from taking minutes.
+      #
+      # The integration tests sleep on a real clock (28 sleeps, plus a 5s
+      # PUSH_WAIT), so this is the job most likely to be slow on a small
+      # runner. Hence timeout-minutes above: the harness has no bound on a
+      # wedged WebSocket test, and an unbounded hang would burn the 6-hour
+      # job limit.
+      - name: Run tests
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+        run: |
+          set -o pipefail
+          cd "${{ github.workspace }}/server"
+          cargo test --locked --verbose --no-fail-fast -- --include-ignored 2>&1 | tee "$RUNNER_TEMP/server-tests.log"
+
+      # An exit code cannot tell "505 passed" from "0 ran". libtest prints
+      # `0 ignored` and `0 filtered out` -- note that is TWO tokens, so the
+      # field after the count is `filtered`, not `filtered_out`.
+      #
+      # `ignored == 0` is the strong assertion: it proves --include-ignored
+      # took effect AND that Postgres was reachable. The passed floor is
+      # deliberately slack (450 against a current 505) so that deleting a test
+      # is ordinary maintenance rather than a CI edit.
+      - name: Assert the tests actually ran
+        if: ${{ !cancelled() }}
+        run: |
+          test -s "$RUNNER_TEMP/server-tests.log" || { echo "::error::no test log -- the test step did not get far enough to produce one"; exit 1; }
+          awk '
+            /^test result:/ {
+              for (i = 1; i <= NF; i++) {
+                if ($(i+1) ~ /^passed/)   p += $i
+                if ($(i+1) ~ /^failed/)   f += $i
+                if ($(i+1) ~ /^ignored/)  g += $i
+              }
+              n++
+            }
+            END {
+              printf "targets=%d passed=%d failed=%d ignored=%d\n", n, p, f, g
+              if (f > 0)   { print "::error::" f+0 " tests failed"; exit 1 }
+              if (g > 0)   { print "::error::" g+0 " tests were ignored -- --include-ignored did not take effect, or PostgreSQL was unreachable"; exit 1 }
+              if (n < 20)  { print "::error::only " n+0 " test targets reported; expected ~25"; exit 1 }
+              if (p < 450) { print "::error::only " p+0 " tests passed; expected ~505"; exit 1 }
+            }
+          ' "$RUNNER_TEMP/server-tests.log"
+
+      - name: Upload test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-test-log
+          path: ${{ runner.temp }}/server-tests.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  android:
+    name: Android (unit tests + lint)
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # JDK 25, NOT the 17 every other Android repo here uses:
+      # android/gradle/gradle-daemon-jvm.properties pins toolchainVersion=25
+      # and is committed. With JAVA_HOME on 17, Gradle satisfies that by
+      # downloading ~137 MB of Temurin 25 from api.foojay.io on every run --
+      # slow, and a hard third-party dependency for a self-hosted project.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # The default branch (master) is 39 commits behind and effectively never
+      # builds, and setup-gradle only WRITES its cache on the default branch
+      # unless told otherwise -- so without this every Android run is cold.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      # Robolectric fetches its own android-all jar (~190 MB) through its own
+      # resolver into ~/.m2 at TEST time. It is not on any Gradle
+      # configuration, so setup-gradle's cache does not cover it and
+      # --offline does not stop it. restore-keys matter: the exact key changes
+      # on any version-catalogue edit, and without a prefix fallback every
+      # dependency bump would re-download the whole jar.
+      - name: Cache the Robolectric android-all jar
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-${{ runner.os }}-${{ hashFiles('android/gradle/libs.versions.toml') }}
+          restore-keys: |
+            robolectric-${{ runner.os }}-
+
+      # compileSdkMinor = 1 means the build needs platform android-36.1, which
+      # is a package separate from android-36 -- so grep for the exact string.
+      # Both are preinstalled on ubuntu-24.04 today; this turns a future image
+      # change into a legible failure here instead of an unaccepted-licence
+      # error minutes later inside checkStandardDebugAarMetadata.
+      - name: Show toolchain
+        run: |
+          java -version 2>&1
+          ls "$ANDROID_HOME/platforms"
+          test -d "$ANDROID_HOME/platforms/android-36.1" || { echo "::error::android-36.1 is missing from this runner image; compileSdkMinor = 1 needs it"; exit 1; }
+
+      # Name the variant. The DEFAULT variant is nettrashDebug, so bare `lint`
+      # or `check` would silently gate the wrong flavour -- and the nettrash
+      # flavour additionally wants a google-services.json that is gitignored
+      # and therefore absent here. `standard` needs no Google project.
+      #
+      # -PnoBump is defence in depth rather than strictly required here: the
+      # bump is a doLast attached only to the assemble*/bundle* task names
+      # (app/build.gradle.kts:378-386), neither of which this job runs. It is
+      # passed anyway so that adding an assemble to this line later cannot
+      # silently start rewriting the TRACKED android/version.properties on the
+      # runner -- a number that is never committed from CI and so would drift
+      # from the one Play has already seen. The git-diff step below is the
+      # tripwire that keeps that true.
+      #
+      # --continue so a failing test still lets lint report; otherwise one
+      # failure hides the other and the log says less than it could.
+      #
+      # No emulator job: there is no androidTest source set at all, so
+      # connectedAndroidTest would add 10-20 minutes and assert nothing.
+      - name: Unit tests + lint (standard flavour)
+        run: cd ${{ github.workspace }}/android ; ./gradlew --no-daemon --stacktrace -PnoBump --continue testStandardDebugUnitTest lintStandardDebug
+
+      # Gradle exits 0 when a test task matches zero tests, so read the JUnit
+      # XML back. Floor is slack (700 against a current 818) on purpose.
+      - name: Assert the tests actually ran
+        if: ${{ !cancelled() }}
+        run: |
+          cd "${{ github.workspace }}/android"
+          python3 - <<'PY'
+          import glob, sys, xml.etree.ElementTree as ET
+          files = glob.glob("app/build/test-results/testStandardDebugUnitTest/TEST-*.xml")
+          if not files:
+              print("::error::no JUnit XML found -- the test task did not run"); sys.exit(1)
+          total = failures = errors = 0
+          for f in files:
+              r = ET.parse(f).getroot()
+              total    += int(r.get("tests", 0))
+              failures += int(r.get("failures", 0))
+              errors   += int(r.get("errors", 0))
+          print(f"suites={len(files)} tests={total} failures={failures} errors={errors}")
+          if failures or errors:
+              print(f"::error::{failures} failures, {errors} errors"); sys.exit(1)
+          if total < 700:
+              print(f"::error::only {total} tests ran; expected ~818"); sys.exit(1)
+          PY
+
+      # Tripwire for the bump described above: if anyone ever adds an assemble
+      # or bundle task here without -PnoBump, fail loudly rather than leave a
+      # dirty checkout whose versionCode silently diverges from the one Play
+      # has already seen.
+      - name: Assert the build did not bump versionCode
+        if: ${{ !cancelled() }}
+        run: cd ${{ github.workspace }} ; git diff --exit-code -- android/version.properties
+
+      - name: Upload reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: |
+            android/app/build/reports/**
+            android/app/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+  ios:
+    name: iOS (unit tests)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The deployment target is only iOS 17, which makes an older image look
+      # safe -- but the source calls MKMapItem(location:address:), which exists
+      # only in the iOS 26 SDK. macos-15 defaults to Xcode 16.4 and fails
+      # compiling LocationAttachmentView.swift with an error that reads like a
+      # source bug; macos-14 cannot open an objectVersion 77 project at all.
+      # macos-26 is pinned rather than macos-latest, which is by definition a
+      # moving target.
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -E 'iOS 2[6-9]' || { echo "::error::no iOS 26+ SDK on this runner; the source needs it"; exit 1; }
+
+      # Its own step so an upstream package problem is reported as one, rather
+      # than buried in a wall of xcodebuild output. Deliberately NOT cached:
+      # no Apple sibling caches SwiftPM, and a stale artifact cache would hide
+      # exactly the class of upstream breakage this step exists to surface.
+      - name: Resolve package dependencies
+        run: cd ${{ github.workspace }}/ios ; xcodebuild -resolvePackageDependencies -project FamilyConnect.xcodeproj -scheme FamilyConnect
+
+      # Never hardcode a device name. `generic/platform=iOS Simulator` is
+      # rejected outright for a test action, a bare `name=` silently means
+      # OS:latest, and the obvious names drift with the image (name=iPhone 16
+      # Pro does not resolve). Resolve a concrete UDID instead.
+      - name: Pick a simulator
+        run: |
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          best = None
+          for runtime, devs in devices.items():
+              if "SimRuntime.iOS-" not in runtime:
+                  continue
+              version = tuple(int(p) for p in runtime.rsplit(".", 1)[-1].split("-")[1:])
+              for dev in devs:
+                  if dev.get("isAvailable") and "iPhone" in dev["name"]:
+                      if best is None or version > best[0]:
+                          best = (version, dev["udid"], dev["name"])
+          if best is None:
+              sys.exit("no available iPhone simulator with an iOS runtime")
+          print(best[1])')
+          echo "Selected $(xcrun simctl list devices | grep "$UDID")"
+          echo "FC_SIM_UDID=$UDID" >> "$GITHUB_ENV"
+
+      # -only-testing:FamilyConnectTests, as issue #20 asks. The scheme also
+      # lists FamilyConnectUITests, of which three of five classes XCTSkip
+      # themselves unless a seeded live server is pointed at them (and one
+      # needs a SIGNED build for its app-group keychain write) -- so including
+      # them buys skipped-but-green results plus two real app launches on the
+      # runner billed at 10x.
+      #
+      # `test`, never `archive`: the agvtool bump hangs off ArchiveAction, so a
+      # test job leaves the checkout clean but an archive would rewrite
+      # CURRENT_PROJECT_VERSION across project.pbxproj on every run.
+      #
+      # The result bundle goes under RUNNER_TEMP and is removed first --
+      # xcodebuild exits 64 if the path already exists, which is what a
+      # re-run of a failed job would otherwise hit.
+      - name: Run tests
+        run: |
+          cd "${{ github.workspace }}/ios"
+          rm -rf "$RUNNER_TEMP/FamilyConnect.xcresult"
+          xcodebuild test \
+            -project FamilyConnect.xcodeproj \
+            -scheme FamilyConnect \
+            -only-testing:FamilyConnectTests \
+            -destination "platform=iOS Simulator,id=$FC_SIM_UDID" \
+            -resultBundlePath "$RUNNER_TEMP/FamilyConnect.xcresult" \
+            CODE_SIGNING_ALLOWED=NO
+
+      # A mistyped -only-testing SUITE name exits 0 having run nothing (only a
+      # wrong TARGET name is a hard error), so read the count back out of the
+      # bundle. Note `get test-results summary` emits JSON already -- it has no
+      # --format flag.
+      - name: Assert the tests actually ran
+        if: ${{ !cancelled() }}
+        run: |
+          test -d "$RUNNER_TEMP/FamilyConnect.xcresult" || { echo "::error::no result bundle -- the test step did not get far enough to produce one"; exit 1; }
+          xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/FamilyConnect.xcresult" > "$RUNNER_TEMP/ios-summary.json"
+          test -s "$RUNNER_TEMP/ios-summary.json" || { echo "::error::xcresulttool produced no summary -- the result bundle is unreadable"; exit 1; }
+          python3 - "$RUNNER_TEMP/ios-summary.json" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          total, failed, skipped, result = d["totalTestCount"], d["failedTests"], d["skippedTests"], d["result"]
+          print(f"total={total} failed={failed} skipped={skipped} result={result}")
+          if failed:
+              print(f"::error::{failed} tests failed"); sys.exit(1)
+          if total < 600:
+              print(f"::error::only {total} tests ran; expected ~686"); sys.exit(1)
+          PY
+
+      - name: Upload result bundle
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcresult
+          path: ${{ runner.temp }}/FamilyConnect.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
+
+# Deliberately not here, and why:
+#
+#   * A macOS test lane. The Mac app is real and 675 of the tests compile for
+#     it, but issue #31 records the lane hanging ~1-in-4 with "the test runner
+#     hung before establishing connection" -- and a wedged job on the 10x-billed
+#     runner is expensive. Add it once #31 is closed.
+#   * ios/scripts/check-strings.py, which is written to be a gate and would
+#     catch strings that never reach Localizable.xcstrings. It exits 1 today
+#     (one uncatalogued and four untranslated strings), and shipping a
+#     permanently-yellow job is how a gate gets ignored. Add it once those are
+#     fixed.
+#   * assembleStandardRelease. It would cover R8 and lintVital, but AGP does
+#     not fall back to debug signing without keystore.properties (the comment
+#     at app/build.gradle.kts:163 is stale) -- it emits an unverifiable
+#     -unsigned.apk. Worth a release job with real secrets, not a test gate.
+#   * A required-check / branch-protection rule: this repo is private on the
+#     free plan, where branch protection is not available. CI here is advisory,
+#     which is part of why it triggers on push rather than on pull_request.
+#   * A README badge. Every sibling has one, but an unparameterised badge URL
+#     reports the DEFAULT branch -- master, which is 39 commits behind -- so it
+#     would show a green tick for code nobody is running. Add one with
+#     `?branch=v1.0`, or after master catches up.

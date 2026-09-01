@@ -753,7 +753,8 @@ mod tests {
         open.begin(id(2), 42, 7, 9, 100, "o".into(), false, false)
             .expect("an ordinary call");
         assert_eq!(
-            open.add_candidate(id(2), 7, candidate(1)).map(|r| r.to_user),
+            open.add_candidate(id(2), 7, candidate(1))
+                .map(|r| r.to_user),
             Some(9),
         );
     }
@@ -784,9 +785,7 @@ mod tests {
         let open = CallRegistry::new();
         open.begin(id(2), 42, 7, 9, 100, "o".into(), false, false)
             .expect("an ordinary call");
-        let ended = open
-            .end(id(2), Some(7), EndReason::Hangup)
-            .expect("ends");
+        let ended = open.end(id(2), Some(7), EndReason::Hangup).expect("ends");
         assert!(!ended.suppressed);
     }
 
