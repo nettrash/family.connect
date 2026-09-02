@@ -173,3 +173,77 @@ async fn every_migration_in_the_list_is_recorded_as_applied() {
         .collect();
     assert_eq!(applied, expected);
 }
+
+/// 0031's backfill, run as its own text against a table put back in its
+/// pre-0031 shape.
+///
+/// The column is what a BADGE counts, so what it says about notes that
+/// already existed decides whether the first launch after the upgrade
+/// badges a wall nobody wrote on. It can only be `board_seq`: nothing in
+/// the schema records which of a note's past changes were rewrites, and
+/// `board_seq` is the one bound that is certainly not too LOW — the last
+/// thing that happened to the note happened at that seq, so "its text was
+/// written no later than then" is true of every row. Too high is safe; too
+/// low badges a note nobody touched.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_0031_backfill_dates_every_existing_note_by_its_board_seq() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+
+    let created: serde_json::Value = ts
+        .post(
+            &owner,
+            "/families/mine/board/notes",
+            serde_json::json!({"text": "Milk", "color": "yellow", "x": 0.2, "y": 0.3}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    let created_seq = created["note"]["board_seq"].as_i64().expect("seq");
+    // Dragged afterwards, so board_seq and the creation seq differ — which
+    // is the only case where the backfill's choice is visible at all.
+    let moved: serde_json::Value = ts
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            serde_json::json!({"x": 0.9}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let moved_seq = moved["note"]["board_seq"].as_i64().expect("seq");
+    assert!(moved_seq > created_seq);
+
+    // Back to the shape the table had before 0031, then run the real text.
+    sqlx::raw_sql("ALTER TABLE notes DROP COLUMN content_seq")
+        .execute(&ts.state.pool)
+        .await
+        .expect("dropping the column back off");
+    sqlx::raw_sql(migration_sql(31))
+        .execute(&ts.state.pool)
+        .await
+        .expect("re-running migration 31");
+
+    let content_seq: i64 = sqlx::query_scalar("SELECT content_seq FROM notes WHERE id = $1")
+        .bind(note_id)
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("the backfilled seq");
+    assert_eq!(content_seq, moved_seq);
+
+    // …and the column it leaves behind takes no default, so a note written
+    // without one is a loud failure rather than a note that never badges.
+    let has_default: Option<String> = sqlx::query_scalar(
+        "SELECT column_default FROM information_schema.columns
+         WHERE table_name = 'notes' AND column_name = 'content_seq'",
+    )
+    .fetch_one(&ts.state.pool)
+    .await
+    .expect("the column exists");
+    assert_eq!(has_default, None);
+}

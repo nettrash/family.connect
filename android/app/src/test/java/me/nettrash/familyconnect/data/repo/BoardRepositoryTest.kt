@@ -20,12 +20,16 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.NoteDao
+import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.testutil.FakeBoardApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.noteDto
 import me.nettrash.familyconnect.testutil.noteTombstone
+import me.nettrash.familyconnect.util.BoardBadge
+import me.nettrash.familyconnect.util.badgeMarks
+import me.nettrash.familyconnect.util.marks
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -285,5 +289,88 @@ class BoardRepositoryTest {
 
         assertThat(boardApi.created.single().size).isEqualTo("small")
         assertThat(noteDao.observeNotes().first().single().size).isEqualTo("small")
+    }
+
+    // --- content_seq: the seq a badge counts (issue #53) ---------------
+
+    @Test
+    fun `a note stores its content seq and a move leaves it alone`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(noteDto(id = 1, boardSeq = 10, contentSeq = 10))
+        runCurrent()
+        assertThat(noteDao.findById(1)!!.contentSeq).isEqualTo(10)
+
+        // The server moved board_seq and kept content_seq: a drag.
+        repository.applyNote(noteDto(id = 1, x = 0.9, boardSeq = 11, contentSeq = 10))
+        runCurrent()
+        assertThat(noteDao.findById(1)!!.boardSeq).isEqualTo(11)
+        assertThat(noteDao.findById(1)!!.contentSeq).isEqualTo(10)
+
+        // …and a rewrite moves both.
+        repository.applyNote(noteDto(id = 1, text = "Oat milk", boardSeq = 12, contentSeq = 12))
+        runCurrent()
+        assertThat(noteDao.findById(1)!!.contentSeq).isEqualTo(12)
+    }
+
+    /** A server that predates the field sends none, and the row then says
+     *  so with 0 — which is what sends the badge back to the note-id
+     *  rule. */
+    @Test
+    fun `a note without a content seq stores zero`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(noteDto(id = 1, boardSeq = 10, contentSeq = null))
+        runCurrent()
+
+        assertThat(noteDao.findById(1)!!.contentSeq).isEqualTo(0)
+    }
+
+    /** The update that brings content seqs finds a device that has shown
+     *  this board before: its badge mark is seeded once, from what it
+     *  already holds, or the server's backfill badges the whole wall. */
+    @Test
+    fun `applying a note seeds the badge's content mark once`() = runTest(dispatcher) {
+        // What the cache looks like just after the update: rows with no
+        // content seq of their own, and a note-id mark from before it.
+        noteDao.upsert(
+            NoteEntity(
+                id = 1, authorId = 7, text = "Milk", color = "yellow", size = "medium",
+                x = 0.2, y = 0.3, createdAt = 1L, updatedAt = 1L, boardSeq = 38, contentSeq = 0,
+            ),
+        )
+        noteDao.upsert(
+            NoteEntity(
+                id = 2, authorId = 7, text = "Bread", color = "yellow", size = "medium",
+                x = 0.2, y = 0.3, createdAt = 1L, updatedAt = 1L, boardSeq = 40, contentSeq = 0,
+            ),
+        )
+        settings.setBoardSeenNoteId(2)
+        val repository = repository()
+
+        // The first thing the new server says is the backfill for a note
+        // nobody has touched: content_seq = board_seq.
+        repository.applyNote(noteDto(id = 1, boardSeq = 38, contentSeq = 38))
+        runCurrent()
+
+        assertThat(settings.state.first().boardSeenContentSeq).isEqualTo(40)
+        val marks = settings.state.first().badgeMarks()
+        assertThat(BoardBadge.unreadCount(noteDao.observeNotes().first().marks(), marks))
+            .isEqualTo(0)
+    }
+
+    /** A fresh install has shown nothing, so there is nothing to seed and
+     *  the board is correctly new to it. */
+    @Test
+    fun `a device that never showed the board seeds no mark`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(noteDto(id = 1, boardSeq = 38, contentSeq = 38))
+        runCurrent()
+
+        assertThat(settings.state.first().boardSeenContentSeq).isEqualTo(0)
+        val marks = settings.state.first().badgeMarks()
+        assertThat(BoardBadge.unreadCount(noteDao.observeNotes().first().marks(), marks))
+            .isEqualTo(1)
     }
 }

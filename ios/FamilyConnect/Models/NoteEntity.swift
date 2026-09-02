@@ -45,6 +45,16 @@ final class NoteEntity {
     var updatedAt: Date
     /// Highest board_seq applied to this row. The per-note guard.
     var boardSeq: Int64
+    /// The seq of the last change to what this note SAYS, and the only
+    /// number the board badge counts (docs/protocol.md, "Board").
+    ///
+    /// ZERO MEANS UNKNOWN, and it is the default for exactly two reasons at
+    /// once: a row written before this field existed (SwiftData fills it in
+    /// as a lightweight migration) and a note from a server that predates
+    /// the field. Both are "nothing here can say when this text was
+    /// written", and both fall back to the note-id rule the badge used
+    /// before — see BoardBadge.
+    var contentSeq: Int64 = 0
 
     init(
         noteID: Int64,
@@ -56,7 +66,8 @@ final class NoteEntity {
         y: Double,
         createdAt: Date,
         updatedAt: Date,
-        boardSeq: Int64
+        boardSeq: Int64,
+        contentSeq: Int64 = 0
     ) {
         self.noteID = noteID
         self.authorID = authorID
@@ -68,5 +79,6 @@ final class NoteEntity {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.boardSeq = boardSeq
+        self.contentSeq = contentSeq
     }
 }

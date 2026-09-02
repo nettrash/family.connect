@@ -136,9 +136,11 @@ struct ChatListView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    // A count of notes added since this device last showed
-                    // the board — see AppSettings.boardSeenNoteID for why
-                    // it is not the sync cursor.
+                    // What is new to READ on the board since this device
+                    // last showed it: notes pinned, and notes whose text
+                    // changed. A drag, a resize and a recolour are not
+                    // news and never count — BoardBadge holds the rule,
+                    // shared with the Mac so the two cannot disagree.
                     //
                     // .badge on a toolbar item renders only on iOS 26+ —
                     // verified empirically: a silent no-op on an iOS 18.6
@@ -258,7 +260,7 @@ struct ChatListView: View {
         }
     }
 
-    /// Notes pinned since this device last had the board on screen.
+    /// The way into the board; the badge beside it is `newNoteCount`.
     private var boardButton: some View {
         Button {
             showsBoard = true
@@ -268,16 +270,13 @@ struct ChatListView: View {
     }
 
     private var newNoteCount: Int {
-        let seen = AppSettings.boardSeenNoteID
-        return notes.filter { $0.noteID > seen }.count
+        BoardBadge.unreadCount(notes: notes, marks: AppSettings.boardMarks)
     }
 
     /// The board is on screen, so everything on it has been shown.
     private func markBoardSeen() {
-        let highest = notes.map(\.noteID).max() ?? 0
-        if highest > AppSettings.boardSeenNoteID {
-            AppSettings.boardSeenNoteID = highest
-        }
+        AppSettings.boardMarks = BoardBadge.marksAfterShowing(
+            notes: notes, marks: AppSettings.boardMarks)
     }
 
     /// Act on a call the system asked for (CallIntents), then clear it so

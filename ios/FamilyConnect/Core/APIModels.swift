@@ -1079,6 +1079,12 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
     let createdAt: Date?
     let updatedAt: Date?
     let boardSeq: Int64
+    /// The `board_seq` of the last change to what the note SAYS — nil on a
+    /// tombstone, and nil from a server that predates the field, which is
+    /// why it is optional and not merely 0 (docs/protocol.md, "Board").
+    /// A move, a resize and a recolour leave it where it was; that is what
+    /// makes it, and not `boardSeq`, the number a badge may count.
+    let contentSeq: Int64?
     let deleted: Bool?
 
     enum CodingKeys: String, CodingKey {
@@ -1092,6 +1098,7 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case boardSeq = "board_seq"
+        case contentSeq = "content_seq"
         case deleted
     }
 

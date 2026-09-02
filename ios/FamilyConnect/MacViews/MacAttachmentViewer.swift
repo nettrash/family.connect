@@ -253,32 +253,31 @@ private struct MacVideoPlayer: View {
     let attachment: AttachmentDTO
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
-    @State private var player: AVPlayer?
+    /// Same loader as the iOS page, for the same reason: the stream URL
+    /// comes from the API actor, so building the player suspends. This
+    /// view has only ONE reason to start (it appears), so it cannot
+    /// double-start the way the iOS pager can — but the other half of the
+    /// problem is entirely real here. The viewer is keyed by attachment,
+    /// so a fast arrow-key page turn or closing the window tears this down
+    /// while the load is suspended, and the load must be abandoned rather
+    /// than hand a playing player to a window that has gone. Keeping the
+    /// two platforms on one loader is also how this stays fixed: only the
+    /// macOS build compiles this file.
+    @State private var stream = AttachmentStreamPlayer()
 
     var body: some View {
         Group {
-            if let player {
+            if let player = stream.player {
                 MacPlayerSurface(player: player)
             } else {
                 ProgressView()
             }
         }
         .onAppear {
-            guard player == nil,
-                  let stream = coordinator.api.attachmentStreamURL(id: attachment.id)
-            else { return }
-            // AVURLAsset again: AVPlayer(url:) sends no Authorization
-            // header, and every byte-range request needs one.
-            let asset = AVURLAsset(
-                url: stream.url,
-                options: ["AVURLAssetHTTPHeaderFieldsKey": stream.headers])
-            let created = AVPlayer(playerItem: AVPlayerItem(asset: asset))
-            created.play()
-            player = created
+            stream.start(attachment: attachment.id, from: coordinator.api)
         }
         .onDisappear {
-            player?.pause()
-            player = nil
+            stream.stop()
         }
     }
 }

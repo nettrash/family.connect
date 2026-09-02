@@ -40,7 +40,7 @@ fun interface LocalDataWiper {
         MemberEntity::class,
         NoteEntity::class,
     ],
-    version = 18,
+    version = 19,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -280,6 +280,21 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_17_18: Migration = object : Migration(17, 18) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN size TEXT NOT NULL DEFAULT 'medium'")
+            }
+        }
+
+        /**
+         * v19: the seq a BADGE counts (docs/protocol.md, "Board").
+         *
+         * NOT NULL DEFAULT 0, and 0 means "unknown" rather than "ancient":
+         * a row already in this table was cached before any server said
+         * when its text was written, and the badge judges those by note id
+         * exactly as it always did (BoardBadge). Rows refresh themselves
+         * with a real value the next time the board is read.
+         */
+        val MIGRATION_18_19: Migration = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN contentSeq INTEGER NOT NULL DEFAULT 0")
             }
         }
 

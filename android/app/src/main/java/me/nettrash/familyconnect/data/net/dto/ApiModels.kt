@@ -749,6 +749,14 @@ data class NoteDto(
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("board_seq") val boardSeq: Long,
+    /**
+     * The board_seq of the last change to what the note SAYS — the only
+     * number the badge counts (docs/protocol.md, "Board"). A move, a resize
+     * and a recolour leave it where it was. Null on a tombstone and from a
+     * server that predates the field, which is why it is nullable rather
+     * than 0: "nobody said" is not "written at the dawn of the board".
+     */
+    @SerialName("content_seq") val contentSeq: Long? = null,
     val deleted: Boolean? = null,
 ) {
     val isTombstone: Boolean get() = deleted == true

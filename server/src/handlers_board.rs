@@ -15,6 +15,13 @@
 //! Deletes leave TOMBSTONES: the row keeps its id, takes a new seq, and
 //! reports `deleted: true` in the change feed. Without that, a client who
 //! was offline when a note was removed has no way to learn it is gone.
+//!
+//! A note carries a SECOND stamp from the same sequence, `content_seq`,
+//! reset only when its `text` changes. `board_seq` answers "what has
+//! changed?" and must move for a drag, or the move never reaches the other
+//! devices; `content_seq` answers "is there anything to READ?", which is
+//! the only question a badge may ask (migration 0031, protocol.md,
+//! "Board").
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -107,8 +114,8 @@ fn validate_size(size: &str) -> Result<String, ApiError> {
     }
 }
 
-const NOTE_COLS: &str =
-    "id, author_id, text, color, size, x, y, board_seq, created_at, updated_at, deleted_at";
+const NOTE_COLS: &str = "id, author_id, text, color, size, x, y, board_seq, content_seq, \
+     created_at, updated_at, deleted_at";
 
 /// `GET /families/mine/board` — the whole board, tombstones excluded.
 pub async fn get_board(
@@ -204,9 +211,11 @@ pub async fn create_note(
     let seq: i64 = sqlx::query_scalar("SELECT nextval('family_board_seq')")
         .fetch_one(&mut *tx)
         .await?;
+    // A new note IS new text, so both stamps take the same value: there is
+    // nothing on the wall yet that anybody could have read.
     let row = sqlx::query(&format!(
-        "INSERT INTO notes (family_id, author_id, text, color, size, x, y, board_seq)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "INSERT INTO notes (family_id, author_id, text, color, size, x, y, board_seq, content_seq)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
          RETURNING {NOTE_COLS}"
     ))
     .bind(family_id)
@@ -246,7 +255,7 @@ pub async fn patch_note(
 
     let mut tx = state.pool.begin().await?;
     let locked = sqlx::query(
-        "SELECT author_id, text, color, size, x, y, deleted_at FROM notes
+        "SELECT author_id, text, color, size, x, y, content_seq, deleted_at FROM notes
          WHERE id = $1 AND family_id = $2 FOR UPDATE",
     )
     .bind(note_id)
@@ -293,7 +302,13 @@ pub async fn patch_note(
         .map(Note::clamp_position)
         .unwrap_or_else(|| locked.get("y"));
 
-    let changed = next_text != locked.get::<String, _>("text")
+    // The TEXT is the only field a badge speaks for: a note that was moved,
+    // resized or recoloured says exactly what it said before, and telling
+    // somebody there is something to read would be a lie (protocol.md,
+    // "Board"). Hence two comparisons, not one — `changed` decides whether
+    // anything happened at all, `text_changed` whether it is worth a badge.
+    let text_changed = next_text != locked.get::<String, _>("text");
+    let changed = text_changed
         || next_color != locked.get::<String, _>("color")
         || next_size != locked.get::<String, _>("size")
         || next_x != locked.get::<f64, _>("x")
@@ -303,9 +318,18 @@ pub async fn patch_note(
         let seq: i64 = sqlx::query_scalar("SELECT nextval('family_board_seq')")
             .fetch_one(&mut *tx)
             .await?;
+        // A rewrite moves both stamps to the same value; everything else
+        // carries the old `content_seq` forward untouched, which is what
+        // makes the pair survive the change feed's collapsing (an edit
+        // followed by five drags still reports the edit's seq).
+        let next_content_seq = if text_changed {
+            seq
+        } else {
+            locked.get::<i64, _>("content_seq")
+        };
         let row = sqlx::query(&format!(
             "UPDATE notes SET text = $2, color = $3, size = $4, x = $5, y = $6,
-                              board_seq = $7, updated_at = now()
+                              board_seq = $7, content_seq = $8, updated_at = now()
              WHERE id = $1
              RETURNING {NOTE_COLS}"
         ))
@@ -316,6 +340,7 @@ pub async fn patch_note(
         .bind(next_x)
         .bind(next_y)
         .bind(seq)
+        .bind(next_content_seq)
         .fetch_one(&mut *tx)
         .await?;
         advance_family_seq(&mut tx, family_id, seq).await?;

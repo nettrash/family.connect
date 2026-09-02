@@ -806,6 +806,14 @@ pub struct Note {
     )]
     pub updated_at: Option<OffsetDateTime>,
     pub board_seq: i64,
+    /// The `board_seq` of the last change to what this note SAYS — set at
+    /// creation, reset only by a change of `text`. A move, a resize and a
+    /// recolour leave it alone, which is what lets a badge count it: a wall
+    /// somebody tidied has nothing new to read on it (protocol.md,
+    /// "Board"). Always `<= board_seq`, and absent on a tombstone for the
+    /// same reason the text is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_seq: Option<i64>,
     /// Present and true ONLY on a tombstone; absent otherwise, so a live
     /// note never carries `"deleted": false`.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -855,6 +863,7 @@ impl Note {
                 created_at: None,
                 updated_at: None,
                 board_seq: row.get("board_seq"),
+                content_seq: None,
                 deleted: true,
             };
         }
@@ -869,6 +878,7 @@ impl Note {
             created_at: Some(row.get("created_at")),
             updated_at: Some(row.get("updated_at")),
             board_seq: row.get("board_seq"),
+            content_seq: Some(row.get("content_seq")),
             deleted: false,
         }
     }

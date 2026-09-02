@@ -125,8 +125,11 @@ struct MacChatView: View {
                     Label("Board", systemImage: "square.grid.2x2")
                 }
                 .help("The family board")
-                // Notes pinned since this Mac last showed the board. NOT
-                // the sync cursor — see AppSettings.boardSeenNoteID.
+                // What is new to READ on the board since this Mac last
+                // showed it (BoardBadge): notes pinned, and notes whose
+                // text changed. Tidying the wall — dragging, resizing,
+                // recolouring — is not news and never counts. NOT the sync
+                // cursor either; see AppSettings.boardSeenContentSeq.
                 .badge(newNoteCount)
             }
             ToolbarItem {
@@ -234,15 +237,12 @@ struct MacChatView: View {
     }
 
     private var newNoteCount: Int {
-        let seen = AppSettings.boardSeenNoteID
-        return notes.filter { $0.noteID > seen }.count
+        BoardBadge.unreadCount(notes: notes, marks: AppSettings.boardMarks)
     }
 
     private func markBoardSeen() {
-        let highest = notes.map(\.noteID).max() ?? 0
-        if highest > AppSettings.boardSeenNoteID {
-            AppSettings.boardSeenNoteID = highest
-        }
+        AppSettings.boardMarks = BoardBadge.marksAfterShowing(
+            notes: notes, marks: AppSettings.boardMarks)
     }
 
     /// Open one conversation on its own. Keyed by chat id, so asking

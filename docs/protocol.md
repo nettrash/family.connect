@@ -190,8 +190,12 @@ IceServer {"urls": ["turn:turn.example.com:3478?transport=udp"],
           — "username"/"credential" on a TURN server only, and only when the operator
             configured credentials; a STUN server is "urls" alone — see "Voice calls"
 Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow", "size": "medium",
-           "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88}
+           "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88,
+           "content_seq": 84}
           — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
+          — "content_seq" is the board_seq of the last change to what the note SAYS; a
+            move, a resize and a recolour leave it alone. It is what a badge counts, and
+            it is absent on a tombstone and from a server that predates it — see "Board"
 ```
 
 **A body is plain text on the wire, and always has been.** No markup is parsed, transformed or
@@ -399,9 +403,54 @@ to nothing else.
 Counting what is new is the CLIENT's job, and it needs a marker of its own. `max_board_seq` is a
 SYNC cursor — it advances whenever a client applies a change, including a background resync — so
 using it to mean "seen" would clear the badge for a user who never opened the board. A client keeps
-a separate high-water mark of the note ids it has SHOWN the user, advanced only when the board is
-actually opened, and counts live notes above it. Note ids are server-assigned and monotonic, so
-"created since you last looked" needs nothing further from the server.
+a separate high-water mark, advanced only when the board is actually on screen, and counts the live
+notes above it.
+
+**What that mark counts is `content_seq`, not the note id and not `board_seq`.** A badge is a claim
+that there is something to READ, and a wall somebody tidied has nothing new to read on it: dragging
+a note, resizing it or recolouring it must never raise one, on any client. `content_seq` is the
+`board_seq` of the last change to what the note SAYS — it is set when the note is created and reset
+only when its `text` changes. `x`, `y`, `size` and `color` leave it exactly where it was, which is
+why a move can take a new `board_seq` (it must: the change feed has to carry moves, or a drag on one
+device never reaches another) without touching the badge. So `content_seq <= board_seq` always, and
+a note that has only ever been dragged still reports the `content_seq` of the day it was written.
+
+It is a property of the note's CURRENT STATE, and that is the whole reason it is a seq on the note
+rather than a "this change was only a move" flag on the change entry. The feed collapses: a note
+edited and then dragged five times appears once, and a flag describing the LAST event would say
+"only a move" and lose the edit for every client that was away across both. A seq survives the
+collapse — the entry still carries the `content_seq` of the edit, so a client that missed everything
+still learns there is something new to read.
+
+The badge therefore counts live notes whose `content_seq` is above the mark, and the mark advances
+to the highest `content_seq` on the board whenever the board is shown. Two consequences worth
+saying out loud: an EDIT to an old note now counts (its text changed; that is exactly the thing a
+badge is for, and the note id alone could never see it), and a note that lands in a client's cache
+for the first time as the result of somebody's MOVE does not count if it was written before you last
+looked — the note is old, and only the cache was empty.
+
+Which is why this is a server field and not three client comparisons. Every client could diff the
+incoming text against the one it holds and decide for itself, but then "worth a badge" would be
+defined in three places, in three languages, against three local caches that are not in the same
+state — and a client with no cached copy of a note cannot diff anything at all. The server takes
+the decision once, and every client counts the same number.
+
+A server that predates the field sends no `content_seq`, exactly as a server that predates sizes
+sends no `size`, and a tombstone carries none for the same reason it carries no text: there is
+nothing left to read. So a client keeps BOTH marks and picks the rule per note — a note that came
+with a `content_seq` is counted against the content mark, a note that came without one against the
+note-id mark, which is the rule this paragraph used to state on its own. Both marks advance when
+the board is shown, to the highest value on the board.
+
+A client that already had a note-id mark seeds its content mark ONCE, with the highest `board_seq`
+it holds among the notes at or below that id mark. Without the seed the first launch after an
+update would badge the whole wall, and a fix for a badge that cries wolf should not start by crying
+wolf — a server upgrading to this field backfills `content_seq = board_seq` for every note that
+already exists (it cannot know which of their past changes were rewrites), so every one of them
+arrives above an unseeded mark of 0. `board_seq` rather than `content_seq` because the cache cannot
+say more: the rows it stored before the update carry no content seq of their own, and the backfill
+is at exactly that height. Notes ABOVE the id mark are left out of the seed, so a badge that was
+pending when the update landed survives it.
 
 Who may do what: **anyone in the family may MOVE a note; only its author may change its text,
 colour or size, or delete it.** Moving is the shared act (tidying the wall together), authorship is
@@ -423,7 +472,9 @@ text showing, the same way `color` is a name and not a hex value. A free width a
 fractions would have made the same note a third of a phone and a third of a desktop window, and
 left the type size undefined. Size belongs to the AUTHOR, with text and colour: how loudly a note
 speaks is the writer's call, and a size anyone could change is a size anyone could shrink to
-nothing. Resizing takes a `board_seq` like any other mutation and does not notify, like a move.
+nothing. Resizing takes a `board_seq` like any other mutation and does not notify, like a move —
+and, like a move, it leaves `content_seq` alone and raises no badge: a note that got bigger is not
+a note with something new in it.
 
 Every board mutation — create, edit, move, delete — takes the next value of a third server-wide
 sequence and stamps it on the note as `board_seq`, with the family exposing its maximum as

@@ -658,3 +658,289 @@ async fn re_sending_the_current_size_is_a_no_op() {
     assert_eq!(again["note"]["size"], "medium");
     assert_eq!(again["note"]["board_seq"].as_i64(), Some(seq));
 }
+
+// --- content_seq: the seq a BADGE counts (protocol.md, "Board") ---------
+//
+// `board_seq` answers "what has changed?" and therefore MUST move for a
+// drag — the change feed carries moves, or a move on one device never
+// reaches another. `content_seq` answers "is there anything to READ?", and
+// tidying a wall does not put anything on it.
+
+/// The whole of issue #53 in one test: dragging, resizing and recolouring
+/// all take a new `board_seq` and all leave `content_seq` exactly where it
+/// was, so no client can badge them.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn geometry_and_colour_take_a_board_seq_but_never_a_content_seq() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let created = add_note(&server, &owner, "Milk").await;
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    let created_seq = created["note"]["board_seq"].as_i64().expect("seq");
+    // A new note IS new text: both stamps start together.
+    assert_eq!(created["note"]["content_seq"].as_i64(), Some(created_seq));
+
+    // A move — by somebody who is not the author, which is the ordinary
+    // case and the one that used to badge a whole family.
+    let moved: Value = server
+        .patch(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"x": 0.9, "y": 0.1}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert!(moved["note"]["board_seq"].as_i64().expect("seq") > created_seq);
+    assert_eq!(moved["note"]["content_seq"].as_i64(), Some(created_seq));
+
+    // A resize, by the author (only they may).
+    let resized: Value = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"size": "large"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(resized["note"]["size"], "large");
+    assert!(
+        resized["note"]["board_seq"].as_i64().expect("seq")
+            > moved["note"]["board_seq"].as_i64().expect("seq")
+    );
+    assert_eq!(resized["note"]["content_seq"].as_i64(), Some(created_seq));
+
+    // A recolour: the author chose it, but the note still says what it said.
+    let recoloured: Value = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"color": "pink"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(recoloured["note"]["color"], "pink");
+    assert!(
+        recoloured["note"]["board_seq"].as_i64().expect("seq")
+            > resized["note"]["board_seq"].as_i64().expect("seq")
+    );
+    assert_eq!(
+        recoloured["note"]["content_seq"].as_i64(),
+        Some(created_seq)
+    );
+
+    // And the whole-board read agrees with the PATCH answers.
+    let board: Value = server
+        .get(&member, "/families/mine/board")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        board["notes"][0]["content_seq"].as_i64(),
+        Some(created_seq),
+        "got {}",
+        board["notes"][0]
+    );
+}
+
+/// A rewrite moves BOTH stamps: new words are the one board change worth
+/// telling somebody about.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_rewrite_moves_the_content_seq() {
+    let server = spawn_server().await;
+    let (owner, _) = family_of_two(&server).await;
+    let created = add_note(&server, &owner, "Milk").await;
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    let created_seq = created["note"]["board_seq"].as_i64().expect("seq");
+
+    let edited: Value = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"text": "Oat milk"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let board_seq = edited["note"]["board_seq"].as_i64().expect("seq");
+    assert!(board_seq > created_seq);
+    assert_eq!(edited["note"]["content_seq"].as_i64(), Some(board_seq));
+
+    // A rewrite that lands in the same request as a move still counts as a
+    // rewrite: which fields are PRESENT is what the wire means by an edit.
+    let both: Value = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"text": "Oat milk, 2 cartons", "x": 0.4}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        both["note"]["content_seq"].as_i64(),
+        both["note"]["board_seq"].as_i64()
+    );
+}
+
+/// Why it is a stamp on the note and not a flag on the change entry: the
+/// feed COLLAPSES. A note edited and then dragged five times appears once,
+/// and the one entry still has to say that its words changed.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_change_feed_keeps_the_content_seq_through_later_moves() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let created = add_note(&server, &owner, "Milk").await;
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    // Where a client that has already seen this note stands.
+    let seen_through = created["note"]["board_seq"].as_i64().expect("seq");
+
+    let edited: Value = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"text": "Oat milk"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let edit_seq = edited["note"]["content_seq"].as_i64().expect("seq");
+
+    // …and then five drags by anybody, which is what a family does to a
+    // wall.
+    for step in 1..=5 {
+        server
+            .patch(
+                &member,
+                &format!("/families/mine/board/notes/{note_id}"),
+                json!({"x": 0.1 * f64::from(step)}),
+            )
+            .await;
+    }
+
+    let changes: Value = server
+        .get(
+            &member,
+            &format!("/families/mine/board/changes?after_seq={seen_through}"),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let notes = changes["notes"].as_array().expect("array");
+    assert_eq!(notes.len(), 1, "the feed carries a note once: {notes:?}");
+    // The single collapsed entry still reports the EDIT, which a
+    // "this change was only a move" flag on the last event could not.
+    assert_eq!(notes[0]["content_seq"].as_i64(), Some(edit_seq));
+    assert!(notes[0]["board_seq"].as_i64().expect("seq") > edit_seq);
+}
+
+/// A note that has only ever been dragged is not worth a badge on any
+/// client, however far its `board_seq` has travelled.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_dragged_note_stays_below_the_mark_a_reader_already_had() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    // Two notes, and a reader who has seen both: their mark is the highest
+    // content_seq on the board.
+    let first = add_note(&server, &owner, "Milk").await;
+    let second = add_note(&server, &owner, "Bread").await;
+    let mark = second["note"]["content_seq"].as_i64().expect("seq");
+    let first_id = first["note"]["id"].as_i64().expect("id");
+
+    for step in 1..=3 {
+        server
+            .patch(
+                &member,
+                &format!("/families/mine/board/notes/{first_id}"),
+                json!({"x": 0.2 * f64::from(step), "y": 0.3}),
+            )
+            .await;
+    }
+
+    let board: Value = server
+        .get(&member, "/families/mine/board")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let unread = board["notes"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|note| note["content_seq"].as_i64().expect("seq") > mark)
+        .count();
+    assert_eq!(unread, 0, "a tidied wall badges nobody: {board}");
+    // …while the cursor a SYNC uses has moved on, which is the whole
+    // tension: the move must still travel.
+    assert!(board["max_board_seq"].as_i64().expect("seq") > mark);
+}
+
+/// A tombstone carries no `content_seq`, for the same reason it carries no
+/// text: there is nothing left to read.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_tombstone_carries_no_content_seq() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let created = add_note(&server, &owner, "Milk").await;
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    let after_create = created["note"]["board_seq"].as_i64().expect("seq");
+
+    server
+        .delete(&owner, &format!("/families/mine/board/notes/{note_id}"))
+        .await;
+
+    let changes: Value = server
+        .get(
+            &member,
+            &format!("/families/mine/board/changes?after_seq={after_create}"),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let tombstone = &changes["notes"][0];
+    assert_eq!(tombstone["deleted"], true);
+    assert!(tombstone.get("content_seq").is_none(), "got {tombstone}");
+}
+
+/// The live WS frame carries it too — a client applying a frame and a
+/// client catching up must reach the same badge.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_board_note_frame_carries_the_content_seq() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let mut ws = connect_ws(&server, &member).await;
+
+    let created = add_note(&server, &owner, "Milk").await;
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    let created_seq = created["note"]["board_seq"].as_i64().expect("seq");
+    let frame = next_frame_of_type(&mut ws, "board_note").await;
+    assert_eq!(frame["note"]["content_seq"].as_i64(), Some(created_seq));
+
+    server
+        .patch(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"x": 0.9}),
+        )
+        .await;
+    let frame = next_frame_of_type(&mut ws, "board_note").await;
+    assert_eq!(frame["note"]["x"].as_f64(), Some(0.9));
+    assert!(frame["note"]["board_seq"].as_i64().expect("seq") > created_seq);
+    assert_eq!(frame["note"]["content_seq"].as_i64(), Some(created_seq));
+}

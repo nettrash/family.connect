@@ -639,6 +639,12 @@ final class ChatSyncCoordinator {
         set { AppSettings.boardCursor = newValue }
     }
 
+    /// Whether this launch has already decided about seeding the badge's
+    /// content mark. Not a "seeded" flag: the answer "there was nothing to
+    /// seed" is just as final, and re-asking would fetch the whole board on
+    /// every applied note.
+    private var boardContentMarkChecked = false
+
     /// Apply one note under the per-note seq guard.
     ///
     /// A TOMBSTONE deletes the local row: the server keeps one so its feed
@@ -649,6 +655,11 @@ final class ChatSyncCoordinator {
     /// out-of-order MOVE, which very much can.
     @discardableResult
     func applyNote(_ dto: NoteDTO) -> Bool {
+        // Before the first note that carries a content seq is written, and
+        // only ever once per launch: a device that had shown this board
+        // before the field existed needs its content mark seeded, or the
+        // server's backfill badges the whole wall (BoardBadge).
+        seedBoardContentMarkIfNeeded()
         let existing = fetchNote(dto.id)
         if let existing, dto.boardSeq <= existing.boardSeq { return false }
 
@@ -669,6 +680,10 @@ final class ChatSyncCoordinator {
         // A server from before sizes never sends one; "medium" is the size
         // every note had then, so the wall does not change under it.
         let size = dto.size ?? NoteSize.medium.name
+        // A server from before content seqs sends none either, and 0 is how
+        // this store spells "nobody said" — the badge then judges the note
+        // by its id, exactly as it always did (BoardBadge).
+        let contentSeq = dto.contentSeq ?? 0
         if let existing {
             existing.authorID = authorID
             existing.text = text
@@ -678,6 +693,7 @@ final class ChatSyncCoordinator {
             existing.y = y
             existing.updatedAt = dto.updatedAt ?? existing.updatedAt
             existing.boardSeq = dto.boardSeq
+            existing.contentSeq = contentSeq
         } else {
             modelContext.insert(NoteEntity(
                 noteID: dto.id,
@@ -689,9 +705,24 @@ final class ChatSyncCoordinator {
                 y: y,
                 createdAt: dto.createdAt ?? Date(),
                 updatedAt: dto.updatedAt ?? Date(),
-                boardSeq: dto.boardSeq))
+                boardSeq: dto.boardSeq,
+                contentSeq: contentSeq))
         }
         return true
+    }
+
+    /// One-time repair of the badge marks after the update that brought
+    /// content seqs (docs/protocol.md, "Board"). Cheap to ask: the flag
+    /// costs one comparison, and the fetch behind it happens at most once
+    /// per launch and only on a device that has one to do.
+    private func seedBoardContentMarkIfNeeded() {
+        guard !boardContentMarkChecked else { return }
+        boardContentMarkChecked = true
+        let marks = AppSettings.boardMarks
+        let notes = (try? modelContext.fetch(FetchDescriptor<NoteEntity>())) ?? []
+        guard let seed = BoardBadge.contentMarkSeed(notes: notes, marks: marks) else { return }
+        AppSettings.boardMarks = BoardBadge.Marks(
+            seenNoteID: marks.seenNoteID, seenContentSeq: seed)
     }
 
     private func fetchNote(_ noteID: Int64) -> NoteEntity? {
