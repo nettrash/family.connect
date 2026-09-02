@@ -456,6 +456,19 @@ jobs:
               print(f"::error::{failed} tests failed"); sys.exit(1)
           if total < 600:
               print(f"::error::only {total} tests ran; expected ~686"); sys.exit(1)
+          # A skip is coverage that did not run, so it has a ceiling too.
+          # Three are EXPECTED here and are not a defect: KeychainStoreTests
+          # cannot reach the keychain on an unsigned host, because
+          # CODE_SIGNING_ALLOWED=NO below leaves the build with no
+          # application-identifier entitlement and every write fails -34018
+          # (issue #45). They used to `return` early instead, which counts as
+          # a PASS -- the executed count was right and the coverage was zero,
+          # which is issue #20's own failure mode one level down. The ceiling
+          # is slack so that adding a legitimately-skipped test is ordinary
+          # maintenance, and tight enough that a suite quietly skipping
+          # itself is not.
+          if skipped > 10:
+              print(f"::error::{skipped} tests skipped; expected 3 (the keychain tests on an unsigned host)"); sys.exit(1)
           PY
 
       - name: Upload result bundle
