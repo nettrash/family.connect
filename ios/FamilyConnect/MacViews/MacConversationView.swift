@@ -1394,8 +1394,33 @@ struct MacConversationView: View {
     /// CoreLocation refuses without explaining itself.
     private func shareLocation() {
         guard !isSending else { return }
-        isSending = true
         Task {
+            // Permission is settled BEFORE `isSending`, which here disables
+            // the attach menu AND `canSend` — the Send button itself. A
+            // person reading the system alert would otherwise find the
+            // composer bricked for as long as they took over it, and the
+            // Mac's alert has no time limit at all. The phone does the same
+            // thing for the same reason (#41).
+            switch await locationProvider.requestPermission() {
+            case .allowed:
+                break
+            case .denied:
+                mediaNotice = .failed(String(
+                    localized:
+                        "Family needs permission to use your location. Turn it on in System Settings."
+                ))
+                return
+            case .unanswered:
+                // Nothing was taken and nothing is running: the menu item
+                // is still there and asking again is one click. On the Mac
+                // this is rare — the alert stays up until it is answered —
+                // and there is deliberately no "became active" hook here to
+                // manufacture it, because a cmd-tab would then declare
+                // silence over an alert still on screen.
+                return
+            }
+            guard !isSending else { return }
+            isSending = true
             defer { isSending = false }
             do {
                 let fix = try await locationProvider.currentFix()
@@ -1426,6 +1451,9 @@ struct MacConversationView: View {
                     mediaNotice = .failed(String(localized: "Could not share your location."))
                 }
             } catch LocationProvider.Failure.denied {
+                // The prompt was settled above; reaching here means the
+                // permission was taken away in System Settings while the
+                // hunt was running.
                 mediaNotice = .failed(String(
                     localized:
                         "Family needs permission to use your location. Turn it on in System Settings."

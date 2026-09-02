@@ -774,12 +774,21 @@ struct ConversationView: View {
             // then the reader has genuinely seen it.
             publishPresence()
         }
-        .onChange(of: scenePhase) {
+        .onChange(of: scenePhase) { previous, _ in
             // Backgrounding revokes the authority to read (the coordinator
             // does that centrally, because onDisappear does NOT fire here);
             // coming back re-establishes it from the same geometry, without
             // the act of returning reading anything by itself.
             publishPresence()
+            // Coming back from the BACKGROUND specifically — not from the
+            // inactive flicker a Control Centre pull or an alert causes —
+            // is the one moment iOS has certainly thrown away a permission
+            // alert that was up, and it does not put it back. Tell the
+            // provider, so a share parked on that prompt stops waiting for
+            // an answer that can no longer arrive. It re-reads the status
+            // first, so a permission granted in Settings while we were away
+            // still continues the share.
+            if previous == .background { locationProvider.promptWasAbandoned() }
         }
         .onChange(of: model.draft) { _, newValue in
             guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -2521,9 +2530,48 @@ struct ConversationView: View {
     /// kind of refusal it was — a denied permission and a fix that never
     /// arrived need different things from the reader.
     private func shareLocation() {
-        guard mediaState == .idle else { return }
-        mediaState = .preparing
+        // The gate every other attachment door uses, rather than
+        // `== .idle`: a dismissible `.failed` left over from the last try
+        // must not swallow the next tap. It did — only the strip's Dismiss
+        // button returns this to `.idle` — so a reader told to turn the
+        // permission on in Settings, who did exactly that and came back and
+        // tapped Location, got silence.
+        guard !composerIsBusy else { return }
         Task {
+            // Settle permission FIRST, outside everything that says the
+            // composer is busy. The prompt is a system alert somebody may
+            // take a minute over, or never answer at all, and `.preparing`
+            // closes the attach menu and the paste door for as long as it
+            // is set. Android has never had this problem: `ChatScreen.kt`
+            // asks for the permission and only calls the view model once it
+            // is held, so its composer stays live under the dialog. This is
+            // that shape — and it needs no timeout, because nothing here is
+            // waiting on a machine.
+            switch await locationProvider.requestPermission() {
+            case .allowed:
+                break
+            case .denied:
+                mediaState = .failed(String(
+                    localized:
+                        "Family needs permission to use your location. Turn it on in Settings."))
+                return
+            case .unanswered:
+                // The alert went away unanswered — backgrounding tears it
+                // down, and Location Services switched off system-wide may
+                // mean it never appeared. Nothing was taken from the
+                // composer and nothing is in flight, so there is nothing to
+                // report and nothing to restore: Location is still in the
+                // menu, still enabled, and tapping it asks again. A line of
+                // copy here would be nagging somebody for an answer they
+                // deliberately withheld — and any copy that said "try
+                // again" would have to be a lie the guard above refused.
+                return
+            }
+            // That wait was a real suspension. Whatever the composer was
+            // doing when the alert went up may have finished or started in
+            // the meantime, so the door is checked again on the way in.
+            guard !composerIsBusy else { return }
+            mediaState = .preparing
             do {
                 let fix = try await locationProvider.currentFix()
                 mediaState = .uploading(nil)
@@ -2546,6 +2594,9 @@ struct ConversationView: View {
                     mediaState = .failed(String(localized: "Could not share your location."))
                 }
             } catch LocationProvider.Failure.denied {
+                // Not the prompt any more — that was settled above. This is
+                // the switch being thrown in Settings, or an "Allow Once"
+                // lapsing, while the hunt was running.
                 mediaState = .failed(String(
                     localized:
                         "Family needs permission to use your location. Turn it on in Settings."))
