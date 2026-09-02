@@ -73,10 +73,21 @@ struct FamilyConnectApp: App {
     init() {
         // UI-test hook: launch with a clean slate so the smoke test can
         // assert the server-setup screen deterministically.
+        //
+        // DEBUG-only, because what it does is destructive and it is driven
+        // by a launch argument — a thing a person can pass to a shipped
+        // app. It wipes every default AND deletes the keychain token, so on
+        // a Release build it is a one-flag "sign me out and forget my
+        // server" that nothing in the UI offers. Nothing legitimate needs
+        // it there: `DEBUG` is defined only by the project-level Debug
+        // configuration, and both schemes' TestAction builds Debug, so
+        // every UI test that passes this argument still gets it.
+        #if DEBUG
         if CommandLine.arguments.contains("--uitest-reset") {
             AppSettings.wipe(keepServerURL: false)
             try? KeychainStore.delete(account: KeychainStore.tokenAccount)
         }
+        #endif
 
         let schema = Schema([
             ChatEntity.self, MessageEntity.self, MemberEntity.self, NoteEntity.self,
@@ -120,6 +131,24 @@ struct FamilyConnectApp: App {
             }
         }
         self.containerResult = result
+
+        // The Share Extension's leftovers, once per launch (issue #35).
+        // A hand-off that never completed — the open was dropped, this
+        // process was killed mid-import, the app was simply not opened —
+        // leaves its staged files in the App Group container, and nothing
+        // else in either process will ever look at them again.
+        //
+        // Detached, so the launch path neither waits for it nor can be
+        // failed by it: this is IO on a path that already does IO, and
+        // there is nothing here that needs its answer. Order against an
+        // incoming hand-off does not matter either — a share this app is
+        // about to import is seconds old, and the sweep only takes what
+        // is a day old (ShareHandoff.stagingGrace).
+        //
+        // Deliberately OUTSIDE the store branch below: the group
+        // container is not the message store's, and a launch that cannot
+        // open the store is still a launch that should not leak.
+        Task.detached(priority: .utility) { _ = ShareHandoff.sweepOrphanedStaging() }
 
         if let container = try? result.get() {
             let coordinator = ChatSyncCoordinator(modelContainer: container)

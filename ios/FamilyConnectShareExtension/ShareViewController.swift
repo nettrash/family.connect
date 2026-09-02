@@ -97,6 +97,27 @@ final class ShareViewController: SharePlatformViewController {
         try? FileManager.default.createDirectory(
             at: ShareHandoff.inboxURL(container: container), withIntermediateDirectories: true)
 
+        // Take out whatever an earlier hand-off abandoned, BEFORE staging
+        // this one (issue #35). Two reasons for this appex rather than
+        // only the app, and for here rather than after the hand-off:
+        //
+        // This process is the only one guaranteed to run when an orphan
+        // is CREATED. The app may never be opened between two shares —
+        // share, change your mind, share again next week — and every one
+        // of those leaves a staging directory nothing else will ever look
+        // at. Whereas after `openHostApp` is the moment the system has
+        // what it needs to tear this extension down, so a sweep there is
+        // a sweep that may not run. Before staging is also the ordering
+        // that cannot go wrong: the sweep can only see directories from
+        // earlier hand-offs, over and above the day-long floor that
+        // already spares anything this run is about to write.
+        //
+        // Affordable under the jetsam limit this class is written around:
+        // one directory listing plus a stat per entry — of a folder that
+        // is empty whenever the last share landed — and not one byte of
+        // any file is read.
+        _ = ShareHandoff.sweepOrphanedStaging(container: container)
+
         var ids: [String] = []
         for provider in attachmentProviders().prefix(ShareHandoff.maxAttachmentsPerMessage) {
             let id = UUID().uuidString

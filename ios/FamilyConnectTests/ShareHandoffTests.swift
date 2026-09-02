@@ -213,6 +213,196 @@ struct ShareHandoffTests {
         #expect(try String(contentsOf: imported, encoding: .utf8) == "x")
     }
 
+    // MARK: - The hand-offs that never complete
+
+    /// Move an entry's clock back. Sleeping to age something would put a
+    /// wall clock in a suite that runs concurrently on one actor; the
+    /// modification date is what the sweep actually reads, so it is what
+    /// a test sets.
+    private func backdate(_ url: URL, by interval: TimeInterval) throws {
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-interval)],
+            ofItemAtPath: url.path)
+    }
+
+    /// The staging directories a hand-off URL names — rebuilt the way the
+    /// app rebuilds them, from the ids in the URL.
+    private func stagedDirectories(of url: URL, in container: URL) throws -> [URL] {
+        let ids = try #require(ShareHandoff.ids(from: url))
+        return try ids.map {
+            try #require(ShareHandoff.stagingDirectory(container: container, id: $0))
+        }
+    }
+
+    /// The leak: the appex stages, and then nothing completes the
+    /// hand-off — the open is dropped, the app is killed, the app is
+    /// never opened. A completed import removes its own directory; this
+    /// is what removes everybody else's (issue #35).
+    @Test("A staging directory nothing ever claimed is swept once it is old")
+    func abandonedStagingIsSwept() throws {
+        let container = try makeContainer()
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        let url = try extensionStages([(name: "big.mov", bytes: "abandoned")], into: container)
+        let staged = try stagedDirectories(of: url, in: container)
+        for directory in staged { try backdate(directory, by: 3 * 24 * 60 * 60) }
+
+        #expect(ShareHandoff.sweepOrphanedStaging(container: container) == 1)
+        let inbox = ShareHandoff.inboxURL(container: container)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: inbox.path).isEmpty)
+        // The inbox itself stays: the appex expects to find it there.
+        #expect(FileManager.default.fileExists(atPath: inbox.path))
+    }
+
+    /// THE case that matters. The extension stages and the app opens some
+    /// time later; on a cold launch that gap is real, and a sweep that
+    /// took a fresh directory would make shares evaporate at random. So
+    /// the fresh one survives the sweep AND still imports afterwards —
+    /// asserting the survival alone would pass on a sweep that left an
+    /// empty husk behind.
+    @Test("A staging directory still in flight is never swept")
+    func inFlightStagingSurvives() throws {
+        let session = makeSession()
+        let container = try makeContainer()
+        defer {
+            session.discardShareImports()
+            try? FileManager.default.removeItem(at: container)
+        }
+
+        let url = try extensionStages([(name: "IMG_0002.HEIC", bytes: "in flight")], into: container)
+        #expect(ShareHandoff.sweepOrphanedStaging(container: container) == 0)
+
+        session.handleShareURL(url, container: container)
+        let imported = try #require(session.pendingShareImport?.first)
+        #expect(imported.lastPathComponent == "IMG_0002.HEIC")
+        #expect(try String(contentsOf: imported, encoding: .utf8) == "in flight")
+    }
+
+    /// The floor itself, from both sides, with an injected clock rather
+    /// than a real one: at the grace it stays, a second past it goes.
+    @Test("The grace period is a floor, not a rounding")
+    func gracePeriodIsAFloor() throws {
+        let container = try makeContainer()
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        let url = try extensionStages([(name: "a.txt", bytes: "a")], into: container)
+        let staged = try #require(stagedDirectories(of: url, in: container).first)
+        let stamped = Date()
+        try FileManager.default.setAttributes(
+            [.modificationDate: stamped], ofItemAtPath: staged.path)
+
+        #expect(ShareHandoff.sweepOrphanedStaging(
+            container: container,
+            now: stamped.addingTimeInterval(ShareHandoff.stagingGrace)) == 0)
+        #expect(FileManager.default.fileExists(atPath: staged.path))
+
+        #expect(ShareHandoff.sweepOrphanedStaging(
+            container: container,
+            now: stamped.addingTimeInterval(ShareHandoff.stagingGrace + 1)) == 1)
+        #expect(!FileManager.default.fileExists(atPath: staged.path))
+    }
+
+    /// The sweep is total over whatever is in there. A directory the
+    /// consumer would refuse to name (only a UUID becomes a path) and a
+    /// bare FILE in the inbox are both things no import will ever claim,
+    /// so age is the only question asked of them — and asked of them the
+    /// same way, so a fresh one is still left alone.
+    @Test("A non-UUID directory and a stray file are swept on age alone")
+    func strayEntriesAreSweptOnAgeAlone() throws {
+        let container = try makeContainer()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let manager = FileManager.default
+        let inbox = ShareHandoff.inboxURL(container: container)
+        try manager.createDirectory(at: inbox, withIntermediateDirectories: true)
+
+        let notAUUID = inbox.appendingPathComponent("scratch", isDirectory: true)
+        try manager.createDirectory(at: notAUUID, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: notAUUID.appendingPathComponent("leftover.jpg"))
+        let strayFile = inbox.appendingPathComponent(".DS_Store")
+        try Data("junk".utf8).write(to: strayFile)
+        let fresh = inbox.appendingPathComponent("also-not-a-uuid", isDirectory: true)
+        try manager.createDirectory(at: fresh, withIntermediateDirectories: true)
+
+        // Backdate the directory AFTER writing into it: creating an entry
+        // moves the parent's modification date, which is exactly the
+        // stamp the sweep reads.
+        try backdate(notAUUID, by: 2 * 24 * 60 * 60)
+        try backdate(strayFile, by: 2 * 24 * 60 * 60)
+
+        #expect(ShareHandoff.sweepOrphanedStaging(container: container) == 2)
+        #expect(!manager.fileExists(atPath: notAUUID.path))
+        #expect(!manager.fileExists(atPath: strayFile.path))
+        #expect(manager.fileExists(atPath: fresh.path))
+    }
+
+    /// A clock moved backwards stamps things in the future. The sweep's
+    /// one job is not to take what is in flight, so an entry it cannot
+    /// place in the past is left — the subtraction goes negative and
+    /// matches nothing.
+    @Test("An entry stamped in the future is left alone")
+    func futureStampsAreLeft() throws {
+        let container = try makeContainer()
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        let url = try extensionStages([(name: "a.txt", bytes: "a")], into: container)
+        let staged = try #require(stagedDirectories(of: url, in: container).first)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(7 * 24 * 60 * 60)],
+            ofItemAtPath: staged.path)
+
+        #expect(ShareHandoff.sweepOrphanedStaging(container: container) == 0)
+        #expect(FileManager.default.fileExists(atPath: staged.path))
+    }
+
+    /// The other half of the contract: a hand-off that DOES complete
+    /// still cleans up after itself, at import time, exactly as it did
+    /// before there was a sweep. The sweep is for what is left over, and
+    /// after a completed import there is nothing left over.
+    @Test("A completed import leaves the sweep nothing to do")
+    func completedImportNeedsNoSweep() throws {
+        let session = makeSession()
+        let container = try makeContainer()
+        defer {
+            session.discardShareImports()
+            try? FileManager.default.removeItem(at: container)
+        }
+
+        let url = try extensionStages([(name: "a.txt", bytes: "a")], into: container)
+        session.handleShareURL(url, container: container)
+        #expect(session.pendingShareImport?.count == 1)
+
+        let inbox = ShareHandoff.inboxURL(container: container)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: inbox.path).isEmpty)
+        // Even with every floor removed, because the directories are gone.
+        #expect(ShareHandoff.sweepOrphanedStaging(container: container, olderThan: 0) == 0)
+    }
+
+    /// Both call sites are paths that must not fail — an app launch and
+    /// an appex about to stage — so no container (an unsigned build with
+    /// no App Group) and no inbox (nothing was ever shared) are answers,
+    /// not errors.
+    @Test("No container and no inbox are both a quiet zero")
+    func sweepIsTotal() throws {
+        #expect(ShareHandoff.sweepOrphanedStaging(container: nil) == 0)
+
+        let container = try makeContainer()
+        defer { try? FileManager.default.removeItem(at: container) }
+        // Never shared: the inbox has not been created yet.
+        #expect(ShareHandoff.sweepOrphanedStaging(container: container) == 0)
+        #expect(ShareHandoff.sweepOrphanedStaging(
+            container: container.appendingPathComponent("nowhere")) == 0)
+    }
+
+    /// 24 hours, which is the server's `limits.attachment_grace_hours`
+    /// and the "Unclaimed attachments are deleted after 24 hours" promise
+    /// in docs/protocol.md — the same abandoned send, one hop later. A
+    /// client sweeping sooner than the server would promise more than the
+    /// protocol does.
+    @Test("The staging grace matches the server's unclaimed-upload grace")
+    func graceMatchesTheServer() {
+        #expect(ShareHandoff.stagingGrace == 24 * 60 * 60)
+    }
+
     // MARK: - The halves a property list holds
 
     /// The constants are literals on purpose: the App Group is written

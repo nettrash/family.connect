@@ -85,6 +85,94 @@ nonisolated enum ShareHandoff {
         return inboxURL(container: container).appendingPathComponent(id, isDirectory: true)
     }
 
+    // MARK: - What never completed
+
+    /// How long a staging entry is left alone before the sweep calls it
+    /// abandoned. 24 hours — the SERVER's number.
+    ///
+    /// `limits.attachment_grace_hours` defaults to 24 (server/config.rs,
+    /// config.example.toml) and docs/protocol.md states it as a promise:
+    /// "Unclaimed attachments are deleted after 24 hours". That is the
+    /// same abandoned send as this one, one hop later in the same
+    /// pipeline, and a client that swept sooner than the server would be
+    /// making a stricter promise than the protocol documents.
+    ///
+    /// It is also enormous next to the real in-flight window, which is
+    /// the number that actually has to be safe. A hand-off is live from
+    /// the appex's `copyItem` to the app's `onOpenURL`: seconds against a
+    /// running app, and on the worst cold launch — a big video, a slow
+    /// device, a SwiftData store that has to be rebuilt first — still far
+    /// short of a minute. Nothing is bought by tightening it: a shorter
+    /// floor reclaims a few directory entries sooner, and risks deleting
+    /// a share while its own app is still launching.
+    static let stagingGrace: TimeInterval = 24 * 60 * 60
+
+    /// Delete everything in the inbox older than `age`; answer how many
+    /// entries went.
+    ///
+    /// A hand-off that COMPLETES cleans up after itself — the app removes
+    /// each staging directory as it imports it (`AppSession.handleShareURL`).
+    /// This is for every hand-off that does not: the person cancels after
+    /// the appex has already staged, the open is dropped, the app is
+    /// killed mid-import, the import throws, or the app is simply never
+    /// opened again. Nothing in either process ever looks at those
+    /// directories again, so without this they sit in the App Group
+    /// container for the life of the install — with a shared video's
+    /// hundreds of megabytes in each (issue #35).
+    ///
+    /// AGE IS THE ONLY TEST, and both halves of that are deliberate:
+    ///
+    ///   - A directory IN FLIGHT must never be deleted. `age` is the
+    ///     entire protection, so an entry whose timestamp cannot be read
+    ///     is LEFT rather than guessed at, and so is one stamped in the
+    ///     future (a clock moved back: the subtraction goes negative and
+    ///     nothing matches). A directory kept one launch too long costs
+    ///     nothing; a share that evaporates mid-hand-off is the failure
+    ///     this whole file exists to prevent.
+    ///   - The NAME is not consulted. An entry the consumer would refuse
+    ///     to name — `stagingDirectory` builds a path from a UUID and
+    ///     nothing else — is precisely an entry no import will ever
+    ///     claim, and so is a stray FILE dropped straight into the inbox
+    ///     (a `.DS_Store`, a half-written copy). Sparing those would be
+    ///     sparing exactly the garbage this exists to collect. `ShareInbox`
+    ///     is written by this appex and read by this app; there is no
+    ///     third party whose file could be in there.
+    ///
+    /// TOTAL AND SILENT. Every filesystem call is `try?`: a missing
+    /// container (no App Group entitlement), a missing inbox (nothing has
+    /// ever been shared) and an unreadable entry all return a count
+    /// rather than throw, because both call sites are paths that must not
+    /// fail — an app launch, and an appex about to stage a share. It logs
+    /// nothing, because this file is compiled into the extension and stays
+    /// dependency-free; a caller with a logger can log the count.
+    static func sweepOrphanedStaging(
+        container: URL? = ShareHandoff.containerURL(),
+        olderThan age: TimeInterval = ShareHandoff.stagingGrace,
+        now: Date = Date(),
+        fileManager: FileManager = .default
+    ) -> Int {
+        guard let container else { return 0 }
+        let inbox = inboxURL(container: container)
+        guard let names = try? fileManager.contentsOfDirectory(atPath: inbox.path) else {
+            return 0
+        }
+        var removed = 0
+        for name in names {
+            let entry = inbox.appendingPathComponent(name)
+            let attributes = try? fileManager.attributesOfItem(atPath: entry.path)
+            // Modified, not created: a staging directory's modification
+            // date moves when the appex copies the file INTO it, which is
+            // the moment the hand-off became live. Creation date is the
+            // fallback for anything that carries one and not the other.
+            guard let stamped = (attributes?[.modificationDate] as? Date)
+                    ?? (attributes?[.creationDate] as? Date),
+                  now.timeIntervalSince(stamped) > age
+            else { continue }
+            if (try? fileManager.removeItem(at: entry)) != nil { removed += 1 }
+        }
+        return removed
+    }
+
     // MARK: - The hand-off URL, both directions
 
     /// PRODUCER (extension): `familyconnect://share?ids=<uuid>,<uuid>`.
