@@ -16,10 +16,20 @@
 //  AVPlayer, which does its own buffering and would gain nothing from a
 //  second copy on the phone.
 //
+//  A VIDEO'S POSTER IS THE ONE THING HERE THE SERVER MIGHT NOT HAVE.
+//  Everything else in this cache is a copy of bytes the server already
+//  holds. A poster is made on this device and pushed up in its own request
+//  (`ChatSyncCoordinator.performSendMedia`), and that request can fail
+//  while the send itself succeeds — which used to mean no poster for
+//  anybody, ever (issue #54). So this store also keeps the small amount of
+//  bookkeeping needed to finish the job later: see "Repairing a poster the
+//  server never got".
+//
 //  Android counterpart: data/repo/AttachmentRepository.kt
 //
 
 import SwiftUI
+import os
 
 @MainActor
 @Observable
@@ -86,6 +96,13 @@ final class AttachmentStore {
 
     private func fileURL(_ key: String) -> URL {
         directory.appendingPathComponent(key).appendingPathExtension("jpg")
+    }
+
+    /// Where the "this poster never reached the server" marker for an
+    /// attachment lives: beside its bytes, under the same id.
+    private func posterMarkerURL(_ id: Int64) -> URL {
+        directory.appendingPathComponent(key(id, preview: true))
+            .appendingPathExtension(Self.posterMarkerExtension)
     }
 
     /// The image if it is already here, else nil — and a fetch is started.
@@ -226,6 +243,185 @@ final class AttachmentStore {
         generation &+= 1
     }
 
+    // MARK: - Repairing a poster the server never got
+
+    /// The marker's file extension. `34-preview.unsent` sits beside
+    /// `34-preview.jpg`, which is the whole design: the note and the bytes
+    /// it refers to live and die together, so a caches purge cannot leave
+    /// a work item pointing at material that is gone. Same name on
+    /// Android (`AttachmentRepository.POSTER_MARKER_EXTENSION`).
+    static let posterMarkerExtension = "unsent"
+
+    /// How many ANSWERED attempts a poster repair is worth before the
+    /// video is given up on for good.
+    ///
+    /// A budget, not a schedule — nothing here is on a timer. The pass
+    /// runs when the socket connects, which is once per launch plus once
+    /// per recovery from a network drop, so three answered failures is a
+    /// video the server is refusing rather than one that lost a coin
+    /// flip. After that the marker is deleted and the tile keeps its play
+    /// badge for good, which is the honest outcome: `image(id:preview:)`
+    /// settles the same key after its own bounded re-check, and nothing
+    /// on either side polls.
+    ///
+    /// A TRANSPORT failure does not spend the budget, exactly as it does
+    /// not settle a fetch in `finish(_:data:settled:)`: nobody answered,
+    /// so nothing was learned. It cannot spin — the pass is only ever
+    /// started by an event, never by itself.
+    static let posterRepairAttempts = 3
+
+    /// One pass at a time, so a flapping socket cannot start a second.
+    @ObservationIgnored private var posterRepair: Task<Void, Never>?
+
+    /// Say what became of a video's poster upload.
+    ///
+    /// Called by the send path for VIDEOS only. A photo needs none of
+    /// this: a bubble whose preview is missing falls back to the full
+    /// bytes, so a lost photo preview costs bandwidth rather than the
+    /// picture. A video's bytes are a video — there is no second source
+    /// of pixels, and that asymmetry is the whole of issue #54.
+    ///
+    /// - Parameter landed: whether the server took it. False leaves a
+    ///   marker for `repairPosters()` to find; true removes one, which is
+    ///   what makes a later successful send of the same id idempotent.
+    func notePosterUpload(id: Int64, landed: Bool) {
+        let marker = posterMarkerURL(id)
+        guard !landed else {
+            try? FileManager.default.removeItem(at: marker)
+            return
+        }
+        // Only worth a marker if the bytes to send are actually here.
+        // `seed` runs just before the upload, so they normally are; when
+        // they are not there is nothing to repair from and a marker would
+        // only cost a directory read on every reconnect.
+        guard FileManager.default.fileExists(
+            atPath: fileURL(key(id, preview: true)).path)
+        else { return }
+        try? Data("0".utf8).write(to: marker, options: .atomic)
+    }
+
+    /// Push up the posters this device made and the server never got.
+    ///
+    /// THE OTHER HALF OF ISSUE #38. That one taught the read side that
+    /// `has_preview` is a hint, so a poster that EXISTS is picked up
+    /// without a relaunch. This is what makes one exist. The upload is
+    /// best-effort by design — a thumbnail must never cost the send — and
+    /// before this, best-effort meant exactly once: a failed `uploadPreview`
+    /// left `has_preview = false` on the server with nobody able to
+    /// correct it, because the only device holding the pixels had already
+    /// moved on. The sender saw nothing wrong (its own bubble draws from
+    /// the seeded cache), which is why it read as "the video from the
+    /// other person is broken".
+    ///
+    /// NO WIRE CHANGE. `PUT /attachments/{id}/preview` is uploader-only,
+    /// idempotent, and legal after the message that claims the attachment
+    /// exists (server/src/handlers_attachment.rs) — it overwrites the file
+    /// and sets `has_preview = true`. Repairing is the same request the
+    /// send makes, sent again.
+    ///
+    /// Called when the socket connects: once per launch, and again each
+    /// time the network comes back — the same signal `retryAfterReconnect`
+    /// uses, and the moment we know a request is worth making. Android's
+    /// counterpart hangs off `connectivity.onAvailable` for the same
+    /// reason.
+    ///
+    /// - Returns: the running pass, or nil if one was already going. The
+    ///   app ignores it; a test awaits it.
+    @discardableResult
+    func repairPosters() -> Task<Void, Never>? {
+        guard posterRepair == nil else { return nil }
+        let task = Task { [weak self] in
+            await self?.runPosterRepair()
+            self?.posterRepair = nil
+        }
+        posterRepair = task
+        return task
+    }
+
+    private func runPosterRepair() async {
+        let suffix = "-preview." + Self.posterMarkerExtension
+        guard let names = try? FileManager.default
+            .contentsOfDirectory(atPath: directory.path)
+        else { return }
+        for name in names where name.hasSuffix(suffix) {
+            guard let id = Int64(name.dropLast(suffix.count)) else { continue }
+            // A dead session fails every remaining marker the same way,
+            // so stop rather than burn the whole queue's budget on it.
+            if await repairPoster(id: id) == .sessionGone { return }
+        }
+    }
+
+    private enum PosterRepairOutcome { case done, sessionGone }
+
+    private func repairPoster(id: Int64) async -> PosterRepairOutcome {
+        let marker = posterMarkerURL(id)
+        guard let jpeg = try? Data(contentsOf: fileURL(key(id, preview: true))),
+              !jpeg.isEmpty
+        else {
+            // Nothing to send. The bytes were purged with the caches, or
+            // the frame grab never produced any — and no number of tries
+            // conjures pixels. Says so, because "this video never had a
+            // poster" and "its upload failed" need different fixes.
+            try? FileManager.default.removeItem(at: marker)
+            AppLog.sync.error(
+                "Poster repair impossible for attachment \(id, privacy: .public): no poster bytes held on this device")
+            return .done
+        }
+
+        do {
+            try await api.uploadPreview(attachmentID: id, jpeg: jpeg)
+            try? FileManager.default.removeItem(at: marker)
+            AppLog.sync.info("Poster repaired for attachment \(id, privacy: .public)")
+            // Every reader that settled on "there is no poster" may now be
+            // wrong; this device's own bubbles included.
+            missing.remove(key(id, preview: true))
+            generation &+= 1
+            return .done
+        } catch {
+            switch error as? APIError {
+            case .unauthorized:
+                return .sessionGone
+            case .transport, .notConfigured:
+                // Nobody answered. Nothing was learned, so nothing is
+                // spent; the next reconnect asks again.
+                return .done
+            case .notFound:
+                // The attachment is gone, or was never ours to replace.
+                // As terminal as an answer gets.
+                try? FileManager.default.removeItem(at: marker)
+                AppLog.sync.error(
+                    "Poster repair abandoned for attachment \(id, privacy: .public): the server has no such attachment")
+                return .done
+            default:
+                let spent = posterRepairAttemptsSpent(marker) + 1
+                if spent >= Self.posterRepairAttempts {
+                    try? FileManager.default.removeItem(at: marker)
+                    AppLog.sync.error(
+                        "Poster repair given up for attachment \(id, privacy: .public) after \(spent, privacy: .public) answered attempts: \(String(describing: error), privacy: .public)")
+                } else {
+                    try? Data(String(spent).utf8).write(to: marker, options: .atomic)
+                }
+                return .done
+            }
+        }
+    }
+
+    /// The marker's whole contents: a decimal count of answered attempts.
+    /// An unreadable or absent one reads as zero — a repair that runs once
+    /// too often is a few kilobytes; one that never runs is the bug.
+    private func posterRepairAttemptsSpent(_ marker: URL) -> Int {
+        guard let data = try? Data(contentsOf: marker),
+              let text = String(data: data, encoding: .utf8),
+              let value = Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return 0 }
+        return max(0, value)
+    }
+
+    /// Test-facing: whether this id is still waiting to be repaired.
+    func isPosterUnsent(id: Int64) -> Bool {
+        FileManager.default.fileExists(atPath: posterMarkerURL(id).path)
+    }
+
     private func remember(_ key: String, _ image: Image) {
         hot[key] = image
         hotOrder.append(key)
@@ -258,6 +454,10 @@ final class AttachmentStore {
                 missing.remove(key)
                 try? FileManager.default.removeItem(at: fileURL(key))
             }
+            // The poster is gone with the chat, so the note asking for it
+            // to be re-sent must go too — the repair pass would otherwise
+            // find a marker with nothing behind it.
+            try? FileManager.default.removeItem(at: posterMarkerURL(id))
         }
         generation &+= 1
     }

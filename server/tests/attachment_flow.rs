@@ -352,6 +352,115 @@ async fn a_preview_is_uploaded_separately_and_flagged() {
     assert_eq!(body["message"]["attachment"]["has_preview"], true);
 }
 
+/// The property the clients' poster repair rests on (issue #54).
+///
+/// A preview goes up in its OWN request, so it can fail while the message
+/// that claims the attachment succeeds — and then only the uploading device
+/// still holds the pixels. It has to be able to finish the job later, which
+/// means a second `PUT` must be legal AFTER the message exists, must
+/// overwrite whatever is stored, and must flip `has_preview` from false to
+/// true where every reader can see it. Nothing here asks the server to
+/// decode anything: the repair is the same request, sent again.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_preview_may_be_uploaded_after_the_message_claims_it() {
+    let server = spawn_server().await;
+    let (owner, member, chat_id) = family_of_two(&server).await;
+
+    let body: Value = upload(&server, &owner, "?kind=video", "video/mp4", mp4_bytes(512))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let attachment_id = body["attachment"]["id"].as_i64().expect("id");
+
+    // The send: the poster upload is skipped entirely, exactly as a failed
+    // one leaves things.
+    let sent: Value = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_id": attachment_id,
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(sent["message"]["attachment"]["has_preview"], false);
+
+    // The repair, after the row is claimed. Uploader only — a member who
+    // did not upload it has no business replacing what a bubble draws.
+    assert_error(
+        server
+            .put_bytes(
+                &member,
+                &format!("/attachments/{attachment_id}/preview"),
+                "image/jpeg",
+                jpeg_bytes(128),
+            )
+            .await,
+        404,
+        "attachment_not_found",
+    )
+    .await;
+    assert_eq!(
+        server
+            .put_bytes(
+                &owner,
+                &format!("/attachments/{attachment_id}/preview"),
+                "image/jpeg",
+                jpeg_bytes(256),
+            )
+            .await
+            .status(),
+        204
+    );
+
+    // And it is visible to the OTHER member, which is the whole point: the
+    // grey tile was never the sender's problem.
+    let fetched = server
+        .get(&member, &format!("/attachments/{attachment_id}/preview"))
+        .await;
+    assert_eq!(fetched.status(), 200);
+    let listed: Value = server
+        .get(&member, &format!("/chats/{chat_id}/messages"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let message = listed["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|row| row["attachment"]["id"].as_i64() == Some(attachment_id))
+        .expect("the message carrying the repaired attachment");
+    assert_eq!(message["attachment"]["has_preview"], true);
+
+    // Idempotent: sending it a second time overwrites and stays true, so a
+    // repair that raced a successful one costs nothing.
+    assert_eq!(
+        server
+            .put_bytes(
+                &owner,
+                &format!("/attachments/{attachment_id}/preview"),
+                "image/jpeg",
+                jpeg_bytes(300),
+            )
+            .await
+            .status(),
+        204
+    );
+    let again = server
+        .get(&member, &format!("/attachments/{attachment_id}/preview"))
+        .await;
+    assert_eq!(again.status(), 200);
+    assert_eq!(again.bytes().await.expect("bytes").len(), 300);
+}
+
 /// A send the user abandoned must not leave 100 MB on the server forever.
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]

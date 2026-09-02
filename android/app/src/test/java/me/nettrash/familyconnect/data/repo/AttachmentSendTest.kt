@@ -39,6 +39,7 @@ import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
+import me.nettrash.familyconnect.testutil.FakePosterCache
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
@@ -67,6 +68,7 @@ class AttachmentSendTest {
     private lateinit var chatDao: ChatDao
     private lateinit var chatApi: FakeChatApi
     private val attachmentApi = FakeAttachmentApi()
+    private val posterCache = FakePosterCache()
     private lateinit var socket: FakeChatSocket
     private lateinit var settings: FakeSettingsRepository
 
@@ -101,6 +103,7 @@ class AttachmentSendTest {
             socket = socket,
             settings = settings,
             chatRepository = testChatRepository(chatApi, chatDao, messageDao, socket, repoScope),
+            posterCache = posterCache,
             scope = repoScope,
             clock = Clock { NOW },
         )
@@ -253,6 +256,86 @@ class AttachmentSendTest {
         advanceUntilIdle()
 
         assertThat(attachmentApi.calls).containsExactly("upload")
+    }
+
+    /**
+     * ISSUE #54. The poster upload is best-effort, and it used to be
+     * best-effort ONCE: a refused `uploadPreview` left `has_preview` false
+     * on the server with the pixels only on this device and nothing that
+     * would ever offer them again. The send still succeeds — that part
+     * never changed — but the frame is now KEPT and the debt recorded, so
+     * the next time the network is there the poster goes up.
+     */
+    @Test
+    fun `a video whose poster upload failed keeps the frame and records the debt`() =
+        runTest(dispatcher) {
+            insertChat()
+            val repository = newRepository()
+            ackWith(hasPreview = false)
+            attachmentApi.uploadHandler = { _, _, _ ->
+                ApiResult.Ok(AttachmentResponse(FakeAttachmentApi.attachment(id = 34, kind = "video")))
+            }
+            attachmentApi.previewHandler = { _, _ -> ApiResult.HttpError(500, "internal", "no") }
+
+            assertThat(repository.sendMedia(listOf(preparedVideo()), "", CHAT)).isTrue()
+            advanceUntilIdle()
+
+            assertThat(posterCache.seeded).containsExactly(34L to 64)
+            assertThat(posterCache.noted).containsExactly(34L to false)
+        }
+
+    /** The same send when the poster lands: kept all the same (the sender
+     *  draws its own bubble from it), and nothing is owed. */
+    @Test
+    fun `a video whose poster landed owes nothing`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        ackWith(hasPreview = true)
+        attachmentApi.uploadHandler = { _, _, _ ->
+            ApiResult.Ok(AttachmentResponse(FakeAttachmentApi.attachment(id = 34, kind = "video")))
+        }
+
+        assertThat(repository.sendMedia(listOf(preparedVideo()), "", CHAT)).isTrue()
+        advanceUntilIdle()
+
+        assertThat(posterCache.seeded).containsExactly(34L to 64)
+        assertThat(posterCache.noted).containsExactly(34L to true)
+    }
+
+    /**
+     * A photo needs none of it. Its preview failing costs bandwidth, not
+     * the picture — the bubble falls back to the full bytes — so nothing
+     * is kept and nothing is owed.
+     */
+    @Test
+    fun `a photo whose preview upload failed owes nothing`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        ackWith(hasPreview = false)
+        attachmentApi.previewHandler = { _, _ -> ApiResult.HttpError(500, "internal", "no") }
+
+        assertThat(repository.sendMedia(listOf(prepared()), "", CHAT)).isTrue()
+        advanceUntilIdle()
+
+        assertThat(posterCache.seeded).isEmpty()
+        assertThat(posterCache.noted).isEmpty()
+    }
+
+    /** A prepared video on disk, as MediaPrep would leave one. */
+    private fun preparedVideo(
+        previewJpeg: ByteArray? = ByteArray(64) { 0x7 },
+    ): MediaPrep.Prepared {
+        val file = File.createTempFile("fc-upload", ".mp4")
+        file.writeBytes(byteArrayOf(0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70))
+        return MediaPrep.Prepared(
+            file = file,
+            mime = "video/mp4",
+            kind = "video",
+            width = 1080,
+            height = 1920,
+            durationMs = 8400,
+            previewJpeg = previewJpeg,
+        )
     }
 
     /** The socket path carries the attachment id too, not just REST. */
