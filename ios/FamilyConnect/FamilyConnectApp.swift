@@ -76,14 +76,16 @@ struct FamilyConnectApp: App {
         //
         // DEBUG-only, because what it does is destructive and it is driven
         // by a launch argument — a thing a person can pass to a shipped
-        // app. It wipes every default AND deletes the keychain token, so on
-        // a Release build it is a one-flag "sign me out and forget my
-        // server" that nothing in the UI offers. Nothing legitimate needs
+        // app. It wipes every default, deletes the keychain token AND
+        // deletes the message store (below), so on a Release build it is a
+        // one-flag "sign me out, forget my server and throw the cache
+        // away" that nothing in the UI offers. Nothing legitimate needs
         // it there: `DEBUG` is defined only by the project-level Debug
         // configuration, and both schemes' TestAction builds Debug, so
         // every UI test that passes this argument still gets it.
         #if DEBUG
-        if CommandLine.arguments.contains("--uitest-reset") {
+        let uiTestReset = CommandLine.arguments.contains("--uitest-reset")
+        if uiTestReset {
             AppSettings.wipe(keepServerURL: false)
             try? KeychainStore.delete(account: KeychainStore.tokenAccount)
         }
@@ -98,6 +100,27 @@ struct FamilyConnectApp: App {
             isStoredInMemoryOnly: false,
             cloudKitDatabase: .none
         )
+        // …AND the message cache, which the wipe above cannot reach: it
+        // clears UserDefaults and the keychain token, both of which live
+        // somewhere else entirely (#55).
+        //
+        // The gap was not academic. `--uitest-reset` is documented, and
+        // used, as "a clean slate"; what it actually produced was a
+        // signed-out app still holding the previous fixture's rows, and
+        // SwiftData has no reason to distrust them. A chat id reused by a
+        // different seed therefore rendered the OTHER fixture's thread —
+        // one store-screenshot run photographed 1500 "Message number N"
+        // bubbles inside "The Harpers", and the images looked entirely
+        // plausible.
+        //
+        // Deleting the FILE rather than the rows, and here rather than
+        // after the container opens, because this must also clear a store
+        // whose schema no longer matches — the case where opening it is
+        // the thing that fails. Same three files as the corruption path
+        // below (`.store`, `-wal`, `-shm`); a missing one is not an error.
+        #if DEBUG
+        if uiTestReset { Self.deleteStore(at: configuration.url) }
+        #endif
         // One delete-and-retry before giving up. A store that will not open
         // is not a disaster here: every row in it is a CACHE of something
         // the server still has, which is exactly what the error view has

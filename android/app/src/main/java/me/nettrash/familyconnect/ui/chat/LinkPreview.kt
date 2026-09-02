@@ -55,8 +55,16 @@ object LinkPreviewParser {
     /**
      * Longest prefix of a page worth scanning: everything read lives in
      * <head>, and the fetcher caps the download anyway.
+     *
+     * Deliberately the SAME number as the fetcher's byte cap, and a
+     * second reason #50 showed no card for a YouTube link: a scan limit
+     * under the fetch cap silently throws away bytes already paid for.
+     * A UTF-8 page never decodes to more characters than it has bytes,
+     * so matching the cap means the parser always sees everything that
+     * was downloaded. Raising one without the other fixes nothing —
+     * YouTube's og:title sits at ~706K.
      */
-    const val SCAN_LIMIT = 200_000
+    const val SCAN_LIMIT = 1_048_576
 
     /**
      * Both limits count UNICODE CODE POINTS, on both platforms —

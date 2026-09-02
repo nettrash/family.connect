@@ -11,8 +11,8 @@
  * switchable off in Settings, which is why callers check the flag
  * before asking for anything. Requests are stripped down accordingly:
  * no cookies (the app's OkHttp client has no CookieJar), no redirect
- * chain beyond OkHttp's default, and a body read that stops after
- * MAX_HTML_BYTES.
+ * chain beyond OkHttp's default, and a body read that stops at the end
+ * of the page's <head> (or after MAX_HTML_BYTES, whichever is first).
  *
  * One repository for the app, so a link posted in a busy chat is
  * fetched once no matter how many bubbles render it. Results —
@@ -40,6 +40,8 @@ import me.nettrash.familyconnect.ui.chat.LinkPreview
 import me.nettrash.familyconnect.ui.chat.LinkPreviewParser
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -144,9 +146,18 @@ class LinkPreviewRepository @Inject constructor(
                     contentType.type == "text" ||
                     contentType.subtype.contains("html")
                 if (!isHtml) return@use null
-                // peekBody reads at most this many bytes and leaves the
-                // rest un-downloaded.
-                val html = response.peekBody(MAX_HTML_BYTES).string()
+                val stream = response.body?.byteStream() ?: return@use null
+                // Stops at the end of <head>, leaving the rest of the
+                // page un-downloaded — which is what makes the 1MB cap
+                // affordable. This was peekBody(MAX_HTML_BYTES), which
+                // always read the flat cap and, at 256K, never reached
+                // YouTube's og: tags (#50).
+                val bytes = readHead(stream, MAX_HTML_BYTES)
+                // Same charset rule ResponseBody.string() applied: the
+                // one the response declares, UTF-8 when it declares
+                // none or one this JVM does not have.
+                val charset = contentType?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+                val html = String(bytes, charset)
                 // Redirects land on response.request.url; resolve
                 // relative images and the host label against where we
                 // actually ended up.
@@ -192,10 +203,140 @@ class LinkPreviewRepository @Inject constructor(
     }
 
     private companion object {
-        /** <head> is all that is parsed, so the rest is never fetched. */
-        const val MAX_HTML_BYTES = 256L * 1024
+        /**
+         * Ceiling on the page read. It is rarely reached — the read
+         * stops at the end of <head> — and exists for a page that never
+         * closes its head.
+         *
+         * It was 256K, and that is precisely why a YouTube link showed
+         * no card at all (#50): youtube.com/watch ships ~700K of inline
+         * player JSON ahead of its og: tags, so the first 256K contain
+         * no og:title and not even a <title>, and the parser correctly
+         * refused to build a card out of nothing. Measured on a real
+         * watch page: <title> at 704,923, og:title at 706,842, </head>
+         * at 715,108 of 1,310,787. Kept equal to
+         * LinkPreviewParser.SCAN_LIMIT and to the iOS cap.
+         */
+        const val MAX_HTML_BYTES = 1024L * 1024
         const val MAX_IMAGE_BYTES = 4L * 1024 * 1024
         const val TARGET_IMAGE_WIDTH = 600
         const val MAX_ENTRIES = 200
+    }
+}
+
+/**
+ * Reads [input] up to the end of the page's `<head>`, or [cap] bytes,
+ * whichever comes first.
+ *
+ * The head stop is what pays for the 1MB cap. Everything the parser
+ * reads lives in `<head>`, so the rest of a page is bytes burned on
+ * somebody's mobile data, and heads are small even when pages are not:
+ * measured over ten real sites, `</head>` lands at 347B (Hacker News),
+ * 6.8K (Vimeo), 9.5K (Wikipedia, in a 650K page), 13K (apple.com), 22K
+ * (GitHub), 31K (amazon.com, 762K page), 90K (BBC News), 353K (Reddit,
+ * 874K page), 619K (the Guardian, 1.28M page) and 715K (YouTube, 1.31M
+ * page). Seven of those ten now transfer less than the flat 256K they
+ * used to.
+ *
+ * Internal rather than private so the unit tests can drive it off a
+ * ByteArrayInputStream instead of a socket.
+ *
+ * iOS counterpart: `limitedData(…, stoppingAtEndOfHead:)` in
+ * LinkPreviewLoader.swift.
+ */
+internal fun readHead(input: InputStream, cap: Long): ByteArray {
+    val out = ByteArrayOutputStream(minOf(cap, 64L * 1024).toInt())
+    val scanner = HeadEndScanner()
+    val buffer = ByteArray(16 * 1024)
+    var total = 0L
+    while (total < cap) {
+        val want = minOf(buffer.size.toLong(), cap - total).toInt()
+        val read = input.read(buffer, 0, want)
+        if (read <= 0) break
+        // Scan the chunk for the head end, then write the prefix in one
+        // go rather than a byte at a time.
+        var stop = -1
+        for (index in 0 until read) {
+            if (scanner.consume(buffer[index])) {
+                stop = index
+                break
+            }
+        }
+        if (stop >= 0) {
+            out.write(buffer, 0, stop + 1)
+            break
+        }
+        out.write(buffer, 0, read)
+        total += read
+    }
+    return out.toByteArray()
+}
+
+/**
+ * Spots the end of a page's `<head>` in a byte stream, one byte at a
+ * time, so a fetch can stop there without buffering the page first.
+ *
+ * Deliberately dumber than an HTML tokenizer, and matched to the
+ * scanner in LinkPreviewParser: ASCII-only case folding, and a match
+ * counts only when the tag NAME ends there, so `<bodyguard>` is not the
+ * body. `<body` is honoured as well as `</head`, because the head end
+ * tag is optional in HTML and a page that omits it would otherwise be
+ * read to the cap.
+ *
+ * The cost of being dumb is a page that writes the literal text
+ * `</head>` or `<body>` inside an inline script in its head: the fetch
+ * stops early and the card is lost. That is rare enough to accept (none
+ * of the ten pages measured above does it, YouTube included — its
+ * inline JSON escapes every `<` as a \u003C escape), and the
+ * alternative is a real tokenizer for a nicety feature.
+ *
+ * iOS counterpart: HeadEndDetector in LinkPreviewLoader.swift.
+ */
+internal class HeadEndScanner {
+
+    /**
+     * The last few folded bytes — one longer than the longest needle,
+     * because the byte AFTER the name is what proves the name ended.
+     */
+    private val window = ByteArray(WINDOW)
+    private var filled = 0
+
+    /** True the moment [byte] completes `</head` or `<body`. */
+    fun consume(byte: Byte): Boolean {
+        val folded = fold(byte)
+        if (filled == WINDOW) {
+            System.arraycopy(window, 1, window, 0, WINDOW - 1)
+            window[WINDOW - 1] = folded
+        } else {
+            window[filled] = folded
+            filled++
+        }
+        // The newest byte is the boundary; the needle sits just before it.
+        if (isNameCharacter(window[filled - 1])) return false
+        return endsWithNeedle(HEAD) || endsWithNeedle(BODY)
+    }
+
+    private fun endsWithNeedle(needle: ByteArray): Boolean {
+        // -1 for the boundary byte, which is not part of the name.
+        val end = filled - 1
+        if (end < needle.size) return false
+        for (index in needle.indices) {
+            if (window[end - needle.size + index] != needle[index]) return false
+        }
+        return true
+    }
+
+    private fun fold(byte: Byte): Byte =
+        if (byte >= 'A'.code.toByte() && byte <= 'Z'.code.toByte()) (byte + 32).toByte() else byte
+
+    private fun isNameCharacter(byte: Byte): Boolean {
+        val value = byte.toInt() and 0xFF
+        return (value in 'a'.code..'z'.code) || (value in '0'.code..'9'.code)
+    }
+
+    private companion object {
+        val HEAD = "</head".toByteArray(Charsets.US_ASCII)
+        val BODY = "<body".toByteArray(Charsets.US_ASCII)
+        const val WINDOW = 7
     }
 }
