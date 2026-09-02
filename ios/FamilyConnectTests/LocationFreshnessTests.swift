@@ -149,13 +149,38 @@ struct LocationFreshnessTests {
     /// location, and the run would stay green while it did. Only the
     /// hardware is stubbed here — the real deadline, the real hold, the
     /// real teardown and the real per-wait `bestSoFar` reset all still run.
+    /// It also COUNTS, because the permission split (#41) is a claim about
+    /// what does not happen: settling permission must start no hunt, and a
+    /// hunt must raise no alert. Only the hardware can say whether either
+    /// happened, so it keeps the tally.
+    ///
+    /// The two hooks are how a test plays the person and the daemon
+    /// without a clock anywhere: they run at the exact moment the app asks
+    /// for the alert, or starts sampling, which is the only moment at
+    /// which a wait is provably parked. Answering from a `Task` inside one
+    /// models the delegate's own hop.
     @MainActor
     final class InertLocationHardware: LocationHardware {
         var authorizationStatus: CLAuthorizationStatus = .authorizedWhenInUse
         var desiredAccuracy: CLLocationAccuracy = 0
         weak var delegate: (any CLLocationManagerDelegate)?
-        func requestWhenInUseAuthorization() {}
-        func startUpdatingLocation() {}
-        func stopUpdatingLocation() {}
+        /// How many times the app put the system alert up.
+        private(set) var authorizationRequests = 0
+        /// How many times it started sampling, and stopped.
+        private(set) var startCount = 0
+        private(set) var stopCount = 0
+        /// What "the person" does once the alert is up.
+        var onRequestAuthorization: (() -> Void)?
+        /// What the world does once the hunt is running.
+        var onStartUpdating: (() -> Void)?
+        func requestWhenInUseAuthorization() {
+            authorizationRequests += 1
+            onRequestAuthorization?()
+        }
+        func startUpdatingLocation() {
+            startCount += 1
+            onStartUpdating?()
+        }
+        func stopUpdatingLocation() { stopCount += 1 }
     }
 }
