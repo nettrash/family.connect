@@ -21,6 +21,29 @@
 import CoreLocation
 import Foundation
 
+/// The six members of `CLLocationManager` this file actually uses.
+///
+/// It exists so tests can drive the real timeout, hold and teardown logic
+/// without a real `CLLocationManager` underneath. They used to construct
+/// one, which made them correct only where CoreLocation happens to be
+/// inert — the author's Mac. On a fresh simulator, authorization is
+/// `.notDetermined`, so the suite's own `requestWhenInUseAuthorization()`
+/// went unanswered, turned the status `.denied`, and the timeout tests
+/// failed with the wrong error. CI found that on its first run.
+///
+/// Production is unchanged: the initializer below defaults to a real
+/// `CLLocationManager`, so both app call sites are byte-identical.
+protocol LocationHardware: AnyObject {
+    var authorizationStatus: CLAuthorizationStatus { get }
+    var desiredAccuracy: CLLocationAccuracy { get set }
+    var delegate: (any CLLocationManagerDelegate)? { get set }
+    func requestWhenInUseAuthorization()
+    func startUpdatingLocation()
+    func stopUpdatingLocation()
+}
+
+extension CLLocationManager: LocationHardware {}
+
 @MainActor
 @Observable
 final class LocationProvider: NSObject {
@@ -111,14 +134,15 @@ final class LocationProvider: NSObject {
     /// gymnastics over a value this path always has.
     private(set) var bestSoFar: (fix: Fix, accuracy: CLLocationAccuracy)?
 
-    private let manager = CLLocationManager()
+    private let manager: any LocationHardware
     private var waiters: [CheckedContinuation<Fix, Error>] = []
     private var isRunning = false
 
-    override init() {
+    init(manager: any LocationHardware = CLLocationManager()) {
+        self.manager = manager
         super.init()
-        manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        self.manager.delegate = self
+        self.manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
     }
 
     /// Ask for one fix. Requests authorization first if it has never been

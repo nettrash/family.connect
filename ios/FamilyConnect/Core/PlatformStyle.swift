@@ -88,11 +88,26 @@ extension View {
     /// a Mac" look, a label at one edge and its field at the other. Every
     /// Mac setup sheet answers this the same way, so this does too.
     ///
-    /// No-op on iOS, where the window IS the column.
+    /// The same holds on a big iPad, which is why this is no longer a
+    /// no-op there. On a phone the window really IS the column — 460pt is
+    /// wider than every iPhone, so the clamp never binds and the phone
+    /// renders exactly as it always has. On a 13-inch iPad it was binding
+    /// on nothing: the server-address field ran 992pt in portrait and
+    /// 1344pt in landscape, roughly four times the width of the one line
+    /// of help text beneath it, with the button a second full-bleed pill
+    /// under it.
+    ///
+    /// Applied here, OUTSIDE each screen's NavigationStack, rather than
+    /// inside the six screens: measured, the large title then sits inside
+    /// the centred column, and the bar is transparent at rest so no chrome
+    /// floats. Clamping inside the Form instead strands the title at the
+    /// far left of the window, hundreds of points from the form it names.
     @ViewBuilder
     func setupColumn() -> some View {
         #if os(iOS)
-        self
+        frame(maxWidth: 460)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemGroupedBackground))
         #else
         frame(maxWidth: 460)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
