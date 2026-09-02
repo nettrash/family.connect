@@ -107,6 +107,39 @@ final class MacLaunchSmokeUITests: XCTestCase {
             app.staticTexts["Server address"].exists,
             "the setup form's section header should be on screen with the button")
     }
+
+    /// The invariant from #52: AFTER ANY LAUNCH, AT LEAST ONE WINDOW EXISTS.
+    ///
+    /// THE MISSING FLAG IS THE POINT. The test above passes
+    /// `-ApplePersistenceIgnoreState YES` so that what it measures is the
+    /// app rather than the residue of the last run — but that flag also
+    /// switched off the very mechanism #52 lives in, which is how the bug
+    /// went on being real while the suite was green. This test deliberately
+    /// does NOT pass it: it launches with whatever saved state this machine
+    /// has, which is what a person's Mac does every morning.
+    ///
+    /// It asserts nothing about WHICH screen, on purpose. Restoration can
+    /// legitimately bring back a conversation window instead of the main
+    /// one, and a store that will not open legitimately shows StoreErrorView
+    /// — all of those are a window, and a window is the whole claim.
+    ///
+    /// `--uitest-reset` for the same reason the other test passes it: a
+    /// launch that lands on server setup needs no server, no seed and no
+    /// fixture, so this runs on a CI box with nothing on it.
+    @MainActor
+    func testLaunchWithWhateverSavedStateExistsStillHasAWindow() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitest-reset"]
+        app.launch()
+
+        XCTAssertTrue(
+            app.windows.firstMatch.waitForExistence(timeout: 60),
+            """
+            the Mac app reached a live run loop with no window — there is no way \
+            out of that from inside the app, so this is a launch nobody can use. \
+            Check the main WindowGroup's restoration id and LaunchWindowBackstop.
+            """)
+    }
 }
 
 #endif

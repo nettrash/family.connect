@@ -199,6 +199,12 @@ fun BoardScreen(
     var editing by remember { mutableStateOf<NoteDraft?>(null) }
 
     LaunchedEffect(Unit) { viewModel.refresh() }
+    // The wall is in front of somebody, so everything on it has been shown
+    // — including whatever lands WHILE they are looking, which is why this
+    // keys on the notes and not on Unit. Marking only at the tap that opens
+    // the board (ChatListScreen) marked an empty cache seen and then let the
+    // whole wall, loaded a moment later, come back as unread (issue #53).
+    LaunchedEffect(notes) { viewModel.markBoardSeen() }
 
     Scaffold(
         topBar = {

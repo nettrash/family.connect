@@ -297,6 +297,18 @@ data class NoteEntity(
     val createdAt: Long,
     val updatedAt: Long,
     val boardSeq: Long,
+    /**
+     * The seq of the last change to what this note SAYS, and the only
+     * number the board badge counts (BoardBadge, docs/protocol.md,
+     * "Board").
+     *
+     * ZERO MEANS UNKNOWN, and covers two cases at once: a row written
+     * before this column existed, and a note from a server that predates
+     * the field. Both mean "nothing here can say when this text was
+     * written", and both send the badge back to the note-id rule it used
+     * before. The @ColumnInfo default byte-matches MIGRATION_18_19.
+     */
+    @ColumnInfo(defaultValue = "0") val contentSeq: Long = 0,
 )
 
 @Entity(tableName = "members")

@@ -40,6 +40,12 @@ nonisolated enum AppSettings {
         /// up from another's cursor.
         static let boardCursor = "v1.board.cursor"
         static let boardSeenNoteID = "v1.board.seenNoteId"
+        /// The badge's real mark: the highest `content_seq` this device has
+        /// SHOWN. Separate key rather than a reused one, because the two
+        /// numbers come from different spaces — a note id and a board seq —
+        /// and a device that upgrades has a meaningful value for the old
+        /// one and none for the new (BoardBadge.contentMarkSeed).
+        static let boardSeenContentSeq = "v1.board.seenContentSeq"
         /// The assistant, as `GET /families/mine` last reported it. Two
         /// jobs at once: naming its messages in the family chat, where its
         /// reserved account is deliberately absent from the roster, and
@@ -212,6 +218,31 @@ nonisolated enum AppSettings {
         set { defaults.set(Int(newValue), forKey: Key.boardSeenNoteID) }
     }
 
+    /// Highest `content_seq` the user has actually BEEN SHOWN — what the
+    /// board badge counts (docs/protocol.md, "Board").
+    ///
+    /// `boardSeenNoteID` above is kept beside it, and still used, for notes
+    /// that carry no content seq: rows cached before the field existed, and
+    /// notes from a server that predates it. BoardBadge holds the rule; this
+    /// is only where the two numbers live.
+    static var boardSeenContentSeq: Int64 {
+        get { Int64(defaults.integer(forKey: Key.boardSeenContentSeq)) }
+        set { defaults.set(Int(newValue), forKey: Key.boardSeenContentSeq) }
+    }
+
+    /// The pair, read and written together — a badge that used one mark
+    /// from before an update and one from after would be neither rule.
+    static var boardMarks: BoardBadge.Marks {
+        get {
+            BoardBadge.Marks(
+                seenNoteID: boardSeenNoteID, seenContentSeq: boardSeenContentSeq)
+        }
+        set {
+            boardSeenNoteID = newValue.seenNoteID
+            boardSeenContentSeq = newValue.seenContentSeq
+        }
+    }
+
     /// The assistant's reserved account id, or nil when the server has no
     /// assistant configured.
     ///
@@ -258,6 +289,7 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.legacyDeviceRegistered)
         defaults.removeObject(forKey: Key.boardCursor)
         defaults.removeObject(forKey: Key.boardSeenNoteID)
+        defaults.removeObject(forKey: Key.boardSeenContentSeq)
         // Member ↔ contact links name user ids of THIS server's family.
         defaults.removeObject(forKey: ContactLinks.key)
     }

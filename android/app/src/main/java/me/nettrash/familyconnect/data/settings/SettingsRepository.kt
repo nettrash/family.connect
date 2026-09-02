@@ -101,6 +101,16 @@ data class SettingsState(
      */
     val boardSeenNoteId: Long = 0,
     /**
+     * Highest `content_seq` this device has actually SHOWN — what the board
+     * badge counts (docs/protocol.md, "Board").
+     *
+     * [boardSeenNoteId] above is kept beside it, and still used, for notes
+     * that carry no content seq: rows cached before the column existed and
+     * notes from a server that predates the field. BoardBadge holds the
+     * rule; these two are only where the numbers live.
+     */
+    val boardSeenContentSeq: Long = 0,
+    /**
      * The assistant's reserved account id, or null when the server has no
      * assistant configured.
      *
@@ -170,6 +180,9 @@ interface SettingsRepository {
      */
     suspend fun setBoardSeenNoteId(noteId: Long)
 
+    /** The badge's real mark. Monotonic, like the one above. */
+    suspend fun setBoardSeenContentSeq(seq: Long)
+
     /**
      * Record (or clear) the assistant the server just reported. Account-
      * scoped, so it goes with the session on logout — a different server
@@ -236,6 +249,11 @@ class DataStoreSettingsRepository @Inject constructor(
         val LINK_PREVIEWS_DISABLED = booleanPreferencesKey("link_previews_disabled")
         val BOARD_CURSOR = longPreferencesKey("board_cursor")
         val BOARD_SEEN_NOTE_ID = longPreferencesKey("board_seen_note_id")
+        // A separate key rather than a reused one: the two numbers come
+        // from different spaces — a note id and a board seq — and a device
+        // that updates has a meaningful value for the old one and none for
+        // the new (BoardBadge.contentMarkSeed).
+        val BOARD_SEEN_CONTENT_SEQ = longPreferencesKey("board_seen_content_seq")
         // Stored inverted so a missing key reads as "on", like the link
         // preview key above.
         val MAP_PREVIEWS_DISABLED = booleanPreferencesKey("map_previews_disabled")
@@ -269,6 +287,7 @@ class DataStoreSettingsRepository @Inject constructor(
             linkPreviewsEnabled = prefs[Keys.LINK_PREVIEWS_DISABLED] != true,
             boardCursor = prefs[Keys.BOARD_CURSOR] ?: 0L,
             boardSeenNoteId = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L,
+            boardSeenContentSeq = prefs[Keys.BOARD_SEEN_CONTENT_SEQ] ?: 0L,
             mapPreviewsEnabled = prefs[Keys.MAP_PREVIEWS_DISABLED] != true,
             assistantUserId = prefs[Keys.ASSISTANT_USER_ID],
             assistantName = prefs[Keys.ASSISTANT_NAME],
@@ -335,6 +354,13 @@ class DataStoreSettingsRepository @Inject constructor(
             // resurrect a badge that was already cleared.
             val current = prefs[Keys.BOARD_SEEN_NOTE_ID] ?: 0L
             if (noteId > current) prefs[Keys.BOARD_SEEN_NOTE_ID] = noteId
+        }
+    }
+
+    override suspend fun setBoardSeenContentSeq(seq: Long) {
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.BOARD_SEEN_CONTENT_SEQ] ?: 0L
+            if (seq > current) prefs[Keys.BOARD_SEEN_CONTENT_SEQ] = seq
         }
     }
 

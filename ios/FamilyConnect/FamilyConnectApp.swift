@@ -337,10 +337,38 @@ struct FamilyConnectApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        #if os(macOS)
+        // THE `id:` IS THE FIX FOR #52, and it is not cosmetic.
+        //
+        // macOS saves and restores windows by a per-window restoration
+        // identifier, and for a SwiftUI WindowGroup WITHOUT an id that
+        // identifier is the mangled Swift type name of the window's content.
+        // This app's content type is a `_ConditionalContent` over
+        // `windowContents`, and it contains two types with no stable mangled
+        // name — the fileprivate `StoreErrorView` and SwiftData's own
+        // `PassthroughModelContainerViewModifier` — which the runtime spells
+        // as `(unknown context at $103eaa038)`: a RUN-TIME ADDRESS. Measured
+        // on this tree, that made the saved identifier different on every
+        // single launch, so AppKit asked SwiftUI to restore a window it could
+        // no longer recognise and got nil back:
+        //
+        //     restoreWindowWithIdentifier:…-AppWindow-1
+        //         className=SwiftUI.AppWindowsController
+        //     …_block_invoke … window=0x0 error=(null)
+        //
+        // AppKit opens NOTHING in place of a restore that returns nil, so a
+        // launch could reach a live run loop with a menu bar and zero
+        // windows — no UI to click, and a Dock icon that is already running.
+        // With this id the identifier is simply `main-AppWindow-1`, and the
+        // same measurement shows the restore handing back a real window.
+        //
+        // macOS only, and the group is spelled twice for that reason: the id
+        // buys nothing on iOS, where there is one scene and no AppKit window
+        // restoration, and changing the identity of the iPhone app's only
+        // scene is a risk with no matching return.
+        WindowGroup(id: MacWindow.main) {
             windowContents { RootView() }
         }
-        #if os(macOS)
         // A Mac window opens at a size somebody can actually read a
         // conversation in, rather than the square SwiftUI would pick.
         .defaultSize(width: 1000, height: 680)
@@ -354,6 +382,10 @@ struct FamilyConnectApp: App {
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }
+        }
+        #else
+        WindowGroup {
+            windowContents { RootView() }
         }
         #endif
 
@@ -458,6 +490,11 @@ struct FamilyConnectApp: App {
 /// Window identifiers, in one place so the opener and the scene cannot
 /// drift apart on a string.
 enum MacWindow {
+    /// The main window. Unlike the others this id is never passed to
+    /// `openWindow` — it exists so the window has a STABLE macOS restoration
+    /// identifier (#52). Changing this string retires every saved window
+    /// people already have, exactly once; there is no reason to.
+    static let main = "main"
     static let conversation = "conversation"
     static let board = "board"
     static let attachment = "attachment"

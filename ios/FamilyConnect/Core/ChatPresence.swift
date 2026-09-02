@@ -29,9 +29,9 @@
 //  badge cleared too early costs the message.
 //
 //  The same principle already governs the board badge, for the same
-//  reason — see AppSettings.boardSeenNoteID, which refuses to ride the
-//  sync cursor because a background resync would clear it for somebody
-//  who never opened the board.
+//  reason — see BoardBadge, whose marks refuse to ride the sync cursor
+//  because a background resync would clear them for somebody who never
+//  opened the board.
 //
 
 import Foundation

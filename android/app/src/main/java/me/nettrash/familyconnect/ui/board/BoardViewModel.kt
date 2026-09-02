@@ -22,6 +22,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -30,6 +31,9 @@ import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.repo.BoardRepository
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
+import me.nettrash.familyconnect.util.BoardBadge
+import me.nettrash.familyconnect.util.badgeMarks
+import me.nettrash.familyconnect.util.marks
 import me.nettrash.familyconnect.util.resolvedDisplayNames
 import javax.inject.Inject
 
@@ -40,7 +44,7 @@ class BoardViewModel @Inject constructor(
     private val boardRepository: BoardRepository,
     private val familyRepository: FamilyRepository,
     memberDao: MemberDao,
-    settings: SettingsRepository,
+    private val settings: SettingsRepository,
 ) : ViewModel() {
 
     val notes: StateFlow<List<NoteEntity>> = boardRepository.observeNotes()
@@ -71,6 +75,22 @@ class BoardViewModel @Inject constructor(
         viewModelScope.launch {
             val serverMax = familyRepository.refreshMine().okOrNull()?.maxBoardSeq ?: 0L
             boardRepository.catchUpBoard(serverMax)
+        }
+    }
+
+    /**
+     * Everything on the wall has been shown, so the badge's marks move up
+     * to it (BoardBadge, docs/protocol.md, "Board"). Both marks together:
+     * one from before an update and one from after would be neither rule.
+     */
+    fun markBoardSeen() {
+        viewModelScope.launch {
+            val marks = BoardBadge.marksAfterShowing(
+                boardRepository.observeNotes().first().marks(),
+                settings.state.first().badgeMarks(),
+            )
+            settings.setBoardSeenNoteId(marks.seenNoteId)
+            settings.setBoardSeenContentSeq(marks.seenContentSeq)
         }
     }
 

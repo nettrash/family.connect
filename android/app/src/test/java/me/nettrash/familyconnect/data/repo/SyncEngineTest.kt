@@ -26,6 +26,7 @@ import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.dto.ChatDto
 import me.nettrash.familyconnect.data.net.dto.ChatListItemDto
+import me.nettrash.familyconnect.data.net.dto.BoardResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyDto
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
@@ -41,6 +42,7 @@ import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAuthApi
 import me.nettrash.familyconnect.testutil.FakeAttachmentApi
+import me.nettrash.familyconnect.testutil.FakeBoardApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeFamilyApi
@@ -50,6 +52,7 @@ import me.nettrash.familyconnect.testutil.RecordingWiper
 import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
+import me.nettrash.familyconnect.testutil.noteDto
 import me.nettrash.familyconnect.testutil.pollDto
 import me.nettrash.familyconnect.testutil.pollState
 import me.nettrash.familyconnect.testutil.reactionState
@@ -81,6 +84,7 @@ class SyncEngineTest {
     private val chatApi = FakeChatApi()
     private val attachmentApi = FakeAttachmentApi()
     private val familyApi = FakeFamilyApi()
+    private val boardApi = FakeBoardApi()
     private val socket = FakeChatSocket()
     private val tokenStore = FakeTokenStore("tok")
     private val wiper = RecordingWiper()
@@ -147,11 +151,19 @@ class SyncEngineTest {
             clock = Clock { 1_000_000L },
         )
         runCurrent()
+        val boardRepository = BoardRepository(
+            boardApi = boardApi,
+            noteDao = db.noteDao(),
+            settings = settings,
+            socket = socket,
+            scope = repoScope,
+        )
         return SyncEngine(
             sessionRepository = sessionRepository,
             chatRepository = chatRepository,
             familyRepository = familyRepository,
             messageRepository = messageRepository,
+            boardRepository = boardRepository,
             chatDao = db.chatDao(),
             messageDao = db.messageDao(),
         )
@@ -441,5 +453,38 @@ class SyncEngineTest {
         engine.resync()
 
         assertThat(chatApi.pollsCalls).isEqualTo(0)
+    }
+
+    /**
+     * The board is caught up by the RESYNC, not only by the board screen
+     * (issue #53). A cache filled by socket frames alone is a cache full of
+     * holes, and a note this device never held would first appear the
+     * moment somebody DRAGGED it — which the badge then counted as news.
+     */
+    @Test
+    fun resyncCatchesTheBoardUp() = runTest(dispatcher) {
+        val engine = newEngine()
+        scriptChats()
+        familyApi.mineResult = ApiResult.Ok(
+            FamilyMineResponse(
+                family = FamilyDto(id = 1, name = "The Smiths", joinPolicy = "open"),
+                members = listOf(MemberDto(ME, "anna", "Anna", "owner")),
+                maxBoardSeq = 40,
+            ),
+        )
+        boardApi.board = BoardResponse(
+            notes = listOf(
+                noteDto(id = 1, boardSeq = 38, contentSeq = 12),
+                noteDto(id = 2, boardSeq = 40, contentSeq = 40),
+            ),
+            maxBoardSeq = 40,
+        )
+
+        engine.resync()
+
+        val notes = db.noteDao().observeNotes().first()
+        assertThat(notes.map { it.id }).containsExactly(1L, 2L)
+        assertThat(notes.single { it.id == 1L }.contentSeq).isEqualTo(12)
+        assertThat(settings.state.first().boardCursor).isEqualTo(40)
     }
 }

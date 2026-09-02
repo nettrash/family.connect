@@ -174,6 +174,12 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         }
     }
 
+    override suspend fun setBoardSeenContentSeq(seq: Long) {
+        if (seq > _state.value.boardSeenContentSeq) {
+            _state.value = _state.value.copy(boardSeenContentSeq = seq)
+        }
+    }
+
     override suspend fun setMapPreviewsEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(mapPreviewsEnabled = enabled)
     }
@@ -815,6 +821,12 @@ fun noteDto(
     x: Double = 0.2,
     y: Double = 0.3,
     boardSeq: Long,
+    /**
+     * Defaults to the board seq — what a CREATE carries. Pass an older one
+     * for a note that has since been dragged, and null for a server that
+     * predates the field.
+     */
+    contentSeq: Long? = boardSeq,
     deleted: Boolean? = null,
 ) = NoteDto(
     id = id,
@@ -827,6 +839,7 @@ fun noteDto(
     createdAt = if (deleted == true) null else "2026-08-22T12:00:00Z",
     updatedAt = if (deleted == true) null else "2026-08-22T12:00:00Z",
     boardSeq = boardSeq,
+    contentSeq = if (deleted == true) null else contentSeq,
     deleted = deleted,
 )
 

@@ -37,6 +37,11 @@ import SwiftUI
 struct MacBoardView: View {
     @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    /// Whether this window is the one in front of somebody, the same test
+    /// a conversation window uses before it dares call a message read
+    /// (ChatPresence). A board window restored at login behind everything
+    /// else has shown nobody anything.
+    @Environment(\.controlActiveState) private var windowActivation
 
     @Query(sort: [SortDescriptor(\NoteEntity.createdAt)]) private var notes: [NoteEntity]
     @Query private var members: [MemberEntity]
@@ -98,6 +103,15 @@ struct MacBoardView: View {
             }
         }
         .task { await coordinator.loadBoard() }
+        // The board on the Mac is a WINDOW, not a sheet: it is opened once
+        // and left open, and notes land on a wall somebody is already
+        // looking at. Marking seen only where it is OPENED (MacChatView's
+        // toolbar) therefore left every one of those counted as new until
+        // the next click on a window that was never closed. So the window
+        // marks what it is showing, whenever what it shows changes and
+        // whenever it becomes the front one.
+        .onChange(of: boardMark, initial: true) { _, _ in markSeenIfFrontmost() }
+        .onChange(of: windowActivation, initial: true) { _, _ in markSeenIfFrontmost() }
         .sheet(isPresented: $composing) {
             MacNoteEditor(text: $draftText, color: $draftColor, size: $draftSize, title: "New Note") {
                 Task {
@@ -115,6 +129,19 @@ struct MacBoardView: View {
         .sheet(item: $editing) { note in
             MacNoteEditorForExisting(note: note)
         }
+    }
+
+    /// What the marks WOULD be if this wall counted as shown — an
+    /// Equatable value, so `onChange` fires on a note arriving, on one
+    /// being rewritten, and on nothing else. A drag changes no part of it.
+    private var boardMark: BoardBadge.Marks {
+        BoardBadge.marksAfterShowing(notes: notes, marks: .zero)
+    }
+
+    private func markSeenIfFrontmost() {
+        guard windowActivation == .key else { return }
+        AppSettings.boardMarks = BoardBadge.marksAfterShowing(
+            notes: notes, marks: AppSettings.boardMarks)
     }
 
     private func displayName(for userID: Int64) -> String {

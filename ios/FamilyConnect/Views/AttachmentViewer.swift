@@ -298,11 +298,25 @@ private struct VideoAttachmentPlayer: View {
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
 
-    @State private var player: AVPlayer?
+    /// The player AND the fetch of the URL it is built from, in one
+    /// object. It cannot be a bare `@State var player` any more: the
+    /// stream URL lives behind the API actor, so getting it suspends, and
+    /// this view asks for a start from TWO places — `onAppear` and the
+    /// `isCurrent` change. Two starts across one suspension used to mean
+    /// two AVPlayers, the first of them leaked and audible. The loader
+    /// holds the slot across the await and cancels it on the way out; see
+    /// Core/AttachmentStreamPlayer.swift for why the guard is a task
+    /// handle rather than a flag.
+    @State private var stream = AttachmentStreamPlayer()
 
     var body: some View {
         Group {
-            if let player {
+            // Nil for one runloop turn longer than before — the actor hop
+            // that fetches the URL. Nothing downstream needed `player`
+            // synchronously: this branch was already the state the page
+            // rendered in before `onAppear` had run at all, so the
+            // spinner it shows is the one that was always there.
+            if let player = stream.player {
                 VideoPlayer(player: player)
                     .ignoresSafeArea()
             } else {
@@ -311,30 +325,15 @@ private struct VideoAttachmentPlayer: View {
         }
         .onAppear { if isCurrent { start() } }
         .onChange(of: isCurrent) { _, current in
-            if current { start() } else { stop() }
+            if current { start() } else { stream.stop() }
         }
-        .onDisappear { stop() }
+        // Paging away or dismissing the viewer mid-load cancels it, so a
+        // player is never handed to a page that has gone.
+        .onDisappear { stream.stop() }
     }
 
     private func start() {
-        guard player == nil,
-              let stream = coordinator.api.attachmentStreamURL(id: attachment.id)
-        else { return }
-        // AVURLAsset is the only way to attach an Authorization header:
-        // AVPlayer(url:) sends none, and the attachment endpoint needs
-        // one on every byte-range request it makes.
-        let asset = AVURLAsset(
-            url: stream.url,
-            options: ["AVURLAssetHTTPHeaderFieldsKey": stream.headers])
-        let item = AVPlayerItem(asset: asset)
-        let player = AVPlayer(playerItem: item)
-        player.play()
-        self.player = player
-    }
-
-    private func stop() {
-        player?.pause()
-        player = nil
+        stream.start(attachment: attachment.id, from: coordinator.api)
     }
 }
 

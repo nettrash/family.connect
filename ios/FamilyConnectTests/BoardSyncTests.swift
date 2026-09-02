@@ -70,17 +70,21 @@ struct BoardSyncTests {
         size: String? = "medium",
         x: Double = 0.2,
         y: Double = 0.3,
-        boardSeq: Int64
+        boardSeq: Int64,
+        /// nil is what a server from before content seqs sends — no field.
+        contentSeq: Int64? = nil
     ) -> NoteDTO {
         NoteDTO(
             id: id, authorID: 7, text: text, color: color, size: size, x: x, y: y,
-            createdAt: Self.stamp, updatedAt: Self.stamp, boardSeq: boardSeq, deleted: nil)
+            createdAt: Self.stamp, updatedAt: Self.stamp, boardSeq: boardSeq,
+            contentSeq: contentSeq, deleted: nil)
     }
 
     private func tombstone(id: Int64, boardSeq: Int64) -> NoteDTO {
         NoteDTO(
             id: id, authorID: nil, text: nil, color: nil, size: nil, x: nil, y: nil,
-            createdAt: nil, updatedAt: nil, boardSeq: boardSeq, deleted: true)
+            createdAt: nil, updatedAt: nil, boardSeq: boardSeq, contentSeq: nil,
+            deleted: true)
     }
 
     @Test("a note is created, then updated in place")
@@ -171,7 +175,8 @@ struct BoardSyncTests {
         harness.coordinator.applyNote(
             NoteDTO(
                 id: 1, authorID: nil, text: nil, color: nil, size: nil, x: nil, y: nil,
-                createdAt: nil, updatedAt: nil, boardSeq: 3, deleted: nil))
+                createdAt: nil, updatedAt: nil, boardSeq: 3, contentSeq: nil,
+                deleted: nil))
 
         #expect(harness.notes().isEmpty)
     }
@@ -224,5 +229,43 @@ struct BoardSyncTests {
 
         #expect(harness.note(1)?.size == "large")
         #expect(harness.note(1)?.boardSeq == 20)
+    }
+
+    // --- The badge (issue #53) -----------------------------------------
+    //
+    // A move, a resize and a recolour all take a new board_seq, and none of
+    // them is anything to READ. The rule lives in BoardBadge so the phone,
+    // the Mac and Android cannot answer it differently.
+
+    @Test("a note applies with its content seq, and a move leaves it alone")
+    func contentSeqSurvivesAMove() throws {
+        let harness = try makeHarness(host: "board-contentseq.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.applyNote(note(id: 1, boardSeq: 10, contentSeq: 10))
+        #expect(harness.note(1)?.contentSeq == 10)
+
+        // The server moved board_seq and kept content_seq: a drag.
+        harness.coordinator.applyNote(note(id: 1, x: 0.9, boardSeq: 11, contentSeq: 10))
+        #expect(harness.note(1)?.boardSeq == 11)
+        #expect(harness.note(1)?.contentSeq == 10)
+
+        // …and a rewrite moves both.
+        harness.coordinator.applyNote(
+            note(id: 1, text: "Oat milk", boardSeq: 12, contentSeq: 12))
+        #expect(harness.note(1)?.contentSeq == 12)
+    }
+
+    /// A server that predates the field sends none, and the row then says
+    /// so with 0 — which is what sends the badge back to the note-id rule.
+    @Test("a note without a content seq stores 0")
+    func missingContentSeqIsZero() throws {
+        let harness = try makeHarness(host: "board-nocontentseq.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.applyNote(note(id: 1, boardSeq: 10, contentSeq: nil))
+
+        #expect(harness.notes().count == 1)
+        #expect(harness.note(1)?.contentSeq == 0)
     }
 }
