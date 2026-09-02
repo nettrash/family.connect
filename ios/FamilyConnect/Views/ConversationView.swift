@@ -468,6 +468,16 @@ struct ConversationView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
+                // A readable column on a big screen, the second half of
+                // #21. The CONTAINER is capped, never the bubble: the
+                // greedy-frame ordering question stays out of
+                // MessageBubbleView (which has shipped a full-width-slab
+                // regression twice) and ReplyBalloonLayout — shared with
+                // macOS, carrying no #if os(iOS) — is untouched. 560 sits
+                // above every iPhone PORTRAIT width, so the bubble subtree
+                // there sees exactly the proposal it ships with today.
+                .frame(maxWidth: 560)
+                .frame(maxWidth: .infinity)
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
