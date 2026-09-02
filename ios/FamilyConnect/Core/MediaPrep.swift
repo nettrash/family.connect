@@ -465,7 +465,11 @@ nonisolated enum MediaPrep {
     // MARK: - Shared
 
     static func fileSize(of url: URL) -> Int {
-        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) as? Int ?? 0
+        // One cast, not two: `[.size]` is `Any?`, so the inner `as? Int`
+        // already yields `Int?` and `try?` flattens rather than nesting it.
+        // The second `as? Int` was therefore casting `Int?` to `Int?` — a
+        // no-op that read as if it were doing the unwrapping the `?? 0` does.
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
     }
 
     static func temporaryURL(extension ext: String) -> URL {

@@ -118,7 +118,7 @@ final class LocationProvider: NSObject {
     /// Good enough to stop waiting. A hundred metres names a street, which
     /// is what "where are you?" is asking — holding out for ten would keep
     /// somebody staring at a spinner indoors for no benefit.
-    static let goodEnoughMetres: CLLocationAccuracy = 100
+    nonisolated static let goodEnoughMetres: CLLocationAccuracy = 100
 
     /// How old a fix may be and still answer the question.
     ///
@@ -127,7 +127,7 @@ final class LocationProvider: NSObject {
     /// one into a family chat — where the whole point is "here is where I am
     /// now" — is the location failure that actually matters. Two minutes is
     /// Android's `FRESH_ENOUGH_MS`, kept identical on purpose.
-    static let freshEnough: TimeInterval = 2 * 60
+    nonisolated static let freshEnough: TimeInterval = 2 * 60
 
     /// What to do with one delivery from CoreLocation.
     ///

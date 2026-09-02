@@ -145,7 +145,7 @@ final class WebRTCClient: NSObject, CallMediaClient {
             // forcing the speaker there would defeat the headphones the
             // person just reached for.
             guard reason == .categoryChange || reason == .oldDeviceUnavailable else { return }
-            Task { @MainActor in self?.reapplySpeakerRouteAfterNotification() }
+            Task { @MainActor [weak self] in self?.reapplySpeakerRouteAfterNotification() }
         }
         #endif
         connection.add(track, streamIds: ["stream0"])
@@ -230,7 +230,7 @@ final class WebRTCClient: NSObject, CallMediaClient {
         // same client (weak self), not closed, and the track still
         // enabled (setCameraEnabled(false) disables it first).
         capturer.stopCapture { [weak self] in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self, !self.closed, self.videoTrack?.isEnabled == true else { return }
                 self.startCapture(front: front)
             }
@@ -574,7 +574,7 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
 ///
 /// renderFrame arrives on WebRTC's decoder thread; the once-latch is a
 /// lock, and the callback hops to the main actor before touching anyone.
-final class RemoteFirstFrameRelay: NSObject, RTCVideoRenderer, @unchecked Sendable {
+nonisolated final class RemoteFirstFrameRelay: NSObject, RTCVideoRenderer, @unchecked Sendable {
 
     private let wrapped: any RTCVideoRenderer
     private let onFirstFrame: @MainActor @Sendable () -> Void

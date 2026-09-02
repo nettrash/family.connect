@@ -58,7 +58,7 @@ final class LinkPreviewLoader {
     private static let maxImageBytes = 4 * 1024 * 1024
     /// Longest edge the card image is decoded to — the card is 120pt
     /// tall, so anything beyond this is memory nobody sees.
-    private static let maxImagePixels = 1200
+    private nonisolated static let maxImagePixels = 1200
     private static let maxCacheEntries = 200
 
     private let session: URLSession
@@ -237,7 +237,7 @@ final class LinkPreviewLoader {
     }
 }
 
-private extension String.Encoding {
+nonisolated private extension String.Encoding {
     /// The IANA charset name from a response header, or UTF-8.
     init(ianaName name: String) {
         let cf = CFStringConvertIANACharSetNameToEncoding(name as CFString)

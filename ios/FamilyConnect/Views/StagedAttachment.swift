@@ -30,7 +30,7 @@ struct StagedAttachment: Identifiable {
     /// (docs/protocol.md, "Limits": `limits.max_attachments_per_message`).
     /// Both composers refuse the eleventh pick against this, with a
     /// notice — the same number the server would refuse it with.
-    static let maxPerMessage = 10
+    nonisolated static let maxPerMessage = 10
 
     /// May one more item be staged beside `count` already staged?
     ///

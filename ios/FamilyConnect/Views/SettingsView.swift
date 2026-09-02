@@ -182,7 +182,14 @@ struct SettingsView: View {
                 }
                 // The picker hands back an item, not bytes; the transfer
                 // and the downscale happen in setAvatar.
-                PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+                // No `photoLibrary:` argument on purpose. Passing `.shared()`
+                // hands the picker the app's own library object, which makes
+                // the binary reference PHPhotoLibrary and would eventually
+                // want NSPhotoLibraryUsageDescription — for nothing, since
+                // nothing here touches PHAsset or an itemIdentifier. Without
+                // it the picker runs out of process and returns only the
+                // items the person chose, which is all setAvatar needs.
+                PhotosPicker(selection: $pickedPhoto, matching: .images) {
                     Label(
                         user.avatarVersion > 0 ? "Change Photo" : "Add Photo",
                         systemImage: "person.crop.circle.badge.plus")

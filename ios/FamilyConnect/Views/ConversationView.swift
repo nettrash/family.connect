@@ -1287,8 +1287,10 @@ struct ConversationView: View {
                     isPresented: $showPhotoPicker,
                     selection: $pickedMedia,
                     maxSelectionCount: StagedAttachment.maxPerMessage,
-                    matching: .any(of: [.images, .videos]),
-                    photoLibrary: .shared())
+                    // No `photoLibrary:` — see the note in SettingsView. The
+                    // out-of-process picker needs no PhotoKit reference and
+                    // no usage description, and nothing here reads a PHAsset.
+                    matching: .any(of: [.images, .videos]))
                 if showsAssistantMention {
                     Button {
                         insertAssistantMention()

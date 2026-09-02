@@ -159,13 +159,13 @@ nonisolated enum RingbackTone {
     }
 }
 
-private extension Double {
+nonisolated private extension Double {
     func clamped(to range: ClosedRange<Double>) -> Double {
         min(max(self, range.lowerBound), range.upperBound)
     }
 }
 
-private extension Data {
+nonisolated private extension Data {
     mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
         var little = value.littleEndian
         Swift.withUnsafeBytes(of: &little) { append(contentsOf: $0) }
