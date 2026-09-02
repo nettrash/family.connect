@@ -103,11 +103,9 @@ struct LocationFreshnessTests {
         #expect(provider.bestSoFar?.fix.accuracyM == 349)
     }
 
-    @Test(
-        "a coarse fix is sent at the timeout rather than failing the send",
-        .enabled(if: LocationFreshnessTests.locationNotRefused))
+    @Test("a coarse fix is sent at the timeout rather than failing the send")
     func timeoutSendsTheHeldFix() async throws {
-        let provider = LocationProvider()
+        let provider = LocationProvider(manager: InertLocationHardware())
         provider.timeout = .milliseconds(250)
 
         // Held, because 400 m is past the bar — the wait keeps looking.
@@ -123,11 +121,9 @@ struct LocationFreshnessTests {
         #expect(provider.bestSoFar == nil)
     }
 
-    @Test(
-        "with nothing held the timeout still reports a failure",
-        .enabled(if: LocationFreshnessTests.locationNotRefused))
+    @Test("with nothing held the timeout still reports a failure")
     func timeoutWithNothingHeldFails() async throws {
-        let provider = LocationProvider()
+        let provider = LocationProvider(manager: InertLocationHardware())
         provider.timeout = .milliseconds(250)
         // Only a stale fix arrived, so there is genuinely nothing to send.
         provider.deliver(accuracy: 5, age: 3600, latitude: 51.5, longitude: -0.12)
@@ -137,12 +133,29 @@ struct LocationFreshnessTests {
         }
     }
 
-    /// The two waiting tests need CoreLocation not to short-circuit before
-    /// the wait even starts. A machine that refused location once remembers
-    /// it, so this is a SKIP condition rather than an assertion — a build
-    /// machine's location setting is not a defect in the location rule.
-    nonisolated(unsafe) static let locationNotRefused: Bool = {
-        let status = CLLocationManager().authorizationStatus
-        return status != .denied && status != .restricted
-    }()
+    /// Location hardware that reports "authorised" and then does nothing.
+    ///
+    /// This replaces a `.enabled(if:)` skip guard that sampled the real
+    /// `CLLocationManager().authorizationStatus` ONCE into a `static let`
+    /// and skipped only on `.denied`/`.restricted`. It covered one state out
+    /// of four: a fresh simulator is `.notDetermined`, so the guard did not
+    /// skip, the tests then reached real CoreLocation, their own unanswered
+    /// `requestWhenInUseAuthorization()` turned the status `.denied`, and
+    /// both failed with the wrong error. That is what CI hit. A cached
+    /// sample is also shared, so one test's prompt could poison the other's.
+    ///
+    /// Skipping was the wrong remedy anyway: it would delete the only
+    /// coverage of the timeout branch on any machine that ever refused
+    /// location, and the run would stay green while it did. Only the
+    /// hardware is stubbed here — the real deadline, the real hold, the
+    /// real teardown and the real per-wait `bestSoFar` reset all still run.
+    @MainActor
+    final class InertLocationHardware: LocationHardware {
+        var authorizationStatus: CLAuthorizationStatus = .authorizedWhenInUse
+        var desiredAccuracy: CLLocationAccuracy = 0
+        weak var delegate: (any CLLocationManagerDelegate)?
+        func requestWhenInUseAuthorization() {}
+        func startUpdatingLocation() {}
+        func stopUpdatingLocation() {}
+    }
 }

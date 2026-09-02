@@ -203,6 +203,8 @@ struct CallManagerTests {
         var ensureConnectedCalls = 0
         var endedCalls = 0
         var phases: [CallManager.Phase] = []
+        /// Continuations parked by `waitForEnd()`, resumed by `onEnded`.
+        private var endWaiters: [CheckedContinuation<Void, Never>] = []
         /// The `video` handed to makeMediaClient, per creation.
         var mediaVideo: [Bool] = []
 
@@ -220,16 +222,31 @@ struct CallManagerTests {
             // grant override this with nil.
             manager.cameraGrantState = { camera }
             manager.resolvePeer = { _ in ("Anna", 3) }
-            // Long enough that no guard fires under a loaded parallel run;
-            // the two guard tests lower it themselves.
-            manager.ringTimeout = 5
+            // No guard may fire inside a test body; the two guard tests set
+            // their own. This used to be 5s, described as "long enough that
+            // no guard fires under a loaded parallel run" — CI falsified that
+            // sentence on its first run. On a 3-core hosted runner the
+            // accept tests took 15.0s and 17.6s of wall time, so the
+            // PRODUCT's ring guard fired mid-body, tore the call down under
+            // the assertions, and acceptIncoming then no-op'd on its
+            // `guard case .incoming` — the slower the machine, the likelier
+            // the fixture sabotaged its own test. Nothing depends on this
+            // default expiring: `.ended(.timeout)` is asserted only by
+            // outgoingGuard and incomingGuard, which both lower it to 0.05.
+            manager.ringTimeout = 600
             manager.guardSlack = 0
             manager.endedLinger = 0
             // Weak, not unowned: a guard clock can fire after a test has
             // let its harness go, and the manager's own Task keeps the
             // manager alive past the harness.
             manager.ensureConnected = { [weak self] in self?.ensureConnectedCalls += 1 }
-            manager.onEnded = { [weak self] in self?.endedCalls += 1 }
+            manager.onEnded = { [weak self] in
+                guard let self else { return }
+                self.endedCalls += 1
+                let waiting = self.endWaiters
+                self.endWaiters = []
+                for continuation in waiting { continuation.resume() }
+            }
             manager.onPhaseChange = { [weak self] in self?.phases.append($0) }
             if bridge {
                 let b = FakeBridge()
@@ -247,10 +264,39 @@ struct CallManagerTests {
 
         /// Wait for a clock-driven transition without betting on how loaded
         /// the machine is: poll, bounded, rather than sleep a fixed time.
+        ///
+        /// The bound is still a WALL clock, so it is only honest for
+        /// conditions that do not depend on a timer the main actor owes us.
+        /// For an END, use `waitForEnd()` instead — see the note there.
         func waitUntil(_ condition: @MainActor () -> Bool, timeout: TimeInterval = 5) async {
             let deadline = Date().addingTimeInterval(timeout)
             while !condition() && Date() < deadline {
                 try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+
+        /// Wait for the call to END, by the event rather than by a clock.
+        ///
+        /// `waitUntil` cannot do this job, and CI proved it: its deadline is
+        /// wall time, which keeps advancing while the main actor is held by
+        /// the ~680 other tests in this concurrently-run bundle, so the 5s
+        /// budget is spent on contention rather than on the 50ms guard. The
+        /// failure is then deterministic, not flaky — the poll's 20ms wake
+        /// is enqueued AHEAD of the guard's 50ms wake, so when the actor
+        /// frees the poll runs first, sees an expired deadline and gives up
+        /// one scheduling slot before the guard would have satisfied it.
+        /// (Measured: the guard fires ~1s after the bound expires.) Swapping
+        /// Date for ContinuousClock fixes nothing — a monotonic clock
+        /// advances through the stall too.
+        ///
+        /// Waiting on the event has no bound to blow, and is strictly
+        /// stronger: a guard that never fires now hangs into the test's
+        /// `.timeLimit` and FAILS, where the old poll quietly satisfied
+        /// itself by timing out.
+        func waitForEnd() async {
+            guard endedCalls == 0 else { return }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                endWaiters.append(continuation)
             }
         }
     }
@@ -510,13 +556,14 @@ struct CallManagerTests {
         }
     }
 
-    @Test("outgoing: the guard clock gives up on a server that never answers")
+    @Test("outgoing: the guard clock gives up on a server that never answers",
+          .timeLimit(.minutes(1)))
     func outgoingGuard() async throws {
         let h = Harness()
         h.manager.ringTimeout = 0.05
         h.manager.startCall(chatID: 42, peerUserID: 9)
         await h.drain()
-        await h.waitUntil { h.endedCalls == 1 }
+        await h.waitForEnd()
         #expect(h.manager.phase == .ended(.timeout) || h.manager.phase == .idle)
         #expect(h.endedCalls == 1)
         #expect(h.phases.contains(.ended(.timeout)))
@@ -677,12 +724,13 @@ struct CallManagerTests {
         #expect(h2.manager.phase == .idle)
     }
 
-    @Test("incoming: the ring guard gives up when the offer never comes")
+    @Test("incoming: the ring guard gives up when the offer never comes",
+          .timeLimit(.minutes(1)))
     func incomingGuard() async throws {
         let h = Harness()
         h.manager.ringTimeout = 0.05
         h.manager.handleIncomingPush(IncomingCallPush(callID: remoteID, chatID: 42, fromUserID: 9, callerName: "Anna"))
-        await h.waitUntil { h.endedCalls == 1 }
+        await h.waitForEnd()
         #expect(h.manager.phase == .ended(.timeout) || h.manager.phase == .idle)
         #expect(h.endedCalls == 1)
         #expect(h.phases.contains(.ended(.timeout)))
