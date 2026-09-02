@@ -161,7 +161,7 @@ struct LocationFreshnessTests {
     /// models the delegate's own hop.
     @MainActor
     final class InertLocationHardware: LocationHardware {
-        var authorizationStatus: CLAuthorizationStatus = .authorizedWhenInUse
+        var authorizationStatus: CLAuthorizationStatus = grantedLocationAuthorization
         var desiredAccuracy: CLLocationAccuracy = 0
         weak var delegate: (any CLLocationManagerDelegate)?
         /// How many times the app put the system alert up.

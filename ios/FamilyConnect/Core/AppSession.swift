@@ -183,7 +183,7 @@ final class AppSession {
     /// The share extension opened `familyconnect://share?ids=…`: move the
     /// staged files out of the App Group inbox into this process's temp
     /// directory and park them for the chat picker. Ids are validated as
-    /// UUIDs (ShareImport) — anything else never becomes a path.
+    /// UUIDs (ShareHandoff) — anything else never becomes a path.
     ///
     /// `container` is injectable so the parsing-and-moving shape can be
     /// exercised against a plain directory; the app passes nothing and
@@ -191,12 +191,12 @@ final class AppSession {
     func handleShareURL(
         _ url: URL,
         container: URL? = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: ShareImport.appGroup)
+            forSecurityApplicationGroupIdentifier: ShareHandoff.appGroup)
     ) {
-        guard let ids = ShareImport.ids(from: url), let container else { return }
+        guard let ids = ShareHandoff.ids(from: url), let container else { return }
         var moved: [URL] = []
         for id in ids {
-            guard let inbox = ShareImport.inboxDirectory(container: container, id: id),
+            guard let inbox = ShareHandoff.stagingDirectory(container: container, id: id),
                   let name = (try? FileManager.default.contentsOfDirectory(atPath: inbox.path))?.first
             else { continue }
             let source = inbox.appendingPathComponent(name)

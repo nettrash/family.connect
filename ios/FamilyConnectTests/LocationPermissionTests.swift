@@ -89,8 +89,8 @@ struct LocationPermissionTests {
             // the Task models — and which is the ordering that matters: the
             // continuation is parked before the ask, so an answer on this
             // turn or any later one lands on somebody.
-            hardware?.authorizationStatus = .authorizedWhenInUse
-            Task { @MainActor in provider?.authorizationDidChange(to: .authorizedWhenInUse) }
+            hardware?.authorizationStatus = grantedLocationAuthorization
+            Task { @MainActor in provider?.authorizationDidChange(to: grantedLocationAuthorization) }
         }
 
         let outcome = await provider.requestPermission()
@@ -155,10 +155,10 @@ struct LocationPermissionTests {
             // when the app returns; the delegate's callback is still a hop
             // behind. Declaring silence on that order is #41's own bug with
             // a longer fuse, and the live status read is what prevents it.
-            hardware?.authorizationStatus = .authorizedWhenInUse
+            hardware?.authorizationStatus = grantedLocationAuthorization
             Task { @MainActor in
                 provider?.promptWasAbandoned()
-                provider?.authorizationDidChange(to: .authorizedWhenInUse)
+                provider?.authorizationDidChange(to: grantedLocationAuthorization)
             }
         }
 
@@ -204,7 +204,7 @@ struct LocationPermissionTests {
 
         // The second wait is parked by now — it parked before resuming the
         // first — so the answer belongs to it alone.
-        provider.authorizationDidChange(to: .authorizedWhenInUse)
+        provider.authorizationDidChange(to: grantedLocationAuthorization)
         let second = await box.task?.value
         #expect(second == .allowed)
         #expect(hardware.authorizationRequests == 2)
