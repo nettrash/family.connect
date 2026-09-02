@@ -11,8 +11,14 @@
 //  reopened mid-call.
 //
 //  Detach is the representable's job: dismantle hands the renderer back
-//  as nil, so a dismissed call screen never leaves a dead Metal view
-//  registered on a live track.
+//  BY NAME, so a dismissed call screen never leaves a dead Metal view
+//  registered on a live track — and, just as important, never unhooks a
+//  live one. Two view trees can overlap (a call screen rebuilt while the
+//  call runs), and a blind "clear whatever is registered" from the dying
+//  surface would leave the call with no picture for the rest of its life
+//  and nothing to re-attach it (issue #38). CallManager ignores a
+//  dismantle that does not name the current renderer, and logs that it
+//  did.
 //
 
 import SwiftUI
@@ -31,7 +37,9 @@ struct CallVideoSurface: UIViewRepresentable {
     let calls: CallManager
 
     final class Coordinator {
-        var detach: (() -> Void)?
+        /// Given the very view being dismantled, so the detach names it
+        /// rather than clearing whatever happens to be registered.
+        var detach: ((any RTCVideoRenderer) -> Void)?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -48,7 +56,7 @@ struct CallVideoSurface: UIViewRepresentable {
     func updateUIView(_ uiView: RTCMTLVideoView, context: Context) {}
 
     static func dismantleUIView(_ uiView: RTCMTLVideoView, coordinator: Coordinator) {
-        coordinator.detach?()
+        coordinator.detach?(uiView)
     }
 
     private func attach(_ view: RTCMTLVideoView, coordinator: Coordinator) {
@@ -58,10 +66,10 @@ struct CallVideoSurface: UIViewRepresentable {
         case .local: manager.setLocalVideoRenderer(view)
         case .remote: manager.setRemoteVideoRenderer(view)
         }
-        coordinator.detach = { [weak manager] in
+        coordinator.detach = { [weak manager] dismantled in
             switch role {
-            case .local: manager?.setLocalVideoRenderer(nil)
-            case .remote: manager?.setRemoteVideoRenderer(nil)
+            case .local: manager?.detachLocalVideoRenderer(dismantled)
+            case .remote: manager?.detachRemoteVideoRenderer(dismantled)
             }
         }
     }
@@ -74,7 +82,9 @@ struct CallVideoSurface: NSViewRepresentable {
     let calls: CallManager
 
     final class Coordinator {
-        var detach: (() -> Void)?
+        /// Given the very view being dismantled, so the detach names it
+        /// rather than clearing whatever happens to be registered.
+        var detach: ((any RTCVideoRenderer) -> Void)?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -91,7 +101,7 @@ struct CallVideoSurface: NSViewRepresentable {
     func updateNSView(_ nsView: RTCMTLNSVideoView, context: Context) {}
 
     static func dismantleNSView(_ nsView: RTCMTLNSVideoView, coordinator: Coordinator) {
-        coordinator.detach?()
+        coordinator.detach?(nsView)
     }
 
     private func attach(_ view: RTCMTLNSVideoView, coordinator: Coordinator) {
@@ -101,10 +111,10 @@ struct CallVideoSurface: NSViewRepresentable {
         case .local: manager.setLocalVideoRenderer(view)
         case .remote: manager.setRemoteVideoRenderer(view)
         }
-        coordinator.detach = { [weak manager] in
+        coordinator.detach = { [weak manager] dismantled in
             switch role {
-            case .local: manager?.setLocalVideoRenderer(nil)
-            case .remote: manager?.setRemoteVideoRenderer(nil)
+            case .local: manager?.detachLocalVideoRenderer(dismantled)
+            case .remote: manager?.detachRemoteVideoRenderer(dismantled)
             }
         }
     }

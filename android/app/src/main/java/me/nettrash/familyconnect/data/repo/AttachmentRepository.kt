@@ -39,6 +39,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
@@ -118,63 +119,104 @@ class AttachmentRepository @Inject constructor(
      * Make sure the image is in memory: from the hot map, from the disk
      * cache, or from the server. Cancelling the caller does NOT cancel a
      * fetch already running.
+     *
+     * @param mayArriveLate the server answering "no" is not necessarily
+     *   the end of it. True for a VIDEO POSTER and nothing else: a poster
+     *   is the one image uploaded separately from the message that carries
+     *   it (MessageRepository.sendMedia), so a reader can ask a moment
+     *   before it lands — and unlike a photo, a video has no second source
+     *   of pixels to fall back on. Such a key is re-asked a few times over
+     *   [POSTER_RETRY_DELAYS_MS] and then settles into `missing` exactly
+     *   like any other 404: a video whose poster failed for good must stop
+     *   asking, not poll forever.
      */
-    suspend fun load(attachmentId: Long, preview: Boolean) {
+    suspend fun load(attachmentId: Long, preview: Boolean, mayArriveLate: Boolean = false) {
         val key = Key(attachmentId, preview)
         val fetch = guard.withLock {
             when {
                 hot.containsKey(key) || key in missing -> null
-                else -> inFlight.getOrPut(key) { startFetch(key, generation) }
+                else -> inFlight.getOrPut(key) { startFetch(key, generation, mayArriveLate) }
             }
         } ?: return
         fetch.join()
     }
 
-    private fun startFetch(key: Key, startedAt: Int): Deferred<Unit> = scope.async {
+    private fun startFetch(
+        key: Key,
+        startedAt: Int,
+        mayArriveLate: Boolean,
+    ): Deferred<Unit> = scope.async {
         try {
-            val file = fileFor(key)
-            var transportFailed = false
-            val bitmap = withContext(Dispatchers.IO) {
-                // On disk from a previous run: decode it and skip the
-                // network entirely. Bytes that no longer decode mean a
-                // truncated file, which is worth one re-download.
-                if (file.isFile) {
-                    decode(file) ?: run { file.delete(); null }
-                } else {
-                    null
-                } ?: run {
-                    when (attachmentApi.download(key.attachmentId, key.preview, file)) {
-                        is ApiResult.Ok -> decode(file)
-                        // A server that ANSWERED said no: no preview yet,
-                        // or not ours to see. Final.
-                        is ApiResult.HttpError -> null
-                        // Nobody answered. NOT final — see below.
-                        is ApiResult.NetworkError -> {
-                            transportFailed = true
-                            null
+            // The re-check loop, not a retry of a failed request: every
+            // pass here follows a server that ANSWERED, and answered "not
+            // here". A key stays in `inFlight` for the whole ladder, so
+            // the bubbles asking for it join this one chain instead of
+            // starting their own, and a success lands in `hot` — a
+            // SnapshotStateMap — which is what repaints them with no
+            // token bumped and nothing else touched.
+            var attempt = 0
+            while (true) {
+                val file = fileFor(key)
+                var transportFailed = false
+                val bitmap = withContext(Dispatchers.IO) {
+                    // On disk from a previous run: decode it and skip the
+                    // network entirely. Bytes that no longer decode mean a
+                    // truncated file, which is worth one re-download.
+                    if (file.isFile) {
+                        decode(file) ?: run { file.delete(); null }
+                    } else {
+                        null
+                    } ?: run {
+                        when (attachmentApi.download(key.attachmentId, key.preview, file)) {
+                            is ApiResult.Ok -> decode(file)
+                            // A server that ANSWERED said no: no preview
+                            // yet, or not ours to see.
+                            is ApiResult.HttpError -> null
+                            // Nobody answered. NOT final — see below.
+                            is ApiResult.NetworkError -> {
+                                transportFailed = true
+                                null
+                            }
                         }
                     }
                 }
-            }
 
-            withContext(Dispatchers.Main.immediate) {
-                guard.withLock {
-                    // The session ended while this was in flight.
-                    if (startedAt != generation) return@withLock
-                    if (bitmap != null) {
-                        hot[key] = bitmap
-                        order.addLast(key)
-                        evictIfNeeded()
-                    } else if (!file.isFile && !transportFailed) {
-                        // Only a real answer marks a key dead. Marking a
-                        // TRANSPORT failure here is what blanked every
-                        // photo on screen the moment the phone left the
-                        // house: `load` short-circuits on `missing`, so the
-                        // key could never be retried and a @Singleton cache
-                        // meant not even leaving the screen recovered it.
-                        missing += key
+                val again = withContext(Dispatchers.Main.immediate) {
+                    guard.withLock {
+                        // The session ended while this was in flight.
+                        if (startedAt != generation) return@withLock false
+                        if (bitmap != null) {
+                            hot[key] = bitmap
+                            order.addLast(key)
+                            evictIfNeeded()
+                            false
+                        } else if (!file.isFile && !transportFailed) {
+                            // Only a real answer marks a key dead. Marking
+                            // a TRANSPORT failure here is what blanked
+                            // every photo on screen the moment the phone
+                            // left the house: `load` short-circuits on
+                            // `missing`, so the key could never be retried
+                            // and a @Singleton cache meant not even leaving
+                            // the screen recovered it.
+                            //
+                            // A poster gets the ladder first, and joins
+                            // `missing` when it runs out — the budget is
+                            // spent once per key per process, because the
+                            // key is held in `inFlight` throughout.
+                            if (mayArriveLate && attempt < POSTER_RETRY_DELAYS_MS.size) {
+                                true
+                            } else {
+                                missing += key
+                                false
+                            }
+                        } else {
+                            false
+                        }
                     }
                 }
+                if (!again) break
+                delay(POSTER_RETRY_DELAYS_MS[attempt])
+                attempt++
             }
         } finally {
             withContext(Dispatchers.Main.immediate) {
@@ -267,7 +309,10 @@ class AttachmentRepository @Inject constructor(
         }
     }
 
-    private companion object {
+    /** Internal rather than private for one line of it: the poster ladder
+     *  is a budget, and the test that pins it has to name the same number
+     *  the code spends (AttachmentPosterTest). */
+    internal companion object {
         const val CACHE_DIR = "attachments"
 
         /** Sub-directory of [CACHE_DIR]; matches res/xml/file_paths.xml,
@@ -285,5 +330,20 @@ class AttachmentRepository @Inject constructor(
         /** Decoded images held at once — a screenful of a photo-heavy
          *  thread, several times over. The files stay on disk regardless. */
         const val MAX_ENTRIES = 40
+
+        /**
+         * How long to wait before asking again for a video poster the
+         * server did not have, and — by its length — how many times.
+         *
+         * Short and finite on purpose. A poster is uploaded just before
+         * the message that claims it, so the window in which a reader can
+         * be told "no" and be wrong is seconds wide; twelve of them cover
+         * it several times over. After the last rung the key settles like
+         * any other 404, which is the half that matters most: a video
+         * whose poster never made it — the frame grab failed, or its
+         * upload did — costs three small requests once per process and
+         * then nothing at all, and keeps the play badge it always had.
+         */
+        val POSTER_RETRY_DELAYS_MS = longArrayOf(2_000, 10_000)
     }
 }

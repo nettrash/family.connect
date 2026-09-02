@@ -33,6 +33,21 @@ final class AttachmentStore {
     @ObservationIgnored private var inFlight: Set<String> = []
     /// Ids the server has nothing for; not retried.
     @ObservationIgnored private var missing: Set<String> = []
+    /// How long to wait before asking again for a video poster the server
+    /// did not have, and — by its length — how many times.
+    ///
+    /// Short and finite on purpose. A poster is uploaded just before the
+    /// message that claims it (`ChatSyncCoordinator.sendMedia`), so the
+    /// window in which a reader can be told "no" and be wrong is seconds
+    /// wide. After the last rung the key settles like any other 404, which
+    /// is the half that matters most: a video whose poster never made it —
+    /// the frame grab failed, or its upload did — costs three small
+    /// requests once per launch and then nothing at all.
+    ///
+    /// A test seam like `directory`: a test that has to watch the ladder
+    /// run cannot spend twelve seconds doing it. Matches Android's
+    /// `AttachmentRepository.POSTER_RETRY_DELAYS_MS`.
+    private let posterRetryDelays: [Duration]
     /// Small hot cache in front of the disk, so a visible bubble does not
     /// re-read and re-decode on every scroll frame.
     @ObservationIgnored private var hot: [String: Image] = [:]
@@ -49,8 +64,13 @@ final class AttachmentStore {
     /// injected `URLSession`: the app passes nothing and gets the caches
     /// folder, while a test gives each case its own empty directory so one
     /// case's cached bytes cannot answer another's fetch.
-    init(api: APIClient, directory: URL? = nil) {
+    init(
+        api: APIClient,
+        directory: URL? = nil,
+        posterRetryDelays: [Duration] = [.seconds(2), .seconds(10)]
+    ) {
         self.api = api
+        self.posterRetryDelays = posterRetryDelays
         if let directory {
             self.directory = directory
         } else {
@@ -70,7 +90,16 @@ final class AttachmentStore {
 
     /// The image if it is already here, else nil — and a fetch is started.
     /// Safe to call from a view body.
-    func image(id: Int64, preview: Bool) -> Image? {
+    ///
+    /// - Parameter mayArriveLate: whether the server answering "no" is
+    ///   necessarily the end of it. True for a VIDEO POSTER and nothing
+    ///   else: a poster is the one image uploaded separately from the
+    ///   message that carries it, and unlike a photo a video has no second
+    ///   source of pixels to fall back on. Such a key is re-asked over
+    ///   `posterRetryDelays` and then settles into `missing` exactly like
+    ///   any other 404 — a poster that failed for good must stop being
+    ///   asked for, not polled forever.
+    func image(id: Int64, preview: Bool, mayArriveLate: Bool = false) -> Image? {
         let key = key(id, preview: preview)
         if let cached = hot[key] { return cached }
         guard !missing.contains(key) else { return nil }
@@ -87,28 +116,49 @@ final class AttachmentStore {
             return hot[key]
         }
         guard !inFlight.contains(key) else { return nil }
-        fetch(id: id, preview: preview, key: key)
+        fetch(id: id, preview: preview, key: key, mayArriveLate: mayArriveLate)
         return nil
     }
 
-    private func fetch(id: Int64, preview: Bool, key: String) {
+    private func fetch(id: Int64, preview: Bool, key: String, mayArriveLate: Bool) {
         inFlight.insert(key)
         Task { [weak self] in
             guard let self else { return }
-            do {
-                // nil = a real 404: no preview, or not ours to see.
-                let data = try await api.attachmentData(id: id, preview: preview)
-                finish(key, data: data, settled: true)
-            } catch {
-                // A timeout, a refused connection or a 5xx says nothing
-                // about whether the bytes exist. Marking the key missing
-                // here is what left a permanent spinner on every photo
-                // whose fetch happened to land during an outage: the gate
-                // in `image(id:preview:)` sits in front of the disk cache
-                // as well as the fetch, and nothing cleared it short of a
-                // logout. Only a real answer settles a key.
-                finish(key, data: nil, settled: false)
+            // The key stays in `inFlight` for the whole ladder, so the
+            // views asking for it wait on this one chain rather than
+            // starting their own — and the budget is spent once per key
+            // per launch however many bubbles draw it.
+            for attempt in 0...posterRetryDelays.count {
+                do {
+                    // nil = a real 404: no preview, or not ours to see.
+                    let data = try await api.attachmentData(id: id, preview: preview)
+                    if data == nil, mayArriveLate, attempt < posterRetryDelays.count {
+                        // Not there YET. Nothing observable happens here on
+                        // purpose: `generation` is what re-renders the
+                        // views, and a bump while the key is neither
+                        // cached nor gated is a tight loop, not a retry.
+                        try? await Task.sleep(for: posterRetryDelays[attempt])
+                        continue
+                    }
+                    finish(key, data: data, settled: true)
+                    return
+                } catch {
+                    // A timeout, a refused connection or a 5xx says nothing
+                    // about whether the bytes exist. Marking the key missing
+                    // here is what left a permanent spinner on every photo
+                    // whose fetch happened to land during an outage: the gate
+                    // in `image(id:preview:)` sits in front of the disk cache
+                    // as well as the fetch, and nothing cleared it short of a
+                    // logout. Only a real answer settles a key.
+                    finish(key, data: nil, settled: false)
+                    return
+                }
             }
+            // Not reachable: the last rung has no `continue`. A floor all
+            // the same, because the cost of falling out of this loop is a
+            // key stuck in `inFlight` — an image that never loads again
+            // for the rest of the launch, and nothing to see that says so.
+            finish(key, data: nil, settled: true)
         }
     }
 

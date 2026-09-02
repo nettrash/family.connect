@@ -84,11 +84,32 @@ struct AttachmentView: View {
     /// The lookup behind `image`, for any view that draws a bubble-sized
     /// preview of an attachment. The caller reads `store.generation` — the
     /// paragraph above is about the caller, not this function.
+    ///
+    /// `hasPreview` IS A HINT, NOT A FACT, and the difference is the whole
+    /// reason the two kinds are treated differently here.
+    ///
+    /// The flag is a snapshot the server took when this device happened to
+    /// read the message, and it is the one attachment field that changes
+    /// afterwards (`AttachmentDTO.withPreviewFlag`). Nothing can correct a
+    /// stale copy: history sync is `after_id` only, so it cannot see a
+    /// mutation of an older row — the constraint that forced separate seqs
+    /// for reactions, edits and board notes — and a message already held is
+    /// not rewritten when it is re-delivered. A `false` stored on a video
+    /// was therefore permanent, and so was the grey tile it produced,
+    /// because a video has no second source of pixels: leaving the chat,
+    /// relaunching, nothing brought the poster back.
+    ///
+    /// So a PHOTO may still skip the request on the flag — being wrong
+    /// there costs nothing, since the full bytes are the fallback — while a
+    /// VIDEO always asks. The server is the only thing that actually knows.
+    /// A 404 settles the key after a bounded re-check and the tile keeps its
+    /// play badge; see `AttachmentStore.image(id:preview:mayArriveLate:)`.
     static func image(for attachment: AttachmentDTO, in store: AttachmentStore) -> Image? {
-        if attachment.hasPreview {
-            return store.image(id: attachment.id, preview: true)
+        if attachment.hasPreview || attachment.isVideo {
+            return store.image(
+                id: attachment.id, preview: true, mayArriveLate: attachment.isVideo)
         }
-        return attachment.isVideo ? nil : store.image(id: attachment.id, preview: false)
+        return store.image(id: attachment.id, preview: false)
     }
 
     /// What a media tile shows until its bytes arrive. A soft vertical
@@ -104,10 +125,13 @@ struct AttachmentView: View {
             endPoint: .bottom)
     }
 
-    /// True while bytes we expect are still on their way. A video with no
-    /// preview is NOT waiting for anything — nobody uploaded a poster and
-    /// nobody will — so a spinner there promises an arrival that never
-    /// comes. It gets the play badge over a plain placeholder instead.
+    /// True while bytes we expect are still on their way.
+    ///
+    /// A video whose flag says there is no poster is asked about anyway
+    /// (see `image(for:in:)`), but it does not get a SPINNER for it: the
+    /// answer may well be that there is no poster and never will be, and a
+    /// spinner promises an arrival. It keeps the play badge over a plain
+    /// placeholder, and if the poster does turn up it simply appears.
     private var isAwaitingBytes: Bool {
         image == nil && (attachment.hasPreview || !attachment.isVideo)
     }

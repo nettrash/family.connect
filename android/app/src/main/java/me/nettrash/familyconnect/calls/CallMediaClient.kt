@@ -62,6 +62,29 @@ interface CallMediaClient {
     /** Where the far side's video is drawn, once its track arrives. null detaches. */
     fun setRemoteVideoSink(sink: VideoSink?)
 
+    /**
+     * Detach [sink] if — and ONLY if — it is the one registered right
+     * now; returns whether it was. The unconditional `setXVideoSink(null)`
+     * is a blind detach: a surface that goes away AFTER its replacement
+     * attached (two compositions overlapping — an Activity recreated
+     * while the call runs) would tear down the live one and leave the
+     * call with no picture for the rest of its life, with nothing to
+     * re-attach it. Identity makes a late release a no-op instead.
+     *
+     * Defaulted to the blind detach so a fake needs nothing; the real
+     * client overrides both.
+     */
+    fun detachLocalVideoSink(sink: VideoSink): Boolean {
+        setLocalVideoSink(null)
+        return true
+    }
+
+    /** [detachLocalVideoSink] for the far side's picture. */
+    fun detachRemoteVideoSink(sink: VideoSink): Boolean {
+        setRemoteVideoSink(null)
+        return true
+    }
+
     /** Tear everything down. Idempotent. */
     fun close()
 

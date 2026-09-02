@@ -76,10 +76,39 @@ struct CallManagerTests {
         /// true = a renderer attached, false = detached (nil).
         var localRenderers: [Bool] = []
         var remoteRenderers: [Bool] = []
+        /// Whatever is attached right now — so a test can name it.
+        var attachedLocal: (any RTCVideoRenderer)?
+        var attachedRemote: (any RTCVideoRenderer)?
+        /// Detaches this client refused because the named renderer was not the attached one.
+        var refusedDetaches = 0
         func setCameraEnabled(_ enabled: Bool) { cameraEnabled.append(enabled) }
         func flipCamera() { flips += 1 }
-        func setLocalVideoRenderer(_ renderer: (any RTCVideoRenderer)?) { localRenderers.append(renderer != nil) }
-        func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?) { remoteRenderers.append(renderer != nil) }
+        func setLocalVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {
+            localRenderers.append(renderer != nil)
+            attachedLocal = renderer
+        }
+        func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {
+            remoteRenderers.append(renderer != nil)
+            attachedRemote = renderer
+        }
+        func detachLocalVideoRenderer(_ renderer: any RTCVideoRenderer) -> Bool {
+            guard let attachedLocal, attachedLocal === renderer else {
+                refusedDetaches += 1
+                return false
+            }
+            self.attachedLocal = nil
+            localRenderers.append(false)
+            return true
+        }
+        func detachRemoteVideoRenderer(_ renderer: any RTCVideoRenderer) -> Bool {
+            guard let attachedRemote, attachedRemote === renderer else {
+                refusedDetaches += 1
+                return false
+            }
+            self.attachedRemote = nil
+            remoteRenderers.append(false)
+            return true
+        }
 
         func emit(_ state: CallMediaConnectionState) {
             delegate?.mediaClient(self, connectionStateChanged: state)
@@ -998,6 +1027,43 @@ struct CallManagerTests {
         #expect(h.manager.isRemoteVideoActive)
         h.media.emitRemoteVideo(false)
         #expect(!h.manager.isRemoteVideoActive)
+    }
+
+    @Test("video: a surface dismantled after its replacement attached leaves the live one drawing")
+    func staleVideoSurfaceDoesNotUnhookTheLiveOne() async throws {
+        let h = Harness()
+        h.manager.startCall(chatID: 42, peerUserID: 9, video: true)
+        await h.drain()
+
+        // Two view trees overlapping: the replacement is made before the
+        // dying one is dismantled, so the dismantle lands last.
+        let dying = FakeRenderer()
+        let replacement = FakeRenderer()
+        h.manager.setRemoteVideoRenderer(dying)
+        h.manager.setRemoteVideoRenderer(replacement)
+
+        h.manager.detachRemoteVideoRenderer(dying)
+
+        // The live surface is untouched. Before the identity check this
+        // cleared the renderer and the call was black for the rest of its
+        // life, with nothing left to re-attach it (issue #38).
+        #expect(h.media.attachedRemote === replacement)
+        #expect(h.media.refusedDetaches == 0)
+
+        // And the CURRENT surface still detaches when it is the one going.
+        h.manager.detachRemoteVideoRenderer(replacement)
+        #expect(h.media.attachedRemote == nil)
+
+        // Same rule for the local preview, which leaves and re-enters the
+        // tree on every camera toggle.
+        let dyingLocal = FakeRenderer()
+        let liveLocal = FakeRenderer()
+        h.manager.setLocalVideoRenderer(dyingLocal)
+        h.manager.setLocalVideoRenderer(liveLocal)
+        h.manager.detachLocalVideoRenderer(dyingLocal)
+        #expect(h.media.attachedLocal === liveLocal)
+        h.manager.detachLocalVideoRenderer(liveLocal)
+        #expect(h.media.attachedLocal == nil)
     }
 
     @Test("video: ending the call takes the remote picture down with the media, before the linger")

@@ -79,6 +79,16 @@ protocol CallMediaClient: AnyObject {
     /// Where the far side's picture draws. Same rules.
     func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?)
 
+    /// Detach `renderer` if — and ONLY if — it is the one attached right
+    /// now; returns whether it was. The unconditional
+    /// `setRemoteVideoRenderer(nil)` is a blind detach: a surface torn
+    /// down AFTER its replacement attached (two view trees overlapping)
+    /// would unhook the live one and leave the call with no picture for
+    /// the rest of its life. Identity makes a late dismantle a no-op.
+    func detachLocalVideoRenderer(_ renderer: any RTCVideoRenderer) -> Bool
+    /// `detachLocalVideoRenderer` for the far side's picture.
+    func detachRemoteVideoRenderer(_ renderer: any RTCVideoRenderer) -> Bool
+
     func close()
 }
 
@@ -88,4 +98,14 @@ extension CallMediaClient {
     func flipCamera() {}
     func setLocalVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {}
     func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {}
+    /// Defaulted to the blind detach so a fake needs nothing; the real
+    /// client overrides both.
+    func detachLocalVideoRenderer(_ renderer: any RTCVideoRenderer) -> Bool {
+        setLocalVideoRenderer(nil)
+        return true
+    }
+    func detachRemoteVideoRenderer(_ renderer: any RTCVideoRenderer) -> Bool {
+        setRemoteVideoRenderer(nil)
+        return true
+    }
 }

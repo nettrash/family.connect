@@ -120,15 +120,39 @@ val LocalAttachments = staticCompositionLocalOf<AttachmentRepository?> { null }
  * upload landed still shows something rather than a permanent spinner.
  * A video has nothing to fall back to — its bytes are a video — so it
  * shows the play badge over the placeholder until the poster arrives.
+ *
+ * `has_preview` IS A HINT, NOT A FACT, and the difference is the whole
+ * reason the two kinds are gated differently here.
+ *
+ * The flag is a snapshot the server took when this device happened to
+ * read the message, and it is the ONE attachment field that changes
+ * afterwards (ApiModels, [AttachmentDto]). Nothing can correct a stale
+ * copy: history sync is `after_id` only, so it cannot see a mutation of
+ * an older row — the same constraint that forced separate seqs for
+ * reactions, edits and board notes — and the arrival path writes with
+ * `insertIgnore`, which never overwrites. A `false` stored on a video
+ * therefore used to be permanent, and because a video has no second
+ * source of pixels, so was the grey tile it produced: through leaving
+ * the chat, through a relaunch, for the life of the install.
+ *
+ * So a PHOTO may still skip the request on the flag — being wrong there
+ * costs nothing, since the full bytes below are the fallback — while a
+ * VIDEO always asks. The server is the only thing that actually knows,
+ * and it answers plainly: the poster, or a 404
+ * (server/src/handlers_attachment.rs, `get_attachment`). A 404 settles
+ * the key after a bounded re-check and the bubble keeps its play badge;
+ * see [AttachmentRepository.load].
  */
 @Composable
 fun rememberAttachmentImage(attachment: AttachmentDto, preview: Boolean): ImageBitmap? {
     val attachments = LocalAttachments.current ?: return null
-    if (preview && !attachment.hasPreview) return null
+    if (preview && !attachment.hasPreview && !attachment.isVideo) return null
     if (!preview && attachment.isVideo) return null
     // retryToken is in the key on purpose — see rememberAvatar.
     LaunchedEffect(attachment.id, preview, attachments.retryToken) {
-        attachments.load(attachment.id, preview)
+        // Only a video poster may arrive late: it is the only image the
+        // sender uploads separately from the message that carries it.
+        attachments.load(attachment.id, preview, mayArriveLate = preview && attachment.isVideo)
     }
     return attachments.cached(attachment.id, preview)
 }

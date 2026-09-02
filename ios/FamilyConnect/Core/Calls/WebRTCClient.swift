@@ -277,10 +277,38 @@ final class WebRTCClient: NSObject, CallMediaClient {
         if let renderer { videoTrack?.add(renderer) }
     }
 
+    func detachLocalVideoRenderer(_ renderer: any RTCVideoRenderer) -> Bool {
+        guard let localRenderer, localRenderer === renderer else { return false }
+        videoTrack?.remove(localRenderer)
+        self.localRenderer = nil
+        return true
+    }
+
     func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {
         if let remoteRelay { remoteVideoTrack?.remove(remoteRelay) }
         remoteRelay = renderer.map(makeRemoteRelay)
         if let remoteRelay { remoteVideoTrack?.add(remoteRelay) }
+        AppLog.call.info(
+            "\(AppLog.CallVideo.tag, privacy: .public) client remote renderer=\(AppLog.CallVideo.id(renderer), privacy: .public) trackPresent=\(self.remoteVideoTrack != nil, privacy: .public) attached=\(renderer != nil && self.remoteVideoTrack != nil, privacy: .public)"
+        )
+    }
+
+    /// Detach only the relay that wraps THIS renderer — a dismantle from
+    /// a surface that has already been replaced must not unhook the live
+    /// one (see CallVideoView, and issue #38).
+    func detachRemoteVideoRenderer(_ renderer: any RTCVideoRenderer) -> Bool {
+        guard let relay = remoteRelay, relay.wraps(renderer) else {
+            AppLog.call.error(
+                "\(AppLog.CallVideo.tag, privacy: .public) client remote detach IGNORED renderer=\(AppLog.CallVideo.id(renderer), privacy: .public) (stale surface; the live one keeps drawing)"
+            )
+            return false
+        }
+        remoteVideoTrack?.remove(relay)
+        remoteRelay = nil
+        AppLog.call.info(
+            "\(AppLog.CallVideo.tag, privacy: .public) client remote renderer detached renderer=\(AppLog.CallVideo.id(renderer), privacy: .public)"
+        )
+        return true
     }
 
     /// Wraps the screen's remote renderer so the FIRST decoded frame — not
@@ -505,7 +533,11 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
         guard let track = rtpReceiver.track as? RTCVideoTrack else { return }
         Task { @MainActor in
             self.remoteVideoTrack = track
-            if let relay = self.remoteRelay { track.add(relay) }
+            let relay = self.remoteRelay
+            if let relay { track.add(relay) }
+            AppLog.call.info(
+                "\(AppLog.CallVideo.tag, privacy: .public) didAdd remote video track rendererPresent=\(relay != nil, privacy: .public) path=\(relay != nil ? "track-after-attach" : "track-before-attach", privacy: .public)"
+            )
         }
     }
     nonisolated func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
@@ -580,6 +612,12 @@ nonisolated final class RemoteFirstFrameRelay: NSObject, RTCVideoRenderer, @unch
     private let onFirstFrame: @MainActor @Sendable () -> Void
     private let fired = OSAllocatedUnfairLock(initialState: false)
 
+    /// Whether this relay stands in for `renderer` — how a detach names
+    /// the surface it owns rather than clearing whatever is attached.
+    nonisolated func wraps(_ renderer: any RTCVideoRenderer) -> Bool {
+        wrapped === renderer
+    }
+
     init(wrapping renderer: any RTCVideoRenderer, onFirstFrame: @escaping @MainActor @Sendable () -> Void) {
         self.wrapped = renderer
         self.onFirstFrame = onFirstFrame
@@ -599,6 +637,7 @@ nonisolated final class RemoteFirstFrameRelay: NSObject, RTCVideoRenderer, @unch
             return true
         }
         guard isFirst else { return }
+        AppLog.call.info("\(AppLog.CallVideo.tag, privacy: .public) FIRST remote frame")
         let callback = onFirstFrame
         Task { @MainActor in callback() }
     }
