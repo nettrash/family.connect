@@ -46,6 +46,7 @@ import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
+import me.nettrash.familyconnect.testutil.FakePosterCache
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
@@ -122,6 +123,7 @@ class MessageRepositoryTest {
             socket = socket,
             settings = settings,
             chatRepository = chatRepository,
+            posterCache = FakePosterCache(),
             scope = repoScope,
             clock = Clock { NOW },
         )

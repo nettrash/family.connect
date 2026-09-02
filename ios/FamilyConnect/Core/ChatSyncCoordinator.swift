@@ -416,6 +416,13 @@ final class ChatSyncCoordinator {
             // back by a `missing` gate that nothing else clears; a reconnect
             // is the signal that retrying them is worth it.
             attachmentStore?.retryAfterReconnect()
+            // And the other direction: posters THIS device made that the
+            // server never got. A connect is once per launch plus once per
+            // recovery, which is exactly when a re-send is worth making —
+            // and the only trigger there is, because a repair on a timer
+            // would be a poll (issue #54). Android hangs the same pass off
+            // `connectivity.onAvailable`.
+            attachmentStore?.repairPosters()
             Task { await self.resync() }
         case .disconnected:
             // The socket's own loop is retrying; "offline" is reserved for
@@ -1540,6 +1547,22 @@ final class ChatSyncCoordinator {
                 } catch {
                     AppLog.sync.error("Preview upload failed: \(String(describing: error), privacy: .public)")
                 }
+            } else if item.kind == "video" {
+                // Distinguishable on purpose from the line above: a video
+                // that never HAD a poster and one whose poster upload
+                // failed need different fixes, and until issue #54 the
+                // first of the two said nothing at all (MediaPrep logs the
+                // grab itself; this is what it cost).
+                AppLog.sync.error(
+                    "Video \(attachment.id, privacy: .public) sent with no poster frame")
+            }
+            if item.kind == "video" {
+                // Best-effort ONCE was the bug (issue #54): a poster is
+                // the only image with no second source of pixels, so a
+                // lost one is a grey tile for every recipient, forever.
+                // The marker is what lets the next reconnect finish the
+                // job; `hasPreview == true` clears it.
+                attachmentStore?.notePosterUpload(id: attachment.id, landed: hasPreview)
             }
             uploaded.append(attachment.withPreviewFlag(hasPreview))
         }

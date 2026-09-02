@@ -867,6 +867,19 @@ magic number and stores what it is given, exactly as it does for avatars. That m
 the downscaled photo, or the poster frame of a video — is produced and uploaded by the client. A
 message may be sent before its preview arrives; `has_preview` says whether one is there yet.
 
+**A preview may be uploaded again, later.** `PUT /attachments/{id}/preview` is not closed by the
+message that claims the attachment, and it is idempotent: a further PUT from the UPLOADER overwrites
+whatever is stored and sets `has_preview` to true, at any time. Nothing on the wire changes for this
+— it is the same request the send makes, sent again — but clients rely on it, so it is written down.
+The reason is that a preview travels in its own request and can therefore fail while the message
+succeeds. Uploaded once and never retried, that left `has_preview: false` on the server permanently
+with only the uploading device still holding the pixels. It shows up on VIDEOS, which have no second
+source of pixels to fall back on: a photo whose preview is missing draws its full bytes, a video's
+bytes are a video, so every recipient got a grey tile for good. Clients therefore keep the poster
+they made and re-send it — a bounded number of times, from what they still hold, not on a timer —
+when the first attempt did not land. The server still decodes nothing; poster generation is
+deliberately not its job, for the same reason avatars are downscaled client-side.
+
 #### Audio
 
 `kind=audio` covers both halves of the same thing: a sound file picked from disk, and a voice note
@@ -1643,7 +1656,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | Method & path | Body → Response |
 |---|---|
 | `POST /attachments` | Raw bytes with `Content-Type` set to the media type. Query: `kind` (`photo`\|`video`\|`audio`\|`file`\|`location`), `width`, `height`, `duration_ms`, `name`, `latitude`, `longitude`, `accuracy_m`. `name` is REQUIRED for `kind=file` (1–255 characters) and optional on audio and a location; `latitude` and `longitude` are REQUIRED for `kind=location` and refused on anything else. A location sends **no body** — it is metadata only. → `201 {attachment: Attachment}`. Errors: `attachment_too_large` (413), `invalid_attachment` (415 for a media type not accepted on a photo/video/audio, 400 when the bytes do not match the declared type, a file has no name, or a location has no or out-of-range coordinates), `not_in_family`. |
-| `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only, and never on a `file`, `audio` or `location` (`invalid_attachment`). Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
+| `PUT /attachments/{id}/preview` | Raw JPEG bytes of the downscaled photo or poster frame → `204`. Uploader only, and never on a `file`, `audio` or `location` (`invalid_attachment`). IDEMPOTENT and not closed by the message that claims the attachment: a repeat overwrites the stored preview and sets `has_preview` to true, which is what lets a client finish a poster upload that failed (see "Photos, videos, audio, files and locations"). Errors: `attachment_not_found`, `attachment_too_large`, `invalid_attachment`. |
 | `GET /attachments/{id}` | → `200` with the stored bytes and their `Content-Type`. A location has none and answers `invalid_attachment` (400). A `file` additionally gets `Content-Disposition: attachment; filename=…` (sanitised) and `X-Content-Type-Options: nosniff`, so an uploaded document can never render or execute from the server's own origin. Readable by the uploader always, and by every member of the chat once a message claims it; anyone else gets `404 attachment_not_found`. Sends `ETag` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match` with `304`. Honours a single-byte-range `Range` request with `206` + `Content-Range` (`416` for a range past the end) — that is how a video player seeks, and without it scrubbing a 90 MB clip re-downloads it from the start. A multi-range or unrecognised `Range` is ignored and the whole body sent, per RFC 9110. |
 | `GET /attachments/{id}/preview` | → `200` with the preview JPEG, same access rules. `404` when there is no preview yet. |
 

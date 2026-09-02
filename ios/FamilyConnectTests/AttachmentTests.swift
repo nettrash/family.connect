@@ -492,6 +492,126 @@ struct AttachmentTests {
         #expect(gets.isEmpty)
     }
 
+    /// ISSUE #54, end to end. The bytes landed, the message landed, and
+    /// only the poster's own request failed — which used to be the end of
+    /// it: `has_preview` stayed false on the server with nobody able to
+    /// correct it, and every recipient got a grey tile for ever while the
+    /// sender's own bubble looked perfect. The frame is still on this
+    /// device, so the next connect finishes the job.
+    @Test("A video whose poster upload failed is still owed, and is re-sent")
+    func aFailedVideoPosterIsRepaired() async throws {
+        let host = "attach-poster-repair.test"
+        let harness = try makeHarness(host: host) { request in
+            switch (request.method, request.url.path()) {
+            case ("POST", "/api/v1/attachments"):
+                return .json(201, """
+                    {"attachment": {"id": 9110, "kind": "video", "mime": "video/mp4",
+                     "size": 4096, "width": 1080, "height": 1920, "duration_ms": 8400,
+                     "has_preview": false}}
+                    """)
+            case ("PUT", "/api/v1/attachments/9110/preview"):
+                // The first one — the send's own — is refused; the repair
+                // that follows is not.
+                let puts = StubURLProtocol.requests(host: host)
+                    .filter { $0.method == "PUT" }.count
+                return puts <= 1 ? .empty(500) : .empty(204)
+            default:
+                let clientID = request.bodyJSON()?["client_msg_id"] as? String ?? ""
+                return .json(201, """
+                    {"message": {"id": 951, "chat_id": 42, "sender_id": 7, "body": "",
+                     "created_at": "2026-08-22T09:00:00Z", "client_msg_id": "\(clientID)",
+                     "attachment": {"id": 9110, "kind": "video", "mime": "video/mp4",
+                       "size": 4096, "width": 1080, "height": 1920, "duration_ms": 8400,
+                       "has_preview": false}}}
+                    """)
+            }
+        }
+        defer { harness.tearDown() }
+
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("attach-poster-repair-\(UUID().uuidString)")
+        let store = AttachmentStore(api: harness.coordinator.api, directory: directory)
+        defer { store.clear() }
+        harness.coordinator.bind(attachmentStore: store)
+
+        let poster = TestImages.solid(width: 40, height: 30)
+        let url = MediaPrep.temporaryURL(extension: "mp4")
+        try Data([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]).write(to: url)
+        let prepared = MediaPrep.Prepared(
+            fileURL: url,
+            mime: "video/mp4",
+            kind: "video",
+            width: 1080,
+            height: 1920,
+            durationMS: 8400,
+            previewJPEG: poster)
+
+        // The send survives a refused poster — that part never changed.
+        #expect(await harness.coordinator.sendMedia(prepared, caption: "", in: 42))
+        await harness.settle()
+        #expect(store.isPosterUnsent(id: 9110),
+                "a poster the server refused was forgotten on the spot")
+
+        await store.repairPosters()?.value
+
+        let puts = StubURLProtocol.requests(host: host)
+            .filter { $0.method == "PUT" && $0.url.path().hasSuffix("/9110/preview") }
+        #expect(puts.count == 2, "the poster was never offered a second time")
+        #expect(puts.last?.body == poster, "something other than the poster went up")
+        #expect(!store.isPosterUnsent(id: 9110))
+    }
+
+    /// A photo needs none of this. Its preview failing costs bandwidth,
+    /// not the picture — the bubble falls back to the full bytes — so no
+    /// bookkeeping is kept and nothing is re-sent.
+    @Test("A photo whose preview upload failed is not owed anything")
+    func aFailedPhotoPreviewIsNotOwed() async throws {
+        let host = "attach-photo-no-repair.test"
+        let harness = try makeHarness(host: host) { request in
+            switch (request.method, request.url.path()) {
+            case ("POST", "/api/v1/attachments"):
+                return .json(201, Self.attachmentJSON(id: 9111))
+            case ("PUT", "/api/v1/attachments/9111/preview"):
+                return .empty(500)
+            default:
+                let clientID = request.bodyJSON()?["client_msg_id"] as? String ?? ""
+                return .json(201, """
+                    {"message": {"id": 952, "chat_id": 42, "sender_id": 7, "body": "",
+                     "created_at": "2026-08-22T09:00:00Z", "client_msg_id": "\(clientID)",
+                     "attachment": {"id": 9111, "kind": "photo", "mime": "image/jpeg",
+                       "size": 4096, "width": 1600, "height": 1200, "has_preview": false}}}
+                    """)
+            }
+        }
+        defer { harness.tearDown() }
+
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("attach-photo-no-repair-\(UUID().uuidString)")
+        let store = AttachmentStore(api: harness.coordinator.api, directory: directory)
+        defer { store.clear() }
+        harness.coordinator.bind(attachmentStore: store)
+
+        let url = MediaPrep.temporaryURL(extension: "jpg")
+        try TestImages.solid(width: 120, height: 90).write(to: url)
+        let prepared = MediaPrep.Prepared(
+            fileURL: url,
+            mime: "image/jpeg",
+            kind: "photo",
+            width: 1600,
+            height: 1200,
+            durationMS: nil,
+            previewJPEG: TestImages.solid(width: 40, height: 30))
+
+        #expect(await harness.coordinator.sendMedia(prepared, caption: "", in: 42))
+        await harness.settle()
+
+        #expect(!store.isPosterUnsent(id: 9111))
+        await store.repairPosters()?.value
+        let puts = StubURLProtocol.requests(host: host)
+            .filter { $0.method == "PUT" && $0.url.path().hasSuffix("/preview") }
+        #expect(puts.count == 1, "a photo preview was re-sent as if it were a poster")
+    }
+
     // MARK: - The composer's other state
 
     /// Attaching while a reply was primed used to post the photo with no

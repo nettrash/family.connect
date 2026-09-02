@@ -25,6 +25,7 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -76,6 +77,7 @@ class MessageRepository @Inject constructor(
     private val socket: ChatSocket,
     private val settings: SettingsRepository,
     private val chatRepository: ChatRepository,
+    private val posterCache: PosterCache,
     @param:AppScope private val scope: CoroutineScope,
     private val clock: Clock,
 ) {
@@ -327,8 +329,30 @@ class MessageRepository @Inject constructor(
             // Per-item and best-effort, exactly as it was for one: a
             // failed preview costs a thumbnail, never the send.
             var hasPreview = false
-            item.previewJpeg?.let { jpeg ->
-                hasPreview = attachmentApi.uploadPreview(attachment.id, jpeg) is ApiResult.Ok
+            val poster = item.previewJpeg
+            if (poster != null) {
+                // Kept BEFORE the upload, so a failure still leaves this
+                // device holding the only copy of the pixels — which is
+                // what makes the repair possible at all (issue #54).
+                if (item.kind == AttachmentDto.KIND_VIDEO) {
+                    posterCache.seedPoster(attachment.id, poster)
+                }
+                hasPreview = attachmentApi.uploadPreview(attachment.id, poster) is ApiResult.Ok
+            } else if (item.kind == AttachmentDto.KIND_VIDEO) {
+                // Distinguishable on purpose from a failed upload: a video
+                // that never HAD a poster and one whose poster upload
+                // failed need different fixes, and until issue #54 the
+                // first of the two said nothing at all (MediaPrep logs the
+                // grab itself; this is what it cost).
+                Log.w(TAG, "video ${attachment.id} sent with no poster frame")
+            }
+            if (item.kind == AttachmentDto.KIND_VIDEO) {
+                // Best-effort ONCE was the bug (issue #54): a poster is
+                // the only image with no second source of pixels, so a
+                // lost one is a grey tile for every recipient, forever.
+                // The note is what lets the next `onAvailable` finish the
+                // job; a landed poster clears it.
+                posterCache.notePosterUpload(attachment.id, hasPreview)
             }
             uploadedAttachments += attachment.copy(hasPreview = hasPreview)
             // This item's bytes are on the server; its prepared file is
@@ -1207,6 +1231,8 @@ class MessageRepository @Inject constructor(
         /** The pre-plurality spelling, kept for single-attachment callers. */
         fun previewText(body: String, attachment: AttachmentDto?, call: CallDto? = null): String =
             previewText(body, attachment?.let(::listOf).orEmpty(), call)
+
+        private const val TAG = "MessageRepository"
 
         /** Most broken locations repaired per resync — see the note above. */
         private const val REPAIR_BATCH = 25

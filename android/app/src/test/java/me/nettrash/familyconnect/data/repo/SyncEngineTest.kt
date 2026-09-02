@@ -46,6 +46,7 @@ import me.nettrash.familyconnect.testutil.FakeBoardApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeFamilyApi
+import me.nettrash.familyconnect.testutil.FakePosterCache
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.FakeTokenStore
 import me.nettrash.familyconnect.testutil.RecordingWiper
@@ -147,6 +148,7 @@ class SyncEngineTest {
             socket = socket,
             settings = settings,
             chatRepository = chatRepository,
+            posterCache = FakePosterCache(),
             scope = repoScope,
             clock = Clock { 1_000_000L },
         )

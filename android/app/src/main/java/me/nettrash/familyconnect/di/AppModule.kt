@@ -73,9 +73,11 @@ import me.nettrash.familyconnect.data.net.DefaultFamilyApi
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.OkHttpChatSocket
+import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.AvatarSource
 import me.nettrash.familyconnect.data.repo.ContentResolverAvatarSource
 import me.nettrash.familyconnect.data.repo.DefaultShareImporter
+import me.nettrash.familyconnect.data.repo.PosterCache
 import me.nettrash.familyconnect.data.repo.ShareImporter
 import me.nettrash.familyconnect.data.push.FirebasePushTokenProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
@@ -135,6 +137,13 @@ abstract class AppModule {
     // MainViewModel's tests can default it away (see ShareImporter).
     @Binds
     abstract fun bindShareImporter(impl: DefaultShareImporter): ShareImporter
+
+    // The send path's one line into the attachment cache: keep the poster
+    // this device just made, and say whether the server got it (issue
+    // #54). An interface so a send test does not have to stand up a
+    // Context, a disk cache and an HTTP client to send a photo.
+    @Binds
+    abstract fun bindPosterCache(impl: AttachmentRepository): PosterCache
 
     @Binds
     abstract fun bindChatSocket(impl: OkHttpChatSocket): ChatSocket

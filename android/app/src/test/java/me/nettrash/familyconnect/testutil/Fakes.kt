@@ -73,6 +73,7 @@ import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.push.UnreadNotifications
 import me.nettrash.familyconnect.data.repo.ChatRepository
+import me.nettrash.familyconnect.data.repo.PosterCache
 import org.robolectric.RuntimeEnvironment
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
@@ -920,6 +921,28 @@ fun pollDto(
 
 fun pollState(messageId: Long, poll: PollDto) =
     MessagePollStateDto(messageId = messageId, poll = poll)
+
+/**
+ * The send path's one line into the attachment cache (issue #54), with
+ * neither a Context nor a disk behind it. Records what the sender kept
+ * and what it said about each poster's upload, in order.
+ */
+class FakePosterCache : PosterCache {
+
+    /** (attachment id, byte count) per poster the sender kept. */
+    val seeded = mutableListOf<Pair<Long, Int>>()
+
+    /** (attachment id, whether the server got it) per video sent. */
+    val noted = mutableListOf<Pair<Long, Boolean>>()
+
+    override suspend fun seedPoster(attachmentId: Long, jpeg: ByteArray) {
+        seeded += attachmentId to jpeg.size
+    }
+
+    override suspend fun notePosterUpload(attachmentId: Long, landed: Boolean) {
+        noted += attachmentId to landed
+    }
+}
 
 /**
  * Scriptable AttachmentApi. Records what was uploaded, in order, so the
