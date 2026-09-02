@@ -94,4 +94,14 @@ class CallViewModel @Inject constructor(
 
     fun setLocalVideoSink(sink: VideoSink?) = callManager.setLocalVideoSink(sink)
     fun setRemoteVideoSink(sink: VideoSink?) = callManager.setRemoteVideoSink(sink)
+
+    /**
+     * The screen's surfaces go away by NAME, not by null: two
+     * compositions can overlap (an Activity recreated mid-call builds the
+     * new tree before it disposes the old one), and a blind detach from
+     * the dying one would unhook the live surface for the rest of the
+     * call. The manager ignores a release that is not the current sink.
+     */
+    fun detachLocalVideoSink(sink: VideoSink) = callManager.detachLocalVideoSink(sink)
+    fun detachRemoteVideoSink(sink: VideoSink) = callManager.detachRemoteVideoSink(sink)
 }

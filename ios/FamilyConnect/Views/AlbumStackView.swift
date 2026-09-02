@@ -151,8 +151,8 @@ struct AlbumStackView: View {
         isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08)
     }
 
-    /// AttachmentView's rule: a video with no preview is not waiting for
-    /// anything, so it gets the badge over the placeholder, not a spinner.
+    /// AttachmentView's rule: a video's poster is always asked for, but
+    /// never promised — the badge over the placeholder, not a spinner.
     private func isAwaitingBytes(_ item: AttachmentDTO) -> Bool {
         AttachmentView.image(for: item, in: store) == nil && (item.hasPreview || !item.isVideo)
     }

@@ -979,13 +979,37 @@ class FakeAttachmentApi : AttachmentApi {
         return previewHandler(attachmentId, jpeg)
     }
 
+    /**
+     * Every download this fake was asked for, as (attachmentId, preview).
+     *
+     * The preview half is the point: a video's poster and its bytes are
+     * two different requests, and what a test about posters needs to know
+     * is how many times the poster was asked for.
+     */
+    val downloads = mutableListOf<Pair<Long, Boolean>>()
+
+    /**
+     * What `download` answers, and — on success — what it writes.
+     *
+     * A 404 by default, which is what the server says for an attachment
+     * with no preview; it also means every test that predates this seam
+     * behaves exactly as it did. A handler that answers [ApiResult.Ok]
+     * must write the destination file itself, because the real client
+     * does (`ApiClient.rawDownloadToFile`) and the repository decodes
+     * whatever is there.
+     */
+    var downloadHandler: (Long, Boolean, File) -> ApiResult<Unit> = { _, _, _ ->
+        ApiResult.HttpError(404, "attachment_not_found", "no")
+    }
+
     override suspend fun download(
         attachmentId: Long,
         preview: Boolean,
         destination: File,
     ): ApiResult<Unit> {
         calls += "download"
-        return ApiResult.HttpError(404, "attachment_not_found", "no")
+        downloads += attachmentId to preview
+        return downloadHandler(attachmentId, preview, destination)
     }
 
     override suspend fun streamUrl(attachmentId: Long): Pair<String, Map<String, String>>? =

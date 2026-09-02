@@ -475,9 +475,39 @@ final class CallManager {
         media?.setLocalVideoRenderer(renderer)
     }
 
+    /// The local surface went away. A no-op unless it is still the one
+    /// registered — see `detachRemoteVideoRenderer`.
+    func detachLocalVideoRenderer(_ renderer: any RTCVideoRenderer) {
+        guard let localVideoRenderer, localVideoRenderer === renderer else { return }
+        self.localVideoRenderer = nil
+        _ = media?.detachLocalVideoRenderer(renderer)
+    }
+
     func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {
         remoteVideoRenderer = renderer
         media?.setRemoteVideoRenderer(renderer)
+        AppLog.call.info(
+            "\(AppLog.CallVideo.tag, privacy: .public) remote renderer=\(AppLog.CallVideo.id(renderer), privacy: .public) media=\(self.media != nil ? "live" : "not-open-yet", privacy: .public) path=ui-attach"
+        )
+    }
+
+    /// The call screen dismantled its remote surface. Detaches ONLY if it
+    /// is still the registered one: two view trees can overlap, and a
+    /// blind `setRemoteVideoRenderer(nil)` from the dying one would
+    /// unhook the LIVE surface — the call then has no picture for the
+    /// rest of its life, with nothing to re-attach it (issue #38).
+    func detachRemoteVideoRenderer(_ renderer: any RTCVideoRenderer) {
+        guard let remoteVideoRenderer, remoteVideoRenderer === renderer else {
+            AppLog.call.error(
+                "\(AppLog.CallVideo.tag, privacy: .public) remote renderer detach IGNORED renderer=\(AppLog.CallVideo.id(renderer), privacy: .public) (a stale surface dismantled after its replacement attached; the live one keeps drawing)"
+            )
+            return
+        }
+        self.remoteVideoRenderer = nil
+        _ = media?.detachRemoteVideoRenderer(renderer)
+        AppLog.call.info(
+            "\(AppLog.CallVideo.tag, privacy: .public) remote renderer detached renderer=\(AppLog.CallVideo.id(renderer), privacy: .public)"
+        )
     }
 
     /// After `media` is created on a video call: the camera state the
@@ -488,6 +518,9 @@ final class CallManager {
         media.setCameraEnabled(isCameraOn)
         if let localVideoRenderer { media.setLocalVideoRenderer(localVideoRenderer) }
         if let remoteVideoRenderer { media.setRemoteVideoRenderer(remoteVideoRenderer) }
+        AppLog.call.info(
+            "\(AppLog.CallVideo.tag, privacy: .public) media open camera=\(self.isCameraOn, privacy: .public) path=applyVideoState-reapply remote=\(AppLog.CallVideo.id(self.remoteVideoRenderer), privacy: .public)"
+        )
     }
 
     // MARK: - System callbacks (CallKit actions)

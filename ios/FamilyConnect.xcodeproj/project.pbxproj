@@ -93,17 +93,17 @@
 			path = FamilyConnectUITests;
 			sourceTree = "<group>";
 		};
-		FC00008F2EAB0010013FC000 /* FamilyConnectShared */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = FamilyConnectShared;
-			sourceTree = "<group>";
-		};
 		FC0000852EAB0010013FC000 /* FamilyConnectShareExtension */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				FC0000842EAB0010013FC000 /* Exceptions for "FamilyConnectShareExtension" folder in "FamilyConnectShareExtension" target */,
 			);
 			path = FamilyConnectShareExtension;
+			sourceTree = "<group>";
+		};
+		FC00008F2EAB0010013FC000 /* FamilyConnectShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = FamilyConnectShared;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */

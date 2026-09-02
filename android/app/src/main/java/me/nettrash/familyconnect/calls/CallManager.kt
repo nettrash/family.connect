@@ -156,11 +156,53 @@ class CallManager @Inject constructor(
     val answerRequested: StateFlow<Boolean> = _answerRequested
 
     private val mutex = Mutex()
+
+    /**
+     * Guards `media` together with the four sink fields below, because
+     * "hand the new media client whatever renderers the screen already
+     * registered" and "hand the live media client this renderer" are the
+     * SAME read-modify-write seen from two threads — openMedia on the app
+     * scope (Dispatchers.Default) and the composable on the main thread.
+     * Unguarded, both can read the other's field before it is written and
+     * conclude the other side will do the attaching, and the far side's
+     * picture never appears with nothing left to retry it.
+     *
+     * A plain monitor, not the call mutex: the mutex is suspending and
+     * the UI entry points are not. Held only across field writes and the
+     * media client's own sink calls — never across close(), never across
+     * anything that suspends or blocks — and it is always taken BEFORE
+     * WebRtcClient's own video lock, never after.
+     */
+    private val videoLock = Any()
+
+    @Volatile
     private var media: CallMediaClient? = null
+
     // The UI's renderers, held here so a media client created later (the
     // screen usually exists before the call is answered) still gets them.
     private var localVideoSink: VideoSink? = null
     private var remoteVideoSink: VideoSink? = null
+
+    /**
+     * What the media client actually holds: [localVideoSink] and
+     * [remoteVideoSink] wrapped by [firstFrameNotifyingSink]. Remembered
+     * so a detach can name the very object the client registered — the
+     * wrapper is minted per attach, so "detach whatever is there" and
+     * "detach mine" are different instructions.
+     */
+    private var localSinkHandedOver: VideoSink? = null
+    private var remoteSinkHandedOver: VideoSink? = null
+
+    /**
+     * Diagnostics for the one symptom nobody can reproduce (issue #38):
+     * whether a remote frame was ever seen on THIS call, and whether the
+     * screen's surface ever reached the media client. Read once, at the
+     * end of the call, into a single logcat line — the cheapest way to
+     * record the ABSENCE of a picture, which no per-event line can.
+     */
+    private var sawRemoteFrame = false
+    private var everAttachedRemoteSink = false
+
     private var offerSdp: String? = null
     private var remoteDescriptionSet = false
     private val pendingRemoteCandidates = ArrayList<IceCandidateDto>()
@@ -332,17 +374,97 @@ class CallManager @Inject constructor(
         media?.flipCamera()
     }
 
-    /** Where the local preview draws. The UI owns the renderer; null detaches. */
+    /**
+     * Where the local preview draws. The UI owns the renderer and hands
+     * it back through [detachLocalVideoSink]; passing null here still
+     * clears unconditionally, which only the tests do.
+     */
     fun setLocalVideoSink(sink: VideoSink?) {
-        localVideoSink = sink
-        media?.setLocalVideoSink(sink)
+        val hadMedia = synchronized(videoLock) {
+            localVideoSink = sink
+            // The local preview goes down UNWRAPPED — the first-frame
+            // relay reports the FAR side's picture, and the camera's own
+            // frames must never be mistaken for it.
+            localSinkHandedOver = sink
+            val client = media
+            client?.setLocalVideoSink(sink)
+            client != null
+        }
+        CallVideoLog.event("local sink=${CallVideoLog.id(sink)} media=${if (hadMedia) "live" else "not-open-yet"}")
     }
 
-    /** Where the far side's video draws. The UI owns the renderer; null detaches. */
-    fun setRemoteVideoSink(sink: VideoSink?) {
-        remoteVideoSink = sink
-        media?.setRemoteVideoSink(sink?.let(::firstFrameNotifyingSink))
+    /**
+     * The local surface went away. A no-op unless [sink] is still the one
+     * registered — see [detachRemoteVideoSink] for why identity matters.
+     */
+    fun detachLocalVideoSink(sink: VideoSink) {
+        val mine = synchronized(videoLock) {
+            if (localVideoSink !== sink) return@synchronized false
+            localVideoSink = null
+            localSinkHandedOver?.let { handed -> media?.detachLocalVideoSink(handed) }
+            localSinkHandedOver = null
+            true
+        }
+        if (mine) {
+            CallVideoLog.event("local sink detached sink=${CallVideoLog.id(sink)}")
+        } else {
+            CallVideoLog.warn("local sink detach IGNORED sink=${CallVideoLog.id(sink)} (not the registered one)")
+        }
     }
+
+    /**
+     * Where the far side's video draws. The UI owns the renderer; passing
+     * null still clears unconditionally, which only the tests do — the
+     * screen hands its surface back through [detachRemoteVideoSink].
+     */
+    fun setRemoteVideoSink(sink: VideoSink?) {
+        val hadMedia = synchronized(videoLock) {
+            remoteVideoSink = sink
+            val handed = sink?.let(::firstFrameNotifyingSink)
+            remoteSinkHandedOver = handed
+            if (sink != null) everAttachedRemoteSink = true
+            val client = media
+            client?.setRemoteVideoSink(handed)
+            client != null
+        }
+        CallVideoLog.event(
+            "remote sink=${CallVideoLog.id(sink)} media=${if (hadMedia) "live" else "not-open-yet"} " +
+                "path=ui-attach state=${stateLabel()}",
+        )
+    }
+
+    /**
+     * The screen released its remote surface. Detaches ONLY if [sink] is
+     * still the registered one: two compositions can overlap (an Activity
+     * recreated mid-call builds the new tree before it tears the old one
+     * down), and a blind `setRemoteVideoSink(null)` from the dying one
+     * would unhook the LIVE surface — leaving the call with no picture
+     * for the rest of its life and nothing to re-attach it. A late
+     * release is a no-op, and says so in the log.
+     */
+    fun detachRemoteVideoSink(sink: VideoSink) {
+        val mine = synchronized(videoLock) {
+            if (remoteVideoSink !== sink) return@synchronized false
+            remoteVideoSink = null
+            remoteSinkHandedOver?.let { handed -> media?.detachRemoteVideoSink(handed) }
+            remoteSinkHandedOver = null
+            true
+        }
+        if (mine) {
+            CallVideoLog.event("remote sink detached sink=${CallVideoLog.id(sink)} state=${stateLabel()}")
+        } else {
+            CallVideoLog.warn(
+                "remote sink detach IGNORED sink=${CallVideoLog.id(sink)} " +
+                    "registered=${CallVideoLog.id(currentRemoteSink())} " +
+                    "(a stale surface released after its replacement attached; the live one keeps drawing)",
+            )
+        }
+    }
+
+    private fun currentRemoteSink(): VideoSink? = synchronized(videoLock) { remoteVideoSink }
+
+    /** The state's name alone — never its ids — so one line places an event in the call's life. */
+    private fun stateLabel(): String = _state.value::class.simpleName ?: "?"
 
     /**
      * The remote sink the media client actually gets: the UI's own sink,
@@ -354,15 +476,30 @@ class CallManager @Inject constructor(
      * the call is still the same one before flipping.
      */
     private fun firstFrameNotifyingSink(delegate: VideoSink): VideoSink {
-        val callId = (_state.value as? CallState.Live)?.callId ?: return delegate
+        val callId = (_state.value as? CallState.Live)?.callId
+        if (callId == null) {
+            // No call to report against — the raw sink goes down and the
+            // avatar can never step aside for this surface. It should not
+            // happen (the screen only exists while a call does), so say so.
+            CallVideoLog.warn(
+                "remote sink wrapped with NO live call (state=${stateLabel()}); " +
+                    "first-frame reporting is off for sink=${CallVideoLog.id(delegate)}",
+            )
+            return delegate
+        }
         val notified = AtomicBoolean(false)
         return VideoSink { frame ->
             delegate.onFrame(frame)
+            // Once per attachment, never per frame.
             if (notified.compareAndSet(false, true)) {
+                CallVideoLog.event("FIRST remote frame sink=${CallVideoLog.id(delegate)}")
                 scope.launch {
                     mutex.withLock {
                         val current = _state.value as? CallState.Live ?: return@withLock
-                        if (current.callId == callId) _remoteVideoActive.value = true
+                        if (current.callId != callId) return@withLock
+                        sawRemoteFrame = true
+                        _remoteVideoActive.value = true
+                        CallVideoLog.event("remoteVideoActive=true")
                     }
                 }
             }
@@ -393,6 +530,11 @@ class CallManager @Inject constructor(
                     hasOffer = false,
                 )
                 _isCameraOn.value = video
+                // The marker for the one path nobody has tested: woken by
+                // FCM with the screen locked, so the Compose tree is built
+                // fresh while the call is already connecting. Everything
+                // logged after this line happened in THAT order.
+                if (video) CallVideoLog.event("incoming push (video) — no UI yet, state=Incoming")
                 startGuard(timings.ringTimeoutMillis) {
                     val still = _state.value as? CallState.Incoming ?: return@startGuard
                     if (still.callId != callId) return@startGuard
@@ -612,20 +754,36 @@ class CallManager @Inject constructor(
             finish(CallEnding.FAILED)
             return null
         }
-        media = client
-        // A Telecom hold (setHeld) can land while the ICE servers are
-        // still being fetched: the client comes up already held.
-        client.setMuted(_isMuted.value || held)
-        client.setRemoteAudioEnabled(!held)
-        if (video) {
+        // Publishing the client and re-applying the screen's renderers is
+        // ONE step: between the two, a surface entering composition on the
+        // main thread would see no media, store its sink, and be missed by
+        // the re-apply that had already read the old value — the far side
+        // black with nothing left to retry it. See videoLock.
+        val reAppliedRemote = synchronized(videoLock) {
+            media = client
+            if (!video) return@synchronized null
             // The camera state was decided BEFORE the media existed (the
             // default, or the screen's permission-denied override) — hand
             // it over, along with whatever renderers the screen already
             // registered.
-            client.setCameraEnabled(_isCameraOn.value)
             client.setLocalVideoSink(localVideoSink)
-            client.setRemoteVideoSink(remoteVideoSink?.let(::firstFrameNotifyingSink))
+            localSinkHandedOver = localVideoSink
+            val handed = remoteVideoSink?.let(::firstFrameNotifyingSink)
+            remoteSinkHandedOver = handed
+            if (handed != null) everAttachedRemoteSink = true
+            client.setRemoteVideoSink(handed)
+            remoteVideoSink
         }
+        // A Telecom hold (setHeld) can land while the ICE servers are
+        // still being fetched: the client comes up already held.
+        client.setMuted(_isMuted.value || held)
+        client.setRemoteAudioEnabled(!held)
+        if (video) client.setCameraEnabled(_isCameraOn.value)
+        CallVideoLog.event(
+            "media open video=$video camera=${_isCameraOn.value} " +
+                "path=openMedia-reapply remote=${CallVideoLog.id(reAppliedRemote)} " +
+                "local=${CallVideoLog.id(localVideoSink)} state=${stateLabel()}",
+        )
         return client
     }
 
@@ -679,7 +837,9 @@ class CallManager @Inject constructor(
             scope.launch {
                 mutex.withLock {
                     val current = _state.value as? CallState.Live ?: return@withLock
-                    if (current.callId == callId) _remoteVideoActive.value = false
+                    if (current.callId != callId) return@withLock
+                    if (_remoteVideoActive.value) CallVideoLog.event("remoteVideoActive=false (track gone)")
+                    _remoteVideoActive.value = false
                 }
             }
         }
@@ -710,8 +870,8 @@ class CallManager @Inject constructor(
         val duration = answeredAtMillis?.let { ((clock.now() - it) / 1000).toInt().coerceAtLeast(0) }
         guardJob?.cancel()
         guardJob = null
-        media?.close()
-        media = null
+        if (live?.video == true) logVideoCallSummary(reason)
+        closeMedia()
         // end() silences the ringback too; said explicitly so a call that
         // ends while it rings — cancel, decline, timeout, a refusal — reads
         // as the stop it is.
@@ -744,11 +904,48 @@ class CallManager @Inject constructor(
         }
     }
 
+    /**
+     * Drop the media client. The FIELD is cleared under [videoLock] — so a
+     * surface attaching at this instant can never hand its sink to a dead
+     * client — but close() itself runs OUTSIDE it: it is native teardown,
+     * and the main thread must never block on it.
+     *
+     * The renderers themselves are NOT forgotten: they belong to the
+     * screen, which is still up during Ended and hands them back on its
+     * own. Only the wrappers die with the client that held them.
+     */
+    private fun closeMedia() {
+        val client = synchronized(videoLock) {
+            val current = media
+            media = null
+            localSinkHandedOver = null
+            remoteSinkHandedOver = null
+            current
+        }
+        client?.close()
+    }
+
+    /**
+     * The one line that records the ABSENCE of a picture — issue #38.
+     * Written when a VIDEO call ends, because no per-event line can say
+     * "and then nothing ever happened". If the far side was never seen,
+     * this says which link of the chain was missing.
+     */
+    private fun logVideoCallSummary(reason: CallEnding) {
+        CallVideoLog.event(
+            "call over reason=$reason remoteFrameSeen=$sawRemoteFrame " +
+                "remoteSinkEverAttached=$everAttachedRemoteSink " +
+                "remoteSinkAtEnd=${CallVideoLog.id(currentRemoteSink())} " +
+                "answeredMs=${answeredAtMillis?.let { clock.now() - it } ?: -1}",
+        )
+    }
+
     private fun resetCallLocals() {
         guardJob?.cancel()
         guardJob = null
-        media?.close()
-        media = null
+        closeMedia()
+        sawRemoteFrame = false
+        everAttachedRemoteSink = false
         audio.stopRingback()
         held = false
         offerSdp = null

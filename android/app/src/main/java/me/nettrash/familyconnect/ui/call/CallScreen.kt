@@ -95,6 +95,7 @@ import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.calls.CallEnding
 import me.nettrash.familyconnect.calls.CallNotifications
 import me.nettrash.familyconnect.calls.CallState
+import me.nettrash.familyconnect.calls.CallVideoLog
 import me.nettrash.familyconnect.ui.chat.CallRecordWording
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.theme.FamilyConnectTheme
@@ -369,6 +370,14 @@ private fun Context.findActivity(): Activity? {
  * The far side's picture. init against the factory's ONE EglBase context,
  * registered as the remote sink; onRelease detaches the sink FIRST, then
  * releases the renderer — the reverse order draws into freed GL state.
+ *
+ * The detach names THIS renderer rather than clearing whatever is
+ * registered. Two compositions can be alive at once — an Activity
+ * recreated mid-call builds the new tree before it disposes the old one —
+ * and a blind clear from the dying surface would unhook the live one,
+ * leaving the call with no remote picture for the rest of its life and
+ * nothing to re-attach it. The manager ignores a release that is not the
+ * current sink and logs that it did.
  */
 @Composable
 private fun RemoteVideo(
@@ -382,11 +391,13 @@ private fun RemoteVideo(
                 init(viewModel.eglBaseContext, null)
                 setEnableHardwareScaler(true)
                 setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                CallVideoLog.event("remote surface created renderer=${CallVideoLog.id(this)}")
                 viewModel.setRemoteVideoSink(this)
             }
         },
         onRelease = { renderer ->
-            viewModel.setRemoteVideoSink(null)
+            CallVideoLog.event("remote surface released renderer=${CallVideoLog.id(renderer)}")
+            viewModel.detachRemoteVideoSink(renderer)
             renderer.release()
         },
     )
@@ -414,7 +425,10 @@ private fun LocalPreview(
         },
         update = { renderer -> renderer.setMirror(isFrontCamera) },
         onRelease = { renderer ->
-            viewModel.setLocalVideoSink(null)
+            // By name, for the same reason as RemoteVideo above — and
+            // this one leaves and re-enters composition on every camera
+            // toggle, so an overlap is that much likelier.
+            viewModel.detachLocalVideoSink(renderer)
             renderer.release()
         },
     )
