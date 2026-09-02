@@ -1,6 +1,30 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "CFBundleDisplayName" : {
+      "comment" : "Bundle display name",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Family"
+          }
+        }
+      }
+    },
+    "CFBundleName" : {
+      "comment" : "Bundle name",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "FamilyConnect"
+          }
+        }
+      }
+    },
     "NSCameraUsageDescription" : {
       "comment" : "Camera permission alert. English source lives in INFOPLIST_KEY_NSCameraUsageDescription (project.pbxproj, all three configurations) — keep the two in step. Every sentence must say what the camera is for AND what the app will never do with it; Apple rejects a usage string that only names the permission.\nEN: Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.",
       "extractionState" : "manual",
@@ -57,6 +81,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "视频通话时家人能看到你；在对话里拍摄的照片或视频只会发到那个对话，不会发往别处。除了通话和你自己发起的拍摄，Family 从不打开相机。"
+          }
+        }
+      }
+    },
+    "NSHumanReadableCopyright" : {
+      "comment" : "Copyright (human-readable)",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "© 2026 nettrash. MIT licensed."
           }
         }
       }
