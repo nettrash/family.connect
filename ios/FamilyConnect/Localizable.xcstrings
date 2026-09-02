@@ -20245,6 +20245,9 @@
         }
       }
     },
+    "Sign in to see your settings." : {
+      "comment" : "Shown in the Mac's Settings window when nobody is signed in — ⌘, opens it at the sign-in screen too."
+    },
     "Size" : {
       "comment" : "A section of the note editor (a submenu on the Mac) for choosing how big a note is drawn: small, medium or large.",
       "localizations" : {

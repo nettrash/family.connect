@@ -8,7 +8,8 @@
 //  Shared, with no `#if os` guard around the form itself — both platforms
 //  ask for exactly the same three things — and a FIXED SIZE on the Mac,
 //  because a macOS sheet cannot be resized by the person using it (the
-//  lesson MacSettingsView's frame already records). The chrome differs and
+//  lesson FamilyConnectApp's window scenes record, and the reason Settings
+//  is one of them rather than a sheet). The chrome differs and
 //  only the chrome: a navigation bar with Cancel/Create on the phone, a
 //  title row and a button bar on the Mac.
 //
