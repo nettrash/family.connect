@@ -11,7 +11,8 @@
 //  switchable off in Settings, which is why every entry point checks
 //  AppSettings.linkPreviewsEnabled before asking for anything. Requests
 //  are stripped down accordingly: no cookies, no credentials, no
-//  referrer, and a GET that stops reading after `maxBytes`.
+//  referrer, and a GET that stops at the end of the page's <head>
+//  (or after `maxBytes`, whichever comes first).
 //
 //  One loader for the app, so a link posted in a busy chat is fetched
 //  once no matter how many bubbles render it. Results — including
@@ -52,9 +53,20 @@ final class LinkPreviewLoader {
     /// oldest instead of everything.
     private var order: [URL] = []
 
-    /// Page bytes read before giving up: <head> is all that is parsed,
-    /// and this keeps a mis-typed link to a huge file cheap.
-    private static let maxBytes = 256 * 1024
+    /// Page bytes read before giving up. The read normally stops long
+    /// before this, at the end of <head> (see limitedData) — the ceiling
+    /// is only for a page that never closes its head.
+    ///
+    /// It was 256K, and that is precisely why a YouTube link showed no
+    /// card at all (#50): youtube.com/watch ships ~700K of inline player
+    /// JSON ahead of its og: tags, so the first 256K contain no og:title
+    /// and not even a <title>, and the parser correctly refused to build
+    /// a card out of nothing. Measured on a real watch page: <title> at
+    /// 704,923, og:title at 706,842, </head> at 715,108 of 1,310,787.
+    /// 1MB clears that with room, and the head stop is what keeps the
+    /// raise from costing anything on ordinary pages — most close their
+    /// head inside 30K, so they now transfer far LESS than they used to.
+    private static let maxBytes = 1024 * 1024
     private static let maxImageBytes = 4 * 1024 * 1024
     /// Longest edge the card image is decoded to — the card is 120pt
     /// tall, so anything beyond this is memory nobody sees.
@@ -157,7 +169,8 @@ final class LinkPreviewLoader {
         var request = URLRequest(url: url)
         request.httpShouldHandleCookies = false
         request.setValue(nil, forHTTPHeaderField: "Referer")
-        guard let (data, response) = try? await limitedData(for: request, session: session, cap: maxBytes) else {
+        guard let (data, response) = try? await limitedData(
+            for: request, session: session, cap: maxBytes, stoppingAtEndOfHead: true) else {
             return nil
         }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -211,29 +224,190 @@ final class LinkPreviewLoader {
     }
 
     /// A GET that stops reading at `cap` bytes instead of trusting the
-    /// far end's Content-Length.
+    /// far end's Content-Length — and, for a page, at the end of its
+    /// <head> before that.
+    ///
+    /// The head stop is what pays for the 1MB `maxBytes`. Everything the
+    /// parser reads lives in <head>, so the rest of a page is bytes
+    /// burned on somebody's mobile data, and heads are small even when
+    /// pages are not: measured over ten real sites, </head> lands at
+    /// 347B (Hacker News), 6.8K (Vimeo), 9.5K (Wikipedia, in a 650K
+    /// page), 13K (apple.com), 22K (GitHub), 31K (amazon.com, 762K
+    /// page), 90K (BBC News), 353K (Reddit, 874K page), 619K (the
+    /// Guardian, 1.28M page) and 715K (YouTube, 1.31M page). Seven of
+    /// those ten now transfer less than the flat 256K they used to.
+    ///
+    /// The body arrives through a task delegate rather than
+    /// `session.bytes(for:)`, and that is not a style preference.
+    /// AsyncBytes is an AsyncSequence of UInt8 — one async element per
+    /// BYTE — and measured against a local HTTP server it moves about
+    /// 140KB/s: 1.9s to read the old 256K cap, 5.0s to reach YouTube's
+    /// og: tags at 715K, 7.5s for 1MB, all of it iteration overhead
+    /// rather than network. The same reads through this delegate take
+    /// 8ms, 2ms and 1ms. At 1MB the old loop would have spent most of
+    /// the session's 20s resource timeout on a phone doing nothing but
+    /// stepping a Swift async iterator.
     private nonisolated static func limitedData(
         for request: URLRequest,
         session: URLSession,
-        cap: Int
+        cap: Int,
+        stoppingAtEndOfHead: Bool = false
     ) async throws -> (Data, URLResponse) {
-        let (stream, response) = try await session.bytes(for: request)
-        var data = Data()
-        data.reserveCapacity(min(cap, 64 * 1024))
-        // Chunked, not byte-by-byte: AsyncBytes yields one element per
-        // byte, and appending 256K times individually is pure overhead.
-        var chunk = [UInt8]()
-        chunk.reserveCapacity(16 * 1024)
-        for try await byte in stream {
-            chunk.append(byte)
-            if chunk.count == chunk.capacity {
-                data.append(contentsOf: chunk)
-                chunk.removeAll(keepingCapacity: true)
-            }
-            if data.count + chunk.count >= cap { break }
+        let reader = LimitedBodyReader(cap: cap, stoppingAtEndOfHead: stoppingAtEndOfHead)
+        let task = session.dataTask(with: request)
+        // Per-task delegate, so the caller's session — the injected stub
+        // in tests, the ephemeral one in the app — needs no delegate of
+        // its own.
+        task.delegate = reader
+        return try await withCheckedThrowingContinuation { continuation in
+            reader.begin(continuation)
+            task.resume()
         }
-        data.append(contentsOf: chunk)
-        return (data, response)
+    }
+}
+
+/// Collects a response body in the chunks the network hands over,
+/// stopping at `cap` bytes and — for a page — at the end of its <head>
+/// before that, then cancelling the task so the rest is never
+/// transferred.
+///
+/// The lock is not ceremony: the delegate callbacks run on the session's
+/// own queue while `limitedData` waits on another thread entirely.
+private nonisolated final class LimitedBodyReader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+
+    private let cap: Int
+    private let stoppingAtEndOfHead: Bool
+    private let lock = NSLock()
+    private var head = HeadEndDetector()
+    private var collected = Data()
+    private var response: URLResponse?
+    private var continuation: CheckedContinuation<(Data, URLResponse), Error>?
+    /// Set the moment we have enough. Cancelling a task does not unqueue
+    /// the callbacks already on the delegate's queue, and without this a
+    /// late chunk would append bytes from BELOW the head we stopped at.
+    private var stopped = false
+
+    init(cap: Int, stoppingAtEndOfHead: Bool) {
+        self.cap = cap
+        self.stoppingAtEndOfHead = stoppingAtEndOfHead
+    }
+
+    /// Handed the continuation BEFORE the task is resumed, so a response
+    /// that arrives immediately still finds somebody to resume.
+    func begin(_ continuation: CheckedContinuation<(Data, URLResponse), Error>) {
+        lock.lock()
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        lock.lock()
+        // Redirects land here too; the LAST response is where we ended
+        // up, which is what relative images resolve against.
+        self.response = response
+        lock.unlock()
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        guard !stopped else {
+            lock.unlock()
+            return
+        }
+        var slice = data.prefix(max(0, cap - collected.count))
+        var done = collected.count + slice.count >= cap
+        if stoppingAtEndOfHead {
+            // A plain synchronous walk of the chunk: nanoseconds a byte,
+            // which is the whole point of not doing it asynchronously.
+            var offset = 0
+            for byte in slice {
+                offset += 1
+                if head.consume(byte) {
+                    slice = slice.prefix(offset)
+                    done = true
+                    break
+                }
+            }
+        }
+        collected.append(slice)
+        stopped = done
+        lock.unlock()
+        // Cancelling surfaces as an error in didCompleteWithError, where
+        // a response already in hand means "enough", not "failed".
+        if done { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let waiting = continuation
+        continuation = nil
+        let body = collected
+        let response = self.response
+        lock.unlock()
+        guard let waiting else { return }
+        if let response {
+            waiting.resume(returning: (body, response))
+        } else {
+            waiting.resume(throwing: error ?? URLError(.badServerResponse))
+        }
+    }
+}
+
+/// Spots the end of a page's `<head>` in a byte stream, one byte at a
+/// time, so a fetch can stop there without buffering the page first.
+///
+/// Deliberately dumber than an HTML tokenizer, and matched to the
+/// scanner in LinkPreviewParser: ASCII-only case folding, and a match
+/// counts only when the tag NAME ends there, so `<bodyguard>` is not the
+/// body. `<body` is honoured as well as `</head`, because the head end
+/// tag is optional in HTML and a page that omits it would otherwise be
+/// read to the cap.
+///
+/// The cost of being dumb is a page that writes the literal text
+/// `</head>` or `<body>` inside an inline script in its head: the fetch
+/// stops early and the card is lost. That is rare enough to accept
+/// (none of the ten pages measured above does it, YouTube included —
+/// its inline JSON escapes every `<` as a \u003C escape), and the
+/// alternative is a real tokenizer for a nicety feature.
+///
+/// Android counterpart: HeadEndScanner in LinkPreviewRepository.kt.
+nonisolated struct HeadEndDetector {
+    /// The last few folded bytes — one longer than the longest needle,
+    /// because the byte AFTER the name is what proves the name ended.
+    private var window: [UInt8] = []
+
+    private static let head = Array("</head".utf8)
+    private static let body = Array("<body".utf8)
+    private static let windowSize = 7
+
+    /// True the moment `byte` completes `</head` or `<body`.
+    mutating func consume(_ byte: UInt8) -> Bool {
+        window.append(Self.folded(byte))
+        if window.count > Self.windowSize { window.removeFirst() }
+        // The newest byte is the boundary; the needle sits just before it.
+        guard let boundary = window.last, !Self.isNameCharacter(boundary) else { return false }
+        return endsWithNeedle(Self.head) || endsWithNeedle(Self.body)
+    }
+
+    private func endsWithNeedle(_ needle: [UInt8]) -> Bool {
+        // -1 for the boundary byte, which is not part of the name.
+        let end = window.count - 1
+        guard end >= needle.count else { return false }
+        return Array(window[(end - needle.count)..<end]) == needle
+    }
+
+    private static func folded(_ byte: UInt8) -> UInt8 {
+        (byte >= 65 && byte <= 90) ? byte + 32 : byte
+    }
+
+    private static func isNameCharacter(_ byte: UInt8) -> Bool {
+        (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
     }
 }
 

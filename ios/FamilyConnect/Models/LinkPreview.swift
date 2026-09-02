@@ -49,7 +49,15 @@ nonisolated enum LinkPreviewParser {
 
     /// Longest prefix of a page worth scanning: everything we read lives
     /// in <head>, and the loader caps the download anyway.
-    static let scanLimit = 200_000
+    ///
+    /// Deliberately the SAME number as the loader's byte cap, and a
+    /// second reason #50 showed no card for a YouTube link: a scan limit
+    /// under the fetch cap silently throws away bytes already paid for.
+    /// A UTF-8 page never decodes to more characters than it has bytes,
+    /// so matching the cap means the parser always sees everything that
+    /// was downloaded. Raising one without the other fixes nothing —
+    /// YouTube's og:title sits at ~706K.
+    static let scanLimit = 1_048_576
 
     /// Both limits count UNICODE SCALARS, on both platforms — clamping
     /// by Swift's grapheme count and Kotlin's UTF-16 length would cut
