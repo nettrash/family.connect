@@ -467,12 +467,97 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  macos:
+    name: macOS (unit tests)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -E '\-sdk macosx2[6-9]' || { echo "::error::no macOS 26+ SDK on this runner"; exit 1; }
+
+      - name: Resolve package dependencies
+        run: cd ${{ github.workspace }}/ios ; xcodebuild -resolvePackageDependencies -project FamilyConnect.xcodeproj -scheme FamilyConnect
+
+      # -only-testing:FamilyConnectTests, and the exclusion of the UI target is
+      # not a preference -- it is a hard constraint of an unsigned runner.
+      #
+      # CODE_SIGNING_ALLOWED=NO is the only signing this runner can do: it holds
+      # no certificate, and ad-hoc (CODE_SIGN_IDENTITY="-") does not build --
+      # both FamilyConnect and FamilyConnectShareExtension fail with "requires a
+      # provisioning profile", because their entitlements (aps-environment, the
+      # App Group) are profile-backed. Measured, not assumed.
+      #
+      # Unsigned is fine for the UNIT host and fatal for the UI runner:
+      #   * FamilyConnectTests, unsigned, macOS: 693/693 pass in ~13s.
+      #   * FamilyConnectUITests, unsigned, macOS: 3 of 3 attempts die with
+      #     "Test crashed with signal kill before establishing connection",
+      #     because the kernel refuses to run it --
+      #     "AppleSystemPolicy: Security policy would not allow process".
+      #     That message is #31's "hung before establishing connection".
+      # So the Mac launch smoke test (MacLaunchSmokeUITests) is a SIGNED-only
+      # test for now: it belongs on a developer's machine, not here.
+      #
+      # `test`, never `archive`: the agvtool bump hangs off ArchiveAction.
+      - name: Run tests
+        run: |
+          cd "${{ github.workspace }}/ios"
+          rm -rf "$RUNNER_TEMP/FamilyConnect-macOS.xcresult"
+          xcodebuild test \
+            -project FamilyConnect.xcodeproj \
+            -scheme FamilyConnect \
+            -only-testing:FamilyConnectTests \
+            -destination 'platform=macOS,arch=arm64' \
+            -resultBundlePath "$RUNNER_TEMP/FamilyConnect-macOS.xcresult" \
+            CODE_SIGNING_ALLOWED=NO
+
+      # Same reasoning as the iOS lane: an exit code is not a result. The
+      # expected number is LOWER than iOS's 705 because 12 tests are iOS-only
+      # (#if os(iOS)), so the floor is set below 693 rather than at it.
+      - name: Assert the tests actually ran
+        if: ${{ !cancelled() }}
+        run: |
+          test -d "$RUNNER_TEMP/FamilyConnect-macOS.xcresult" || { echo "::error::no result bundle -- the test step did not get far enough to produce one"; exit 1; }
+          xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/FamilyConnect-macOS.xcresult" > "$RUNNER_TEMP/macos-summary.json"
+          test -s "$RUNNER_TEMP/macos-summary.json" || { echo "::error::xcresulttool produced no summary -- the result bundle is unreadable"; exit 1; }
+          python3 - "$RUNNER_TEMP/macos-summary.json" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          total, failed, skipped, result = d["totalTestCount"], d["failedTests"], d["skippedTests"], d["result"]
+          print(f"total={total} failed={failed} skipped={skipped} result={result}")
+          if failed:
+              print(f"::error::{failed} tests failed"); sys.exit(1)
+          if total < 600:
+              print(f"::error::only {total} tests ran; expected ~693"); sys.exit(1)
+          PY
+
+      - name: Upload result bundle
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-xcresult
+          path: ${{ runner.temp }}/FamilyConnect-macOS.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
+
 # Deliberately not here, and why:
 #
-#   * A macOS test lane. The Mac app is real and 675 of the tests compile for
-#     it, but issue #31 records the lane hanging ~1-in-4 with "the test runner
-#     hung before establishing connection" -- and a wedged job on the 10x-billed
-#     runner is expensive. Add it once #31 is closed.
+#   * A macOS UI lane -- the Mac launch smoke test (MacLaunchSmokeUITests). It
+#     is NOT the ~1-in-4 flake #31 recorded; it is a 100% failure, and the macOS
+#     unit lane above is the half of #31 that turned out to be trustworthy.
+#     An unsigned UI-test runner is killed by the kernel before it can connect
+#     ("AppleSystemPolicy: Security policy would not allow process" ->
+#     "Test crashed with signal kill before establishing connection", 3 of 3),
+#     and this runner cannot sign: it has no certificate, and ad-hoc signing
+#     will not build because the app's entitlements are profile-backed. The
+#     same test is 16 for 16 green on a signed local build, so it earns its
+#     keep on a developer's machine today and here only if a signing identity
+#     is ever imported into the runner keychain.
 #   * ios/scripts/check-strings.py, which is written to be a gate and would
 #     catch strings that never reach Localizable.xcstrings. It exits 1 today
 #     (one uncatalogued and four untranslated strings), and shipping a

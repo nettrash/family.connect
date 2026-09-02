@@ -30,7 +30,11 @@ struct StagedAttachment: Identifiable {
     /// (docs/protocol.md, "Limits": `limits.max_attachments_per_message`).
     /// Both composers refuse the eleventh pick against this, with a
     /// notice — the same number the server would refuse it with.
-    nonisolated static let maxPerMessage = 10
+    ///
+    /// An alias, not a second 10: the Share Extension has to cap what it
+    /// stages against the same ceiling and cannot see this type, so the
+    /// literal lives in ShareHandoff where both targets compile it.
+    nonisolated static let maxPerMessage = ShareHandoff.maxAttachmentsPerMessage
 
     /// May one more item be staged beside `count` already staged?
     ///
