@@ -129,6 +129,11 @@ struct MacConversationView: View {
     @State private var reportTarget: ReportTarget?
     /// One fix, on demand — never a running location service.
     @State private var locationProvider = LocationProvider()
+    /// A drag is over this window and would be accepted. Drawn, because a
+    /// drop target that gives no feedback is one nobody discovers: the
+    /// pointer says "copy" over every window on the Mac, so only the window
+    /// itself can say that THIS one will take it.
+    @State private var isDropTargeted = false
 
     /// What the composer is saying above the field.
     ///
@@ -330,6 +335,34 @@ struct MacConversationView: View {
         // Narrower than this and a balloon has nowhere to go; the split
         // view honours it too, so the sidebar cannot squeeze the thread.
         .frame(minWidth: 420, minHeight: 320)
+        // Files dragged onto the window, which on a Mac is how people move
+        // a file into a conversation. The WHOLE window is the target — the
+        // thread and the composer both — because the composer is one line
+        // tall and a strip that thin is a target nobody hits.
+        //
+        // `for: URL.self` and not a wider type on purpose. It is the
+        // narrowest thing that catches a Finder drag, and it also settles
+        // the not-a-file cases by not matching them: dragging selected TEXT
+        // out of another app offers `public.utf8-plain-text` and no URL, so
+        // this modifier never highlights and never fires, and the drag
+        // springs back where it came from. What DOES match and is not a
+        // file is a link, and what matches and is not sendable is a folder
+        // — DroppedAttachment.decide settles both.
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .padding(2)
+                    // Feedback only; the drop is the window's, and a shape
+                    // that ate the pointer would be the drop target.
+                    .allowsHitTesting(false)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            drop(urls)
+        } isTargeted: { targeted in
+            isDropTargeted = targeted
+        }
         // ⌘V, and deliberately NOT a ⌘V keyboard shortcut on a button: a
         // shortcut would outrank the field editor and steal every ordinary
         // text paste. This reaches the view only when the responder chain
@@ -1676,17 +1709,39 @@ struct MacConversationView: View {
 
     /// An open panel rather than PhotosPicker: on the Mac what people
     /// attach lives in the file system, and the same panel covers photos,
-    /// videos and documents alike. Multi-select since a message carries
-    /// up to ten; sequential preparation, because ten re-encodes at once
-    /// is how a machine stalls.
+    /// videos and documents alike. Multi-select since a message carries up
+    /// to ten. What happens to the chosen files is `ingest`'s, which is
+    /// also what a drop lands in.
     private func pickAttachment() {
-        let urls = MacFilePicker.pickMany()
+        ingest(MacFilePicker.pickMany())
+    }
+
+    /// THE file-ingestion path on this window: prepare each file and stage
+    /// it, in order, one at a time.
+    ///
+    /// Extracted so the drop destination cannot become a second one. That
+    /// is the whole risk in adding drag and drop — a parallel path that
+    /// skips the 100 MB ceiling, or the photo downscale, or the animated-GIF
+    /// rule, or the ten-per-message cap, and then differs from the attach
+    /// panel in ways nobody notices until a send fails. Every one of those
+    /// lives below `MediaPrep.prepare(fileAt:)` and `stage`, so both doors
+    /// inherit all of them by construction.
+    ///
+    /// Sequential, because ten re-encodes at once is how a machine stalls.
+    private func ingest(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         mediaNotice = .busy(String(localized: "Preparing…"))
         Task {
             for url in urls {
                 do {
-                    stage(try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit))
+                    // Stop at the cap instead of preparing the rest and
+                    // throwing them away: `stage` refuses past ten and says
+                    // so, and a drop of twenty videos would otherwise spend
+                    // minutes re-encoding ten it is about to delete. The cap
+                    // and its notice stay `stage`'s — this only asks whether
+                    // the last one landed.
+                    guard stage(try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit))
+                    else { break }
                 } catch MediaPrep.PrepError.tooLargeAfterCompression {
                     mediaNotice = .failed(String(localized: "That file is over the 100 MB limit."))
                 } catch {
@@ -1696,11 +1751,76 @@ struct MacConversationView: View {
         }
     }
 
+    /// Something was dropped on the window. True when this view took it.
+    ///
+    /// The rule is `DroppedAttachment.decide` and lives outside this view so
+    /// it can be tested; this is only the doing.
+    ///
+    /// THE SANDBOX: a dropped file needs no entitlement this app is missing.
+    /// `com.apple.security.files.user-selected.read-write` is already in
+    /// FamilyConnect-macOS.entitlements (widened from read-only on
+    /// 2026-08-31 for the viewer's Save a copy) and read-write subsumes the
+    /// read a drop needs — a drag is a user-selection gesture like the open
+    /// panel, and AppKit hands the pasteboard's sandbox extension over with
+    /// the URL. Security-scoping is handled where it always was: both
+    /// `MediaPrep.prepareFile` and `prepareAudio` bracket their copy in
+    /// start/stopAccessingSecurityScopedResource, and the photo branch of
+    /// `prepare(fileAt:)` brackets its read. Those calls are correct for a
+    /// dragged URL without knowing it is one — `startAccessing…` returns
+    /// false for a panel or drag URL and true for a bookmark, and the guard
+    /// on the Bool is what makes both right.
+    private func drop(_ urls: [URL]) -> Bool {
+        guard !composerIsBusy else {
+            mediaNotice = .failed(composerBusyNotice)
+            return false
+        }
+        switch DroppedAttachment.decide(urls, isDirectory: isDirectory) {
+        case .attach(let files):
+            ingest(files)
+            return true
+        case .link(let links):
+            // Nothing to attach — the bytes are on somebody else's server —
+            // so it goes where the clipboard already sends a link: into the
+            // draft, as words, through the one appender that knows the
+            // 4000-character ceiling. Nothing is sent; it sits in the field
+            // to be edited or deleted.
+            appendToDraft(links.map(\.absoluteString).joined(separator: "\n"))
+            return true
+        case .nothing:
+            // A folder, or a bundle, or an empty drop. Refusing it is the
+            // answer AND the feedback: the drag springs back to where it
+            // came from, which is what every Mac app does with something it
+            // cannot take, and is more honest than a notice under a
+            // composer the person was not looking at.
+            return false
+        }
+    }
+
+    /// The one piece of file-system IO the drop rule needs, done here
+    /// because here is where the drag's sandbox grant applies.
+    ///
+    /// Unreadable counts as a directory — i.e. as "not something to
+    /// attach". A URL this cannot even probe is one `MediaPrep` could not
+    /// have read either, and refusing it springs the drag back instead of
+    /// staging something that fails later.
+    private func isDirectory(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? true
+    }
+
     /// The guard every attachment door carries: the composer is borrowed
     /// for an edit, or a send is already running. Named once so the menu,
     /// the paste command and the rule's `busy` branch cannot drift apart.
     private var composerIsBusy: Bool {
         editTarget != nil || isSending
+    }
+
+    /// WHICH busy it is, because the two have different ways out. Said by
+    /// the paste door and the drop door from one place, so a person who
+    /// drops a file mid-upload reads the same sentence as one who pastes.
+    private var composerBusyNotice: String {
+        editTarget != nil
+            ? String(localized: "Finish editing before attaching something.")
+            : String(localized: "Wait until the current attachment is done.")
     }
 
     /// EVERY paste door on this window, and the only one.
@@ -1718,10 +1838,7 @@ struct MacConversationView: View {
         case .type:
             pasteText()
         case .busy:
-            // Which busy it is, because the two have different ways out.
-            mediaNotice = .failed(editTarget != nil
-                ? String(localized: "Finish editing before attaching something.")
-                : String(localized: "Wait until the current attachment is done."))
+            mediaNotice = .failed(composerBusyNotice)
         case .nothing:
             mediaNotice = .failed(String(localized: "There's nothing to paste."))
         }
@@ -1747,6 +1864,17 @@ struct MacConversationView: View {
             mediaNotice = .failed(String(localized: "There's nothing to paste."))
             return
         }
+        appendToDraft(text)
+    }
+
+    /// Words onto the end of the draft, against the protocol's ceiling.
+    ///
+    /// Shared by the paste door and by a dropped link, so both refuse at the
+    /// same 4000 characters with the same sentence. The wording still says
+    /// "pasted" for the truncation case: a dropped link is a handful of
+    /// characters and can only hit it against a draft that was already
+    /// nearly full, which is the paste story anyway.
+    private func appendToDraft(_ text: String) {
         switch ComposerText.appending(text, to: draft) {
         case .appended(let updated):
             draft = updated
@@ -1818,16 +1946,24 @@ struct MacConversationView: View {
     /// already staged — up to the protocol's ten per message. At the cap
     /// the pick is refused with a dismissible notice and the prepared
     /// file cleaned up, because nothing else owns it now.
-    private func stage(_ prepared: MediaPrep.Prepared) {
+    ///
+    /// Returns whether it took the item, which is how a BATCH door — the
+    /// attach panel, a drop, a share import — knows to stop rather than
+    /// prepare nine more it would only delete. Discardable, because the
+    /// single-item doors (paste, the recorder) have nothing to do with the
+    /// answer: the notice has already been shown.
+    @discardableResult
+    private func stage(_ prepared: MediaPrep.Prepared) -> Bool {
         guard StagedAttachment.canAdd(to: staged.count) else {
             try? FileManager.default.removeItem(at: prepared.fileURL)
             mediaNotice = .failed(String(
                 localized: "You can attach up to \(StagedAttachment.maxPerMessage) items."))
-            return
+            return false
         }
         mediaNotice = nil
         staged.append(StagedAttachment(prepared: prepared))
         composerFocused = true
+        return true
     }
 
     /// Throw away ONE staged item and its temp file.

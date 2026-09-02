@@ -1,0 +1,306 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSCameraUsageDescription" : {
+      "comment" : "Camera permission alert. English source lives in INFOPLIST_KEY_NSCameraUsageDescription (project.pbxproj, all three configurations) — keep the two in step. Every sentence must say what the camera is for AND what the app will never do with it; Apple rejects a usage string that only names the permission.\nEN: Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In einem Videoanruf sieht dich deine Familie, solange der Anruf läuft, und ein Foto oder Video, das du in einem Chat aufnimmst, geht dorthin und sonst nirgendwohin. Family öffnet die Kamera nie außerhalb eines Anrufs oder einer Aufnahme, die du selbst startest."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En una videollamada tu familia te ve mientras dura la llamada, y la foto o el vídeo que haces en un chat se envía ahí y a ningún otro sitio. Family nunca abre la cámara fuera de una llamada o de una captura que inicias tú."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pendant un appel vidéo, ta famille te voit, et la photo ou la vidéo que tu prends dans une conversation y est envoyée, et nulle part ailleurs. Family n’ouvre jamais l’appareil photo en dehors d’un appel ou d’une prise de vue que tu lances toi-même."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ビデオ通話中は家族にあなたの姿が見えます。チャットで撮った写真やビデオは、そのチャットにだけ送られます。Family が通話やあなたが始めた撮影以外でカメラを開くことはありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Во время видеозвонка семья видит тебя, а фото или видео, снятое в чате, уходит туда — и никуда больше. Family никогда не включает камеру вне звонка или съёмки, которую начинаешь ты."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Током видео позива породица те види, а фотографија или видео који снимиш у разговору иде тамо и нигде више. Family никада не отвара камеру ван позива или снимања које покренеш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tokom video poziva porodica te vidi, a fotografija ili video koji snimiš u razgovoru ide tamo i nigde više. Family nikada ne otvara kameru van poziva ili snimanja koje pokreneš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频通话时家人能看到你；在对话里拍摄的照片或视频只会发到那个对话，不会发往别处。除了通话和你自己发起的拍摄，Family 从不打开相机。"
+          }
+        }
+      }
+    },
+    "NSLocalNetworkUsageDescription" : {
+      "comment" : "Local Network permission alert. English source lives in INFOPLIST_KEY_NSLocalNetworkUsageDescription (project.pbxproj, all three configurations) — keep the two in step. Declining this one is silent: same-Wi-Fi calls just fail, so the sentence has to say that plainly.\nEN: A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ein Sprachanruf verbindet deine Geräte direkt miteinander. In einem gemeinsamen WLAN läuft diese direkte Verbindung über das lokale Netz, und genau diese Berechtigung erlaubt sie; ohne sie kommen Anrufe zwischen Geräten im selben Netz nicht zustande."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Una llamada de voz conecta tus dispositivos directamente. En una misma red Wi-Fi esa conexión directa es local, y este permiso es lo que la hace posible; sin él, las llamadas entre dispositivos de la misma red no se pueden establecer."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un appel vocal relie directement tes appareils. Sur un même réseau Wi-Fi, cette connexion directe passe par le réseau local, et c’est cette autorisation qui la permet ; sans elle, les appels entre appareils du même réseau n’aboutissent pas."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音声通話は端末どうしを直接つなぎます。同じ Wi-Fi につながっているときは、その直接の接続がローカルネットワーク上の接続になり、この許可がそれを可能にします。許可がないと、同じネットワーク上の端末どうしの通話はつながりません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Звонок соединяет твои устройства напрямую. В общей сети Wi-Fi это прямое соединение идёт по локальной сети, и именно это разрешение делает его возможным; без него звонки между устройствами в одной сети не соединяются."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Гласовни позив повезује твоје уређаје директно. На истој Wi-Fi мрежи та директна веза иде преко локалне мреже, и управо то омогућава ова дозвола; без ње позиви између уређаја на истој мрежи не могу да се успоставе."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glasovni poziv povezuje tvoje uređaje direktno. Na istoj Wi-Fi mreži ta direktna veza ide preko lokalne mreže, i upravo to omogućava ova dozvola; bez nje pozivi između uređaja na istoj mreži ne mogu da se uspostave."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音通话会在你的设备之间直接建立连接。在同一个 Wi-Fi 网络里，这条直连走的是本地网络，而这项权限正是它的前提；没有它，同一网络中的设备之间就无法接通。"
+          }
+        }
+      }
+    },
+    "NSLocationWhenInUseUsageDescription" : {
+      "comment" : "Location permission alert. English source lives in INFOPLIST_KEY_NSLocationWhenInUseUsageDescription (project.pbxproj, all three configurations) — keep the two in step. The one-shot, only-when-you-choose promise is the whole point of the sentence; do not shorten it away. Russian and Serbian: no gendered past tense about the reader.\nEN: Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du deinen Standort teilst, erfährt deine Familie einmalig, wo du gerade bist — und nur dann, wenn du es willst. Family verfolgt dich nie und sendet deinen Standort nie von allein."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Al compartir tu ubicación, se envía a tu familia dónde estás, una sola vez y solo cuando tú lo decides. Family nunca te sigue ni envía tu ubicación por su cuenta."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Partager ta position envoie à ta famille l’endroit où tu es, une seule fois, quand tu le décides. Family ne te suit jamais et n’envoie jamais ta position de sa propre initiative."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "位置情報を共有すると、あなたが選んだときに一度だけ、いる場所が家族に送られます。Family があなたを追跡することも、勝手に位置情報を送ることもありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда ты делишься местоположением, семья один раз узнаёт, где ты находишься — и только по твоему выбору. Family никогда не следит за тобой и никогда не отправляет местоположение по своей инициативе."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Када поделиш локацију, породица једном сазна где се налазиш — и само онда када то одлучиш. Family те никада не прати и никада не шаље твоју локацију самоиницијативно."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kada podeliš lokaciju, porodica jednom sazna gde se nalaziš — i samo onda kada to odlučiš. Family te nikada ne prati i nikada ne šalje tvoju lokaciju samoinicijativno."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共享位置时，只有在你选择的那一刻，你所在的地方才会发送给家人，仅此一次。Family 从不追踪你，也从不擅自发送你的位置。"
+          }
+        }
+      }
+    },
+    "NSMicrophoneUsageDescription" : {
+      "comment" : "Microphone permission alert. English source lives in INFOPLIST_KEY_NSMicrophoneUsageDescription (project.pbxproj, all three configurations) — keep the two in step. It has to name all three uses (call, voice message, sound of a video) and then the never.\nEN: Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprachanrufe und Sprachnachrichten nutzen das Mikrofon, und ein Video, das du in einem Chat aufnimmst, zeichnet damit den Ton auf. Außerhalb eines Anrufs, einer Aufnahme oder laufender Kamera hört Family nie mit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Las llamadas de voz y los mensajes de voz usan el micrófono, y el vídeo que grabas en un chat capta el sonido con él. Family nunca escucha fuera de una llamada, una grabación o una captura con la cámara."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les appels vocaux et les messages vocaux utilisent le micro, et une vidéo que tu tournes dans une conversation enregistre le son avec lui. En dehors d’un appel, d’un enregistrement ou d’une prise de vue, Family n’écoute jamais."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音声通話と音声メッセージはマイクを使い、チャットで撮るビデオもマイクで音声を録音します。Family が通話・録音・撮影以外でマイクを使うことはありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Звонки и голосовые сообщения используют микрофон, а видео, которое ты снимаешь в чате, записывает им звук. Family никогда не слушает вне звонка, записи или съёмки."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Гласовни позиви и гласовне поруке користе микрофон, а њиме се снима и звук видеа који направиш у разговору. Family никада не слуша ван позива, снимања или рада камере."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glasovni pozivi i glasovne poruke koriste mikrofon, a njime se snima i zvuk videa koji napraviš u razgovoru. Family nikada ne sluša van poziva, snimanja ili rada kamere."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音通话和语音消息会用到麦克风，在对话里拍摄的视频也用它录制声音。除了通话、录音和拍摄，Family 从不收听。"
+          }
+        }
+      }
+    },
+    "NSPhotoLibraryAddUsageDescription" : {
+      "comment" : "Photo library ADD permission alert (write only — the app never asks for read access, and the picker is out of process). English source lives in INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription (project.pbxproj, all three configurations) — keep the two in step. The \"never reads your library\" half is a factual claim about the app; keep it.\nEN: Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn du ein Foto oder Video aus einem Chat sicherst, landet es in deiner Mediathek. Family liest deine Mediathek nie — die Fotoauswahl übergibt nur das, was du selbst aussuchst."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Al guardar una foto o un vídeo de un chat, se añade a tu fototeca. Family nunca lee tu fototeca — el selector solo entrega lo que tú eliges."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enregistrer une photo ou une vidéo d’une conversation l’ajoute à ta photothèque. Family ne lit jamais ta photothèque — le sélecteur ne transmet que ce que tu choisis."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "チャットの写真やビデオを保存すると、あなたの写真ライブラリに追加されます。Family があなたのライブラリを読み取ることはありません。ピッカーが渡すのは、あなたが選んだものだけです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда ты сохраняешь фото или видео из чата, оно попадает в твою медиатеку. Family никогда не читает медиатеку — окно выбора передаёт только то, что ты выбираешь."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Фотографија или видео који сачуваш из разговора одлази у твоју библиотеку фотографија. Family никада не чита твоју библиотеку — прослеђује се само оно што изабереш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fotografija ili video koji sačuvaš iz razgovora odlazi u tvoju biblioteku fotografija. Family nikada ne čita tvoju biblioteku — prosleđuje se samo ono što izabereš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从对话中存储照片或视频会把它放进你的照片图库。Family 从不读取你的图库，选取器只会交出你选中的内容。"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.1"
+}

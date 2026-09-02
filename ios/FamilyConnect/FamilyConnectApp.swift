@@ -395,6 +395,32 @@ struct FamilyConnectApp: App {
         }
         .defaultSize(width: 900, height: 700)
         .windowResizability(.contentMinSize)
+
+        // ⌘, and App menu → "Settings…", which is where a Mac's settings
+        // live and which this app simply did not answer: the panel existed
+        // only as a sheet on the main window, so the two standard doors
+        // were dead keys. A Settings scene is also the only one of these
+        // scenes macOS creates the menu item for by itself.
+        //
+        // `windowContents` for the same reason every other scene here uses
+        // it: this window shows the signed-in identity, the family and the
+        // server, and a settings window built on a second container would
+        // be a second app's idea of all three.
+        //
+        // .defaultSize AND .contentMinSize, and both are load-bearing.
+        // Measured on macOS 26: a Settings scene ignores the panel's ideal
+        // frame and opens at the system default, 882x444 — twice the width
+        // the grouped Form wants, and short enough to push its last section
+        // (Delete Account) below the fold. .defaultSize is what opens it at
+        // the 460x530 the panel was tuned to; .contentMinSize is what then
+        // lets a person resize it, down to the floor MacSettingsView names.
+        // .contentSize would pin it there forever, which is the sheet's own
+        // defect wearing a title bar.
+        Settings {
+            windowContents { MacSettingsView() }
+        }
+        .defaultSize(width: 460, height: 530)
+        .windowResizability(.contentMinSize)
         #endif
     }
 }

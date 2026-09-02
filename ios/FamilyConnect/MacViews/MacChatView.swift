@@ -34,8 +34,13 @@ struct MacChatView: View {
     @Query private var notes: [NoteEntity]
 
     @Environment(\.openWindow) private var openWindow
+    /// Raises the Settings scene (FamilyConnectApp) — the same window ⌘,
+    /// and the App menu open, never a second copy of it. The gear used to
+    /// present MacSettingsView as a sheet; it now rings the one doorbell
+    /// this app has, so the toolbar path people already use survives the
+    /// move to a window without becoming a rival panel.
+    @Environment(\.openSettings) private var openSettings
     @State private var selectedChatID: Int64?
-    @State private var showingSettings = false
     @State private var showingFamily = false
     /// Files were shared into the app and are waiting for a chat: the
     /// picker sheet is up. See ShareImport.
@@ -134,15 +139,12 @@ struct MacChatView: View {
             }
             ToolbarItem {
                 Button {
-                    showingSettings = true
+                    openSettings()
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
                 .help("Settings")
             }
-        }
-        .sheet(isPresented: $showingSettings) {
-            MacSettingsView()
         }
         .sheet(isPresented: $showingFamily) {
             MacFamilyView(onOpenChat: { selectedChatID = $0 })
@@ -178,10 +180,13 @@ struct MacChatView: View {
             consumePendingRoute() // clicked while the window is up
         }
         .onChange(of: session.pendingShareImport) { _, pending in
-            // A share arrived while the app is up: the sheets step aside
-            // so the picker is what the person sees.
+            // A share arrived while the app is up: the Family sheet steps
+            // aside so the picker is what the person sees. Settings is no
+            // longer among them — it is a window now, and a window is not
+            // something this view may close on somebody's behalf. It also
+            // does not need to be: it is not covering this window, and the
+            // share URL brings this one to the front.
             guard pending != nil else { return }
-            showingSettings = false
             showingFamily = false
             showsShareTarget = true
         }
@@ -201,7 +206,8 @@ struct MacChatView: View {
     private func consumePendingRoute() {
         guard let route = session.pendingPushRoute else { return }
         session.pendingPushRoute = nil
-        showingSettings = false
+        // Settings is not cleared here for the reason the share handler
+        // above gives: it stopped being a sheet on this window.
         showingFamily = false
         switch route {
         case .chat(let chatID):
