@@ -130,6 +130,20 @@ data class FamilyDto(
      */
     @SerialName("ai_history") val aiHistory: Boolean = true,
     /**
+     * Whether a photograph a member attaches in their OWN assistant chat
+     * may be shown to the model at all (docs/protocol.md, "Pictures").
+     *
+     * ALWAYS present on the wire, exactly like [aiHistory] and for the
+     * same reason — but the default is the OTHER one. FALSE, and
+     * deliberately so: `ai_history` widened what a model was already
+     * being told, while a photograph is a different KIND of disclosure,
+     * and the family who never open this screen are exactly the family
+     * whose pictures should stay where they are. The default here is
+     * therefore both the protocol's default and the compatibility rule —
+     * a server that predates the field has no vision path at all.
+     */
+    @SerialName("ai_vision") val aiVision: Boolean = false,
+    /**
      * The most members this family admits, or null for NO cap of the
      * owner's own — in which case the operator's ceiling
      * (`MeResponse.maxFamilyMembers`) is what binds at the join door.
@@ -622,6 +636,7 @@ data class PatchFamilyRequest(
     @SerialName("join_policy") val joinPolicy: String? = null,
     val language: JsonElement? = null,
     @SerialName("ai_history") val aiHistory: Boolean? = null,
+    @SerialName("ai_vision") val aiVision: Boolean? = null,
     @SerialName("max_members") val maxMembers: JsonElement? = null,
 ) {
     companion object {
@@ -644,6 +659,14 @@ data class PatchFamilyRequest(
             PatchFamilyRequest(language = tag?.let(::JsonPrimitive) ?: JsonNull)
 
         fun aiHistory(enabled: Boolean) = PatchFamilyRequest(aiHistory = enabled)
+
+        /**
+         * The picture switch. A plain boolean like [aiHistory] — absent
+         * leaves it alone and there is nothing for a `null` to mean —
+         * differing only in that its default is FALSE
+         * (docs/protocol.md, "Pictures").
+         */
+        fun aiVision(enabled: Boolean) = PatchFamilyRequest(aiVision = enabled)
     }
 }
 
@@ -975,6 +998,30 @@ data class AssistantDto(
      * own would be unanswerable.
      */
     val mention: String,
+    /**
+     * The picture token, alongside [mention] and for the same reason: the
+     * grammar is shared ([me.nettrash.familyconnect.ui.chat.AssistantMention])
+     * but the spelling belongs to the protocol.
+     *
+     * Absent on a server that predates "Pictures", where the composer
+     * offers nothing anyway — [images] is false there too.
+     */
+    val draw: String? = null,
+    /**
+     * This SERVER has a deployment that can look at a picture.
+     *
+     * It says nothing about whether THIS family allows it — that is
+     * [FamilyDto.aiVision], and a client needs BOTH before it offers to
+     * attach a picture in an `ai` chat (docs/protocol.md, "Pictures").
+     * False on an old server, which is also the honest answer there.
+     */
+    val vision: Boolean = false,
+    /**
+     * This server can MAKE one. The whole of the `/draw` capability
+     * check: an affordance that silently does nothing is worse than one
+     * that is not there, which is the reason this object exists at all.
+     */
+    val images: Boolean = false,
 )
 
 @Serializable

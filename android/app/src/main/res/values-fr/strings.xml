@@ -388,4 +388,18 @@
     <string name="s_reports_empty">Les membres peuvent vous signaler un message ou une personne.</string>
     <string name="s_safety">Sécurité</string>
     <string name="s_safety_for">Options de sécurité pour %1$s</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Montrer une photo à l’assistant</string>
+    <string name="s_show_the_assistant_a_picture_note">Elle quitte ce serveur pour le modèle avec lequel il communique</string>
+    <string name="s_ask_for_a_picture">Demander une image</string>
+    <string name="s_assistant_sees_this_picture">L’assistant verra cette photo. Elle quitte ce serveur pour le modèle avec lequel il communique.</string>
+    <string name="s_assistant_sees_these_pictures">L’assistant verra ces photos. Elles quittent ce serveur pour le modèle avec lequel il communique.</string>
+    <string name="s_assistant_picture_extra_left_out">Seules les %1$d premières partent avec une question ; les autres restent ici.</string>
+    <string name="s_assistant_picture_others_left_out">Les vidéos, fichiers, audios et positions ne lui sont jamais envoyés.</string>
+    <string name="s_assistant_picture_unreadable_left_out">Une photo trop grande, ou dans un format que le modèle ne peut pas lire, lui est signalée plutôt que montrée.</string>
+    <string name="s_assistant_will_not_see_picture">L’assistant ne verra pas cette photo. Elle est envoyée comme une pièce jointe ordinaire.</string>
+    <string name="s_assistant_answer_failed">L’assistant n’a pas pu terminer cette réponse. Redemandez.</string>
+    <string name="s_assistant_vision">L’assistant peut regarder les photos</string>
+    <string name="s_assistant_vision_explanation">Quand quelqu’un joint une photo à une question dans sa propre discussion avec l’assistant, cette photo part vers le modèle avec elle — 4 au maximum par question. Désactivé tant que vous ne l’activez pas. Une photo du chat familial n’est jamais envoyée, quel que soit le réglage, et les vidéos, fichiers, audios et positions non plus.</string>
+    <string name="e_change_assistant_vision_failed">Impossible de modifier ce réglage</string>
 </resources>

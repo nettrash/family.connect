@@ -454,6 +454,7 @@ final class ChatSyncCoordinator {
 
         case .message(let message):
             _ = upsert(message, bumpUnread: true)
+            noteAssistantAnswerStarted(message)
             announce(message)
 
         case .boardNote(let note):
@@ -468,11 +469,33 @@ final class ChatSyncCoordinator {
             // partial answer is worth more than a bubble that never
             // resolves. Just stop showing it as still being written.
             streamingMessageIDs.remove(messageID)
+            // …and REMEMBER that it stopped. A text answer that failed
+            // midway has its partial text to show for itself; a picture
+            // answer has nothing at all, because an image model streams no
+            // deltas and the body of such a reply stays empty by design
+            // (protocol.md, "How a picture comes back"). Without this the
+            // row that "has to have somewhere to fail" fails into a
+            // completely blank bubble.
+            failedAssistantMessageIDs.insert(messageID)
 
         case .messageEdited(let message):
             // The authoritative body: whatever was accumulated from deltas
             // is replaced, and the row stops being "still being written".
+            //
+            // The whole Message is applied, not the body alone, and this is
+            // the one frame where that matters: the assistant's own reply
+            // gains its GENERATED PICTURE as an attachment through exactly
+            // this path (protocol.md, "Editing" and "How a picture comes
+            // back"). `upsert` has always applied the whole object —
+            // attachments through `applyAttachment`, under the rule that an
+            // absent field never wipes — so a picture answer draws the
+            // moment the edit lands rather than at the next history page.
             streamingMessageIDs.remove(message.id)
+            // An answer that arrived is not a failed one. It cannot
+            // normally un-fail (asking again makes a NEW message), but a
+            // late edit racing an `ai_error` must not leave the row
+            // apologising underneath a finished answer.
+            failedAssistantMessageIDs.remove(message.id)
             // bumpUnread: false — an edit is not new mail. The body write
             // itself is guarded by edit_seq inside upsert, and the chat's
             // cursor advances so a later catch-up does not replay it.
@@ -620,11 +643,121 @@ final class ChatSyncCoordinator {
 
     /// Assistant replies still being written, by server id.
     ///
-    /// Read by the bubble to show a cursor while text is arriving. Cleared
-    /// when the final `message_edited` lands (or an `ai_error` does), so a
-    /// row that was mid-stream when the app was killed is not stuck looking
-    /// live forever — nothing here survives a launch.
+    /// ONE of the two things `isAwaitingAssistant` consults, and the one
+    /// that answers what the row cannot: a text answer part-way through has
+    /// a body, so it no longer "carries nothing" while its cursor still
+    /// belongs after the last fragment. Cleared when the final
+    /// `message_edited` lands (or an `ai_error` does), so a row that was
+    /// mid-stream when the app was killed is not stuck looking live
+    /// forever — nothing here survives a launch, and nothing needs to: the
+    /// ROW is what says an empty answer is still coming.
     private(set) var streamingMessageIDs: Set<Int64> = []
+
+    /// Assistant replies an `ai_error` frame named, by server id.
+    ///
+    /// Read by the bubble so an answer that stopped says so where it would
+    /// otherwise show nothing. In memory only, exactly like the set above
+    /// and for the same reason: a row that failed while the app was running
+    /// has a bubble to correct, and a row from a previous launch has no
+    /// business claiming a failure this process never saw.
+    private(set) var failedAssistantMessageIDs: Set<Int64> = []
+
+    /// Is this row an assistant answer that has not arrived yet?
+    ///
+    /// The two states a waiting row can be in, answered together because a
+    /// bubble draws them in the same place: still coming, or stopped. An
+    /// EMPTY row is the "still working" state — which is what it already
+    /// was before the first delta of a text answer, and the only state a
+    /// picture answer ever has, since an image model produces no token
+    /// stream and there is nothing honest to stream (protocol.md, "How a
+    /// picture comes back").
+    ///
+    /// **Answered from the ROW first and from the set second**, and that
+    /// order is the whole point. `streamingMessageIDs` records what THIS
+    /// PROCESS watched arrive; protocol.md's rule is about the message, and
+    /// says so without scoping it to one launch. Quitting while a `/draw`
+    /// was still generating and reopening used to draw the row completely
+    /// blank — no cursor, no error, nothing, for as long as it never
+    /// arrived — because a history page and a cold start populate no set.
+    ///
+    /// The set is still consulted, because it answers the case the row
+    /// cannot: a TEXT answer part-way through has a body, so the row no
+    /// longer "carries nothing" while the cursor still belongs after its
+    /// last fragment.
+    ///
+    /// A FAILURE outranks both. The two are drawn in the same place and an
+    /// `ai_error` this process saw is newer information than the row's own
+    /// shape, so a row that stopped says so rather than pulsing forever.
+    /// After a relaunch that knowledge is gone and the row reads as working
+    /// again — which is exactly what protocol.md says an empty row means,
+    /// and the member's remedy is the one it names: ask again.
+    func isAwaitingAssistant(messageID: Int64) -> Bool {
+        guard !failedAssistantMessageIDs.contains(messageID) else { return false }
+        if streamingMessageIDs.contains(messageID) { return true }
+        guard let row = fetchMessage(serverID: messageID) else { return false }
+        return MessagePresentation.isAwaitedAssistantAnswer(
+            carriesNothing: row.body.isEmpty && row.attachmentList.isEmpty
+                && row.poll == nil && row.callSnapshot == nil,
+            senderID: row.senderID,
+            isAssistantChat: fetchChat(row.chatID)?.kind == "ai",
+            assistantUserID: AppSettings.assistantUserID,
+            currentUserID: currentUserID)
+    }
+
+    /// The same question of a laid-out row, which is what a bubble has.
+    ///
+    /// The bubble already holds the snapshot and the chat's kind, so this
+    /// asks nothing of the store — a `ForEach` body over a screenful of
+    /// rows must not fetch one message and one chat per row per frame.
+    func isAwaitingAssistant(_ message: MessageSnapshot, isAssistantChat: Bool) -> Bool {
+        if let serverID = message.serverID {
+            guard !failedAssistantMessageIDs.contains(serverID) else { return false }
+            if streamingMessageIDs.contains(serverID) { return true }
+        }
+        return MessagePresentation.isAwaitedAssistantAnswer(
+            message,
+            isAssistantChat: isAssistantChat,
+            assistantUserID: AppSettings.assistantUserID,
+            currentUserID: currentUserID)
+    }
+
+    /// True once an `ai_error` named this row.
+    func assistantAnswerFailed(messageID: Int64) -> Bool {
+        failedAssistantMessageIDs.contains(messageID)
+    }
+
+    /// An empty assistant reply has just been fanned out: the row exists so
+    /// a bubble appears at once, and there is nothing in it yet.
+    ///
+    /// Marked as working HERE rather than on the first `ai_delta`, because
+    /// a picture answer has no deltas at all — the empty row IS the
+    /// progress indicator, and without this it would sit blank until the
+    /// picture landed (protocol.md, "How a picture comes back", step 3).
+    /// A text answer gains the same thing a beat earlier, which is right:
+    /// the row was already the "still working" state before its first
+    /// fragment.
+    ///
+    /// Deliberately narrow, and the SAME rule `isAwaitingAssistant` reads
+    /// off a stored row — one predicate, asked here of the object arriving
+    /// and there of the object kept, so a live frame and a history page
+    /// cannot disagree about what an empty row means.
+    ///
+    /// What this still adds over the row rule alone is the CLEARING of a
+    /// stale failure: an id is never reused, so this only fires for a row
+    /// this device marked failed and the server then re-fanned, but leaving
+    /// the mark would draw "ask again" under an answer that is coming.
+    private func noteAssistantAnswerStarted(_ dto: MessageDTO) {
+        let isWaiting = MessagePresentation.isAwaitedAssistantAnswer(
+            carriesNothing: dto.body.isEmpty && dto.attachmentList.isEmpty
+                && dto.poll == nil && dto.call == nil,
+            senderID: dto.senderID,
+            isAssistantChat: fetchChat(dto.chatID)?.kind == "ai",
+            assistantUserID: AppSettings.assistantUserID,
+            currentUserID: currentUserID)
+        guard isWaiting else { return }
+        streamingMessageIDs.insert(dto.id)
+        failedAssistantMessageIDs.remove(dto.id)
+    }
 
     /// Append one fragment to the assistant's row.
     ///
@@ -2021,6 +2154,15 @@ final class ChatSyncCoordinator {
             // messages and the composer knows whether to offer `@ai`.
             AppSettings.assistantUserID = mine.assistant?.userID
             AppSettings.assistantName = mine.assistant?.displayName
+            // What this server's assistant can do beyond words. Both
+            // false when the object is absent, which is the same answer a
+            // server with neither deployment configured gives — and the
+            // one that makes every picture surface disappear rather than
+            // sit there disabled, lying about what would happen
+            // (protocol.md, "Pictures").
+            AppSettings.assistantVision = mine.assistant?.vision ?? false
+            AppSettings.assistantImages = mine.assistant?.images ?? false
+            AppSettings.assistantDraw = mine.assistant?.draw
         }
 
         // 3. Chat list: server unread wins; direct chats the server

@@ -392,4 +392,18 @@
     <string name="s_reports_empty">Участники могут пожаловаться вам на сообщение или на человека.</string>
     <string name="s_safety">Безопасность</string>
     <string name="s_safety_for">Настройки безопасности для %1$s</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Показать ассистенту фото</string>
+    <string name="s_show_the_assistant_a_picture_note">Фото уйдёт с этого сервера в модель, с которой он работает</string>
+    <string name="s_ask_for_a_picture">Попросить картинку</string>
+    <string name="s_assistant_sees_this_picture">Ассистенту покажут это фото. Оно уйдёт с этого сервера в модель, с которой он работает.</string>
+    <string name="s_assistant_sees_these_pictures">Ассистенту покажут эти фото. Они уйдут с этого сервера в модель, с которой он работает.</string>
+    <string name="s_assistant_picture_extra_left_out">С одним вопросом уходят только первые %1$d, остальные остаются здесь.</string>
+    <string name="s_assistant_picture_others_left_out">Видео, файлы, аудио и геопозиции ему не отправляются никогда.</string>
+    <string name="s_assistant_picture_unreadable_left_out">Фото, которое слишком большое или в формате, недоступном модели, ей называют, но не показывают.</string>
+    <string name="s_assistant_will_not_see_picture">Ассистенту это фото не покажут. Оно отправляется как обычное вложение.</string>
+    <string name="s_assistant_answer_failed">Ассистент не смог закончить этот ответ. Спросите ещё раз.</string>
+    <string name="s_assistant_vision">Ассистент может смотреть фото</string>
+    <string name="s_assistant_vision_explanation">Когда кто-то прикрепляет фото к вопросу в своём личном чате с ассистентом, это фото уходит в модель вместе с вопросом — не больше 4 на вопрос. По умолчанию выключено. Фото из семейного чата не отправляются никогда, при любых настройках; видео, файлы, аудио и геопозиции — тоже.</string>
+    <string name="e_change_assistant_vision_failed">Не удалось изменить настройку</string>
 </resources>

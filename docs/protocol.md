@@ -1091,7 +1091,12 @@ Exactly like a text answer, which is the point:
    the member's devices has a row to fill;
 3. **no `ai_delta` frames.** An image model produces no token stream and there is nothing honest to
    stream. The empty row is the "still working" state — which is exactly what it already is before
-   the first delta of a text answer;
+   the first delta of a text answer. That is a property of the ROW and not of a session: a client
+   reads it off the message — empty body, no attachment, no poll, no call, not the reader's own,
+   in the assistant's chat or from its reserved account — so a history page and a cold start show
+   the same waiting bubble a live frame does. A client that instead remembers only the rows it
+   watched arrive draws a blank balloon after a relaunch, and a picture answer, which raises no
+   frame to remember, gets one even without a relaunch;
 4. when the picture arrives the server stores it as an ordinary **`photo` attachment on that same
    message**, takes an `edit_seq` and fans out `message_edited`, exactly as the finished text of a
    text answer does. The body stays empty: a photo needs no caption, and the member's own words

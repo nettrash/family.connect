@@ -185,11 +185,24 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(mapPreviewsEnabled = enabled)
     }
 
-    override suspend fun setAssistant(userId: Long?, displayName: String?) {
+    override suspend fun setAssistant(
+        userId: Long?,
+        displayName: String?,
+        vision: Boolean,
+        images: Boolean,
+    ) {
         _state.value = _state.value.copy(
             assistantUserId = userId,
             assistantName = displayName,
+            // Cleared with the assistant, like the real one: an absent
+            // assistant has no capabilities to remember.
+            assistantVision = userId != null && vision,
+            assistantImages = userId != null && images,
         )
+    }
+
+    override suspend fun setFamilyAiVision(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiVision = enabled)
     }
 
     override suspend fun setCallsEnabled(enabled: Boolean) {
@@ -596,6 +609,9 @@ class FakeFamilyApi : FamilyApi {
     /** Every ai_history PATCH, in order. */
     val aiHistorySet = mutableListOf<Boolean>()
 
+    /** Every ai_vision PATCH, in order. */
+    val aiVisionSet = mutableListOf<Boolean>()
+
     override suspend fun setLanguage(tag: String?): ApiResult<FamilyResponse> {
         languagesSet += tag
         return createResult
@@ -603,6 +619,11 @@ class FakeFamilyApi : FamilyApi {
 
     override suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> {
         aiHistorySet += enabled
+        return createResult
+    }
+
+    override suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiVisionSet += enabled
         return createResult
     }
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult
@@ -874,6 +895,14 @@ fun messageDto(
     editSeq: Long? = null,
     editedAt: String? = null,
     poll: PollDto? = null,
+    /**
+     * The attachments the message carries, in the sender's order. Sent as
+     * BOTH the plural array and the legacy singular, exactly as the
+     * server does — the two are never present without each other, and a
+     * fixture that sent only one of them would let a plural-only or
+     * singular-only read pass by accident.
+     */
+    attachments: List<AttachmentDto>? = null,
 ) = MessageDto(
     id = id,
     chatId = chatId,
@@ -887,6 +916,31 @@ fun messageDto(
     editSeq = editSeq,
     editedAt = editedAt,
     poll = poll,
+    attachment = attachments?.firstOrNull(),
+    attachments = attachments,
+)
+
+/**
+ * A `photo` attachment as the server reports one.
+ *
+ * `has_preview` defaults to FALSE because the case this fixture exists
+ * for is the assistant's own generated picture: the server generates no
+ * preview for it, "here as everywhere", so clients draw it from its full
+ * bytes (docs/protocol.md, "Pictures").
+ */
+fun photoAttachment(
+    id: Long,
+    mime: String = "image/png",
+    size: Long = 4096,
+    hasPreview: Boolean = false,
+) = AttachmentDto(
+    id = id,
+    kind = AttachmentDto.KIND_PHOTO,
+    mime = mime,
+    size = size,
+    width = 1024,
+    height = 1024,
+    hasPreview = hasPreview,
 )
 
 fun reactionState(

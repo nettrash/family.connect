@@ -388,4 +388,18 @@
     <string name="s_reports_empty">Los miembros pueden denunciarte un mensaje o una persona.</string>
     <string name="s_safety">Seguridad</string>
     <string name="s_safety_for">Opciones de seguridad para %1$s</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Mostrar una foto al asistente</string>
+    <string name="s_show_the_assistant_a_picture_note">Sale de este servidor hacia el modelo con el que habla</string>
+    <string name="s_ask_for_a_picture">Pedir una imagen</string>
+    <string name="s_assistant_sees_this_picture">Al asistente se le mostrará esta foto. Sale de este servidor hacia el modelo con el que habla.</string>
+    <string name="s_assistant_sees_these_pictures">Al asistente se le mostrarán estas fotos. Salen de este servidor hacia el modelo con el que habla.</string>
+    <string name="s_assistant_picture_extra_left_out">Solo las %1$d primeras van con una pregunta; el resto se queda aquí.</string>
+    <string name="s_assistant_picture_others_left_out">Los vídeos, archivos, audios y ubicaciones nunca se le envían.</string>
+    <string name="s_assistant_picture_unreadable_left_out">Una foto demasiado grande, o en un formato que el modelo no puede leer, se le menciona en lugar de mostrársela.</string>
+    <string name="s_assistant_will_not_see_picture">Al asistente no se le mostrará esta foto. Se envía como un adjunto normal.</string>
+    <string name="s_assistant_answer_failed">El asistente no pudo terminar esta respuesta. Vuelve a preguntar.</string>
+    <string name="s_assistant_vision">El asistente puede mirar fotos</string>
+    <string name="s_assistant_vision_explanation">Cuando alguien adjunta una foto a una pregunta en su propio chat con el asistente, esa foto se envía al modelo junto con ella: como máximo 4 por pregunta. Desactivado salvo que lo actives. Una foto del chat familiar nunca se envía, con ningún ajuste, y tampoco los vídeos, archivos, audios ni ubicaciones.</string>
+    <string name="e_change_assistant_vision_failed">No se pudo cambiar ese ajuste</string>
 </resources>

@@ -163,9 +163,16 @@ pub struct AiConfig {
     #[serde(default)]
     pub model: String,
 
-    /// `api-key` header. Never logged, never sent to a client.
+    /// The key itself. Never logged, never sent to a client. How it is
+    /// PRESENTED is [`AiConfig::auth`]'s business.
     #[serde(default)]
     pub api_key: String,
+
+    /// How the key is presented: `"api-key"` (the default, and what classic
+    /// Azure OpenAI takes) or `"bearer"`. Inherited by both sub-sections
+    /// unless they say otherwise.
+    #[serde(default)]
+    pub auth: AuthScheme,
 
     /// Azure's dated API version. Pinned rather than "latest": a silently
     /// changing contract is not something a family server should discover
@@ -206,6 +213,29 @@ pub struct AiConfig {
     pub images: AiImagesConfig,
 }
 
+/// How the key is presented to the provider.
+///
+/// Azure OpenAI takes an `api-key` header. The Foundry model surface — Black
+/// Forest Labs FLUX lives there, under `/providers/blackforestlabs/…` — takes
+/// `Authorization: Bearer <key>` instead, and the SAME key opens both.
+///
+/// CONFIGURED, never inferred from the URL. A scheme that switches itself on
+/// a hostname is a 401 nobody can explain six months later: the config file
+/// would say one thing, the request another, and nothing in between would
+/// admit to choosing. Written out, "which header carried the key?" has an
+/// answer you can read off the file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthScheme {
+    /// `api-key: <key>`. THE DEFAULT, so every config written before this
+    /// field existed sends the byte-identical request it always did.
+    #[default]
+    #[serde(alias = "api_key", alias = "apikey")]
+    ApiKey,
+    /// `Authorization: Bearer <key>`.
+    Bearer,
+}
+
 /// A second deployment on the same provider: only what DIFFERS from `[ai]`.
 ///
 /// Every field falls back to the `[ai]` section when it is empty, because in
@@ -234,29 +264,54 @@ pub struct AiDeployment {
     /// Overrides `[ai] api_key`.
     #[serde(default)]
     pub api_key: String,
+    /// Overrides `[ai] auth` — `"api-key"` or `"bearer"`. Absent (the
+    /// default) inherits, like every other field here, because the usual
+    /// case is one resource whose two surfaces want two different headers
+    /// and only ONE of them has to say so.
+    #[serde(default)]
+    pub auth: Option<AuthScheme>,
     /// Overrides `[ai] api_version`.
     #[serde(default)]
     pub api_version: String,
 }
 
-/// `[ai.images]` — a deployment plus the two knobs an images endpoint has
-/// that a chat one does not.
+/// `[ai.images]` — a deployment plus the knobs an images endpoint has that a
+/// chat one does not.
 ///
-/// Both knobs exist because the images surface is the one place this server
-/// cannot verify the contract from here: an operator points it at whatever
-/// their portal gave them, and a body that model rejects comes back as an
-/// opaque 400. So the two fields that vary between image models are
-/// CONFIGURABLE and both are omitted from the request when empty, which is
-/// the shape that works everywhere.
+/// They exist because the images surface is the one place this server cannot
+/// verify the contract from here: an operator points it at whatever their
+/// portal gave them, and a body that model rejects comes back as an opaque
+/// 400. So the fields that vary between image models are CONFIGURABLE and
+/// every one of them is omitted from the request when it is left empty,
+/// which is the shape that works everywhere — and it is that omission which
+/// lets one deployment ignore the very field another requires.
+///
+/// The picture size is the sharp example. The OpenAI images contract spells
+/// it `size: "1024x1024"`; FLUX on Azure Foundry wants `width` and `height`
+/// as separate integers and knows nothing of `size`. Both are here, both
+/// default the way the deployment that needs them expects, and a config sets
+/// whichever pair its model reads.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AiImagesConfig {
     #[serde(flatten)]
     pub deployment: AiDeployment,
 
     /// `size` in the request body — `"1024x1024"` and so on. Empty omits
-    /// the field, which lets the deployment choose its own default.
+    /// the field, which lets the deployment choose its own default — and is
+    /// what a `width`/`height` deployment wants, since it would answer 400
+    /// to a `size` it does not implement.
     #[serde(default = "default_ai_image_size")]
     pub size: String,
+
+    /// `width` in the request body, as an INTEGER, for the deployments that
+    /// take the two dimensions apart rather than as one `"WxH"` string.
+    /// `0` — the default — omits it.
+    #[serde(default)]
+    pub width: u32,
+
+    /// `height`, under the same rule as [`AiImagesConfig::width`].
+    #[serde(default)]
+    pub height: u32,
 
     /// `response_format`. `"b64_json"` asks for the bytes inline;
     /// `"url"` asks for a link the server then fetches. EMPTY BY DEFAULT and
@@ -285,6 +340,9 @@ pub struct AiImagesConfig {
 pub struct ModelRoute {
     pub url: String,
     pub api_key: String,
+    /// Which header carries `api_key`. Resolved here for the same reason the
+    /// URL is: one place decides, and `ai.rs` only obeys.
+    pub auth: AuthScheme,
     /// The `model` field of the request body — on Azure the DEPLOYMENT name,
     /// which is what the v1 surface routes on and what the classic surface
     /// ignores.
@@ -309,6 +367,7 @@ impl Default for AiConfig {
             deployment: String::new(),
             model: String::new(),
             api_key: String::new(),
+            auth: AuthScheme::default(),
             api_version: default_ai_api_version(),
             system_prompt: default_ai_system_prompt(),
             max_tokens: default_ai_max_tokens(),
@@ -328,6 +387,11 @@ impl Default for AiImagesConfig {
         Self {
             deployment: AiDeployment::default(),
             size: default_ai_image_size(),
+            // Zero, which is "say nothing about it": `size` above already
+            // carries the default shape, and a deployment that reads
+            // `width`/`height` is one an operator has to name anyway.
+            width: 0,
+            height: 0,
             response_format: String::new(),
             max_bytes: default_ai_image_max_bytes(),
         }
@@ -424,6 +488,7 @@ impl AiConfig {
         ModelRoute {
             url: self.completions_url(),
             api_key: self.api_key.trim().to_string(),
+            auth: self.auth,
             model: self.request_model().to_string(),
             max_tokens: self.max_tokens,
         }
@@ -447,6 +512,7 @@ impl AiConfig {
                 "chat/completions",
             ),
             api_key: self.vision.api_key_or(&self.api_key).trim().to_string(),
+            auth: self.vision.auth_or(self.auth),
             model: self.vision.request_model_or(&self.deployment).to_string(),
             // The same cap the text deployment obeys: a description of a
             // photograph is still an answer in a family chat.
@@ -477,6 +543,7 @@ impl AiConfig {
                 .api_key_or(&self.api_key)
                 .trim()
                 .to_string(),
+            auth: images.deployment.auth_or(self.auth),
             model: images
                 .deployment
                 .request_model_or(&self.deployment)
@@ -522,6 +589,12 @@ impl AiDeployment {
         pick(&self.api_version, parent)
     }
 
+    /// The `[ai]` scheme unless this sub-section named one of its own —
+    /// `pick`, for a field that cannot be "empty".
+    fn auth_or(&self, parent: AuthScheme) -> AuthScheme {
+        self.auth.unwrap_or(parent)
+    }
+
     /// What goes in the body's `model` field for this deployment, under the
     /// rule [`AiConfig::request_model`] states: the DEPLOYMENT name routes,
     /// and `model` is only a record of what answered.
@@ -548,9 +621,18 @@ fn pick<'a>(own: &'a str, parent: &'a str) -> &'a str {
 /// whole function exists to prevent: a bare `404 Resource not found` that
 /// cannot say which part was wrong.
 ///
-/// - an endpoint that ALREADY names this path is used verbatim (paste the
-///   target URI the portal shows), with `api-version` appended only when it
-///   carries no query of its own;
+/// - an endpoint that CARRIES ITS OWN QUERY is a finished target URI and is
+///   used exactly as pasted. Nothing can be spliced onto one anyway: a
+///   query starts at the first `?`, so appending a path after it produces
+///   `…?api-version=preview/openai/deployments/…`, which is not a URL any
+///   endpoint has ever answered. This is the shape Foundry's own portal
+///   shows for a FLUX deployment —
+///   `…/providers/blackforestlabs/v1/flux-2-pro?api-version=preview`;
+/// - an endpoint that already names the operation — this `path`, or a
+///   `/providers/` segment, where the MODEL is the path and there is no
+///   operation segment to add — is likewise used as given, with
+///   `api-version` appended only because Azure requires one and this URL
+///   carries no query to hold it;
 /// - an endpoint ending in `/openai/v1` is Azure's OpenAI-COMPATIBLE
 ///   surface: the deployment goes in the BODY, not the path, and there is no
 ///   `api-version` at all. Splicing `/openai/deployments/…` onto one of
@@ -561,8 +643,14 @@ fn pick<'a>(own: &'a str, parent: &'a str) -> &'a str {
 fn azure_url(endpoint: &str, deployment: &str, api_version: &str, path: &str) -> String {
     let base = endpoint.trim().trim_end_matches('/');
 
-    if base.contains(&format!("/{path}")) {
-        if base.contains('?') || api_version.trim().is_empty() {
+    // Complete as given. Checked FIRST so it covers every shape below: a
+    // pasted URI answers for itself, whatever its path looks like.
+    if base.contains('?') {
+        return base.to_string();
+    }
+
+    if base.contains(&format!("/{path}")) || base.contains("/providers/") {
+        if api_version.trim().is_empty() {
             return base.to_string();
         }
         return format!("{base}?api-version={api_version}");
@@ -1624,6 +1712,211 @@ size = "1024x1024"
         assert_eq!(
             images.model, "nettrash-FLUX.2-pro",
             "the deployment routes from the BODY on this surface"
+        );
+    }
+
+    /// **Black Forest Labs FLUX on Azure AI Foundry, as its own portal shows
+    /// it.** Read off disk rather than built in Rust, because everything
+    /// that had to change to reach this deployment is spelled in TOML: the
+    /// target URI with a query of its own, `auth`, and the two integers that
+    /// replace `size`.
+    ///
+    /// The URI is the whole point. It does NOT contain `images/generations`
+    /// — the model itself is the path — so before this it fell through to
+    /// the classic branch and had `/openai/deployments/…/images/generations?
+    /// api-version=…` spliced on AFTER its existing `?api-version=preview`.
+    /// A URL like that answers nothing you can act on.
+    #[test]
+    fn a_flux_target_uri_is_used_exactly_as_the_portal_shows_it() {
+        let mut f = NamedTempFile::new().expect("tempfile");
+        f.write_all(
+            br#"
+[ai]
+enabled = true
+endpoint = "https://nettrash-openai.openai.azure.com"
+deployment = "nettrash-gpt-oss-120b"
+api_key = "one-key-for-both"
+api_version = "2024-10-21"
+
+[ai.images]
+endpoint = "https://nettrash-openai.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro?api-version=preview"
+deployment = "nettrash-FLUX.2-pro"
+model = "FLUX.2-pro"
+auth = "bearer"
+size = ""
+width = 1024
+height = 1024
+"#,
+        )
+        .expect("write");
+        f.flush().expect("flush");
+        let cfg = Config::load(f.path()).expect("load");
+
+        let images = cfg.ai.images_route().expect("images route");
+        assert_eq!(
+            images.url,
+            "https://nettrash-openai.services.ai.azure.com\
+             /providers/blackforestlabs/v1/flux-2-pro?api-version=preview",
+            "a target URI with its own query is the whole URL, untouched"
+        );
+        assert_eq!(
+            images.auth,
+            AuthScheme::Bearer,
+            "FLUX answers 401 to an api-key header"
+        );
+        assert_eq!(
+            images.api_key, "one-key-for-both",
+            "one key opens both surfaces, so it is still inherited from [ai]"
+        );
+        assert_eq!(
+            images.model, "nettrash-FLUX.2-pro",
+            "the DEPLOYMENT is what goes in the body's `model`"
+        );
+        assert_eq!(cfg.ai.images.size, "", "and is therefore not sent at all");
+        assert_eq!(cfg.ai.images.width, 1024);
+        assert_eq!(cfg.ai.images.height, 1024);
+
+        // The text deployment on the same server is untouched by any of it:
+        // its own host, its own header.
+        let text = cfg.ai.text_route();
+        assert_eq!(
+            text.url,
+            "https://nettrash-openai.openai.azure.com/openai/deployments\
+             /nettrash-gpt-oss-120b/chat/completions?api-version=2024-10-21"
+        );
+        assert_eq!(text.auth, AuthScheme::ApiKey);
+    }
+
+    /// The widened rule may not cost the three shapes that came before it.
+    /// Two of them are a production incident apiece — a doubled `/openai`
+    /// giving a bare 404, and a spliced path onto a pasted URI — so they are
+    /// pinned here TOGETHER, in one test, where a fourth shape cannot be
+    /// added without reading them.
+    #[test]
+    fn widening_the_verbatim_rule_leaves_the_older_shapes_alone() {
+        // Classic Azure OpenAI: deployment in the path, dated api-version.
+        assert_eq!(
+            azure_url(
+                "https://r.openai.azure.com",
+                "dep",
+                "2024-10-21",
+                "images/generations"
+            ),
+            "https://r.openai.azure.com/openai/deployments/dep/images/generations\
+             ?api-version=2024-10-21"
+        );
+        // The OpenAI-compatible surface: no deployment in the path, no
+        // api-version, and above all no second `/openai`.
+        assert_eq!(
+            azure_url(
+                "https://r.openai.azure.com/openai/v1",
+                "dep",
+                "2024-10-21",
+                "chat/completions"
+            ),
+            "https://r.openai.azure.com/openai/v1/chat/completions"
+        );
+        // A pasted URI that names the operation but carries no query still
+        // gets the api-version Azure requires.
+        assert_eq!(
+            azure_url(
+                "https://r.services.ai.azure.com/models/chat/completions",
+                "dep",
+                "2024-10-21",
+                "chat/completions"
+            ),
+            "https://r.services.ai.azure.com/models/chat/completions?api-version=2024-10-21"
+        );
+        // And the new one: a query of its own ends the matter, whatever the
+        // path looks like.
+        assert_eq!(
+            azure_url(
+                "https://r.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro\
+                 ?api-version=preview",
+                "dep",
+                "2024-10-21",
+                "images/generations"
+            ),
+            "https://r.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro\
+             ?api-version=preview"
+        );
+        // The same URI with the query left off is still a model path rather
+        // than a resource root: the api-version is appended, not a whole
+        // `/openai/deployments/…` segment.
+        assert_eq!(
+            azure_url(
+                "https://r.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro",
+                "dep",
+                "preview",
+                "images/generations"
+            ),
+            "https://r.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro\
+             ?api-version=preview"
+        );
+    }
+
+    /// The scheme is CONFIGURED, and it defaults to what every existing
+    /// config already gets. A silent switch on a hostname would be a 401
+    /// nobody could explain.
+    #[test]
+    fn the_auth_scheme_defaults_to_api_key_and_is_inherited() {
+        let mut cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://r.openai.azure.com".to_string(),
+            deployment: "text".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        cfg.vision.deployment = "sees".to_string();
+        cfg.images.deployment.deployment = "draws".to_string();
+
+        // Untouched config: all three routes present the key the way they
+        // always did.
+        assert_eq!(cfg.text_route().auth, AuthScheme::ApiKey);
+        assert_eq!(cfg.vision_route().expect("vision").auth, AuthScheme::ApiKey);
+        assert_eq!(cfg.images_route().expect("images").auth, AuthScheme::ApiKey);
+
+        // One sub-section may differ without disturbing the others…
+        cfg.images.deployment.auth = Some(AuthScheme::Bearer);
+        assert_eq!(cfg.images_route().expect("images").auth, AuthScheme::Bearer);
+        assert_eq!(cfg.text_route().auth, AuthScheme::ApiKey);
+
+        // …and `[ai]` sets the house rule, which the sub-sections inherit
+        // unless, as above, they said otherwise.
+        cfg.auth = AuthScheme::Bearer;
+        assert_eq!(cfg.text_route().auth, AuthScheme::Bearer);
+        assert_eq!(cfg.vision_route().expect("vision").auth, AuthScheme::Bearer);
+        cfg.images.deployment.auth = Some(AuthScheme::ApiKey);
+        assert_eq!(cfg.images_route().expect("images").auth, AuthScheme::ApiKey);
+    }
+
+    /// How the two spellings arrive from TOML, and what an unknown one does:
+    /// fails the LOAD, with the file's own word in the message, rather than
+    /// quietly falling back to a header the deployment will refuse.
+    #[test]
+    fn the_auth_scheme_is_spelled_out_in_the_file() {
+        let parse = |raw: &str| Config::from_toml_str(raw).map(|cfg| cfg.ai.auth);
+        assert_eq!(
+            parse("[ai]\nauth = \"api-key\"\n").expect("api-key"),
+            AuthScheme::ApiKey
+        );
+        assert_eq!(
+            parse("[ai]\nauth = \"api_key\"\n").expect("the underscore spelling too"),
+            AuthScheme::ApiKey
+        );
+        assert_eq!(
+            parse("[ai]\nauth = \"bearer\"\n").expect("bearer"),
+            AuthScheme::Bearer
+        );
+        assert_eq!(
+            parse("[ai]\n").expect("an [ai] section that never mentions it"),
+            AuthScheme::ApiKey,
+            "the default is what every config written before this field gets"
+        );
+        let err = format!("{:#}", parse("[ai]\nauth = \"Bearer\"\n").unwrap_err());
+        assert!(
+            err.contains("Bearer"),
+            "the operator's own word back: {err}"
         );
     }
 

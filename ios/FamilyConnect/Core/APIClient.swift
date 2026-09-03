@@ -235,6 +235,11 @@ actor APIClient {
         var joinPolicy: String?
         var language: String??
         var aiHistory: Bool?
+        /// A second boolean of exactly `ai_history`'s shape, differing only
+        /// in defaulting to FALSE server-side (protocol.md, "Pictures") —
+        /// so, like it, absent leaves it alone and there is nothing for a
+        /// null to mean.
+        var aiVision: Bool?
         /// The same double Optional the language uses, and for the same
         /// reason: the outer is "was this field touched", the inner is the
         /// value, and a real JSON `null` CLEARS the cap. These are the two
@@ -246,6 +251,7 @@ actor APIClient {
             case joinPolicy = "join_policy"
             case language
             case aiHistory = "ai_history"
+            case aiVision = "ai_vision"
             case maxMembers = "max_members"
         }
 
@@ -263,6 +269,7 @@ actor APIClient {
                 }
             }
             try container.encodeIfPresent(aiHistory, forKey: .aiHistory)
+            try container.encodeIfPresent(aiVision, forKey: .aiVision)
             if let maxMembers {
                 if let cap = maxMembers {
                     try container.encode(cap, forKey: .maxMembers)
@@ -356,6 +363,20 @@ actor APIClient {
     func setAIHistory(_ enabled: Bool) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
             "PATCH", "/families/mine", body: FamilyPatchRequest(aiHistory: enabled))
+        return response.family
+    }
+
+    /// Owner-only: whether a photograph a member attaches in their OWN
+    /// assistant chat may be shown to the model (protocol.md, "Pictures").
+    ///
+    /// One of the two locks that have to be open before a single pixel can
+    /// leave; the other is the operator's, and this client learns it from
+    /// `assistant.vision` on `GET /families/mine`. Neither is consent for a
+    /// particular photograph — that is the member attaching it, one send at
+    /// a time, and it is deliberately not a setting anywhere.
+    func setAIVision(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiVision: enabled))
         return response.family
     }
 

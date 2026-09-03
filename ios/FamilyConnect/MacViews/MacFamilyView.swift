@@ -280,6 +280,7 @@ struct MacFamilyView: View {
             inviteCode: updated.inviteCode ?? session.family?.inviteCode,
             language: updated.language,
             aiHistory: updated.aiHistory,
+            aiVision: updated.aiVision,
             maxMembers: updated.maxMembers)
     }
 

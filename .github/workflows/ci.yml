@@ -98,9 +98,26 @@ jobs:
             printf 'server=true\nandroid=true\nios=true\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # The `@ai` and `/draw` vector tables live in THREE files and are
+          # only correct while all three are identical. The test that checks
+          # that lives in the server crate (mentions.rs) and reads the two
+          # client test files off disk -- so a client-only edit to either
+          # table has to run the server job, or the guard is not a guard.
+          # Not the blanket "run everything" above: this is one extra job on
+          # two files that change rarely, against a class of drift that is
+          # invisible from any single stack, because each port's own suite
+          # goes green against its own copy.
+          mirrors='^(ios/FamilyConnectTests/AssistantMentionTests\.swift|android/app/src/test/java/me/nettrash/familyconnect/ui/chat/AssistantMentionTest\.kt)$'
+          mirror_changed=false
+          if echo "$files" | grep -q -E "$mirrors"; then
+            echo "A client mirror table changed -- the server holds the test that compares all three."
+            mirror_changed=true
+          fi
           for stack in server android ios; do
             if echo "$files" | grep -q -E "^$stack/"; then
               echo "$stack=true" >> "$GITHUB_OUTPUT"
+            elif [ "$stack" = server ] && [ "$mirror_changed" = true ]; then
+              echo "server=true" >> "$GITHUB_OUTPUT"
             else
               echo "$stack=false" >> "$GITHUB_OUTPUT"
             fi

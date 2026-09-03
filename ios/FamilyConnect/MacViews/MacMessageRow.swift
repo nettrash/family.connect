@@ -26,7 +26,13 @@ struct MacMessageRow: View {
     /// a face like the phone's do.
     var avatarVersionFor: (Int64) -> Int64 = { _ in 0 }
     /// The assistant is still writing this one — a cursor, nothing more.
+    /// True for an EMPTY assistant row from the moment it is fanned out:
+    /// a picture answer streams nothing, so the empty row is the whole of
+    /// its "still working" state (protocol.md, "How a picture comes back").
     var isStreaming: Bool = false
+    /// An `ai_error` named this row, and it is BLANK — no partial text and
+    /// no picture. The phone's rule, and its wording.
+    var assistantFailed: Bool = false
     let isMine: Bool
     /// Family chat, run head, not mine — the phone's rule, shared.
     var showsSenderName: Bool = false
@@ -503,6 +509,11 @@ struct MacMessageRow: View {
                 // The row exists but nothing has arrived yet; an empty
                 // balloon would look broken.
                 Text(verbatim: "▍").opacity(0.6)
+            }
+            if assistantFailed && message.body.isEmpty && message.attachments.isEmpty {
+                Label("Couldn't answer that. Ask again.", systemImage: "exclamationmark.circle")
+                    .opacity(0.75)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let call = message.call {
                 // The outcome, never the placeholder body — the same view

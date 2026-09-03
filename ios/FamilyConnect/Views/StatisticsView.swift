@@ -78,12 +78,23 @@ struct StatisticsView: View {
                 }
             }
 
-            if stats.totals.ai.questions > 0 {
+            if stats.totals.ai.questions > 0 || stats.totals.ai.images > 0 {
                 Section("Assistant") {
                     LabeledContent("Questions", value: "\(stats.totals.ai.questions)")
                     LabeledContent(
                         "Tokens",
                         value: "\(stats.totals.ai.promptTokens + stats.totals.ai.completionTokens)")
+                    // Its own row, next to the tokens rather than folded
+                    // into them, because it is a different bill: an image
+                    // model reports no tokens at all, so a family shown
+                    // only the two numbers above would see the expensive
+                    // half of their assistant as free (protocol.md,
+                    // "Family statistics"). Hidden at zero, which is what
+                    // every server that has never drawn one reports —
+                    // including every server that cannot.
+                    if stats.totals.ai.images > 0 {
+                        LabeledContent("Pictures", value: "\(stats.totals.ai.images)")
+                    }
                 }
             }
 
@@ -117,6 +128,9 @@ struct StatisticsView: View {
         }
         if member.ai.questions > 0 {
             parts.append(String(localized: "\(member.ai.questions) questions to the assistant"))
+        }
+        if member.ai.images > 0 {
+            parts.append(String(localized: "\(member.ai.images) pictures from the assistant"))
         }
         if parts.isEmpty { return String(localized: "Words only") }
         return parts.joined(separator: " · ")

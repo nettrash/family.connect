@@ -15,6 +15,7 @@ use axum::extract::State;
 use axum::response::Json;
 use axum::routing::post;
 use common::{TestServer, assert_error, spawn_server, spawn_server_with_config};
+use family_connect::config::Config;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
@@ -502,6 +503,34 @@ async fn messages_in(ts: &TestServer, token: &str, chat_id: i64) -> Vec<Value> {
 /// Poll for the assistant's row. The reply is spawned, so it does not exist
 /// the moment the send returns — and polling beats a fixed sleep, which is
 /// either flaky or slow.
+/// The statistics a generated picture produces, once they EXIST.
+///
+/// `wait_for_picture` gates on the attachment landing on the message, which
+/// is not the same moment: the `ai_usage` row that feeds `totals.ai` is
+/// written separately, so there is a window where the picture is on the
+/// message and every AI counter still reads zero. Asserting straight after
+/// the picture therefore fails about one run in three — observed, not
+/// theorised. Polling the thing actually being asserted closes it, the same
+/// way `wait_for_assistant_message` polls rather than sleeping.
+async fn wait_for_ai_stats(ts: &TestServer, token: &str) -> Value {
+    for _ in 0..50 {
+        let stats: Value = ts
+            .get(token, "/families/mine/stats")
+            .await
+            .json()
+            .await
+            .expect("JSON");
+        if stats["totals"]["ai"]["questions"]
+            .as_i64()
+            .is_some_and(|n| n > 0)
+        {
+            return stats;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the assistant's usage was never recorded");
+}
+
 async fn wait_for_assistant_message(
     ts: &TestServer,
     token: &str,
@@ -1206,6 +1235,21 @@ const IMAGES_DEPLOYMENT: &str = "test-flux";
 /// A server whose assistant can talk, see and draw — all three pointed at the
 /// mock, which is the only endpoint any of these tests ever reach.
 async fn server_with_pictures(addr: SocketAddr) -> TestServer {
+    server_with_pictures_tweaked(addr, |_| {}).await
+}
+
+/// The same, with one more turn of the config — for the ONE test that has
+/// to upload a photograph bigger than the vision ceiling.
+///
+/// The shared harness caps attachments at 64 KiB, far below production's
+/// 100 MB, "because what the tests check is the REFUSAL, not the number".
+/// The vision ceiling is a fixed 5 MiB in the source and is deliberately
+/// not configurable, so the only way to hand the server a photo over it is
+/// to open the upload door wide enough for one to get in.
+async fn server_with_pictures_tweaked(
+    addr: SocketAddr,
+    extra: impl FnOnce(&mut Config),
+) -> TestServer {
     spawn_server_with_config(move |cfg| {
         cfg.ai.enabled = true;
         cfg.ai.endpoint = format!("http://{addr}");
@@ -1214,6 +1258,7 @@ async fn server_with_pictures(addr: SocketAddr) -> TestServer {
         cfg.ai.title = "Assistant".to_string();
         cfg.ai.vision.deployment = VISION_DEPLOYMENT.to_string();
         cfg.ai.images.deployment.deployment = IMAGES_DEPLOYMENT.to_string();
+        extra(cfg);
     })
     .await
 }
@@ -1244,6 +1289,53 @@ async fn upload_photo(ts: &TestServer, token: &str, with_preview: bool) -> i64 {
         assert_eq!(response.status(), 204, "uploading the preview");
     }
     id
+}
+
+/// Upload a photo of a chosen SIZE and TYPE, with no preview — the two
+/// shapes `vision_images` turns away, and the only way to reach them.
+///
+/// No preview on purpose: the server prefers one when it exists, and a
+/// preview is a small JPEG by definition, so an attachment that HAS one can
+/// never be too large and can never be the wrong type. Both bounds are
+/// therefore reachable only through the stored original, which is exactly
+/// the case they exist for — a photo from a client that uploaded no
+/// preview (protocol.md, "Pictures").
+async fn upload_raw_photo(ts: &TestServer, token: &str, mime: &str, bytes: Vec<u8>) -> i64 {
+    let response = ts
+        .put_bytes_method(
+            "POST",
+            token,
+            "/attachments?kind=photo&width=64&height=64",
+            mime,
+            bytes,
+        )
+        .await;
+    assert_eq!(response.status(), 201, "uploading a {mime} photo");
+    let uploaded: Value = response.json().await.expect("JSON");
+    uploaded["attachment"]["id"].as_i64().expect("id")
+}
+
+/// A JPEG of exactly `len` bytes: a real SOI marker, then padding. Over
+/// `VISION_MAX_IMAGE_BYTES` it is a photograph the server will not send.
+fn jpeg_of(len: usize) -> Vec<u8> {
+    let mut bytes = jpeg_bytes();
+    bytes.resize(len, 0x00);
+    bytes
+}
+
+/// HEIC: ISO base media, `ftyp` at offset 4 with the `heic` brand — which is
+/// what `matches_magic` checks and what an iPhone original actually is. No
+/// chat deployment reads it, so it counts as left out and is said out loud.
+fn heic_bytes() -> Vec<u8> {
+    let mut bytes = vec![0x00, 0x00, 0x00, 0x18];
+    bytes.extend_from_slice(b"ftypheic");
+    bytes.resize(64, 0x00);
+    bytes
+}
+
+/// How many pictures actually travelled in one provider call.
+fn inline_images(call: &ProviderCall) -> usize {
+    call.raw.matches("data:image").count()
 }
 
 /// Send a message that claims attachments — the ordinary send, in whatever
@@ -1469,6 +1561,109 @@ async fn an_attached_photo_reaches_the_vision_deployment_once_the_owner_allows_i
     );
 }
 
+/// THE 5 MiB CEILING, which nothing exercised before.
+///
+/// "a photo still over **5 MiB** after that choice is **not sent at all**,
+/// and the assistant is told that one was left out. Told rather than
+/// silently dropped, for the reason every other note in this section
+/// exists: a model that is not told what is missing invents it."
+///
+/// So both halves are asserted: the pixels do not travel, AND the sentence
+/// that names them does. A test that only counted the images would pass
+/// just as well against a server that dropped them in silence, which is the
+/// failure protocol.md is written against.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_photo_over_the_ceiling_does_not_travel_and_is_named_to_the_model() {
+    let (mock, addr) = spawn_mock_provider().await;
+    // The one server in this file with a raised upload ceiling: nothing
+    // over 5 MiB can otherwise reach the code path being tested.
+    let ts = server_with_pictures_tweaked(addr, |cfg| {
+        cfg.limits.max_attachment_bytes = 6 * 1024 * 1024;
+    })
+    .await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    ts.patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    let chat = ai_chat_id(&ts, &owner).await;
+
+    // One ordinary photo, and one a byte over the ceiling. Both on the SAME
+    // message, so "one travelled and one did not" is one assertion about
+    // one question rather than two runs compared by hand.
+    let small = upload_photo(&ts, &owner, true).await;
+    let huge = upload_raw_photo(&ts, &owner, "image/jpeg", jpeg_of(5 * 1024 * 1024 + 1)).await;
+    say_with(&ts, &owner, chat, "what are these?", vec![small, huge]).await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    assert_eq!(
+        inline_images(&call),
+        1,
+        "only the photo under the ceiling travels: {}",
+        call.raw
+    );
+    assert!(
+        call.raw.contains("attached ONE photograph"),
+        "and the model is told it can see exactly one: {}",
+        call.raw
+    );
+    assert!(
+        call.raw.contains("could not be included"),
+        "the one left out is NAMED, never dropped in silence: {}",
+        call.raw
+    );
+    assert!(
+        call.raw
+            .contains("too large or in a format you cannot read"),
+        "and the reason is given, so the model asks instead of guessing: {}",
+        call.raw
+    );
+}
+
+/// THE ENCODING RULE, the other branch nothing exercised.
+///
+/// "only **JPEG or PNG** bytes travel. An iPhone's HEIC original is a
+/// photograph no chat deployment reads, and sending it would fail the whole
+/// question rather than one picture — so it counts as left out, and is said
+/// out loud in the same sentence."
+///
+/// Failing the WHOLE question is the outcome this rule exists to prevent,
+/// so the readable photo travelling is as much the point as the HEIC one
+/// not travelling.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_photo_in_an_encoding_no_deployment_reads_is_named_to_the_model() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    ts.patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    let chat = ai_chat_id(&ts, &owner).await;
+
+    let readable = upload_photo(&ts, &owner, true).await;
+    let heic = upload_raw_photo(&ts, &owner, "image/heic", heic_bytes()).await;
+    say_with(&ts, &owner, chat, "what are these?", vec![readable, heic]).await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    assert_eq!(
+        inline_images(&call),
+        1,
+        "the HEIC original stays here; the question still goes: {}",
+        call.raw
+    );
+    assert!(
+        !call.raw.contains("image/heic"),
+        "and its bytes are not smuggled through under their own type: {}",
+        call.raw
+    );
+    assert!(
+        call.raw.contains("could not be included"),
+        "it is NAMED to the model, in the same sentence a size omission is: {}",
+        call.raw
+    );
+}
+
 /// An EARLIER picture in the same thread is a `[photo]` marker and never
 /// bytes, however many times the member asks. Every disclosure of a
 /// photograph is an act somebody just performed.
@@ -1656,12 +1851,7 @@ async fn a_generated_picture_is_counted_as_an_image_in_statistics() {
     mock.wait_for(IMAGES_DEPLOYMENT).await;
     wait_for_picture(&ts, &owner, chat, asked["id"].as_i64().expect("id")).await;
 
-    let stats: Value = ts
-        .get(&owner, "/families/mine/stats")
-        .await
-        .json()
-        .await
-        .expect("JSON");
+    let stats = wait_for_ai_stats(&ts, &owner).await;
     let ai = &stats["totals"]["ai"];
     assert_eq!(ai["images"].as_i64(), Some(1), "stats: {stats}");
     assert_eq!(ai["questions"].as_i64(), Some(1));
@@ -1674,6 +1864,258 @@ async fn a_generated_picture_is_counted_as_an_image_in_statistics() {
         stats["members"][0]["ai"]["images"].as_i64(),
         Some(1),
         "and the member who asked is the one it is counted against"
+    );
+}
+
+// -- the request an images deployment actually receives -----------------------
+//
+// The tests above assert what a family's words do to a request. These two
+// assert the request ITSELF — method, URL, headers, body — against the two
+// image surfaces this server speaks to, because that is the half nobody can
+// check by reading the config file.
+//
+// It is asserted here rather than against Azure for the plain reason that it
+// CANNOT be asserted against Azure from a test suite: no key, no network, no
+// account. A stub on an ephemeral port is what makes "we send exactly this"
+// a claim with a proof attached, and the two shapes below are copied from
+// the Azure AI Foundry portal's own FLUX sample and from the OpenAI images
+// contract respectively. Neither test needs PostgreSQL — nothing here goes
+// near a database — so both run in an ordinary `cargo test`.
+
+/// One captured request, as the wire had it: everything a `ProviderCall`
+/// deliberately throws away, because up there only the body mattered.
+#[derive(Debug, Clone)]
+struct RawCall {
+    method: String,
+    /// Path AND query — the whole of what followed the host.
+    target: String,
+    /// Lowercased names, as hyper hands them over.
+    headers: Vec<(String, String)>,
+    body: Value,
+}
+
+impl RawCall {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+type Captured = Arc<std::sync::Mutex<Vec<RawCall>>>;
+
+/// Answer any request at all with one inline PNG, having first written down
+/// every byte of it. A fallback route rather than a declared path, because
+/// half of what is being tested is WHICH path the server chose to ask.
+async fn capture_everything(
+    State(calls): State<Captured>,
+    request: axum::extract::Request,
+) -> impl axum::response::IntoResponse {
+    let method = request.method().to_string();
+    let target = request
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.to_string())
+        .unwrap_or_default();
+    let headers = request
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                value.to_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    let bytes = axum::body::to_bytes(request.into_body(), 256 * 1024)
+        .await
+        .expect("reading the captured body");
+    let body: Value = serde_json::from_slice(&bytes).expect("an images request is JSON");
+    calls.lock().expect("capture lock").push(RawCall {
+        method,
+        target,
+        headers,
+        body,
+    });
+    // The shape both surfaces answer with, which is why the response half of
+    // this needed no change: `data[0].b64_json`, synchronously, no polling.
+    Json(json!({"data": [{"b64_json": base64_standard(&png_bytes())}]}))
+}
+
+async fn spawn_capturing_provider() -> (Captured, SocketAddr) {
+    let calls: Captured = Arc::default();
+    let router = Router::new()
+        .fallback(capture_everything)
+        .with_state(calls.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("binding the capturing provider port");
+    let addr = listener.local_addr().expect("capture local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("capturing provider crashed");
+    });
+    (calls, addr)
+}
+
+/// The one call the stub received, once there is one.
+async fn one_captured_call(calls: &Captured) -> RawCall {
+    for _ in 0..100 {
+        {
+            let seen = calls.lock().expect("capture lock");
+            if let Some(call) = seen.first() {
+                assert_eq!(seen.len(), 1, "one picture, one request: {seen:?}");
+                return call.clone();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the images deployment was never called");
+}
+
+/// **Black Forest Labs FLUX on Azure AI Foundry, pinned against the sample
+/// its own portal prints.**
+///
+/// That sample is:
+///
+/// ```text
+/// curl -X POST "https://RESOURCE.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro?api-version=preview" \
+///   -H "Content-Type: application/json" \
+///   -H "Authorization: Bearer $AZURE_API_KEY" \
+///   -d '{ "prompt": "A photograph of a red fox in an autumn forest",
+///          "model": "nettrash-FLUX.2-pro", "width": 1024, "height": 1024, "n": 1 }'
+/// ```
+///
+/// Every line of it was a way to get this wrong. The URL has a query of its
+/// own and no `images/generations` in it, so the old rule spliced a second
+/// path on after the query. The key rides on `Authorization`, and FLUX
+/// answers 401 to the `api-key` header Azure OpenAI requires. The size is
+/// two integers, and FLUX rejects the `size` string. This test is the
+/// difference between believing all that and knowing it.
+#[tokio::test]
+async fn a_flux_deployment_sends_the_request_its_own_portal_documents() {
+    let (calls, addr) = spawn_capturing_provider().await;
+
+    let mut cfg = family_connect::config::AiConfig {
+        enabled: true,
+        // The GPT deployments stay where they are, on the other host.
+        endpoint: format!("http://{addr}"),
+        deployment: "nettrash-gpt-oss-120b".to_string(),
+        api_key: "AZURE_API_KEY".to_string(),
+        ..Default::default()
+    };
+    cfg.images.deployment.endpoint =
+        format!("http://{addr}/providers/blackforestlabs/v1/flux-2-pro?api-version=preview");
+    cfg.images.deployment.deployment = "nettrash-FLUX.2-pro".to_string();
+    cfg.images.deployment.auth = Some(family_connect::config::AuthScheme::Bearer);
+    // FLUX takes the two integers and refuses the string, so the string is
+    // cleared — which is the omission rule doing the work it exists for.
+    cfg.images.size = String::new();
+    cfg.images.width = 1024;
+    cfg.images.height = 1024;
+
+    let route = cfg.images_route().expect("a named images deployment");
+    let picture = family_connect::ai::generate_image(
+        &reqwest::Client::new(),
+        &route,
+        &cfg.images,
+        "A photograph of a red fox in an autumn forest",
+    )
+    .await
+    .expect("the stub answers with one inline PNG");
+    assert_eq!(picture.mime, "image/png");
+
+    let call = one_captured_call(&calls).await;
+    assert_eq!(call.method, "POST");
+    assert_eq!(
+        call.target, "/providers/blackforestlabs/v1/flux-2-pro?api-version=preview",
+        "the pasted target URI, whole and unspliced"
+    );
+    assert_eq!(
+        call.header("authorization"),
+        Some("Bearer AZURE_API_KEY"),
+        "FLUX takes the key as a bearer token: {:?}",
+        call.headers
+    );
+    assert_eq!(
+        call.header("api-key"),
+        None,
+        "and not as the header Azure OpenAI takes: {:?}",
+        call.headers
+    );
+    assert_eq!(call.header("content-type"), Some("application/json"));
+    assert_eq!(
+        call.body,
+        json!({
+            "prompt": "A photograph of a red fox in an autumn forest",
+            "model": "nettrash-FLUX.2-pro",
+            "width": 1024,
+            "height": 1024,
+            "n": 1,
+        }),
+        "the portal's own body, field for field — and no `size`, which FLUX \
+         would answer 400 to"
+    );
+}
+
+/// And the other surface, unchanged. A server configured the OpenAI way must
+/// send the byte-identical request it sent before FLUX was ever considered:
+/// the classic `/openai/deployments/…/images/generations` URL, the `api-key`
+/// header, and `size` as the `"WxH"` string — with no `width`, no `height`
+/// and no `Authorization` anywhere near it.
+#[tokio::test]
+async fn a_gpt_style_images_deployment_sends_exactly_what_it_always_did() {
+    let (calls, addr) = spawn_capturing_provider().await;
+
+    let mut cfg = family_connect::config::AiConfig {
+        enabled: true,
+        endpoint: format!("http://{addr}"),
+        deployment: "nettrash-gpt-oss-120b".to_string(),
+        api_key: "AZURE_API_KEY".to_string(),
+        ..Default::default()
+    };
+    // The whole of an existing images config: name a deployment and stop.
+    cfg.images.deployment.deployment = "nettrash-dall-e-3".to_string();
+
+    let route = cfg.images_route().expect("a named images deployment");
+    family_connect::ai::generate_image(
+        &reqwest::Client::new(),
+        &route,
+        &cfg.images,
+        "a cat in a hat",
+    )
+    .await
+    .expect("the stub answers with one inline PNG");
+
+    let call = one_captured_call(&calls).await;
+    assert_eq!(call.method, "POST");
+    assert_eq!(
+        call.target,
+        "/openai/deployments/nettrash-dall-e-3/images/generations?api-version=2024-10-21"
+    );
+    assert_eq!(
+        call.header("api-key"),
+        Some("AZURE_API_KEY"),
+        "the default scheme is the one that was always sent: {:?}",
+        call.headers
+    );
+    assert_eq!(
+        call.header("authorization"),
+        None,
+        "nothing switched itself on: {:?}",
+        call.headers
+    );
+    assert_eq!(
+        call.body,
+        json!({
+            "prompt": "a cat in a hat",
+            "model": "nettrash-dall-e-3",
+            "size": "1024x1024",
+            "n": 1,
+        }),
+        "the same four fields as before, and the two new ones absent"
     );
 }
 

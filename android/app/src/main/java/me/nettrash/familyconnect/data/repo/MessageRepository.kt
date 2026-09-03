@@ -96,14 +96,29 @@ class MessageRepository @Inject constructor(
                         // from deltas is replaced, and the row stops being
                         // "still being written".
                         _streamingMessageIds.update { it - frame.message.id }
+                        // An answer that arrives is not a failed one. A
+                        // second attempt reuses no id, so this only ever
+                        // fires for a row this device marked failed and the
+                        // server then finished anyway — but leaving the
+                        // mark would draw "ask again" under a real answer.
+                        _failedAssistantMessageIds.update { it - frame.message.id }
                         applyEdit(frame.message)
                     }
                     is ServerFrame.AiDelta -> appendAssistantDelta(frame)
-                    is ServerFrame.AiError ->
+                    is ServerFrame.AiError -> {
                         // Whatever arrived is already on the row and stays
                         // there — a partial answer beats a bubble that never
                         // resolves.
                         _streamingMessageIds.update { it - frame.messageId }
+                        // …but a row that has NOTHING on it — which is every
+                        // picture answer that failed, since a picture
+                        // streams no tokens — would otherwise be an empty
+                        // balloon that never resolves and never explains
+                        // itself. The mark is what lets the bubble say so
+                        // (docs/protocol.md, "Pictures": "an answer that
+                        // failed has to have somewhere to fail").
+                        _failedAssistantMessageIds.update { it + frame.messageId }
+                    }
                     is ServerFrame.Read -> onRead(frame)
                     is ServerFrame.Reaction -> onReaction(frame)
                     is ServerFrame.Poll -> onPoll(frame)
@@ -427,13 +442,39 @@ class MessageRepository @Inject constructor(
     ): String = Companion.previewText(body, attachments, call)
 
     /**
-     * Assistant replies still being written, by server id. Drives the
-     * bubble's cursor and nothing else; it is deliberately in memory only,
-     * so a row that was mid-stream when the app was killed is not stuck
-     * looking live after a relaunch.
+     * Assistant replies still being written, by server id.
+     *
+     * ONE of the two things the bubble's cursor is decided from
+     * ([me.nettrash.familyconnect.ui.chat.AssistantAnswer]), and the one
+     * that answers what the ROW cannot: a text answer part-way through has
+     * a body, so it no longer "carries nothing" while its cursor still
+     * belongs after the last fragment. Deliberately in memory only, so a
+     * row that was mid-stream when the app was killed is not stuck looking
+     * live after a relaunch — and nothing is lost by that, because an EMPTY
+     * assistant row says for itself that its answer has not arrived.
      */
     private val _streamingMessageIds = MutableStateFlow<Set<Long>>(emptySet())
     val streamingMessageIds: StateFlow<Set<Long>> = _streamingMessageIds
+
+    /**
+     * Assistant replies that stopped early, by server id — the rows an
+     * `ai_error` frame named.
+     *
+     * In memory only, exactly like [streamingMessageIds] and for the same
+     * reason: a failure is a thing that happened while somebody was
+     * watching, not a property of the stored message. After a relaunch
+     * the row is simply what it is, and a text answer that failed
+     * half-written still reads as the half it got.
+     *
+     * This exists because of pictures. A text answer that fails has
+     * usually accumulated something to leave on screen; a picture answer
+     * produces no deltas at all (protocol.md, "Pictures": "no `ai_delta`
+     * frames" — "an image model produces no token stream and there is
+     * nothing honest to stream"), so its failure is an empty balloon and
+     * nothing else. The bubble draws a short line from this instead.
+     */
+    private val _failedAssistantMessageIds = MutableStateFlow<Set<Long>>(emptySet())
+    val failedAssistantMessageIds: StateFlow<Set<Long>> = _failedAssistantMessageIds
 
     /**
      * Append one fragment to the assistant's row.
@@ -616,15 +657,52 @@ class MessageRepository @Inject constructor(
     }
 
     /**
-     * Apply an edited body under the seq guard, and advance the chat's
+     * Apply an edited MESSAGE under the seq guard, and advance the chat's
      * edit cursor so a later catch-up does not replay it.
+     *
+     * The WHOLE message, not the body alone. `message_edited` "carries
+     * the whole message, exactly as `message` does", and the protocol
+     * spells out the one case that needs it: **the assistant's picture
+     * answer arrives as an attachment added by exactly this frame** —
+     * the empty row that appeared the moment the question was asked
+     * gains a `photo` attachment and nothing else changes
+     * (docs/protocol.md, "Editing" and "Pictures"). Merging the body
+     * alone is not fatal there — the attachment is on the row, so the
+     * next history page or cold start draws it, "late, not lost" — but
+     * this is what makes it arrive while the member is still looking at
+     * the chat. It is written generally rather than as a picture special
+     * case because that is how the protocol states it, and because a
+     * special case would be one more thing to remember.
      *
      * Never bumps unread and never notifies: an edit is not new mail.
      */
     suspend fun applyEdit(message: MessageDto) {
         val seq = message.editSeq ?: return
         val editedAt = message.editedAt?.let(TimeFormat::parseTimestamp)
-        val updated = messageDao.applyEdit(message.id, message.body, seq, editedAt)
+        // The plural-first read, exactly as the ack and the arrival paths
+        // make it. An edit carries the whole message, so an empty set here
+        // is a message that genuinely carries none.
+        val edited = message.resolvedAttachments
+        val editedFirst = edited.firstOrNull()
+        val updated = messageDao.applyEdit(
+            serverId = message.id,
+            body = message.body,
+            editSeq = seq,
+            editedAt = editedAt,
+            attachmentId = editedFirst?.id,
+            kind = editedFirst?.kind,
+            mime = editedFirst?.mime,
+            size = editedFirst?.size ?: 0L,
+            width = editedFirst?.width,
+            height = editedFirst?.height,
+            durationMs = editedFirst?.durationMs,
+            hasPreview = editedFirst?.hasPreview ?: false,
+            name = editedFirst?.name,
+            latitude = editedFirst?.latitude,
+            longitude = editedFirst?.longitude,
+            accuracyM = editedFirst?.accuracyM,
+            attachmentsJson = edited.takeIf { it.isNotEmpty() }?.let(AttachmentsCodec::encode),
+        )
         if (updated > 0) {
             // A quote is a snapshot of the body, so every local reply
             // pointing at this message is now stale.

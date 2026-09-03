@@ -164,22 +164,71 @@ interface MessageDao {
     )
 
     /**
-     * Overwrite the body ONLY when the incoming copy is at least as new.
+     * Apply an edited message ONLY when the incoming copy is at least as
+     * new — and apply the WHOLE of it, not the body alone.
      *
      * The guard the protocol calls load-bearing. Deliveries are not
      * ordered: a history page fetched BEFORE an edit can arrive after the
      * frame carrying it, and an unguarded write would quietly restore the
      * old text — on one device and not another. Expressed in SQL so the
      * check and the write are one statement and cannot race each other.
+     *
+     * The ATTACHMENT columns are written here for the same reason the
+     * body is, and it is not decoration. `message_edited` "carries the
+     * whole message, exactly as `message` does", and there is exactly one
+     * message in this protocol whose edit changes more than the body:
+     * **the assistant's own reply gains its generated picture as an
+     * attachment through this path** (docs/protocol.md, "Editing" and
+     * "Pictures"). A body-only merge is not broken by that — the
+     * attachment is on the row, so the next history page or cold start
+     * draws it — but it is late, and this is what makes it live. Nothing
+     * else ever adds, removes or replaces an attachment by editing, so
+     * for every other edit these columns are rewritten with the values
+     * they already hold.
      */
     @Query(
         """
         UPDATE messages
-        SET body = :body, editSeq = :editSeq, editedAt = :editedAt
+        SET body = :body,
+            editSeq = :editSeq,
+            editedAt = :editedAt,
+            attachmentId = :attachmentId,
+            attachmentKind = :kind,
+            attachmentMime = :mime,
+            attachmentSize = :size,
+            attachmentWidth = :width,
+            attachmentHeight = :height,
+            attachmentDurationMs = :durationMs,
+            attachmentHasPreview = :hasPreview,
+            attachmentName = :name,
+            attachmentLatitude = :latitude,
+            attachmentLongitude = :longitude,
+            attachmentAccuracyM = :accuracyM,
+            attachmentsJson = :attachmentsJson
         WHERE serverId = :serverId AND :editSeq >= editSeq
         """,
     )
-    suspend fun applyEdit(serverId: Long, body: String, editSeq: Long, editedAt: Long?): Int
+    @Suppress("LongParameterList")
+    suspend fun applyEdit(
+        serverId: Long,
+        body: String,
+        editSeq: Long,
+        editedAt: Long?,
+        attachmentId: Long?,
+        kind: String?,
+        mime: String?,
+        size: Long,
+        width: Int?,
+        height: Int?,
+        durationMs: Int?,
+        hasPreview: Boolean,
+        name: String?,
+        latitude: Double?,
+        longitude: Double?,
+        accuracyM: Int?,
+        /** The full set, wire-shape JSON; the flat columns mirror its first element. */
+        attachmentsJson: String?,
+    ): Int
 
     /** Refresh the quote on every reply that points at this message. */
     @Query(
