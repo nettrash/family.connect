@@ -90,6 +90,10 @@ struct MacConversationView: View {
     @State private var staged: [StagedAttachment] = []
     /// The message being answered, while the composer is primed.
     @State private var replyDraft: ReplyToDTO?
+    /// What the message being replied to carries, looked up once per reply
+    /// target — the family composer's picture strip reads it
+    /// (`mentionPictureNotice`), and the phone's reason applies here too.
+    @State private var quotedAttachments: [AttachmentDTO] = []
     /// Live height of the composer, watched for the same reason the phone
     /// watches its input bar: the thread and the composer are siblings in
     /// one VStack, so anything that GROWS the composer — a reply banner, an
@@ -1288,10 +1292,13 @@ struct MacConversationView: View {
             if !staged.isEmpty {
                 StagedAttachmentRow(items: staged) { discardStaged($0) }
             }
-            if let pictureNotice {
+            // Two strips, never both — the phone's arrangement: the
+            // assistant's own chat, and (#56) the family chat for a photo
+            // an `@ai` draft is about to carry.
+            if let notice = pictureNotice ?? mentionPictureNotice {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "eye")
-                    Text(pictureNotice)
+                    Text(notice)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
@@ -1468,6 +1475,10 @@ struct MacConversationView: View {
         } action: { height in
             composerHeight = height
         }
+        // On the composer, which reads it — the phone's placement.
+        .onChange(of: replyDraft?.messageID, initial: true) { _, messageID in
+            quotedAttachments = quotedAttachmentList(for: messageID)
+        }
     }
 
     private var canSend: Bool {
@@ -1613,6 +1624,33 @@ struct MacConversationView: View {
             return String(localized: "The first \(AssistantPictureLimits.maxPerQuestion) photos go to the model your server is set up to use. The rest are named to it, not shown.")
         }
         return String(localized: "This goes to the model your server is set up to use, with your question. Nothing else from this chat does.")
+    }
+
+    /// The family composer's sentence for an `@ai` draft about to carry a
+    /// photo (#56) — the phone's rule, `MentionPictureNotice`, for the
+    /// phone's reason: one disclosure, one sentence, on both platforms.
+    /// With the owner's `ai_history_photos` on it also says that the chat's
+    /// most recent photos may go, "up to N", and shows for a bare `@ai`
+    /// draft (protocol.md, "Recent photos from the family chat").
+    private var mentionPictureNotice: String? {
+        guard isFamilyChat else { return nil }
+        return MentionPictureNotice.of(
+            draft: draft,
+            staged: staged.map(\.assistantPictureCandidate),
+            quoted: quotedAttachments.map(AssistantPictureCandidate.init(attachment:)),
+            serverCanSee: AppSettings.assistantVision,
+            familyAllows: session.family?.aiVision == true,
+            familyHistory: session.family?.aiHistory == true,
+            familyHistoryPhotos: session.family?.aiHistoryPhotos == true,
+            serverCanDraw: AppSettings.offersPictureRequests
+        )?.sentence
+    }
+
+    /// The attachments of the message a reply is primed on, from this
+    /// chat's own rows — `ReplyToDTO` carries an excerpt and nothing else.
+    private func quotedAttachmentList(for serverID: Int64?) -> [AttachmentDTO] {
+        guard let serverID else { return [] }
+        return messages.first { $0.serverID == serverID }?.attachmentList ?? []
     }
 
     /// The picture door: an image-only open panel, then the ordinary

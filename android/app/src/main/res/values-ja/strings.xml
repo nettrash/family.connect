@@ -390,8 +390,26 @@
     <string name="s_assistant_picture_others_left_out">動画・ファイル・音声・位置情報が送られることはありません。</string>
     <string name="s_assistant_picture_unreadable_left_out">大きすぎる写真や、モデルが読めない形式の写真は、見せられずに「ある」とだけ伝えられます。</string>
     <string name="s_assistant_will_not_see_picture">この写真はアシスタントには見せられません。通常の添付として送られます。</string>
+    <string name="s_assistant_mention_sees_this_picture">このメッセージはアシスタントに話しかけているため、この写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。このチャットのほかの写真は送られません。</string>
+    <string name="s_assistant_mention_sees_these_pictures">このメッセージはアシスタントに話しかけているため、これらの写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。このチャットのほかの写真は送られません。</string>
+    <string name="s_assistant_mention_sees_quoted_picture">この返信はアシスタントに話しかけているため、返信先の写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。このチャットのほかの写真は送られません。</string>
+    <string name="s_assistant_mention_sees_quoted_pictures">この返信はアシスタントに話しかけているため、返信先の写真はすべてアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。このチャットのほかの写真は送られません。</string>
+    <string name="s_assistant_mention_sees_both">この返信はアシスタントに話しかけているため、ここの写真と返信先の写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。このチャットのほかの写真は送られません。</string>
+    <string name="s_assistant_mention_extra_left_out">1つのメッセージで送られるのは最初の %1$d 枚だけです。このメッセージの写真が先で、次に返信先の写真です。残りはここに残ります。</string>
+    <string name="s_assistant_mention_sees_recent_only">このメッセージはアシスタントに話しかけているため、このチャットの最近の写真が最大 %1$d 枚一緒に送られます。誰が送ったものでも、アシスタントに示していない写真です。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_mention_sees_this_picture_and_recent">このメッセージはアシスタントに話しかけているため、この写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_mention_sees_these_pictures_and_recent">このメッセージはアシスタントに話しかけているため、これらの写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_mention_sees_quoted_picture_and_recent">この返信はアシスタントに話しかけているため、返信先の写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_mention_sees_quoted_pictures_and_recent">この返信はアシスタントに話しかけているため、返信先の写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_mention_sees_both_and_recent">この返信はアシスタントに話しかけているため、ここの写真と返信先の写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
     <string name="s_assistant_answer_failed">アシスタントはこの返事を完了できませんでした。もう一度聞いてください。</string>
     <string name="s_assistant_vision">アシスタントが写真を見られるようにする</string>
-    <string name="s_assistant_vision_explanation">アシスタントとの自分だけのチャットで質問に写真を添えると、その写真も質問と一緒にモデルへ送られます（1つの質問につき最大4枚）。オンにするまではオフです。ファミリーチャットの写真はどの設定でも送られません。動画・ファイル・音声・位置情報も送られません。</string>
+    <string name="s_assistant_vision_explanation">アシスタントとの自分だけのチャットで質問に写真を添えたとき、ファミリーチャットでアシスタントに話しかけるメッセージに写真を添えたとき、またはアシスタントに話しかけながら写真に返信したとき、その写真も質問と一緒にモデルへ送られます（1つの質問につき最大4枚）。アシスタントに示していない写真は、「アシスタントが最近の写真を見る」がオンでないかぎり、前のメッセージのものも含めて送られません。動画・ファイル・音声・位置情報も送られません。オンにするまではオフで、オフのあいだは写真は一切送られません。</string>
     <string name="e_change_assistant_vision_failed">設定を変更できませんでした</string>
+    <string name="s_assistant_history_photos">アシスタントが最近の写真を見る</string>
+    <string name="s_assistant_history_photos_explanation">ファミリーチャットで誰かがアシスタントに話しかけると、そのチャットの最近の写真（最大4枚、誰が送ったものでも、アシスタントに示していないもの）も、メッセージ自体や返信先の写真に続いて、質問と一緒にモデルへ送られます。ほぼすべての話しかけで写真が送られるため、費用が増えます。「アシスタントが写真を見られるようにする」と「アシスタントが最近の履歴を見る」が必要です。オンにするまではオフです。</string>
+    <string name="s_assistant_history_photos_no_deployment">ここでは使えません。このサーバーのアシスタントは画像を見ることができません。</string>
+    <string name="s_assistant_history_photos_needs_vision">先に「アシスタントが写真を見られるようにする」をオンにしてください。それがオフのあいだ、サーバーはこれを受け付けません。</string>
+    <string name="s_assistant_history_photos_needs_history">「アシスタントが最近の履歴を見る」がオフのあいだ、これは何もしません。チャットの履歴が送られないので、そこからの写真も送られません。</string>
+    <string name="e_change_assistant_history_photos_failed">設定を変更できませんでした</string>
 </resources>

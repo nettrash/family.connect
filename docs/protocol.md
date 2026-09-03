@@ -87,7 +87,8 @@ Member    {"id": 7, "username": "anna", "display_name": "Anna", "role": "owner|m
             only shape that can CARRY a blocked former member — resolving that id to a
             name is the client's job, and may not be possible (see "Blocking a member")
 Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
-           "created_at": "…", "ai_history": true, "ai_vision": false}
+           "created_at": "…", "ai_history": true, "ai_vision": false,
+           "ai_history_photos": false}
           — plus "invite_code": "ABCD2345" when (and only when) the caller is the owner
           — plus "max_members": 8 when (and only when) the owner has set a cap. ABSENT means
             the family has no cap of its own and only the operator's ceiling binds — absent is
@@ -111,6 +112,14 @@ Family    {"id": 3, "name": "The Smiths", "join_policy": "open|approval|closed",
             attaches in their own assistant chat to be shown to the model at all. Off unless
             the owner turned it on, and off for every family that existed before it — see
             "Pictures", which is also where the asymmetry with "ai_history" is argued
+          — "ai_history_photos" is ALWAYS present too, and defaults to FALSE. It is a THIRD
+            switch rather than a widening of the second: whether an @ai mention in the
+            family chat may also be shown the most recent photographs of that chat — pictures
+            nobody pointed the assistant at. It can only be true while "ai_vision" is true:
+            the server refuses to turn it on otherwise and turns it off whenever "ai_vision"
+            goes off. It does nothing unless "ai_history" is on and the server can see. A
+            client that never heard of it reads an absent key as false, which is the truth
+            for every family that predates it — see "Recent photos from the family chat"
 JoinRequest {"id": 12, "user": {User}, "created_at": "…"}
 Report    {"id": 4, "reporter": {User}, "reported": {User},
            "reason": "spam|harassment|inappropriate|other", "created_at": "…"}
@@ -728,7 +737,12 @@ With **`ai_history: false`**, what leaves the server is exactly this and nothing
   grammar described under "A poll contributes its options and its tallies" below and under exactly
   the same rule: counts, never voters. The question is already the body and is not repeated. This is
   the setting where withholding them costs most, because there is no transcript here to carry the
-  poll instead — the model would receive a question with nothing after it.
+  poll instead — the model would receive a question with nothing after it;
+- and, since 2026-09-03 (#56), what those same two messages CARRY: a placeholder per attachment in
+  the grammar the transcript uses, and — only on a server that can see, in a family whose owner has
+  turned `ai_vision` on — the photos on them, at most four across the two. That is the one place a
+  photograph may reach the assistant from the family chat, and the whole of it is under "Showing the
+  assistant a picture from the family chat".
 
 Not the messages before it. Not the messages after it. Not the roster, not the family name, not the
 board, not anyone's private assistant thread, and not the previous mention or its answer — **a
@@ -754,7 +768,12 @@ recently said in this family chat** — that, and nothing more:
   `GET /families/mine` reports and every client draws it under, and the note names it too so the
   assistant can recognise which lines are its own;
 - **not** the mentioning message. That is the question; it already reaches the model as the
-  question, and the transcript is strictly what came before it.
+  question, and the transcript is strictly what came before it;
+- and — added 2026-09-03, under a THIRD switch that is off by default, `ai_history_photos` — the
+  most recent photographs in that transcript, as pixels, filling whatever the mentioning message
+  and the message it quotes left of the four a mention may carry. Without that switch the
+  transcript's photographs are `[photo]` markers and nothing more, exactly as they always were.
+  The whole of it is under "Recent photos from the family chat".
 
 The transcript is given as a NOTE, the same mechanism the mention instruction already uses, and not
 as conversation turns. What the family said last Tuesday is context, not an instruction addressed to
@@ -955,6 +974,14 @@ and only one of them has a switch.
 > own thread. Not a video, not a file, and never a location. Nothing here makes the server go
 > looking for an image somebody did not deliberately put in front of it.
 
+*Amended 2026-09-03 (#56): "in their own `ai` chat" is no longer the whole of it. A member may also
+point the assistant at a photograph from the family chat — by attaching it to an `@ai` message, or
+by replying to it with `@ai` — and under the same two locks it then travels. Everything else in the
+rule holds: not from an earlier message, not one the assistant was not pointed at, never a video, a
+file or a location, and never by the server going looking. The paragraphs after the list below say
+why, against the rule as it was written; the mechanics are under "Showing the assistant a picture
+from the family chat".*
+
 That is the image half of the invariant the rest of this section rests on — "in an `ai` chat the
 assistant is only ever shown that member's own AI thread" — and it is drawn deliberately tighter
 than the text one, because a photograph is a materially bigger disclosure than a sentence:
@@ -973,6 +1000,61 @@ exactly as it always has. The reason is the mention rule's own reason, pointed t
 photograph in the family chat is very often somebody ELSE's, and the member typing `@ai` is in no
 position to consent on their behalf. A member who wants the assistant to look at a picture sends it
 to the assistant, in their own thread, themselves.
+
+**That paragraph was overruled on 2026-09-03 (#56), and it stays above because the reason it gave
+is still the reason for the shape of what replaced it.** The product owner asked for two things:
+that the assistant should see a photograph from the family chat when it is being asked about one,
+and that it should be able to draw without being told `/draw` (that one is under "Drawing without
+being told to"). What follows is the argument for how far the first goes, made against the paragraph
+above rather than by deleting it.
+
+`@ai` now sends a picture in exactly two cases, and the two are one act seen from two ends:
+
+- a photograph **on the message that mentioned it** — the member attached a photo and wrote `@ai`
+  in the same send;
+- a photograph **on the message that mention replies to** — the member chose a photo already in
+  the chat and pointed the assistant at it, by the reply this section already treats as a
+  deliberate act ("The quoted message is included only because the member chose it by replying").
+
+And in no third case. **A photograph elsewhere in the window still never travels**, at either
+`ai_history` setting: the transcript carries `[photo]` for it exactly as it always has. That is the
+case the old paragraph worried about most — a third person's photograph leaving the building because
+somebody else mentioned the assistant about something unrelated — and it is left out on purpose
+rather than by omission. Whether it should ever be let in is the owner's call, and it is not made
+here.
+
+*Amended 2026-09-03, later the same day: that call was made, and the answer is a THIRD switch —
+`ai_history_photos`, off by default, owner-only, and only openable while `ai_vision` is on — rather
+than a widening of `ai_vision`. With it on, and only then, a mention may also be shown the most
+recent photographs of the transcript it already carries, newest first, in whatever is left of the
+four after the mention's own photos and the quoted message's. The paragraph above stays as the
+default: for every family that has not turned that switch on it is still exactly true. The switch,
+the reason it is a third one, and what it costs are under "Recent photos from the family chat".*
+
+The old paragraph's objection was consent, and three things answer it — none of them "the family
+will not mind":
+
+- **the consent is the owner's, family-wide, and it is off by default.** `ai_vision` is the same
+  switch, behind the same two locks, that a private thread needs; a family that never opens its
+  settings screen is still a family whose photographs stay where they are. The owner who turns it
+  on is told — by every client, in the sentence under "What a client's switch must say" below — that
+  a photo in the family chat can now reach the model when a member points the assistant at it;
+- **a photo on an `@ai` message, or a reply to a photo with `@ai`, is a member deliberately
+  pointing the assistant at that picture.** It is not the assistant going looking, and it is not
+  the whole window going along for the ride. The act is as explicit as attaching a photo in a
+  private thread, and it is more visible, not less: the family sees the mention, sees which photo
+  it is on or replies to, and sees the answer;
+- **what is left out is still left out.** Not an earlier photo, not one the mention did not touch,
+  never a video, a file or a place, and — under the same bounds as the private thread — at most four
+  across the two messages, 5 MiB each, JPEG or PNG only, the preview preferred, with anything left
+  out NAMED to the model.
+
+Which leaves what the old paragraph got right, unchanged: the photograph in the family chat may be
+somebody else's, and the member replying to it with `@ai` is not the person who took it. The answer
+is that the person who took it sent it into a chat whose owner has said, once, family-wide and in
+writing on a settings screen, that pictures here may be shown to the assistant when a member asks
+about them — and that a member asking about a photo in the family chat is doing, in front of
+everyone, exactly what a member attaching it to a private question does alone.
 
 ##### Showing the assistant a picture
 
@@ -1026,7 +1108,10 @@ What does not leave, whatever is configured and whatever is switched on:
   not a picture, and a file is whatever it happens to be;
 - **a location, or any part of one.** Coordinates are barred from reaching a model anywhere in this
   protocol and this is not the exception;
-- anything at all from the family chat, from another member's thread, or from any direct chat.
+- anything at all from the family chat, from another member's thread, or from any direct chat. (The
+  family chat has a surface of its own — an `@ai` mention — with a rule of its own for the photos
+  on the two messages a mention already sends; that is the next subsection, and nothing about it
+  reaches a private thread.)
 
 A picture sent to an assistant that cannot see — no vision deployment, or `ai_vision` off — is not
 an error and raises none. It becomes `[photo]` like an older one, and the assistant answers that it
@@ -1038,6 +1123,311 @@ settings screen that somebody read once; the photograph is chosen in a composer,
 who may not have been the one who read it. So a client that offers to attach a picture in an `ai`
 chat says plainly, there, that the picture will be sent to whatever model the server is configured
 to talk to — and offers nothing at all when `assistant.vision` is false or `ai_vision` is off.
+
+##### Showing the assistant a picture from the family chat
+
+Added 2026-09-03 (#56); the argument for its existence is under "Pictures" above, against the rule it
+replaced.
+
+**The same two locks, and both have to be open:** the operator has configured `[ai.vision]`, and the
+owner has turned `ai_vision` on. There is no third switch and no per-surface one — a family that has
+allowed the assistant to see photographs has allowed it on both surfaces, and the sentence every
+client shows against the switch says so. With either lock shut, a mention carries `[photo]` for the
+picture and nothing more, and nothing is refused: the assistant answers that it was not shown it.
+*(Amended 2026-09-03: there is now a third switch, `ai_history_photos`, and it is deliberately not
+a per-surface one either. It decides whether a mention may ALSO be shown the transcript's recent
+photographs, and it sits behind these same two locks rather than beside them — see "Recent photos
+from the family chat".)*
+
+What leaves the server with such a mention, in addition to what a mention already sends, and the
+whole of it:
+
+- the photos on the **mentioning message**, then the photos on the **message it replies to**, in
+  that order — the member's own attachment first, because it is the one they chose just now, and
+  each message's photos in the sender's order;
+- under **one shared budget**: at most **four** across the two messages together, not four each.
+  The mentioning message's photos take their places first and the quoted message's fill what is
+  left;
+- each under the private thread's own rules, which are the same code and not a copy of it: the
+  downscaled **preview** when the client uploaded one, otherwise the original; nothing over
+  **5 MiB**; **JPEG or PNG** only; and a photo left out for any of those reasons is **NAMED** to
+  the model, together with which of the two messages it was on;
+- and the text of both messages carries a `[photo]` placeholder for each photo alongside the
+  pixels, exactly as a private question does — so a photo the model can see and a photo it was
+  only told about are written the same way, and only the note tells them apart.
+
+When any photo travels the mention goes to the **vision deployment**; when none does — no photo on
+either message, or either lock shut — it goes to the **text deployment** with the request it has
+always sent. A text-only mention serialises byte for byte as it did before this subsection existed,
+and the server's tests pin that. One thing rides on a text request, and only in one case: when both
+locks are open and the member pointed the assistant at a photo that then could not travel — a HEIC
+original with no preview, a photo over 5 MiB — the note below still goes, saying so, even though no
+picture does. The model is then looking at a `[photo]` marker on the very message that asked about
+it, and a marker nothing explains is exactly the silence this section forbids. With either lock shut
+there is no such note, by design: that is the text request pinned above, and the assistant answers
+that it was not shown it.
+
+One small widening rides with this, and it is deliberate rather than incidental: **the mentioning
+message and the message it quotes now render what they carry as the placeholders the transcript
+already uses for them** — `[photo]`, `[video]`, `[voice note]`, `[file] receipts.pdf`,
+`[location] Grandma's house`, under exactly the rules given for the transcript, coordinates never.
+Until now those two messages sent their bodies alone, and a quoted photograph with no caption
+therefore vanished from the prompt altogether — an empty body dropped the quote — leaving the model
+to answer "what is this?" with nothing to say it was about a picture. With `ai_history` on this adds
+nothing the transcript did not already say about the same message; with it off it adds the kind of
+the attachment and a file's name or a place's label, which is what the quoted message IS.
+
+**`ai_history` changes nothing here.** The mentioning message and the message it quotes are "the
+message that mentioned you" and "the message it quotes" — the two things a mention sends at BOTH
+settings. A photo on either is part of that message, and the switch that decides whether a
+transcript goes with them has no say in it.
+
+**What still does not leave, whatever is on:** any photo on any OTHER message of the family chat,
+however recent, however much the question seems to be about it. In the transcript it is `[photo]`;
+if it is not in the transcript it is nothing. A member who wants the assistant to look at it replies
+to it. That is not a limitation to be relaxed quietly later: it is the line between a member pointing
+at a picture and the assistant going looking for one.
+
+*Amended 2026-09-03: it was not relaxed quietly. With `ai_history_photos` on — a switch the owner
+turns, in writing, under a sentence that says exactly this — the most recent photographs of the
+transcript may travel too, and "if it is not in the transcript it is nothing" is the half of this
+paragraph that holds at every setting. See "Recent photos from the family chat".*
+
+The model is told all of this in its own note, the way the private thread's note tells it: how many
+photographs it can see and on which of the two messages, in what order; that every other `[photo]`
+marker in front of it — the transcript's included — is a picture it was NOT shown; and what was left
+out, where, and why. Told rather than dropped in silence, for the reason every other note in this
+section exists — and told whether or not anything else travelled: a member who pointed the assistant
+at one photograph that could not go is a member who believes it went, and the note is the only thing
+that can say otherwise. The private thread's note follows the same rule (amended 2026-09-03, with
+this): a question whose only photograph was left out still carries the note that says so.
+
+**What a client's switch must say.** The `ai_vision` switch used to be described to the owner with a
+sentence this subsection has made false — "never from the family chat" — and a switch whose
+description is wrong is worse than no description. Every client now shows, against the switch and in
+every language it ships, a sentence carrying these facts, in whatever register that screen already
+has — the facts are the contract, the wording is the client's:
+
+- the **three doors** a photo can go through: a question in a member's own chat with the assistant,
+  an `@ai` message in the family chat, and an `@ai` reply to a photo;
+- that what goes is sent **to the model** — the one the server is set up to talk to, which is to say
+  somewhere outside this server;
+- **never a photo the assistant was not pointed at**, and **never from an earlier message** —
+  *since 2026-09-03: unless the owner has ALSO turned Recent photos (`ai_history_photos`) on, and
+  the sentence has to say so, because the promise it makes is the reason that is a separate
+  switch*;
+- **never a video, a file or a place**;
+- and that **with it off, no photo is ever sent** — the promise that is unchanged, still true, and the
+  one the switch exists for.
+
+iOS and macOS show one sentence for it, verbatim in each language: *with this on, a photo is sent to
+the model your server is set up to use when a member attaches it to a question in their own chat with
+the assistant, attaches it to an `@ai` message in the family chat, or replies to a photo with `@ai` —
+never a photo the assistant was not pointed at, never from an earlier message unless Recent photos
+is on, and never a video, file or place. With it off, no photo is ever sent.* (The clause "unless
+Recent photos is on" was added 2026-09-03 with the third switch; until then the sentence read
+"never from an earlier message" and stopped.) Android carries the same five facts in the register
+its settings screen already had ("at most 4 per question … Off unless you turn it on; with it off, no
+photo is ever sent"), which is a paraphrase and is meant to be one: a client is held to the facts,
+not to another client's phrasing.
+
+**What a client's family-chat composer must say.** The private thread's rule — "a client must say
+what it is about to do, at the moment it matters" — applies to the family chat from the moment a
+photo can leave from there, and the moment it matters is the draft. So a client shows, in the family
+composer, the same kind of line the private thread shows above a staged photo, and shows it exactly
+when a photo is about to go: **both locks open**, the draft **mentions the assistant**, and there is
+**a photo staged on the draft or on the message it replies to**. Absent when any of those is not so —
+a lock shut, no mention, no photo — and absent for a `@ai /draw …` draft on a server that can draw,
+because a picture request sends the words after the token and nothing else. What it says:
+
+- that the photo goes to the model the server is set up to use, and that no other photo in this
+  chat does;
+- which photo: the one staged, the one being replied to, or both;
+- the **shared budget**, counted exactly as the server counts it — the mention's photos first, then
+  the quoted message's, four across the two, never four each — so a "4" a member reads is the four
+  that will go;
+- and a photo that will NOT travel — a HEIC with no preview, one over 5 MiB — said so, in the
+  words the private thread's strip already uses for it;
+- and — since 2026-09-03, only when `ai_history_photos` is on as well — that **recent photos in
+  this chat may go too**, "up to N", where N is what is left of four after the photos the strip
+  has just counted. The rule for that line, and the one case where it shows a strip #56 did not,
+  are under "Recent photos from the family chat".
+
+It is a notice, not an affordance: nothing is offered in the family composer that was not already
+there, and the line is read, not pressed.
+
+##### Recent photos from the family chat
+
+Added 2026-09-03, the same day as #56 and on the product owner's request, widening it by exactly
+one thing: an `@ai` mention may now also be shown **the most recent photographs of the family
+chat** — pictures nobody pointed the assistant at, on messages the mention did not touch — when the
+family's owner has turned a **third switch** on. This is the case the paragraph under "Pictures"
+called "the case the old paragraph worried about most", and it is let in here on purpose, behind
+its own switch, with the argument written down.
+
+**The switch: `ai_history_photos`.** A boolean on the `Family` object, always present, owner-only
+through `PATCH /families/mine`, family-wide with no per-member override, and **`false` by default**
+for families created after it and for every family that existed before it. Migration 0033 adds the
+column with that default, in the voice of 0032 and for the same reason turned one notch further:
+`ai_vision` defaulted off because a photograph is a different kind of thing from a sentence; this
+defaults off because it is a different kind of ACT — nobody chose these pictures for this
+question. It has a rule between it and its neighbour that neither `ai_history` nor `ai_vision`
+has:
+
+- it can only be `true` while `ai_vision` is `true`. A `PATCH` that sends `ai_history_photos:
+  true` while `ai_vision` is off — or would be off after that same request — is refused with
+  `validation` (400), and nothing in the request is written; a request that turns both on at
+  once is fine;
+- turning `ai_vision` off **turns this off in the same write**, whether or not the request
+  mentioned it. Not "leaves it set but inert": a switch that quietly stays on underneath the one
+  that was turned off would spring back the day `ai_vision` is turned on again, and the wider
+  disclosure would then be reached without anybody choosing it a second time. An owner who
+  turns pictures off and later on again gets `ai_vision` alone, and turns this one on again
+  deliberately or not at all. The database says the same thing in its own words — a `CHECK`
+  that the column is never true while `ai_vision` is false — so no code path can write the
+  state the rule forbids, and a race between two owners' devices resolves to off.
+
+**It requires everything below it, and does nothing on its own.** Three things must all hold
+before one pixel of the transcript leaves, and with any of them missing the switch is inert and
+nothing is refused — the mention is exactly the mention #56 sends, byte for byte, including the
+`[photo]` markers and the note about the photos it was pointed at:
+
+1. the operator has configured `[ai.vision]`. The switch may be turned on without it (as
+   `ai_vision` may), because the server's configuration is not a family's business and a
+   refusal would be a way of learning it; but a client shows the switch disabled, with the
+   reason, when `assistant.vision` is false;
+2. `ai_vision` is on — enforced, above, rather than merely required;
+3. `ai_history` is on. **With `ai_history` off there is no transcript, and a photograph that is
+   not in the transcript never travels**, so there is nothing for this switch to widen. The
+   narrow setting's list under "Mentioning the assistant in the family chat" is unchanged by
+   this section, at every value of every switch.
+
+**Why a third switch, and not `ai_vision` widened.** Every owner who has turned `ai_vision` on did
+so under a sentence — shown by every client, in nine languages, and required by "What a client's
+switch must say" above — that ends *never from an earlier message*. That sentence is the promise
+the switch makes, and it is the reason a family that keeps its own photographs on its own server
+let any of them reach a model at all: a member has to point the assistant at a picture, one send
+at a time. Widening what `ai_vision` does would make that sentence false for every family that
+already read it and said yes to it, on the strength of it. A switch whose description has become
+false is worse than no switch, and there is no honest way to re-ask a question somebody has already
+answered except to ask a new one. So this is a new one, off, with its own sentence, and `ai_vision`
+keeps every fact its sentence stated except the one that now carries a condition ("never from an
+earlier message — unless Recent photos is on"), which is the smallest change to that sentence that
+keeps it true.
+
+**What leaves the server with a mention when all three hold**, in addition to what a mention already
+sends, and the whole of it:
+
+- photographs, at most **four in total across the whole request** — the same four, under the
+  same one budget, that "Showing the assistant a picture from the family chat" already counts,
+  not four more. They are filled in **priority order**: the photos on the **mentioning message**
+  first, then the photos on the **message it replies to**, then the transcript's, and the
+  transcript takes only what is left. A photo the member pointed the assistant at therefore
+  always beats an ambient one: a mention carrying four photos of its own sends no history photo
+  at all, however many the chat holds;
+- from the transcript, **newest first** — the newest message that carries a photo, then the next
+  newest, and within one message the sender's order — until the budget is spent or the window
+  runs out. Newest, because the question in front of the model is being asked NOW, and the
+  pictures most likely to be what it is about are the ones the family has just been looking at.
+  The quoted message is not counted here twice: its photos went through the quote's slot, and
+  its transcript line is skipped;
+- **only from the transcript**. The same window — the last 30 days, the newest 200 messages,
+  40 000 characters, whichever binds first — and a message that fell out of it for any of those
+  reasons has no line and sends no picture. A photograph is never fetched from further back than
+  the model can read about;
+- each under the private thread's own rules, which are the same code and not a copy: the
+  downscaled **preview** when the client uploaded one, otherwise the original; nothing over
+  **5 MiB**; **JPEG or PNG** only. One that cannot be sent for size or type is skipped and the
+  walk continues to the next older one, so a HEIC original at the top of the chat does not
+  starve four readable photos beneath it; and everything left out is **NAMED** to the model,
+  even when nothing at all travelled — a mention in a chat whose only recent photo is a HEIC
+  goes to the text deployment with a note saying one photograph in the transcript could not be
+  included and that it can see no picture, exactly as #56 says it for a photo on the mention
+  itself.
+
+**Pictures are tied to lines.** A transcript full of `[photo]` markers and four pictures beside it
+is a model left to guess which picture is whose. So when this switch is on and any picture travels,
+**every marker for a picture the model can see carries that picture's number** — `[photo 1]`,
+`[photo 2]`, … — where the number is the picture's position among the images attached to the
+request, in the order above: the mentioning message's first, then the quoted message's, then the
+transcript's, newest first. The numbering applies wherever that photo is written — on the
+mentioning message, on the quoted message, and on the transcript's line for either of them or for
+a history message — so the model can connect a picture to who sent it and when, which is the whole
+point of sending it. Every other `[photo]` stays bare, and the note disowns it in the words #56
+already uses: a bare marker is a picture it was NOT shown. Without this switch nothing is numbered
+and the transcript is byte for byte what it was; with it on and nothing travelling, likewise.
+
+The note the model is given says, in addition to what #56's note says about the mention's own
+photos: **how many of the pictures came from the transcript and that they are the most recent ones
+that could be included**, on which numbered lines; that nobody pointed it at them — they are the
+chat's recent pictures, sent by whoever the transcript says sent them; how the numbering works;
+and how many other photographs in the transcript were not included and why — beyond the four,
+too large, or in a format it cannot read — so that the count of bare markers is a number it has
+been told rather than one it infers. When the transcript has no photographs at all, none of that is said — except how the numbering
+works, which is explained whenever any picture travels, because a mention's own photo is `[photo 1]`
+with or without a transcript behind it — for the reason nothing is said about polls in front of a
+transcript with no poll in it.
+
+**The route is the one #56 already decides.** When any picture travels — the mention's, the
+quote's, or the transcript's — the request goes to the vision deployment; when none does it goes
+to the text deployment with the request #56 sends, and a mention that ends up with zero images
+serialises byte-identically to one on a family that never turned this switch on. The server's tests
+pin both: a family with the switch off, a chat full of photos and a plain mention sends no pixels
+and the #56 request to the byte; the same with the switch on but `ai_vision` off, or on a server
+with no `[ai.vision]`, is the same request; and with everything on, a mention carrying a photo,
+replying to a photo, over a transcript holding five, sends exactly four — the mention's, the
+quote's, the two newest of the five — numbered `[photo 1]` to `[photo 4]`, the other three bare
+and named.
+
+**The cost, said plainly, because it is why this defaults off.** `ai_history` is on by default, and
+a family chat is, for most families, mostly photographs. With this switch on as well, nearly every
+mention in such a chat becomes a **four-image vision call** — not only the mentions that are about
+a picture, every one: "@ai what time is the match" over a chat whose last four messages are
+holiday photos sends those four photos, to be looked at and billed for, for a question about
+football. Vision tokens are the expensive half of a chat deployment's bill, and four previews per
+question is the difference between an assistant a family forgets is metered and one they notice.
+That is a real product concern and not a hypothetical one, and it is the reason this is a switch an
+owner has to find and turn on, under a sentence that says what it costs, rather than something a
+family gets because it is convenient. The convenience is real too — "what was that thing Anna sent
+this morning" is exactly the question a family asks in a chat — and an owner who wants it can have
+it; what this section refuses to do is spend a family's money and their photographs by default.
+
+**Scope: family-chat mentions only.** The private `ai` thread is unchanged by every word of this
+section: it sees the member's own pictures, on the question being answered, and never an earlier
+turn — "Showing the assistant a picture" holds as written, and the server's tests assert that a
+private question's request is the same with this switch on and off. A direct chat never reaches
+the assistant at all, mention or not, and this changes nothing there either. And a `/draw`, or a
+drawn answer the model asks for, sends the words after the token or the tool's prompt and nothing
+else, with or without this switch — no transcript and no picture ever rides on an image request.
+
+**What a client shows**, all three clients, in every language they ship, with tests for every
+state:
+
+- **the switch itself**, beside `ai_vision` on the same owner-only screen, off by default. Its copy
+  says what leaves and what it costs, in the register that screen already has, carrying these
+  facts: that with it on, **the most recent photos in the family chat, up to four, go to the model
+  whenever anyone mentions `@ai`** — not only a photo somebody attached to the mention; that they
+  are photos nobody pointed the assistant at; and that it **costs more**, because a mention then
+  usually sends pictures. It is shown **disabled, with the reason**, when `ai_vision` is off (the
+  server would refuse it) or when `assistant.vision` is false (the server could not honour it);
+  and it reads as off whenever `ai_history` is off, because there is no transcript for it to widen
+  — a client may say that beside it too. Turning `ai_vision` off is reflected as this going off,
+  because the server has turned it off;
+- **the `ai_vision` sentence changes again**, once, in every language: "never from an earlier
+  message" becomes "never from an earlier message unless Recent photos is on". The other four
+  facts of that sentence stand;
+- **the family-chat disclosure strip from #56** gains one line when this switch is on (with both
+  locks open and `ai_history` on): that **recent photos in this chat may go too**, "up to N", where
+  N is what is left of four after the photos the strip has just counted on the draft and on the
+  quoted message — the mention's first, the quote's second, the transcript filling the rest, so the
+  arithmetic a member reads is the server's. The strip cannot say WHICH recent photos, because the
+  server decides that from the transcript it builds at the moment it answers, and a strip that
+  named three photos and sent a fourth would be worse than one that says "up to four". Because
+  of that, under this switch the strip also shows for an `@ai` draft with **no photo of its own and
+  none on its quote** — the case #56's strip was absent for — since that is precisely the mention
+  on which every one of the four may be somebody else's recent picture, and "say what it is about
+  to do, at the moment it matters" applies to it most of all. It stays absent for a `@ai /draw …`
+  draft, which sends no picture at any setting.
 
 ##### Asking for a picture
 
@@ -1081,6 +1471,91 @@ for.
 Both surfaces take it: a member's own `ai` chat, and `@ai /draw …` in the family chat, where the
 whole family sees the answer arrive. The family chat is allowed here precisely because generation
 sends only the asking member's own words, which a mention already sends today.
+
+##### Drawing without being told to
+
+Added 2026-09-03 (#56). "What is deliberately not here" below still says automatic routing was
+rejected, and still says why; this is the part of that paragraph that was overruled, and how far.
+
+**The assistant may now draw a picture in answer to an ordinary question**, when it decides one is
+what was asked for — "@ai what would our house look like in winter?", "draw me something for
+Anna's birthday card", a question that names no token at all. The mechanism is the one the rejected
+paragraph named, and the reason it was rejected is answered by where the decision is made:
+
+- on a server that has an images deployment, every ordinary text request — a private question and
+  a family-chat mention alike — declares **one tool** to the text model: `draw_picture`, taking a
+  single string, `prompt`. A server with no `[ai.images]` declares nothing, and its requests are
+  byte for byte what they were: the `tools` key is simply absent, and the server's tests pin that
+  absence as firmly as they pin its presence;
+- the model answers either with words, as it always did, or by **calling the tool** — and a reply
+  that is a tool call carries no words, so the family sees the empty "working" row a picture answer
+  already shows, with no `ai_delta` frames;
+- when it calls the tool, **the server sends the tool's `prompt` — and nothing else — to the images
+  deployment**, through the same path `/draw` uses, and the reply is a picture message exactly as
+  `/draw` produces one: the same empty body, the same `photo` attachment added by `message_edited`,
+  the same single notification, the same `reply_to` in the family chat.
+
+**This answers the objection, and the paragraph below is kept so a reader can check that it does.**
+The objection was that letting the model choose means "a family's question reaching a provider
+before anything has decided which provider it should reach", and that "what leaves this server, and
+to whom" then becomes "whatever the model decided". Neither is true of this design:
+
+- the question reaches the **text** deployment, which is where it always went. Nothing is sent
+  anywhere in order to decide; the deciding happens inside the request that was going to be made
+  anyway. There is deliberately **no second call** — no classifier asked first whether this looks
+  like a picture request — because that would double the bill of every question for a decision the
+  same model can make while answering;
+- what reaches the **images** deployment is a string the server read out of the tool call, bounded,
+  and could write to its log; it is not the question, not the thread, not the transcript, not the
+  system prompt and not any picture, for exactly the reason a `/draw` sends none of those. The model
+  decides WHETHER; the server still decides WHAT leaves and TO WHOM, and this document can still say
+  what that is.
+
+**What it cannot say, and says so.** The words in that `prompt` are the model's. They will usually
+paraphrase the question; they may draw on the thread or the transcript the model was shown; and on
+a family that has turned `ai_vision` on, they may describe a photograph it was shown — "draw our
+kitchen as a cartoon" is a question whose honest prompt describes the kitchen. That is words about
+a picture leaving for a second deployment of the same operator's provider, and it is the one place
+this section cannot enumerate what leaves by pointing at something a member typed. It is bounded
+(the message-body ceiling, 4000 characters by default — a longer prompt is refused as an error, not
+cut), it is one string, and this server does not log it, for the reason no member's words reach a
+log; but it is written by the model, and a reader should know that.
+
+Three rules about the edges, each decided rather than left to happen:
+
+- **an empty or unreadable prompt is an error**, not a silent nothing. A tool call whose `prompt` is
+  missing, blank, not a string, or over the bound raises `ai_error` on the row exactly as a refused
+  stream does, and the member asks again. A model that decided to draw and then said nothing has
+  failed the question, and a blank row that never resolves is the outcome the empty-row design
+  exists to avoid;
+- **a reply that both writes words and calls the tool is a picture**, and the words are dropped.
+  One reply, one attachment, the same shape as `/draw`, and the row that finishes is a row every
+  client already knows how to draw. The words were most likely "here it is" — had the model meant
+  them as the answer, it would not have drawn. This has a visible cost, and it is named here rather
+  than hidden: any words that streamed as `ai_delta` before the tool call are gone when the finished
+  row arrives, because the row is the truth and the deltas were cosmetic. The alternative — keeping
+  them as the picture's caption — was considered and declined, because it would make the shape of a
+  drawn answer depend on the model's mood; it is recorded here in case the cost turns out to matter;
+- **a tool the server did not declare is an error.** The server offers one tool and knows its name; a
+  call naming any other is refused with `ai_error`, never executed. A model that calls the tool
+  more than once in one reply has asked for one picture several times: the first call is honoured
+  and the rest are dropped.
+
+`/draw` stays, unchanged, and is still the explicit path: a member who writes it gets a picture
+whether or not the model would have thought of one, and what leaves on it is still the words after
+the token alone — it never goes through the text model at all. Contextual drawing is an addition,
+never a replacement. An operator whose text deployment refuses a `tools` key may switch the
+declaration off with `[ai.images] contextual = false`; `/draw` keeps working, `assistant.images`
+stays true, and nothing on the wire changes.
+
+**It is counted as `/draw` is.** A drawn answer records one `question`, the tokens the text model
+reported for deciding, and one `image` — see "Family statistics", whose sentence about zero tokens
+was written for `/draw` and is amended there.
+
+Nothing new reaches a client. `assistant.images` already says this server can draw, and it now also
+means the assistant may do so unasked; the reply is a picture message of the shape clients already
+render; and the "working" row is the one they already show. A client that draws `/draw` answers
+draws these.
 
 ##### How a picture comes back
 
@@ -1139,10 +1614,22 @@ object is:
 
 - **`vision`** — this server has a deployment that can look at a picture. It says nothing about
   whether THIS family has allowed it: that is `ai_vision` on the `Family` object, and a client needs
-  both to be true before it offers to attach a picture in an `ai` chat.
+  both to be true before it offers to attach a picture in an `ai` chat. Since #56 the same pair
+  also decides whether a photo on an `@ai` message, or on the message it replies to, travels with
+  the mention — and the sentence a client shows against `ai_vision` has to say so (see "Showing the
+  assistant a picture from the family chat"). Nothing new is offered in the family-chat composer for
+  it: attaching a photo and replying to one are affordances every client already has. What the
+  composer does gain is a line that SAYS so at the moment a photo is about to go with an `@ai`
+  draft (see "What a client's family-chat composer must say" there) — a notice, not a door.
+  Since the third switch (2026-09-03) the same `vision` is also what a client checks before it
+  lets the owner turn `ai_history_photos` on at all: that switch is shown disabled, with the
+  reason, when this is false or the family's `ai_vision` is (see "Recent photos from the family
+  chat").
 - **`images`** — this server can generate one. A client offers the `/draw` affordance only when this
   is true, for the reason the whole `assistant` object exists: an affordance that silently does
-  nothing is worse than one that is not there.
+  nothing is worse than one that is not there. Since #56 it also means the assistant may draw
+  unasked (see "Drawing without being told to"); that needs nothing from a client, because the
+  reply is the picture message a `/draw` already produces.
 - **`draw`** — the token itself, alongside `mention`, so nothing has to spell it twice. Its value is
   fixed, and a client still mirrors the grammar by value; the field is there so a client can be
   certain the server it is talking to means the same five characters by it.
@@ -1160,6 +1647,9 @@ per request and the family never sees the seam:
 | a text question | `[ai]` | the configured prompt, the notes, the last turns of that one thread — unchanged from before this section |
 | a question with a photo attached | `[ai.vision]` | the same, plus up to four photos off that one message |
 | `/draw …` | `[ai.images]` | the words after `/draw`, and nothing else |
+| an `@ai` mention carrying a photo, or replying to one (#56) | `[ai.vision]` | what a mention sends, plus up to four photos off those two messages together |
+| an `@ai` mention in a family whose owner has turned `ai_history_photos` on, when photos travel (2026-09-03) | `[ai.vision]` | what a mention sends, plus up to four photos under ONE budget — the mention's, then the quote's, then the transcript's newest — each `[photo N]`-numbered where it is written |
+| a question the text model answers by calling `draw_picture` (#56) | `[ai]`, then `[ai.images]` | the usual text request — with one tool declared — and then the tool's `prompt`, and nothing else |
 
 `[ai]` is the section that already existed and it keeps its meaning exactly: it is the TEXT
 deployment, and a server that configures nothing else behaves precisely as it did before — which is
@@ -1195,6 +1685,13 @@ and it means the answer to "what leaves this server, and to whom" becomes "whate
 decided", which is not an answer a self-hosted family server can give. `/draw` is five characters in
 a body that a member typed, that three clients highlight, and that a reader of this document can
 point at.
+
+*Overruled 2026-09-03 (#56) — see "Drawing without being told to", which keeps this paragraph's
+objection and answers it rather than deleting it. What remains not here, and is still the reason
+this paragraph was right to be written: the decision never leaves the server. The model chooses
+whether; it does not choose the provider, the question never reaches the images deployment, and
+what does reach it is one bounded string the server read out of the reply. `/draw` is still there,
+still five characters a reader can point at.*
 
 ### Photos, videos, audio, files and locations
 
@@ -1439,6 +1936,11 @@ of `questions` because it is the only one of these that maps to a per-picture bi
 reports no tokens, so a picture answer is one `question`, zero `prompt_tokens`, zero
 `completion_tokens` and one `image`. A family reading only the token counts would see the expensive
 half of the assistant as free. Always present, `0` on a server that has never generated one.
+
+Since #56 there is one reply that carries both: a picture the text model asked for itself (see
+"Drawing without being told to") is one `question`, the `prompt_tokens` and `completion_tokens` the
+text model reported for the request in which it decided, and one `image`. Two bills, one reply, and
+both are recorded against it — the zero-token sentence above is true of `/draw` and of nothing else.
 
 ### Retention
 
@@ -2009,7 +2511,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `POST /families/join` | `{invite_code}` → `200 {status: "joined"}` (policy `open` — membership immediate) or `200 {status: "pending"}` (policy `approval` — join request created). A family whose policy is `closed` admits nobody: the invite code answers `invalid_invite_code` (404), byte-identical to a code that never existed, so a shut door tells a stranger nothing — the same non-enumeration reasoning the avatar and password-reset endpoints follow. A family that is full answers `family_full` (409) — full meaning at its own `max_members`, or at the operator's ceiling when it has set none, because a valve that limited only what an owner may TYPE would hold nothing shut. The checks run in order — closed, then already in a family, then a pending request, then full — so a closed family answers `invalid_invite_code` whatever else is true of it, and under policy `approval` this door is where the REQUEST is created and the cap is read there too, then read again at approval. `family_full` does admit that the code is real, and that is the one thing this endpoint tells a stranger: the alternative is telling an invited member their code is invalid on the day the family filled up, which costs a real person a real join, where a closed family's code may be years old and in anybody's hands. Errors: `invalid_invite_code` (404), `already_in_family`, `join_request_pending`, `family_full` (409). |
 | `GET /families/mine` | → `200 {family: Family, members: [Member], former_members: [Member], max_board_seq: 88, assistant: {user_id, display_name, mention, draw, vision, images}}`. `former_members` carries the accounts that were deleted while in this family, each with `"deleted": true` and no `role`; it is omitted when there are none, and it exists so a client can name the messages, notes and reactions they left behind (see "Deleting an account"). Nothing else counts them as members. `max_board_seq` is omitted while the board is empty and untouched — it is how a client knows whether a board catch-up is worth a request. `assistant` is present only when the server has one configured, and is how a client both NAMES its messages in the family chat and knows whether to offer `@ai` at all (see "Mentioning the assistant in the family chat"); it is not a member and is not in `members`. Its `vision` and `images` booleans say whether this SERVER can look at a picture and make one — a client offers to attach a picture in an `ai` chat only when `vision` and the family's own `ai_vision` are both true, and offers `draw` (the `/draw` token) only when `images` is true (see "Pictures"). `family.invite_code` present for the owner only. Plus `blocked_user_ids: [11, 14]` as on `GET /me`, always present and `[]` when empty, and a complete state-set there too. Plus `next_owner_user_id: 11`, present for the OWNER only, naming the member who would inherit the family if the owner left right now — the same rule as "Deleting an account", computed once server-side so the leave dialog can say who it is instead of two clients computing it and eventually disagreeing (the roster does not carry join times, so no client could compute it anyway); omitted when the owner is the sole member. It is a PREDICTION and takes no frame of its own: any `member_joined` or `member_left` can change the answer, so a client re-reads `GET /families/mine` immediately before it shows the leave dialog and never names a successor from a cached value. Absence on that fresh read means the owner is the last member and leaving DELETES the family, which is a different dialog and a different confirmation. Error: `not_in_family`. |
 | `POST /families/invite-code/rotate` | (owner) → `200 {invite_code}`. Old code stops working; pending requests survive. |
-| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, or a `max_members` outside 1..ceiling), `invalid_language`. |
+| `PATCH /families/mine` | (owner) `{join_policy?: "open"\|"approval"\|"closed", max_members?: int\|null, language?: "ru"\|null, ai_history?: true\|false, ai_vision?: true\|false, ai_history_photos?: true\|false}` → `200 {family: Family}`. Every field is optional and which fields are PRESENT decides what changes, exactly as on a board note — sending none of them is a valid no-op that answers with the family unchanged. `"language": null` CLEARS the family's language and `"max_members": null` CLEARS the cap, while leaving either key out entirely leaves it alone — these are **the two places** in this protocol where sending a `null` means something a missing key does not (see "The family's language"). `ai_history` is NOT such a place: it is a boolean with a real default, absent leaves it alone, and there is nothing for a `null` to mean (see "Mentioning the assistant in the family chat"); `ai_vision` is a second boolean of exactly that shape, differing only in defaulting to FALSE (see "Pictures"); `ai_history_photos` is a third, defaulting to FALSE, and the one with a rule between it and its neighbour: it may only be `true` while `ai_vision` is — sending `true` for it while `ai_vision` is off, or would be off after this same request, is `validation`, and turning `ai_vision` off turns it off in the same write whether or not the request mentioned it (see "Recent photos from the family chat"). A cap must be between 1 and the operator's ceiling (`limits.max_family_members`). A cap BELOW the family's current size is ACCEPTED and acts as a freeze — nobody new until people leave — rather than being refused: an owner who inherits a large family must still be able to shut the door, and the cap is read at the door and never enforced over the room. Errors: `not_family_owner` (403), `validation` (a `join_policy` that is none of the three, a `max_members` outside 1..ceiling, or `ai_history_photos: true` without `ai_vision`), `invalid_language`. |
 | `GET /families/join-requests` | (owner) → `200 {requests: [JoinRequest]}` (pending only). |
 | `POST /families/join-requests/{id}/approve` | (owner) → `200 {member: Member}`. The cap is re-checked here, because the roster can fill between a request and the decision: `family_full` (409), which leaves the request PENDING — a full family is a temporary condition and not a decision, and the owner may approve it again once a seat frees. The cap counts the rows in `members`, the owner included; `former_members` do not count, and a pending request reserves nothing — three members, a cap of four and two pending requests means the first approval succeeds and the second is `family_full`. Closing the family does NOT touch requests that were already pending, and the owner may still approve them — closing is about the invite code, and an approval is the deliberate act of the person who closed it. Errors: `join_request_not_pending`, `user_already_in_family`, `family_full` (409). |
 | `POST /families/join-requests/{id}/reject` | (owner) → `204`. Error: `join_request_not_pending`. |
@@ -2049,7 +2551,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 | `GET /chats` | → `200 {chats: [{chat: Chat, last_message: Message\|null, unread_count: 3, last_read_message_id: 1337, max_reaction_seq: 123}]}`. Family chat included always; direct chats once they exist. `last_read_message_id` is the CALLER'S OWN read marker for this chat — the value `POST /chats/{id}/read` and the `read` frame maintain, monotonic and shared across all of that user's devices. It is the other half of `unread_count` and comes from the same row, and unlike the three `max_*_seq` cursors it is ALWAYS present: `0` means the caller has never reported reading anything here, which is a real answer rather than an absent one. It is an id THRESHOLD and not a reference — retention may already have swept the message it names, so a client must never assume it can fetch that id, only compare against it. Clients apply it monotonically into whatever they store (`max(stored, received)`), for the same reason the server does: a response still in flight while the reader is reading must never walk a local marker backwards. `max_reaction_seq` is omitted while no message in the chat has ever been reacted to, `max_edit_seq` likewise while nothing in it has ever been edited, and `max_poll_seq` likewise while no poll has ever been created in it — all three are high-water marks that never go back down, so a chat whose polls the retention sweep has since taken still reports one, and a client reading an empty feed is the correct outcome rather than a bug. `last_message` previews never carry `reactions`, the `poll` or the quote, but DO carry `attachments` (and the legacy `attachment`), trimmed exactly as before — kind and name, no dimensions, no coordinates — a photo sent without a caption has an empty body, and a preview with nothing in it is a chat row that looks like nothing happened. A direct chat with somebody the caller has blocked is NOT listed, for the blocker alone, and comes back whole on unblock — nothing about it is deleted (see "Blocking a member"); it contributes nothing to `unread_count` anywhere and nothing to the APNs `badge`, because there is nothing here for a client to count. Nothing else on this row is projected per caller: in the family chat a blocked member's message still moves `unread_count` and may still BE `last_message`, because the count is the other half of the read marker and projecting one without the other desynchronises them — and a count that changed when you blocked somebody is a quantity the blocked person's own behaviour can be tested against. A client draws such a preview as the hidden row rather than as text, with no sender name, and it is not revealable from the list. |
 | `POST /chats/direct` | `{user_id}` → `200 {chat: Chat}` — get-or-create, idempotent. Errors: `cannot_dm_self` (400), `not_in_family` (409, the caller belongs to no family), `not_same_family` (409), `user_not_found` (404). Plus `blocked` (409) when the CALLER has blocked this member. Only that direction refuses: somebody who has been blocked may go on opening and sending into the chat exactly as before, and it is the blocker who no longer sees it (see "Blocking a member"). |
 | `GET /chats/{id}/messages` | Query: `before_id` XOR `after_id` (optional), `limit` (default 50, max 200) → `200 {messages: [Message]}`. `before_id`: strictly older, **newest-first** (history pages). `after_id`: strictly newer, **oldest-first** (reconnect catch-up). Neither: the newest `limit`, newest-first. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
-| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"), and a body that begins `/draw ` — after one leading `@ai` there, or at the very start in an `ai` chat — asks it for a picture instead of an answer (see "Pictures"). In an `ai` chat `attachment_ids` naming photos is how a member shows the assistant a picture; whether the pixels leave the server depends on `ai_vision` and on the server having a vision deployment, and nothing about that is refused here. Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
+| `POST /chats/{id}/messages` | `{client_msg_id: "<uuid>", body, reply_to_message_id?, attachment_id?, poll?}` → `201 {message: Message}`. In the family chat a body containing `@ai` additionally reaches the assistant (see "Mentioning the assistant in the family chat"), and a body that begins `/draw ` — after one leading `@ai` there, or at the very start in an `ai` chat — asks it for a picture instead of an answer (see "Pictures"). In an `ai` chat `attachment_ids` naming photos is how a member shows the assistant a picture; whether the pixels leave the server depends on `ai_vision` and on the server having a vision deployment, and nothing about that is refused here. In the family chat, photos on an `@ai` message — or on the message it replies to through `reply_to_message_id` — reach it the same way, under the same two locks (see "Showing the assistant a picture from the family chat"). Retrying with the same `client_msg_id` returns the existing message as `200` — never a duplicate. Body: trimmed, non-empty, ≤ 4000 chars. `reply_to_message_id` is optional and must name a message in this same chat (see "Replies"). `attachment_ids: [34, 61]` claims 1–10 attachments this caller uploaded, in the order given; `attachment_id` (one id) is the legacy spelling of a one-element array, still accepted — sending BOTH is `validation`. A message carrying any may have an empty body. A location id must be the array's only element, and one id may not appear twice (`invalid_attachment`). `poll: {options: ["Pizza", "Pasta"]}` makes the message a poll (see "Polls"): the body is then the QUESTION and must be non-empty, `poll` and `attachment_id` are mutually exclusive, and only the family chat accepts one. Options: 2–10, each trimmed, non-empty, ≤ 100 characters, no two the same ignoring case. Errors: `blocked` (409, a direct chat with somebody the caller has blocked — see "Blocking a member"), `message_empty` (no body AND no attachment, or a poll with no question), `message_too_long`, `not_chat_member`, `message_not_found` (the reply target is not a message in this chat), `attachment_not_found`, `attachment_already_used`, `invalid_poll` (400 — a poll outside the family chat, alongside an attachment, or with options that break the rules above). |
 | `PATCH /chats/{id}/messages/{mid}` | `{body}` → `200 {message: Message}`. Author only. Replaces the body, stamps `edited_at` and the next `edit_seq`, and fans out `message_edited`. Body rules are the send rules: trimmed, non-empty, ≤ 4000 chars. Re-sending the body it already has is a no-op: no new seq, no fan-out. Errors: `message_empty`, `message_too_long`, `not_message_author` (403), `message_not_found` (404 — no such message *in this chat*), `not_chat_member`, `chat_not_found`. |
 | `GET /chats/{id}/edits` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {messages: [Message]}` ordered by `edit_seq` ascending — the edit catch-up, looped until a short page like `after_id`. Errors: `chat_not_found`, `not_chat_member`, `invalid_pagination`. |
 | `PUT /chats/{id}/messages/{mid}/vote` | `{option_id: 5}` → `200 {message_id, poll: {Poll}}`. Sets the caller's choice on a poll — an idempotent state-set, not a toggle (clients decide locally whether a tap means set or clear). One choice per member; there is no multiple choice. Re-PUT of the option already held is a no-op: no seq bump, no fan-out. Errors: `invalid_poll` (400 — no such option on this poll), `poll_closed` (409), `message_not_found` (404 — no such poll *in this chat*), `not_chat_member`, `chat_not_found`. |
@@ -2546,7 +3048,8 @@ unregistered deletes the row, as an ordinary push would.
 | Poll options | 2 minimum (fixed), 10 maximum |
 | Poll option text | 100 chars |
 | Family-chat history sent with a mention | 30 days / 200 messages / 40 000 chars, whichever binds first (fixed) |
-| Photos shown to the assistant with one question | 4, from that one message only (fixed) |
+| Photos shown to the assistant with one question | 4 — from that one message in a private thread; in the family chat, from the `@ai` message and the message it replies to together, and — only with `ai_history_photos` on — the transcript's newest photos filling whatever those two left of the same four (fixed) |
+| A picture prompt the assistant writes for itself (`draw_picture`) | the message-body ceiling, 4000 chars by default; over it is `ai_error`, never cut |
 | Largest photo shown to the assistant | 5 MiB after preferring the preview; a larger one is left out and the assistant is told so (fixed) |
 | Attachment size | 100 MB (`limits.max_attachment_bytes`; keep nginx in step) |
 | Attachments per message | 10 (`limits.max_attachments_per_message`; the fewest is 1, fixed) |

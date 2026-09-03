@@ -281,6 +281,7 @@ struct MacFamilyView: View {
             language: updated.language,
             aiHistory: updated.aiHistory,
             aiVision: updated.aiVision,
+            aiHistoryPhotos: updated.aiHistoryPhotos,
             maxMembers: updated.maxMembers)
     }
 

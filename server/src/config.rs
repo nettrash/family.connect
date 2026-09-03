@@ -6,6 +6,15 @@
 //! startup and fails fast with a precise message rather than letting a bad
 //! value surface later as a confusing runtime error (e.g. an idle timeout
 //! shorter than the ping interval would silently kill every socket).
+//!
+//! Unknown keys are IGNORED everywhere except under `[ai]` and its two
+//! sub-tables, where they fail the load by name (see
+//! [`reject_unknown_ai_keys`]). The asymmetry is deliberate: a mistyped
+//! `[limits]` key costs a default, while a mistyped — or misplaced — key
+//! under `[ai.*]` changes what leaves this server for a third party, and
+//! `contextual = false` written under `[ai.vision]` instead of
+//! `[ai.images]` is an opt-out that silently never happened. That is the
+//! worst outcome a config file can have, and it is worth a refused start.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -327,6 +336,16 @@ pub struct AiImagesConfig {
     /// answers with a URL instead of bytes.
     #[serde(default = "default_ai_image_max_bytes")]
     pub max_bytes: usize,
+
+    /// Whether the TEXT model may ask for a picture itself, by calling the
+    /// `draw_picture` tool the server declares on every ordinary question
+    /// once this section is configured (protocol.md, "Drawing without being
+    /// told to"). `true` by default — naming an images deployment is what
+    /// turns it on. `false` is the operator's way out for a text deployment
+    /// that answers 400 to a `tools` key; `/draw` keeps working either way,
+    /// because it never goes through the text model at all.
+    #[serde(default = "default_ai_images_contextual")]
+    pub contextual: bool,
 }
 
 /// One resolved provider call: where to POST it, which key opens it, what to
@@ -394,8 +413,15 @@ impl Default for AiImagesConfig {
             height: 0,
             response_format: String::new(),
             max_bytes: default_ai_image_max_bytes(),
+            contextual: default_ai_images_contextual(),
         }
     }
+}
+
+/// On. A server that can draw offers the model the tool; the switch exists
+/// for the deployment that cannot take one, not as a second thing to turn on.
+fn default_ai_images_contextual() -> bool {
+    true
 }
 
 fn default_ai_image_size() -> String {
@@ -550,6 +576,22 @@ impl AiConfig {
                 .to_string(),
             max_tokens: self.max_tokens,
         })
+    }
+
+    /// The images deployment for a picture the TEXT model asks for by
+    /// calling `draw_picture`, or `None` when this server cannot draw or the
+    /// operator has turned that path off (`[ai.images] contextual`).
+    ///
+    /// `/draw` does not go through this: it asks [`AiConfig::images_route`]
+    /// directly, and keeps working when this answers `None`. What this
+    /// decides is whether a text request DECLARES the tool at all — and a
+    /// request that declares none is byte for byte the request it always was
+    /// (protocol.md, "Drawing without being told to").
+    pub fn contextual_images_route(&self) -> Option<ModelRoute> {
+        if !self.images.contextual {
+            return None;
+        }
+        self.images_route()
     }
 
     /// Whether this server can look at a picture at all — the answer sent to
@@ -1116,6 +1158,112 @@ impl Default for PushConfig {
     }
 }
 
+/// The keys `[ai]` itself takes — the fields of [`AiConfig`], by their
+/// TOML names, plus the two sub-tables. Held beside the struct rather than
+/// derived from it because serde offers no way to list a struct's fields,
+/// and `deny_unknown_fields` cannot be used on [`AiImagesConfig`] (serde
+/// refuses it beside `flatten`). The tests hold each list to its struct:
+/// every key here must deserialize, and the example file — which
+/// documents every key — must pass this check uncommented.
+const AI_KEYS: &[&str] = &[
+    "enabled",
+    "endpoint",
+    "deployment",
+    "model",
+    "api_key",
+    "auth",
+    "api_version",
+    "system_prompt",
+    "max_tokens",
+    "history_messages",
+    "title",
+    "vision",
+    "images",
+];
+
+/// The fields of [`AiDeployment`] — what `[ai.vision]` takes, and what
+/// `[ai.images]` takes in addition to [`AI_IMAGES_OWN_KEYS`].
+const AI_DEPLOYMENT_KEYS: &[&str] = &[
+    "endpoint",
+    "deployment",
+    "model",
+    "api_key",
+    "auth",
+    "api_version",
+];
+
+/// The fields [`AiImagesConfig`] adds beside its flattened deployment.
+const AI_IMAGES_OWN_KEYS: &[&str] = &[
+    "size",
+    "width",
+    "height",
+    "response_format",
+    "max_bytes",
+    "contextual",
+];
+
+/// Refuse a key the `[ai]` tables do not know, by name and by table.
+///
+/// serde ignores unknown fields, which is right for most of this file — a
+/// key from a newer server costs nothing on an older one — and wrong for
+/// the three tables that decide what leaves this server for a provider.
+/// `contextual = false` under `[ai.vision]` sets nothing, and the tool the
+/// operator meant to withdraw is declared on every question anyway. A key
+/// that belongs to a sibling table is named as such, because that is the
+/// mistake the layout invites: the two sub-tables read alike.
+///
+/// Reads the raw document a second time, as a plain table, rather than
+/// threading the check through serde: the typed parse has already
+/// succeeded by the time this runs, so the document is well-formed and
+/// the second parse cannot fail differently.
+fn reject_unknown_ai_keys(raw: &str) -> Result<()> {
+    let document: toml::Table = toml::from_str(raw).context("parsing TOML config")?;
+    let Some(ai) = document.get("ai").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    let images_keys: Vec<&str> = AI_DEPLOYMENT_KEYS
+        .iter()
+        .chain(AI_IMAGES_OWN_KEYS)
+        .copied()
+        .collect();
+    let tables: [(&str, Option<&toml::Table>, &[&str]); 3] = [
+        ("[ai]", Some(ai), AI_KEYS),
+        (
+            "[ai.vision]",
+            ai.get("vision").and_then(toml::Value::as_table),
+            AI_DEPLOYMENT_KEYS,
+        ),
+        (
+            "[ai.images]",
+            ai.get("images").and_then(toml::Value::as_table),
+            &images_keys,
+        ),
+    ];
+    for (name, table, known) in &tables {
+        let Some(table) = table else { continue };
+        for key in table.keys() {
+            if known.contains(&key.as_str()) {
+                continue;
+            }
+            let belongs_to: Vec<&str> = tables
+                .iter()
+                .filter(|(other, _, keys)| other != name && keys.contains(&key.as_str()))
+                .map(|(other, _, _)| *other)
+                .collect();
+            let hint = if belongs_to.is_empty() {
+                format!("the keys it takes are {}", known.join(", "))
+            } else {
+                format!("it belongs under {}", belongs_to.join(" or "))
+            };
+            anyhow::bail!(
+                "unknown key `{key}` under {name} — {hint}. Refusing to start rather than \
+                 ignore it: a misplaced key here changes what leaves this server."
+            );
+        }
+    }
+    Ok(())
+}
+
 impl Config {
     /// Read, parse, and validate a config file.
     pub fn load(path: &Path) -> Result<Self> {
@@ -1127,6 +1275,7 @@ impl Config {
     /// Parse and validate from a TOML string (shared by `load` and tests).
     pub fn from_toml_str(raw: &str) -> Result<Self> {
         let cfg: Config = toml::from_str(raw).context("parsing TOML config")?;
+        reject_unknown_ai_keys(raw)?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -1518,6 +1667,139 @@ mod tests {
         );
         assert!(!cfg.ai.system_prompt.trim().is_empty());
         assert_eq!(cfg.ai.max_tokens, Config::default().ai.max_tokens);
+
+        // THE OPT-OUT SAMPLE IS IN THE TABLE THAT READS IT. The example
+        // used to show `contextual = true` above the `[ai.images]` header,
+        // i.e. under `[ai.vision]`, where uncommenting it set nothing and
+        // the tool stayed declared. Flip the documented line and the
+        // switch must actually move — and the example, uncommented, must
+        // carry no key the `[ai]` tables do not know (that is what
+        // `from_toml_str` succeeding above now proves).
+        assert!(
+            out.contains("\ncontextual = true\n"),
+            "the example documents the opt-out, uncommented: {out}"
+        );
+        assert!(cfg.ai.images.contextual, "the documented default is on");
+        let opted_out =
+            Config::from_toml_str(&out.replace("contextual = true", "contextual = false"))
+                .expect("still valid");
+        assert!(
+            !opted_out.ai.images.contextual,
+            "uncommenting the documented line where it is documented must turn it off"
+        );
+        assert!(opted_out.ai.contextual_images_route().is_none());
+        assert!(opted_out.ai.images_usable(), "`/draw` is untouched by it");
+    }
+
+    /// THE SILENT OPT-OUT. `contextual = false` under `[ai.vision]` used to
+    /// parse, set nothing, and leave the tool declared on every question.
+    /// It is refused now, by name, by table, and with the table it belongs
+    /// to — the file's own words back, as `the_auth_scheme_is_spelled_out`
+    /// does for a misspelt header.
+    #[test]
+    fn a_key_under_the_wrong_ai_table_fails_the_load_by_name() {
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str(
+                r#"
+[ai]
+enabled = true
+endpoint = "https://example.openai.azure.com"
+deployment = "text"
+api_key = "k"
+
+[ai.vision]
+deployment = "sees"
+contextual = false
+
+[ai.images]
+deployment = "draws"
+"#,
+            )
+            .unwrap_err()
+        );
+        assert!(err.contains("`contextual`"), "{err}");
+        assert!(err.contains("[ai.vision]"), "{err}");
+        assert!(err.contains("belongs under [ai.images]"), "{err}");
+
+        // A typo with no home anywhere lists what the table does take.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.images]\ndeployment = \"draws\"\nmax_byte = 1\n")
+                .unwrap_err()
+        );
+        assert!(err.contains("`max_byte`"), "{err}");
+        assert!(err.contains("[ai.images]"), "{err}");
+        assert!(err.contains("max_bytes"), "the keys it takes: {err}");
+
+        // And under `[ai]` itself.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai]\nenabled = true\nmodel_name = \"x\"\n").unwrap_err()
+        );
+        assert!(
+            err.contains("`model_name`") && err.contains("[ai]"),
+            "{err}"
+        );
+    }
+
+    /// The lists the check reads are held to the structs they mirror:
+    /// every key named there must be one the deserializer takes — a
+    /// renamed field with a stale list would refuse a valid file — and the
+    /// check must accept a file that uses all of them at once.
+    #[test]
+    fn every_known_ai_key_is_accepted_and_the_check_reads_all_three_tables() {
+        let mut raw = String::from("[ai]\n");
+        for key in AI_KEYS {
+            let value = match *key {
+                "vision" | "images" => continue,
+                "enabled" => "true".to_string(),
+                "auth" => "\"bearer\"".to_string(),
+                "max_tokens" | "history_messages" => "7".to_string(),
+                _ => format!("\"{key}\""),
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
+        raw.push_str("\n[ai.vision]\n");
+        for key in AI_DEPLOYMENT_KEYS {
+            let value = if *key == "auth" {
+                "\"api-key\"".to_string()
+            } else {
+                format!("\"{key}\"")
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
+        raw.push_str("\n[ai.images]\n");
+        for key in AI_DEPLOYMENT_KEYS.iter().chain(AI_IMAGES_OWN_KEYS) {
+            let value = match *key {
+                "auth" => "\"bearer\"".to_string(),
+                "width" | "height" | "max_bytes" => "1024".to_string(),
+                "contextual" => "false".to_string(),
+                _ => format!("\"{key}\""),
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
+        let cfg = Config::from_toml_str(&raw).unwrap_or_else(|err| panic!("{err:#}\n{raw}"));
+        // And they were READ, not merely tolerated.
+        assert_eq!(cfg.ai.title, "title");
+        assert_eq!(cfg.ai.history_messages, 7);
+        assert_eq!(cfg.ai.vision.api_version, "api_version");
+        assert_eq!(cfg.ai.images.width, 1024);
+        assert!(!cfg.ai.images.contextual);
+        assert_eq!(cfg.ai.images.deployment.auth, Some(AuthScheme::Bearer));
+    }
+
+    /// Everywhere ELSE an unknown key still costs nothing — the contract a
+    /// config from a newer server relies on — and an `[ai]` table that is
+    /// absent has nothing to check.
+    #[test]
+    fn unknown_keys_outside_the_ai_tables_are_still_ignored() {
+        let cfg = Config::from_toml_str(
+            "[server]\nbind = \"127.0.0.1:9000\"\nfuture_key = 1\n\n[limits]\nsomething = 2\n",
+        )
+        .expect("ignored, as before");
+        assert_eq!(cfg.server.bind, "127.0.0.1:9000");
+        assert!(Config::from_toml_str("[push]\nnew = true\n").is_ok());
     }
 
     #[test]
@@ -1656,6 +1938,55 @@ size = "1024x1024"
         cfg.enabled = false;
         assert!(!cfg.vision_usable());
         assert!(!cfg.images_usable());
+    }
+
+    /// Naming an images deployment is what lets the text model ask for a
+    /// picture; `contextual = false` is the way out for a text deployment
+    /// that refuses a `tools` key, and it leaves `/draw` untouched.
+    #[test]
+    fn the_draw_tool_follows_the_images_deployment_unless_turned_off() {
+        let mut cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://example.openai.azure.com".to_string(),
+            deployment: "text".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            cfg.contextual_images_route().is_none(),
+            "no images deployment, no tool"
+        );
+        cfg.images.deployment.deployment = "draws".to_string();
+        assert!(cfg.images.contextual, "on by default");
+        assert_eq!(
+            cfg.contextual_images_route().map(|route| route.url),
+            cfg.images_route().map(|route| route.url),
+            "the same deployment `/draw` reaches"
+        );
+        cfg.images.contextual = false;
+        assert!(cfg.contextual_images_route().is_none());
+        assert!(
+            cfg.images_route().is_some(),
+            "`/draw` still works: it never goes through the text model"
+        );
+
+        let parsed = Config::from_toml_str(
+            r#"
+[ai]
+enabled = true
+endpoint = "https://example.openai.azure.com"
+deployment = "text"
+api_key = "k"
+
+[ai.images]
+deployment = "draws"
+contextual = false
+"#,
+        )
+        .expect("parses");
+        assert!(!parsed.ai.images.contextual);
+        assert!(parsed.ai.contextual_images_route().is_none());
+        assert!(parsed.ai.images_usable());
     }
 
     /// A sub-section may live somewhere else entirely — an image model on a

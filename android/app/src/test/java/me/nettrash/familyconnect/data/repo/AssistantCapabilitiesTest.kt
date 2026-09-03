@@ -112,13 +112,17 @@ class AssistantCapabilitiesTest {
     private fun mine(
         assistant: AssistantDto?,
         aiVision: Boolean,
+        aiHistoryPhotos: Boolean = false,
+        aiHistory: Boolean = true,
     ) = ApiResult.Ok(
         FamilyMineResponse(
             family = FamilyDto(
                 id = 3,
                 name = "The Smiths",
                 joinPolicy = "open",
+                aiHistory = aiHistory,
                 aiVision = aiVision,
+                aiHistoryPhotos = aiHistoryPhotos,
             ),
             members = listOf(memberDto(ME, "anna", role = "owner")),
             assistant = assistant,
@@ -258,5 +262,97 @@ class AssistantCapabilitiesTest {
 
         assertThat(familyApi.aiVisionSet).containsExactly(false)
         assertThat(settings.state.first().familyAiVision).isFalse()
+    }
+
+    // -- The third switch, and the history switch it needs ----------------------
+
+    /**
+     * All three family switches are mirrored from one read, because the
+     * family composer's strip has to know all three to say what a mention
+     * is about to carry (docs/protocol.md, "Recent photos from the family
+     * chat"): the transcript, a pointed-at photo, and the transcript's
+     * recent photos under both.
+     */
+    @Test
+    fun `refreshMine mirrors all three family switches`() = runTest(dispatcher) {
+        val repository = repository()
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true, aiHistoryPhotos = true, aiHistory = false)
+        repository.refreshMine()
+
+        val state = settings.state.first()
+        assertThat(state.familyAiVision).isTrue()
+        assertThat(state.familyAiHistoryPhotos).isTrue()
+        assertThat(state.familyAiHistory).isFalse()
+
+        // And back off again, `false` written rather than skipped.
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true, aiHistoryPhotos = false, aiHistory = true)
+        repository.refreshMine()
+        assertThat(settings.state.first().familyAiHistoryPhotos).isFalse()
+        assertThat(settings.state.first().familyAiHistory).isTrue()
+    }
+
+    /** A server that predates the third switch leaves it off. */
+    @Test
+    fun `a server that predates the third switch leaves it off`() = runTest(dispatcher) {
+        val repository = repository()
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true)
+        repository.refreshMine()
+        assertThat(settings.state.first().familyAiHistoryPhotos).isFalse()
+        assertThat(settings.state.first().familyAiHistory).isTrue()
+    }
+
+    @Test
+    fun `the owner's third switch reaches the wire and comes back to the composer`() =
+        runTest(dispatcher) {
+            val repository = repository()
+            familyApi.createResult = ApiResult.Ok(
+                FamilyResponse(
+                    FamilyDto(id = 3, name = "The Smiths", joinPolicy = "open", aiVision = true, aiHistoryPhotos = true),
+                ),
+            )
+
+            repository.setAiHistoryPhotos(true)
+
+            assertThat(familyApi.aiHistoryPhotosSet).containsExactly(true)
+            assertThat(settings.state.first().familyAiHistoryPhotos).isTrue()
+        }
+
+    /**
+     * Turning `ai_vision` off turns the third switch off in the same
+     * write on the server, whether or not this device asked — so the
+     * answer to `setAiVision` is mirrored for BOTH, or the composer would
+     * go on announcing recent photos the server will never send.
+     */
+    @Test
+    fun `turning pictures off takes the third switch with it`() = runTest(dispatcher) {
+        val repository = repository()
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true, aiHistoryPhotos = true)
+        repository.refreshMine()
+        assertThat(settings.state.first().familyAiHistoryPhotos).isTrue()
+
+        familyApi.createResult = ApiResult.Ok(
+            FamilyResponse(
+                FamilyDto(id = 3, name = "The Smiths", joinPolicy = "open", aiVision = false, aiHistoryPhotos = false),
+            ),
+        )
+        repository.setAiVision(false)
+
+        assertThat(familyApi.aiHistoryPhotosSet).isEmpty()
+        assertThat(settings.state.first().familyAiVision).isFalse()
+        assertThat(settings.state.first().familyAiHistoryPhotos).isFalse()
+    }
+
+    /** The history switch is mirrored too, so the strip can tell the third one is inert. */
+    @Test
+    fun `the history switch is mirrored from the owner's PATCH`() = runTest(dispatcher) {
+        val repository = repository()
+        familyApi.createResult = ApiResult.Ok(
+            FamilyResponse(
+                FamilyDto(id = 3, name = "The Smiths", joinPolicy = "open", aiHistory = false),
+            ),
+        )
+        repository.setAiHistory(false)
+        assertThat(familyApi.aiHistorySet).containsExactly(false)
+        assertThat(settings.state.first().familyAiHistory).isFalse()
     }
 }

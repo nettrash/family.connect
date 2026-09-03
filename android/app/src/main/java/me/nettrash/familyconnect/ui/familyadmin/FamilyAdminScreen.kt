@@ -652,6 +652,50 @@ fun FamilyAdminScreen(
                     )
                     SectionDivider()
                 }
+
+                // -- The THIRD switch: the chat's recent photos too ---------------------
+                // PRESENT even on a server that cannot see — disabled, with
+                // the reason — where the switch above is absent. Not an
+                // inconsistency: the protocol asks for exactly this, because
+                // one of the two reasons is something the owner can act on
+                // (turn the switch above on first; the server refuses this
+                // while it is off) and the other is something they deserve
+                // to be told rather than left to find missing
+                // (docs/protocol.md, "Recent photos from the family chat" —
+                // "What a client shows"). The sentence under it says what
+                // leaves and what it costs, then the reason it is withheld,
+                // or that it is inert while the history switch is off.
+                val historyPhotosSwitch = state.historyPhotosSwitch
+                val historyPhotosEnabled = !state.busy && historyPhotosSwitch.isEnabled
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.s_assistant_history_photos)) },
+                    supportingContent = {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(stringResource(R.string.s_assistant_history_photos_explanation))
+                            when (historyPhotosSwitch) {
+                                FamilyAdminViewModel.HistoryPhotosSwitch.OFFERED ->
+                                    if (!state.aiHistory) {
+                                        Text(stringResource(R.string.s_assistant_history_photos_needs_history))
+                                    }
+                                FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_NO_VISION_DEPLOYMENT ->
+                                    Text(stringResource(R.string.s_assistant_history_photos_no_deployment))
+                                FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_VISION_OFF ->
+                                    Text(stringResource(R.string.s_assistant_history_photos_needs_vision))
+                            }
+                        }
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = state.aiHistoryPhotos,
+                            onCheckedChange = viewModel::setAiHistoryPhotos,
+                            enabled = historyPhotosEnabled,
+                        )
+                    },
+                    modifier = Modifier.clickable(enabled = historyPhotosEnabled) {
+                        viewModel.setAiHistoryPhotos(!state.aiHistoryPhotos)
+                    },
+                )
+                SectionDivider()
             }
 
             // -- Members ------------------------------------------------------------

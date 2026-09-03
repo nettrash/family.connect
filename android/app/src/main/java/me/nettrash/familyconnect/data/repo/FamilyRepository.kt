@@ -271,8 +271,14 @@ class FamilyRepository @Inject constructor(
                 images = result.value.assistant?.images == true,
             )
             // …and what this FAMILY allows, which is a different question
-            // with a different answer and its own owner-only switch.
+            // with a different answer and its own owner-only switch —
+            // three of them now: the transcript, a pointed-at photo, and
+            // (the third, under both) the transcript's recent photos. All
+            // three mirrored, so the family composer's strip can say what
+            // a mention is about to carry without a round trip.
+            settings.setFamilyAiHistory(result.value.family.aiHistory)
             settings.setFamilyAiVision(result.value.family.aiVision)
+            settings.setFamilyAiHistoryPhotos(result.value.family.aiHistoryPhotos)
             // The second apply of the same complete state-set. Idempotent
             // and last-writer-wins, which is why the fixed resync order
             // (/me, then /families/mine) needs no coordination — and why
@@ -319,9 +325,16 @@ class FamilyRepository @Inject constructor(
     suspend fun setLanguage(tag: String?): ApiResult<FamilyResponse> =
         familyApi.setLanguage(tag)
 
-    /** Owner-only. */
-    suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> =
-        familyApi.setAiHistory(enabled)
+    /**
+     * Owner-only. Mirrored onto the settings for the strip's sake: with
+     * history off there is no transcript, so the third switch is inert
+     * and the family composer must stop announcing recent photos.
+     */
+    suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> {
+        val result = familyApi.setAiHistory(enabled)
+        if (result is ApiResult.Ok) settings.setFamilyAiHistory(result.value.family.aiHistory)
+        return result
+    }
 
     /**
      * Owner-only: the family's half of the picture rule.
@@ -334,7 +347,27 @@ class FamilyRepository @Inject constructor(
      */
     suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> {
         val result = familyApi.setAiVision(enabled)
-        if (result is ApiResult.Ok) settings.setFamilyAiVision(result.value.family.aiVision)
+        if (result is ApiResult.Ok) {
+            settings.setFamilyAiVision(result.value.family.aiVision)
+            // Turning `ai_vision` OFF turns the third switch off in the
+            // same write on the server, asked or not — so the answer is
+            // the truth for both, and both are mirrored.
+            settings.setFamilyAiHistoryPhotos(result.value.family.aiHistoryPhotos)
+        }
+        return result
+    }
+
+    /**
+     * Owner-only: the third switch (docs/protocol.md, "Recent photos from
+     * the family chat"). Mirrored for [setAiVision]'s reason — the family
+     * composer reads it to say that a mention may carry the chat's recent
+     * photos, and the owner's own device must say so at once.
+     */
+    suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> {
+        val result = familyApi.setAiHistoryPhotos(enabled)
+        if (result is ApiResult.Ok) {
+            settings.setFamilyAiHistoryPhotos(result.value.family.aiHistoryPhotos)
+        }
         return result
     }
 

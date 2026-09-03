@@ -144,13 +144,16 @@ data class SettingsState(
      * Whether this server can MAKE a picture (`assistant.images`). The
      * whole of the `/draw` capability check — generation has no family
      * switch, because what leaves is strictly smaller than a text
-     * question: the words after the token and nothing else.
+     * question: the words after the token and nothing else. Since #56 it
+     * also means the assistant may draw unasked; nothing here changes for
+     * that (docs/protocol.md, "Drawing without being told to").
      */
     val assistantImages: Boolean = false,
     /**
-     * Whether the family's OWNER has allowed a photograph attached in a
-     * member's own assistant chat to be shown to the model
-     * (`Family.ai_vision`).
+     * Whether the family's OWNER has allowed a photograph a member points
+     * the assistant at to be shown to the model (`Family.ai_vision`) — in
+     * their own assistant chat, and since #56 on an `@ai` message in the
+     * family chat or on the message it replies to.
      *
      * FALSE by default — the deliberate opposite of `ai_history` — and
      * false for every family that existed before it. Kept here beside
@@ -159,6 +162,25 @@ data class SettingsState(
      * goes with the session: another server's family is another answer.
      */
     val familyAiVision: Boolean = false,
+    /**
+     * Whether a mention of the assistant in the family chat carries the
+     * recent history of that chat (`Family.ai_history`). TRUE by default,
+     * as on the wire; here only so the family composer can tell that the
+     * third switch below is inert — without a transcript no photo from
+     * it can travel (docs/protocol.md, "Recent photos from the family
+     * chat").
+     */
+    val familyAiHistory: Boolean = true,
+    /**
+     * The family's THIRD switch (`Family.ai_history_photos`): whether an
+     * `@ai` mention may also be shown the chat's most recent photographs
+     * — pictures nobody pointed the assistant at. FALSE by default and
+     * for every family that predates it; only ever true while
+     * [familyAiVision] is, because the server refuses the other state.
+     * Kept here for [familyAiVision]'s reason: the composer's strip has
+     * to say "up to N recent photos" without a round trip.
+     */
+    val familyAiHistoryPhotos: Boolean = false,
     /**
      * Whether the server signals voice calls (`GET /me` → calls_enabled).
      * Account-scoped like the assistant: a different server may have them
@@ -238,6 +260,16 @@ interface SettingsRepository {
      */
     suspend fun setFamilyAiVision(enabled: Boolean)
 
+    /** Record the family's history switch, by the same rule. */
+    suspend fun setFamilyAiHistory(enabled: Boolean)
+
+    /**
+     * Record the family's third switch, by the same rule — `false`
+     * included, and especially: the server turns this off whenever
+     * `ai_vision` goes off, whether or not this device asked.
+     */
+    suspend fun setFamilyAiHistoryPhotos(enabled: Boolean)
+
     /** Record what `GET /me` said about voice calls on this server. */
     suspend fun setCallsEnabled(enabled: Boolean)
 
@@ -312,6 +344,12 @@ class DataStoreSettingsRepository @Inject constructor(
         // explicit `false` say the same thing and neither can be read as
         // permission (docs/protocol.md, "Pictures").
         val FAMILY_AI_VISION = booleanPreferencesKey("family_ai_vision")
+        // Stored plain and read with the protocol's own default (true) when
+        // missing — the only one of the three whose absence means "on".
+        val FAMILY_AI_HISTORY = booleanPreferencesKey("family_ai_history")
+        // Plain, like FAMILY_AI_VISION and for its reason: a missing key
+        // and an explicit `false` say the same thing.
+        val FAMILY_AI_HISTORY_PHOTOS = booleanPreferencesKey("family_ai_history_photos")
         val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
     }
@@ -347,6 +385,8 @@ class DataStoreSettingsRepository @Inject constructor(
             assistantVision = prefs[Keys.ASSISTANT_VISION] == true,
             assistantImages = prefs[Keys.ASSISTANT_IMAGES] == true,
             familyAiVision = prefs[Keys.FAMILY_AI_VISION] == true,
+            familyAiHistory = prefs[Keys.FAMILY_AI_HISTORY] ?: true,
+            familyAiHistoryPhotos = prefs[Keys.FAMILY_AI_HISTORY_PHOTOS] == true,
             callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
         )
@@ -453,6 +493,15 @@ class DataStoreSettingsRepository @Inject constructor(
     override suspend fun setFamilyAiVision(enabled: Boolean) {
         // Unconditional, false included. See the interface.
         dataStore.edit { it[Keys.FAMILY_AI_VISION] = enabled }
+    }
+
+    override suspend fun setFamilyAiHistory(enabled: Boolean) {
+        dataStore.edit { it[Keys.FAMILY_AI_HISTORY] = enabled }
+    }
+
+    override suspend fun setFamilyAiHistoryPhotos(enabled: Boolean) {
+        // Unconditional, false included. See the interface.
+        dataStore.edit { it[Keys.FAMILY_AI_HISTORY_PHOTOS] = enabled }
     }
 
     override suspend fun setCallsEnabled(enabled: Boolean) {

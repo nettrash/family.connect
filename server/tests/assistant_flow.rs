@@ -1091,14 +1091,47 @@ struct ProviderCall {
     raw: String,
 }
 
+/// A tool call the chat mock is scripted to answer with, instead of words.
+#[derive(Debug, Clone, Default)]
+struct ScriptedCall {
+    /// Words streamed BEFORE the call, for the "both" case.
+    words_first: Option<String>,
+    name: String,
+    /// The raw arguments JSON, sent in pieces the way Azure sends it.
+    arguments: String,
+}
+
 #[derive(Default)]
 struct MockProvider {
     calls: std::sync::Mutex<Vec<ProviderCall>>,
+    /// What the chat deployments answer with next: words unless a test
+    /// scripted a tool call.
+    script: std::sync::Mutex<Option<ScriptedCall>>,
 }
 
 impl MockProvider {
     fn calls(&self) -> Vec<ProviderCall> {
         self.calls.lock().expect("mock lock").clone()
+    }
+
+    /// Answer the next chat request with a tool call, streamed the way a
+    /// real deployment streams one — see `tool_call_stream`.
+    fn answer_with_tool_call(&self, name: &str, arguments: &str) {
+        *self.script.lock().expect("mock lock") = Some(ScriptedCall {
+            words_first: None,
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        });
+    }
+
+    /// The same, after some words: a model that says "here you are" and
+    /// then draws.
+    fn answer_with_words_then_tool_call(&self, words: &str, name: &str, arguments: &str) {
+        *self.script.lock().expect("mock lock") = Some(ScriptedCall {
+            words_first: Some(words.to_string()),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        });
     }
 
     fn capture(&self, path: &str, body: Value) {
@@ -1151,23 +1184,68 @@ fn jpeg_bytes() -> Vec<u8> {
 }
 
 /// The chat deployments, text and vision alike: capture, then answer with the
-/// server-sent events `stream_reply` parses.
+/// server-sent events `stream_reply` parses — words, or the tool call a test
+/// scripted.
 async fn mock_chat(
     axum::extract::Path(deployment): axum::extract::Path<String>,
     State(mock): State<Arc<MockProvider>>,
     Json(body): Json<Value>,
 ) -> impl axum::response::IntoResponse {
     mock.capture(&format!("/chat/{deployment}"), body);
-    let events = concat!(
-        "data: {\"choices\":[{\"delta\":{\"content\":\"a picture of \"}}]}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"content\":\"something\"}}],",
-        "\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3}}\n\n",
-        "data: [DONE]\n\n",
-    );
+    let script = mock.script.lock().expect("mock lock").clone();
+    let events = match script {
+        Some(call) => tool_call_stream(&call),
+        None => concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"a picture of \"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"something\"}}],",
+            "\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3}}\n\n",
+            "data: [DONE]\n\n",
+        )
+        .to_string(),
+    };
     (
         [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
         events,
     )
+}
+
+/// A tool call as Azure streams one: the name on the first chunk with empty
+/// arguments, then the arguments JSON a piece at a time under the same
+/// `index`, then a `finish_reason` chunk, then the usage chunk with its
+/// empty `choices`. Three pieces, cut on character boundaries, so the
+/// server has to JOIN them before anything parses — the accumulation is
+/// exercised by a real stream here rather than by a unit test alone.
+fn tool_call_stream(call: &ScriptedCall) -> String {
+    let mut out = String::new();
+    if let Some(words) = &call.words_first {
+        out.push_str(&format!(
+            "data: {}\n\n",
+            json!({"choices": [{"delta": {"content": words}}]})
+        ));
+    }
+    out.push_str(&format!(
+        "data: {}\n\n",
+        json!({"choices": [{"delta": {"role": "assistant", "content": null,
+            "tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                "function": {"name": call.name, "arguments": ""}}]},
+            "finish_reason": null}]})
+    ));
+    let chars: Vec<char> = call.arguments.chars().collect();
+    let cuts = [0, chars.len() / 3, 2 * chars.len() / 3, chars.len()];
+    for window in cuts.windows(2) {
+        let piece: String = chars[window[0]..window[1]].iter().collect();
+        out.push_str(&format!(
+            "data: {}\n\n",
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                "function": {"arguments": piece}}]}, "finish_reason": null}]})
+        ));
+    }
+    out.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n");
+    out.push_str(
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":9}}\n\n",
+    );
+    out.push_str("data: [DONE]\n\n");
+    out
 }
 
 /// The images deployment: capture, then answer with one inline PNG.
@@ -1262,6 +1340,124 @@ async fn server_with_pictures_tweaked(
     })
     .await
 }
+
+/// A server whose assistant can only TALK, pointed at the mock — the shape
+/// every family without `[ai.vision]` or `[ai.images]` runs, and the one
+/// whose requests must not change.
+async fn server_with_text_only(addr: SocketAddr) -> TestServer {
+    spawn_server_with_config(move |cfg| {
+        cfg.ai.enabled = true;
+        cfg.ai.endpoint = format!("http://{addr}");
+        cfg.ai.deployment = TEXT_DEPLOYMENT.to_string();
+        cfg.ai.api_key = "test-key".to_string();
+        cfg.ai.title = "Assistant".to_string();
+    })
+    .await
+}
+
+/// Send a message that replies to another, with attachments — a member
+/// pointing the assistant at a picture already in the chat.
+async fn reply_with(
+    ts: &TestServer,
+    token: &str,
+    chat_id: i64,
+    body: &str,
+    reply_to: i64,
+    attachment_ids: Vec<i64>,
+) -> Value {
+    let response = ts
+        .post(
+            token,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": uuid::Uuid::new_v4().to_string(),
+                "body": body,
+                "reply_to_message_id": reply_to,
+                "attachment_ids": attachment_ids,
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), 201, "replying {body:?} to {reply_to}");
+    let sent: Value = response.json().await.expect("JSON");
+    sent["message"].clone()
+}
+
+/// Upload a photo whose bytes carry a recognisable marker, so a test can
+/// tell which picture landed where in a request. The marker sits after the
+/// JPEG magic, where `matches_magic` does not look — and it is on the
+/// ORIGINAL as well as the preview, because identical originals are stored
+/// once per family and would share one preview file.
+async fn upload_marked_photo(ts: &TestServer, token: &str, marker: u8) -> i64 {
+    let mut original = jpeg_bytes();
+    original[8] = marker;
+    let id = upload_raw_photo(ts, token, "image/jpeg", original).await;
+    let mut preview = jpeg_bytes();
+    preview[8] = marker;
+    let response = ts
+        .put_bytes(
+            token,
+            &format!("/attachments/{id}/preview"),
+            "image/jpeg",
+            preview,
+        )
+        .await;
+    assert_eq!(response.status(), 204, "uploading the marked preview");
+    id
+}
+
+/// The base64 of a marked preview, as it appears inside a data URL.
+fn marked_preview_base64(marker: u8) -> String {
+    let mut preview = jpeg_bytes();
+    preview[8] = marker;
+    base64_standard(&preview)
+}
+
+/// The parts of the one user turn of a multi-part request: the text part,
+/// and the image data URLs in the order they were sent.
+fn user_turn_parts(call: &ProviderCall) -> (String, Vec<String>) {
+    let messages = call.body["messages"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a chat call carries messages: {}", call.raw));
+    let user = messages
+        .iter()
+        .find(|message| message["role"] == "user")
+        .unwrap_or_else(|| panic!("no user turn in {}", call.raw));
+    let parts = user["content"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a turn with pictures is multi-part: {}", call.raw));
+    let text = parts
+        .iter()
+        .find(|part| part["type"] == "text")
+        .and_then(|part| part["text"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let images = parts
+        .iter()
+        .filter(|part| part["type"] == "image_url")
+        .filter_map(|part| part["image_url"]["url"].as_str())
+        .map(str::to_string)
+        .collect();
+    (text, images)
+}
+
+/// The system prompt a request carried — read on its own, because the user
+/// turn beside it is multi-part when pictures travel.
+fn system_prompt_of(call: &ProviderCall) -> String {
+    call.body["messages"]
+        .as_array()
+        .and_then(|messages| messages.iter().find(|message| message["role"] == "system"))
+        .and_then(|message| message["content"].as_str())
+        .unwrap_or_else(|| panic!("no system message in {}", call.raw))
+        .to_string()
+}
+
+/// The configured prompt the test harness leaves in place, and the language
+/// line every request ends on when the asking device names none — the two
+/// fixed halves of every exact-shape pin below.
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant in a family's private chat app. Answer briefly and plainly. \
+     You can only see this one conversation.";
+const MIRROR_LANGUAGE: &str = "Answer in the language the message you were sent is written in, whatever language these \
+     instructions are in.";
 
 /// Upload a photo and hand back its attachment id.
 async fn upload_photo(ts: &TestServer, token: &str, with_preview: bool) -> i64 {
@@ -1706,12 +1902,22 @@ async fn an_earlier_photo_in_the_thread_is_never_sent_again() {
     );
 }
 
-/// `@ai` never sends a picture. Not at either `ai_history` setting, not on a
-/// family that has turned `ai_vision` on, not ever — the photograph in a
-/// family chat is usually somebody else's.
+// -- a photograph from the family chat (#56) ---------------------------------
+//
+// "`@ai` never sends a picture" was the rule, and the paragraph that argued
+// it is still in protocol.md ("Pictures"), followed by the amendment that
+// overruled it: a photograph ON the mentioning message, or on the message it
+// replies to, may travel — under the same two locks and the same bounds as a
+// private question — and a photograph anywhere ELSE in the window still
+// never does. Every test below is one edge of that line.
+
+/// A photo the member attached to the `@ai` message itself, on a family
+/// whose owner has allowed pictures: it reaches the VISION deployment,
+/// inline, with the placeholder in the text and a note saying which message
+/// it is on.
 #[tokio::test]
 #[ignore = "requires PostgreSQL"]
-async fn a_mention_never_sends_a_picture_even_with_vision_allowed() {
+async fn a_photo_on_the_mention_itself_reaches_the_vision_deployment() {
     let (mock, addr) = spawn_mock_provider().await;
     let ts = server_with_pictures(addr).await;
     let (owner, _) = ts.register("owner", "Olive").await;
@@ -1723,15 +1929,1326 @@ async fn a_mention_never_sends_a_picture_even_with_vision_allowed() {
     let photo = upload_photo(&ts, &owner, true).await;
     say_with(&ts, &owner, family_chat, "@ai what is this?", vec![photo]).await;
 
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    assert_eq!(
+        inline_images(&call),
+        1,
+        "the one photo, inline, as a data URL: {}",
+        call.raw
+    );
+    let (text, _) = user_turn_parts(&call);
+    assert_eq!(
+        text, "[photo] @ai what is this?",
+        "the placeholder rides in the text exactly as a private question's does"
+    );
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains("ONE photograph attached to the message that mentioned you"),
+        "the model is told which message it is on: {system}"
+    );
+    assert!(
+        system.contains("pointed you at them deliberately"),
+        "and why it can see it: {system}"
+    );
+    assert!(
+        system.contains("[photo] marker"),
+        "and that every other marker is a picture it was NOT shown: {system}"
+    );
+    assert!(
+        mock.to_deployment(TEXT_DEPLOYMENT).is_empty(),
+        "the text deployment saw none of it"
+    );
+}
+
+/// Replying to a photo with `@ai` is a member pointing the assistant at
+/// that picture. It travels — and `ai_history` has no say: the quoted
+/// message goes at BOTH settings, and its photo is part of it.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn replying_to_a_photo_with_a_mention_shows_the_assistant_that_photo() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    ts.patch(
+        &owner,
+        "/families/mine",
+        json!({"ai_vision": true, "ai_history": false}),
+    )
+    .await;
+    let family_chat = ts.family_chat_id(&owner).await;
+
+    // Olive's photo, with no caption — the message that used to vanish
+    // from a quote altogether, because an empty body dropped it.
+    let photo = upload_photo(&ts, &owner, true).await;
+    let shot = say_with(&ts, &owner, family_chat, "", vec![photo]).await;
+    let shot_id = shot["id"].as_i64().expect("id");
+    reply_with(
+        &ts,
+        &member,
+        family_chat,
+        "@ai what is this?",
+        shot_id,
+        vec![],
+    )
+    .await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 1, "{}", call.raw);
+    let (text, _) = user_turn_parts(&call);
+    assert_eq!(
+        text,
+        "[The member replied to this message from Olive]\n[photo]\n[End of quoted message]\n\n@ai what is this?",
+        "the quote is there — a placeholder is enough to quote by now"
+    );
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains("ONE photograph on the message it quotes"),
+        "told which message: {system}"
+    );
+    assert!(
+        !system.contains("Here is what was recently said"),
+        "history is off, and that changed nothing about the photo: {system}"
+    );
+    assert!(mock.to_deployment(TEXT_DEPLOYMENT).is_empty());
+}
+
+/// THE LINE. A photograph anywhere else in the window — the message before
+/// the mention, however plainly the question is about it — still never
+/// travels. It is `[photo]` in the transcript, and the request goes to the
+/// text deployment exactly as it always has. This is the case the old rule
+/// worried about most: somebody else's picture leaving because a third
+/// person mentioned the assistant.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_photo_elsewhere_in_the_window_still_never_travels() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    ts.patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    let family_chat = ts.family_chat_id(&owner).await;
+
+    let photo = upload_photo(&ts, &owner, true).await;
+    say_with(&ts, &owner, family_chat, "look at this", vec![photo]).await;
+    // Neither a reply nor an attachment: the assistant was not pointed at
+    // anything, whatever the words say.
+    say(&ts, &member, family_chat, "@ai what did Olive just send?").await;
+
     let call = mock.wait_for(TEXT_DEPLOYMENT).await;
     assert!(
         !call.raw.contains("data:image"),
-        "a mention carries the placeholder and nothing more: {}",
+        "no pixels from a message the mention did not touch: {}",
+        call.raw
+    );
+    assert!(
+        call.raw.contains("Olive: [photo] look at this"),
+        "it is the transcript's placeholder, as it always was: {}",
         call.raw
     );
     assert!(
         mock.to_deployment(VISION_DEPLOYMENT).is_empty(),
-        "the vision deployment is unreachable from the family chat"
+        "and the vision deployment is not reached at all"
+    );
+}
+
+/// EITHER LOCK SHUT and the mention with a photo is the text request it was
+/// before — the same body from a server with no vision deployment and from
+/// a family that has not turned `ai_vision` on, pinned to the byte.
+///
+/// The one thing that differs from the request at d654a4f is the `[photo]`
+/// placeholder in the text: the mentioning message's own attachments now
+/// render as the placeholders protocol.md always said a mention carried
+/// (and which, until #56, only the transcript ever did).
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_either_lock_shut_a_mention_with_a_photo_is_the_text_request_it_always_was() {
+    // Lock two shut: a server that CAN see, on a family that has not said so
+    // (the default, for every family).
+    let (mock_a, addr_a) = spawn_mock_provider().await;
+    let ts_a = server_with_pictures(addr_a).await;
+    let (owner_a, _) = ts_a.register("owner", "Olive").await;
+    ts_a.create_family(&owner_a, "The Smiths").await;
+    let chat_a = ts_a.family_chat_id(&owner_a).await;
+    let photo = upload_photo(&ts_a, &owner_a, true).await;
+    say_with(&ts_a, &owner_a, chat_a, "@ai what is this?", vec![photo]).await;
+    let call_a = mock_a.wait_for(TEXT_DEPLOYMENT).await;
+
+    // Lock one shut: a server that cannot see, on a family that has said it
+    // may — the switch on a server with no eyes changes nothing.
+    let (mock_b, addr_b) = spawn_mock_provider().await;
+    let ts_b = server_with_text_only(addr_b).await;
+    let (owner_b, _) = ts_b.register("owner", "Olive").await;
+    ts_b.create_family(&owner_b, "The Smiths").await;
+    ts_b.patch(&owner_b, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    let chat_b = ts_b.family_chat_id(&owner_b).await;
+    let photo = upload_photo(&ts_b, &owner_b, true).await;
+    say_with(&ts_b, &owner_b, chat_b, "@ai what is this?", vec![photo]).await;
+    let call_b = mock_b.wait_for(TEXT_DEPLOYMENT).await;
+
+    let expected_messages = json!([
+        {"role": "system", "content": format!(
+            "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{MIRROR_LANGUAGE}",
+            family_connect::handlers_ai::MENTION_INSTRUCTION
+        )},
+        {"role": "user", "content": "[photo] @ai what is this?"},
+    ]);
+    assert_eq!(
+        call_b.body,
+        json!({
+            "max_tokens": 1024,
+            "messages": expected_messages,
+            "model": TEXT_DEPLOYMENT,
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        }),
+        "a text-only server: no pixels, no vision note, no tools key"
+    );
+    // The draw-capable server sends the same request plus its one tool, and
+    // nothing else differs.
+    let mut without_tool = call_a.body.clone();
+    let tools = without_tool
+        .as_object_mut()
+        .expect("an object")
+        .remove("tools")
+        .expect("a server that can draw declares its tool");
+    assert_eq!(tools, json!([family_connect::ai::draw_picture_tool()]));
+    assert_eq!(
+        without_tool, call_b.body,
+        "either lock shut is the same request, to the same deployment"
+    );
+    assert!(
+        mock_a.to_deployment(VISION_DEPLOYMENT).is_empty()
+            && mock_b.to_deployment(VISION_DEPLOYMENT).is_empty()
+    );
+}
+
+/// A mention with no picture on it or on its quote is byte for byte the
+/// request it was before #56 — captured from d654a4f and pinned whole.
+/// The text deployment is a model families are already talking to, and a
+/// request that changed shape under them is how a working assistant stops
+/// working.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_text_only_mention_serialises_exactly_as_before() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_text_only(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let family_chat = ts.family_chat_id(&owner).await;
+    say(&ts, &owner, family_chat, "@ai what is the weather").await;
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    let expected: Value = serde_json::from_str(concat!(
+        r#"{"max_tokens":1024,"messages":[{"content":"You are a helpful assistant in a family's private chat app. Answer briefly and plainly. You can only see this one conversation.\n\nYou have been mentioned with @ai in a family group chat. You can see ONLY the message that mentioned you, and the message it quotes when there is one; you cannot see the rest of the conversation, who else is in it, or anything said earlier. If answering needs context you were not given, say so in one line and ask for it. Keep the answer short — this is a group chat, not a document.\n\nAnswer in the language the message you were sent is written in, whatever language these instructions are in.","role":"system"},"#,
+        r#"{"content":"@ai what is the weather","role":"user"}],"model":"test-gpt-oss","stream":true,"stream_options":{"include_usage":true}}"#,
+    ))
+    .expect("the pinned request is JSON");
+    assert_eq!(call.body, expected, "{}", call.raw);
+}
+
+/// FOUR ACROSS BOTH MESSAGES, the mentioning message's first — and the fifth
+/// is named, with the message it was on. Distinct previews, so the order
+/// in the request is asserted rather than assumed.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn five_photos_across_a_mention_and_its_quote_send_four_and_name_the_fifth() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    ts.patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    let family_chat = ts.family_chat_id(&owner).await;
+
+    // Olive's album of three, then Junior's reply carrying two of their own.
+    let album = vec![
+        upload_marked_photo(&ts, &owner, 0xA1).await,
+        upload_marked_photo(&ts, &owner, 0xA2).await,
+        upload_marked_photo(&ts, &owner, 0xA3).await,
+    ];
+    let shot = say_with(&ts, &owner, family_chat, "beach day", album).await;
+    let shot_id = shot["id"].as_i64().expect("id");
+    let mine = vec![
+        upload_marked_photo(&ts, &member, 0xB1).await,
+        upload_marked_photo(&ts, &member, 0xB2).await,
+    ];
+    reply_with(
+        &ts,
+        &member,
+        family_chat,
+        "@ai which is best?",
+        shot_id,
+        mine,
+    )
+    .await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (text, images) = user_turn_parts(&call);
+    assert_eq!(images.len(), 4, "four, not five: {}", call.raw);
+    let expected: Vec<String> = [0xB1, 0xB2, 0xA1, 0xA2]
+        .into_iter()
+        .map(|marker| format!("data:image/jpeg;base64,{}", marked_preview_base64(marker)))
+        .collect();
+    assert_eq!(
+        images, expected,
+        "the mentioning message's two first, then the quote's, in the sender's order"
+    );
+    assert!(
+        !call.raw.contains(&marked_preview_base64(0xA3)),
+        "the fifth stays here"
+    );
+    assert_eq!(
+        text,
+        "[The member replied to this message from Olive]\n[photo] [photo] [photo] beach day\n[End of quoted message]\n\n[photo] [photo] @ai which is best?",
+        "every photo has its placeholder, the fifth included"
+    );
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains(
+            "2 photographs on the message that mentioned you and 2 photographs on the message \
+             it quotes"
+        ),
+        "{system}"
+    );
+    assert!(
+        system.contains("the mentioning message's first"),
+        "{system}"
+    );
+    assert!(
+        system.contains("1 further picture(s) on the message it quotes could not be included"),
+        "the fifth is NAMED, and where it was: {system}"
+    );
+    assert!(
+        !system.contains("on the message that mentioned you could not"),
+        "nothing on the mention was left out: {system}"
+    );
+}
+
+/// A HEIC on the mention is named too, in the same sentence a size omission
+/// is, and the readable photo beside it still travels.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_photo_the_deployment_cannot_read_on_a_mention_is_named_to_the_model() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    ts.patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    let family_chat = ts.family_chat_id(&owner).await;
+
+    let readable = upload_photo(&ts, &owner, true).await;
+    let heic = upload_raw_photo(&ts, &owner, "image/heic", heic_bytes()).await;
+    say_with(
+        &ts,
+        &owner,
+        family_chat,
+        "@ai what are these?",
+        vec![readable, heic],
+    )
+    .await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 1, "{}", call.raw);
+    assert!(!call.raw.contains("image/heic"), "{}", call.raw);
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains(
+            "1 further picture(s) on the message that mentioned you could not be included"
+        ),
+        "{system}"
+    );
+    assert!(
+        system.contains("in a format you cannot read"),
+        "and the reason is among those given: {system}"
+    );
+}
+
+/// The user turn of a TEXT request — a plain string, never the multi-part
+/// shape pictures make — for the three pins below that assert nothing
+/// travelled and the note went anyway.
+fn user_turn_text(call: &ProviderCall) -> String {
+    call.body["messages"]
+        .as_array()
+        .and_then(|messages| messages.iter().find(|message| message["role"] == "user"))
+        .and_then(|message| message["content"].as_str())
+        .unwrap_or_else(|| panic!("a text request's user turn is a string: {}", call.raw))
+        .to_string()
+}
+
+/// THE SENTENCE THE PROTOCOL PROMISED AND d654a4f DID NOT SEND.
+///
+/// "a photo left out for any of those reasons is NAMED to the model,
+/// together with which of the two messages it was on" — with no condition
+/// on something else having travelled. A mention whose ONLY photo is a
+/// HEIC original went to the text deployment as `[photo] @ai what is
+/// this?` with a system prompt that said nothing about the omission, nor
+/// what `[photo]` meant. Now the note rides on the text request, and the
+/// exact sentence is pinned off the wire.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_lone_unreadable_photo_on_a_mention_is_named_even_though_nothing_travels() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    ts.patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    let family_chat = ts.family_chat_id(&owner).await;
+
+    let heic = upload_raw_photo(&ts, &owner, "image/heic", heic_bytes()).await;
+    say_with(&ts, &owner, family_chat, "@ai what is this?", vec![heic]).await;
+
+    // Nothing could travel, so this is a TEXT request — not the vision
+    // deployment with an empty picture list.
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 0, "{}", call.raw);
+    assert!(!call.raw.contains("image/heic"), "{}", call.raw);
+    assert!(
+        mock.to_deployment(VISION_DEPLOYMENT).is_empty(),
+        "no picture, no vision deployment"
+    );
+    assert_eq!(user_turn_text(&call), "[photo] @ai what is this?");
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains(
+            "The member pointed you at ONE photograph, but it could not be included, so you can \
+             see NO picture here. Every [photo] marker in front of you, in the transcript or \
+             elsewhere, is a picture you were NOT shown — do not describe it, and say so if it \
+             is what you are being asked about. You still cannot see any member's private chat \
+             with you, or any one-to-one chat between two members. 1 picture(s) on the message \
+             that mentioned you could not be included, because they were too large, in a \
+             format you cannot read, or beyond the four you can be shown at once. Say so rather \
+             than guessing what they showed."
+        ),
+        "the omission is NAMED, and the marker explained: {system}"
+    );
+    // The request is otherwise the mention it always was: the narrow
+    // instruction, then the note, then the language line.
+    assert!(
+        system.starts_with(&format!(
+            "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n",
+            family_connect::handlers_ai::MENTION_INSTRUCTION
+        )),
+        "{system}"
+    );
+    assert!(system.ends_with(MIRROR_LANGUAGE), "{system}");
+}
+
+/// The same for the QUOTE: "@ai what is this?" replying to a message that
+/// is nothing but a HEIC. The quote still renders as `[photo]`, and the
+/// note says the picture it could not include was on the quoted message.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_lone_unreadable_photo_on_the_quote_is_named_even_though_nothing_travels() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    ts.patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    let family_chat = ts.family_chat_id(&owner).await;
+
+    let heic = upload_raw_photo(&ts, &owner, "image/heic", heic_bytes()).await;
+    let shot = say_with(&ts, &owner, family_chat, "", vec![heic]).await;
+    let shot_id = shot["id"].as_i64().expect("id");
+    reply_with(
+        &ts,
+        &member,
+        family_chat,
+        "@ai what is this?",
+        shot_id,
+        vec![],
+    )
+    .await;
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 0, "{}", call.raw);
+    assert!(mock.to_deployment(VISION_DEPLOYMENT).is_empty());
+    assert_eq!(
+        user_turn_text(&call),
+        "[The member replied to this message from Olive]\n[photo]\n[End of quoted message]\n\n@ai what is this?",
+        "the captionless quote still goes, as its placeholder"
+    );
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains(
+            "The member pointed you at ONE photograph, but it could not be included, so you can \
+             see NO picture here. Every [photo] marker in front of you, in the transcript or \
+             elsewhere, is a picture you were NOT shown — do not describe it, and say so if it \
+             is what you are being asked about. You still cannot see any member's private chat \
+             with you, or any one-to-one chat between two members. 1 picture(s) on the message \
+             it quotes could not be included, because they were too large, in a format you \
+             cannot read, or beyond the four you can be shown at once. Say so rather than \
+             guessing what they showed."
+        ),
+        "{system}"
+    );
+    assert!(
+        !system.contains("on the message that mentioned you could not"),
+        "nothing on the mention was left out: {system}"
+    );
+}
+
+/// And the PRIVATE THREAD's own zero case, which had the identical gap: a
+/// question whose only photograph is over the ceiling went to the text
+/// deployment as `[photo] what is this?` with no note. It is a text
+/// request still — and it carries the sentence.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_private_question_whose_only_photo_is_over_the_ceiling_is_still_told() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures_tweaked(addr, |cfg| {
+        cfg.limits.max_attachment_bytes = 6 * 1024 * 1024;
+    })
+    .await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    ts.patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    let chat = ai_chat_id(&ts, &owner).await;
+
+    let huge = upload_raw_photo(&ts, &owner, "image/jpeg", jpeg_of(5 * 1024 * 1024 + 1)).await;
+    say_with(&ts, &owner, chat, "what is this?", vec![huge]).await;
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 0, "{}", call.raw);
+    assert!(mock.to_deployment(VISION_DEPLOYMENT).is_empty());
+    assert_eq!(user_turn_text(&call), "[photo] what is this?");
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains(
+            "The member attached ONE photograph to this question, but it could not be included, \
+             because it was too large or in a format you cannot read. You were NOT shown it: \
+             say so rather than guessing what it showed. Any [photo] marker in this \
+             conversation is a picture you were NOT shown — do not describe it. You cannot see \
+             anything from the family chat, from another member's conversation with you, or \
+             from any one-to-one chat between two members."
+        ),
+        "{system}"
+    );
+    assert!(
+        !system.contains("no words with it"),
+        "there was a caption: {system}"
+    );
+}
+
+// -- the third switch: recent photos from the family chat (2026-09-03) -------
+//
+// "A photograph anywhere else in the window still never travels" was #56's
+// line, and the test above this block draws it. `ai_history_photos` lets an
+// owner move it, deliberately and behind `ai_vision`: the transcript's newest
+// photographs fill whatever the mention and its quote left of the SAME four,
+// numbered `[photo N]` wherever they are written (protocol.md, "Recent photos
+// from the family chat"). Every test below is one edge of the new line — and
+// the first of them is that, with the switch off, nothing moved.
+
+/// The request a text-only mention makes with the transcript in front of it:
+/// the wider instruction, the transcript itself — built by the same public
+/// function the mention path uses, off the same rows — and the language line.
+/// Everything the third switch could change is in here, so pinning the whole
+/// body is what "byte for byte" means.
+async fn expected_history_mention(
+    ts: &TestServer,
+    family_chat: i64,
+    mention_id: i64,
+    deployment: &str,
+    body: &str,
+    with_tool: bool,
+) -> Value {
+    let assistant = assistant_id(ts).await;
+    let transcript = family_connect::handlers_ai::family_chat_history(
+        &ts.state,
+        family_chat,
+        mention_id,
+        assistant,
+    )
+    .await
+    .expect("the query runs")
+    .expect("a transcript");
+    let mut expected = json!({
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "system", "content": format!(
+                "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{transcript}\n\n{MIRROR_LANGUAGE}",
+                family_connect::handlers_ai::MENTION_WITH_HISTORY_INSTRUCTION
+            )},
+            {"role": "user", "content": body},
+        ],
+        "model": deployment,
+        "stream": true,
+        "stream_options": {"include_usage": true},
+    });
+    if with_tool {
+        expected["tools"] = json!([family_connect::ai::draw_picture_tool()]);
+    }
+    expected
+}
+
+/// A server that can see and draw, a family whose owner has opened both
+/// locks AND the third switch — the only configuration under which a photo
+/// the mention did not touch can travel.
+async fn family_with_recent_photos(ts: &TestServer) -> (String, String, i64) {
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    let response = ts
+        .patch(
+            &owner,
+            "/families/mine",
+            json!({"ai_vision": true, "ai_history_photos": true}),
+        )
+        .await;
+    assert_eq!(response.status(), 200, "both on at once is allowed");
+    let family_chat = ts.family_chat_id(&owner).await;
+    (owner, member, family_chat)
+}
+
+/// CASE (1). The switch OFF — the default, for every family — and a chat
+/// full of photographs: a plain mention sends no pixels and is #56's request
+/// to the byte, transcript included. This is the test that says the feature
+/// changed nothing for anybody who did not ask for it.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_the_switch_off_a_mention_over_a_chat_full_of_photos_is_the_56_request_to_the_byte() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    // Both #56 locks open; the third switch untouched.
+    ts.patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    let family_chat = ts.family_chat_id(&owner).await;
+
+    let one = upload_marked_photo(&ts, &owner, 0xA1).await;
+    let two = upload_marked_photo(&ts, &owner, 0xA2).await;
+    say_with(&ts, &owner, family_chat, "beach", vec![one]).await;
+    say_with(&ts, &owner, family_chat, "", vec![two]).await;
+    let mention = say(&ts, &member, family_chat, "@ai what did Olive send?").await;
+    let mention_id = mention["id"].as_i64().expect("id");
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 0, "{}", call.raw);
+    assert!(
+        mock.to_deployment(VISION_DEPLOYMENT).is_empty(),
+        "no pixels, no vision deployment"
+    );
+    let expected = expected_history_mention(
+        &ts,
+        family_chat,
+        mention_id,
+        TEXT_DEPLOYMENT,
+        "@ai what did Olive send?",
+        true,
+    )
+    .await;
+    assert_eq!(call.body, expected, "{}", call.raw);
+    assert!(
+        call.raw.contains("Olive: [photo] beach") && call.raw.contains("Olive: [photo]\\n"),
+        "bare markers, as they always were: {}",
+        call.raw
+    );
+    assert!(
+        !call.raw.contains("[photo 1]"),
+        "nothing numbered: {}",
+        call.raw
+    );
+    assert!(
+        !call.raw.contains("transcript above"),
+        "and no sentence about the transcript's pictures: {}",
+        call.raw
+    );
+}
+
+/// CASE (2a). The switch is the owner's, and it cannot be on while
+/// `ai_vision` is off: on alone is `validation`, on-while-turning-vision-off
+/// is `validation`, both on together is fine, and vision going off takes it
+/// down in the same write — and it does not come back when vision does.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn recent_photos_can_only_be_on_while_pictures_are() {
+    let ts = server_with_assistant().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+
+    // Present, false, and readable by every member from both doors.
+    let mine: Value = ts
+        .get(&member, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(mine["family"]["ai_history_photos"], false, "{mine}");
+    let me: Value = ts.get(&member, "/me").await.json().await.expect("JSON");
+    assert_eq!(me["family"]["ai_history_photos"], false, "{me}");
+
+    // Not the member's to change.
+    assert_error(
+        ts.patch(
+            &member,
+            "/families/mine",
+            json!({"ai_vision": true, "ai_history_photos": true}),
+        )
+        .await,
+        403,
+        "not_family_owner",
+    )
+    .await;
+
+    // On alone, with `ai_vision` off: refused with the reason, and nothing
+    // in the request written.
+    assert_error(
+        ts.patch(&owner, "/families/mine", json!({"ai_history_photos": true}))
+            .await,
+        400,
+        "validation",
+    )
+    .await;
+    assert_error(
+        ts.patch(
+            &owner,
+            "/families/mine",
+            json!({"language": "ru", "ai_history_photos": true}),
+        )
+        .await,
+        400,
+        "validation",
+    )
+    .await;
+    let unchanged: Value = ts
+        .get(&owner, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert!(
+        unchanged["family"].get("language").is_none(),
+        "the language in the refused request did not land either: {unchanged}"
+    );
+
+    // Judged against what `ai_vision` WILL be: off-and-on in one request
+    // is a contradiction.
+    ts.patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await;
+    assert_error(
+        ts.patch(
+            &owner,
+            "/families/mine",
+            json!({"ai_vision": false, "ai_history_photos": true}),
+        )
+        .await,
+        400,
+        "validation",
+    )
+    .await;
+
+    // On while vision is on: fine. Off for it alone: fine.
+    let on: Value = ts
+        .patch(&owner, "/families/mine", json!({"ai_history_photos": true}))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(on["family"]["ai_vision"], true);
+    assert_eq!(on["family"]["ai_history_photos"], true);
+    let off: Value = ts
+        .patch(
+            &owner,
+            "/families/mine",
+            json!({"ai_history_photos": false}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(off["family"]["ai_vision"], true, "vision stayed: {off}");
+    assert_eq!(off["family"]["ai_history_photos"], false);
+
+    // Both on at once, then vision off ALONE: the third goes with it, in
+    // the same write, though the request never mentioned it…
+    ts.patch(
+        &owner,
+        "/families/mine",
+        json!({"ai_vision": true, "ai_history_photos": true}),
+    )
+    .await;
+    let cascaded: Value = ts
+        .patch(&owner, "/families/mine", json!({"ai_vision": false}))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(cascaded["family"]["ai_vision"], false);
+    assert_eq!(
+        cascaded["family"]["ai_history_photos"], false,
+        "a switch left on underneath the one that was turned off would spring back: {cascaded}"
+    );
+    // …and it does NOT come back when vision does.
+    let back: Value = ts
+        .patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(back["family"]["ai_vision"], true);
+    assert_eq!(
+        back["family"]["ai_history_photos"], false,
+        "the wider disclosure is chosen again or not at all: {back}"
+    );
+}
+
+/// CASE (2b). The switch ON — accepted — on a server with no `[ai.vision]`:
+/// inert. A mention over a chat full of photos is the text request it always
+/// was, to the byte, and the vision deployment does not exist to be reached.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_no_vision_deployment_the_switch_is_inert_and_the_request_unchanged() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_text_only(addr).await;
+    let (owner, member, family_chat) = family_with_recent_photos(&ts).await;
+    let mine: Value = ts
+        .get(&owner, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(mine["assistant"]["vision"], false, "{mine}");
+    assert_eq!(
+        mine["family"]["ai_history_photos"], true,
+        "accepted — the server's configuration is not the family's business: {mine}"
+    );
+
+    let photo = upload_marked_photo(&ts, &owner, 0xA1).await;
+    say_with(&ts, &owner, family_chat, "look", vec![photo]).await;
+    let mention = say(&ts, &member, family_chat, "@ai what is that?").await;
+    let mention_id = mention["id"].as_i64().expect("id");
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 0, "{}", call.raw);
+    let expected = expected_history_mention(
+        &ts,
+        family_chat,
+        mention_id,
+        TEXT_DEPLOYMENT,
+        "@ai what is that?",
+        false,
+    )
+    .await;
+    assert_eq!(call.body, expected, "{}", call.raw);
+    assert!(!call.raw.contains("[photo 1]"), "{}", call.raw);
+}
+
+/// CASE (3). Everything on. A mention carrying a photo, replying to a photo,
+/// over a transcript holding five more: exactly FOUR travel, in priority
+/// order — the mention's, the quote's, then the two NEWEST of the five — and
+/// every marker for a picture the model can see is numbered where it is
+/// written, on the mention, in the quote, and on the transcript's lines. The
+/// other three stay bare, are disowned, and are counted.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn five_history_photos_behind_a_mention_and_its_quote_send_the_two_newest_numbered() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_recent_photos(&ts).await;
+
+    // Five photographs of the chat's own, oldest to newest, by two people.
+    for (who, marker, caption) in [
+        (&owner, 0xC1, "h1"),
+        (&owner, 0xC2, "h2"),
+        (&owner, 0xC3, "h3"),
+        (&member, 0xC4, "h4"),
+        (&member, 0xC5, "h5"),
+    ] {
+        let photo = upload_marked_photo(&ts, who, marker).await;
+        say_with(&ts, who, family_chat, caption, vec![photo]).await;
+    }
+    // Then the message that will be quoted, with a photo of its own…
+    let quoted = upload_marked_photo(&ts, &owner, 0xD1).await;
+    let shot = say_with(&ts, &owner, family_chat, "which one?", vec![quoted]).await;
+    let shot_id = shot["id"].as_i64().expect("id");
+    // …and the mention, replying to it, carrying one more.
+    let mine = upload_marked_photo(&ts, &member, 0xE1).await;
+    reply_with(
+        &ts,
+        &member,
+        family_chat,
+        "@ai which is best?",
+        shot_id,
+        vec![mine],
+    )
+    .await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (text, images) = user_turn_parts(&call);
+    let expected: Vec<String> = [0xE1, 0xD1, 0xC5, 0xC4]
+        .into_iter()
+        .map(|marker| format!("data:image/jpeg;base64,{}", marked_preview_base64(marker)))
+        .collect();
+    assert_eq!(
+        images, expected,
+        "four: the mention's, the quote's, then the transcript's newest two — h5 before h4"
+    );
+    for stayed in [0xC1, 0xC2, 0xC3] {
+        assert!(
+            !call.raw.contains(&marked_preview_base64(stayed)),
+            "the older three stay here: {stayed:#x}"
+        );
+    }
+    assert_eq!(
+        text,
+        "[The member replied to this message from Olive]\n[photo 2] which one?\n[End of quoted message]\n\n[photo 1] @ai which is best?",
+        "the mention's photo is picture 1 and the quote's is picture 2, where they are written"
+    );
+
+    let system = system_prompt_of(&call);
+    // The transcript, oldest first: bare markers on h1–h3, numbers on the
+    // two that travelled and on the quoted message's own line — the SAME
+    // number the quote carries in the user turn.
+    let transcript = system
+        .split_once("Here is what was recently said")
+        .expect("the transcript is there")
+        .1;
+    let lines: Vec<&str> = transcript
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix('[')
+                .and_then(|rest| rest.split_once("] "))
+                .filter(|(stamp, _)| stamp.len() == 20 && stamp.ends_with(" UTC"))
+                .map(|(_, rest)| rest)
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            "Olive: [photo] h1",
+            "Olive: [photo] h2",
+            "Olive: [photo] h3",
+            "Junior: [photo 4] h4",
+            "Junior: [photo 3] h5",
+            "Olive: [photo 2] which one?",
+        ],
+        "each travelling picture is numbered on its line, the rest are bare: {system}"
+    );
+    assert!(
+        system.contains(
+            "You can see ONE photograph on the message that mentioned you and ONE photograph on \
+             the message it quotes, in that order: the mentioning message's first."
+        ),
+        "{system}"
+    );
+    assert!(
+        system.contains(
+            "You can also see 2 photographs from the transcript above, on the lines marked \
+             [photo 3] to [photo 4]: the most recent pictures sent in this chat that could be \
+             included. Nobody pointed you at those"
+        ),
+        "how many came from history, and that they are the most recent: {system}"
+    );
+    assert!(
+        system.contains("[photo 1] is the first picture attached, [photo 2] the second"),
+        "the numbering is explained: {system}"
+    );
+    assert!(
+        system.contains(
+            "3 other picture(s) in the transcript could not be included, because they were \
+             beyond the four you can be shown at once, too large, or in a format you cannot \
+             read; their markers are bare."
+        ),
+        "the left-out are NAMED and counted: {system}"
+    );
+    assert!(
+        !system.contains("could not be included, because they were too large, in a format"),
+        "nothing on the mention or the quote was left out: {system}"
+    );
+    assert!(
+        mock.to_deployment(TEXT_DEPLOYMENT).is_empty(),
+        "pixels travelled, so the text deployment saw none of it"
+    );
+}
+
+/// The PRIORITY rule from the other end: a mention carrying four photos of
+/// its own leaves nothing for the transcript, however many it holds. The
+/// transcript's photographs are still counted and disowned — the model is
+/// told there are two it cannot see — and none of them is loaded.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_mention_carrying_four_photos_leaves_no_room_for_the_transcripts() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_recent_photos(&ts).await;
+
+    for marker in [0xC1, 0xC2] {
+        let photo = upload_marked_photo(&ts, &owner, marker).await;
+        say_with(&ts, &owner, family_chat, "", vec![photo]).await;
+    }
+    let mut four = Vec::new();
+    for marker in [0xE1, 0xE2, 0xE3, 0xE4] {
+        four.push(upload_marked_photo(&ts, &member, marker).await);
+    }
+    say_with(&ts, &member, family_chat, "@ai rank these", four).await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (text, images) = user_turn_parts(&call);
+    let expected: Vec<String> = [0xE1, 0xE2, 0xE3, 0xE4]
+        .into_iter()
+        .map(|marker| format!("data:image/jpeg;base64,{}", marked_preview_base64(marker)))
+        .collect();
+    assert_eq!(images, expected, "the member's four, and nothing ambient");
+    assert_eq!(
+        text,
+        "[photo 1] [photo 2] [photo 3] [photo 4] @ai rank these"
+    );
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains("You can see 4 photographs attached to the message that mentioned you."),
+        "{system}"
+    );
+    assert!(
+        !system.contains("transcript above"),
+        "none came from the transcript, so nothing says so: {system}"
+    );
+    assert!(
+        system.contains(
+            "2 other picture(s) in the transcript could not be included, because they were \
+             beyond the four you can be shown at once"
+        ),
+        "but the two it holds are counted and disowned: {system}"
+    );
+    assert!(
+        system.contains("Olive: [photo]\n"),
+        "and stay bare on their lines: {system}"
+    );
+}
+
+/// CASE (4). A photograph OUTSIDE the transcript window never travels —
+/// whichever of the three bounds put it there. Older than thirty days, and
+/// then pushed off the far end by the character cap: no pixels, no line, and
+/// the request is the text one #56 sends, to the byte.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_photo_outside_the_transcript_window_never_travels() {
+    // The day bound.
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_recent_photos(&ts).await;
+    let old = upload_marked_photo(&ts, &owner, 0xA1).await;
+    let shot = say_with(&ts, &owner, family_chat, "from the summer", vec![old]).await;
+    let shot_id = shot["id"].as_i64().expect("id");
+    sqlx::query("UPDATE messages SET created_at = now() - INTERVAL '31 days' WHERE id = $1")
+        .bind(shot_id)
+        .execute(&ts.state.pool)
+        .await
+        .expect("backdating the photo");
+    say(&ts, &owner, family_chat, "anyway").await;
+    let mention = say(&ts, &member, family_chat, "@ai what was that?").await;
+    let mention_id = mention["id"].as_i64().expect("id");
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 0, "{}", call.raw);
+    assert!(mock.to_deployment(VISION_DEPLOYMENT).is_empty());
+    assert!(
+        !call.raw.contains("from the summer"),
+        "no line for it either: {}",
+        call.raw
+    );
+    let expected = expected_history_mention(
+        &ts,
+        family_chat,
+        mention_id,
+        TEXT_DEPLOYMENT,
+        "@ai what was that?",
+        true,
+    )
+    .await;
+    assert_eq!(
+        call.body, expected,
+        "a switched-on family whose window holds no photograph sends #56's request: {}",
+        call.raw
+    );
+
+    // The character bound: the photo is the oldest line, and ten lines of
+    // near-maximal bodies behind it add up to more than the ceiling, so it
+    // falls off the far end of the window.
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_recent_photos(&ts).await;
+    let pushed = upload_marked_photo(&ts, &owner, 0xB1).await;
+    say_with(&ts, &owner, family_chat, "pushed out", vec![pushed]).await;
+    let filler = "x".repeat(3990);
+    for _ in 0..10 {
+        say(&ts, &owner, family_chat, &filler).await;
+    }
+    say(&ts, &member, family_chat, "@ai what did Olive send first?").await;
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 0, "{}", call.raw);
+    assert!(mock.to_deployment(VISION_DEPLOYMENT).is_empty());
+    assert!(
+        !call.raw.contains("pushed out"),
+        "the photo's line fell off the window: {}",
+        call.raw
+    );
+    assert!(
+        !call.raw.contains(&marked_preview_base64(0xB1)),
+        "and its pixels never left"
+    );
+}
+
+/// CASE (5). `ai_history` OFF: no transcript, so nothing for the switch to
+/// widen. A plain mention is the narrow #56 request to the byte; a mention
+/// that carries its own photo still sends it — as #56 does — but nothing is
+/// numbered and the note says nothing about the transcript, because there
+/// is none.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_history_off_the_switch_sends_no_history_photo() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_recent_photos(&ts).await;
+    ts.patch(&owner, "/families/mine", json!({"ai_history": false}))
+        .await;
+    let mine: Value = ts
+        .get(&owner, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        mine["family"]["ai_history_photos"], true,
+        "still on: {mine}"
+    );
+
+    let photo = upload_marked_photo(&ts, &owner, 0xA1).await;
+    say_with(&ts, &owner, family_chat, "look", vec![photo]).await;
+    say(&ts, &member, family_chat, "@ai what did Olive send?").await;
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 0, "{}", call.raw);
+    assert!(mock.to_deployment(VISION_DEPLOYMENT).is_empty());
+    let expected = json!({
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "system", "content": format!(
+                "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{MIRROR_LANGUAGE}",
+                family_connect::handlers_ai::MENTION_INSTRUCTION
+            )},
+            {"role": "user", "content": "@ai what did Olive send?"},
+        ],
+        "model": TEXT_DEPLOYMENT,
+        "stream": true,
+        "stream_options": {"include_usage": true},
+        "tools": [family_connect::ai::draw_picture_tool()],
+    });
+    assert_eq!(call.body, expected, "{}", call.raw);
+
+    // A photo ON the mention still goes, #56's way: bare marker, #56's note.
+    let mine = upload_marked_photo(&ts, &member, 0xE1).await;
+    say_with(&ts, &member, family_chat, "@ai and this?", vec![mine]).await;
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (text, images) = user_turn_parts(&call);
+    assert_eq!(images.len(), 1);
+    assert_eq!(
+        text, "[photo] @ai and this?",
+        "not numbered: the switch is inert"
+    );
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains(
+            "You can see ONE photograph attached to the message that mentioned you. A member \
+             pointed you at them deliberately — by attaching them to the mention, or by \
+             replying to them with it. Any other [photo] marker in front of you"
+        ),
+        "#56's note, word for word: {system}"
+    );
+    assert!(!system.contains("numbered"), "{system}");
+}
+
+/// CASE (6). Neither of the other two surfaces moves. A direct chat never
+/// reaches the assistant, switch or no switch; and a member's private thread
+/// sends the same request with the switch on as with it off — the earlier
+/// photo in the thread is a `[photo]` and stays here.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_direct_chat_and_the_private_thread_are_unaffected_by_the_switch() {
+    // Two servers, identical but for the switch, so the private thread's
+    // requests can be compared whole.
+    let (mock_off, addr_off) = spawn_mock_provider().await;
+    let ts_off = server_with_pictures(addr_off).await;
+    let (owner_off, _) = ts_off.register("owner", "Olive").await;
+    ts_off.create_family(&owner_off, "The Smiths").await;
+    ts_off
+        .patch(&owner_off, "/families/mine", json!({"ai_vision": true}))
+        .await;
+
+    let (mock_on, addr_on) = spawn_mock_provider().await;
+    let ts_on = server_with_pictures(addr_on).await;
+    let (owner_on, member_on, family_chat) = family_with_recent_photos(&ts_on).await;
+
+    // The direct chat, on the switched-on server: a photo in it, then a
+    // mention. Nothing is spawned; only what was typed is there.
+    let member_id = ts_on.user_id(&member_on).await;
+    let direct: Value = ts_on
+        .post(&owner_on, "/chats/direct", json!({"user_id": member_id}))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let direct_id = direct["chat"]["id"].as_i64().expect("a direct chat");
+    let photo = upload_marked_photo(&ts_on, &owner_on, 0xA1).await;
+    say_with(&ts_on, &owner_on, direct_id, "just us", vec![photo]).await;
+    say(&ts_on, &member_on, direct_id, "@ai what is that?").await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(messages_in(&ts_on, &owner_on, direct_id).await.len(), 2);
+    assert!(mock_on.calls().is_empty(), "no provider call at all");
+    // …and a photo in the FAMILY chat does not reach a private thread
+    // either: it is the family chat's, and the thread never reads it.
+    let family_photo = upload_marked_photo(&ts_on, &member_on, 0xB1).await;
+    say_with(&ts_on, &member_on, family_chat, "", vec![family_photo]).await;
+
+    // The private thread, on both: a photo question, then a follow-up.
+    let mut requests = Vec::new();
+    for (ts, mock, owner) in [
+        (&ts_off, &mock_off, &owner_off),
+        (&ts_on, &mock_on, &owner_on),
+    ] {
+        let chat = ai_chat_id(ts, owner).await;
+        let photo = upload_photo(ts, owner, true).await;
+        say_with(ts, owner, chat, "what is this?", vec![photo]).await;
+        let first = mock.wait_for(VISION_DEPLOYMENT).await;
+        say(ts, owner, chat, "and what colour was it?").await;
+        let follow_up = loop {
+            if let Some(call) = mock
+                .to_deployment(TEXT_DEPLOYMENT)
+                .into_iter()
+                .find(|call| call.raw.contains("what colour was it"))
+            {
+                break call;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert!(!follow_up.raw.contains("data:image"), "{}", follow_up.raw);
+        assert!(!follow_up.raw.contains("[photo 1]"), "{}", follow_up.raw);
+        assert!(
+            !first.raw.contains(&marked_preview_base64(0xB1)),
+            "the family chat's photo never reaches a private thread"
+        );
+        requests.push((first.body, follow_up.body));
+    }
+    assert_eq!(
+        requests[0], requests[1],
+        "the private thread's requests are the same with the switch on and off"
+    );
+}
+
+/// CASE (7). The transcript's only photograph is a HEIC original, nothing is
+/// on the mention: nothing travels, the request is a TEXT one, and the note
+/// still names the picture that could not go — pinned to the sentence,
+/// because a marker nothing explains is the silence this feature forbids.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_lone_unreadable_photo_in_the_transcript_is_named_even_though_nothing_travels() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_recent_photos(&ts).await;
+
+    let heic = upload_raw_photo(&ts, &owner, "image/heic", heic_bytes()).await;
+    say_with(&ts, &owner, family_chat, "", vec![heic]).await;
+    say(&ts, &member, family_chat, "@ai what is that?").await;
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 0, "{}", call.raw);
+    assert!(!call.raw.contains("image/heic"), "{}", call.raw);
+    assert!(mock.to_deployment(VISION_DEPLOYMENT).is_empty());
+    assert_eq!(user_turn_text(&call), "@ai what is that?");
+    let system = system_prompt_of(&call);
+    assert!(
+        system.contains("Olive: [photo]\n"),
+        "bare on its line: {system}"
+    );
+    assert!(
+        system.ends_with(&format!(
+            "There is ONE photograph in the transcript above, but it could not be included, so \
+             you can see NO picture here. Every [photo] marker in front of you, in the \
+             transcript or elsewhere, is a picture you were NOT shown — do not describe it, and \
+             say so if it is what you are being asked about. You still cannot see any member's \
+             private chat with you, or any one-to-one chat between two members. 1 picture(s) in \
+             the transcript could not be included, because they were too large or in a format \
+             you cannot read. Say so rather than guessing what they showed.\n\n{MIRROR_LANGUAGE}"
+        )),
+        "the omission is NAMED, after the transcript and before the language line: {system}"
+    );
+}
+
+/// A HEIC at the TOP of the transcript does not starve the readable photo
+/// beneath it: the walk skips it for the next older one, the readable one
+/// travels as picture 1, and the HEIC is counted among the bare.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_unreadable_newest_photo_is_skipped_for_the_readable_one_beneath_it() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_recent_photos(&ts).await;
+
+    let readable = upload_marked_photo(&ts, &owner, 0xA1).await;
+    say_with(&ts, &owner, family_chat, "readable", vec![readable]).await;
+    let heic = upload_raw_photo(&ts, &owner, "image/heic", heic_bytes()).await;
+    say_with(&ts, &owner, family_chat, "newer", vec![heic]).await;
+    say(&ts, &member, family_chat, "@ai what did Olive send?").await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (text, images) = user_turn_parts(&call);
+    assert_eq!(
+        images,
+        vec![format!(
+            "data:image/jpeg;base64,{}",
+            marked_preview_base64(0xA1)
+        )]
+    );
+    assert_eq!(
+        text, "@ai what did Olive send?",
+        "nothing on the mention itself"
+    );
+    let system = system_prompt_of(&call);
+    assert!(system.contains("Olive: [photo 1] readable"), "{system}");
+    assert!(system.contains("Olive: [photo] newer"), "{system}");
+    assert!(
+        system.contains(
+            "You can see ONE photograph from the transcript above, on the line marked \
+             [photo 1]: the most recent picture sent in this chat that could be included. \
+             Nothing was attached to the message that mentioned you or to the message it quotes."
+        ),
+        "{system}"
+    );
+    assert!(
+        system.contains("1 other picture(s) in the transcript could not be included"),
+        "{system}"
+    );
+    assert!(
+        mock.to_deployment(TEXT_DEPLOYMENT).is_empty(),
+        "a picture travelled, so the vision deployment answered"
     );
 }
 
@@ -1864,6 +3381,268 @@ async fn a_generated_picture_is_counted_as_an_image_in_statistics() {
         stats["members"][0]["ai"]["images"].as_i64(),
         Some(1),
         "and the member who asked is the one it is counted against"
+    );
+}
+
+// -- drawing without being told to (#56) --------------------------------------
+//
+// The text model may ask for a picture itself, through the ONE tool a
+// draw-capable server declares. The question still reaches the text
+// deployment as it always did; what then reaches the images deployment is
+// the tool's `prompt`, and nothing else (docs/protocol.md, "Drawing without
+// being told to"). These pin the two request shapes, and what a tool call
+// streamed in pieces turns into.
+
+/// THE TWO REQUEST SHAPES. A server that can draw declares exactly one
+/// tool on an ordinary question; a server that cannot sends no `tools` key
+/// at all — its request is, to the byte, the one captured at d654a4f.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_draw_capable_server_declares_one_tool_and_a_text_only_server_declares_none() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_text_only(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+    say(&ts, &owner, chat, "what is the weather").await;
+    let text_only = mock.wait_for(TEXT_DEPLOYMENT).await;
+    let expected: Value = serde_json::from_str(
+        r#"{"max_tokens":1024,"messages":[{"content":"You are a helpful assistant in a family's private chat app. Answer briefly and plainly. You can only see this one conversation.\n\nAnswer in the language the message you were sent is written in, whatever language these instructions are in.","role":"system"},{"content":"what is the weather","role":"user"}],"model":"test-gpt-oss","stream":true,"stream_options":{"include_usage":true}}"#,
+    )
+    .expect("the pinned request is JSON");
+    assert_eq!(text_only.body, expected, "{}", text_only.raw);
+    assert!(
+        text_only.body.get("tools").is_none(),
+        "ABSENT, not empty: {}",
+        text_only.raw
+    );
+
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+    say(&ts, &owner, chat, "what is the weather").await;
+    let can_draw = mock.wait_for(TEXT_DEPLOYMENT).await;
+    let mut expected = expected;
+    expected["tools"] = json!([family_connect::ai::draw_picture_tool()]);
+    assert_eq!(
+        can_draw.body, expected,
+        "the same request plus its one tool: {}",
+        can_draw.raw
+    );
+    assert!(
+        can_draw.body.get("tool_choice").is_none(),
+        "auto is the default and the rule: {}",
+        can_draw.raw
+    );
+}
+
+/// A tool call streamed in pieces ends as ONE picture message and ONE
+/// `images` in statistics — with the tokens the text model spent deciding
+/// counted against the same reply.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_assistant_may_draw_without_being_told_to() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+
+    // A thread with something in it, so "the thread did not reach the
+    // images deployment" is a real assertion. Answered in full before the
+    // next question goes, so the two usage rows cannot race each other.
+    let first = say(&ts, &owner, chat, "what is the capital of Serbia").await;
+    wait_for_assistant_message(&ts, &owner, chat, first["id"].as_i64().expect("id")).await;
+    wait_for_ai_stats(&ts, &owner).await;
+    mock.answer_with_tool_call(
+        "draw_picture",
+        r#"{"prompt": "a cat in a hat, watercolour"}"#,
+    );
+    let asked = say(
+        &ts,
+        &owner,
+        chat,
+        "could I have a picture of a cat in a hat?",
+    )
+    .await;
+
+    let drawn = mock.wait_for(IMAGES_DEPLOYMENT).await;
+    assert_eq!(
+        drawn.body,
+        json!({
+            "prompt": "a cat in a hat, watercolour",
+            "n": 1,
+            "model": IMAGES_DEPLOYMENT,
+            "size": "1024x1024",
+        }),
+        "the tool's prompt and nothing else — not the question, not the thread: {}",
+        drawn.raw
+    );
+    assert!(!drawn.raw.contains("capital of Serbia"), "{}", drawn.raw);
+    assert!(!drawn.raw.contains("helpful assistant"), "{}", drawn.raw);
+
+    let asked_id = asked["id"].as_i64().expect("id");
+    let reply = wait_for_picture(&ts, &owner, chat, asked_id).await;
+    assert_eq!(reply["attachments"][0]["kind"], "photo", "reply: {reply}");
+    assert_eq!(
+        reply["body"], "",
+        "one reply, one attachment, the shape `/draw` has"
+    );
+    assert!(reply["edit_seq"].as_i64().is_some(), "{reply}");
+
+    // The usage row lands separately from the picture (see
+    // `wait_for_ai_stats`), so poll for the image itself.
+    let mut stats = wait_for_ai_stats(&ts, &owner).await;
+    for _ in 0..50 {
+        if stats["totals"]["ai"]["images"].as_i64() == Some(1) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stats = wait_for_ai_stats(&ts, &owner).await;
+    }
+    let ai = &stats["totals"]["ai"];
+    // Two questions: the Serbia one, and this. One image.
+    assert_eq!(ai["images"].as_i64(), Some(1), "stats: {stats}");
+    assert_eq!(ai["questions"].as_i64(), Some(2), "stats: {stats}");
+    assert_eq!(
+        ai["prompt_tokens"].as_i64(),
+        Some(11 + 40),
+        "the tokens the text model spent deciding are billed to the same reply: {stats}"
+    );
+    assert_eq!(ai["completion_tokens"].as_i64(), Some(3 + 9), "{stats}");
+}
+
+/// The family chat gets the tool too, and the picture quotes the mention
+/// exactly as `@ai /draw` does.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_mention_may_draw_without_being_told_to() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    let family_chat = ts.family_chat_id(&owner).await;
+
+    say(&ts, &owner, family_chat, "we are going to the beach").await;
+    mock.answer_with_tool_call("draw_picture", r#"{"prompt": "a family on a beach"}"#);
+    let asked = say(&ts, &member, family_chat, "@ai can you draw us there?").await;
+
+    let question = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert!(
+        question.body["tools"].is_array(),
+        "the mention declares the tool: {}",
+        question.raw
+    );
+    let drawn = mock.wait_for(IMAGES_DEPLOYMENT).await;
+    assert_eq!(drawn.body["prompt"], "a family on a beach");
+    assert!(
+        !drawn.raw.contains("going to the beach"),
+        "the transcript the mention carried does not: {}",
+        drawn.raw
+    );
+
+    let asked_id = asked["id"].as_i64().expect("id");
+    let reply = wait_for_picture(&ts, &owner, family_chat, asked_id).await;
+    assert_eq!(reply["attachments"][0]["kind"], "photo", "{reply}");
+    assert_eq!(reply["reply_to"]["message_id"].as_i64(), Some(asked_id));
+}
+
+/// Words AND a call: the picture wins and the words are dropped — one
+/// reply, one attachment.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn words_and_a_tool_call_together_become_the_picture() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+
+    mock.answer_with_words_then_tool_call(
+        "Here you are:",
+        "draw_picture",
+        r#"{"prompt": "a lighthouse at dusk"}"#,
+    );
+    let asked = say(&ts, &owner, chat, "draw me a lighthouse").await;
+    mock.wait_for(IMAGES_DEPLOYMENT).await;
+    let reply = wait_for_picture(&ts, &owner, chat, asked["id"].as_i64().expect("id")).await;
+    assert_eq!(reply["attachments"][0]["kind"], "photo", "{reply}");
+    assert_eq!(
+        reply["body"], "",
+        "the words are not a caption; the picture is the reply: {reply}"
+    );
+}
+
+/// A call the server cannot honour is an ERROR the member sees, never a
+/// silent nothing: a blank prompt, and a tool the server never offered.
+/// Nothing reaches the images deployment either way.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_bad_tool_call_is_an_error_not_a_silent_nothing() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+    let mut ws = connect_ws(&ts, &owner).await;
+
+    mock.answer_with_tool_call("draw_picture", r#"{"prompt": "   "}"#);
+    let asked = say(&ts, &owner, chat, "draw me something").await;
+    let error = next_frame_of_type(&mut ws, "ai_error").await;
+    assert_eq!(error["chat_id"].as_i64(), Some(chat));
+    let asked_id = asked["id"].as_i64().expect("id");
+    assert!(
+        error["message_id"].as_i64().is_some_and(|id| id > asked_id),
+        "the error names the assistant's own empty row: {error}"
+    );
+
+    mock.answer_with_tool_call("delete_family", r#"{"prompt": "a cat"}"#);
+    say(&ts, &owner, chat, "and now a cat").await;
+    next_frame_of_type(&mut ws, "ai_error").await;
+
+    assert!(
+        mock.to_deployment(IMAGES_DEPLOYMENT).is_empty(),
+        "nothing was drawn"
+    );
+    let messages = messages_in(&ts, &owner, chat).await;
+    let replies: Vec<&Value> = messages
+        .iter()
+        .filter(|message| message["id"].as_i64().is_some_and(|id| id > asked_id))
+        .filter(|message| {
+            message["body"] != "draw me something" && message["body"] != "and now a cat"
+        })
+        .collect();
+    assert!(
+        replies
+            .iter()
+            .all(|reply| reply["body"] == "" && reply["attachments"].is_null()),
+        "the rows keep nothing, for the member to ask again: {replies:?}"
+    );
+}
+
+/// `/draw` is untouched by any of this: the explicit path still bypasses
+/// the text model entirely, tool or no tool.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_explicit_draw_still_never_asks_the_text_model() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat = ai_chat_id(&ts, &owner).await;
+
+    let asked = say(&ts, &owner, chat, "/draw a cat in a hat").await;
+    let drawn = mock.wait_for(IMAGES_DEPLOYMENT).await;
+    assert_eq!(drawn.body["prompt"], "a cat in a hat");
+    wait_for_picture(&ts, &owner, chat, asked["id"].as_i64().expect("id")).await;
+    assert!(
+        mock.to_deployment(TEXT_DEPLOYMENT).is_empty(),
+        "no tool was needed: nothing reached the text deployment"
     );
 }
 

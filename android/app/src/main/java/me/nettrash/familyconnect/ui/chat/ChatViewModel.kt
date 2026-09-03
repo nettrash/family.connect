@@ -74,6 +74,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -492,11 +493,19 @@ class ChatViewModel @Inject constructor(
      * particular photograph: that is a third thing, the member attaching
      * it to the question, and it is never a remembered setting.
      *
-     * The member's OWN `ai` chat and nowhere else. `@ai` in the family
-     * chat never sends a picture at any setting — the photograph there is
-     * very often somebody else's, and the member typing the mention is in
-     * no position to consent on their behalf — so this is false in the
-     * family chat even with both locks open.
+     * The member's OWN `ai` chat and nowhere else — and that is a fact
+     * about this DOOR, the "Show the assistant a picture" item, not about
+     * what travels. Since #56 a photo on an `@ai` message in the family
+     * chat, or on the message it replies to, goes to the model under the
+     * same two locks (docs/protocol.md, "Showing the assistant a picture
+     * from the family chat"); it rides the ordinary "Photo or video" door
+     * and the reply affordance the family composer has always had, and
+     * either is the member pointing the assistant at that picture. So
+     * this stays false in the family chat even with both locks open, for
+     * a narrower reason than it used to: a second item there would offer
+     * nothing the first does not. What still never goes is a photo the
+     * member did not point at — somebody else's picture elsewhere in the
+     * window stays `[photo]`.
      */
     val canShowAssistantPicture: StateFlow<Boolean> =
         combine(chat, settings.state) { chatEntity, settingsState ->
@@ -848,6 +857,73 @@ class ChatViewModel @Inject constructor(
                         )
                     },
                     allowed,
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * The draft as typed, as a flow — the field is a [TextFieldState], so
+     * this is the same snapshot watch the typing indicator keeps, shared
+     * here so the family composer's strip can read the draft for `@ai`.
+     */
+    private val draftText: StateFlow<String> =
+        snapshotFlow { inputState.text.toString() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    /**
+     * What the message being replied to carries, looked up once per reply
+     * target — from this device's own rows, because a [ReplyToDto] holds
+     * an excerpt and nothing else. Empty while nothing is primed.
+     */
+    private val quotedAttachments: StateFlow<List<AttachmentDto>> =
+        _replyDraft
+            .mapLatest { quote -> quote?.let { messageRepository.attachmentsOf(it.messageId) } ?: emptyList() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * The FAMILY composer's own disclosure, for the case that did not
+     * exist before #56: an `@ai` draft with a photo staged on it, or
+     * replying to a message that carries one, is about to send that photo
+     * to the model under the same two locks a private question needs
+     * (docs/protocol.md, "Showing the assistant a picture from the family
+     * chat" — "What a client's family-chat composer must say"). Null in
+     * every other chat and whenever there is nothing to say; the rule is
+     * [AiPictureNotice.forMention], pinned by its own tests, and the
+     * counting is the server's.
+     *
+     * With the owner's third switch on (`ai_history_photos`, and
+     * `ai_history` with it) the same rule also says that the chat's most
+     * recent photos may go — "up to N", N being what the draft and the
+     * quote left of the four — and the strip then shows for an `@ai`
+     * draft with no photo of its own at all, since that is the mention on
+     * which every one of the four may be somebody else's picture
+     * (docs/protocol.md, "Recent photos from the family chat").
+     *
+     * Eager, for [assistantPictureNotice]'s reason: the line has to be
+     * there on the frame the photo is, not one frame later.
+     */
+    val mentionPictureNotice: StateFlow<MentionPictureNotice?> =
+        combine(chat, draftText, staged, quotedAttachments, settings.state) {
+                chatEntity, draft, items, quoted, settingsState ->
+            if (chatEntity?.kind != "family") {
+                null
+            } else {
+                AiPictureNotice.forMention(
+                    draft = draft,
+                    staged = items.map { item ->
+                        StagedPicture(
+                            kind = item.kind,
+                            mime = AiPictureNotice.wireMime(
+                                item.mime, hasPreview = item.previewJpeg != null),
+                            bytes = AiPictureNotice.wireBytes(
+                                item.previewJpeg?.size) { item.file.length() },
+                        )
+                    },
+                    quoted = quoted.map(StagedPicture::of),
+                    allowed = settingsState.assistantVision && settingsState.familyAiVision,
+                    serverCanDraw = settingsState.assistantImages,
+                    familyHistory = settingsState.familyAiHistory,
+                    familyHistoryPhotos = settingsState.familyAiHistoryPhotos,
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)

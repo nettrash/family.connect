@@ -177,6 +177,11 @@ struct ConversationView: View {
     /// the wire snapshot so send() can hand it straight to the coordinator
     /// and the pending bubble can draw its quote before the server answers.
     @State private var replyDraft: ReplyToDTO?
+    /// What the message being replied to carries, looked up once per
+    /// reply target rather than per keystroke — the family composer's
+    /// picture strip reads it (`mentionPictureNotice`), and a scan of the
+    /// chat's rows inside a body property would run on every character.
+    @State private var quotedAttachments: [AttachmentDTO] = []
     /// The message being rewritten, while the composer is in edit mode.
     /// Mutually exclusive with replyDraft: you are either answering a
     /// message or rewriting one.
@@ -1293,8 +1298,11 @@ struct ConversationView: View {
             if !staged.isEmpty {
                 stagedRow
             }
-            if let pictureNotice {
-                assistantPictureNotice(pictureNotice)
+            // Two strips, never both: the assistant's own chat says what a
+            // staged photo will meet; the family chat says the same for a
+            // photo an `@ai` draft is about to carry (#56).
+            if let notice = pictureNotice ?? mentionPictureNotice {
+                assistantPictureNotice(notice)
             }
             HStack(alignment: .bottom, spacing: 8) {
                 // A Menu rather than two buttons: the composer is narrow,
@@ -1476,6 +1484,11 @@ struct ConversationView: View {
             geometry.size.height
         } action: { height in
             inputBarHeight = height
+        }
+        // On the input bar rather than the thread's own chain, which is
+        // already at the type-checker's limit; it is the bar that reads it.
+        .onChange(of: replyDraft?.messageID, initial: true) { _, messageID in
+            quotedAttachments = quotedAttachmentList(for: messageID)
         }
     }
 
@@ -2762,9 +2775,14 @@ struct ConversationView: View {
     /// thing, and it is the member attaching it to this one question, which
     /// is deliberately not a setting anywhere (protocol.md, "Pictures").
     ///
-    /// `@ai` in the FAMILY chat is not here and never will be: the
-    /// photograph there is very often somebody else's, and the member
-    /// typing the mention is in no position to consent on their behalf.
+    /// `@ai` in the FAMILY chat is not here, and that is a statement about
+    /// this DOOR rather than about what travels: since #56 a photo on an
+    /// `@ai` message, or on the message it replies to, goes to the model
+    /// under the same two locks, through the ordinary photo picker and the
+    /// reply affordance the family composer has always had (protocol.md,
+    /// "Showing the assistant a picture from the family chat"). What still
+    /// never goes is a photo the member did not point the assistant at —
+    /// somebody else's picture elsewhere in the window stays `[photo]`.
     private var showsPictureAttach: Bool {
         AssistantSurfaces.offersPictureAttach(
             isAssistantChat: isAssistantChat,
@@ -2824,6 +2842,44 @@ struct ConversationView: View {
             return String(localized: "The first \(AssistantPictureLimits.maxPerQuestion) photos go to the model your server is set up to use. The rest are named to it, not shown.")
         }
         return String(localized: "This goes to the model your server is set up to use, with your question. Nothing else from this chat does.")
+    }
+
+    /// The FAMILY composer's own sentence, for the case that did not exist
+    /// before #56: an `@ai` draft with a photo staged on it, or replying to
+    /// a message that carries one, is about to send that photo to the model
+    /// under the same two locks a private question needs. The doctrine is
+    /// the one above — say it here, now, where the photo is — and the rule
+    /// is `MentionPictureNotice`, shared with the Mac and pinned by tests:
+    /// absent with either lock shut, absent without a mention, absent for
+    /// `@ai /draw`, and counting the four exactly as the server does.
+    ///
+    /// With the owner's third switch on (`ai_history_photos`, and
+    /// `ai_history` with it) the same rule also says that the chat's most
+    /// recent photos may go — "up to N", N being what the draft and the
+    /// quote left of the four — and it then shows for an `@ai` draft with
+    /// no photo of its own at all, since that is the mention on which every
+    /// one of the four may be somebody else's picture (protocol.md, "Recent
+    /// photos from the family chat").
+    private var mentionPictureNotice: String? {
+        guard isFamilyChat else { return nil }
+        return MentionPictureNotice.of(
+            draft: model.draft,
+            staged: staged.map(\.assistantPictureCandidate),
+            quoted: quotedAttachments.map(AssistantPictureCandidate.init(attachment:)),
+            serverCanSee: AppSettings.assistantVision,
+            familyAllows: session.family?.aiVision == true,
+            familyHistory: session.family?.aiHistory == true,
+            familyHistoryPhotos: session.family?.aiHistoryPhotos == true,
+            serverCanDraw: AppSettings.offersPictureRequests
+        )?.sentence
+    }
+
+    /// The attachments of the message a reply is primed on — from this
+    /// chat's own rows, because `ReplyToDTO` carries an excerpt and nothing
+    /// else. [] when nothing is primed, or the row is not held here.
+    private func quotedAttachmentList(for serverID: Int64?) -> [AttachmentDTO] {
+        guard let serverID else { return [] }
+        return messages.first { $0.serverID == serverID }?.attachmentList ?? []
     }
 
     /// The notice itself. Not red and not an error: it is what is about to

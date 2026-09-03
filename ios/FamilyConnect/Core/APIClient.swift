@@ -240,6 +240,12 @@ actor APIClient {
         /// so, like it, absent leaves it alone and there is nothing for a
         /// null to mean.
         var aiVision: Bool?
+        /// The third boolean, of the same shape again (protocol.md,
+        /// "Recent photos from the family chat"). The server refuses
+        /// `true` while `ai_vision` is off, and turns it off whenever
+        /// `ai_vision` goes off — both are the server's to enforce, and
+        /// this client learns them from the answer.
+        var aiHistoryPhotos: Bool?
         /// The same double Optional the language uses, and for the same
         /// reason: the outer is "was this field touched", the inner is the
         /// value, and a real JSON `null` CLEARS the cap. These are the two
@@ -252,6 +258,7 @@ actor APIClient {
             case language
             case aiHistory = "ai_history"
             case aiVision = "ai_vision"
+            case aiHistoryPhotos = "ai_history_photos"
             case maxMembers = "max_members"
         }
 
@@ -270,6 +277,7 @@ actor APIClient {
             }
             try container.encodeIfPresent(aiHistory, forKey: .aiHistory)
             try container.encodeIfPresent(aiVision, forKey: .aiVision)
+            try container.encodeIfPresent(aiHistoryPhotos, forKey: .aiHistoryPhotos)
             if let maxMembers {
                 if let cap = maxMembers {
                     try container.encode(cap, forKey: .maxMembers)
@@ -377,6 +385,22 @@ actor APIClient {
     func setAIVision(_ enabled: Bool) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
             "PATCH", "/families/mine", body: FamilyPatchRequest(aiVision: enabled))
+        return response.family
+    }
+
+    /// Owner-only: whether an `@ai` mention in the family chat may also be
+    /// shown that chat's most recent photographs — pictures nobody pointed
+    /// the assistant at (protocol.md, "Recent photos from the family
+    /// chat").
+    ///
+    /// Sends this one key and nothing else. The server answers `validation`
+    /// (400) to `true` while `ai_vision` is off, which is why the switch
+    /// that calls this is disabled in that state rather than left to find
+    /// out; and the family it answers with is the truth for BOTH switches,
+    /// since turning `ai_vision` off turns this off in the same write.
+    func setAIHistoryPhotos(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiHistoryPhotos: enabled))
         return response.family
     }
 

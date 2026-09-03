@@ -295,7 +295,9 @@ nonisolated enum AppSettings {
     /// chat only when BOTH are true (protocol.md, "Pictures"). False here
     /// means the surface is absent rather than disabled — a server without
     /// the deployment configured must show no surface at all, not one that
-    /// lies about what would happen.
+    /// lies about what would happen. Since #56 the same pair also decides
+    /// whether a photo on an `@ai` message, or on the message it replies
+    /// to, travels with the mention; that needs no surface of its own.
     static var assistantVision: Bool {
         get { defaults.bool(forKey: Key.assistantVision) }
         set { defaults.set(newValue, forKey: Key.assistantVision) }
@@ -304,7 +306,10 @@ nonisolated enum AppSettings {
     /// Whether this server can GENERATE one. The whole of the `/draw`
     /// capability check: generation has no family switch, because what
     /// leaves on such a request is the words after the token and nothing
-    /// else.
+    /// else. Since #56 it also means the assistant may draw UNASKED, in
+    /// answer to an ordinary question — nothing here changes for that: the
+    /// reply is the picture message `/draw` already produces (protocol.md,
+    /// "Drawing without being told to").
     static var assistantImages: Bool {
         get { defaults.bool(forKey: Key.assistantImages) }
         set { defaults.set(newValue, forKey: Key.assistantImages) }

@@ -79,8 +79,12 @@ class FamilyAdminViewModel @Inject constructor(
         /** Whether a mention carries the chat's recent history. */
         val aiHistory: Boolean = true,
         /**
-         * Whether a photograph a member attaches in their OWN assistant
-         * chat may be shown to the model (docs/protocol.md, "Pictures").
+         * Whether a photograph a member points the assistant at may be
+         * shown to the model: in their OWN assistant chat, and — since
+         * #56 — on an `@ai` message in the family chat or on the message
+         * it replies to (docs/protocol.md, "Pictures" and "Showing the
+         * assistant a picture from the family chat"). The sentence under
+         * the switch names all three doors.
          *
          * FALSE by default, which is the opposite of [aiHistory] and the
          * point rather than an oversight: `ai_history` widened what a
@@ -88,6 +92,18 @@ class FamilyAdminViewModel @Inject constructor(
          * kind of disclosure altogether.
          */
         val aiVision: Boolean = false,
+        /**
+         * The THIRD switch (`ai_history_photos`, docs/protocol.md, "Recent
+         * photos from the family chat"): whether an `@ai` mention may
+         * also be shown the chat's most recent photographs — pictures
+         * nobody pointed the assistant at. FALSE by default, one notch
+         * further than [aiVision]: not only a different kind of thing
+         * from a sentence, a different kind of ACT — nobody chose these
+         * pictures for this question. Only ever true while [aiVision] is;
+         * the server turns it off whenever that goes off, so a PATCH
+         * answer for either is the truth for both.
+         */
+        val aiHistoryPhotos: Boolean = false,
         /**
          * Whether this SERVER has a deployment that can look at a picture
          * at all (`assistant.vision`).
@@ -107,7 +123,50 @@ class FamilyAdminViewModel @Inject constructor(
         val memberCount: Int = 0,
         val busy: Boolean = false,
         val error: String? = null,
-    )
+    ) {
+        /**
+         * How the third switch is drawn: offered, or DISABLED with its
+         * reason. Unlike [aiVision]'s switch, which is hidden on a server
+         * that cannot see, this one is present in both withheld states,
+         * because the protocol asks for exactly that — one reason is
+         * something the owner can act on (turn pictures on first; the
+         * server refuses this while they are off) and the other is
+         * something they deserve to be told rather than left to find
+         * missing (docs/protocol.md, "Recent photos from the family chat"
+         * — "What a client shows").
+         */
+        val historyPhotosSwitch: HistoryPhotosSwitch
+            get() = HistoryPhotosSwitch.of(serverCanSee = assistantVision, familyAllowsPhotos = aiVision)
+    }
+
+    /**
+     * The third switch's state from the two locks under it. The vision
+     * deployment is asked first: an owner on a server that cannot see is
+     * told that, not "turn pictures on first" — which they could do, to
+     * no effect. `ai_history` is deliberately NOT an input: with it off
+     * the switch is inert rather than withheld (there is no transcript
+     * for it to widen) and the server accepts it all the same; the screen
+     * says so beside it instead.
+     */
+    enum class HistoryPhotosSwitch {
+        /** Both locks under it are open; the owner may turn it either way. */
+        OFFERED,
+        /** `assistant.vision` is false: the assistant here cannot look at pictures at all. */
+        WITHHELD_NO_VISION_DEPLOYMENT,
+        /** `ai_vision` is off: the server refuses this while that is. */
+        WITHHELD_VISION_OFF,
+        ;
+
+        val isEnabled: Boolean get() = this == OFFERED
+
+        companion object {
+            fun of(serverCanSee: Boolean, familyAllowsPhotos: Boolean): HistoryPhotosSwitch = when {
+                !serverCanSee -> WITHHELD_NO_VISION_DEPLOYMENT
+                !familyAllowsPhotos -> WITHHELD_VISION_OFF
+                else -> OFFERED
+            }
+        }
+    }
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
@@ -145,6 +204,7 @@ class FamilyAdminViewModel @Inject constructor(
                         language = mine.family.language,
                         aiHistory = mine.family.aiHistory,
                         aiVision = mine.family.aiVision,
+                        aiHistoryPhotos = mine.family.aiHistoryPhotos,
                         assistantVision = mine.assistant?.vision == true,
                         maxMembers = mine.family.maxMembers,
                         memberCount = mine.members.size,
@@ -359,12 +419,51 @@ class FamilyAdminViewModel @Inject constructor(
             _state.update { it.copy(busy = true, error = null) }
             when (val result = familyRepository.setAiVision(enabled)) {
                 is ApiResult.Ok ->
-                    _state.update { it.copy(busy = false, aiVision = result.value.family.aiVision) }
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            aiVision = result.value.family.aiVision,
+                            // Turning this OFF turns the third switch off
+                            // in the same write on the server, asked or
+                            // not — the answer carries both, and both are
+                            // drawn from it.
+                            aiHistoryPhotos = result.value.family.aiHistoryPhotos,
+                        )
+                    }
                 is ApiResult.HttpError ->
                     _state.update {
                         it.copy(
                             busy = false,
                             error = result.message ?: appContext.getString(R.string.e_change_assistant_vision_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Owner-only: the third switch (docs/protocol.md, "Recent photos from
+     * the family chat"). The screen never calls this while the switch is
+     * withheld — the server would answer `validation` to `true` under a
+     * shut `ai_vision` — but a refusal that does arrive is shown, and the
+     * switch stays where the server says it is.
+     */
+    fun setAiHistoryPhotos(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setAiHistoryPhotos(enabled)) {
+                is ApiResult.Ok ->
+                    _state.update {
+                        it.copy(busy = false, aiHistoryPhotos = result.value.family.aiHistoryPhotos)
+                    }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message
+                                ?: appContext.getString(R.string.e_change_assistant_history_photos_failed),
                         )
                     }
                 is ApiResult.NetworkError ->

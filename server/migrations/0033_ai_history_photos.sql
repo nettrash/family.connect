@@ -1,0 +1,66 @@
+-- Recent photos for an @ai mention (docs/protocol.md, "Recent photos from
+-- the family chat"): whether a mention in the family chat may ALSO be
+-- shown the most recent photographs of that chat — pictures nobody pointed
+-- the assistant at, on messages the mention did not touch.
+--
+-- A THIRD switch, one column away from the two it depends on, and not a
+-- widening of `ai_vision` (0032). That is the whole argument of this
+-- migration, and it is an argument about a sentence rather than a column.
+--
+-- Every owner who has turned `ai_vision` on did so under a sentence every
+-- client shows against it, in nine languages, that ends "never from an
+-- earlier message". That sentence is the promise the switch makes, and it
+-- is the reason a family that keeps its photographs on its own server let
+-- any of them reach a model at all: a member has to point the assistant at
+-- a picture, one send at a time. Widening what `ai_vision` does would make
+-- that sentence false for every family that read it and said yes on the
+-- strength of it — and there is no honest way to re-ask a question somebody
+-- has already answered except to ask a new one. So this is a new one.
+
+-- NOT NULL DEFAULT FALSE, like 0032 and for 0032's reason turned one notch
+-- further. `ai_vision` defaulted off because a photograph is a different
+-- KIND of thing from a sentence. This defaults off because it is a
+-- different kind of ACT: a photo on the mention, or on the message it
+-- replies to, is a member deliberately pointing the assistant at that
+-- picture; a photo three messages up is not, and the person who sent it
+-- has done nothing since. Off for families created after it and for every
+-- family that existed before.
+--
+-- And off because of what it COSTS, which the protocol section says out
+-- loud and this comment repeats: `ai_history` (0019) is on by default, a
+-- family chat is mostly photographs, and with this on as well nearly every
+-- mention becomes a four-image vision call — "what time is the match" over
+-- four holiday photos sends the four holiday photos. That is a bill an
+-- owner has to choose, under a sentence that names it, not one a family
+-- gets because it was convenient.
+--
+-- A switch, therefore NOT NULL: there is no third state for a NULL to mean.
+ALTER TABLE families ADD COLUMN ai_history_photos BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- It can only be true while `ai_vision` is, and the database says so in its
+-- own words rather than trusting the one handler that writes both.
+--
+-- The rule has two halves and the constraint holds the invariant behind
+-- both. Turning this on while `ai_vision` is off is refused by
+-- PATCH /families/mine with `validation`; turning `ai_vision` OFF turns
+-- this off in the same UPDATE, whether or not the request mentioned it.
+-- Not "leaves it set but inert": a switch that quietly stayed on underneath
+-- the one that was turned off would spring back the day `ai_vision` was
+-- turned on again, and the wider disclosure would be reached without
+-- anybody choosing it a second time. The CHECK is what makes that a
+-- property of the schema rather than of a COALESCE somebody remembered:
+-- no code path, present or future, can write the state the protocol
+-- forbids, and a race between two owners' devices resolves to off.
+--
+-- Every existing row is FALSE in both columns, so the constraint holds the
+-- moment it is added and validates nothing.
+ALTER TABLE families ADD CONSTRAINT families_ai_history_photos_needs_vision
+    CHECK (ai_vision OR NOT ai_history_photos);
+
+-- What this column can never do: widen anything but a family-chat MENTION.
+-- No private `ai` thread reads it — that surface sees the member's own
+-- pictures on the question being answered and never an earlier turn — and
+-- no code path that touches a direct chat reads it either. And it does
+-- nothing while `ai_history` is off: with no transcript there is nothing
+-- to widen, because a photograph that is not in the transcript never
+-- travels at any setting.

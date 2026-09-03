@@ -747,7 +747,8 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 u.birthday_month, u.birthday_day,
                 f.id AS family_id, f.name AS family_name, f.join_policy,
                 f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
-                f.language, f.max_members, f.ai_history, f.ai_vision
+                f.language, f.max_members, f.ai_history, f.ai_vision,
+                f.ai_history_photos
          FROM users u
          LEFT JOIN families f ON f.id = u.family_id
          WHERE u.id = $1",
@@ -783,6 +784,9 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 // And the picture switch, which decides whether a member's
                 // own photographs may leave the server at all.
                 ai_vision: row.get("ai_vision"),
+                // And the third, which decides whether they may leave
+                // without anybody pointing the assistant at them.
+                ai_history_photos: row.get("ai_history_photos"),
             };
             let role = if is_owner { "owner" } else { "member" };
             (Some(family), Some(role))

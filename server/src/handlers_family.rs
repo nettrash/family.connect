@@ -69,6 +69,12 @@ pub struct PatchFamilyRequest {
     /// has ever sent it (protocol.md, "Pictures").
     #[serde(default)]
     pub ai_vision: Option<bool>,
+    /// The third switch, the same shape again — and the one with a rule
+    /// between it and its neighbour: `true` is refused while `ai_vision`
+    /// is off, and turning `ai_vision` off turns this off in the same write
+    /// (protocol.md, "Recent photos from the family chat").
+    #[serde(default)]
+    pub ai_history_photos: Option<bool>,
 }
 
 /// Deserialize a present key into `Some(...)`, so that `#[serde(default)]`
@@ -128,6 +134,7 @@ struct FamilyRecord {
     max_members: Option<i32>,
     ai_history: bool,
     ai_vision: bool,
+    ai_history_photos: bool,
     owner_user_id: i64,
     created_at: OffsetDateTime,
 }
@@ -143,6 +150,7 @@ impl FamilyRecord {
             max_members: row.get("max_members"),
             ai_history: row.get("ai_history"),
             ai_vision: row.get("ai_vision"),
+            ai_history_photos: row.get("ai_history_photos"),
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
         }
@@ -173,12 +181,18 @@ impl FamilyRecord {
             // leave the server. Every member gets to know the answer before
             // they attach one; only the owner can change it.
             ai_vision: self.ai_vision,
+            // And the third, for the reason that tops the other three: it
+            // decides whether a member's photographs may leave WITHOUT
+            // anybody pointing the assistant at them. Every member gets to
+            // know that before they send one; only the owner can change it.
+            ai_history_photos: self.ai_history_photos,
         }
     }
 }
 
 const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, max_members,
-                             ai_history, ai_vision, owner_user_id, created_at FROM families";
+                             ai_history, ai_vision, ai_history_photos, owner_user_id, created_at
+                             FROM families";
 
 async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, ApiError> {
     let row = sqlx::query(&format!("{SELECT_FAMILY} WHERE id = $1"))
@@ -416,7 +430,7 @@ pub async fn create_family(
             "INSERT INTO families (name, invite_code, owner_user_id)
              VALUES ($1, $2, $3)
              RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
-                       ai_vision, owner_user_id, created_at",
+                       ai_vision, ai_history_photos, owner_user_id, created_at",
         )
         .bind(&name)
         .bind(&invite_code)
@@ -793,13 +807,19 @@ pub async fn rotate_invite_code(
 }
 
 /// `PATCH /families/mine` (owner) — the join policy, the family's main
-/// language, whether a mention sees the chat's recent history, or any
-/// combination of the three.
+/// language, the cap, the three assistant switches, or any combination.
 ///
 /// Which fields are PRESENT decides what changes, exactly as on a board
 /// note. Everything is validated before anything is written, so a request
 /// naming a good policy and a bad language changes neither and the owner is
 /// never left guessing which half of it landed.
+///
+/// One rule binds two of the switches (protocol.md, "Recent photos from
+/// the family chat"): `ai_history_photos` may only be on while `ai_vision`
+/// is. Turning it on otherwise is `validation`; turning `ai_vision` off
+/// turns it off in the same write, whether or not the request said so.
+/// The check needs the row, so it is the one validation that runs after
+/// `require_owner` — still before anything is written.
 pub async fn patch_family(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -844,21 +864,41 @@ pub async fn patch_family(
     };
 
     let family = require_owner(&state, &auth).await?;
-    // COALESCE for the policy and for the history switch, because an unsent
-    // field binds NULL and the column should keep what it had — which is
-    // exactly what COALESCE says. The language cannot use it — NULL is a
-    // VALUE there rather than "unchanged" — so a separate flag says whether
-    // to write that column at all.
+    // The third switch may only be on while `ai_vision` is, judged against
+    // what `ai_vision` WILL be once this same request has applied: turning
+    // both on at once is fine, turning `ai_vision` off and this on is not,
+    // and turning this on alone while `ai_vision` is off is the case an
+    // owner most needs an answer to rather than a silent no. Refused here
+    // with the reason; and enforced AGAIN in the UPDATE below, so a racing
+    // request cannot write the state migration 0033's CHECK forbids.
+    let vision_after = req.ai_vision.unwrap_or(family.ai_vision);
+    if req.ai_history_photos == Some(true) && !vision_after {
+        return Err(ApiError::validation(
+            "ai_history_photos can only be turned on while ai_vision is on",
+        ));
+    }
+    // COALESCE for the policy and for the switches, because an unsent field
+    // binds NULL and the column should keep what it had — which is exactly
+    // what COALESCE says. The language cannot use it — NULL is a VALUE
+    // there rather than "unchanged" — so a separate flag says whether to
+    // write that column at all.
+    //
+    // `ai_history_photos` is what was asked (or what it was) AND what
+    // `ai_vision` is about to be. That one expression is both halves of
+    // the rule at once: `ai_vision` going off takes it down in the same
+    // write, whether or not the request mentioned it, and nothing this
+    // handler can be sent leaves it on over a shut `ai_vision`.
     let row = sqlx::query(
         "UPDATE families
          SET join_policy = COALESCE($2, join_policy),
              language = CASE WHEN $3 THEN $4 ELSE language END,
              ai_history = COALESCE($5, ai_history),
              ai_vision = COALESCE($8, ai_vision),
+             ai_history_photos = COALESCE($9, ai_history_photos) AND COALESCE($8, ai_vision),
              max_members = CASE WHEN $6 THEN $7 ELSE max_members END
          WHERE id = $1
          RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
-                   ai_vision, owner_user_id, created_at",
+                   ai_vision, ai_history_photos, owner_user_id, created_at",
     )
     .bind(family.id)
     .bind(join_policy)
@@ -868,6 +908,7 @@ pub async fn patch_family(
     .bind(max_members.is_some())
     .bind(max_members.flatten())
     .bind(req.ai_vision)
+    .bind(req.ai_history_photos)
     .fetch_one(&state.pool)
     .await?;
     let family = FamilyRecord::from_row(&row);
