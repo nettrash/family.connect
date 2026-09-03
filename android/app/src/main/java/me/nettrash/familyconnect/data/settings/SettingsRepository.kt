@@ -130,6 +130,36 @@ data class SettingsState(
     /** What to call it — server-configured, not compiled in here. */
     val assistantName: String? = null,
     /**
+     * Whether this SERVER has a deployment that can look at a picture
+     * (`assistant.vision`, docs/protocol.md, "Pictures").
+     *
+     * One of the two locks the composer reads. It says nothing about
+     * whether this FAMILY allows it — that is [familyAiVision] — and a
+     * client needs both before it offers a picture to the assistant.
+     * False on a server that has no such deployment, which is the
+     * default and is a server where this cannot happen at all.
+     */
+    val assistantVision: Boolean = false,
+    /**
+     * Whether this server can MAKE a picture (`assistant.images`). The
+     * whole of the `/draw` capability check — generation has no family
+     * switch, because what leaves is strictly smaller than a text
+     * question: the words after the token and nothing else.
+     */
+    val assistantImages: Boolean = false,
+    /**
+     * Whether the family's OWNER has allowed a photograph attached in a
+     * member's own assistant chat to be shown to the model
+     * (`Family.ai_vision`).
+     *
+     * FALSE by default — the deliberate opposite of `ai_history` — and
+     * false for every family that existed before it. Kept here beside
+     * the assistant's capabilities because the composer has to answer
+     * "may I offer this?" without a round trip, and account-scoped so it
+     * goes with the session: another server's family is another answer.
+     */
+    val familyAiVision: Boolean = false,
+    /**
      * Whether the server signals voice calls (`GET /me` → calls_enabled).
      * Account-scoped like the assistant: a different server may have them
      * off. False hides the call button rather than letting somebody
@@ -190,7 +220,23 @@ interface SettingsRepository {
      */
     suspend fun setMapPreviewsEnabled(enabled: Boolean)
 
-    suspend fun setAssistant(userId: Long?, displayName: String?)
+    suspend fun setAssistant(
+        userId: Long?,
+        displayName: String?,
+        vision: Boolean = false,
+        images: Boolean = false,
+    )
+
+    /**
+     * Record the family's own picture switch, from `GET /families/mine`
+     * or from the owner's own PATCH.
+     *
+     * Unconditional, `false` included: it is a complete state-set like
+     * the block list, not a delta. An owner turning it OFF must reach
+     * every device, and a guard skipping the false case would leave the
+     * composer offering a picture the server would never show.
+     */
+    suspend fun setFamilyAiVision(enabled: Boolean)
 
     /** Record what `GET /me` said about voice calls on this server. */
     suspend fun setCallsEnabled(enabled: Boolean)
@@ -259,6 +305,13 @@ class DataStoreSettingsRepository @Inject constructor(
         val MAP_PREVIEWS_DISABLED = booleanPreferencesKey("map_previews_disabled")
         val ASSISTANT_USER_ID = longPreferencesKey("assistant_user_id")
         val ASSISTANT_NAME = stringPreferencesKey("assistant_name")
+        val ASSISTANT_VISION = booleanPreferencesKey("assistant_vision")
+        val ASSISTANT_IMAGES = booleanPreferencesKey("assistant_images")
+        // Stored PLAIN, not inverted like the two preview keys above: this
+        // one's default is already `false`, so a missing key and an
+        // explicit `false` say the same thing and neither can be read as
+        // permission (docs/protocol.md, "Pictures").
+        val FAMILY_AI_VISION = booleanPreferencesKey("family_ai_vision")
         val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
     }
@@ -291,6 +344,9 @@ class DataStoreSettingsRepository @Inject constructor(
             mapPreviewsEnabled = prefs[Keys.MAP_PREVIEWS_DISABLED] != true,
             assistantUserId = prefs[Keys.ASSISTANT_USER_ID],
             assistantName = prefs[Keys.ASSISTANT_NAME],
+            assistantVision = prefs[Keys.ASSISTANT_VISION] == true,
+            assistantImages = prefs[Keys.ASSISTANT_IMAGES] == true,
+            familyAiVision = prefs[Keys.FAMILY_AI_VISION] == true,
             callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
         )
@@ -368,18 +424,35 @@ class DataStoreSettingsRepository @Inject constructor(
         dataStore.edit { it[Keys.MAP_PREVIEWS_DISABLED] = !enabled }
     }
 
-    override suspend fun setAssistant(userId: Long?, displayName: String?) {
+    override suspend fun setAssistant(
+        userId: Long?,
+        displayName: String?,
+        vision: Boolean,
+        images: Boolean,
+    ) {
         dataStore.edit { prefs ->
             if (userId != null && displayName != null) {
                 prefs[Keys.ASSISTANT_USER_ID] = userId
                 prefs[Keys.ASSISTANT_NAME] = displayName
+                prefs[Keys.ASSISTANT_VISION] = vision
+                prefs[Keys.ASSISTANT_IMAGES] = images
             } else {
                 // Cleared rather than left stale: a server that turned the
                 // assistant off must stop offering `@ai` on the next resync.
+                // The two capabilities go with it — an absent assistant has
+                // none, and a stale `true` would offer a picture surface on
+                // a server that has no assistant at all.
                 prefs.remove(Keys.ASSISTANT_USER_ID)
                 prefs.remove(Keys.ASSISTANT_NAME)
+                prefs.remove(Keys.ASSISTANT_VISION)
+                prefs.remove(Keys.ASSISTANT_IMAGES)
             }
         }
+    }
+
+    override suspend fun setFamilyAiVision(enabled: Boolean) {
+        // Unconditional, false included. See the interface.
+        dataStore.edit { it[Keys.FAMILY_AI_VISION] = enabled }
     }
 
     override suspend fun setCallsEnabled(enabled: Boolean) {

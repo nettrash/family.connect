@@ -626,6 +626,32 @@ fun FamilyAdminScreen(
                     },
                 )
                 SectionDivider()
+
+                // -- Whether the assistant may LOOK at a photo -------------------------
+                // Only on a server that has a deployment which can see.
+                // Absent, not disabled: a greyed switch here would say
+                // "your server could do this, but something is stopping
+                // you", which is not what a missing deployment means
+                // (docs/protocol.md, "Pictures").
+                if (state.assistantVision) {
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.s_assistant_vision)) },
+                        supportingContent = {
+                            Text(stringResource(R.string.s_assistant_vision_explanation))
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = state.aiVision,
+                                onCheckedChange = viewModel::setAiVision,
+                                enabled = !state.busy,
+                            )
+                        },
+                        modifier = Modifier.clickable(enabled = !state.busy) {
+                            viewModel.setAiVision(!state.aiVision)
+                        },
+                    )
+                    SectionDivider()
+                }
             }
 
             // -- Members ------------------------------------------------------------

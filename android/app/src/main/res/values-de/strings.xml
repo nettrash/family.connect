@@ -384,4 +384,18 @@
     <string name="s_reports_empty">Mitglieder können dir eine Nachricht oder eine Person melden.</string>
     <string name="s_safety">Sicherheit</string>
     <string name="s_safety_for">Sicherheitsoptionen für %1$s</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Dem Assistenten ein Foto zeigen</string>
+    <string name="s_show_the_assistant_a_picture_note">Es verlässt diesen Server und geht an das Modell, mit dem er spricht</string>
+    <string name="s_ask_for_a_picture">Um ein Bild bitten</string>
+    <string name="s_assistant_sees_this_picture">Dem Assistenten wird dieses Foto gezeigt. Es verlässt diesen Server und geht an das Modell, mit dem er spricht.</string>
+    <string name="s_assistant_sees_these_pictures">Dem Assistenten werden diese Fotos gezeigt. Sie verlassen diesen Server und gehen an das Modell, mit dem er spricht.</string>
+    <string name="s_assistant_picture_extra_left_out">Nur die ersten %1$d gehen mit einer Frage mit, der Rest bleibt hier.</string>
+    <string name="s_assistant_picture_others_left_out">Videos, Dateien, Audio und Standorte werden ihm nie gesendet.</string>
+    <string name="s_assistant_picture_unreadable_left_out">Ein Foto, das zu groß ist oder in einem für das Modell unlesbaren Format vorliegt, wird ihm nur genannt und nicht gezeigt.</string>
+    <string name="s_assistant_will_not_see_picture">Dem Assistenten wird dieses Foto nicht gezeigt. Es wird als gewöhnlicher Anhang gesendet.</string>
+    <string name="s_assistant_answer_failed">Der Assistent konnte diese Antwort nicht abschließen. Frag noch einmal.</string>
+    <string name="s_assistant_vision">Assistent darf Fotos ansehen</string>
+    <string name="s_assistant_vision_explanation">Wenn jemand in seinem eigenen Chat mit dem Assistenten ein Foto an eine Frage anhängt, wird dieses Foto mit der Frage an das Modell gesendet — höchstens 4 pro Frage. Standardmäßig aus. Ein Foto aus dem Familienchat wird nie gesendet, bei keiner Einstellung, und Videos, Dateien, Audio und Standorte ebenso wenig.</string>
+    <string name="e_change_assistant_vision_failed">Einstellung konnte nicht geändert werden</string>
 </resources>

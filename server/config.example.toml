@@ -310,6 +310,13 @@ ring_timeout_secs = 45
 # # api-version query at all.
 # #
 # #     endpoint = "https://YOUR-RESOURCE.openai.azure.com/openai/v1"
+# #
+# # And an endpoint that carries a QUERY of its own — `?api-version=preview`
+# # and the like — is a finished URL and is sent exactly as pasted. Nothing
+# # could be spliced onto one anyway: a query starts at the first `?`, so
+# # anything appended lands inside it. This is the shape Azure AI Foundry
+# # prints for a model deployment, and it is what the FLUX example further
+# # down uses.
 # endpoint = "https://YOUR-RESOURCE.openai.azure.com"
 #
 # # The DEPLOYMENT name — this is what the request URL is built from, and it
@@ -324,9 +331,8 @@ ring_timeout_secs = 45
 # # on the surface — so the two may differ without breaking anything.
 # model = "gpt-oss-120b"
 #
-# # The `api-key` header. It belongs HERE, in the server's own config, and
-# # never on a client: a key shipped to devices is a key you no longer
-# # control.
+# # The key. It belongs HERE, in the server's own config, and never on a
+# # client: a key shipped to devices is a key you no longer control.
 # #
 # # This file is read VERBATIM — there is no ${VAR} expansion — so the file
 # # itself is the secret. Keep it out of version control, and readable only
@@ -334,6 +340,20 @@ ring_timeout_secs = 45
 # #     sudo chown family-connect:family-connect /etc/family-connect/config.toml
 # #     sudo chmod 600 /etc/family-connect/config.toml
 # api_key = "paste-the-azure-key-here"
+#
+# # WHICH HEADER carries that key. "api-key" (the default, and what Azure
+# # OpenAI takes) or "bearer", which sends `Authorization: Bearer <key>` and
+# # is what the Foundry model surface takes.
+# #
+# # Written down rather than guessed from the URL on purpose. A server that
+# # silently switched headers on a hostname would answer 401 one day with
+# # nothing in the config to explain it; this way "which header carried the
+# # key?" is a line you can read.
+# #
+# # Both sub-sections inherit this and either may override it, which is the
+# # ordinary case: a GPT deployment on api-key and a FLUX one on bearer, with
+# # ONE key between them.
+# auth = "api-key"
 #
 # # Azure's dated API version. PINNED rather than "latest" on purpose: a
 # # silently changing contract is not something a family server should
@@ -430,14 +450,20 @@ ring_timeout_secs = 45
 # # thread, not the transcript, not the system prompt, not even the language
 # # line. That is a smaller disclosure than an ordinary text question, which
 # # carries the last turns of a conversation.
+# # THE BLOCK BELOW IS THE OPENAI-STYLE ONE — an image deployment on your
+# # Azure OpenAI resource, taking the same body the OpenAI images API takes.
+# # FLUX on Azure AI Foundry is a different shape in four ways and has its own
+# # worked example a little further down; if that is what you deployed, read
+# # that one instead of adapting this one.
 # [ai.images]
 # deployment = "YOUR-IMAGE-DEPLOYMENT"
-# model = "FLUX.2-pro"
+# model = "gpt-image-1"
 #
 # # An images endpoint is the one contract this server cannot verify for you,
-# # so the two fields that vary between image models are yours to set and are
-# # OMITTED from the request when empty — which is the body that works
-# # everywhere.
+# # so every field that varies between image models is yours to set and is
+# # OMITTED from the request when you leave it empty. That omission is the
+# # whole trick: it is what lets one section speak to a model that requires a
+# # field another model refuses.
 # #
 # # If your portal shows a full target URI for this deployment, paste it as
 # # `endpoint` here and it is used verbatim, exactly as [ai] does for chat:
@@ -447,6 +473,12 @@ ring_timeout_secs = 45
 # # `size` goes in the body as-is; empty omits it and lets the deployment
 # # choose.
 # size = "1024x1024"
+# # `width` and `height` are the OTHER spelling of the same thing, as two
+# # integers, for the models that take it apart and know nothing of `size`.
+# # 0 — the default — omits them. Set these OR `size`, never both: a model
+# # that reads one answers 400 to the other.
+# width = 0
+# height = 0
 # # `response_format` is "b64_json" (bytes inline) or "url" (a link the SERVER
 # # then fetches — never a client). Empty by default and omitted, because some
 # # deployments answer 400 to a field they do not implement; both answers are
@@ -455,3 +487,56 @@ ring_timeout_secs = 45
 # # The most bytes one generated picture may be, as a guard against a runaway
 # # response. It bounds the download too, when a deployment answers with a URL.
 # max_bytes = 16777216
+# # `auth` and `api_key` may be given here too, as under [ai.vision]. The FLUX
+# # example below needs the first and not the second.
+#
+# # ---------------------------------------------------------------------------
+# # Black Forest Labs FLUX on Azure AI Foundry
+# #
+# # A worked, working [ai.images] — replace the block above with this one when
+# # your picture model is FLUX. It is copied from the sample the Foundry
+# # portal prints for the deployment, which is the only description of this
+# # surface that has proved to be true:
+# #
+# #     [ai.images]
+# #     endpoint = "https://YOUR-RESOURCE.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro?api-version=preview"
+# #     deployment = "YOUR-FLUX-DEPLOYMENT"      # e.g. "nettrash-FLUX.2-pro"
+# #     model = "FLUX.2-pro"                     # recorded with usage, not sent
+# #     auth = "bearer"
+# #     size = ""                                # FLUX has no `size`
+# #     width = 1024
+# #     height = 1024
+# #
+# # FOUR THINGS DIFFER FROM THE BLOCK ABOVE, and each has its own error when
+# # it is the one you got wrong:
+# #
+# # 1. THE HOST AND PATH. FLUX answers on services.ai.azure.com, under
+# #    /providers/blackforestlabs/, and the model IS the path — there is no
+# #    /openai/deployments/... and no images/generations segment. Paste the
+# #    portal's whole target URI, `?api-version=preview` included; a URL that
+# #    carries its own query is sent exactly as written.
+# #    Point the OpenAI images path at FLUX instead and it answers
+# #    "Model not supported with Responses API" — on every URL shape that was
+# #    tried, which is the error that says "right key, right model, wrong
+# #    surface". A bare `404 Resource not found` is the other half of the same
+# #    mistake: the right surface on the wrong host.
+# #
+# # 2. THE HEADER. `auth = "bearer"` — FLUX reads the key from
+# #    `Authorization: Bearer`, not from `api-key`. A 401 with a key you know
+# #    is good means this line, not the key.
+# #
+# # 3. THE SIZE. Two integers, `width` and `height`; `size = ""` so the string
+# #    is not sent at all. A 400 naming a field is this: `size` sent to FLUX,
+# #    or width/height sent to a model that wanted `size`.
+# #
+# # 4. NOTHING ELSE. `model` is still the DEPLOYMENT name on the wire (the
+# #    config's `model` is only what statistics record), `n` is always 1, and
+# #    the answer comes back as data[0].b64_json synchronously — no polling,
+# #    nothing to configure.
+# #
+# # ONE KEY COVERS BOTH — verified against the live resource. The GPT
+# # deployments on YOUR-RESOURCE.openai.azure.com and the FLUX deployment on
+# # YOUR-RESOURCE.services.ai.azure.com take the same key, so [ai.images] here
+# # needs no `api_key` of its own; it inherits [ai]'s and changes only the
+# # header it goes in.
+# # ---------------------------------------------------------------------------

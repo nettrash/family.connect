@@ -943,8 +943,10 @@ struct ConversationView: View {
                             MessageBubbleView(
                                 message: message,
                                 isMine: message.senderID == currentUserID,
-                                isStreaming: message.serverID.map {
-                                    coordinator.streamingMessageIDs.contains($0)
+                                isStreaming: coordinator.isAwaitingAssistant(
+                                    message, isAssistantChat: isAssistantChat),
+                                assistantFailed: message.serverID.map {
+                                    coordinator.assistantAnswerFailed(messageID: $0)
                                 } ?? false,
                                 showsSenderName: MessagePresentation.showsSenderName(
                                     at: index,
@@ -1291,14 +1293,45 @@ struct ConversationView: View {
             if !staged.isEmpty {
                 stagedRow
             }
+            if let pictureNotice {
+                assistantPictureNotice(pictureNotice)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 // A Menu rather than two buttons: the composer is narrow,
                 // and "attach" is one intent with two sources.
                 Menu {
-                    Button {
-                        showPhotoPicker = true
-                    } label: {
-                        Label("Photo or Video", systemImage: "photo.on.rectangle")
+                    // In the assistant's own chat the picture doors are the
+                    // vision gate, and they are ABSENT rather than disabled
+                    // when it is shut: a server with no vision deployment,
+                    // or a family whose owner has not turned `ai_vision`
+                    // on, must show no surface at all rather than one that
+                    // lies about what would happen (protocol.md,
+                    // "Pictures"). Everywhere else they are unconditional,
+                    // exactly as they have always been.
+                    if !isAssistantChat || showsPictureAttach {
+                        Button {
+                            showPhotoPicker = true
+                        } label: {
+                            // In the assistant's chat this door NAMES what
+                            // it does. The switch lives on a settings
+                            // screen somebody read once; this is where the
+                            // photograph is actually chosen, and it is the
+                            // last place the consequence can be said before
+                            // it happens. A video never reaches the model
+                            // either — the server sends photographs and
+                            // nothing else — so the wording is honest about
+                            // that too. Same sentence the Mac's panel uses.
+                            //
+                            // Two literals rather than one ternary so
+                            // `check-strings.py` can see both keys: it
+                            // reads source text, and a key inside a
+                            // conditional expression is invisible to it.
+                            if isAssistantChat {
+                                Label("Show the Assistant a Photo…", systemImage: "photo")
+                            } else {
+                                Label("Photo or Video", systemImage: "photo.on.rectangle")
+                            }
+                        }
                     }
                     Button {
                         showFilePicker = true
@@ -1325,7 +1358,7 @@ struct ConversationView: View {
                     // Hidden rather than disabled where there is no camera
                     // (Simulator, camera-less device): presenting the picker
                     // there shows an empty black sheet.
-                    if CameraPicker.isAvailable {
+                    if CameraPicker.isAvailable, !isAssistantChat || showsPictureAttach {
                         Button {
                             showCamera = true
                         } label: {
@@ -1375,7 +1408,7 @@ struct ConversationView: View {
                     // No `photoLibrary:` — see the note in SettingsView. The
                     // out-of-process picker needs no PhotoKit reference and
                     // no usage description, and nothing here reads a PHAsset.
-                    matching: .any(of: [.images, .videos]))
+                    matching: isAssistantChat ? .images : .any(of: [.images, .videos]))
                 if showsAssistantMention {
                     Button {
                         insertAssistantMention()
@@ -1388,6 +1421,19 @@ struct ConversationView: View {
                     }
                     .disabled(editTarget != nil)
                     .accessibilityLabel("Ask the assistant")
+                }
+                if showsPictureRequest {
+                    Button {
+                        insertDrawToken()
+                    } label: {
+                        Image(systemName: "paintbrush")
+                            .font(.system(size: 19))
+                            .foregroundStyle(.tint)
+                            .frame(width: composerControl, height: composerControl)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(editTarget != nil)
+                    .accessibilityLabel("Ask for a picture")
                 }
                 TextField("Message", text: Bindable(model).draft, axis: .vertical)
                     .focused($inputFocused)
@@ -2706,6 +2752,113 @@ struct ConversationView: View {
     /// characters than a button that types them.
     private var showsAssistantMention: Bool {
         chat?.kind == "family" && AppSettings.assistantUserID != nil
+    }
+
+    /// Both locks, and only in the assistant's own chat.
+    ///
+    /// The operator configured a deployment that can SEE
+    /// (`assistant.vision`), and this family's owner turned `ai_vision` on.
+    /// Neither is consent for a particular photograph — that is the third
+    /// thing, and it is the member attaching it to this one question, which
+    /// is deliberately not a setting anywhere (protocol.md, "Pictures").
+    ///
+    /// `@ai` in the FAMILY chat is not here and never will be: the
+    /// photograph there is very often somebody else's, and the member
+    /// typing the mention is in no position to consent on their behalf.
+    private var showsPictureAttach: Bool {
+        AssistantSurfaces.offersPictureAttach(
+            isAssistantChat: isAssistantChat,
+            serverCanSee: AppSettings.assistantVision,
+            familyAllows: session.family?.aiVision == true)
+    }
+
+    /// The `/draw` affordance: this server can generate a picture, and we
+    /// are somewhere it would be answered.
+    ///
+    /// No family switch, deliberately — what leaves on such a request is
+    /// the words after the token and nothing else, which is a SMALLER
+    /// disclosure than an ordinary text question.
+    private var showsPictureRequest: Bool {
+        isAssistantChat && AppSettings.offersPictureRequests
+    }
+
+    /// What the composer has to say out loud before a photograph goes.
+    ///
+    /// The switch lives on a settings screen somebody read once; the
+    /// photograph is chosen here, later, possibly by somebody else. So the
+    /// sentence is said HERE, at the moment it matters, and it names the
+    /// two things a reader can act on: that the picture leaves for whatever
+    /// model this server talks to, and anything of theirs that will NOT go.
+    private var pictureNotice: String? {
+        guard isAssistantChat else { return nil }
+        // EVERY staged photograph, before any bound is applied — the
+        // sentence is about what the member is looking at, so what they are
+        // looking at is what it counts.
+        let photos = staged.filter { $0.prepared.kind == AttachmentDTO.Kind.photo }
+        guard !photos.isEmpty else { return nil }
+        guard showsPictureAttach else {
+            // Not an error and not refused — the server takes it, stores
+            // it, and tells the assistant a photo was attached that it was
+            // not shown. Saying so is the whole of the honesty here.
+            return String(localized: "The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it.")
+        }
+        // The server's own rules, applied to what will actually be ON THE
+        // WIRE: JPEG or PNG, and 5 MiB at most, judged on the PREVIEW where
+        // there is one because that is the copy the server prefers
+        // (protocol.md, "Pictures"). Without this the notice below promised
+        // that a photograph the server will leave out "goes to the model".
+        let carried = AssistantPictureLimits.carried(
+            photos,
+            kind: { $0.prepared.kind },
+            mime: { $0.assistantWireMIME },
+            bytes: { $0.assistantWireBytes })
+        if carried.count < photos.count {
+            // Ahead of the cap below, on the rare send that trips both: a
+            // member who staged five photos half expects a limit, and
+            // nobody expects a photograph to be left out for its bytes.
+            return String(localized: "A photo here is too large, or in a format the model can't read, so it will be told it's here but won't be shown it.")
+        }
+        if photos.count > AssistantPictureLimits.maxPerQuestion {
+            // Named rather than silently dropped, the same way the server
+            // names them to the model.
+            return String(localized: "The first \(AssistantPictureLimits.maxPerQuestion) photos go to the model your server is set up to use. The rest are named to it, not shown.")
+        }
+        return String(localized: "This goes to the model your server is set up to use, with your question. Nothing else from this chat does.")
+    }
+
+    /// The notice itself. Not red and not an error: it is what is about to
+    /// happen, said plainly.
+    private func assistantPictureNotice(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "eye")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Put `/draw ` at the FRONT of the draft and give the field back.
+    ///
+    /// At the front rather than appended, which is the one place this
+    /// differs from the mention button: the token is only a request when it
+    /// is the first thing in the body, so appending it would type something
+    /// the server will not act on (protocol.md, "Pictures").
+    private func insertDrawToken() {
+        let token = AssistantMention.drawToken
+        guard !AssistantMention.asksForPicture(model.draft) else {
+            inputFocused = true
+            return
+        }
+        let rest = model.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        model.draft = rest.isEmpty ? "\(token) " : "\(token) \(rest)"
+        inputFocused = true
     }
 
     /// Put `@ai ` in the draft and give the field back to the keyboard.

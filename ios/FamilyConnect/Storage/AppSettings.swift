@@ -52,6 +52,17 @@ nonisolated enum AppSettings {
         /// telling the composer whether to offer `@ai` at all.
         static let assistantUserID = "v1.assistant.userId"
         static let assistantName = "v1.assistant.name"
+        /// What this SERVER's assistant can do beyond words, as
+        /// `GET /families/mine` last reported it (protocol.md, "Pictures").
+        /// Stored the plain way round — a missing key reads as "cannot" —
+        /// because that is both the honest answer for a server that
+        /// predates the feature and the one that offers nothing.
+        static let assistantVision = "v1.assistant.vision"
+        static let assistantImages = "v1.assistant.images"
+        /// The picture token as the server spells it. Held so the client
+        /// can be certain the server means the same five characters by it
+        /// before offering an affordance built on its own copy.
+        static let assistantDraw = "v1.assistant.draw"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
@@ -277,11 +288,62 @@ nonisolated enum AppSettings {
         }
     }
 
+    /// Whether this server has a deployment that can LOOK at a picture.
+    ///
+    /// Half of the vision gate and only half: the family's own `ai_vision`
+    /// is the other, and a client offers to attach a picture in an `ai`
+    /// chat only when BOTH are true (protocol.md, "Pictures"). False here
+    /// means the surface is absent rather than disabled — a server without
+    /// the deployment configured must show no surface at all, not one that
+    /// lies about what would happen.
+    static var assistantVision: Bool {
+        get { defaults.bool(forKey: Key.assistantVision) }
+        set { defaults.set(newValue, forKey: Key.assistantVision) }
+    }
+
+    /// Whether this server can GENERATE one. The whole of the `/draw`
+    /// capability check: generation has no family switch, because what
+    /// leaves on such a request is the words after the token and nothing
+    /// else.
+    static var assistantImages: Bool {
+        get { defaults.bool(forKey: Key.assistantImages) }
+        set { defaults.set(newValue, forKey: Key.assistantImages) }
+    }
+
+    /// The picture token the server named, or nil when it named none.
+    static var assistantDraw: String? {
+        get { defaults.string(forKey: Key.assistantDraw) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.assistantDraw)
+            } else {
+                defaults.removeObject(forKey: Key.assistantDraw)
+            }
+        }
+    }
+
+    /// May this client offer the `/draw` affordance?
+    ///
+    /// The server's answer AND a spelling check. `assistant.draw` exists so
+    /// a client can be certain the server means the same five characters
+    /// its own grammar does; a server that named a different token is one
+    /// this build cannot compose for, and offering a button that types the
+    /// wrong thing is exactly the "affordance that silently does nothing"
+    /// the capability flags exist to prevent. A server that named NO token
+    /// is a server that predates pictures, where `images` is false anyway.
+    static var offersPictureRequests: Bool {
+        AssistantSurfaces.offersPictureRequests(
+            serverCanDraw: assistantImages, serverToken: assistantDraw)
+    }
+
     static func wipe(keepServerURL: Bool) {
         if !keepServerURL { defaults.removeObject(forKey: Key.serverURL) }
         defaults.removeObject(forKey: Key.currentUserID)
         defaults.removeObject(forKey: Key.assistantUserID)
         defaults.removeObject(forKey: Key.assistantName)
+        defaults.removeObject(forKey: Key.assistantVision)
+        defaults.removeObject(forKey: Key.assistantImages)
+        defaults.removeObject(forKey: Key.assistantDraw)
         defaults.removeObject(forKey: Key.joinPending)
         defaults.removeObject(forKey: Key.pushToken)
         defaults.removeObject(forKey: Key.pushDeviceID)

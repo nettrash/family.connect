@@ -650,8 +650,10 @@ struct MacConversationView: View {
                                 senderName: senderName(for: row.message.senderID),
                                 nameFor: quoteAuthorName,
                                 avatarVersionFor: { avatarVersions[$0] ?? 0 },
-                                isStreaming: row.message.serverID.map {
-                                    coordinator.streamingMessageIDs.contains($0)
+                                isStreaming: coordinator.isAwaitingAssistant(
+                                    row.message, isAssistantChat: isAssistantChat),
+                                assistantFailed: row.message.serverID.map {
+                                    coordinator.assistantAnswerFailed(messageID: $0)
                                 } ?? false,
                                 isMine: row.isMine,
                                 showsSenderName: row.showsSenderName,
@@ -1286,8 +1288,36 @@ struct MacConversationView: View {
             if !staged.isEmpty {
                 StagedAttachmentRow(items: staged) { discardStaged($0) }
             }
+            if let pictureNotice {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "eye")
+                    Text(pictureNotice)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
+                    // The Mac's answer to the phone's photo picker: its own
+                    // open panel, filtered to images and capped at the four
+                    // the model is shown (MacFilePicker.pickPictures).
+                    // Present only when BOTH locks are open — the operator
+                    // configured a deployment that can see, and this
+                    // family's owner turned `ai_vision` on — and absent
+                    // rather than disabled when they are not, because a
+                    // server without the deployment must show no surface at
+                    // all rather than one that lies (protocol.md,
+                    // "Pictures").
+                    if showsPictureAttach {
+                        Button {
+                            pickPictures()
+                        } label: {
+                            Label("Show the Assistant a Photo…", systemImage: "photo")
+                        }
+                    }
                     Button {
                         pickAttachment()
                     } label: {
@@ -1361,6 +1391,20 @@ struct MacConversationView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Ask the assistant")
+                    .disabled(editTarget != nil)
+                }
+
+                if showsPictureRequest {
+                    Button {
+                        insertDrawToken()
+                    } label: {
+                        Image(systemName: "paintbrush")
+                            .font(.system(size: 15))
+                            .frame(width: composerControl, height: composerControl)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Ask for a picture")
                     .disabled(editTarget != nil)
                 }
 
@@ -1519,6 +1563,80 @@ struct MacConversationView: View {
     /// (docs/protocol.md, "Mentioning the assistant in the family chat").
     private var showsAssistantMention: Bool {
         chat?.kind == "family" && AppSettings.assistantUserID != nil
+    }
+
+    /// The assistant's own chat: two participants, so a message that is
+    /// not mine is its.
+    private var isAssistantChat: Bool { chat?.kind == "ai" }
+
+    /// Both locks, and only in the assistant's own chat — the phone's rule,
+    /// from the same two facts, so a family that turned pictures on cannot
+    /// find them on one device and not the other.
+    ///
+    /// Neither lock is consent for a particular photograph: that is the
+    /// third thing, and it is the member choosing this one in this panel
+    /// for this question (protocol.md, "Pictures").
+    private var showsPictureAttach: Bool {
+        AssistantSurfaces.offersPictureAttach(
+            isAssistantChat: isAssistantChat,
+            serverCanSee: AppSettings.assistantVision,
+            familyAllows: session.family?.aiVision == true)
+    }
+
+    /// The `/draw` affordance. No family switch, deliberately: what leaves
+    /// on such a request is the words after the token and nothing else.
+    private var showsPictureRequest: Bool {
+        isAssistantChat && AppSettings.offersPictureRequests
+    }
+
+    /// What the composer says out loud before a photograph goes — the
+    /// phone's sentences, because it is the same disclosure and a family
+    /// reading two different ones would reasonably wonder which is true.
+    private var pictureNotice: String? {
+        guard isAssistantChat else { return nil }
+        // EVERY staged photograph, before any bound — the phone's rule and
+        // the phone's reason (ConversationView.pictureNotice).
+        let photos = staged.filter { $0.prepared.kind == AttachmentDTO.Kind.photo }
+        guard !photos.isEmpty else { return nil }
+        guard showsPictureAttach else {
+            return String(localized: "The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it.")
+        }
+        let carried = AssistantPictureLimits.carried(
+            photos,
+            kind: { $0.prepared.kind },
+            mime: { $0.assistantWireMIME },
+            bytes: { $0.assistantWireBytes })
+        if carried.count < photos.count {
+            return String(localized: "A photo here is too large, or in a format the model can't read, so it will be told it's here but won't be shown it.")
+        }
+        if photos.count > AssistantPictureLimits.maxPerQuestion {
+            return String(localized: "The first \(AssistantPictureLimits.maxPerQuestion) photos go to the model your server is set up to use. The rest are named to it, not shown.")
+        }
+        return String(localized: "This goes to the model your server is set up to use, with your question. Nothing else from this chat does.")
+    }
+
+    /// The picture door: an image-only open panel, then the ordinary
+    /// ingestion path so the downscale, the ceiling and the cap all still
+    /// apply. Not a second staging path — that is the whole rule `ingest`
+    /// exists to keep.
+    private func pickPictures() {
+        ingest(MacFilePicker.pickPictures())
+    }
+
+    /// Put `/draw ` at the FRONT of the draft and put the caret back.
+    ///
+    /// At the front rather than appended, which is the one place this
+    /// differs from the mention button: the token is only a request when it
+    /// is the first thing in the body (protocol.md, "Pictures").
+    private func insertDrawToken() {
+        let token = AssistantMention.drawToken
+        guard !AssistantMention.asksForPicture(draft) else {
+            composerFocused = true
+            return
+        }
+        let rest = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft = rest.isEmpty ? "\(token) " : "\(token) \(rest)"
+        composerFocused = true
     }
 
     /// Put `@ai ` in the draft and put the caret back in the field.

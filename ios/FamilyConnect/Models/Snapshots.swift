@@ -568,6 +568,69 @@ nonisolated enum MessagePresentation {
         return serverID <= othersReadUpTo
     }
 
+    /// Does this ROW read as an assistant answer that has not arrived yet?
+    ///
+    /// Asked of the row, and of nothing else. The set of ids a live
+    /// `ai_delta`/`ai_error` populated is a fact about THIS PROCESS; the
+    /// protocol's rule is a fact about the message — *"an EMPTY assistant
+    /// message is stored and fanned out, so a bubble appears at once… The
+    /// empty row is the 'still working' state"* (docs/protocol.md, "How a
+    /// picture comes back"), which it says without scoping to one launch.
+    /// Deciding it from a set meant quitting mid-`/draw` and reopening drew
+    /// the row completely blank — no cursor, no error, nothing — which is
+    /// the exact bubble the working state was added to remove.
+    ///
+    /// Deliberately narrow, and every clause earns its place:
+    ///
+    /// - EMPTY and carrying nothing: a body, an attachment, a poll or a
+    ///   call is an answer that arrived (a picture answer gains its
+    ///   attachment through `message_edited`, and that is what ends this
+    ///   state);
+    /// - not MINE: my own empty row is a send in flight;
+    /// - and from somebody who could be the assistant — its own `ai` chat,
+    ///   where two participants mean anything not mine is its, or the
+    ///   family chat, where only its reserved account names it.
+    ///
+    /// A member's own message cannot reach this shape anyway: the server
+    /// refuses a send with neither body nor attachment (`message_empty`),
+    /// so an empty attachment-less row in an `ai` chat is the placeholder
+    /// and nothing else.
+    ///
+    /// Same rule on Android (`AssistantAnswer.isAwaited` in
+    /// AssistantAnswer.kt), pinned by the same cases.
+    static func isAwaitedAssistantAnswer(
+        carriesNothing: Bool,
+        senderID: Int64,
+        isAssistantChat: Bool,
+        assistantUserID: Int64?,
+        currentUserID: Int64
+    ) -> Bool {
+        guard carriesNothing, senderID != currentUserID else { return false }
+        return isAssistantChat || senderID == assistantUserID
+    }
+
+    /// The same question of a laid-out row, which is what a bubble holds.
+    ///
+    /// The one place "carries nothing" is spelled out for a snapshot; the
+    /// coordinator spells it once more for a stored row and for an arriving
+    /// DTO, because those three types share no field list and a protocol
+    /// over four accessors would be more machinery than the sentence is
+    /// worth.
+    static func isAwaitedAssistantAnswer(
+        _ message: MessageSnapshot,
+        isAssistantChat: Bool,
+        assistantUserID: Int64?,
+        currentUserID: Int64
+    ) -> Bool {
+        isAwaitedAssistantAnswer(
+            carriesNothing: message.body.isEmpty && message.attachments.isEmpty
+                && message.poll == nil && message.call == nil,
+            senderID: message.senderID,
+            isAssistantChat: isAssistantChat,
+            assistantUserID: assistantUserID,
+            currentUserID: currentUserID)
+    }
+
     /// True when a message is nothing but photos and/or videos — no
     /// caption, no quote, no poll, no call, nothing still arriving — and
     /// the bubble therefore draws it BARE: no balloon, the way an

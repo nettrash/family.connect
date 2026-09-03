@@ -381,4 +381,18 @@
     <string name="s_reports_empty">Чланови могу да вам пријаве поруку или особу.</string>
     <string name="s_safety">Безбедност</string>
     <string name="s_safety_for">Безбедносне опције за %1$s</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Покажи асистенту фотографију</string>
+    <string name="s_show_the_assistant_a_picture_note">Она напушта овај сервер и иде моделу с којим он разговара</string>
+    <string name="s_ask_for_a_picture">Затражи слику</string>
+    <string name="s_assistant_sees_this_picture">Асистенту ће бити приказана ова фотографија. Она напушта овај сервер и иде моделу с којим он разговара.</string>
+    <string name="s_assistant_sees_these_pictures">Асистенту ће бити приказане ове фотографије. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
+    <string name="s_assistant_picture_extra_left_out">Уз једно питање иду само прве %1$d, остале остају овде.</string>
+    <string name="s_assistant_picture_others_left_out">Видео, фајлови, аудио и локације му се никада не шаљу.</string>
+    <string name="s_assistant_picture_unreadable_left_out">Фотографија која је превелика или у формату који модел не уме да прочита само се помене, а не приказује.</string>
+    <string name="s_assistant_will_not_see_picture">Асистенту неће бити приказана ова фотографија. Шаље се као обичан прилог.</string>
+    <string name="s_assistant_answer_failed">Асистент није успео да заврши овај одговор. Питајте поново.</string>
+    <string name="s_assistant_vision">Асистент сме да гледа фотографије</string>
+    <string name="s_assistant_vision_explanation">Када неко у свом чету с асистентом приложи фотографију уз питање, та фотографија иде моделу заједно с питањем — највише 4 по питању. Искључено док га не укључите. Фотографија из породичног чета се не шаље никада, ни уз једно подешавање, као ни видео, фајлови, аудио и локације.</string>
+    <string name="e_change_assistant_vision_failed">Није успела промена подешавања</string>
 </resources>

@@ -479,6 +479,85 @@ class ChatViewModel @Inject constructor(
         .map { it?.kind == "family" }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    // -- Pictures -----------------------------------------------------------------
+
+    /**
+     * Whether this composer may offer to show the assistant a picture.
+     *
+     * TWO locks, and both have to be open before a single pixel can leave
+     * (docs/protocol.md, "Pictures"): the operator has configured a
+     * deployment that can SEE (`assistant.vision`), and the family's
+     * OWNER has turned `ai_vision` on — which is false by default, the
+     * deliberate opposite of `ai_history`. Neither is consent for a
+     * particular photograph: that is a third thing, the member attaching
+     * it to the question, and it is never a remembered setting.
+     *
+     * The member's OWN `ai` chat and nowhere else. `@ai` in the family
+     * chat never sends a picture at any setting — the photograph there is
+     * very often somebody else's, and the member typing the mention is in
+     * no position to consent on their behalf — so this is false in the
+     * family chat even with both locks open.
+     */
+    val canShowAssistantPicture: StateFlow<Boolean> =
+        combine(chat, settings.state) { chatEntity, settingsState ->
+            chatEntity?.kind == "ai" &&
+                settingsState.assistantVision &&
+                settingsState.familyAiVision
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * Whether this composer may offer `/draw`.
+     *
+     * One lock and no family switch, because what leaves the server on a
+     * picture request is strictly SMALLER than what an ordinary text
+     * question sends: the words after the token and nothing else — not
+     * the thread, not the transcript, not the system prompt, not the
+     * family's language, not the member's name, and not any picture the
+     * message carries (docs/protocol.md, "Pictures").
+     *
+     * Both surfaces take it: the member's own `ai` chat, and the family
+     * chat, where the whole family sees the answer arrive. Never a direct
+     * chat, which the assistant is not in. And never on a server with no
+     * images deployment: `/draw` is just text there, answered in words,
+     * so the affordance would be one that silently does nothing.
+     */
+    val canAskForPicture: StateFlow<Boolean> =
+        combine(chat, settings.state) { chatEntity, settingsState ->
+            settingsState.assistantImages &&
+                when (chatEntity?.kind) {
+                    "ai" -> true
+                    "family" -> settingsState.assistantUserId != null
+                    else -> false
+                }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * Turn whatever is in the composer into a picture request.
+     *
+     * The token cannot be appended the way `@ai` is — it has to be FIRST,
+     * and in the family chat it has to sit after one leading mention — so
+     * the whole body is rebuilt by the shared grammar rather than
+     * assembled here. Pressing it twice is a no-op: a body that already
+     * asks for a picture comes back untouched.
+     */
+    fun insertDrawToken() {
+        if (!canAskForPicture.value) return
+        if (_editTarget.value != null) return
+        val inFamilyChat = chat.value?.kind == "family"
+        val rewritten = AssistantMention.withDraw(inputState.text.toString(), inFamilyChat)
+        inputState.setTextAndPlaceCursorAtEnd(rewritten)
+    }
+
+    /**
+     * Assistant replies an `ai_error` frame named, by server id.
+     *
+     * The bubble needs it: a picture answer that failed has an empty row
+     * and no deltas ever arrived, so without this it is a blank balloon
+     * that never resolves (docs/protocol.md, "Pictures").
+     */
+    val failedAssistantMessageIds: StateFlow<Set<Long>> =
+        messageRepository.failedAssistantMessageIds
+
     /** Open the poll sheet on a fresh draft — two empty options, no question. */
     fun beginPoll() {
         if (!canCreatePoll.value) return
@@ -732,6 +811,46 @@ class ChatViewModel @Inject constructor(
      */
     private val _staged = MutableStateFlow<List<MediaPrep.Prepared>>(emptyList())
     val staged: StateFlow<List<MediaPrep.Prepared>> = _staged
+
+    /**
+     * Whether a picture is staged right now — which, in an `ai` chat, is
+     * the moment the disclosure has to be on screen.
+     *
+     * The switch lives on a settings screen somebody read once; the
+     * photograph is chosen in a composer, later, by someone who may not
+     * have been the one who read it. So the notice hangs off the STAGED
+     * items rather than off the door they came through — the picker, a
+     * paste, a drop and the camera all end up here.
+     *
+     * Started EAGERLY, like the two capability flags it sits beside: a
+     * lazily started flow would hand the composer a null on the frame a
+     * photo is staged and the sentence one frame later, so the disclosure
+     * would appear AFTER the thumbnail it is about. It has to be there
+     * when the picture is.
+     */
+    val assistantPictureNotice: StateFlow<AiPictureNotice?> =
+        combine(chat, staged, canShowAssistantPicture) { chatEntity, items, allowed ->
+            if (chatEntity?.kind != "ai") {
+                null
+            } else {
+                AiPictureNotice.of(
+                    items.map { item ->
+                        // What the item will BE on the wire, not what was
+                        // picked: the server prefers the preview, so the
+                        // preview's type and length are what its rule
+                        // reads (docs/protocol.md, "Pictures").
+                        StagedPicture(
+                            kind = item.kind,
+                            mime = AiPictureNotice.wireMime(
+                                item.mime, hasPreview = item.previewJpeg != null),
+                            bytes = AiPictureNotice.wireBytes(
+                                item.previewJpeg?.size) { item.file.length() },
+                        )
+                    },
+                    allowed,
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /** Screen calls this from a LifecycleResumeEffect. */
     fun setResumed(isResumed: Boolean) {

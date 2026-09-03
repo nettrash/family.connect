@@ -381,4 +381,18 @@
     <string name="s_reports_empty">Članovi mogu da vam prijave poruku ili osobu.</string>
     <string name="s_safety">Bezbednost</string>
     <string name="s_safety_for">Bezbednosne opcije za %1$s</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Pokaži asistentu fotografiju</string>
+    <string name="s_show_the_assistant_a_picture_note">Ona napušta ovaj server i ide modelu s kojim on razgovara</string>
+    <string name="s_ask_for_a_picture">Zatraži sliku</string>
+    <string name="s_assistant_sees_this_picture">Asistentu će biti prikazana ova fotografija. Ona napušta ovaj server i ide modelu s kojim on razgovara.</string>
+    <string name="s_assistant_sees_these_pictures">Asistentu će biti prikazane ove fotografije. One napuštaju ovaj server i idu modelu s kojim on razgovara.</string>
+    <string name="s_assistant_picture_extra_left_out">Uz jedno pitanje idu samo prve %1$d, ostale ostaju ovde.</string>
+    <string name="s_assistant_picture_others_left_out">Video, fajlovi, audio i lokacije mu se nikada ne šalju.</string>
+    <string name="s_assistant_picture_unreadable_left_out">Fotografija koja je prevelika ili u formatu koji model ne ume da pročita samo se pomene, a ne prikazuje.</string>
+    <string name="s_assistant_will_not_see_picture">Asistentu neće biti prikazana ova fotografija. Šalje se kao običan prilog.</string>
+    <string name="s_assistant_answer_failed">Asistent nije uspeo da završi ovaj odgovor. Pitajte ponovo.</string>
+    <string name="s_assistant_vision">Asistent sme da gleda fotografije</string>
+    <string name="s_assistant_vision_explanation">Kada neko u svom četu s asistentom priloži fotografiju uz pitanje, ta fotografija ide modelu zajedno s pitanjem — najviše 4 po pitanju. Isključeno dok ga ne uključite. Fotografija iz porodičnog četa se ne šalje nikada, ni uz jedno podešavanje, kao ni video, fajlovi, audio i lokacije.</string>
+    <string name="e_change_assistant_vision_failed">Nije uspela promena podešavanja</string>
 </resources>

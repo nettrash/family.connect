@@ -228,6 +228,19 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// month of it. ALWAYS present on the wire — a switch has no "unset" —
     /// but `true` here is the fallback for a server that predates it.
     let aiHistory: Bool
+    /// Whether a photograph a member attaches in their OWN assistant chat
+    /// may be shown to the model at all (protocol.md, "Pictures").
+    ///
+    /// ALWAYS present on the wire for the reason `aiHistory` is, and its
+    /// default is the other one: **false**. Off unless the owner turned it
+    /// on, and off for every family that existed before it — which is also
+    /// the right answer for a server that predates the field, so the
+    /// decoder's fallback and the protocol's default are the same value.
+    ///
+    /// The asymmetry with `aiHistory` is the point rather than an
+    /// inconsistency: history widened what a model was already being told,
+    /// while a photograph is a different kind of disclosure entirely.
+    let aiVision: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -238,6 +251,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         case language
         case maxMembers = "max_members"
         case aiHistory = "ai_history"
+        case aiVision = "ai_vision"
     }
 
     init(
@@ -248,12 +262,17 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         inviteCode: String?,
         language: String? = nil,
         aiHistory: Bool = true,
-        // DELIBERATELY UNDEFAULTED, and last. A default here compiles
-        // cleanly at every field-by-field rebuild site and then silently
-        // resets the cap after a policy change, a code rotation or an
-        // assistant edit — the class of bug the invite-code merge comment
-        // in FamilyManageView already records happening once. Taking the
-        // compile errors is the point.
+        // DELIBERATELY UNDEFAULTED, both of them, and last. A default here
+        // compiles cleanly at every field-by-field rebuild site and then
+        // silently resets the value after a policy change, a code rotation
+        // or an assistant edit — the class of bug the invite-code merge
+        // comment in FamilyManageView already records happening once.
+        // Taking the compile errors is the point.
+        //
+        // `aiVision` earns it twice over: it is the switch that decides
+        // whether photographs leave the server, and a rebuild that dropped
+        // it would show the family a setting their server does not have.
+        aiVision: Bool,
         maxMembers: Int?
     ) {
         self.id = id
@@ -264,6 +283,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         self.language = language
         self.maxMembers = maxMembers
         self.aiHistory = aiHistory
+        self.aiVision = aiVision
     }
 
     /// Hand-written for the reason UserDTO's is, and this type had no
@@ -282,6 +302,11 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         language = try container.decodeIfPresent(String.self, forKey: .language)
         maxMembers = try container.decodeIfPresent(Int.self, forKey: .maxMembers)
         aiHistory = try container.decodeIfPresent(Bool.self, forKey: .aiHistory) ?? true
+        // FALSE, and not for compatibility's sake — it is the protocol's
+        // own default. A server that predates the field is a server where
+        // no photograph can reach a model, which is exactly what `false`
+        // makes this client offer.
+        aiVision = try container.decodeIfPresent(Bool.self, forKey: .aiVision) ?? false
     }
 }
 
@@ -949,11 +974,63 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
     /// the grammar is shared (AssistantMention) but the spelling belongs to
     /// the protocol, and a client inventing its own would be unanswerable.
     let mention: String
+    /// The picture token, alongside `mention` and for the same reason. Its
+    /// value is fixed and this client still mirrors the grammar by value;
+    /// the field is here so it can be CERTAIN the server it is talking to
+    /// means the same five characters by it (protocol.md, "Pictures").
+    /// Absent on a server that predates pictures, where `images` is false
+    /// too and nothing is offered anyway.
+    let draw: String?
+    /// This SERVER has a deployment that can look at a picture. It says
+    /// nothing about whether THIS family has allowed it — that is
+    /// `ai_vision` on the Family object, and a client needs both to be true
+    /// before it offers to attach a picture in an `ai` chat.
+    let vision: Bool
+    /// This server can generate one. A client offers the `/draw`
+    /// affordance only when this is true, for the reason the whole
+    /// `assistant` object exists: an affordance that silently does nothing
+    /// is worse than one that is not there.
+    let images: Bool
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
         case displayName = "display_name"
         case mention
+        case draw
+        case vision
+        case images
+    }
+
+    init(
+        userID: Int64,
+        displayName: String,
+        mention: String,
+        draw: String? = nil,
+        vision: Bool = false,
+        images: Bool = false
+    ) {
+        self.userID = userID
+        self.displayName = displayName
+        self.mention = mention
+        self.draw = draw
+        self.vision = vision
+        self.images = images
+    }
+
+    /// Hand-written for the reason `UserDTO`'s is: a property default is
+    /// not a decoding fallback, and all three keys below are absent on
+    /// every server that predates pictures. FALSE is the honest answer
+    /// there — such a server can neither see nor draw — so an old server
+    /// and a server with no vision/images deployment configured produce
+    /// exactly the same client, which is the point of the flags.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        userID = try container.decode(Int64.self, forKey: .userID)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        mention = try container.decode(String.self, forKey: .mention)
+        draw = try container.decodeIfPresent(String.self, forKey: .draw)
+        vision = try container.decodeIfPresent(Bool.self, forKey: .vision) ?? false
+        images = try container.decodeIfPresent(Bool.self, forKey: .images) ?? false
     }
 }
 
@@ -1330,10 +1407,41 @@ nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
     let questions: Int
     let promptTokens: Int
     let completionTokens: Int
+    /// The pictures the assistant GENERATED, and its own number rather
+    /// than a share of `questions`, because it is the only one of these
+    /// that maps to a per-picture bill: an image model reports no tokens,
+    /// so a picture answer is one question, zero prompt tokens, zero
+    /// completion tokens and one image (protocol.md, "Family statistics").
+    ///
+    /// A family shown only the token counts would therefore see the
+    /// expensive half of their assistant as free, which is the whole
+    /// reason this field is on the wire and the whole reason a client
+    /// draws it.
+    let images: Int
 
     enum CodingKeys: String, CodingKey {
         case questions
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
+        case images
+    }
+
+    init(questions: Int, promptTokens: Int, completionTokens: Int, images: Int = 0) {
+        self.questions = questions
+        self.promptTokens = promptTokens
+        self.completionTokens = completionTokens
+        self.images = images
+    }
+
+    /// Hand-written for the reason `UserDTO`'s is: a property default is
+    /// not a decoding fallback, and `images` is absent from every response
+    /// of a server that predates pictures. Zero is the honest answer
+    /// there — such a server has generated none and can generate none.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        questions = try container.decode(Int.self, forKey: .questions)
+        promptTokens = try container.decode(Int.self, forKey: .promptTokens)
+        completionTokens = try container.decode(Int.self, forKey: .completionTokens)
+        images = try container.decodeIfPresent(Int.self, forKey: .images) ?? 0
     }
 }

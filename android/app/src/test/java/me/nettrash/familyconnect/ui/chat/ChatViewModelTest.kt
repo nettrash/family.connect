@@ -1383,8 +1383,8 @@ class ChatViewModelTest {
         assertThat(c.file.exists()).isTrue()
     }
 
-    private fun tempPrepared(tag: Byte): MediaPrep.Prepared {
-        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { tag }) }
+    private fun tempPrepared(tag: Byte, bytes: Int = 16): MediaPrep.Prepared {
+        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(bytes) { tag }) }
         return MediaPrep.Prepared(
             file = file,
             mime = "image/jpeg",
@@ -1923,5 +1923,195 @@ class ChatViewModelTest {
 
         assertThat(viewModel.awaitFailure().reason)
             .isEqualTo(RuntimeEnvironment.getApplication().getString(R.string.e_close_poll_failed))
+    }
+
+    // -- Pictures -------------------------------------------------------------
+    //
+    // The composer's two picture affordances, each behind its own
+    // capability check. What is asserted here is ABSENCE as much as
+    // presence: a surface offered where the server will not act is the
+    // failure mode the whole `assistant` object exists to prevent, and in
+    // the vision case it would be a surface that says pixels are about to
+    // leave when they are not — or, far worse, the reverse.
+
+    /** Both locks open, in the member's own thread: the one place it is offered. */
+    private fun TestScope.picturesConfigured(
+        vision: Boolean = true,
+        images: Boolean = true,
+        familyAllows: Boolean = true,
+    ) {
+        launch {
+            settings.setAssistant(userId = 1L, displayName = "Assistant", vision = vision, images = images)
+            settings.setFamilyAiVision(familyAllows)
+        }
+        runCurrent()
+    }
+
+    @Test
+    fun aPictureIsOfferedOnlyInTheMembersOwnThreadWithBothLocksOpen() = runTest(dispatcher) {
+        for (kind in listOf("ai", "family", "direct")) {
+            val viewModel = newViewModel(kind = kind)
+            picturesConfigured()
+            runCurrent()
+            // `@ai` in the family chat NEVER sends a picture, at any
+            // setting: the photograph there is very often somebody
+            // else's, and the member typing the mention is in no position
+            // to consent on their behalf.
+            assertThat(viewModel.canShowAssistantPicture.value).isEqualTo(kind == "ai")
+        }
+    }
+
+    @Test
+    fun neitherLockOnItsOwnOffersAPicture() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "ai")
+
+        // The operator has no vision deployment: this cannot happen at
+        // all here, whatever the owner switched on.
+        picturesConfigured(vision = false, familyAllows = true)
+        runCurrent()
+        assertThat(viewModel.canShowAssistantPicture.value).isFalse()
+
+        // The server can see, and this family has not said it may.
+        picturesConfigured(vision = true, familyAllows = false)
+        runCurrent()
+        assertThat(viewModel.canShowAssistantPicture.value).isFalse()
+
+        picturesConfigured(vision = true, familyAllows = true)
+        runCurrent()
+        assertThat(viewModel.canShowAssistantPicture.value).isTrue()
+    }
+
+    /**
+     * Generation takes BOTH surfaces — the member's own thread and the
+     * family chat, where the whole family watches the answer arrive. It
+     * is allowed there precisely because what leaves is only the asking
+     * member's own words, which a mention already sends today.
+     */
+    @Test
+    fun drawIsOfferedInBothAssistantSurfacesAndNowhereElse() = runTest(dispatcher) {
+        for (kind in listOf("ai", "family", "direct")) {
+            val viewModel = newViewModel(kind = kind)
+            picturesConfigured()
+            runCurrent()
+            assertThat(viewModel.canAskForPicture.value).isEqualTo(kind != "direct")
+        }
+    }
+
+    /** A server that cannot make one must not offer to: `/draw` is just text there. */
+    @Test
+    fun drawIsNotOfferedWithoutAnImagesDeployment() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "ai")
+        picturesConfigured(images = false)
+        runCurrent()
+        assertThat(viewModel.canAskForPicture.value).isFalse()
+    }
+
+    /**
+     * The composer's output has to be a body the SERVER reads as a
+     * request, so it is checked through the shared grammar rather than
+     * against a literal — including the family chat's leading mention,
+     * without which the server never looks for the token at all.
+     */
+    @Test
+    fun theDrawButtonRewritesTheDraftIntoARequest() = runTest(dispatcher) {
+        val aiChat = newViewModel(kind = "ai")
+        picturesConfigured()
+        runCurrent()
+        aiChat.inputState.setTextAndPlaceCursorAtEnd("a cat in a hat")
+        aiChat.insertDrawToken()
+        assertThat(aiChat.inputState.text.toString()).isEqualTo("/draw a cat in a hat")
+        assertThat(AssistantMention.drawPrompt(aiChat.inputState.text.toString()))
+            .isEqualTo("a cat in a hat")
+
+        val familyChat = newViewModel(kind = "family")
+        picturesConfigured()
+        runCurrent()
+        familyChat.inputState.setTextAndPlaceCursorAtEnd("a cat in a hat")
+        familyChat.insertDrawToken()
+        assertThat(familyChat.inputState.text.toString()).isEqualTo("@ai /draw a cat in a hat")
+        assertThat(AssistantMention.mentions(familyChat.inputState.text.toString())).isTrue()
+        assertThat(AssistantMention.drawPrompt(familyChat.inputState.text.toString()))
+            .isEqualTo("a cat in a hat")
+    }
+
+    /** No capability, no rewrite: the draft is left exactly as it was. */
+    @Test
+    fun theDrawButtonDoesNothingWhereItIsNotOffered() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "direct")
+        picturesConfigured()
+        runCurrent()
+        viewModel.inputState.setTextAndPlaceCursorAtEnd("a cat")
+
+        viewModel.insertDrawToken()
+
+        assertThat(viewModel.inputState.text.toString()).isEqualTo("a cat")
+    }
+
+    /**
+     * The disclosure is raised by what is STAGED, not by the door it came
+     * through — and only in the assistant's own thread, where a picture
+     * can actually be shown to it.
+     */
+    @Test
+    fun theDisclosureIsRaisedByWhatIsStagedAndOnlyInTheAssistantsThread() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "ai")
+        picturesConfigured()
+        runCurrent()
+        // Nothing staged: nothing to say.
+        assertThat(viewModel.assistantPictureNotice.value).isNull()
+
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+        assertThat(viewModel.assistantPictureNotice.value)
+            .isEqualTo(
+                AiPictureNotice.WillShow(
+                    shown = 1, extraPhotos = 0, otherAttachments = 0, unreadablePhotos = 0,
+                ),
+            )
+
+        // The same photo in the family chat says nothing: it is never
+        // shown to the assistant there, so there is nothing to disclose.
+        val familyChat = newViewModel(kind = "family")
+        picturesConfigured()
+        familyChat.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+        assertThat(familyChat.assistantPictureNotice.value).isNull()
+    }
+
+    /**
+     * THE BOUND THE STRIP CLAIMED AND DID NOT APPLY.
+     *
+     * A photograph over 5 MiB is one the SERVER leaves out and names to
+     * the model — while the strip told the member it "leaves this server
+     * for the model your server talks to". This goes through the real
+     * staging path, so the size it is judged on is the one measured off
+     * the file that will be uploaded.
+     */
+    @Test
+    fun aStagedPhotoTheServerWillLeaveOutIsNotPromisedToTheModel() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "ai")
+        picturesConfigured()
+        runCurrent()
+
+        viewModel.stagePrepared(tempPrepared(tag = 1, bytes = (AiPictureNotice.MAX_BYTES + 1).toInt()))
+        runCurrent()
+
+        assertThat(viewModel.assistantPictureNotice.value).isEqualTo(
+            AiPictureNotice.WillShow(
+                shown = 0, extraPhotos = 0, otherAttachments = 0, unreadablePhotos = 1,
+            ),
+        )
+    }
+
+    /** With a lock shut the sentence flips rather than disappearing. */
+    @Test
+    fun aPictureThatWillNotBeShownSaysSo() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "ai")
+        picturesConfigured(familyAllows = false)
+        runCurrent()
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+
+        assertThat(viewModel.assistantPictureNotice.value).isEqualTo(AiPictureNotice.WillNotShow)
     }
 }

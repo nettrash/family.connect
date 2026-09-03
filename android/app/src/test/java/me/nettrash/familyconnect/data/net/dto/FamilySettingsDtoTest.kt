@@ -18,6 +18,7 @@ package me.nettrash.familyconnect.data.net.dto
 
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.Json
+import me.nettrash.familyconnect.ui.chat.AssistantMention
 import org.junit.Test
 
 class FamilySettingsDtoTest {
@@ -44,6 +45,69 @@ class FamilySettingsDtoTest {
         // A boolean with a real default: the successor of a server that
         // sends nothing behaves as `true`.
         assertThat(family.aiHistory).isTrue()
+        // …and the picture switch defaults the OTHER way, which is the
+        // point rather than an inconsistency between two neighbouring
+        // booleans: a server that predates it has no vision path at all,
+        // and a family that never opened this screen has not consented to
+        // anything (docs/protocol.md, "Pictures").
+        assertThat(family.aiVision).isFalse()
+    }
+
+    @Test
+    fun `the picture switch arrives when the owner has turned it on`() {
+        val family = json.decodeFromString<FamilyDto>(
+            """
+            {"id": 3, "name": "The Smiths", "join_policy": "open",
+             "ai_history": true, "ai_vision": true}
+            """.trimIndent(),
+        )
+        assertThat(family.aiVision).isTrue()
+    }
+
+    /**
+     * The three capability keys on the assistant. `vision` and `images`
+     * are what decide whether a picture surface exists AT ALL, so the
+     * compatibility default has to be the one that offers nothing: an
+     * affordance that silently does nothing is worse than one that is not
+     * there (docs/protocol.md, "Pictures").
+     */
+    @Test
+    fun `an assistant from a server that predates pictures offers neither`() {
+        val assistant = json.decodeFromString<AssistantDto>(
+            """{"user_id": 1, "display_name": "Assistant", "mention": "@ai"}""",
+        )
+        assertThat(assistant.vision).isFalse()
+        assertThat(assistant.images).isFalse()
+        assertThat(assistant.draw).isNull()
+    }
+
+    @Test
+    fun `an assistant that can see and draw says so`() {
+        val assistant = json.decodeFromString<AssistantDto>(
+            """
+            {"user_id": 1, "display_name": "Assistant", "mention": "@ai",
+             "draw": "/draw", "vision": true, "images": true}
+            """.trimIndent(),
+        )
+        assertThat(assistant.vision).isTrue()
+        assertThat(assistant.images).isTrue()
+        // The token comes from the server rather than being invented here,
+        // exactly as `mention` does — the grammar is shared, the spelling
+        // belongs to the protocol.
+        assertThat(assistant.draw).isEqualTo(AssistantMention.DRAW)
+    }
+
+    /** One deployment without the other is an ordinary configuration. */
+    @Test
+    fun `seeing and drawing are independent`() {
+        val assistant = json.decodeFromString<AssistantDto>(
+            """
+            {"user_id": 1, "display_name": "Assistant", "mention": "@ai",
+             "draw": "/draw", "vision": false, "images": true}
+            """.trimIndent(),
+        )
+        assertThat(assistant.vision).isFalse()
+        assertThat(assistant.images).isTrue()
     }
 
     @Test
@@ -133,6 +197,14 @@ class FamilySettingsDtoTest {
             .isEqualTo("""{"ai_history":false}""")
         assertThat(houseJson.encodeToString(PatchFamilyRequest.aiHistory(true)))
             .isEqualTo("""{"ai_history":true}""")
+        // The picture switch is a boolean of exactly that shape — absent
+        // leaves it alone, and there is nothing for a `null` to mean —
+        // differing only in its default. So `false` is a VALUE here too,
+        // and an owner switching it off must not encode to `{}`.
+        assertThat(houseJson.encodeToString(PatchFamilyRequest.aiVision(true)))
+            .isEqualTo("""{"ai_vision":true}""")
+        assertThat(houseJson.encodeToString(PatchFamilyRequest.aiVision(false)))
+            .isEqualTo("""{"ai_vision":false}""")
     }
 
     @Test

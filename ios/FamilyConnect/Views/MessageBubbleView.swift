@@ -53,7 +53,22 @@ struct MessageBubbleView: View {
     /// The assistant is still writing this one, so the bubble shows a
     /// cursor. Purely cosmetic: the row's body is already whatever has
     /// arrived, and the authoritative text lands as an edit either way.
+    ///
+    /// True for an EMPTY assistant row from the moment it is fanned out,
+    /// not from the first delta — a picture answer has no deltas at all,
+    /// and the empty row is its whole "still working" state (protocol.md,
+    /// "How a picture comes back").
     var isStreaming: Bool = false
+    /// An `ai_error` named this row: the answer stopped.
+    ///
+    /// Only ever drawn where the row would otherwise be BLANK. A text
+    /// answer that failed midway keeps whatever arrived and says nothing
+    /// extra — a partial answer speaks for itself, and the member can ask
+    /// again. A picture answer has nothing to speak with: its body stays
+    /// empty by design and the attachment never came, so without this the
+    /// row that "has to have somewhere to fail" fails into an empty
+    /// balloon.
+    var assistantFailed: Bool = false
     let showsSenderName: Bool
     let senderName: String?
     /// Who sent it, for the run-head avatar. Only consulted when
@@ -737,6 +752,15 @@ struct MessageBubbleView: View {
                     .font(bubbleFont)
                     .foregroundStyle(bubbleContentColor.opacity(0.6))
                     .symbolEffect(.pulse)
+            }
+            // …and where it stopped instead of starting. The bubble is
+            // already in place and already scrolled to; this is the only
+            // thing that can go in it.
+            if assistantFailed && message.body.isEmpty && message.attachments.isEmpty {
+                Label("Couldn't answer that. Ask again.", systemImage: "exclamationmark.circle")
+                    .font(bubbleFont)
+                    .foregroundStyle(bubbleContentColor.opacity(0.7))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             // A call record draws its outcome INSTEAD of the body, which
             // is an English placeholder for clients that predate calls

@@ -78,6 +78,27 @@ class FamilyAdminViewModel @Inject constructor(
         val language: String? = null,
         /** Whether a mention carries the chat's recent history. */
         val aiHistory: Boolean = true,
+        /**
+         * Whether a photograph a member attaches in their OWN assistant
+         * chat may be shown to the model (docs/protocol.md, "Pictures").
+         *
+         * FALSE by default, which is the opposite of [aiHistory] and the
+         * point rather than an oversight: `ai_history` widened what a
+         * model was already being told, while a photograph is a different
+         * kind of disclosure altogether.
+         */
+        val aiVision: Boolean = false,
+        /**
+         * Whether this SERVER has a deployment that can look at a picture
+         * at all (`assistant.vision`).
+         *
+         * The switch above is HIDDEN when this is false — not disabled.
+         * A greyed-out control on a server that has no vision deployment
+         * would be a control that lies about what turning it on would do,
+         * and an owner would reasonably read it as "my server could, but
+         * something is stopping me".
+         */
+        val assistantVision: Boolean = false,
         /** The owner's own cap, or null for none of their own. */
         val maxMembers: Int? = null,
         /** The operator's ceiling; null on a server too old to say. */
@@ -123,6 +144,8 @@ class FamilyAdminViewModel @Inject constructor(
                         joinPolicy = mine.family.joinPolicy,
                         language = mine.family.language,
                         aiHistory = mine.family.aiHistory,
+                        aiVision = mine.family.aiVision,
+                        assistantVision = mine.assistant?.vision == true,
                         maxMembers = mine.family.maxMembers,
                         memberCount = mine.members.size,
                         ceiling = settings.state.first().maxFamilyMembers,
@@ -312,6 +335,36 @@ class FamilyAdminViewModel @Inject constructor(
                         it.copy(
                             busy = false,
                             error = result.message ?: appContext.getString(R.string.e_change_assistant_history_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Owner-only: whether a photograph a member attaches in their own
+     * assistant chat may be shown to the model.
+     *
+     * One of THREE locks, and the only one an owner holds. The operator
+     * must also have configured a deployment that can see — without one
+     * this screen shows no switch at all — and the member must attach the
+     * picture to the question themselves, which is per-picture consent
+     * and is deliberately never a remembered setting anywhere in this app
+     * (docs/protocol.md, "Pictures").
+     */
+    fun setAiVision(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setAiVision(enabled)) {
+                is ApiResult.Ok ->
+                    _state.update { it.copy(busy = false, aiVision = result.value.family.aiVision) }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message ?: appContext.getString(R.string.e_change_assistant_vision_failed),
                         )
                     }
                 is ApiResult.NetworkError ->

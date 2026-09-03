@@ -1805,6 +1805,58 @@
         }
       }
     },
+    "%lld pictures from the assistant" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld Bilder vom Assistenten"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld imágenes del asistente"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld images de l’assistant"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アシスタントの画像 %lld 枚"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld картинок от ассистента"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld слика од асистента"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld slika od asistenta"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "助手生成的 %lld 张图片"
+          }
+        }
+      }
+    },
     "%lld questions to the assistant" : {
       "comment" : "How many questions a member asked the assistant.",
       "localizations" : {
@@ -2460,6 +2512,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "一条消息最多 %lld 个字符。其余内容没有粘贴。"
+          }
+        }
+      }
+    },
+    "A photo here is too large, or in a format the model can't read, so it will be told it's here but won't be shown it." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ein Foto hier ist zu groß oder in einem Format, das das Modell nicht lesen kann. Ihm wird gesagt, dass es hier ist — sehen wird es das Foto nicht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aquí hay una foto demasiado grande, o en un formato que el modelo no puede leer. Se le dirá que está aquí, pero no se la mostrará."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Une photo ici est trop grande, ou dans un format que le modèle ne peut pas lire. On lui dira qu’elle est là, mais elle ne lui sera pas montrée."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ここにある写真が大きすぎるか、モデルが読めない形式です。写真があることは伝えられますが、見せられることはありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Одно из фото здесь слишком большое или в формате, который модель не умеет читать. Ассистенту сообщат, что оно есть, но не покажут его."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Једна фотографија овде је превелика или у формату који модел не уме да прочита. Биће му речено да постоји, али му неће бити приказана."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jedna fotografija ovde je prevelika ili u formatu koji model ne ume da pročita. Biće mu rečeno da postoji, ali mu neće biti prikazana."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这里有一张照片太大，或者是模型读不了的格式。它会被告知照片在这里，但不会看到它。"
           }
         }
       }
@@ -3630,6 +3734,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "批准 %@"
+          }
+        }
+      }
+    },
+    "Ask for a picture" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ein Bild erbitten"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pedir una imagen"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Demander une image"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "画像をお願いする"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Попросить картинку"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Затражи слику"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zatraži sliku"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请助手画一张图"
           }
         }
       }
@@ -5320,6 +5476,58 @@
         }
       }
     },
+    "Can be shown photos" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Darf Fotos sehen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Puede ver fotos"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Peut voir des photos"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "写真を見せられる"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Можно показывать фото"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Може да види фотографије"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Može da vidi fotografije"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可以看照片"
+          }
+        }
+      }
+    },
     "Can't reach the family server" : {
       "comment" : "A title for a screen that shows an error message and a button to retry.",
       "isCommentAutoGenerated" : true,
@@ -6811,6 +7019,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法分享你的位置。"
+          }
+        }
+      }
+    },
+    "Couldn't answer that. Ask again." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konnte darauf nicht antworten. Frag noch einmal."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo responder a eso. Pregunta otra vez."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de répondre. Redemande."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "答えられませんでした。もう一度聞いてみてください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось ответить. Спроси ещё раз."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Није успело да одговори. Питај поново."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nije uspelo da odgovori. Pitaj ponovo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没能回答。请再问一次。"
           }
         }
       }
@@ -16659,6 +16919,58 @@
         }
       }
     },
+    "Pictures" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bilder"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Imágenes"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Images"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "画像"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Картинки"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Слике"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slike"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图片"
+          }
+        }
+      }
+    },
     "Plain http only works for servers on your local network. Use https for %@." : {
       "comment" : "Server setup error; the argument is the host name.",
       "localizations" : {
@@ -20176,6 +20488,58 @@
         }
       }
     },
+    "Show the Assistant a Photo…" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dem Assistenten ein Foto zeigen …"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostrar una foto al asistente…"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Montrer une photo à l’assistant…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アシスタントに写真を見せる…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать ассистенту фото…"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прикажи асистенту фотографију…"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prikaži asistentu fotografiju…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "给助手看一张照片…"
+          }
+        }
+      }
+    },
     "Shows a map on a shared location. Drawing one asks Apple for it, so Apple sees a request from this Mac. With it off, a location still shows its pin and opens in Maps when you click it." : {
       "comment" : "The macOS Privacy section footer.",
       "extractionState" : "stale",
@@ -22037,6 +22401,58 @@
         }
       }
     },
+    "The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Assistent auf diesem Server kann keine Bilder ansehen. Ihm wird gesagt, dass hier ein Foto ist — sehen wird er es nicht."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El asistente de este servidor no puede ver imágenes. Se le dirá que aquí hay una foto, pero no se la mostrará."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L’assistant de ce serveur ne peut pas regarder d’images. On lui dira qu’il y a une photo ici, mais elle ne lui sera pas montrée."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このサーバーのアシスタントは画像を見ることができません。写真があることは伝えられますが、見せられることはありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ассистент на этом сервере не умеет смотреть картинки. Ему сообщат, что фото есть, но не покажут его."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Асистент на овом серверу не може да гледа слике. Биће му речено да овде има фотографија, али му неће бити приказана."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Asistent na ovom serveru ne može da gleda slike. Biće mu rečeno da ovde ima fotografija, ali mu neće biti prikazana."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台服务器上的助手看不了图片。它会被告知这里有一张照片，但不会看到它。"
+          }
+        }
+      }
+    },
     "The board is empty" : {
       "comment" : "A label displayed when a user has not added any notes to a board.",
       "isCommentAutoGenerated" : true,
@@ -22409,6 +22825,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法下载该文件。"
+          }
+        }
+      }
+    },
+    "The first %lld photos go to the model your server is set up to use. The rest are named to it, not shown." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die ersten %lld Fotos gehen an das Modell, das dein Server nutzt. Die übrigen werden ihm nur genannt, nicht gezeigt."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Las primeras %lld fotos van al modelo que usa tu servidor. Del resto solo se le dice que existen; no se le muestran."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les %lld premières photos vont au modèle que ton serveur utilise. Les autres lui sont seulement signalées, pas montrées."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最初の %lld 枚がサーバーの使うモデルに送られます。残りは存在だけが伝えられ、見せられることはありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Первые %lld фото уйдут модели, которую использует твой сервер. Об остальных ей только сообщат — показывать не будут."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Првих %lld фотографија иде моделу који твој сервер користи. За остале му се само каже да постоје, али му се не приказују."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prvih %lld fotografija ide modelu koji tvoj server koristi. Za ostale mu se samo kaže da postoje, ali mu se ne prikazuju."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "前 %lld 张照片会发送给你的服务器所用的模型。其余的只会被提及，不会展示。"
           }
         }
       }
@@ -23318,6 +23786,58 @@
         }
       }
     },
+    "These photos go to the model your server is set up to use." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diese Fotos gehen an das Modell, das dein Server nutzt."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Estas fotos van al modelo que usa tu servidor."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ces photos vont au modèle que ton serveur utilise."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これらの写真は、サーバーの使うモデルに送られます。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эти фото уйдут модели, которую использует твой сервер."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ове фотографије иду моделу који твој сервер користи."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ove fotografije idu modelu koji tvoj server koristi."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这些照片会发送给你的服务器所用的模型。"
+          }
+        }
+      }
+    },
     "This address uses plain http. That's fine for a server on your home network, but anyone on the same network can read the traffic." : {
       "comment" : "Advisory under the server address field while it names a local http address.",
       "localizations" : {
@@ -23367,6 +23887,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "该地址使用未加密的 http。对家庭网络中的服务器来说没问题，但同一网络上的任何人都能读取流量。"
+          }
+        }
+      }
+    },
+    "This goes to the model your server is set up to use, with your question. Nothing else from this chat does." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das geht zusammen mit deiner Frage an das Modell, das dein Server nutzt. Sonst nichts aus diesem Chat."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esto va al modelo que usa tu servidor, junto con tu pregunta. Nada más de este chat lo hace."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cela part vers le modèle que ton serveur utilise, avec ta question. Rien d’autre de cette conversation."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これは質問と一緒に、サーバーの使うモデルへ送られます。このチャットのほかのものは送られません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Оно уйдёт вместе с твоим вопросом модели, которую использует твой сервер. Больше ничего из этого чата."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ово иде моделу који твој сервер користи, заједно с твојим питањем. Ништа друго из овог ћаскања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovo ide modelu koji tvoj server koristi, zajedno s tvojim pitanjem. Ništa drugo iz ovog ćaskanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它会连同你的问题一起发送给你的服务器所用的模型。这个聊天里的其他内容都不会。"
           }
         }
       }
@@ -25797,6 +26369,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "启用批准后，加入申请会留在这里等你批准。"
+          }
+        }
+      }
+    },
+    "With this on, anyone in the family can attach a photo to a question in their own chat with the assistant, and that photo is sent to the model your server is set up to use. It is sent only when they attach it to that question — never from the family chat, never from an earlier message, and never a video, file or place. With it off, no photo is ever sent." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ist das an, kann jede Person in der Familie einer Frage im eigenen Chat mit dem Assistenten ein Foto anhängen, und dieses Foto geht an das Modell, das dein Server nutzt. Gesendet wird es nur, wenn sie es an genau diese Frage hängt — nie aus dem Familienchat, nie aus einer früheren Nachricht, und nie ein Video, eine Datei oder ein Ort. Ist es aus, wird nie ein Foto gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Con esto activado, cualquiera de la familia puede adjuntar una foto a una pregunta en su propio chat con el asistente, y esa foto se envía al modelo que usa tu servidor. Solo se envía cuando la adjuntan a esa pregunta: nunca desde el chat familiar, nunca desde un mensaje anterior, y nunca un vídeo, un archivo o un lugar. Desactivado, no se envía ninguna foto."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quand c’est activé, chaque membre de la famille peut joindre une photo à une question dans sa propre conversation avec l’assistant, et cette photo part vers le modèle que ton serveur utilise. Elle n’est envoyée que jointe à cette question — jamais depuis la conversation familiale, jamais depuis un message plus ancien, et jamais une vidéo, un fichier ou un lieu. Désactivé, aucune photo n’est jamais envoyée."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "オンにすると、家族の誰もが自分とアシスタントのチャットで質問に写真を添えられるようになり、その写真はサーバーの使うモデルへ送られます。送られるのはその質問に添えたときだけです。家族チャットからは決して送られず、前のメッセージからも送られず、動画・ファイル・場所は決して送られません。オフのあいだは、写真は一切送られません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда включено, любой в семье может приложить фото к вопросу в своём чате с ассистентом, и это фото уйдёт модели, которую использует твой сервер. Оно уходит только тогда, когда его приложили к этому вопросу — никогда из семейного чата, никогда из прежнего сообщения, и никогда видео, файл или место. Когда выключено, фото не уходит никогда."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Кад је укључено, свако у породици може да приложи фотографију уз питање у свом ћаскању с асистентом, и та фотографија иде моделу који твој сервер користи. Шаље се само кад је приложена уз то питање — никада из породичног ћаскања, никада из раније поруке, и никада видео, датотека или место. Кад је искључено, ниједна фотографија се не шаље."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kad je uključeno, svako u porodici može da priloži fotografiju uz pitanje u svom ćaskanju s asistentom, i ta fotografija ide modelu koji tvoj server koristi. Šalje se samo kad je priložena uz to pitanje — nikada iz porodičnog ćaskanja, nikada iz ranije poruke, i nikada video, datoteka ili mesto. Kad je isključeno, nijedna fotografija se ne šalje."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开后，家里的任何人都可以在自己与助手的聊天中给问题附上照片，这张照片会发送给你的服务器所用的模型。只有在附到那个问题上时才会发送——绝不会来自家庭聊天，绝不会来自更早的消息，也绝不会发送视频、文件或位置。关闭时，任何照片都不会被发送。"
           }
         }
       }

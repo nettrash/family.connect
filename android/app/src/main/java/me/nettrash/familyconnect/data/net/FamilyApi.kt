@@ -57,6 +57,20 @@ interface FamilyApi {
      * no third state and no per-member override.
      */
     suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: whether a photograph a member attaches in their OWN
+     * assistant chat may be shown to the model (docs/protocol.md,
+     * "Pictures"). Family-wide, no per-member override, and OFF unless
+     * the owner turned it on — the opposite default to [setAiHistory],
+     * which is the point rather than an inconsistency.
+     *
+     * It is one of THREE locks, and the only one an owner holds: the
+     * operator must also have configured a vision deployment, and the
+     * member must attach the picture to the question themselves. That
+     * third one is never a remembered setting.
+     */
+    suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse>
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
     suspend fun approve(requestId: Long): ApiResult<ApproveResponse>
     suspend fun reject(requestId: Long): ApiResult<Unit>
@@ -155,6 +169,9 @@ class DefaultFamilyApi @Inject constructor(
 
     override suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> =
         client.patch("/families/mine", PatchFamilyRequest.aiHistory(enabled))
+
+    override suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiVision(enabled))
 
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
         client.get("/families/join-requests")

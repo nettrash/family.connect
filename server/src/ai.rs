@@ -31,7 +31,21 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::config::{AiImagesConfig, ModelRoute};
+use crate::config::{AiImagesConfig, AuthScheme, ModelRoute};
+
+/// Put the key on the request, in the header this route's provider reads.
+///
+/// Two schemes because two Azure surfaces disagree: classic Azure OpenAI
+/// takes `api-key`, and the Foundry model surface takes an `Authorization:
+/// Bearer` — with the SAME key. Which one is CONFIGURED, never sniffed from
+/// the URL (see [`AuthScheme`]), so this function only obeys and there is
+/// exactly one place in the file where a key meets a request.
+fn with_key(request: reqwest::RequestBuilder, route: &ModelRoute) -> reqwest::RequestBuilder {
+    match route.auth {
+        AuthScheme::ApiKey => request.header("api-key", route.api_key.as_str()),
+        AuthScheme::Bearer => request.bearer_auth(route.api_key.as_str()),
+    }
+}
 
 /// One photograph, ready to travel.
 ///
@@ -180,9 +194,7 @@ where
     });
 
     let url = &route.url;
-    let response = client
-        .post(url)
-        .header("api-key", route.api_key.as_str())
+    let response = with_key(client.post(url), route)
         .json(&body)
         .send()
         .await
@@ -274,14 +286,16 @@ pub struct GeneratedImage {
 /// language instruction — an image has no language to answer in, and there
 /// is nothing here for a family's history to add (protocol.md, "Pictures").
 ///
-/// **The request body is the one contract in this file that could not be
-/// verified against a live endpoint.** Its three optional fields are
-/// therefore optional in config too, and omitted when empty: `size` and
-/// `response_format` are the two that vary between image deployments, and an
-/// endpoint that rejects a field it does not implement answers 400 with
-/// nothing a family can act on. Both response shapes the OpenAI images
-/// contract allows are parsed, whichever one arrives, so asking for neither
-/// is the safe default.
+/// **The request body varies by deployment, so every part of it that does is
+/// configured rather than assumed, and omitted when left empty.** `size`,
+/// `width`/`height` and `response_format` are the fields image models
+/// disagree about, and an endpoint rejecting one it does not implement
+/// answers 400 with nothing a family can act on. Two live examples of the
+/// disagreement: the OpenAI images contract takes `size: "1024x1024"`, while
+/// FLUX on Azure Foundry takes `width` and `height` as integers and refuses
+/// `size` — so the omission rule is what lets one `[ai.images]` section
+/// speak to either. Both response shapes are parsed whichever arrives, so
+/// asking for neither `response_format` is the safe default.
 pub async fn generate_image(
     client: &reqwest::Client,
     route: &ModelRoute,
@@ -298,13 +312,20 @@ pub async fn generate_image(
     if !cfg.size.trim().is_empty() {
         body["size"] = json!(cfg.size.trim());
     }
+    // The other spelling of the same thing, for the deployments that take it
+    // apart. Each half stands alone — a model that has a default for one and
+    // not the other is a config that sets one and not the other.
+    if cfg.width > 0 {
+        body["width"] = json!(cfg.width);
+    }
+    if cfg.height > 0 {
+        body["height"] = json!(cfg.height);
+    }
     if !cfg.response_format.trim().is_empty() {
         body["response_format"] = json!(cfg.response_format.trim());
     }
 
-    let response = client
-        .post(&route.url)
-        .header("api-key", route.api_key.as_str())
+    let response = with_key(client.post(&route.url), route)
         .json(&body)
         .send()
         .await
@@ -369,9 +390,10 @@ pub async fn generate_image(
 ///
 /// Chunk by chunk with a running total rather than `bytes()` whole, for the
 /// same reason uploads are streamed: the ceiling has to bind before the
-/// allocation, not after it. No `api-key` header — the link is pre-signed,
-/// and sending the key to whatever host a response named would be handing it
-/// over on the provider's say-so.
+/// allocation, not after it. The key rides on NEITHER header here, whatever
+/// the route's scheme — the link is pre-signed, and sending the key to
+/// whatever host a response named would be handing it over on the provider's
+/// say-so.
 async fn download(client: &reqwest::Client, url: &str, max_bytes: usize) -> Result<Vec<u8>> {
     let response = client
         .get(url)

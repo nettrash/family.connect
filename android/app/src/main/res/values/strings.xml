@@ -431,4 +431,18 @@
         <item quantity="one">Use at least %1$d character.</item>
         <item quantity="other">Use at least %1$d characters.</item>
     </plurals>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Show the assistant a picture</string>
+    <string name="s_show_the_assistant_a_picture_note">It leaves this server for the model your server talks to</string>
+    <string name="s_ask_for_a_picture">Ask for a picture</string>
+    <string name="s_assistant_sees_this_picture">The assistant will be shown this picture. It leaves this server for the model your server talks to.</string>
+    <string name="s_assistant_sees_these_pictures">The assistant will be shown these pictures. They leave this server for the model your server talks to.</string>
+    <string name="s_assistant_picture_extra_left_out">Only the first %1$d go with one question; the rest stay here.</string>
+    <string name="s_assistant_picture_others_left_out">Videos, files, audio and locations are never sent to it.</string>
+    <string name="s_assistant_picture_unreadable_left_out">A photo that is too large, or in a format the model can\'t read, is named to it rather than shown.</string>
+    <string name="s_assistant_will_not_see_picture">The assistant won\'t be shown this picture. It is sent as an ordinary attachment.</string>
+    <string name="s_assistant_answer_failed">The assistant couldn\'t finish this answer. Ask again.</string>
+    <string name="s_assistant_vision">Assistant may look at photos</string>
+    <string name="s_assistant_vision_explanation">When someone attaches a photo to a question in their own chat with the assistant, that photo is sent to the model with it — at most 4 per question. Off unless you turn it on. A photo in the family chat is never sent, at any setting, and neither are videos, files, audio or locations.</string>
+    <string name="e_change_assistant_vision_failed">Couldn\'t change that setting</string>
 </resources>

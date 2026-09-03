@@ -182,24 +182,92 @@ object MessageLinks {
     }
 
     /**
-     * The `@ai` mention, marked so it reads as addressed to somebody.
+     * The assistant's tokens — every `@ai`, and the leading `/draw` when
+     * the body is a picture request — marked so they read as instructions
+     * rather than as words.
      *
-     * Same grammar the SERVER decides by ([AssistantMention], mirrored in
-     * three places): a highlight the server would not act on, or an
-     * unhighlighted token it would, is a family watching a question go
-     * unanswered with no way to tell why.
+     * Same GRAMMAR the SERVER decides by ([AssistantMention], mirrored in
+     * three places and pinned by one shared table): a token the server acts
+     * on that the bubble draws as ordinary text, or the reverse, is a
+     * family watching a question go unanswered with no way to tell why.
+     * `/draw` needs it even more sharply — the server decides from it
+     * whether the request goes to an entirely DIFFERENT provider, so "each
+     * client must highlight exactly what the server will act on"
+     * (docs/protocol.md, "Pictures").
+     *
+     * **What this is NOT is a claim about the chat.** This function has no
+     * chat kind and asks for none, so both tokens are marked in a DIRECT
+     * chat too, where the server acts on neither: there is no assistant in
+     * a two-member thread, `@ai` reaches nobody there and `/draw` is a
+     * word. Deliberate, for three reasons: the two tokens then have ONE
+     * rule between them (`@ai` has been marked everywhere since it existed,
+     * so scoping only `/draw` would draw two assistant tokens by two rules
+     * in one bubble); the mark says what the token IS, and nothing here
+     * INVITES it — the `/draw` button, the `@ai` button and the picture
+     * door are each scoped to the surface that honours them, so a token in
+     * a direct chat is one somebody typed for themselves; and this is
+     * memoized per rendered body, which a chat kind would turn into a
+     * second cache dimension here and on iOS, bought for a bold word in a
+     * chat with no assistant. If that trade is revisited, revisit it for
+     * BOTH tokens.
+     *
+     * Only the tokens, never the words after them: those are the member's
+     * own and read as ordinary text.
      *
      * Applied over the RENDERED text, like everything else here, and only
-     * as a style — so it never competes with a link span for a tap.
+     * as a style — so it never competes with a link span for a tap. The
+     * picture token is DECIDED from the raw body all the same; see
+     * [rawBody].
      */
-    fun withMentions(text: AnnotatedString, style: SpanStyle): AnnotatedString {
+    fun withMentions(
+        text: AnnotatedString,
+        style: SpanStyle,
+        /**
+         * The RAW message body — the exact string the server parses —
+         * or null when this block cannot begin a picture request.
+         *
+         * The server reads `/draw` off the body as typed. This file is
+         * handed the body as DRAWN, after markdown has deleted the `**`,
+         * the backticks and the `](url)`. Deciding from the rendered text
+         * is therefore deciding from a different string than the server
+         * does, and wherever markdown removes characters ahead of the
+         * token the two disagree: a `/draw` wrapped in a pair of asterisks
+         * renders to `/draw a cat`, so the bubble highlighted a picture
+         * request that the server — looking at the asterisks it was
+         * actually sent — reads as an ordinary message and never acts on.
+         * Six such shapes were found, and `theDrawMarkIsDecidedFromTheRawBody`
+         * in `MessageLinksTest` lists them; that is the whole class.
+         * (They cannot be spelled here: a bold marker in front of the
+         * token closes a KDoc block.)
+         *
+         * So the DECISION comes from this string and the POSITION from the
+         * rendered one, and the highlight is drawn only where both agree
+         * that a request starts. Where markdown has mangled the token
+         * beyond the grammar's recognition the bubble simply says nothing,
+         * which is the safe half of the disagreement: a missing highlight
+         * on a request the server honours, never a highlight on one it
+         * ignores.
+         *
+         * Null for every block but the first. A message is split into
+         * blocks around markdown tables, and `/draw` is a request only at
+         * the very beginning of the whole body — without that, a paragraph
+         * that happens to follow a table and begin `/draw …` would be
+         * highlighted as a request nothing will act on. `@ai` needs no
+         * such treatment: it is a mention wherever it appears.
+         */
+        rawBody: String? = null,
+    ): AnnotatedString {
         val ranges = AssistantMention.ranges(text.text)
-        if (ranges.isEmpty()) return text
+        val draw = rawBody
+            ?.takeIf { AssistantMention.drawRange(it) != null }
+            ?.let { AssistantMention.drawRange(text.text) }
+        if (ranges.isEmpty() && draw == null) return text
         return buildAnnotatedString {
             append(text)
             for (range in ranges) {
                 addStyle(style, range.first, range.last + 1)
             }
+            if (draw != null) addStyle(style, draw.first, draw.last + 1)
         }
     }
 }

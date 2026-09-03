@@ -332,6 +332,7 @@ struct FamilyManageView: View {
                     inviteCode: updated.inviteCode ?? settingsModel.family?.inviteCode,
                     language: updated.language,
                     aiHistory: updated.aiHistory,
+                    aiVision: updated.aiVision,
                     maxMembers: updated.maxMembers)
                 // The server's answer is the truth; drop the draft so the
                 // stepper follows it again.
@@ -574,8 +575,10 @@ struct FamilyManageView: View {
                         inviteCode: newCode,
                         language: family.language,
                         aiHistory: family.aiHistory,
-                        // Rotating a code changes nothing about the cap:
-                        // carry the one we hold, or this rebuild clears it.
+                        // Rotating a code changes nothing about the cap or
+                        // the picture switch: carry the ones we hold, or
+                        // this rebuild clears them.
+                        aiVision: family.aiVision,
                         maxMembers: family.maxMembers)
                 }
             } catch {
@@ -598,6 +601,7 @@ struct FamilyManageView: View {
                     inviteCode: updated.inviteCode ?? settingsModel.family?.inviteCode,
                     language: updated.language,
                     aiHistory: updated.aiHistory,
+                    aiVision: updated.aiVision,
                     // From the RESPONSE, not the held copy: unlike the
                     // invite code, the cap is not owner-gated, so the
                     // server's answer is complete and authoritative — and

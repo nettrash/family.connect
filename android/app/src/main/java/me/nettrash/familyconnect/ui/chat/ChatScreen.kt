@@ -128,6 +128,7 @@ import androidx.compose.material.icons.filled.CallMade
 import androidx.compose.material.icons.filled.CallMissed
 import androidx.compose.material.icons.filled.CallReceived
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DoneAll
@@ -340,6 +341,17 @@ fun ChatScreen(
     // row that was mid-stream when the app was killed is not stuck looking
     // live after a relaunch.
     val streamingIds by viewModel.streamingMessageIds.collectAsStateWithLifecycle()
+    // Rows an `ai_error` frame named. A picture answer streams nothing, so
+    // its failure is an empty balloon and nothing else unless the bubble
+    // says so (docs/protocol.md, "Pictures").
+    val failedAssistantIds by viewModel.failedAssistantMessageIds.collectAsStateWithLifecycle()
+    // The two picture affordances, each behind its own capability check —
+    // no surface at all where the server cannot do the thing, rather than
+    // a disabled one that lies about what would happen.
+    val canShowAssistantPicture by viewModel.canShowAssistantPicture.collectAsStateWithLifecycle()
+    val canAskForPicture by viewModel.canAskForPicture.collectAsStateWithLifecycle()
+    // What the composer must say out loud about what is staged, right now.
+    val assistantPictureNotice by viewModel.assistantPictureNotice.collectAsStateWithLifecycle()
     // Null when the server has no assistant configured, which is what
     // decides whether the composer offers `@ai` at all.
     val assistantUserId by viewModel.assistantUserId.collectAsStateWithLifecycle()
@@ -1116,8 +1128,21 @@ fun ChatScreen(
                                     item = item,
                                     chat = chat,
                                     isMine = item.entity.senderId == myUserId,
-                                    isStreaming = item.entity.serverId
-                                        ?.let { it in streamingIds } == true,
+                                    // Asked of the ROW, not only of the
+                                    // live set: a picture answer produces
+                                    // no deltas to put an id in it, and a
+                                    // relaunch mid-answer starts with it
+                                    // empty (AssistantAnswer).
+                                    isStreaming = AssistantAnswer.isWorking(
+                                        entity = item.entity,
+                                        isAssistantChat = chat?.kind == "ai",
+                                        assistantUserId = assistantUserId,
+                                        myUserId = myUserId,
+                                        streamingIds = streamingIds,
+                                        failedIds = failedAssistantIds,
+                                    ),
+                                    answerFailed = item.entity.serverId
+                                        ?.let { it in failedAssistantIds } == true,
                                     myUserId = myUserId,
                                     memberNames = memberNames,
                                     memberAvatars = memberAvatars,
@@ -1296,6 +1321,23 @@ fun ChatScreen(
                 onDismissMediaError = viewModel::clearMediaState,
                 showsAssistantMention = chat?.kind == "family" && assistantUserId != null,
                 onShareLocation = shareLocation,
+                // The picture affordances. Each is absent, not disabled,
+                // wherever the server cannot do the thing — an affordance
+                // that silently does nothing is worse than one that is not
+                // there (docs/protocol.md, "Pictures").
+                showsAssistantPicture = canShowAssistantPicture,
+                onShowAssistantPicture = {
+                    // Images only. A video is never shown to the
+                    // assistant at any setting, so offering to pick one
+                    // from THIS door would be offering something that
+                    // cannot happen.
+                    pickMedia.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                    )
+                },
+                showsDraw = canAskForPicture,
+                onAskForPicture = viewModel::insertDrawToken,
+                pictureNotice = assistantPictureNotice,
             )
         }
     }
@@ -2175,6 +2217,11 @@ private fun MessageBubble(
     revealedMessages: MutableSet<String>,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
+    /**
+     * An `ai_error` frame named this row: the answer stopped early and
+     * nothing more is coming (docs/protocol.md, "Pictures").
+     */
+    answerFailed: Boolean,
     myUserId: Long?,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
@@ -2433,6 +2480,7 @@ private fun MessageBubble(
                     chat = chat,
                     isMine = isMine,
                     isStreaming = isStreaming,
+                    answerFailed = answerFailed,
                     mediaOnly = mediaOnly,
                     emojiFontSize = emojiFontSize,
                     blocks = bodyBlocks,
@@ -3347,6 +3395,8 @@ private fun BubbleContent(
     isMine: Boolean,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
+    /** The answer stopped early — see [MessageBubble]. */
+    answerFailed: Boolean,
     /**
      * Nothing but photos/videos: the balloon is gone (MessageBubble), so
      * the content's inset goes with it — the tile's edge is the message's
@@ -3568,6 +3618,21 @@ private fun BubbleContent(
         // the same thing.
         if (isStreaming && entity.body.isEmpty()) {
             StreamingCursor()
+        } else if (answerFailed && entity.body.isEmpty() && bubbleAttachments.isEmpty()) {
+            // The answer stopped with nothing on the row at all — which is
+            // every PICTURE answer that failed, because an image model
+            // produces no token stream and so there are no deltas to have
+            // left something behind (docs/protocol.md, "Pictures"). The
+            // empty row was created before the provider was called
+            // precisely so a failure would have somewhere to fail; this is
+            // that somewhere. A text answer that failed half-written keeps
+            // its half instead, and says nothing extra.
+            Text(
+                text = stringResource(R.string.s_assistant_answer_failed),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontStyle = FontStyle.Italic,
+            )
         }
         // A call record draws its own wording from the outcome and the
         // side, never the body — which is the server's English placeholder
@@ -3604,6 +3669,11 @@ private fun BubbleContent(
                     is MessageMarkdown.Block.Text -> TextBlock(
                         rendered = block.rendered,
                         links = bodyBlock.links,
+                        // `/draw` is a request only at the very start of
+                        // the body, so only the first block may carry the
+                        // highlight for it — and it is decided from the RAW
+                        // body, which is the string the server parses.
+                        drawSource = if (index == 0) entity.body else null,
                         // The cursor rides the LAST block, and only when
                         // that block is text — see below for a body that
                         // ends in a table.
@@ -3784,6 +3854,17 @@ private fun ColumnScope.TextBlock(
     links: List<LinkSpan>,
     /** The assistant's cursor rides this block — the last one only. */
     showCursor: Boolean,
+    /**
+     * The RAW message body when this is the FIRST block — the only place a
+     * `/draw` can be the picture token rather than five characters of text
+     * — and null otherwise.
+     *
+     * The BODY rather than a flag because the server decides from the raw
+     * string and this block draws the rendered one; `MessageLinks.withMentions`
+     * explains why handing it only the rendered text made the bubble and
+     * the server disagree.
+     */
+    drawSource: String?,
     /** Emoji-ladder size for an emoji-only body, else null. */
     emojiFontSize: Float?,
     linkColor: Color,
@@ -3802,7 +3883,7 @@ private fun ColumnScope.TextBlock(
     onDoubleTap: () -> Unit,
     onLongPress: () -> Unit,
 ) {
-    val body = remember(rendered, links, linkColor, mentionColor, showCursor) {
+    val body = remember(rendered, links, linkColor, mentionColor, showCursor, drawSource) {
         val linked = MessageLinks.styled(
             rendered.annotated,
             links,
@@ -3811,6 +3892,7 @@ private fun ColumnScope.TextBlock(
         val styled = MessageLinks.withMentions(
             linked,
             SpanStyle(color = mentionColor, fontWeight = FontWeight.Bold),
+            rawBody = drawSource,
         )
         // While the assistant is writing, the text ends in a cursor
         // rather than just stopping mid-word — the same signal iOS and
@@ -4111,6 +4193,97 @@ private fun StatusGlyph(
     }
 }
 
+/**
+ * What the composer says, in the member's own assistant chat, about the
+ * photographs staged on the message they are about to send.
+ *
+ * This strip is where the protocol's "say what it is about to do, at the
+ * moment it matters" actually lands. It hangs off the STAGED list rather
+ * than off any one door into it, so the picker, a paste, a drop onto the
+ * field and the camera all raise the same sentence — there is no way to
+ * put a photograph in front of the assistant without having read it.
+ *
+ * When something will be left out it says so too, and names it. That
+ * mirrors what the server does with the model itself: a picture left out
+ * is told, never silently dropped, "for the reason every other note in
+ * this section exists: a model that is not told what is missing invents
+ * it" (docs/protocol.md, "Pictures"). The member deserves the same
+ * courtesy — the alternative is a photo they believe they showed it.
+ */
+@Composable
+private fun AssistantPictureStrip(notice: AiPictureNotice) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.AutoAwesome,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = when (notice) {
+                    is AiPictureNotice.WillShow -> stringResource(
+                        // One picture or several: two whole sentences
+                        // rather than a formatted count, so nine locales
+                        // agree with themselves without a plural table
+                        // for a number that is only ever 0..4.
+                        //
+                        // ZERO is the case where everything staged is too
+                        // large or in an encoding no deployment reads: the
+                        // locks are open and nothing goes through them
+                        // anyway, so the sentence is the same one a shut
+                        // lock earns and the line below says why.
+                        when (notice.shown) {
+                            0 -> R.string.s_assistant_will_not_see_picture
+                            1 -> R.string.s_assistant_sees_this_picture
+                            else -> R.string.s_assistant_sees_these_pictures
+                        },
+                    )
+                    AiPictureNotice.WillNotShow ->
+                        stringResource(R.string.s_assistant_will_not_see_picture)
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (notice is AiPictureNotice.WillShow) {
+                if (notice.extraPhotos > 0) {
+                    Text(
+                        text = stringResource(
+                            R.string.s_assistant_picture_extra_left_out,
+                            AiPictureNotice.MAX_PHOTOS,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (notice.unreadablePhotos > 0) {
+                    // Named rather than dropped in silence, which is the
+                    // rule the server applies to the MODEL and the member
+                    // is owed the same courtesy (docs/protocol.md,
+                    // "Pictures").
+                    Text(
+                        text = stringResource(R.string.s_assistant_picture_unreadable_left_out),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (notice.otherAttachments > 0) {
+                    Text(
+                        text = stringResource(R.string.s_assistant_picture_others_left_out),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
 /** What the composer shows while a photo or video is on its way. */
 @Composable
 private fun MediaStrip(
@@ -4376,6 +4549,29 @@ private fun InputBar(
      * (docs/protocol.md, "Mentioning the assistant in the family chat").
      */
     showsAssistantMention: Boolean,
+    /**
+     * Offer to show the assistant a photograph. The member's OWN `ai`
+     * chat only, and only when BOTH locks are open — this server has a
+     * deployment that can see, and the family's owner has turned
+     * `ai_vision` on (docs/protocol.md, "Pictures"). False is the common
+     * case and means no such item exists at all.
+     */
+    showsAssistantPicture: Boolean,
+    onShowAssistantPicture: () -> Unit,
+    /**
+     * Offer `/draw`. Only where this server can MAKE a picture: on one
+     * that cannot, `/draw` is just text answered in words, so the
+     * affordance would promise something that will not happen.
+     */
+    showsDraw: Boolean,
+    onAskForPicture: () -> Unit,
+    /**
+     * What must be said, right now, about the pictures staged in an `ai`
+     * chat — including what will be left out. Null when there is nothing
+     * to say, which is every chat that is not the assistant's and every
+     * message with no photograph on it.
+     */
+    pictureNotice: AiPictureNotice?,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
@@ -4399,6 +4595,9 @@ private fun InputBar(
                     onStop = onStopRecording,
                     onCancel = onCancelRecording,
                 )
+            }
+            if (pictureNotice != null) {
+                AssistantPictureStrip(notice = pictureNotice)
             }
             if (staged.isNotEmpty()) {
                 StagedAttachmentRow(staged = staged, onDiscard = onDiscardStaged)
@@ -4444,6 +4643,35 @@ private fun InputBar(
                         expanded = attachMenuOpen,
                         onDismissRequest = { attachMenuOpen = false },
                     ) {
+                        if (showsAssistantPicture) {
+                            // Above "Photo or video", and worded as what it
+                            // DOES rather than what it attaches: this is the
+                            // one item in this menu that sends pixels off
+                            // this server, and the protocol asks a client to
+                            // say so where the choice is made rather than
+                            // only on a settings screen somebody read once.
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(stringResource(R.string.s_show_the_assistant_a_picture))
+                                        Text(
+                                            text = stringResource(
+                                                R.string.s_show_the_assistant_a_picture_note,
+                                            ),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.AutoAwesome, contentDescription = null)
+                                },
+                                onClick = {
+                                    attachMenuOpen = false
+                                    onShowAssistantPicture()
+                                },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.s_photo_or_video)) },
                             leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
@@ -4508,6 +4736,27 @@ private fun InputBar(
                                 onClick = {
                                     attachMenuOpen = false
                                     onStartPoll()
+                                },
+                            )
+                        }
+                        if (showsDraw) {
+                            // Inside the attach menu for the same reason the
+                            // poll is: asking for a picture is one more thing
+                            // a message can be, and it inherits that button's
+                            // guard (nothing is composed mid-edit) for free.
+                            // It does not attach anything — it rewrites the
+                            // draft into a request, because the token has to
+                            // be FIRST and, in the family chat, has to sit
+                            // after one leading `@ai`.
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.s_ask_for_a_picture)) },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Brush, contentDescription = null)
+                                },
+                                onClick = {
+                                    attachMenuOpen = false
+                                    onAskForPicture()
+                                    focusRequester.requestFocus()
                                 },
                             )
                         }

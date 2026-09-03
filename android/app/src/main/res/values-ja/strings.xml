@@ -380,4 +380,18 @@
     <string name="s_reports_empty">メンバーはメッセージや人物をあなたに報告できます。</string>
     <string name="s_safety">セーフティ</string>
     <string name="s_safety_for">%1$sさんのセーフティ設定</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">アシスタントに写真を見せる</string>
+    <string name="s_show_the_assistant_a_picture_note">この写真はサーバーを離れ、サーバーが利用しているモデルに送られます</string>
+    <string name="s_ask_for_a_picture">画像を作ってもらう</string>
+    <string name="s_assistant_sees_this_picture">この写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_sees_these_pictures">これらの写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_picture_extra_left_out">1つの質問と一緒に送られるのは最初の%1$d枚だけで、残りはここに留まります。</string>
+    <string name="s_assistant_picture_others_left_out">動画・ファイル・音声・位置情報が送られることはありません。</string>
+    <string name="s_assistant_picture_unreadable_left_out">大きすぎる写真や、モデルが読めない形式の写真は、見せられずに「ある」とだけ伝えられます。</string>
+    <string name="s_assistant_will_not_see_picture">この写真はアシスタントには見せられません。通常の添付として送られます。</string>
+    <string name="s_assistant_answer_failed">アシスタントはこの返事を完了できませんでした。もう一度聞いてください。</string>
+    <string name="s_assistant_vision">アシスタントが写真を見られるようにする</string>
+    <string name="s_assistant_vision_explanation">アシスタントとの自分だけのチャットで質問に写真を添えると、その写真も質問と一緒にモデルへ送られます（1つの質問につき最大4枚）。オンにするまではオフです。ファミリーチャットの写真はどの設定でも送られません。動画・ファイル・音声・位置情報も送られません。</string>
+    <string name="e_change_assistant_vision_failed">設定を変更できませんでした</string>
 </resources>

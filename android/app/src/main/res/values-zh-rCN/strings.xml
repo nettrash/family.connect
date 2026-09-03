@@ -380,4 +380,18 @@
     <string name="s_reports_empty">成员可以向你举报某条消息或某个人。</string>
     <string name="s_safety">安全</string>
     <string name="s_safety_for">%1$s的安全选项</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">给助手看一张照片</string>
+    <string name="s_show_the_assistant_a_picture_note">照片会离开此服务器，发送给服务器所用的模型</string>
+    <string name="s_ask_for_a_picture">请它画一张图</string>
+    <string name="s_assistant_sees_this_picture">助手将看到这张照片。它会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_sees_these_pictures">助手将看到这些照片。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_picture_extra_left_out">一次提问只会发送前 %1$d 张，其余留在此处。</string>
+    <string name="s_assistant_picture_others_left_out">视频、文件、语音和位置永远不会发送给它。</string>
+    <string name="s_assistant_picture_unreadable_left_out">太大的照片，或模型读不了的格式，只会被提到，而不会被展示。</string>
+    <string name="s_assistant_will_not_see_picture">助手不会看到这张照片。它只作为普通附件发送。</string>
+    <string name="s_assistant_answer_failed">助手没能完成这条回复。请再问一次。</string>
+    <string name="s_assistant_vision">允许助手查看照片</string>
+    <string name="s_assistant_vision_explanation">当某人在自己与助手的聊天中给问题附上照片时，这张照片会随问题一起发送给模型，每次提问最多 4 张。默认关闭。家庭聊天中的照片在任何设置下都不会发送，视频、文件、语音和位置也一样。</string>
+    <string name="e_change_assistant_vision_failed">无法更改该设置</string>
 </resources>

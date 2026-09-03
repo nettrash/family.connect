@@ -263,7 +263,16 @@ class FamilyRepository @Inject constructor(
             settings.setAssistant(
                 result.value.assistant?.userId,
                 result.value.assistant?.displayName,
+                // What this SERVER can do with pictures. Kept beside the
+                // assistant because it is part of the same capability
+                // answer and goes with it on logout: another server may
+                // have neither deployment (docs/protocol.md, "Pictures").
+                vision = result.value.assistant?.vision == true,
+                images = result.value.assistant?.images == true,
             )
+            // …and what this FAMILY allows, which is a different question
+            // with a different answer and its own owner-only switch.
+            settings.setFamilyAiVision(result.value.family.aiVision)
             // The second apply of the same complete state-set. Idempotent
             // and last-writer-wins, which is why the fixed resync order
             // (/me, then /families/mine) needs no coordination — and why
@@ -313,6 +322,21 @@ class FamilyRepository @Inject constructor(
     /** Owner-only. */
     suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> =
         familyApi.setAiHistory(enabled)
+
+    /**
+     * Owner-only: the family's half of the picture rule.
+     *
+     * Mirrored straight onto the account-scoped settings, exactly as
+     * [refreshMine] does — the composer reads it from there to decide
+     * whether to offer a picture at all, and without this mirror the
+     * owner's own device would go on hiding the affordance until the
+     * next `GET /families/mine`.
+     */
+    suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> {
+        val result = familyApi.setAiVision(enabled)
+        if (result is ApiResult.Ok) settings.setFamilyAiVision(result.value.family.aiVision)
+        return result
+    }
 
     /**
      * My own birthday, mirrored onto my roster row.

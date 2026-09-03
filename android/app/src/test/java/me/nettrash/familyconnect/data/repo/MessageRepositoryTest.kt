@@ -51,9 +51,11 @@ import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
+import me.nettrash.familyconnect.testutil.photoAttachment
 import me.nettrash.familyconnect.testutil.pollDto
 import me.nettrash.familyconnect.testutil.pollState
 import me.nettrash.familyconnect.testutil.reactionState
+import me.nettrash.familyconnect.ui.chat.AssistantAnswer
 import me.nettrash.familyconnect.util.Clock
 import org.junit.After
 import org.junit.Before
@@ -824,6 +826,270 @@ class MessageRepositoryTest {
         advanceUntilIdle()
 
         assertThat(chatDao.getById(CHAT)!!.unreadCount).isEqualTo(before)
+    }
+
+    // -- The assistant's picture answer -------------------------------------------------------
+
+    /**
+     * THE case `message_edited` carries the whole message for.
+     *
+     * The assistant's reply is stored EMPTY and fanned out at once, so a
+     * bubble appears while the model is still working; when the picture
+     * arrives the server stores it as an ordinary `photo` attachment on
+     * that same message and fans out `message_edited`
+     * (docs/protocol.md, "Pictures"). A client that merged the body alone
+     * would draw nothing until its next history page or cold start —
+     * "late, not lost" — and this is what makes it live.
+     */
+    @Test
+    fun anEditAddsTheAssistantsPictureToARowThatHadNone() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        // The empty row: the "still working" state, and the reason the
+        // picture has somewhere to land at all.
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
+        advanceUntilIdle()
+        assertThat(messageDao.findByServerId(100)!!.attachmentList).isEmpty()
+
+        socket.emit(
+            ServerFrame.MessageEdited(
+                messageDto(
+                    id = 100, chatId = CHAT, body = "", editSeq = 5,
+                    attachments = listOf(photoAttachment(id = 77)),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100)!!
+        // Through the plural read, which is what the bubble draws from…
+        assertThat(row.attachmentList.map { it.id }).containsExactly(77L)
+        // …and the flat columns, which the pre-plurality consumers use.
+        assertThat(row.attachmentId).isEqualTo(77L)
+        assertThat(row.attachmentKind).isEqualTo("photo")
+        // The body stays empty: a photo needs no caption.
+        assertThat(row.body).isEmpty()
+        assertThat(row.editSeq).isEqualTo(5)
+        // No preview: the server generates none for a generated picture,
+        // so the bubble draws it from the full bytes.
+        assertThat(row.attachmentHasPreview).isFalse()
+    }
+
+    /**
+     * The guard covers the whole message, not just the body: a page
+     * fetched before the picture landed must not take it away again.
+     */
+    @Test
+    fun aStaleCopyNeverRemovesAnAttachmentAnEditAdded() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+
+        repository.applyServerMessage(messageDto(id = 100, chatId = CHAT, body = ""), live = false)
+        repository.applyEdit(
+            messageDto(
+                id = 100, chatId = CHAT, body = "", editSeq = 5,
+                attachments = listOf(photoAttachment(id = 77)),
+            ),
+        )
+        advanceUntilIdle()
+
+        // An older edit, delivered late and carrying no attachment.
+        repository.applyEdit(messageDto(id = 100, chatId = CHAT, body = "", editSeq = 3))
+        advanceUntilIdle()
+
+        assertThat(messageDao.findByServerId(100)!!.attachmentList.map { it.id })
+            .containsExactly(77L)
+    }
+
+    /**
+     * An ordinary edit is still an ordinary edit. Nothing but the
+     * assistant's reply ever gains an attachment this way, so a text edit
+     * of a message that HAS one must leave it exactly where it was.
+     */
+    @Test
+    fun anOrdinaryEditKeepsTheAttachmentItAlreadyHad() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+
+        repository.applyServerMessage(
+            messageDto(
+                id = 100, chatId = CHAT, body = "at the beach",
+                attachments = listOf(photoAttachment(id = 12, hasPreview = true)),
+            ),
+            live = false,
+        )
+        advanceUntilIdle()
+
+        repository.applyEdit(
+            messageDto(
+                id = 100, chatId = CHAT, body = "at the lake", editSeq = 5,
+                attachments = listOf(photoAttachment(id = 12, hasPreview = true)),
+            ),
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100)!!
+        assertThat(row.body).isEqualTo("at the lake")
+        assertThat(row.attachmentList.map { it.id }).containsExactly(12L)
+        assertThat(row.attachmentHasPreview).isTrue()
+    }
+
+    /**
+     * A picture answer streams NOTHING — an image model produces no token
+     * stream, so there is no partial answer to leave on screen. Without a
+     * mark the failure is an empty balloon that never resolves, which is
+     * exactly what creating the row BEFORE calling the provider was meant
+     * to avoid (docs/protocol.md, "Pictures").
+     */
+    @Test
+    fun anAiErrorMarksTheRowSoTheBubbleCanSaySo() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
+        advanceUntilIdle()
+        assertThat(repository.failedAssistantMessageIds.value).isEmpty()
+
+        socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100))
+        advanceUntilIdle()
+
+        assertThat(repository.failedAssistantMessageIds.value).containsExactly(100L)
+        // The row keeps whatever it has, which here is nothing at all.
+        assertThat(messageDao.findByServerId(100)!!.body).isEmpty()
+        assertThat(repository.streamingMessageIds.value).doesNotContain(100L)
+    }
+
+    /**
+     * THE RELAUNCH CASE, and the one the in-memory set could never answer.
+     *
+     * A history page and a cold start go through `applyServerMessage(…,
+     * live = false)` and raise no frame, so nothing puts an id in
+     * [MessageRepository.streamingMessageIds] — and a picture answer puts
+     * none there even live, because an image model streams no deltas. A
+     * member who quit while a `/draw` was still generating therefore came
+     * back to a completely blank balloon.
+     *
+     * protocol.md says the empty row IS the "still working" state, about
+     * the message rather than about one process, so the ROW is what
+     * answers (AssistantAnswer).
+     */
+    @Test
+    fun aWaitingRowLoadedFromHistoryStillReadsAsWorking() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat(kind = "ai", peerUserId = null)
+
+        repository.applyServerMessage(
+            messageDto(id = 100, chatId = CHAT, senderId = PEER, body = ""),
+            live = false,
+        )
+        advanceUntilIdle()
+
+        // Nothing marked it live: this is the state a relaunch starts in.
+        assertThat(repository.streamingMessageIds.value).isEmpty()
+        assertThat(repository.failedAssistantMessageIds.value).isEmpty()
+
+        val row = messageDao.findByServerId(100)!!
+        assertThat(
+            AssistantAnswer.isWorking(
+                entity = row,
+                isAssistantChat = true,
+                assistantUserId = null,
+                myUserId = ME,
+                streamingIds = repository.streamingMessageIds.value,
+                failedIds = repository.failedAssistantMessageIds.value,
+            ),
+        ).isTrue()
+    }
+
+    /**
+     * …and the picture landing ends it, on that same cold-start path: the
+     * attachment arrives on the row through `message_edited`, and a row
+     * that carries something is an answer that arrived.
+     */
+    @Test
+    fun aHistoryRowThatCarriesAPictureIsNotWorking() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat(kind = "ai", peerUserId = null)
+
+        repository.applyServerMessage(
+            messageDto(
+                id = 100, chatId = CHAT, senderId = PEER, body = "",
+                attachments = listOf(photoAttachment(id = 77)),
+            ),
+            live = false,
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100)!!
+        assertThat(
+            AssistantAnswer.isWorking(
+                entity = row,
+                isAssistantChat = true,
+                assistantUserId = null,
+                myUserId = ME,
+                streamingIds = repository.streamingMessageIds.value,
+                failedIds = repository.failedAssistantMessageIds.value,
+            ),
+        ).isFalse()
+    }
+
+    /**
+     * A failure this launch saw outranks the row's own shape — the cursor
+     * and the "ask again" line are drawn in the same place, and the newer
+     * fact wins.
+     */
+    @Test
+    fun aFailureThisLaunchSawBeatsTheEmptyRow() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat(kind = "ai", peerUserId = null)
+        socket.setOpen(true)
+
+        repository.applyServerMessage(
+            messageDto(id = 100, chatId = CHAT, senderId = PEER, body = ""),
+            live = false,
+        )
+        socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100))
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100)!!
+        assertThat(
+            AssistantAnswer.isWorking(
+                entity = row,
+                isAssistantChat = true,
+                assistantUserId = null,
+                myUserId = ME,
+                streamingIds = repository.streamingMessageIds.value,
+                failedIds = repository.failedAssistantMessageIds.value,
+            ),
+        ).isFalse()
+    }
+
+    /** An answer that arrives after all is not a failed one. */
+    @Test
+    fun anEditClearsTheFailureMark() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
+        socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100))
+        advanceUntilIdle()
+        assertThat(repository.failedAssistantMessageIds.value).containsExactly(100L)
+
+        socket.emit(
+            ServerFrame.MessageEdited(
+                messageDto(
+                    id = 100, chatId = CHAT, body = "", editSeq = 5,
+                    attachments = listOf(photoAttachment(id = 77)),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        assertThat(repository.failedAssistantMessageIds.value).isEmpty()
     }
 
     @Test
