@@ -1257,6 +1257,11 @@ async fn the_owner_decides_whether_a_mention_sees_the_family_chats_history() {
             "created_at": family["created_at"],
             "invite_code": invite_code,
             "ai_history": false,
+            // Present for the same reason `ai_history` is, and `false` for
+            // the reason migration 0032 argues: a photograph is not more of
+            // the same thing, so this switch defaults the other way
+            // (protocol.md, "Pictures").
+            "ai_vision": false,
         }),
         "the whole Family object, exactly the shape in protocol.md — no language key, \
          because nobody has chosen one, and ai_history present because it always is"
@@ -1282,6 +1287,7 @@ async fn the_owner_decides_whether_a_mention_sees_the_family_chats_history() {
             "invite_code": invite_code,
             "max_members": 6,
             "ai_history": false,
+            "ai_vision": false,
         }),
         "and the whole object again with a cap — one key more, nothing else moved"
     );

@@ -1603,11 +1603,8 @@ final class ChatSyncCoordinator {
     /// Returns nil when the bytes could not be fetched; the caller says so.
     func localFileURL(for attachment: AttachmentDTO) async -> URL? {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let directory = caches
-            .appendingPathComponent("files", isDirectory: true)
-            .appendingPathComponent(String(attachment.id), isDirectory: true)
-        let name = Self.safeFileName(attachment.name ?? Self.fallbackName(for: attachment))
-        let destination = directory.appendingPathComponent(name)
+        let destination = Self.cachedFileURL(for: attachment, in: caches)
+        let directory = destination.deletingLastPathComponent()
 
         if FileManager.default.fileExists(atPath: destination.path) {
             return destination
@@ -1627,6 +1624,33 @@ final class ChatSyncCoordinator {
             return nil
         }
         return destination
+    }
+
+    /// What an attachment's bytes are called once they are on disk — and
+    /// therefore what Quick Look titles its window, what Share hands the
+    /// next app, and (issue #47) what a drag out drops in the Finder.
+    ///
+    /// Split out of `localFileURL` so there is exactly ONE spelling of it.
+    /// `DraggedAttachment` has to know the name of a file it has not
+    /// downloaded yet, and a second spelling is precisely how a dragged
+    /// photo arrives called something Save… would never have called it.
+    nonisolated static func cachedFileName(for attachment: AttachmentDTO) -> String {
+        safeFileName(attachment.name ?? fallbackName(for: attachment))
+    }
+
+    /// Where those bytes live under a caches directory.
+    ///
+    /// Split out for the same reason and one more: `DraggedAttachment`
+    /// CHECKS the URL it is about to promise against this shape, because
+    /// `AttachmentStore`'s `<id>.jpg` — which is a 600px preview under a
+    /// `.jpg` extension whatever the real type — is otherwise an easy and
+    /// completely silent substitution. The per-attachment id directory is
+    /// what that flat cache has no equivalent of.
+    nonisolated static func cachedFileURL(for attachment: AttachmentDTO, in caches: URL) -> URL {
+        caches
+            .appendingPathComponent("files", isDirectory: true)
+            .appendingPathComponent(String(attachment.id), isDirectory: true)
+            .appendingPathComponent(cachedFileName(for: attachment))
     }
 
     /// What to call a photo or video, which carry no name of their own.

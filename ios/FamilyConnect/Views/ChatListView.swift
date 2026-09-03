@@ -17,12 +17,41 @@
 //  work for free (the route waits on the session until bootstrap
 //  reaches .active and this view exists to act on it).
 //
+//  TWO SHAPES, ONE STATE (issue #43). On the phone this is what it has
+//  always been: a NavigationStack whose path is the open chat. On the
+//  iPad the same list is the SIDEBAR of a NavigationSplitView and the
+//  conversation fills the detail column, because a plain full-width list
+//  on a 13-inch display is a row of avatars with a disclosure chevron a
+//  thousand points away and three quarters of the screen blank.
+//
+//  `path` stays the single source of truth for BOTH shapes, and that is
+//  the whole reason this conversion is small: `path.last` IS the split
+//  view's selection (see `selection` below), so every one of the eight
+//  places that write the path — the New Chat sheet, the share picker, a
+//  vanished chat, a Siri/Recents call, and the four push routes — keeps
+//  working unread and unedited, on both shapes, including the cold-start
+//  ones that are hardest to test. Nothing about routing moved; only the
+//  container the route lands in did.
+//
+//  The shape is chosen by IDIOM, not by size class, and deliberately:
+//  a size-class test would swap NavigationStack for NavigationSplitView
+//  under a running conversation — a different view identity, so the
+//  thread is torn down and rebuilt — every time a Pro Max phone is
+//  rotated or an iPad enters Slide Over. Choosing by idiom makes the
+//  phone's tree literally the one it has today, and leaves the iPad's
+//  narrow states to NavigationSplitView's own collapsing (which is a
+//  stack, presented by the framework rather than by us).
+//
 
 // iOS only — the Mac has its own views (MacViews/).
 #if os(iOS)
 
 import SwiftData
 import SwiftUI
+// UIDevice.userInterfaceIdiom, for the shape decision above. SwiftUI has
+// no environment key for the idiom — only for the size class, which is
+// the thing that must NOT decide this.
+import UIKit
 
 struct ChatListView: View {
     @Environment(AppSession.self) private var session
@@ -75,139 +104,31 @@ struct ChatListView: View {
         Dictionary(members.map { ($0.userID, $0.avatarVersion) }, uniquingKeysWith: { first, _ in first })
     }
 
+    /// iPad or phone — see the header for why this is the IDIOM and not
+    /// the horizontal size class.
+    private var usesSplitView: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad
+    }
+
+    /// The split view's selection, projected onto the SAME `path` the
+    /// stack navigates — the projection itself is `ChatSelection`, which
+    /// is where it can be tested without a screen.
+    private var selection: Binding<Int64?> {
+        Binding(
+            get: { ChatSelection.openChat(in: path) },
+            set: { path = ChatSelection.path(opening: $0) })
+    }
+
+    private var navigationTitleText: String {
+        session.family?.name ?? String(localized: "Chats")
+    }
+
     var body: some View {
-        NavigationStack(path: $path) {
-            Group {
-                if chats.isEmpty {
-                    // A ScrollView, not a bare view: the copy promises
-                    // pull-to-refresh, and .refreshable only works on
-                    // scrollable content. containerRelativeFrame keeps the
-                    // placeholder centered while the bounce exists.
-                    ScrollView {
-                        ContentUnavailableView(
-                            "No chats yet",
-                            systemImage: "bubble.left.and.bubble.right",
-                            description: Text("Pull down to sync with the family server."))
-                        .containerRelativeFrame([.horizontal, .vertical])
-                    }
-                } else {
-                    List(sortedChats) { chat in
-                        NavigationLink(value: chat.chatID) {
-                            ChatRowView(
-                                chat: chat,
-                                peerAvatarVersion: chat.peerUserID
-                                    .flatMap { avatarVersions[$0] } ?? 0)
-                        }
-                    }
-                    .listStyle(.plain)
-                }
-            }
-            .navigationTitle(session.family?.name ?? String(localized: "Chats"))
-            .navigationDestination(for: Int64.self) { chatID in
-                ConversationView(chatID: chatID)
-                    // Rebuild cleanly when the routed chat changes IN
-                    // PLACE: a notification tap while another chat is open
-                    // replaces the path's element (`path = [chatID]`
-                    // below) at the same depth, and without an explicit
-                    // identity SwiftUI keeps the old view's @State — a
-                    // settled flag, scroll pins, the unread anchor and the
-                    // divider of the PREVIOUS chat — and never restarts
-                    // its `.task`, so the new chat opened with no opening
-                    // routine at all (no first-page fetch on an empty
-                    // cache, no anchored open, a stale jump-to-newest
-                    // state). The Mac's sidebar has always done this —
-                    // MacChatView's `.id(selectedChatID)` — for the same
-                    // reason.
-                    .id(chatID)
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showsNewChat = true
-                    } label: {
-                        Label("New Chat", systemImage: "square.and.pencil")
-                    }
-                }
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showsSettings = true
-                    } label: {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    // What is new to READ on the board since this device
-                    // last showed it: notes pinned, and notes whose text
-                    // changed. A drag, a resize and a recolour are not
-                    // news and never count — BoardBadge holds the rule,
-                    // shared with the Mac so the two cannot disagree.
-                    //
-                    // .badge on a toolbar item renders only on iOS 26+ —
-                    // verified empirically: a silent no-op on an iOS 18.6
-                    // simulator, drawn on 26.5 — so earlier systems get the
-                    // chat row's badge capsule as an overlay instead. The
-                    // overlay takes no hits, so the button's tap area is
-                    // exactly what it always was.
-                    if #available(iOS 26, *) {
-                        boardButton
-                            .badge(newNoteCount)
-                    } else {
-                        boardButton
-                            .overlay(alignment: .topTrailing) {
-                                if newNoteCount > 0 {
-                                    Text("\(newNoteCount)")
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 5)
-                                        .padding(.vertical, 1)
-                                        .background(.tint, in: Capsule())
-                                        .offset(x: 8, y: -6)
-                                        .allowsHitTesting(false)
-                                        .accessibilityHidden(true)
-                                }
-                            }
-                    }
-                }
-            }
-            .safeAreaInset(edge: .top) {
-                ConnectionBanner()
-            }
-            .refreshable {
-                await coordinator.resync()
-            }
-            .sheet(isPresented: $showsNewChat) {
-                NewChatView { chatID in
-                    path.append(chatID)
-                }
-            }
-            .sheet(isPresented: $showsSettings) {
-                SettingsView()
-            }
-            .sheet(isPresented: $showsJoinRequests) {
-                JoinRequestsSheet()
-            }
-            .sheet(isPresented: $showsReports) {
-                NavigationStack { ReportInboxView() }
-            }
-            .sheet(isPresented: $showsBoard) {
-                BoardView()
-            }
-            // Fires on both transitions, which is exactly what is wanted:
-            // opening clears what is already pinned, closing catches
-            // anything that arrived while the board was up.
-            .onChange(of: showsBoard) { _, _ in markBoardSeen() }
-            // Where a share INTO the app lands: pick a chat, and the files
-            // stage in its composer — nothing is sent until Send there.
-            // Dismissing without choosing discards the files (a no-op
-            // after a choice, so onDismiss can say it unconditionally).
-            .sheet(isPresented: $showsShareTarget, onDismiss: {
-                session.discardPendingShareImport()
-            }) {
-                ShareTargetPicker { chatID in
-                    session.chooseShareTarget(chatID: chatID)
-                    showsShareTarget = false
-                    path = [chatID]
-                }
+        Group {
+            if usesSplitView {
+                splitShape
+            } else {
+                stackShape
             }
         }
         .sheet(item: $linkingCall) { linking in
@@ -258,6 +179,245 @@ struct ChatListView: View {
             guard !vanished.isEmpty else { return }
             path.removeAll { vanished.contains($0) }
         }
+    }
+
+    // MARK: - The two shapes
+
+    /// The phone. This is the tree this view has always had, verbatim —
+    /// same container, same list, same NavigationLink, same destination,
+    /// same modifier order — because "the iPhone is unchanged" is a claim
+    /// worth being able to make by reading rather than by testing.
+    private var stackShape: some View {
+        NavigationStack(path: $path) {
+            presentations(
+                on: chatList(selectable: false)
+                    .navigationTitle(navigationTitleText)
+                    .navigationDestination(for: Int64.self) { chatID in
+                        ConversationView(chatID: chatID)
+                            // Rebuild cleanly when the routed chat changes IN
+                            // PLACE: a notification tap while another chat is
+                            // open replaces the path's element (`path =
+                            // [chatID]` in `consumePendingRoute`) at the same
+                            // depth, and without an explicit identity SwiftUI
+                            // keeps the old view's @State — a settled flag,
+                            // scroll pins, the unread anchor and the divider
+                            // of the PREVIOUS chat — and never restarts its
+                            // `.task`, so the new chat opened with no opening
+                            // routine at all (no first-page fetch on an empty
+                            // cache, no anchored open, a stale jump-to-newest
+                            // state). The Mac's sidebar has always done this —
+                            // MacChatView's `.id(selectedChatID)` — for the
+                            // same reason, and the split shape below does it
+                            // too.
+                            .id(chatID)
+                    }
+                    .toolbar { chatListToolbar }
+                    .safeAreaInset(edge: .top) {
+                        ConnectionBanner()
+                    }
+                    .refreshable {
+                        await coordinator.resync()
+                    })
+        }
+    }
+
+    /// The iPad. MacChatView's shape, with the Mac's column width, so the
+    /// two big-screen clients do not drift apart.
+    private var splitShape: some View {
+        NavigationSplitView {
+            presentations(
+                on: chatList(selectable: true)
+                    .navigationTitle(navigationTitleText)
+                    .toolbar { chatListToolbar }
+                    // The banner is at the BOTTOM of the sidebar, where the
+                    // Mac puts it, and not on the top edge where the phone
+                    // has it. A `.safeAreaInset(edge: .top)` here would
+                    // band only the sidebar and only under its own title,
+                    // so a reader looking at the thread — which is most of
+                    // the screen — would never learn the wire had dropped.
+                    .safeAreaInset(edge: .bottom) {
+                        ConnectionBanner()
+                            .padding(.bottom, 8)
+                    }
+                    .refreshable {
+                        await coordinator.resync()
+                    })
+                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
+        } detail: {
+            // The path's own open chat, NOT `chats.first(where:)`: a
+            // push-routed chat
+            // may not be cached yet after a reinstall, and routing to one
+            // must still open the thread — ConversationView and the resync
+            // handle a not-yet-known id between them. That is the phone's
+            // rule (see `consumePendingRoute`), and the split shape must
+            // not quietly tighten it into the Mac's. A chat that VANISHES
+            // is a different case and is already handled, by the
+            // `chats.map(\.chatID)` hook clearing the path.
+            if let chatID = ChatSelection.openChat(in: path) {
+                ConversationView(chatID: chatID)
+                    // The reason the stack's destination gives, for the
+                    // same reason: a route that replaces the selection in
+                    // place must rebuild the thread, not reuse it.
+                    .id(chatID)
+            } else {
+                // Deliberately NOT auto-selecting the first chat the way
+                // MacChatView does. Its own comment allows it because a Mac
+                // window can be behind every other window, so selecting a
+                // chat is not showing it; an iPad detail column is in front
+                // of the reader with `scenePhase == .active`, so a launch
+                // that auto-selected the family chat would satisfy all
+                // three of ChatPresence's conditions and mark it read
+                // before anybody had asked to see it.
+                ContentUnavailableView(
+                    "No conversation selected",
+                    systemImage: "bubble.left.and.bubble.right",
+                    description: Text("Pick a chat from the sidebar."))
+            }
+        }
+    }
+
+    // MARK: - Shared pieces
+
+    /// The list itself. One row definition, two selection mechanisms:
+    /// the stack pushes through a NavigationLink, the sidebar tags rows
+    /// for the List's own selection (a link in a sidebar would push the
+    /// thread ON TOP of the sidebar instead of filling the detail column).
+    @ViewBuilder
+    private func chatList(selectable: Bool) -> some View {
+        if chats.isEmpty {
+            // A ScrollView, not a bare view: the copy promises
+            // pull-to-refresh, and .refreshable only works on
+            // scrollable content. containerRelativeFrame keeps the
+            // placeholder centered while the bounce exists.
+            ScrollView {
+                ContentUnavailableView(
+                    "No chats yet",
+                    systemImage: "bubble.left.and.bubble.right",
+                    description: Text("Pull down to sync with the family server."))
+                .containerRelativeFrame([.horizontal, .vertical])
+            }
+        } else if selectable {
+            List(selection: selection) {
+                ForEach(sortedChats) { chat in
+                    chatRow(chat, isNarrow: true)
+                        .tag(chat.chatID)
+                }
+            }
+            // The iPad sidebar look — inset rows and a real selection
+            // highlight, so the open chat is visibly the open one. The
+            // phone keeps `.plain`, which is what it has today.
+            .listStyle(.sidebar)
+        } else {
+            List(sortedChats) { chat in
+                NavigationLink(value: chat.chatID) {
+                    chatRow(chat)
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    private func chatRow(_ chat: ChatEntity, isNarrow: Bool = false) -> some View {
+        ChatRowView(
+            chat: chat,
+            peerAvatarVersion: chat.peerUserID
+                .flatMap { avatarVersions[$0] } ?? 0,
+            isNarrow: isNarrow)
+    }
+
+    @ToolbarContentBuilder
+    private var chatListToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                showsNewChat = true
+            } label: {
+                Label("New Chat", systemImage: "square.and.pencil")
+            }
+        }
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                showsSettings = true
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            // What is new to READ on the board since this device
+            // last showed it: notes pinned, and notes whose text
+            // changed. A drag, a resize and a recolour are not
+            // news and never count — BoardBadge holds the rule,
+            // shared with the Mac so the two cannot disagree.
+            //
+            // .badge on a toolbar item renders only on iOS 26+ —
+            // verified empirically: a silent no-op on an iOS 18.6
+            // simulator, drawn on 26.5 — so earlier systems get the
+            // chat row's badge capsule as an overlay instead. The
+            // overlay takes no hits, so the button's tap area is
+            // exactly what it always was.
+            if #available(iOS 26, *) {
+                boardButton
+                    .badge(newNoteCount)
+            } else {
+                boardButton
+                    .overlay(alignment: .topTrailing) {
+                        if newNoteCount > 0 {
+                            Text("\(newNoteCount)")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(.tint, in: Capsule())
+                                .offset(x: 8, y: -6)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+            }
+        }
+    }
+
+    /// Everything this screen can put on top of itself, in one place so
+    /// the two shapes present exactly the same set from exactly the same
+    /// host — the list on the phone, the sidebar on the iPad. Keeping
+    /// them attached to the LIST (rather than to the split view) is what
+    /// makes `dismissSheets` and the push-route handlers below true for
+    /// both shapes without knowing which one they are running under.
+    private func presentations(on content: some View) -> some View {
+        content
+            .sheet(isPresented: $showsNewChat) {
+                NewChatView { chatID in
+                    path.append(chatID)
+                }
+            }
+            .sheet(isPresented: $showsSettings) {
+                SettingsView()
+            }
+            .sheet(isPresented: $showsJoinRequests) {
+                JoinRequestsSheet()
+            }
+            .sheet(isPresented: $showsReports) {
+                NavigationStack { ReportInboxView() }
+            }
+            .sheet(isPresented: $showsBoard) {
+                BoardView()
+            }
+            // Fires on both transitions, which is exactly what is wanted:
+            // opening clears what is already pinned, closing catches
+            // anything that arrived while the board was up.
+            .onChange(of: showsBoard) { _, _ in markBoardSeen() }
+            // Where a share INTO the app lands: pick a chat, and the files
+            // stage in its composer — nothing is sent until Send there.
+            // Dismissing without choosing discards the files (a no-op
+            // after a choice, so onDismiss can say it unconditionally).
+            .sheet(isPresented: $showsShareTarget, onDismiss: {
+                session.discardPendingShareImport()
+            }) {
+                ShareTargetPicker { chatID in
+                    session.chooseShareTarget(chatID: chatID)
+                    showsShareTarget = false
+                    path = [chatID]
+                }
+            }
     }
 
     /// The way into the board; the badge beside it is `newNoteCount`.
@@ -453,8 +613,29 @@ struct ChatRowView: View {
     /// Profile-picture version of the direct chat's peer; 0 for the
     /// family chat and for anyone without a picture.
     var peerAvatarVersion: Int64 = 0
+    /// The iPad sidebar's arrangement: two lines rather than three
+    /// side-by-side columns.
+    ///
+    /// The phone's row spreads title+preview, the time and the unread
+    /// badge across the full width of a screen. A 280pt sidebar cannot
+    /// hold that — measured at 248pt of usable row: the title truncated
+    /// to "The Sm…", the preview to "Message number…", and the relative
+    /// date wrapped onto two lines, all in one 90pt row. This is
+    /// MacChatRow's arrangement instead (title and time on the first
+    /// line, preview and unread on the second), which is what the Mac
+    /// sidebar has always used at this width — one shape for the two
+    /// big-screen clients, which is the point of issue #43.
+    var isNarrow = false
 
     var body: some View {
+        if isNarrow {
+            narrowBody
+        } else {
+            wideBody
+        }
+    }
+
+    private var wideBody: some View {
         HStack(spacing: 12) {
             InitialsAvatar(
                 title: chat.title,
@@ -506,6 +687,57 @@ struct ChatRowView: View {
         .padding(.vertical, 4)
         // One element per row — title, preview, when, unread — rather
         // than four stops per chat.
+        .accessibilityElement(children: .combine)
+    }
+
+    private var narrowBody: some View {
+        HStack(spacing: 10) {
+            InitialsAvatar(
+                title: chat.title,
+                isFamily: chat.kind == "family",
+                userID: chat.peerUserID,
+                avatarVersion: peerAvatarVersion,
+                size: 34)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(chat.title)
+                        .font(.body.weight(chat.unreadCount > 0 ? .semibold : .regular))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if let date = chat.lastMessageDate {
+                        // NUMERIC and narrow, not the phone's named style:
+                        // "5m" fits beside a name in a sidebar where
+                        // "5 minutes ago" wraps to two lines and shoves
+                        // the title into an ellipsis. The Mac's choice,
+                        // for the Mac's reason.
+                        Text(date, format: .relative(presentation: .numeric, unitsStyle: .narrow))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                HStack(spacing: 6) {
+                    // The blocked-sender placeholder, for the reason the
+                    // wide row gives.
+                    Text(previewText(for: chat))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if chat.unreadCount > 0 {
+                        Text("\(chat.unreadCount)")
+                            .font(.caption2.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(.tint, in: Capsule())
+                            .accessibilityLabel(Text("\(chat.unreadCount) unread"))
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
     }
 }

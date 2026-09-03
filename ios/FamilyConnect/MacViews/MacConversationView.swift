@@ -703,6 +703,22 @@ struct MacConversationView: View {
                                             value: AttachmentAlbum(items: media, index: index))
                                     }
                                 },
+                                onAttachmentDragFailed: {
+                                    // The same strip a failed drop, a
+                                    // failed paste and a failed recording
+                                    // use, and the same words the viewer's
+                                    // Save… uses for the same three causes
+                                    // (offline, gone, swept) — which
+                                    // `localFileURL` cannot tell apart and
+                                    // neither can anybody reading this.
+                                    //
+                                    // It matters that this says ANYTHING: a
+                                    // thrown file promise just springs the
+                                    // drag back, which looks exactly like a
+                                    // drag that never took hold.
+                                    mediaNotice = .failed(
+                                        String(localized: "The file could not be downloaded."))
+                                },
                                 memberCount: familyMemberCount,
                                 onCallBack: canCall ? { startCall() } : nil)
                                 .id(row.message.localID)

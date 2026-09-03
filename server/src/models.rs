@@ -193,6 +193,21 @@ pub struct Family {
     /// above are options because "never chosen" is a state that means
     /// something there; here it is not.
     pub ai_history: bool,
+    /// Whether a photograph a member attaches in their OWN assistant chat
+    /// may be shown to the model at all (protocol.md, "Pictures").
+    /// Owner-set, and `false` by default.
+    ///
+    /// Always serialized and not an `Option`, for the reason `ai_history`
+    /// is not one — a switch has no third state. What differs is which way
+    /// it defaults, and that is the argument migration 0032 makes: a
+    /// photograph is not more of the same thing a model was already being
+    /// told, and the family who never open their settings screen are
+    /// precisely the family whose pictures should stay where they are.
+    ///
+    /// It is a PERMISSION and never consent for a particular picture. The
+    /// member attaching one to the question they are asking is that, one
+    /// send at a time.
+    pub ai_vision: bool,
 }
 
 /// `Report` object as listed for the owner (protocol.md, "Reporting a
@@ -909,6 +924,7 @@ mod tests {
             language: None,
             max_members: None,
             ai_history: true,
+            ai_vision: false,
         };
         let json = serde_json::to_value(&family).expect("serialize");
         assert!(
@@ -931,12 +947,14 @@ mod tests {
             language: None,
             max_members: None,
             ai_history: true,
+            ai_vision: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
             serde_json::json!({
                 "id": 3, "name": "The Smiths", "join_policy": "open",
-                "created_at": "2026-08-19T17:03:12Z", "ai_history": true
+                "created_at": "2026-08-19T17:03:12Z", "ai_history": true,
+                "ai_vision": false
             })
         );
     }
@@ -952,13 +970,15 @@ mod tests {
             language: Some("ru".to_string()),
             max_members: None,
             ai_history: true,
+            ai_vision: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
             serde_json::json!({
                 "id": 3, "name": "The Smiths", "join_policy": "open",
                 "created_at": "2026-08-19T17:03:12Z",
-                "invite_code": "ABCD2345", "language": "ru", "ai_history": true
+                "invite_code": "ABCD2345", "language": "ru", "ai_history": true,
+                "ai_vision": false
             })
         );
     }
@@ -977,13 +997,14 @@ mod tests {
             language: None,
             max_members: Some(12),
             ai_history: true,
+            ai_vision: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
             serde_json::json!({
                 "id": 3, "name": "The Smiths", "join_policy": "closed",
                 "created_at": "2026-08-19T17:03:12Z",
-                "max_members": 12, "ai_history": true
+                "max_members": 12, "ai_history": true, "ai_vision": false
             })
         );
     }

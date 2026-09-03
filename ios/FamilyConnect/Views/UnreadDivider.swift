@@ -80,11 +80,45 @@ struct JumpToNewestButton: View {
                 .frame(width: 36, height: 36)
                 .background(.regularMaterial, in: Circle())
                 .overlay(Circle().stroke(Color.appSeparator, lineWidth: 0.5))
+                // The 12pt of breathing room around the disc is INSIDE the
+                // button and is part of what can be pressed, rather than
+                // outside it as dead margin. Nothing moves: the padding was
+                // always there, the disc is drawn in the same place, and the
+                // control still occupies 60x60 of layout. What changes is
+                // that the 60pt target is now the TAP target too.
+                //
+                // Two reasons, and the second is a bug.
+                //
+                // A 36pt control is under Apple's own 44pt minimum, which is
+                // reason enough on a phone. But in a NavigationSplitView
+                // detail column (iPad, issue #43) a 36pt control does not
+                // receive a tap at its CENTRE at all — the one point a thumb
+                // and XCUITest both aim at. Measured on a 13-inch iPad,
+                // three controls in the same overlay in the same build, each
+                // tapped at its own centre: this button (36pt) 0 hits out of
+                // 2, the same disc driven by `.onTapGesture` instead of a
+                // Button (36pt) 0 out of 2, and an otherwise identical
+                // Button at 90pt 2 out of 2. Sweeping across the 36pt one in
+                // 6pt steps found live points only at ±6 from the centre.
+                // Under a NavigationStack — the phone, and the same iPad
+                // before the split view — the centre landed every time (7 of
+                // 7 across the button's width on an iPhone 17).
+                //
+                // So it is not the host (overlay or ZStack sibling), not the
+                // gesture (Button or tap gesture), not the transition, not
+                // the scroll indicator and not the button's position: all
+                // five were tried and changed nothing. It is the size. This
+                // button is the only way back to the newest message after
+                // reading history, and ChatPresence only marks a chat read
+                // once the newest message is on screen — so a reader who
+                // cannot press it also keeps an unread badge they cannot
+                // clear.
+                .padding(12)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.tint)
         .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
-        .padding(12)
         .accessibilityLabel("Scroll to newest")
     }
 }

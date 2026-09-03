@@ -61,7 +61,8 @@ pub async fn family_stats(
                 COALESCE(a.location, 0)         AS att_location,
                 COALESCE(ai.questions, 0)       AS ai_questions,
                 COALESCE(ai.prompt_tokens, 0)   AS ai_prompt_tokens,
-                COALESCE(ai.completion_tokens, 0) AS ai_completion_tokens
+                COALESCE(ai.completion_tokens, 0) AS ai_completion_tokens,
+                COALESCE(ai.images, 0)          AS ai_images
          FROM users u
          LEFT JOIN (
              SELECT msg.sender_id, COUNT(*) AS count
@@ -89,7 +90,8 @@ pub async fn family_stats(
              SELECT user_id,
                     COUNT(*) AS questions,
                     SUM(prompt_tokens)::BIGINT AS prompt_tokens,
-                    SUM(completion_tokens)::BIGINT AS completion_tokens
+                    SUM(completion_tokens)::BIGINT AS completion_tokens,
+                    SUM(images)::BIGINT AS images
              FROM ai_usage
              WHERE family_id = $1
              GROUP BY user_id
@@ -137,6 +139,7 @@ pub async fn family_stats(
                     "questions": row.get::<i64, _>("ai_questions"),
                     "prompt_tokens": row.get::<i64, _>("ai_prompt_tokens"),
                     "completion_tokens": row.get::<i64, _>("ai_completion_tokens"),
+                    "images": row.get::<i64, _>("ai_images"),
                 },
             })
         })
@@ -194,7 +197,13 @@ pub async fn family_stats(
             (SELECT COALESCE(SUM(prompt_tokens), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
                 AS ai_prompt_tokens,
             (SELECT COALESCE(SUM(completion_tokens), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
-                AS ai_completion_tokens",
+                AS ai_completion_tokens,
+            -- Its own number rather than a share of questions: an image
+            -- model reports no tokens, so a family reading only the token
+            -- totals would see the expensive half of the assistant as free
+            -- (protocol.md, Family statistics).
+            (SELECT COALESCE(SUM(images), 0)::BIGINT FROM ai_usage WHERE family_id = $1)
+                AS ai_images",
     )
     .bind(family_id)
     .fetch_one(&state.pool)
@@ -224,6 +233,7 @@ pub async fn family_stats(
                 "questions": totals.get::<i64, _>("ai_questions"),
                 "prompt_tokens": totals.get::<i64, _>("ai_prompt_tokens"),
                 "completion_tokens": totals.get::<i64, _>("ai_completion_tokens"),
+                "images": totals.get::<i64, _>("ai_images"),
             },
         },
         "members": member_rows,
