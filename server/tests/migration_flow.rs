@@ -174,6 +174,57 @@ async fn every_migration_in_the_list_is_recorded_as_applied() {
     assert_eq!(applied, expected);
 }
 
+/// 0033's rule, said at the level it is enforced: `ai_history_photos` can
+/// never be true while `ai_vision` is false, whatever writes the row.
+///
+/// The handler enforces it too — with a `validation` for the one direction
+/// and a cascade for the other — and the handler's tests are in
+/// assistant_flow.rs. This is the half no request path can reach: a write
+/// that bypasses the handler, or a future handler that forgets, meets the
+/// constraint rather than a state the protocol forbids.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_0033_check_keeps_recent_photos_off_while_pictures_are() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (family_id, _) = ts.create_family(&owner, "The Smiths").await;
+
+    let constraint_of = |result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>| match result {
+        Err(sqlx::Error::Database(error)) => error.constraint().map(str::to_string),
+        Ok(_) => None,
+        Err(other) => panic!("not a constraint refusal: {other}"),
+    };
+
+    // On alone: refused by the schema, not merely by the handler.
+    let refused = sqlx::query("UPDATE families SET ai_history_photos = true WHERE id = $1")
+        .bind(family_id)
+        .execute(&ts.state.pool)
+        .await;
+    assert_eq!(
+        constraint_of(refused).as_deref(),
+        Some("families_ai_history_photos_needs_vision")
+    );
+
+    // Both on in one write is the allowed state…
+    sqlx::query("UPDATE families SET ai_vision = true, ai_history_photos = true WHERE id = $1")
+        .bind(family_id)
+        .execute(&ts.state.pool)
+        .await
+        .expect("both on together is the state the rule allows");
+
+    // …and `ai_vision` off on its own, leaving the third switch on
+    // underneath it, is exactly the latent state the rule exists to forbid.
+    let refused = sqlx::query("UPDATE families SET ai_vision = false WHERE id = $1")
+        .bind(family_id)
+        .execute(&ts.state.pool)
+        .await;
+    assert_eq!(
+        constraint_of(refused).as_deref(),
+        Some("families_ai_history_photos_needs_vision"),
+        "a switch left on underneath the one that was turned off would spring back"
+    );
+}
+
 /// 0031's backfill, run as its own text against a table put back in its
 /// pre-0031 shape.
 ///

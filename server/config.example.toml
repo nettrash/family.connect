@@ -420,7 +420,8 @@ ring_timeout_secs = 45
 # # ---------------------------------------------------------------------------
 #
 # # The deployment that can SEE. A member may then attach a photograph to a
-# # question in their OWN assistant chat, and only there.
+# # question in their OWN assistant chat — or, in the family chat, attach one
+# # to an @ai message or reply to one with @ai (#56).
 # #
 # # NAMING IT IS NOT ENOUGH, and that is deliberate. Each family's owner must
 # # also turn `ai_vision` on (PATCH /families/mine), and it is OFF by default
@@ -432,10 +433,20 @@ ring_timeout_secs = 45
 # # per picture and per send.
 # #
 # # What leaves with such a question, and the whole of it: up to FOUR photos
-# # off that ONE message, each as the downscaled preview when the client
-# # uploaded one, each at most 5 MiB, JPEG or PNG. Never a photo from an
-# # earlier message, never one from the family chat, never a video, a file or
-# # a location. An @ai mention NEVER sends a picture, at any setting.
+# # off that ONE message — in the family chat, off the @ai message and the
+# # message it replies to together — each as the downscaled preview when the
+# # client uploaded one, each at most 5 MiB, JPEG or PNG. Never a photo from
+# # an earlier message, never one the member did not point the assistant at,
+# # never a video, a file or a location. A photo elsewhere in the family chat
+# # is a "[photo]" placeholder to the assistant, at any setting — unless the
+# # owner has ALSO turned `ai_history_photos` on: a THIRD switch, off by
+# # default and openable only while `ai_vision` is on, under which a mention
+# # is shown the transcript's newest photos too, filling whatever the mention
+# # and its quote left of the same four, each numbered "[photo N]" on its
+# # line so the assistant knows whose it is. Nearly every mention in a chat
+# # full of photos then becomes a four-image vision call, which is why that
+# # one stays off until an owner chooses it (docs/protocol.md, "Recent
+# # photos from the family chat").
 # [ai.vision]
 # deployment = "YOUR-VISION-DEPLOYMENT"
 # model = "gpt-4o"
@@ -450,6 +461,15 @@ ring_timeout_secs = 45
 # # thread, not the transcript, not the system prompt, not even the language
 # # line. That is a smaller disclosure than an ordinary text question, which
 # # carries the last turns of a conversation.
+# #
+# # Naming this deployment ALSO lets the assistant draw without being told to
+# # (#56): every ordinary question then declares one tool, `draw_picture`, to
+# # the text model, and when the model calls it the server sends the tool's
+# # prompt — one bounded string, and nothing else — here. The question itself
+# # still goes to [ai], where it always went. `contextual` — INSIDE this
+# # section, below — is the way out for a text deployment that answers 400
+# # to a request with a `tools` key.
+# #
 # # THE BLOCK BELOW IS THE OPENAI-STYLE ONE — an image deployment on your
 # # Azure OpenAI resource, taking the same body the OpenAI images API takes.
 # # FLUX on Azure AI Foundry is a different shape in four ways and has its own
@@ -458,6 +478,15 @@ ring_timeout_secs = 45
 # [ai.images]
 # deployment = "YOUR-IMAGE-DEPLOYMENT"
 # model = "gpt-image-1"
+#
+# # Whether the TEXT model may ask for a picture itself (#56). On by default
+# # once this section names a deployment; set it to false if your TEXT
+# # deployment answers 400 to a request with a `tools` key — the tool is
+# # then never declared, and `/draw` keeps working regardless. It is a key
+# # of THIS table: under [ai.vision] it would name nothing, and the server
+# # refuses to start on a key it does not know under any [ai] table rather
+# # than let an opt-out go quietly unread.
+# contextual = true
 #
 # # An images endpoint is the one contract this server cannot verify for you,
 # # so every field that varies between image models is yours to set and is

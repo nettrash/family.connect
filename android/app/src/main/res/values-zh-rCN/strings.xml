@@ -390,8 +390,26 @@
     <string name="s_assistant_picture_others_left_out">视频、文件、语音和位置永远不会发送给它。</string>
     <string name="s_assistant_picture_unreadable_left_out">太大的照片，或模型读不了的格式，只会被提到，而不会被展示。</string>
     <string name="s_assistant_will_not_see_picture">助手不会看到这张照片。它只作为普通附件发送。</string>
+    <string name="s_assistant_mention_sees_this_picture">这条消息提到了助手，所以助手将看到这张照片。它会离开此服务器，发送给服务器所用的模型；这个聊天里的其他照片都不会。</string>
+    <string name="s_assistant_mention_sees_these_pictures">这条消息提到了助手，所以助手将看到这些照片。它们会离开此服务器，发送给服务器所用的模型；这个聊天里的其他照片都不会。</string>
+    <string name="s_assistant_mention_sees_quoted_picture">这条回复提到了助手，所以助手将看到你回复的那张照片。它会离开此服务器，发送给服务器所用的模型；这个聊天里的其他照片都不会。</string>
+    <string name="s_assistant_mention_sees_quoted_pictures">这条回复提到了助手，所以助手将看到你回复的那些照片。它们会离开此服务器，发送给服务器所用的模型；这个聊天里的其他照片都不会。</string>
+    <string name="s_assistant_mention_sees_both">这条回复提到了助手，所以助手将看到这里的照片和你回复的那些照片。它们会离开此服务器，发送给服务器所用的模型；这个聊天里的其他照片都不会。</string>
+    <string name="s_assistant_mention_extra_left_out">一条消息只带前 %1$d 张——先是消息里的，然后是你回复的那些；其余的留在这里。</string>
+    <string name="s_assistant_mention_sees_recent_only">这条消息提到了助手，所以这个聊天里最近的照片最多 %1$d 张会随它一起发送——没有人指给它看的图片，无论是谁发的。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_mention_sees_this_picture_and_recent">这条消息提到了助手，所以助手将看到这张照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_mention_sees_these_pictures_and_recent">这条消息提到了助手，所以助手将看到这些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_mention_sees_quoted_picture_and_recent">这条回复提到了助手，所以助手将看到你回复的那张照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_mention_sees_quoted_pictures_and_recent">这条回复提到了助手，所以助手将看到你回复的那些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_mention_sees_both_and_recent">这条回复提到了助手，所以助手将看到这里的照片和你回复的那些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
     <string name="s_assistant_answer_failed">助手没能完成这条回复。请再问一次。</string>
     <string name="s_assistant_vision">允许助手查看照片</string>
-    <string name="s_assistant_vision_explanation">当某人在自己与助手的聊天中给问题附上照片时，这张照片会随问题一起发送给模型，每次提问最多 4 张。默认关闭。家庭聊天中的照片在任何设置下都不会发送，视频、文件、语音和位置也一样。</string>
+    <string name="s_assistant_vision_explanation">当某人在自己与助手的聊天中给问题附上照片、在家庭聊天中给提到助手的消息附上照片，或在提到助手的同时回复一张照片时，这张照片会随问题一起发送给模型，每次提问最多 4 张。没有指给助手看的照片绝不会发送，除非打开了“助手可以查看最近的照片”，否则更早消息中的也不会，视频、文件、语音和位置也一样。默认关闭；关闭时，任何照片都不会被发送。</string>
     <string name="e_change_assistant_vision_failed">无法更改该设置</string>
+    <string name="s_assistant_history_photos">助手可以查看最近的照片</string>
+    <string name="s_assistant_history_photos_explanation">当有人在家庭聊天里提到助手时，这个聊天里最近的照片——最多 4 张，来自任何人，没有指给助手看的——也会在消息本身或它所回复的消息上的照片之后，随问题一起发送给模型。此后几乎每次提到它都会发送图片，费用更高。需要打开“允许助手查看照片”和“助手可以查看最近的历史记录”；默认关闭，除非你打开它。</string>
+    <string name="s_assistant_history_photos_no_deployment">此处不可用：这个服务器上的助手无法查看图片。</string>
+    <string name="s_assistant_history_photos_needs_vision">请先打开“允许助手查看照片”——它关闭时，服务器会拒绝这项设置。</string>
+    <string name="s_assistant_history_photos_needs_history">“助手可以查看最近的历史记录”关闭时，这项设置不起作用：聊天历史不会发送，其中的照片自然也不会。</string>
+    <string name="e_change_assistant_history_photos_failed">无法更改该设置</string>
 </resources>

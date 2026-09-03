@@ -71,6 +71,18 @@ interface FamilyApi {
      * third one is never a remembered setting.
      */
     suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: whether an `@ai` mention in the family chat may ALSO be
+     * shown that chat's most recent photographs — pictures nobody pointed
+     * the assistant at (docs/protocol.md, "Recent photos from the family
+     * chat"). Family-wide, OFF by default, and only openable while
+     * `ai_vision` is on: the server answers `validation` to `true`
+     * otherwise, and turns this off in the same write whenever
+     * `ai_vision` goes off. Inert, not refused, while `ai_history` is
+     * off — there is no transcript for it to widen.
+     */
+    suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse>
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
     suspend fun approve(requestId: Long): ApiResult<ApproveResponse>
     suspend fun reject(requestId: Long): ApiResult<Unit>
@@ -172,6 +184,9 @@ class DefaultFamilyApi @Inject constructor(
 
     override suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> =
         client.patch("/families/mine", PatchFamilyRequest.aiVision(enabled))
+
+    override suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiHistoryPhotos(enabled))
 
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
         client.get("/families/join-requests")

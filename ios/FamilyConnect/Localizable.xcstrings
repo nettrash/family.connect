@@ -15431,6 +15431,58 @@
         }
       }
     },
+    "Not available here: the assistant on this server can't look at pictures." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hier nicht verfügbar: Der Assistent auf diesem Server kann keine Bilder ansehen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No disponible aquí: el asistente de este servidor no puede mirar imágenes."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indisponible ici : l’assistant de ce serveur ne peut pas regarder les images."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ここでは使えません。このサーバーのアシスタントは画像を見ることができません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Здесь недоступно: ассистент на этом сервере не умеет смотреть картинки."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Овде није доступно: асистент на овом серверу не може да гледа слике."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovde nije dostupno: asistent na ovom serveru ne može da gleda slike."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此处不可用：这个服务器上的助手无法查看图片。"
+          }
+        }
+      }
+    },
     "Not set" : {
       "localizations" : {
         "de" : {
@@ -15962,6 +16014,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "只有家庭拥有者才能这样做。"
+          }
+        }
+      }
+    },
+    "Only the first %lld photos go to the model your server is set up to use — yours first, then the ones you're replying to. The rest are named to it, not shown." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nur die ersten %lld Fotos gehen an das Modell, das dein Server nutzt — zuerst deine, dann die, auf die du antwortest. Die übrigen werden ihm nur genannt, nicht gezeigt."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Solo las primeras %lld fotos van al modelo que usa tu servidor: primero las tuyas, luego aquellas a las que respondes. Del resto solo se le dice que existen; no se le muestran."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Seules les %lld premières photos vont au modèle que ton serveur utilise — les tiennes d’abord, puis celles auxquelles tu réponds. Les autres lui sont seulement signalées, pas montrées."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "サーバーの使うモデルに送られるのは最初の %lld 枚だけです。あなたの写真が先で、次に返信先の写真です。残りは存在だけが伝えられ、見せられることはありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только первые %lld фото уйдут модели, которую использует твой сервер — сначала твои, затем те, на которые ты отвечаешь. Об остальных ей только сообщат — показывать не будут."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Само првих %lld фотографија иде моделу који твој сервер користи — прво твоје, па оне на које одговараш. За остале му се само каже да постоје, али му се не приказују."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Samo prvih %lld fotografija ide modelu koji tvoj server koristi — prvo tvoje, pa one na koje odgovaraš. Za ostale mu se samo kaže da postoje, ali mu se ne prikazuju."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有前 %lld 张照片会发送给你的服务器所用的模型——先是你的，然后是你回复的那些。其余的只会被提及，不会展示。"
           }
         }
       }
@@ -17821,6 +17925,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "原因"
+          }
+        }
+      }
+    },
+    "Recent photos" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktuelle Fotos"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fotos recientes"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photos récentes"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近の写真"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Недавние фото"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Недавне фотографије"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nedavne fotografije"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近的照片"
           }
         }
       }
@@ -23039,6 +23195,110 @@
         }
       }
     },
+    "The photo you're replying to goes to the model your server is set up to use, with your %@ message, and up to %lld of the most recent photos in this chat may go too." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Foto, auf das du antwortest, geht zusammen mit deiner %@-Nachricht an das Modell, das dein Server nutzt, und bis zu %lld der neuesten Fotos aus diesem Chat können mitgehen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La foto a la que respondes va al modelo que usa tu servidor, junto con tu mensaje con %@, y hasta %lld de las fotos más recientes de este chat pueden ir también."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La photo à laquelle tu réponds part vers le modèle que ton serveur utilise, avec ton message %@, et jusqu’à %lld des photos les plus récentes de cette conversation peuvent partir aussi."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返信先の写真は、%@ を含むメッセージと一緒に、サーバーの使うモデルへ送られます。このチャットの最近の写真も最大 %lld 枚送られることがあります。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Фото, на которое ты отвечаешь, уйдёт вместе с твоим сообщением с %@ модели, которую использует твой сервер, и до %lld самых недавних фото из этого чата могут уйти вместе с ним."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Фотографија на коју одговараш иде моделу који твој сервер користи, заједно с твојом поруком са %@, а може да оде и до %lld најновијих фотографија из овог ћаскања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fotografija na koju odgovaraš ide modelu koji tvoj server koristi, zajedno s tvojom porukom sa %@, a može da ode i do %lld najnovijih fotografija iz ovog ćaskanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你回复的那张照片会连同你带有 %@ 的消息一起发送给你的服务器所用的模型，这个聊天里最近的照片也可能一起发送，最多 %lld 张。"
+          }
+        }
+      }
+    },
+    "The photo you're replying to goes to the model your server is set up to use, with your %@ message. No other photo in this chat does." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Foto, auf das du antwortest, geht zusammen mit deiner %@-Nachricht an das Modell, das dein Server nutzt. Kein anderes Foto aus diesem Chat."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La foto a la que respondes va al modelo que usa tu servidor, junto con tu mensaje con %@. Ninguna otra foto de este chat lo hace."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La photo à laquelle tu réponds part vers le modèle que ton serveur utilise, avec ton message %@. Aucune autre photo de cette conversation."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返信先の写真は、%@ を含むメッセージと一緒に、サーバーの使うモデルへ送られます。このチャットのほかの写真は送られません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Фото, на которое ты отвечаешь, уйдёт вместе с твоим сообщением с %@ модели, которую использует твой сервер. Больше ни одно фото из этого чата."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Фотографија на коју одговараш иде моделу који твој сервер користи, заједно с твојом поруком са %@. Ниједна друга фотографија из овог ћаскања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fotografija na koju odgovaraš ide modelu koji tvoj server koristi, zajedno s tvojom porukom sa %@. Nijedna druga fotografija iz ovog ćaskanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你回复的那张照片会连同你带有 %@ 的消息一起发送给你的服务器所用的模型。这个聊天里的其他照片都不会。"
+          }
+        }
+      }
+    },
     "The question is the message everyone sees." : {
       "comment" : "A footer explaining that a poll question is the chat message itself.",
       "localizations" : {
@@ -23891,6 +24151,214 @@
         }
       }
     },
+    "This and the photo you're replying to go to the model your server is set up to use, with your %@ message, and up to %lld of the most recent photos in this chat may go too." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das und das Foto, auf das du antwortest, gehen zusammen mit deiner %@-Nachricht an das Modell, das dein Server nutzt, und bis zu %lld der neuesten Fotos aus diesem Chat können mitgehen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esto y la foto a la que respondes van al modelo que usa tu servidor, junto con tu mensaje con %@, y hasta %lld de las fotos más recientes de este chat pueden ir también."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cela et la photo à laquelle tu réponds partent vers le modèle que ton serveur utilise, avec ton message %@, et jusqu’à %lld des photos les plus récentes de cette conversation peuvent partir aussi."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これと返信先の写真は、%@ を含むメッセージと一緒に、サーバーの使うモデルへ送られます。このチャットの最近の写真も最大 %lld 枚送られることがあります。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Оно и фото, на которое ты отвечаешь, уйдут вместе с твоим сообщением с %@ модели, которую использует твой сервер, и до %lld самых недавних фото из этого чата могут уйти вместе с ними."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ово и фотографија на коју одговараш иду моделу који твој сервер користи, заједно с твојом поруком са %@, а може да оде и до %lld најновијих фотографија из овог ћаскања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovo i fotografija na koju odgovaraš idu modelu koji tvoj server koristi, zajedno s tvojom porukom sa %@, a može da ode i do %lld najnovijih fotografija iz ovog ćaskanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这张和你回复的那张照片会连同你带有 %@ 的消息一起发送给你的服务器所用的模型，这个聊天里最近的照片也可能一起发送，最多 %lld 张。"
+          }
+        }
+      }
+    },
+    "This and the photo you're replying to go to the model your server is set up to use, with your %@ message. No other photo in this chat does." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das und das Foto, auf das du antwortest, gehen zusammen mit deiner %@-Nachricht an das Modell, das dein Server nutzt. Kein anderes Foto aus diesem Chat."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esto y la foto a la que respondes van al modelo que usa tu servidor, junto con tu mensaje con %@. Ninguna otra foto de este chat lo hace."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cela et la photo à laquelle tu réponds partent vers le modèle que ton serveur utilise, avec ton message %@. Aucune autre photo de cette conversation."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これと返信先の写真は、%@ を含むメッセージと一緒に、サーバーの使うモデルへ送られます。このチャットのほかの写真は送られません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Оно и фото, на которое ты отвечаешь, уйдут вместе с твоим сообщением с %@ модели, которую использует твой сервер. Больше ни одно фото из этого чата."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ово и фотографија на коју одговараш иду моделу који твој сервер користи, заједно с твојом поруком са %@. Ниједна друга фотографија из овог ћаскања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovo i fotografija na koju odgovaraš idu modelu koji tvoj server koristi, zajedno s tvojom porukom sa %@. Nijedna druga fotografija iz ovog ćaskanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这张和你回复的那张照片会连同你带有 %@ 的消息一起发送给你的服务器所用的模型。这个聊天里的其他照片都不会。"
+          }
+        }
+      }
+    },
+    "This goes to the model your server is set up to use, with your %@ message, and up to %lld of the most recent photos in this chat may go too." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das geht zusammen mit deiner %@-Nachricht an das Modell, das dein Server nutzt, und bis zu %lld der neuesten Fotos aus diesem Chat können mitgehen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esto va al modelo que usa tu servidor, junto con tu mensaje con %@, y hasta %lld de las fotos más recientes de este chat pueden ir también."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cela part vers le modèle que ton serveur utilise, avec ton message %@, et jusqu’à %lld des photos les plus récentes de cette conversation peuvent partir aussi."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これは %@ を含むメッセージと一緒に、サーバーの使うモデルへ送られます。このチャットの最近の写真も最大 %lld 枚送られることがあります。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Оно уйдёт вместе с твоим сообщением с %@ модели, которую использует твой сервер, и до %lld самых недавних фото из этого чата могут уйти вместе с ним."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ово иде моделу који твој сервер користи, заједно с твојом поруком са %@, а може да оде и до %lld најновијих фотографија из овог ћаскања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovo ide modelu koji tvoj server koristi, zajedno s tvojom porukom sa %@, a može da ode i do %lld najnovijih fotografija iz ovog ćaskanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它会连同你带有 %@ 的消息一起发送给你的服务器所用的模型，这个聊天里最近的照片也可能一起发送，最多 %lld 张。"
+          }
+        }
+      }
+    },
+    "This goes to the model your server is set up to use, with your %@ message. No other photo in this chat does." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das geht zusammen mit deiner %@-Nachricht an das Modell, das dein Server nutzt. Kein anderes Foto aus diesem Chat."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esto va al modelo que usa tu servidor, junto con tu mensaje con %@. Ninguna otra foto de este chat lo hace."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cela part vers le modèle que ton serveur utilise, avec ton message %@. Aucune autre photo de cette conversation."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これは %@ を含むメッセージと一緒に、サーバーの使うモデルへ送られます。このチャットのほかの写真は送られません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Оно уйдёт вместе с твоим сообщением с %@ модели, которую использует твой сервер. Больше ни одно фото из этого чата."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ово иде моделу који твој сервер користи, заједно с твојом поруком са %@. Ниједна друга фотографија из овог ћаскања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovo ide modelu koji tvoj server koristi, zajedno s tvojom porukom sa %@. Nijedna druga fotografija iz ovog ćaskanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它会连同你带有 %@ 的消息一起发送给你的服务器所用的模型。这个聊天里的其他照片都不会。"
+          }
+        }
+      }
+    },
     "This goes to the model your server is set up to use, with your question. Nothing else from this chat does." : {
       "localizations" : {
         "de" : {
@@ -24580,6 +25048,58 @@
         }
       }
     },
+    "Turn on Can be shown photos first — the server refuses this while that is off." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schalte zuerst „Darf Fotos sehen“ ein — solange das aus ist, lehnt der Server dies ab."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Activa primero «Puede ver fotos»: el servidor rechaza esto mientras eso esté desactivado."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Active d’abord « Peut voir des photos » — le serveur refuse ceci tant que c’est désactivé."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先に「写真を見せられる」をオンにしてください。それがオフのあいだ、サーバーはこれを受け付けません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сначала включи «Можно показывать фото» — пока оно выключено, сервер это отклоняет."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прво укључи „Може да види фотографије“ — док је то искључено, сервер ово одбија."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prvo uključi „Može da vidi fotografije“ — dok je to isključeno, server ovo odbija."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先打开“可以看照片”——它关闭时，服务器会拒绝这项设置。"
+          }
+        }
+      }
+    },
     "Type your password to confirm it is you. Being signed in is not proof." : {
       "comment" : "A footer under the password field of the account-deletion sheet.",
       "localizations" : {
@@ -24944,6 +25464,110 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "取消静音"
+          }
+        }
+      }
+    },
+    "Up to %lld of the most recent photos in this chat go to the model your server is set up to use, with your %@ message — pictures nobody pointed it at, whoever sent them." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bis zu %lld der neuesten Fotos aus diesem Chat gehen zusammen mit deiner %@-Nachricht an das Modell, das dein Server nutzt — Bilder, die niemand ihm gezeigt hat, egal von wem."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hasta %lld de las fotos más recientes de este chat van al modelo que usa tu servidor, junto con tu mensaje con %@: imágenes que nadie le ha señalado, las haya enviado quien las haya enviado."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jusqu’à %lld des photos les plus récentes de cette conversation partent vers le modèle que ton serveur utilise, avec ton message %@ — des images que personne ne lui a montrées, quel qu’en soit l’expéditeur."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このチャットの最近の写真が最大 %lld 枚、%@ を含むメッセージと一緒に、サーバーの使うモデルへ送られます。誰が送ったものでも、アシスタントに示していない写真です。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "До %lld самых недавних фото из этого чата уйдут вместе с твоим сообщением с %@ модели, которую использует твой сервер — картинки, на которые ей никто не указывал, от кого бы они ни были."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "До %lld најновијих фотографија из овог ћаскања иде моделу који твој сервер користи, заједно с твојом поруком са %@ — слике на које му нико није указао, ко год их послао."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Do %lld najnovijih fotografija iz ovog ćaskanja ide modelu koji tvoj server koristi, zajedno s tvojom porukom sa %@ — slike na koje mu niko nije ukazao, ko god ih poslao."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个聊天里最近的照片最多 %lld 张会连同你带有 %@ 的消息一起发送给你的服务器所用的模型——没有人指给它看的图片，无论是谁发的。"
+          }
+        }
+      }
+    },
+    "Up to %lld of the most recent photos in this chat may still go." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bis zu %lld der neuesten Fotos aus diesem Chat können trotzdem mitgehen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hasta %lld de las fotos más recientes de este chat pueden ir de todos modos."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jusqu’à %lld des photos les plus récentes de cette conversation peuvent tout de même partir."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "それでも、このチャットの最近の写真が最大 %lld 枚送られることがあります。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "До %lld самых недавних фото из этого чата всё равно могут уйти."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "До %lld најновијих фотографија из овог ћаскања ипак може да оде."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Do %lld najnovijih fotografija iz ovog ćaskanja ipak može da ode."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个聊天里最近的照片仍可能发送，最多 %lld 张。"
           }
         }
       }
@@ -26107,6 +26731,58 @@
         }
       }
     },
+    "While Sees recent history is off this does nothing: the chat's history isn't sent, so no photo from it is either." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Solange „Sieht den letzten Verlauf“ aus ist, bewirkt das nichts: Der Verlauf des Chats wird nicht gesendet, also auch kein Foto daraus."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mientras «Ve el historial reciente» esté desactivado, esto no hace nada: el historial del chat no se envía, así que tampoco ninguna foto de él."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tant que « Voit l’historique récent » est désactivé, ceci ne fait rien : l’historique de la conversation n’est pas envoyé, donc aucune photo qui en vient non plus."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「最近の履歴を見る」がオフのあいだ、これは何もしません。チャットの履歴が送られないので、そこからの写真も送られません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пока «Видит недавнюю историю» выключено, это ничего не делает: история чата не отправляется, а значит, и ни одно фото из неё."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Док је „Види недавну историју“ искључено, ово не ради ништа: историја ћаскања се не шаље, па ни једна фотографија из ње."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dok je „Vidi nedavnu istoriju“ isključeno, ovo ne radi ništa: istorija ćaskanja se ne šalje, pa ni jedna fotografija iz nje."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“查看最近的历史记录”关闭时，这项设置不起作用：聊天历史不会发送，其中的照片自然也不会。"
+          }
+        }
+      }
+    },
     "Who is %@?" : {
       "comment" : "Title of the sheet asking which family member a device contact is; the argument is the contact's name.",
       "localizations" : {
@@ -26373,54 +27049,54 @@
         }
       }
     },
-    "With this on, anyone in the family can attach a photo to a question in their own chat with the assistant, and that photo is sent to the model your server is set up to use. It is sent only when they attach it to that question — never from the family chat, never from an earlier message, and never a video, file or place. With it off, no photo is ever sent." : {
+    "With this on, a photo is sent to the model your server is set up to use when a member attaches it to a question in their own chat with the assistant, attaches it to an %@ message in the family chat, or replies to a photo with %@ — never a photo the assistant was not pointed at, never from an earlier message unless Recent photos is on, and never a video, file or place. With it off, no photo is ever sent." : {
       "localizations" : {
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ist das an, kann jede Person in der Familie einer Frage im eigenen Chat mit dem Assistenten ein Foto anhängen, und dieses Foto geht an das Modell, das dein Server nutzt. Gesendet wird es nur, wenn sie es an genau diese Frage hängt — nie aus dem Familienchat, nie aus einer früheren Nachricht, und nie ein Video, eine Datei oder ein Ort. Ist es aus, wird nie ein Foto gesendet."
+            "value" : "Ist das an, geht ein Foto an das Modell, das dein Server nutzt, wenn jemand aus der Familie es einer Frage im eigenen Chat mit dem Assistenten anhängt, es einer Nachricht mit %@ im Familienchat anhängt oder mit %@ auf ein Foto antwortet — nie ein Foto, das niemand dem Assistenten gezeigt hat, nie aus einer früheren Nachricht — außer „Aktuelle Fotos“ ist an —, und nie ein Video, eine Datei oder ein Ort. Ist es aus, wird nie ein Foto gesendet."
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Con esto activado, cualquiera de la familia puede adjuntar una foto a una pregunta en su propio chat con el asistente, y esa foto se envía al modelo que usa tu servidor. Solo se envía cuando la adjuntan a esa pregunta: nunca desde el chat familiar, nunca desde un mensaje anterior, y nunca un vídeo, un archivo o un lugar. Desactivado, no se envía ninguna foto."
+            "value" : "Con esto activado, una foto se envía al modelo que usa tu servidor cuando alguien de la familia la adjunta a una pregunta en su propio chat con el asistente, la adjunta a un mensaje con %@ en el chat familiar o responde a una foto con %@: nunca una foto que nadie le haya señalado al asistente, nunca desde un mensaje anterior salvo que «Fotos recientes» esté activado, y nunca un vídeo, un archivo o un lugar. Desactivado, no se envía ninguna foto."
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Quand c’est activé, chaque membre de la famille peut joindre une photo à une question dans sa propre conversation avec l’assistant, et cette photo part vers le modèle que ton serveur utilise. Elle n’est envoyée que jointe à cette question — jamais depuis la conversation familiale, jamais depuis un message plus ancien, et jamais une vidéo, un fichier ou un lieu. Désactivé, aucune photo n’est jamais envoyée."
+            "value" : "Quand c’est activé, une photo part vers le modèle que ton serveur utilise quand un membre de la famille la joint à une question dans sa propre conversation avec l’assistant, la joint à un message avec %@ dans la conversation familiale, ou répond à une photo avec %@ — jamais une photo que personne n’a montrée à l’assistant, jamais depuis un message plus ancien sauf si « Photos récentes » est activé, et jamais une vidéo, un fichier ou un lieu. Désactivé, aucune photo n’est jamais envoyée."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "オンにすると、家族の誰もが自分とアシスタントのチャットで質問に写真を添えられるようになり、その写真はサーバーの使うモデルへ送られます。送られるのはその質問に添えたときだけです。家族チャットからは決して送られず、前のメッセージからも送られず、動画・ファイル・場所は決して送られません。オフのあいだは、写真は一切送られません。"
+            "value" : "オンにすると、家族の誰かが自分とアシスタントのチャットで質問に写真を添えたとき、家族チャットで %@ を含むメッセージに写真を添えたとき、または %@ を付けて写真に返信したときに、その写真がサーバーの使うモデルへ送られます。アシスタントに示していない写真は決して送られず、「最近の写真」がオンでないかぎり前のメッセージからも送られず、動画・ファイル・場所は決して送られません。オフのあいだは、写真は一切送られません。"
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Когда включено, любой в семье может приложить фото к вопросу в своём чате с ассистентом, и это фото уйдёт модели, которую использует твой сервер. Оно уходит только тогда, когда его приложили к этому вопросу — никогда из семейного чата, никогда из прежнего сообщения, и никогда видео, файл или место. Когда выключено, фото не уходит никогда."
+            "value" : "Когда включено, фото уходит модели, которую использует твой сервер, когда кто-то из семьи прикладывает его к вопросу в своём чате с ассистентом, прикладывает к сообщению с %@ в семейном чате или отвечает на фото с %@ — никогда фото, на которое ассистенту не указали, никогда из прежнего сообщения (если не включено «Недавние фото»), и никогда видео, файл или место. Когда выключено, фото не уходит никогда."
           }
         },
         "sr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Кад је укључено, свако у породици може да приложи фотографију уз питање у свом ћаскању с асистентом, и та фотографија иде моделу који твој сервер користи. Шаље се само кад је приложена уз то питање — никада из породичног ћаскања, никада из раније поруке, и никада видео, датотека или место. Кад је искључено, ниједна фотографија се не шаље."
+            "value" : "Кад је укључено, фотографија иде моделу који твој сервер користи кад је неко из породице приложи уз питање у свом ћаскању с асистентом, приложи уз поруку са %@ у породичном ћаскању или са %@ одговори на фотографију — никада фотографија на коју асистенту нико није указао, никада из раније поруке осим ако је укључено „Недавне фотографије“, и никада видео, датотека или место. Кад је искључено, ниједна фотографија се не шаље."
           }
         },
         "sr-Latn" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kad je uključeno, svako u porodici može da priloži fotografiju uz pitanje u svom ćaskanju s asistentom, i ta fotografija ide modelu koji tvoj server koristi. Šalje se samo kad je priložena uz to pitanje — nikada iz porodičnog ćaskanja, nikada iz ranije poruke, i nikada video, datoteka ili mesto. Kad je isključeno, nijedna fotografija se ne šalje."
+            "value" : "Kad je uključeno, fotografija ide modelu koji tvoj server koristi kad je neko iz porodice priloži uz pitanje u svom ćaskanju s asistentom, priloži uz poruku sa %@ u porodičnom ćaskanju ili sa %@ odgovori na fotografiju — nikada fotografija na koju asistentu niko nije ukazao, nikada iz ranije poruke osim ako je uključeno „Nedavne fotografije“, i nikada video, datoteka ili mesto. Kad je isključeno, nijedna fotografija se ne šalje."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "打开后，家里的任何人都可以在自己与助手的聊天中给问题附上照片，这张照片会发送给你的服务器所用的模型。只有在附到那个问题上时才会发送——绝不会来自家庭聊天，绝不会来自更早的消息，也绝不会发送视频、文件或位置。关闭时，任何照片都不会被发送。"
+            "value" : "打开后，当家里的某人在自己与助手的聊天中给问题附上照片、在家庭聊天中给带有 %@ 的消息附上照片，或用 %@ 回复一张照片时，这张照片会发送给你的服务器所用的模型——绝不会发送没有指给助手看的照片，除非打开了“最近的照片”，否则绝不会来自更早的消息，也绝不会发送视频、文件或位置。关闭时，任何照片都不会被发送。"
           }
         }
       }
@@ -26473,6 +27149,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开后，在家庭对话里提到 %@ 时，会把这个对话最近一个月的内容一起发给助手，它就能回答之前说过的事。关闭后，只发送提到它的那条消息。"
+          }
+        }
+      }
+    },
+    "With this on, whenever anyone mentions %@ in the family chat, the most recent photos in that chat — up to %lld, from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ist das an, gehen bei jeder Erwähnung von %@ im Familienchat auch die neuesten Fotos aus diesem Chat — bis zu %lld, von wem auch immer, die niemand dem Assistenten gezeigt hat — an das Modell, das dein Server nutzt, nach den Fotos an der Nachricht selbst oder an der, auf die sie antwortet. Fast jede Erwähnung sendet dann Bilder, und das kostet mehr. Es ist aus, bis du es einschaltest."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Con esto activado, cada vez que alguien mencione a %@ en el chat familiar, las fotos más recientes de ese chat —hasta %lld, de cualquiera, que nadie le haya señalado al asistente— también van al modelo que usa tu servidor, después de las fotos del propio mensaje o del mensaje al que responde. Casi cada mención envía entonces imágenes, y eso cuesta más. Está desactivado salvo que lo actives."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Activé, chaque fois que quelqu’un mentionne %@ dans la conversation familiale, les photos les plus récentes de cette conversation — jusqu’à %lld, de n’importe qui, que personne n’a montrées à l’assistant — partent aussi vers le modèle que ton serveur utilise, après les photos du message lui-même ou de celui auquel il répond. Presque chaque mention envoie alors des images, et cela coûte plus cher. C’est désactivé tant que tu ne l’actives pas."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "オンにすると、家族チャットで誰かが %@ に話しかけるたびに、そのチャットの最近の写真（最大 %lld 枚、誰が送ったものでも、アシスタントに示していないもの）も、メッセージ自体や返信先の写真に続いて、サーバーの使うモデルへ送られます。ほぼすべての話しかけで写真が送られるため、費用が増えます。オンにするまではオフです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда включено, при каждом упоминании %@ в семейном чате модели, которую использует твой сервер, уходят и самые недавние фото из этого чата — до %lld, от кого угодно, на которые ассистенту никто не указывал — после фото на самом сообщении или на том, на которое оно отвечает. Почти каждое упоминание тогда отправляет картинки, а это стоит дороже. Выключено, пока ты не включишь."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Кад је укључено, при сваком помињању %@ у породичном ћаскању моделу који твој сервер користи иду и најновије фотографије из тог ћаскања — до %lld, од било кога, на које асистенту нико није указао — после фотографија уз саму поруку или уз ону на коју одговара. Скоро свако помињање тада шаље слике, а то кошта више. Искључено је док га не укључиш."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kad je uključeno, pri svakom pominjanju %@ u porodičnom ćaskanju modelu koji tvoj server koristi idu i najnovije fotografije iz tog ćaskanja — do %lld, od bilo koga, na koje asistentu niko nije ukazao — posle fotografija uz samu poruku ili uz onu na koju odgovara. Skoro svako pominjanje tada šalje slike, a to košta više. Isključeno je dok ga ne uključiš."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开后，每当有人在家庭聊天里提到 %@，这个聊天里最近的照片——最多 %lld 张，来自任何人，没有指给助手看的——也会在消息本身或它所回复的消息上的照片之后，发送给你的服务器所用的模型。此后几乎每次提到它都会发送图片，费用更高。默认关闭，除非你打开它。"
           }
         }
       }

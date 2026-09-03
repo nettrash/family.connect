@@ -16,7 +16,10 @@
 //  callers can be checked against it:
 //
 //  - at most FOUR photos, off the ONE message being answered, in the
-//    sender's order;
+//    sender's order — and since #56 the same four are SHARED between a
+//    family-chat `@ai` message and the message it replies to, the
+//    mention's own photos first (protocol.md, "Showing the assistant a
+//    picture from the family chat"). One budget, not one per message;
 //  - each as the downscaled PREVIEW when the client uploaded one — which
 //    on Apple is always, since `MediaPrep.preparePhoto` writes a preview
 //    for every photo it makes — and only otherwise the stored original;
@@ -45,7 +48,11 @@ import Foundation
 
 nonisolated enum AssistantPictureLimits {
     /// How many photos off one message reach the model. The rest are named
-    /// to it, never silently dropped.
+    /// to it, never silently dropped. In the family chat the same four are
+    /// one budget across the `@ai` message and the message it replies to
+    /// (#56), not four each — and, with `ai_history_photos` on, the
+    /// transcript's newest photos fill only what those two left of the
+    /// same four (protocol.md, "Recent photos from the family chat").
     static let maxPerQuestion = 4
 
     /// The largest photo that travels, after the preview has been
@@ -149,11 +156,19 @@ nonisolated enum AssistantSurfaces {
     /// the reason it is not written inline twice: three of its four rows
     /// must offer nothing.
     ///
-    /// The assistant's OWN chat only. `@ai` in the family chat never
-    /// carries a picture, at either `ai_history` setting, in any family,
-    /// under any configuration — the photograph there is very often
-    /// somebody else's, and the member typing the mention is in no
-    /// position to consent on their behalf (protocol.md, "Pictures").
+    /// This is the DEDICATED door — "Show the Assistant a Photo…" — and it
+    /// exists in the assistant's own chat only. It is not a claim that a
+    /// picture never reaches the assistant from anywhere else: since #56 a
+    /// photo on an `@ai` message in the family chat, or on the message it
+    /// replies to, travels under the same two locks (protocol.md, "Showing
+    /// the assistant a picture from the family chat"). That path needs no
+    /// door of its own, because attaching a photo and replying to one are
+    /// affordances the family composer has always had, and either is the
+    /// member pointing the assistant at that picture — which is what
+    /// answers the old objection that the photograph there is often
+    /// somebody else's: a photo nobody pointed at still stays `[photo]`.
+    /// Until #56 this comment said the family chat never carried one; the
+    /// function's answer for it is unchanged, its meaning is narrower.
     static func offersPictureAttach(
         isAssistantChat: Bool, serverCanSee: Bool, familyAllows: Bool
     ) -> Bool {
@@ -175,5 +190,45 @@ nonisolated enum AssistantSurfaces {
     /// disclosure than an ordinary text question already is.
     static func offersPictureRequests(serverCanDraw: Bool, serverToken: String?) -> Bool {
         serverCanDraw && (serverToken ?? AssistantMention.drawToken) == AssistantMention.drawToken
+    }
+
+    /// How the owner's screen shows the THIRD switch, `ai_history_photos`
+    /// (protocol.md, "Recent photos from the family chat" — "What a client
+    /// shows").
+    ///
+    /// Unlike `ai_vision`, which is ABSENT on a server with no vision
+    /// deployment, this one is shown DISABLED with its reason in both of
+    /// the states where the owner cannot have it: the protocol asks for
+    /// exactly that, because the reason is something the owner can act on
+    /// in one case (turn `ai_vision` on first — the server would refuse
+    /// `true` otherwise) and something they deserve to be told in the
+    /// other (the server could not honour it). Neither is a lock a member
+    /// can open, and this rule lives on an owner-only screen.
+    ///
+    /// `ai_history` is deliberately NOT an input: with it off the switch
+    /// is inert rather than withheld — there is no transcript for it to
+    /// widen — and the server accepts it all the same. The screen says so
+    /// beside it instead.
+    enum HistoryPhotosSwitch: Equatable, Sendable {
+        /// Both locks under it are open; the owner may turn it either way.
+        case offered
+        /// `assistant.vision` is false: disabled, and the reason is that
+        /// the assistant on this server cannot look at pictures at all.
+        case withheldNoVisionDeployment
+        /// `ai_vision` is off: disabled, and the reason is that the server
+        /// refuses this while that is — so turn that on first.
+        case withheldVisionOff
+
+        var isEnabled: Bool { self == .offered }
+    }
+
+    /// The `ai_history_photos` switch's state from the two locks under it.
+    /// The vision deployment is asked first: an owner on a server that
+    /// cannot see is told that, not "turn `ai_vision` on first" — which
+    /// they could do, to no effect.
+    static func historyPhotosSwitch(serverCanSee: Bool, familyAllowsPhotos: Bool) -> HistoryPhotosSwitch {
+        guard serverCanSee else { return .withheldNoVisionDeployment }
+        guard familyAllowsPhotos else { return .withheldVisionOff }
+        return .offered
     }
 }

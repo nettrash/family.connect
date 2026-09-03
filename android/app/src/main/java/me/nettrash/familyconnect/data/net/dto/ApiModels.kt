@@ -130,8 +130,12 @@ data class FamilyDto(
      */
     @SerialName("ai_history") val aiHistory: Boolean = true,
     /**
-     * Whether a photograph a member attaches in their OWN assistant chat
-     * may be shown to the model at all (docs/protocol.md, "Pictures").
+     * Whether a photograph a member points the assistant at may be shown
+     * to the model at all: one attached to a question in their OWN
+     * assistant chat, and — since #56 — one on an `@ai` message in the
+     * family chat or on the message it replies to (docs/protocol.md,
+     * "Pictures" and "Showing the assistant a picture from the family
+     * chat"). One switch for both surfaces, deliberately.
      *
      * ALWAYS present on the wire, exactly like [aiHistory] and for the
      * same reason — but the default is the OTHER one. FALSE, and
@@ -143,6 +147,24 @@ data class FamilyDto(
      * a server that predates the field has no vision path at all.
      */
     @SerialName("ai_vision") val aiVision: Boolean = false,
+    /**
+     * Whether an `@ai` mention in the family chat may ALSO be shown the
+     * most recent photographs of that chat — pictures nobody pointed the
+     * assistant at, on messages the mention did not touch
+     * (docs/protocol.md, "Recent photos from the family chat"). A THIRD
+     * switch rather than a widening of [aiVision]: every owner who turned
+     * that one on did so under a sentence ending "never from an earlier
+     * message", and widening it would make that sentence false for every
+     * family that already said yes to it.
+     *
+     * ALWAYS present on the wire, and FALSE by default — for every family
+     * that predates it and for a server that predates the field, where no
+     * such photo can travel at all. It can only be true while [aiVision]
+     * is: the server refuses to turn it on otherwise and turns it off in
+     * the same write whenever [aiVision] goes off, so a PATCH answer is
+     * where this client learns either.
+     */
+    @SerialName("ai_history_photos") val aiHistoryPhotos: Boolean = false,
     /**
      * The most members this family admits, or null for NO cap of the
      * owner's own — in which case the operator's ceiling
@@ -637,6 +659,7 @@ data class PatchFamilyRequest(
     val language: JsonElement? = null,
     @SerialName("ai_history") val aiHistory: Boolean? = null,
     @SerialName("ai_vision") val aiVision: Boolean? = null,
+    @SerialName("ai_history_photos") val aiHistoryPhotos: Boolean? = null,
     @SerialName("max_members") val maxMembers: JsonElement? = null,
 ) {
     companion object {
@@ -667,6 +690,15 @@ data class PatchFamilyRequest(
          * (docs/protocol.md, "Pictures").
          */
         fun aiVision(enabled: Boolean) = PatchFamilyRequest(aiVision = enabled)
+
+        /**
+         * The third switch, of the same shape again. The server refuses
+         * `true` while `ai_vision` is off (`validation`, 400) and turns
+         * it off whenever `ai_vision` goes off — both are the server's to
+         * enforce, and this client learns them from the answer
+         * (docs/protocol.md, "Recent photos from the family chat").
+         */
+        fun aiHistoryPhotos(enabled: Boolean) = PatchFamilyRequest(aiHistoryPhotos = enabled)
     }
 }
 
@@ -1020,6 +1052,10 @@ data class AssistantDto(
      * This server can MAKE one. The whole of the `/draw` capability
      * check: an affordance that silently does nothing is worse than one
      * that is not there, which is the reason this object exists at all.
+     * Since #56 it also means the assistant may draw UNASKED, in answer to
+     * an ordinary question; the reply is the picture message `/draw`
+     * already produces, so nothing is offered or drawn differently for it
+     * (docs/protocol.md, "Drawing without being told to").
      */
     val images: Boolean = false,
 )

@@ -228,8 +228,12 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// month of it. ALWAYS present on the wire — a switch has no "unset" —
     /// but `true` here is the fallback for a server that predates it.
     let aiHistory: Bool
-    /// Whether a photograph a member attaches in their OWN assistant chat
-    /// may be shown to the model at all (protocol.md, "Pictures").
+    /// Whether a photograph a member points the assistant at may be shown
+    /// to the model at all: one attached to a question in their OWN
+    /// assistant chat, and — since #56 — one on an `@ai` message in the
+    /// family chat or on the message it replies to (protocol.md,
+    /// "Pictures" and "Showing the assistant a picture from the family
+    /// chat"). One switch for both surfaces, deliberately.
     ///
     /// ALWAYS present on the wire for the reason `aiHistory` is, and its
     /// default is the other one: **false**. Off unless the owner turned it
@@ -241,6 +245,22 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// inconsistency: history widened what a model was already being told,
     /// while a photograph is a different kind of disclosure entirely.
     let aiVision: Bool
+    /// Whether an `@ai` mention in the family chat may ALSO be shown the
+    /// most recent photographs of that chat — pictures nobody pointed the
+    /// assistant at, on messages the mention did not touch (protocol.md,
+    /// "Recent photos from the family chat"). A THIRD switch rather than
+    /// a widening of `aiVision`: every owner who turned that one on did
+    /// so under a sentence ending "never from an earlier message", and
+    /// widening it would make that sentence false for every family that
+    /// already said yes to it.
+    ///
+    /// ALWAYS present on the wire, and **false** by default — for every
+    /// family that predates it, and for a server that predates the field,
+    /// where no such photo can travel at all. It can only be true while
+    /// `aiVision` is: the server refuses to turn it on otherwise and turns
+    /// it off in the same write whenever `aiVision` goes off, so a PATCH
+    /// answer is the only place this client learns either.
+    let aiHistoryPhotos: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -252,6 +272,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         case maxMembers = "max_members"
         case aiHistory = "ai_history"
         case aiVision = "ai_vision"
+        case aiHistoryPhotos = "ai_history_photos"
     }
 
     init(
@@ -273,6 +294,11 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // whether photographs leave the server, and a rebuild that dropped
         // it would show the family a setting their server does not have.
         aiVision: Bool,
+        // The third switch, undefaulted for the same reason: a rebuild
+        // that dropped it would show "Recent photos" off on this device
+        // while the server had it on — and it decides whether photographs
+        // nobody chose leave the server.
+        aiHistoryPhotos: Bool,
         maxMembers: Int?
     ) {
         self.id = id
@@ -284,6 +310,7 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         self.maxMembers = maxMembers
         self.aiHistory = aiHistory
         self.aiVision = aiVision
+        self.aiHistoryPhotos = aiHistoryPhotos
     }
 
     /// Hand-written for the reason UserDTO's is, and this type had no
@@ -307,6 +334,10 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // no photograph can reach a model, which is exactly what `false`
         // makes this client offer.
         aiVision = try container.decodeIfPresent(Bool.self, forKey: .aiVision) ?? false
+        // FALSE for the same reason, one notch further: a server that
+        // predates the field never sends a photo nobody pointed at, which
+        // is exactly the state `false` reports.
+        aiHistoryPhotos = try container.decodeIfPresent(Bool.self, forKey: .aiHistoryPhotos) ?? false
     }
 }
 
@@ -984,12 +1015,18 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
     /// This SERVER has a deployment that can look at a picture. It says
     /// nothing about whether THIS family has allowed it — that is
     /// `ai_vision` on the Family object, and a client needs both to be true
-    /// before it offers to attach a picture in an `ai` chat.
+    /// before it offers to attach a picture in an `ai` chat. Since #56 the
+    /// same pair decides whether a photo on an `@ai` message, or on the
+    /// message it replies to, travels with the mention (protocol.md,
+    /// "Showing the assistant a picture from the family chat").
     let vision: Bool
     /// This server can generate one. A client offers the `/draw`
     /// affordance only when this is true, for the reason the whole
     /// `assistant` object exists: an affordance that silently does nothing
-    /// is worse than one that is not there.
+    /// is worse than one that is not there. Since #56 it also means the
+    /// assistant may draw unasked; the reply is the picture message a
+    /// `/draw` already produces, so nothing is offered or drawn differently
+    /// for it (protocol.md, "Drawing without being told to").
     let images: Bool
 
     enum CodingKeys: String, CodingKey {

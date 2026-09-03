@@ -205,6 +205,14 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(familyAiVision = enabled)
     }
 
+    override suspend fun setFamilyAiHistory(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiHistory = enabled)
+    }
+
+    override suspend fun setFamilyAiHistoryPhotos(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiHistoryPhotos = enabled)
+    }
+
     override suspend fun setCallsEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(callsEnabled = enabled)
     }
@@ -624,6 +632,14 @@ class FakeFamilyApi : FamilyApi {
 
     override suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> {
         aiVisionSet += enabled
+        return createResult
+    }
+
+    /** Every ai_history_photos PATCH, in order. */
+    val aiHistoryPhotosSet = mutableListOf<Boolean>()
+
+    override suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiHistoryPhotosSet += enabled
         return createResult
     }
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult

@@ -140,6 +140,17 @@ class MessageRepository @Inject constructor(
     suspend fun anchorRows(chatId: Long, limit: Int): List<AnchorRow> =
         messageDao.anchorRows(chatId, limit)
 
+    /**
+     * What one message carries, by its server id, for the family
+     * composer's picture strip (#56): a `ReplyToDto` holds an excerpt and
+     * nothing else, and the strip has to know whether the message being
+     * replied to carries a photograph. Empty when the row is not held
+     * here — swept, or never fetched — which the strip reads as "nothing
+     * to say about it" rather than as a fact about the message.
+     */
+    suspend fun attachmentsOf(serverId: Long): List<AttachmentDto> =
+        messageDao.findByServerId(serverId)?.attachmentList ?: emptyList()
+
     // -- Outbound -----------------------------------------------------------------
 
     suspend fun send(chatId: Long, body: String, replyTo: ReplyToDto? = null) {

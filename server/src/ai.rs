@@ -15,6 +15,15 @@
 //! any. Generation is narrower still — the words after `/draw` and nothing
 //! else, no prompt, no history, no language line.
 //!
+//! Since #56 the text model may also ASK for a picture itself, by calling
+//! the one tool a draw-capable server declares ([`draw_picture_tool`]).
+//! That does not move the decision about what leaves out of this server:
+//! the question still goes to the text deployment, where it always went,
+//! and what then goes to the images deployment is the tool's `prompt`
+//! argument — a string this file read out of the stream, bounded, and
+//! nothing else (protocol.md, "Drawing without being told to"). The model
+//! decides WHETHER; the server still decides WHAT leaves and TO WHOM.
+//!
 //! WHICH DEPLOYMENT a request goes to is not decided here either. It arrives
 //! as a [`ModelRoute`] built by `config.rs`, so "text, vision or images?" is
 //! answered once, by the caller that knows what was asked, rather than three
@@ -153,25 +162,137 @@ pub struct Usage {
     pub completion_tokens: i32,
 }
 
-/// Stream a reply, handing each fragment to `on_delta` as it arrives.
+/// The name of the one tool a draw-capable server declares.
 ///
-/// `on_delta` is called on the caller's task, so it should do nothing slow —
-/// fanning a frame out to the member's sockets is exactly the right amount
-/// of work.
+/// One tool, one name, known to the server: a call naming anything else is
+/// refused rather than executed, because the server only ever offered this
+/// one and a model inventing a second is not a request anybody made.
+pub const DRAW_TOOL_NAME: &str = "draw_picture";
+
+/// What the model is told the tool is for.
 ///
-/// Returns the full text and what it cost. An error mid-stream still leaves
-/// whatever arrived with the caller through `on_delta`; the partial answer
-/// is worth more than nothing, and the caller reports it as such.
-pub async fn stream_reply<F>(
-    client: &reqwest::Client,
+/// It carries the one fact the model cannot infer: the images model sees
+/// NOTHING but the `prompt` — not this conversation, not any photograph —
+/// so the prompt has to be complete in itself. Left unsaid, a model writes
+/// "the cat from above, but in a hat" and the picture is of nothing.
+const DRAW_TOOL_DESCRIPTION: &str = "Make a picture for the member. Call this when they ask for a picture, a drawing, an \
+     image or an illustration, or when a picture is plainly the answer they want; answer in words \
+     otherwise. The image model sees ONLY the prompt you pass — not this conversation and not any \
+     photograph — so write a complete, self-contained description of the picture to make.";
+
+/// The one tool, as the chat-completions API wants it declared.
+///
+/// Declared on a text request ONLY when the server has an images
+/// deployment to honour a call with — the caller decides that, and a server
+/// that cannot draw sends no `tools` key at all, so its requests stay byte
+/// for byte what they were (protocol.md, "Drawing without being told to").
+pub fn draw_picture_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": DRAW_TOOL_NAME,
+            "description": DRAW_TOOL_DESCRIPTION,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "A complete, self-contained description of the picture to make."
+                    }
+                },
+                "required": ["prompt"],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+/// A tool call the model made, accumulated from its stream deltas.
+///
+/// `arguments` is the RAW JSON text the model emitted, joined across
+/// chunks, and it is parsed only once the stream has ended: a fragment of
+/// JSON is not JSON, and the API sends the argument string a few characters
+/// at a time.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolCall {
+    pub name: String,
+    pub arguments: String,
+}
+
+impl ToolCall {
+    /// The `prompt` of a `draw_picture` call, checked and bounded — the
+    /// whole of what may then leave for the images deployment.
+    ///
+    /// Every way this can be wrong is an error rather than a guess: a call
+    /// to a tool the server never declared, arguments that are not JSON, a
+    /// `prompt` that is missing, not a string or blank, or one over
+    /// `max_chars` — the message-body ceiling, because a prompt is the same
+    /// kind of thing as the words after `/draw` and lives under the same
+    /// bound. Nothing here is trimmed down or repaired: a model that
+    /// decided to draw and then said nothing has failed the question, and
+    /// the member is better served by `ai_error` and asking again than by a
+    /// picture of whatever a repaired prompt happened to mean.
+    pub fn draw_prompt(&self, max_chars: usize) -> Result<String> {
+        if self.name != DRAW_TOOL_NAME {
+            bail!(
+                "the assistant called a tool this server did not offer: {:?}",
+                self.name
+            );
+        }
+        let arguments: Value = serde_json::from_str(&self.arguments)
+            .context("the assistant's draw_picture arguments were not JSON")?;
+        let Some(prompt) = arguments.get("prompt").and_then(Value::as_str) else {
+            bail!("the assistant's draw_picture call carried no prompt string");
+        };
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            bail!("the assistant's draw_picture call carried an empty prompt");
+        }
+        // Counted in characters and never sliced by a byte index: a prompt
+        // is whatever the model wrote, in whatever alphabet.
+        let chars = prompt.chars().count();
+        if chars > max_chars {
+            bail!(
+                "the assistant's draw_picture prompt is {chars} characters, over the {max_chars} allowed"
+            );
+        }
+        Ok(prompt.to_string())
+    }
+}
+
+/// Everything a streamed reply came back with.
+///
+/// `text` is what streamed as words and `tool_call` is the tool the model
+/// asked for instead, when it did. Both can be present — a model may say
+/// "here you are" and then call the tool — and which of the two the reply
+/// IS is not decided here: the caller owns that rule (protocol.md, "Drawing
+/// without being told to").
+#[derive(Debug, Clone, Default)]
+pub struct Streamed {
+    pub text: String,
+    pub tool_call: Option<ToolCall>,
+    pub usage: Usage,
+}
+
+/// The most tool calls one stream may accumulate. The server declares ONE
+/// tool and honours ONE call; a stream indexing past this is a provider
+/// misbehaving, and its later calls are dropped rather than allocated for.
+const MAX_TOOL_CALLS: usize = 8;
+
+/// The body of a chat-completions request, exactly as it is sent.
+///
+/// Its own function so the shape can be pinned without an HTTP stub: with
+/// `tools` empty there is NO `tools` key — not an empty array, nothing — and
+/// the body is byte for byte the one a text-only server has always sent.
+/// That is the half of the tool-call feature that protects every family
+/// whose server cannot draw: their requests do not change (protocol.md,
+/// "Drawing without being told to").
+fn request_body(
     route: &ModelRoute,
     system_prompt: &str,
     turns: &[ChatTurn],
-    mut on_delta: F,
-) -> Result<(String, Usage)>
-where
-    F: FnMut(&str),
-{
+    tools: &[Value],
+) -> Value {
     let mut messages: Vec<Value> = Vec::with_capacity(turns.len() + 1);
     if !system_prompt.trim().is_empty() {
         messages.push(json!({"role": "system", "content": system_prompt}));
@@ -180,7 +301,7 @@ where
         messages.push(turn.to_json());
     }
 
-    let body = json!({
+    let mut body = json!({
         "messages": messages,
         "max_tokens": route.max_tokens,
         "stream": true,
@@ -192,6 +313,123 @@ where
         // recorded with usage, not what is asked for.
         "model": route.model,
     });
+    if !tools.is_empty() {
+        // No `tool_choice`: the API's default is "auto", which is exactly the
+        // rule — the model decides whether — and one field fewer is one field
+        // fewer for a deployment to answer 400 to.
+        body["tools"] = json!(tools);
+    }
+    body
+}
+
+/// Fold one server-sent event into the reply being accumulated.
+///
+/// Three things can be in an event and all three are read: the usage block
+/// (Azure sends it alone, in a chunk with an empty `choices`), a content
+/// delta (handed straight to `on_delta`), and tool-call deltas. The last
+/// arrive as FRAGMENTS — an `index`, a `name` on the first chunk, and the
+/// `arguments` string a few characters at a time — and are joined by index
+/// until the stream ends. Only whole events are given to this function; the
+/// line splitting is the caller's.
+fn absorb_event<F>(
+    event: &Value,
+    reply: &mut Streamed,
+    drafts: &mut Vec<ToolCall>,
+    on_delta: &mut F,
+) where
+    F: FnMut(&str),
+{
+    if let Some(found) = event
+        .get("usage")
+        .and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok())
+    {
+        reply.usage = found;
+    }
+    // Azure sends a first chunk with an empty `choices` array when it is
+    // only reporting usage, so this is a `get`, not an index.
+    let Some(delta) = event["choices"].get(0).map(|choice| &choice["delta"]) else {
+        return;
+    };
+    if let Some(text) = delta["content"].as_str()
+        && !text.is_empty()
+    {
+        reply.text.push_str(text);
+        on_delta(text);
+    }
+    let Some(calls) = delta["tool_calls"].as_array() else {
+        return;
+    };
+    for call in calls {
+        // A missing index is the first call: some surfaces omit it when
+        // there is only one.
+        let Ok(index) = usize::try_from(call["index"].as_u64().unwrap_or(0)) else {
+            continue;
+        };
+        if index >= MAX_TOOL_CALLS {
+            continue;
+        }
+        while drafts.len() <= index {
+            drafts.push(ToolCall::default());
+        }
+        let draft = &mut drafts[index];
+        // The name is SET ONCE, never appended. Azure and OpenAI send it
+        // whole on the first chunk and omit it after; a provider that
+        // repeats it on every chunk — OpenAI-compatible proxies do — would
+        // otherwise accumulate `draw_picturedraw_picture…`, which the
+        // caller refuses as a tool it never declared, turning every
+        // contextual draw on that provider into `ai_error`. A name that
+        // arrives in fragments is not a shape any surface is known to
+        // produce, and the arguments — which DO arrive in fragments — are
+        // still joined below.
+        if let Some(name) = call["function"]["name"].as_str()
+            && draft.name.is_empty()
+        {
+            draft.name.push_str(name);
+        }
+        if let Some(arguments) = call["function"]["arguments"].as_str() {
+            draft.arguments.push_str(arguments);
+        }
+    }
+}
+
+/// The stream is over: the FIRST tool call with anything in it is the one
+/// the reply made. One tool was declared and one call is honoured; a model
+/// emitting several has asked for one picture several times, and the
+/// second and later are dropped rather than drawn.
+fn finish(mut reply: Streamed, drafts: Vec<ToolCall>) -> Streamed {
+    reply.tool_call = drafts
+        .into_iter()
+        .find(|draft| !draft.name.is_empty() || !draft.arguments.is_empty());
+    reply
+}
+
+/// Stream a reply, handing each fragment to `on_delta` as it arrives.
+///
+/// `on_delta` is called on the caller's task, so it should do nothing slow —
+/// fanning a frame out to the member's sockets is exactly the right amount
+/// of work.
+///
+/// Returns the full text, the tool call the model made instead if it made
+/// one, and what it cost. An error mid-stream still leaves whatever arrived
+/// with the caller through `on_delta`; the partial answer is worth more than
+/// nothing, and the caller reports it as such.
+///
+/// `tools` is what the model may call — [`draw_picture_tool`] on a server
+/// that can draw, and EMPTY on one that cannot, which sends no `tools` key
+/// at all. A tool call arrives as deltas like the words do and is only whole
+/// once the stream is; it is handed back unparsed, for the caller to check.
+pub async fn stream_reply<F>(
+    client: &reqwest::Client,
+    route: &ModelRoute,
+    system_prompt: &str,
+    turns: &[ChatTurn],
+    tools: &[Value],
+    mut on_delta: F,
+) -> Result<Streamed>
+where
+    F: FnMut(&str),
+{
+    let body = request_body(route, system_prompt, turns, tools);
 
     let url = &route.url;
     let response = with_key(client.post(url), route)
@@ -214,8 +452,8 @@ where
         );
     }
 
-    let mut text = String::new();
-    let mut usage = Usage::default();
+    let mut reply = Streamed::default();
+    let mut drafts: Vec<ToolCall> = Vec::new();
     let mut buffer = String::new();
     let mut stream = response.bytes_stream();
 
@@ -238,34 +476,18 @@ where
                 continue;
             }
             if payload == "[DONE]" {
-                return Ok((text, usage));
+                return Ok(finish(reply, drafts));
             }
             let Ok(event) = serde_json::from_str::<Value>(payload) else {
                 // A fragment we cannot parse is not worth failing a reply
                 // over; the next one usually carries on fine.
                 continue;
             };
-            if let Some(found) = event
-                .get("usage")
-                .and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok())
-            {
-                usage = found;
-            }
-            // Azure sends a first chunk with an empty `choices` array when
-            // it is only reporting usage, so this is an `if let`, not an
-            // index.
-            if let Some(delta) = event["choices"]
-                .get(0)
-                .and_then(|choice| choice["delta"]["content"].as_str())
-                && !delta.is_empty()
-            {
-                text.push_str(delta);
-                on_delta(delta);
-            }
+            absorb_event(&event, &mut reply, &mut drafts, &mut on_delta);
         }
     }
 
-    Ok((text, usage))
+    Ok(finish(reply, drafts))
 }
 
 /// A picture, as it came back.
@@ -622,6 +844,315 @@ mod tests {
         );
         assert_eq!(sniff_image(b"<!DOCTYPE html>"), None);
         assert_eq!(sniff_image(&[]), None);
+    }
+
+    fn route() -> ModelRoute {
+        ModelRoute {
+            url: "http://provider.invalid/chat".to_string(),
+            api_key: "k".to_string(),
+            auth: AuthScheme::ApiKey,
+            model: "test-gpt-oss".to_string(),
+            max_tokens: 1024,
+        }
+    }
+
+    /// THE REQUEST A SERVER THAT CANNOT DRAW SENDS — byte for byte the one
+    /// it sent before tools existed. No `tools` key: not an empty array,
+    /// nothing. Every family whose server has no `[ai.images]` is talking
+    /// to a text deployment through exactly this body, and "we added a key
+    /// to every request for a feature you have not configured" is how a
+    /// working assistant stops working.
+    #[test]
+    fn a_server_that_cannot_draw_declares_no_tools_key_at_all() {
+        let body = request_body(&route(), "be brief", &[ChatTurn::user("hello")], &[]);
+        assert_eq!(
+            body,
+            json!({
+                "messages": [
+                    {"role": "system", "content": "be brief"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "max_tokens": 1024,
+                "stream": true,
+                "stream_options": {"include_usage": true},
+                "model": "test-gpt-oss",
+            })
+        );
+        assert!(
+            body.get("tools").is_none(),
+            "the key is ABSENT, not empty: {body}"
+        );
+        assert!(body.get("tool_choice").is_none(), "{body}");
+    }
+
+    /// And the one a server that CAN draw sends: the same body with the one
+    /// tool declared, pinned field for field so a change to the
+    /// declaration is a change to this test.
+    #[test]
+    fn a_server_that_can_draw_declares_exactly_one_tool() {
+        let body = request_body(
+            &route(),
+            "be brief",
+            &[ChatTurn::user("hello")],
+            &[draw_picture_tool()],
+        );
+        assert_eq!(
+            body,
+            json!({
+                "messages": [
+                    {"role": "system", "content": "be brief"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "max_tokens": 1024,
+                "stream": true,
+                "stream_options": {"include_usage": true},
+                "model": "test-gpt-oss",
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "draw_picture",
+                        "description": "Make a picture for the member. Call this when they ask for a \
+                                        picture, a drawing, an image or an illustration, or when a \
+                                        picture is plainly the answer they want; answer in words \
+                                        otherwise. The image model sees ONLY the prompt you pass — not \
+                                        this conversation and not any photograph — so write a complete, \
+                                        self-contained description of the picture to make.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "A complete, self-contained description of the \
+                                                    picture to make."
+                                }
+                            },
+                            "required": ["prompt"],
+                            "additionalProperties": false
+                        }
+                    }
+                }],
+            })
+        );
+        assert!(
+            body.get("tool_choice").is_none(),
+            "the API's default, auto, IS the rule — the model decides whether: {body}"
+        );
+    }
+
+    /// A tool call arrives in pieces: the name on the first chunk, the
+    /// arguments a few characters at a time, all under one index. They are
+    /// joined, and the words — none, for a pure tool call — are untouched.
+    #[test]
+    fn a_tool_call_is_accumulated_across_deltas() {
+        let mut reply = Streamed::default();
+        let mut drafts = Vec::new();
+        let mut words = String::new();
+        let events = [
+            json!({"choices": [{"delta": {"role": "assistant", "content": null,
+                "tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                "function": {"name": "draw_picture", "arguments": ""}}]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                "function": {"arguments": "{\"pro"}}]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                "function": {"arguments": "mpt\": \"a cat in a hat\"}"}}]}}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            json!({"choices": [], "usage": {"prompt_tokens": 40, "completion_tokens": 9}}),
+        ];
+        for event in &events {
+            absorb_event(event, &mut reply, &mut drafts, &mut |delta| {
+                words.push_str(delta)
+            });
+        }
+        let reply = finish(reply, drafts);
+        assert_eq!(reply.text, "", "a tool call streams no words");
+        assert_eq!(words, "", "and nothing reached the audience");
+        assert_eq!(
+            reply.tool_call,
+            Some(ToolCall {
+                name: "draw_picture".to_string(),
+                arguments: "{\"prompt\": \"a cat in a hat\"}".to_string(),
+            })
+        );
+        assert_eq!(reply.usage.prompt_tokens, 40);
+        assert_eq!(reply.usage.completion_tokens, 9);
+        assert_eq!(
+            reply
+                .tool_call
+                .expect("the call")
+                .draw_prompt(4000)
+                .expect("a prompt"),
+            "a cat in a hat"
+        );
+    }
+
+    /// Words AND a call in one stream: both are handed back, and the words
+    /// reached `on_delta` as they arrived — which is why the CALLER, not this
+    /// file, decides that the picture wins (protocol.md, "Drawing without
+    /// being told to").
+    #[test]
+    fn words_and_a_tool_call_are_both_reported() {
+        let mut reply = Streamed::default();
+        let mut drafts = Vec::new();
+        let mut words = String::new();
+        let events = [
+            json!({"choices": [{"delta": {"content": "Here you "}}]}),
+            json!({"choices": [{"delta": {"content": "are:"}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"function": {"name": "draw_picture",
+                "arguments": "{\"prompt\":\"x\"}"}}]}}]}),
+        ];
+        for event in &events {
+            absorb_event(event, &mut reply, &mut drafts, &mut |delta| {
+                words.push_str(delta)
+            });
+        }
+        let reply = finish(reply, drafts);
+        assert_eq!(reply.text, "Here you are:");
+        assert_eq!(words, "Here you are:");
+        assert_eq!(
+            reply.tool_call.map(|call| call.name),
+            Some("draw_picture".to_string()),
+            "a missing index is the first call"
+        );
+    }
+
+    /// A stream with no tool call at all reports none — the shape every text
+    /// answer has had since the assistant existed.
+    #[test]
+    fn a_plain_answer_carries_no_tool_call() {
+        let mut reply = Streamed::default();
+        let mut drafts = Vec::new();
+        absorb_event(
+            &json!({"choices": [{"delta": {"content": "cold"}}]}),
+            &mut reply,
+            &mut drafts,
+            &mut |_| {},
+        );
+        let reply = finish(reply, drafts);
+        assert_eq!(reply.text, "cold");
+        assert_eq!(reply.tool_call, None);
+    }
+
+    /// Every way a call can be wrong is an ERROR, never a guess and never a
+    /// silent nothing: the member asked for a picture, the model agreed, and
+    /// a blank row that never resolves is the outcome the empty-row design
+    /// exists to avoid.
+    #[test]
+    fn a_bad_draw_call_is_refused_rather_than_repaired() {
+        let call = |name: &str, arguments: &str| ToolCall {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        };
+        assert!(
+            call("draw_picture", "{\"prompt\": \"   \"}")
+                .draw_prompt(4000)
+                .is_err(),
+            "blank"
+        );
+        assert!(
+            call("draw_picture", "{}").draw_prompt(4000).is_err(),
+            "missing"
+        );
+        assert!(
+            call("draw_picture", "{\"prompt\": 12}")
+                .draw_prompt(4000)
+                .is_err(),
+            "not a string"
+        );
+        assert!(
+            call("draw_picture", "{\"prompt\": \"a cat")
+                .draw_prompt(4000)
+                .is_err(),
+            "not JSON — a stream that ended early"
+        );
+        assert!(
+            call("delete_family", "{\"prompt\": \"a cat\"}")
+                .draw_prompt(4000)
+                .is_err(),
+            "a tool this server never offered"
+        );
+        assert!(
+            call("draw_picture", "{\"prompt\": \"a cat\"}")
+                .draw_prompt(5)
+                .is_ok(),
+            "exactly at the bound"
+        );
+        assert!(
+            call("draw_picture", "{\"prompt\": \"a cat\"}")
+                .draw_prompt(4)
+                .is_err(),
+            "over it — refused, never cut"
+        );
+        // Characters, not bytes: five Cyrillic letters are five, whatever
+        // their encoding, and a bound counted in bytes would refuse a
+        // Russian family's prompt at half the length of an English one.
+        assert_eq!(
+            call("draw_picture", "{\"prompt\": \"  кошка  \"}")
+                .draw_prompt(5)
+                .expect("five"),
+            "кошка"
+        );
+        assert!(
+            call("draw_picture", "{\"prompt\": \"кошка\"}")
+                .draw_prompt(4)
+                .is_err()
+        );
+    }
+
+    /// A provider that repeats `function.name` on EVERY chunk — some
+    /// OpenAI-compatible proxies do — must not yield `draw_picturedraw_…`,
+    /// which the caller would refuse as undeclared and turn every
+    /// contextual draw there into `ai_error`. The name is set once; the
+    /// arguments still accumulate.
+    #[test]
+    fn a_name_repeated_on_every_chunk_is_read_once() {
+        let mut reply = Streamed::default();
+        let mut drafts = Vec::new();
+        let events = [
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1",
+                "type": "function", "function": {"name": "draw_picture", "arguments": ""}}]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1",
+                "type": "function", "function": {"name": "draw_picture",
+                "arguments": "{\"prompt\": \"a "}}]}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1",
+                "type": "function", "function": {"name": "draw_picture",
+                "arguments": "cat\"}"}}]}}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ];
+        for event in &events {
+            absorb_event(event, &mut reply, &mut drafts, &mut |_| {});
+        }
+        let reply = finish(reply, drafts);
+        assert_eq!(
+            reply.tool_call,
+            Some(ToolCall {
+                name: "draw_picture".to_string(),
+                arguments: "{\"prompt\": \"a cat\"}".to_string(),
+            })
+        );
+        assert_eq!(
+            reply
+                .tool_call
+                .expect("the call")
+                .draw_prompt(4000)
+                .expect("a prompt"),
+            "a cat"
+        );
+    }
+
+    /// A provider indexing past any sane number of calls is dropped, not
+    /// allocated for.
+    #[test]
+    fn a_runaway_tool_index_is_ignored() {
+        let mut reply = Streamed::default();
+        let mut drafts = Vec::new();
+        absorb_event(
+            &json!({"choices": [{"delta": {"tool_calls": [{"index": 4_000_000_000_u64,
+                "function": {"name": "draw_picture", "arguments": "{}"}}]}}]}),
+            &mut reply,
+            &mut drafts,
+            &mut |_| {},
+        );
+        assert!(drafts.is_empty(), "{drafts:?}");
     }
 
     #[test]

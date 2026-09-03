@@ -51,6 +51,11 @@ class FamilySettingsDtoTest {
         // and a family that never opened this screen has not consented to
         // anything (docs/protocol.md, "Pictures").
         assertThat(family.aiVision).isFalse()
+        // …and the THIRD switch defaults off for the same reason, one
+        // notch further: a server that predates it never sends a photo
+        // nobody pointed at (docs/protocol.md, "Recent photos from the
+        // family chat").
+        assertThat(family.aiHistoryPhotos).isFalse()
     }
 
     @Test
@@ -62,6 +67,26 @@ class FamilySettingsDtoTest {
             """.trimIndent(),
         )
         assertThat(family.aiVision).isTrue()
+        // Sent by a server that has it, absent here: off, not a failure.
+        assertThat(family.aiHistoryPhotos).isFalse()
+    }
+
+    @Test
+    fun `the third switch arrives when the owner has turned it on`() {
+        val family = json.decodeFromString<FamilyDto>(
+            """
+            {"id": 3, "name": "The Smiths", "join_policy": "open",
+             "ai_history": true, "ai_vision": true, "ai_history_photos": true}
+            """.trimIndent(),
+        )
+        assertThat(family.aiHistoryPhotos).isTrue()
+        val off = json.decodeFromString<FamilyDto>(
+            """
+            {"id": 3, "name": "The Smiths", "join_policy": "open",
+             "ai_history": true, "ai_vision": true, "ai_history_photos": false}
+            """.trimIndent(),
+        )
+        assertThat(off.aiHistoryPhotos).isFalse()
     }
 
     /**
@@ -205,6 +230,15 @@ class FamilySettingsDtoTest {
             .isEqualTo("""{"ai_vision":true}""")
         assertThat(houseJson.encodeToString(PatchFamilyRequest.aiVision(false)))
             .isEqualTo("""{"ai_vision":false}""")
+        // The third switch travels as its own key and nothing else — in
+        // particular it does NOT send `ai_vision` alongside, even though
+        // the server needs that on: the rule between the two is the
+        // server's, and the screen withholds the switch rather than
+        // guessing (docs/protocol.md, "Recent photos from the family chat").
+        assertThat(houseJson.encodeToString(PatchFamilyRequest.aiHistoryPhotos(true)))
+            .isEqualTo("""{"ai_history_photos":true}""")
+        assertThat(houseJson.encodeToString(PatchFamilyRequest.aiHistoryPhotos(false)))
+            .isEqualTo("""{"ai_history_photos":false}""")
     }
 
     @Test

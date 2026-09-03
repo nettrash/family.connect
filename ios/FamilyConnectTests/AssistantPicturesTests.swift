@@ -128,6 +128,59 @@ struct AssistantPicturesTests {
         #expect(!off.aiVision)
     }
 
+    // MARK: - The third switch (protocol.md, "Recent photos from the family chat")
+
+    /// FALSE when absent — for a family that predates it and for a server
+    /// that predates it, which are the same answer: no photo nobody pointed
+    /// at ever leaves such a server.
+    @Test("ai_history_photos is false when the server does not send it")
+    func historyPhotosDefaultsOff() throws {
+        let family = try decode(
+            FamilyDTO.self,
+            """
+            {"id": 3, "name": "The Smiths", "join_policy": "open",
+             "created_at": "2026-08-19T17:03:12Z", "ai_vision": true}
+            """)
+        #expect(!family.aiHistoryPhotos)
+        #expect(family.aiVision)
+    }
+
+    @Test("ai_history_photos is read when the server does send it")
+    func historyPhotosDecodes() throws {
+        let on = try decode(
+            FamilyDTO.self,
+            """
+            {"id": 3, "name": "The Smiths", "join_policy": "open",
+             "created_at": "2026-08-19T17:03:12Z",
+             "ai_history": true, "ai_vision": true, "ai_history_photos": true}
+            """)
+        #expect(on.aiHistoryPhotos)
+        let off = try decode(
+            FamilyDTO.self,
+            """
+            {"id": 3, "name": "The Smiths", "join_policy": "open",
+             "created_at": "2026-08-19T17:03:12Z",
+             "ai_history": true, "ai_vision": true, "ai_history_photos": false}
+            """)
+        #expect(!off.aiHistoryPhotos)
+    }
+
+    /// The switch on the owner's screen: offered with both locks open,
+    /// otherwise DISABLED with the reason — unlike `ai_vision`, which is
+    /// absent on a server that cannot see. The deployment is asked first,
+    /// so an owner on such a server is told that rather than "turn
+    /// pictures on first", which they could do to no effect.
+    @Test("the Recent photos switch is offered, or withheld with its reason")
+    func historyPhotosSwitchStates() {
+        #expect(AssistantSurfaces.historyPhotosSwitch(serverCanSee: true, familyAllowsPhotos: true) == .offered)
+        #expect(AssistantSurfaces.historyPhotosSwitch(serverCanSee: true, familyAllowsPhotos: false) == .withheldVisionOff)
+        #expect(AssistantSurfaces.historyPhotosSwitch(serverCanSee: false, familyAllowsPhotos: true) == .withheldNoVisionDeployment)
+        #expect(AssistantSurfaces.historyPhotosSwitch(serverCanSee: false, familyAllowsPhotos: false) == .withheldNoVisionDeployment)
+        #expect(AssistantSurfaces.HistoryPhotosSwitch.offered.isEnabled)
+        #expect(!AssistantSurfaces.HistoryPhotosSwitch.withheldVisionOff.isEnabled)
+        #expect(!AssistantSurfaces.HistoryPhotosSwitch.withheldNoVisionDeployment.isEnabled)
+    }
+
     /// The whole `GET /families/mine` shape, because that is the one read
     /// where the family switch and the server capability arrive together —
     /// and a composer needs BOTH before it offers anything.
@@ -304,9 +357,9 @@ struct AssistantPicturesTests {
     ///
     /// Written out as a full table because every row but one must offer
     /// nothing, and a rule that had slipped to `||` — or that had forgotten
-    /// the chat kind, which is the lock that keeps `@ai` in the family chat
-    /// out of this entirely — would still pass a test that only checked the
-    /// happy row.
+    /// the chat kind, which is what keeps this dedicated door out of the
+    /// family chat — would still pass a test that only checked the happy
+    /// row.
     @Test("a picture surface needs the chat, the server AND the family")
     func everyLock() {
         #expect(AssistantSurfaces.offersPictureAttach(
@@ -323,11 +376,15 @@ struct AssistantPicturesTests {
         #expect(!AssistantSurfaces.offersPictureAttach(
             isAssistantChat: true, serverCanSee: false, familyAllows: false))
 
-        // THE FAMILY CHAT, with both locks wide open. `@ai` never carries
-        // a picture, at either `ai_history` setting, in any family, under
-        // any configuration — the photograph there is very often somebody
-        // else's, and the member typing the mention cannot consent for
-        // them. Same for a direct chat, and for anywhere else.
+        // THE FAMILY CHAT, with both locks wide open: no dedicated door.
+        // Not because a picture never reaches the assistant from there —
+        // since #56 a photo on an `@ai` message, or on the message it
+        // replies to, travels under these same two locks (protocol.md,
+        // "Showing the assistant a picture from the family chat") — but
+        // because that path rides the ordinary photo picker and the reply
+        // affordance the family composer already has, and a second
+        // "show the assistant" item there would offer nothing the first
+        // does not. Same for a direct chat, and for anywhere else.
         #expect(!AssistantSurfaces.offersPictureAttach(
             isAssistantChat: false, serverCanSee: true, familyAllows: true))
         #expect(!AssistantSurfaces.offersPictureAttach(
@@ -401,6 +458,64 @@ struct AssistantPicturesTests {
         let body = try #require(sent.first?.bodyJSON())
         #expect(body.count == 1)
         #expect(body["ai_vision"] as? Bool == true)
+    }
+
+    /// The third switch's PATCH: one key, and only when touched. The
+    /// family that comes back is the truth for BOTH picture switches —
+    /// turning `ai_vision` off turns this one off in the same write.
+    @Test("ai_history_photos travels as one key on PATCH /families/mine")
+    func patchBodyHistoryPhotos() async throws {
+        let host = "ai-history-photos.test"
+        StubURLProtocol.register(host: host) { _ in
+            .json(200, """
+                {"family": {"id": 3, "name": "The Smiths", "join_policy": "open",
+                            "created_at": "2026-08-19T17:03:12Z",
+                            "ai_history": true, "ai_vision": true, "ai_history_photos": true}}
+                """)
+        }
+        defer { StubURLProtocol.unregister(host: host) }
+        let api = APIClient(
+            serverURL: URL(string: "https://\(host)")!,
+            session: StubURLProtocol.makeSession())
+
+        let family = try await api.setAIHistoryPhotos(true)
+        #expect(family.aiHistoryPhotos)
+        #expect(family.aiVision)
+
+        let sent = StubURLProtocol.requests(host: host)
+        #expect(sent.count == 1)
+        #expect(sent.first?.method == "PATCH")
+        #expect(sent.first?.url.path.hasSuffix("/families/mine") == true)
+        let body = try #require(sent.first?.bodyJSON())
+        #expect(body.count == 1)
+        #expect(body["ai_history_photos"] as? Bool == true)
+        #expect(body["ai_vision"] == nil)
+    }
+
+    /// Turning `ai_vision` off: the request still carries only that key,
+    /// and the server's answer carries the third switch OFF with it —
+    /// which is what this client then shows, without having asked.
+    @Test("turning ai_vision off brings ai_history_photos off in the answer")
+    func patchVisionOffTakesHistoryPhotosWithIt() async throws {
+        let host = "ai-vision-off-cascade.test"
+        StubURLProtocol.register(host: host) { _ in
+            .json(200, """
+                {"family": {"id": 3, "name": "The Smiths", "join_policy": "open",
+                            "created_at": "2026-08-19T17:03:12Z",
+                            "ai_history": true, "ai_vision": false, "ai_history_photos": false}}
+                """)
+        }
+        defer { StubURLProtocol.unregister(host: host) }
+        let api = APIClient(
+            serverURL: URL(string: "https://\(host)")!,
+            session: StubURLProtocol.makeSession())
+
+        let family = try await api.setAIVision(false)
+        #expect(!family.aiVision)
+        #expect(!family.aiHistoryPhotos)
+        let body = try #require(StubURLProtocol.requests(host: host).first?.bodyJSON())
+        #expect(body.count == 1)
+        #expect(body["ai_vision"] as? Bool == false)
     }
 
     @Test("turning it off sends false, not an absent key")

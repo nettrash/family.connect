@@ -97,13 +97,20 @@ class FamilyAdminPicturesTest {
         images = true,
     )
 
-    private fun mine(assistant: AssistantDto?, aiVision: Boolean) = ApiResult.Ok(
+    private fun mine(
+        assistant: AssistantDto?,
+        aiVision: Boolean,
+        aiHistoryPhotos: Boolean = false,
+        aiHistory: Boolean = true,
+    ) = ApiResult.Ok(
         FamilyMineResponse(
             family = FamilyDto(
                 id = 3,
                 name = "The Smiths",
                 joinPolicy = "open",
+                aiHistory = aiHistory,
                 aiVision = aiVision,
+                aiHistoryPhotos = aiHistoryPhotos,
             ),
             members = listOf(memberDto(ME, "anna", role = "owner")),
             assistant = assistant,
@@ -223,6 +230,164 @@ class FamilyAdminPicturesTest {
 
         assertThat(viewModel.state.value.aiVision).isFalse()
         assertThat(viewModel.state.value.error).isEqualTo("not the owner")
+        assertThat(viewModel.state.value.busy).isFalse()
+    }
+
+    // -- The THIRD switch: recent photos (docs/protocol.md, "Recent photos from the family chat")
+
+    /**
+     * FALSE by default, one notch further than `ai_vision`: a family that
+     * never chose has not consented to photographs nobody pointed at
+     * leaving, and a server that predates the field never sends one.
+     */
+    @Test
+    fun `the third switch reads as off for a family that never chose`() = runTest(dispatcher) {
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true)
+        val viewModel = viewModel()
+        runCurrent()
+
+        assertThat(viewModel.state.value.aiHistoryPhotos).isFalse()
+        assertThat(viewModel.state.value.aiVision).isTrue()
+    }
+
+    @Test
+    fun `the third switch reads as on when the owner turned it on`() = runTest(dispatcher) {
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true, aiHistoryPhotos = true)
+        val viewModel = viewModel()
+        runCurrent()
+
+        assertThat(viewModel.state.value.aiHistoryPhotos).isTrue()
+    }
+
+    /**
+     * Offered with both locks under it open; otherwise DISABLED with the
+     * reason — unlike `ai_vision`'s switch, which is hidden on a server
+     * that cannot see. The deployment is asked first, so an owner on such
+     * a server is told that rather than "turn pictures on first", which
+     * they could do to no effect. `ai_history` is not a lock: off, the
+     * switch is inert and still offered, and the screen says so beside it.
+     */
+    @Test
+    fun `the third switch is offered or withheld with its reason`() = runTest(dispatcher) {
+        val rule = FamilyAdminViewModel.HistoryPhotosSwitch
+        assertThat(rule.of(serverCanSee = true, familyAllowsPhotos = true))
+            .isEqualTo(FamilyAdminViewModel.HistoryPhotosSwitch.OFFERED)
+        assertThat(rule.of(serverCanSee = true, familyAllowsPhotos = false))
+            .isEqualTo(FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_VISION_OFF)
+        assertThat(rule.of(serverCanSee = false, familyAllowsPhotos = true))
+            .isEqualTo(FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_NO_VISION_DEPLOYMENT)
+        assertThat(rule.of(serverCanSee = false, familyAllowsPhotos = false))
+            .isEqualTo(FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_NO_VISION_DEPLOYMENT)
+        assertThat(FamilyAdminViewModel.HistoryPhotosSwitch.OFFERED.isEnabled).isTrue()
+        assertThat(FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_VISION_OFF.isEnabled).isFalse()
+        assertThat(FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_NO_VISION_DEPLOYMENT.isEnabled).isFalse()
+
+        // …and the state derives it from what the server said, in every
+        // combination the screen can meet.
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true)
+        val offered = viewModel()
+        runCurrent()
+        assertThat(offered.state.value.historyPhotosSwitch)
+            .isEqualTo(FamilyAdminViewModel.HistoryPhotosSwitch.OFFERED)
+
+        familyApi.mineResult = mine(assistant = seeing, aiVision = false)
+        val visionOff = viewModel()
+        runCurrent()
+        assertThat(visionOff.state.value.historyPhotosSwitch)
+            .isEqualTo(FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_VISION_OFF)
+
+        familyApi.mineResult = mine(assistant = seeing.copy(vision = false), aiVision = false)
+        val noDeployment = viewModel()
+        runCurrent()
+        assertThat(noDeployment.state.value.historyPhotosSwitch)
+            .isEqualTo(FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_NO_VISION_DEPLOYMENT)
+
+        familyApi.mineResult = mine(assistant = null, aiVision = false)
+        val noAssistant = viewModel()
+        runCurrent()
+        assertThat(noAssistant.state.value.historyPhotosSwitch)
+            .isEqualTo(FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_NO_VISION_DEPLOYMENT)
+
+        // Inert, not withheld, without a transcript.
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true, aiHistory = false)
+        val noHistory = viewModel()
+        runCurrent()
+        assertThat(noHistory.state.value.historyPhotosSwitch)
+            .isEqualTo(FamilyAdminViewModel.HistoryPhotosSwitch.OFFERED)
+        assertThat(noHistory.state.value.aiHistory).isFalse()
+    }
+
+    @Test
+    fun `switching the third switch on reaches the wire as its own key`() = runTest(dispatcher) {
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true)
+        val viewModel = viewModel()
+        runCurrent()
+        familyApi.createResult = ApiResult.Ok(
+            FamilyResponse(
+                FamilyDto(
+                    id = 3, name = "The Smiths", joinPolicy = "open",
+                    aiVision = true, aiHistoryPhotos = true,
+                ),
+            ),
+        )
+
+        viewModel.setAiHistoryPhotos(true)
+        runCurrent()
+
+        assertThat(familyApi.aiHistoryPhotosSet).containsExactly(true)
+        assertThat(familyApi.aiVisionSet).isEmpty()
+        assertThat(viewModel.state.value.aiHistoryPhotos).isTrue()
+        assertThat(viewModel.state.value.busy).isFalse()
+        // Mirrored for the composer, like `ai_vision`.
+        assertThat(settings.current.familyAiHistoryPhotos).isTrue()
+    }
+
+    /**
+     * Turning `ai_vision` OFF turns the third switch off in the same
+     * write on the server, asked or not — and the screen draws BOTH from
+     * the answer rather than leaving the third one on underneath a lock
+     * that just shut.
+     */
+    @Test
+    fun `turning pictures off takes the third switch with it`() = runTest(dispatcher) {
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true, aiHistoryPhotos = true)
+        val viewModel = viewModel()
+        runCurrent()
+        assertThat(viewModel.state.value.aiHistoryPhotos).isTrue()
+        familyApi.createResult = ApiResult.Ok(
+            FamilyResponse(
+                FamilyDto(
+                    id = 3, name = "The Smiths", joinPolicy = "open",
+                    aiVision = false, aiHistoryPhotos = false,
+                ),
+            ),
+        )
+
+        viewModel.setAiVision(false)
+        runCurrent()
+
+        assertThat(familyApi.aiVisionSet).containsExactly(false)
+        assertThat(familyApi.aiHistoryPhotosSet).isEmpty()
+        assertThat(viewModel.state.value.aiVision).isFalse()
+        assertThat(viewModel.state.value.aiHistoryPhotos).isFalse()
+        assertThat(viewModel.state.value.historyPhotosSwitch)
+            .isEqualTo(FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_VISION_OFF)
+        assertThat(settings.current.familyAiHistoryPhotos).isFalse()
+    }
+
+    /** A refusal of the third switch leaves it where it was, and says why. */
+    @Test
+    fun `a refused third switch stays where it was`() = runTest(dispatcher) {
+        familyApi.mineResult = mine(assistant = seeing, aiVision = true)
+        val viewModel = viewModel()
+        runCurrent()
+        familyApi.createResult = ApiResult.HttpError(400, "validation", "ai_history_photos needs ai_vision")
+
+        viewModel.setAiHistoryPhotos(true)
+        runCurrent()
+
+        assertThat(viewModel.state.value.aiHistoryPhotos).isFalse()
+        assertThat(viewModel.state.value.error).isEqualTo("ai_history_photos needs ai_vision")
         assertThat(viewModel.state.value.busy).isFalse()
     }
 }

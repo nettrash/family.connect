@@ -352,6 +352,7 @@ fun ChatScreen(
     val canAskForPicture by viewModel.canAskForPicture.collectAsStateWithLifecycle()
     // What the composer must say out loud about what is staged, right now.
     val assistantPictureNotice by viewModel.assistantPictureNotice.collectAsStateWithLifecycle()
+    val mentionPictureNotice by viewModel.mentionPictureNotice.collectAsStateWithLifecycle()
     // Null when the server has no assistant configured, which is what
     // decides whether the composer offers `@ai` at all.
     val assistantUserId by viewModel.assistantUserId.collectAsStateWithLifecycle()
@@ -1338,6 +1339,7 @@ fun ChatScreen(
                 showsDraw = canAskForPicture,
                 onAskForPicture = viewModel::insertDrawToken,
                 pictureNotice = assistantPictureNotice,
+                mentionPictureNotice = mentionPictureNotice,
             )
         }
     }
@@ -4284,6 +4286,125 @@ private fun AssistantPictureStrip(notice: AiPictureNotice) {
     }
 }
 
+/**
+ * The family composer's sentence for an `@ai` draft that is about to carry
+ * a photograph — staged on it, on the message it replies to, or both (#56;
+ * docs/protocol.md, "What a client's family-chat composer must say").
+ *
+ * The same shape as [AssistantPictureStrip], and the same courtesy: what
+ * goes is said, which photo it is is said, and what will be left out — past
+ * the shared budget, or unreadable — is named rather than dropped in
+ * silence. What it deliberately does NOT say is "nothing else from this
+ * chat": with `ai_history` on a transcript goes with the mention, so the
+ * honest promise is about PHOTOS — no other photo in this chat does.
+ * And since the owner's third switch, not even that where it is false:
+ * with `ai_history_photos` in effect and places left of the four, the
+ * sentence says "up to N of the most recent photos in this chat may go
+ * too" instead — and shows for a bare `@ai` draft, on which all four may
+ * be somebody else's recent picture (docs/protocol.md, "Recent photos
+ * from the family chat").
+ */
+@Composable
+private fun MentionPictureStrip(notice: MentionPictureNotice) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.AutoAwesome,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // The owner's third switch, in effect and with places left of
+            // the four: the sentence says "up to N recent photos may go
+            // too" and drops "no other photo in this chat does", which
+            // would be false. With the four spent by the member's own
+            // photos nothing from the history travels, and #56's sentence
+            // is exactly right — so it is the one shown, the same words a
+            // family without the switch reads, because the same thing
+            // happens (docs/protocol.md, "Recent photos from the family
+            // chat" — the strip's rule).
+            val recent = notice.recentUpTo ?: 0
+            Text(
+                // Which photo, and one or several: whole sentences rather
+                // than a formatted count, for the reason the private strip
+                // gives — nine locales agree with themselves without a
+                // plural table for a number that is only ever 0..4. The
+                // "up to N" is a count all the same, and one a partitive
+                // ("N of the most recent photos") keeps grammatical at
+                // every N in every language shipped.
+                //
+                // ZERO is every pointed-at photo being unreadable: the
+                // locks are open and nothing goes through them anyway, so
+                // the sentence is the private strip's shut-lock one and the
+                // line below says why — unless recent photos may still fill
+                // the places it did not spend, which the first row says.
+                text = if (recent > 0) {
+                    stringResource(
+                        when {
+                            notice.shown == 0 -> R.string.s_assistant_mention_sees_recent_only
+                            notice.shownOnMention > 0 && notice.shownOnQuote > 0 ->
+                                R.string.s_assistant_mention_sees_both_and_recent
+                            notice.shownOnMention == 1 ->
+                                R.string.s_assistant_mention_sees_this_picture_and_recent
+                            notice.shownOnMention > 1 ->
+                                R.string.s_assistant_mention_sees_these_pictures_and_recent
+                            notice.shownOnQuote == 1 ->
+                                R.string.s_assistant_mention_sees_quoted_picture_and_recent
+                            else -> R.string.s_assistant_mention_sees_quoted_pictures_and_recent
+                        },
+                        recent,
+                    )
+                } else {
+                    stringResource(
+                        when {
+                            notice.shown == 0 -> R.string.s_assistant_will_not_see_picture
+                            notice.shownOnMention > 0 && notice.shownOnQuote > 0 ->
+                                R.string.s_assistant_mention_sees_both
+                            notice.shownOnMention == 1 -> R.string.s_assistant_mention_sees_this_picture
+                            notice.shownOnMention > 1 -> R.string.s_assistant_mention_sees_these_pictures
+                            notice.shownOnQuote == 1 -> R.string.s_assistant_mention_sees_quoted_picture
+                            else -> R.string.s_assistant_mention_sees_quoted_pictures
+                        },
+                    )
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (notice.extraPhotos > 0) {
+                // The "4" is the protocol's, held once in AiPictureNotice,
+                // and the sentence says the order it is counted in.
+                Text(
+                    text = stringResource(
+                        R.string.s_assistant_mention_extra_left_out,
+                        AiPictureNotice.MAX_PHOTOS,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (notice.unreadablePhotos > 0) {
+                Text(
+                    text = stringResource(R.string.s_assistant_picture_unreadable_left_out),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (notice.otherAttachments > 0) {
+                Text(
+                    text = stringResource(R.string.s_assistant_picture_others_left_out),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
 /** What the composer shows while a photo or video is on its way. */
 @Composable
 private fun MediaStrip(
@@ -4554,7 +4675,12 @@ private fun InputBar(
      * chat only, and only when BOTH locks are open — this server has a
      * deployment that can see, and the family's owner has turned
      * `ai_vision` on (docs/protocol.md, "Pictures"). False is the common
-     * case and means no such item exists at all.
+     * case and means no such item exists at all. The family chat gets no
+     * item of its own: since #56 a photo on an `@ai` message, or on the
+     * message it replies to, travels under the same two locks through the
+     * ordinary "Photo or video" door and the reply affordance already
+     * here (docs/protocol.md, "Showing the assistant a picture from the
+     * family chat").
      */
     showsAssistantPicture: Boolean,
     onShowAssistantPicture: () -> Unit,
@@ -4572,6 +4698,14 @@ private fun InputBar(
      * message with no photograph on it.
      */
     pictureNotice: AiPictureNotice?,
+    /**
+     * The FAMILY chat's counterpart (#56): what must be said when an `@ai`
+     * draft is about to carry a photo — staged on it, or on the message
+     * it replies to. Null everywhere else and whenever nothing will go —
+     * except under the owner's `ai_history_photos`, when a bare `@ai`
+     * draft may carry the chat's recent photos and the strip says so.
+     */
+    mentionPictureNotice: MentionPictureNotice?,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
@@ -4598,6 +4732,11 @@ private fun InputBar(
             }
             if (pictureNotice != null) {
                 AssistantPictureStrip(notice = pictureNotice)
+            }
+            // Never both: the one above is the assistant's own chat, this
+            // one the family chat.
+            if (mentionPictureNotice != null) {
+                MentionPictureStrip(notice = mentionPictureNotice)
             }
             if (staged.isNotEmpty()) {
                 StagedAttachmentRow(staged = staged, onDiscard = onDiscardStaged)

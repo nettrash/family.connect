@@ -52,6 +52,13 @@ struct StagedAttachment: Identifiable {
             mime: prepared.mime, hasPreview: prepared.previewJPEG != nil)
     }
 
+    /// The three facts the family composer's strip reads off a staged item
+    /// (`MentionPictureNotice`): what it is, and what it will travel as.
+    var assistantPictureCandidate: AssistantPictureCandidate {
+        AssistantPictureCandidate(
+            kind: prepared.kind, mime: assistantWireMIME, bytes: assistantWireBytes)
+    }
+
     /// `Int.max` when the file cannot be measured, which is the safe
     /// direction: an unmeasurable photograph is described as one that will
     /// not be shown, rather than promised to a model it may never reach.

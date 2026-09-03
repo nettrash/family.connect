@@ -26,10 +26,31 @@
 //! photograph rides on a request only when the member attached it to the
 //! question being answered, on a family whose owner turned `ai_vision` on,
 //! and a `/draw` sends the words after the token and nothing else at all.
+//!
+//! #56 widened both halves by exactly one deliberate act each, and both are
+//! argued in protocol.md rather than here. A photograph on the message that
+//! MENTIONED the assistant, or on the message that mention replies to, may
+//! now travel with the mention under the same two locks and the same bounds
+//! as a private question ("Showing the assistant a picture from the family
+//! chat") — and never a photograph anywhere else in the window. And the
+//! text model may ask for a picture itself, through the one tool a
+//! draw-capable server declares: the question still reaches the text
+//! deployment as it always did, and what reaches the images deployment is
+//! the tool's `prompt`, read out of the stream and bounded here ("Drawing
+//! without being told to"). `/draw` stays, unchanged.
+//!
+//! The third switch (2026-09-03, "Recent photos from the family chat")
+//! widened the mention once more, and again by one argued thing: with
+//! `ai_history_photos` on — openable only while `ai_vision` is, and inert
+//! without `ai_history` and a deployment that can see — the transcript's
+//! newest photographs fill whatever the mention and its quote left of the
+//! SAME four, and every marker for a picture that travelled is numbered so
+//! the model can tell whose it is. Off, and a mention is #56's to the byte.
 
 use std::time::Duration;
 
 use anyhow::Result;
+use serde_json::Value;
 use sqlx::Row;
 // `time::Duration` is not `std::time::Duration` and both are wanted here:
 // the std one is the delta-frame interval, this one does calendar
@@ -492,7 +513,43 @@ const VISION_MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// `omitted` is said out loud for the same reason: a photograph left out for
 /// size is a photograph the member believes was sent, and a model that is
 /// not told it is missing invents what was in it.
+///
+/// And it is said even when NOTHING was shown. A question whose only
+/// photograph was a HEIC original, or a 6 MiB one, goes to the text
+/// deployment as `[photo] what is this?` — and until 2026-09-03 it went
+/// with no note at all, so the model was looking at a marker on the very
+/// message that asked about it with nothing to say what the marker meant.
+/// The protocol promised "NAMED to the model" without a condition, and
+/// this is the branch that honours the promise (protocol.md, "Showing the
+/// assistant a picture from the family chat", and the private thread's
+/// rule amended with it).
 fn vision_note(shown: usize, omitted: usize, has_caption: bool) -> String {
+    if shown == 0 {
+        let mut note = if omitted == 1 {
+            "The member attached ONE photograph to this question, but it could not be included, \
+             because it was too large or in a format you cannot read. You were NOT shown it: say \
+             so rather than guessing what it showed."
+                .to_string()
+        } else {
+            format!(
+                "The member attached {omitted} photographs to this question, but none of them \
+                 could be included, because they were too large or in a format you cannot read. \
+                 You were NOT shown them: say so rather than guessing what they showed."
+            )
+        };
+        note.push_str(
+            " Any [photo] marker in this conversation is a picture you were NOT shown — do not \
+             describe it. You cannot see anything from the family chat, from another member's \
+             conversation with you, or from any one-to-one chat between two members.",
+        );
+        if !has_caption {
+            note.push_str(
+                " The member sent no words with it. Say, briefly, that you could not be shown it, \
+                 and ask what they would like to know.",
+            );
+        }
+        return note;
+    }
     let mut note = if shown == 1 {
         "The member has attached ONE photograph to this question and you can see it.".to_string()
     } else {
@@ -523,12 +580,279 @@ fn vision_note(shown: usize, omitted: usize, has_caption: bool) -> String {
     note
 }
 
+/// "ONE photograph" or "N photographs", for the two notes that count them.
+fn photographs(count: usize) -> String {
+    if count == 1 {
+        "ONE photograph".to_string()
+    } else {
+        format!("{count} photographs")
+    }
+}
+
+/// What a mention shows of the TRANSCRIPT's own photographs, when the
+/// family's third switch lets it (protocol.md, "Recent photos from the
+/// family chat") — and, by being passed at all, that the switch is in force
+/// and the numbering grammar with it.
+///
+/// `None` to [`mention_vision_note`] is the switch off, or inert: the note
+/// is then #56's to the byte, which the unit tests pin whole. `Some` with
+/// nothing in it is a family that turned the switch on over a transcript
+/// with no photographs, whose note gains only the sentence about numbering
+/// — and only when something travelled to be numbered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct HistoryPictures {
+    /// Photographs from the transcript that travelled: the newest that
+    /// could be included, in whatever the mention and its quote left of
+    /// the four.
+    shown: usize,
+    /// Photographs in the transcript that did NOT travel, for any reason —
+    /// beyond the budget, over the ceiling, in a format no deployment
+    /// reads, or a file that could not be read. Counted over the lines the
+    /// model can see, the quoted message's excluded (its photos count
+    /// against the quote), so the model is TOLD how many bare markers it is
+    /// looking at rather than left to count them.
+    not_shown: usize,
+}
+
+/// What the assistant is told when a MENTION shows it photographs
+/// (protocol.md, "Showing the assistant a picture from the family chat").
+///
+/// The same three sentences [`vision_note`] says, with the one difference a
+/// mention has: there are TWO messages a picture can be on, and the model
+/// has to be told which — "what is this?" replying to a photo is a question
+/// about the quoted picture, not about one on the mention. The order the
+/// pictures were sent in is said out loud for the same reason.
+///
+/// The `[photo]` warning is wider here than in a private thread, and has to
+/// be: with `ai_history` on there is a transcript full of markers in front
+/// of the model, and every one of them is a picture it was NOT shown. That
+/// is the case the old rule worried about most, and the sentence is what
+/// keeps the model from describing the family's album from its captions.
+///
+/// Omissions are named per message, for the reason they are named at all:
+/// a member who attached five pictures believes five were sent, and a model
+/// not told the fifth is missing invents it.
+///
+/// Named even when NOTHING travelled — a lone HEIC on the mention, a lone
+/// 6 MiB original on the message it replies to. The request then goes to
+/// the text deployment, and this note is the one thing that rides on it
+/// (protocol.md, "Showing the assistant a picture from the family chat"):
+/// without it the model reads `[photo] @ai what is this?` with nothing
+/// anywhere in its prompt saying what `[photo]` means, which is the exact
+/// silence "told rather than dropped" forbids. The `[photo]` sentence is
+/// then about EVERY marker rather than every OTHER one, because there is
+/// no picture it can see.
+///
+/// `history` is the third switch (protocol.md, "Recent photos from the
+/// family chat"): `None` and every sentence above is #56's, byte for byte;
+/// `Some` and the note also says how many pictures came from the
+/// transcript, that they are the most recent ones that could be included
+/// and on which numbered lines, that NOBODY pointed the assistant at those,
+/// how the `[photo N]` numbering works wherever a marker is written, and
+/// how many other photographs in the transcript stayed bare and why. The
+/// same rule about silence applies: a lone HEIC in the transcript, with
+/// nothing on the mention, still gets a note saying it could not be
+/// included and that no picture can be seen.
+fn mention_vision_note(
+    on_mention: usize,
+    on_quote: usize,
+    omitted_on_mention: usize,
+    omitted_on_quote: usize,
+    history: Option<HistoryPictures>,
+) -> String {
+    let from_history = history.unwrap_or_default();
+    let shown = on_mention + on_quote + from_history.shown;
+    if shown == 0 {
+        let pointed = omitted_on_mention + omitted_on_quote;
+        let mut note = match (pointed, from_history.not_shown) {
+            // #56's sentence, byte for byte: the switch is off, or the
+            // transcript holds no photograph — the same note either way.
+            (pointed, 0) => {
+                if pointed == 1 {
+                    "The member pointed you at ONE photograph, but it could not be included, so \
+                     you can see NO picture here."
+                        .to_string()
+                } else {
+                    format!(
+                        "The member pointed you at {pointed} photographs, but none of them could \
+                         be included, so you can see NO picture here."
+                    )
+                }
+            }
+            (0, in_transcript) => format!(
+                "There {} in the transcript above, but {} could not be included, so you can see \
+                 NO picture here.",
+                if in_transcript == 1 {
+                    "is ONE photograph".to_string()
+                } else {
+                    format!("are {in_transcript} photographs")
+                },
+                if in_transcript == 1 {
+                    "it"
+                } else {
+                    "none of them"
+                }
+            ),
+            (pointed, in_transcript) => format!(
+                "The member pointed you at {}, and there {} more in the transcript above, but \
+                 none of them could be included, so you can see NO picture here.",
+                photographs(pointed),
+                if in_transcript == 1 {
+                    "is ONE".to_string()
+                } else {
+                    format!("are {in_transcript}")
+                }
+            ),
+        };
+        note.push_str(
+            " Every [photo] marker in front of you, in the transcript or elsewhere, is a \
+             picture you were NOT shown — do not describe it, and say so if it is what you \
+             are being asked about. You still cannot see any member's private chat with \
+             you, or any one-to-one chat between two members.",
+        );
+        push_mention_omissions(
+            &mut note,
+            (on_mention, omitted_on_mention),
+            (on_quote, omitted_on_quote),
+        );
+        if from_history.not_shown > 0 {
+            note.push_str(&format!(
+                " {} picture(s) in the transcript could not be included, because they were too \
+                 large or in a format you cannot read. Say so rather than guessing what they \
+                 showed.",
+                from_history.not_shown
+            ));
+        }
+        return note;
+    }
+
+    // Something can be seen. The pointed-at pictures first, in #56's own
+    // words, then — under the switch — the transcript's.
+    let mut note = match (on_mention, on_quote) {
+        (0, 0) => String::new(),
+        (shown, 0) => format!(
+            "You can see {} attached to the message that mentioned you.",
+            photographs(shown)
+        ),
+        (0, shown) => format!(
+            "You can see {} on the message it quotes — the message the member replied to.",
+            photographs(shown)
+        ),
+        (mention, quote) => format!(
+            "You can see {} on the message that mentioned you and {} on the message it quotes, \
+             in that order: the mentioning message's first.",
+            photographs(mention),
+            photographs(quote)
+        ),
+    };
+    if on_mention + on_quote > 0 {
+        note.push_str(
+            " A member pointed you at them deliberately — by attaching them to the mention, or by \
+             replying to them with it.",
+        );
+    }
+    match history {
+        // #56's disowning sentence, byte for byte.
+        None => note.push_str(
+            " Any other [photo] marker in front of you, in the transcript or elsewhere, is a \
+             picture you were NOT shown — do not describe it, and say so if it is what you are \
+             being asked about. You still cannot see any member's private chat with you, or any \
+             one-to-one chat between two members.",
+        ),
+        Some(from_history) => {
+            if from_history.shown > 0 {
+                let first = on_mention + on_quote + 1;
+                let last = on_mention + on_quote + from_history.shown;
+                let lines = if first == last {
+                    format!("the line marked [photo {first}]")
+                } else {
+                    format!("the lines marked [photo {first}] to [photo {last}]")
+                };
+                let newest = if from_history.shown == 1 {
+                    "the most recent picture sent in this chat that could be included"
+                } else {
+                    "the most recent pictures sent in this chat that could be included"
+                };
+                if note.is_empty() {
+                    note.push_str(&format!(
+                        "You can see {} from the transcript above, on {lines}: {newest}. Nothing \
+                         was attached to the message that mentioned you or to the message it \
+                         quotes.",
+                        photographs(from_history.shown)
+                    ));
+                } else {
+                    note.push_str(&format!(
+                        " You can also see {} from the transcript above, on {lines}: {newest}.",
+                        photographs(from_history.shown)
+                    ));
+                }
+                note.push_str(
+                    " Nobody pointed you at those: this family's owner has allowed you to be \
+                     shown the chat's recent pictures alongside a mention, and each one is \
+                     whatever its line says its sender sent, when they sent it.",
+                );
+            }
+            note.push_str(
+                " The pictures are attached in this order — the mentioning message's first, then \
+                 the quoted message's, then the transcript's, newest first — and every marker \
+                 for a picture you can see is numbered to match: [photo 1] is the first picture \
+                 attached, [photo 2] the second, and so on, on the message that mentioned you, \
+                 on the message it quotes and on the transcript's lines alike. A bare [photo] \
+                 with no number, anywhere in front of you, is a picture you were NOT shown — do \
+                 not describe it, and say so if it is what you are being asked about. You still \
+                 cannot see any member's private chat with you, or any one-to-one chat between \
+                 two members.",
+            );
+        }
+    }
+    push_mention_omissions(
+        &mut note,
+        (on_mention, omitted_on_mention),
+        (on_quote, omitted_on_quote),
+    );
+    if from_history.not_shown > 0 {
+        note.push_str(&format!(
+            " {} other picture(s) in the transcript could not be included, because they were \
+             beyond the four you can be shown at once, too large, or in a format you cannot \
+             read; their markers are bare. Say so rather than guessing what they showed.",
+            from_history.not_shown
+        ));
+    }
+    note
+}
+
+/// The per-message "could not be included" sentences of a mention's note.
+///
+/// "further" only when that message DID show something: "1 further
+/// picture on the message it quotes" beside a quote that showed two is
+/// true, and beside a quote that showed nothing it implies a picture that
+/// was never there. Each pair is `(shown, omitted)` for that message.
+fn push_mention_omissions(note: &mut String, mention: (usize, usize), quote: (usize, usize)) {
+    for ((shown, omitted), which) in [
+        (mention, "the message that mentioned you"),
+        (quote, "the message it quotes"),
+    ] {
+        if omitted > 0 {
+            let further = if shown > 0 { "further " } else { "" };
+            note.push_str(&format!(
+                " {omitted} {further}picture(s) on {which} could not be included, because they \
+                 were too large, in a format you cannot read, or beyond the four you can be shown \
+                 at once. Say so rather than guessing what they showed."
+            ));
+        }
+    }
+}
+
 /// One family-chat message, reduced to what may leave the server.
 ///
 /// Its own type rather than a `Message`, and built by the one query below,
 /// so that "what a mention may send" is a struct somebody can read in five
 /// lines instead of a set of fields somebody remembered not to use.
 struct HistoryMessage {
+    /// The row's id — what the third switch loads a photograph by, and how
+    /// the quoted message is recognised in the window so its photos are not
+    /// counted twice (protocol.md, "Recent photos from the family chat").
+    id: i64,
     at: OffsetDateTime,
     /// The name the family SEES against this message, because an answer
     /// about what Anna said has to know which lines are Anna's. For a
@@ -654,6 +978,28 @@ fn attachment_placeholder(attachment: &Attachment) -> String {
         ("location", Some(label)) => format!("[location] {label}"),
         ("file", None) | ("location", None) => format!("[{}]", attachment.kind),
         _ => "[attachment]".to_string(),
+    }
+}
+
+/// Attachment id → the number of that photograph among the images attached
+/// to one request, for the markers that name a picture the model can see
+/// (protocol.md, "Recent photos from the family chat"). Empty whenever the
+/// third switch is off or nothing travelled, and every marker is then bare.
+type Numbered = std::collections::HashMap<i64, usize>;
+
+/// [`attachment_placeholder`], with the picture's number — `[photo 3]` —
+/// when the third switch is in force and this photograph travelled.
+///
+/// Numbered by ATTACHMENT id, which is what makes the same picture read the
+/// same wherever it is written: the quoted message's photo is `[photo 2]`
+/// inside the quote and `[photo 2]` on that message's own line of the
+/// transcript. An empty map is every marker bare, which is the transcript
+/// exactly as it was before the switch existed — the unit tests pin that
+/// the two renderings are byte-identical then.
+fn numbered_placeholder(attachment: &Attachment, numbered: &Numbered) -> String {
+    match numbered.get(&attachment.id) {
+        Some(number) if attachment.kind == "photo" => format!("[photo {number}]"),
+        _ => attachment_placeholder(attachment),
     }
 }
 
@@ -791,7 +1137,11 @@ fn poll_line(poll: &HistoryPoll, body: &str) -> String {
 /// Bodies go in RAW, exactly as stored. The server parses markup nowhere
 /// else and this is not where it starts — a stripper here would be a second
 /// implementation of markdown, wrong in a different way from every client's.
-fn history_line(message: &HistoryMessage) -> Option<String> {
+///
+/// `numbered` marks the photographs that travelled with this request, when
+/// the third switch let any — see [`numbered_placeholder`]. Empty, and the
+/// line is what it always was.
+fn history_line(message: &HistoryMessage, numbered: &Numbered) -> Option<String> {
     let body = message.body.trim();
     // The line in the order it is read: what the message CARRIED, then what
     // it IS, then the words, then what the family did with them. One
@@ -808,7 +1158,7 @@ fn history_line(message: &HistoryMessage) -> Option<String> {
     let mut parts: Vec<String> = message
         .attachments
         .iter()
-        .map(attachment_placeholder)
+        .map(|attachment| numbered_placeholder(attachment, numbered))
         .collect();
     match &message.poll {
         // Marker, question and tallies in one piece, from the one function
@@ -850,26 +1200,44 @@ fn history_line(message: &HistoryMessage) -> Option<String> {
 ///
 /// `assistant_name` is what this family calls the assistant, and it goes in
 /// the header so the model can recognise its own lines among the rest.
+///
+/// Two halves since the third switch — [`window`] decides WHAT survives and
+/// [`render_history`] writes it out — because the switch needs the answer
+/// in between: which photographs may travel is chosen over the surviving
+/// lines and no others, and only then are the lines written with the
+/// travelling ones numbered. This is the two composed, with nothing
+/// numbered: the transcript as it was.
 fn history_note(
     now: OffsetDateTime,
     newest_first: &[HistoryMessage],
     assistant_name: &str,
 ) -> Option<String> {
+    render_history(&window(now, newest_first), assistant_name, &Numbered::new())
+}
+
+/// The messages of the window that survive the three caps, NEWEST FIRST —
+/// and only those that contribute a line, so a photograph is never chosen
+/// off a message the model will not read about.
+///
+/// The character cap is measured over the BARE rendering. Numbering a
+/// marker adds two or three characters to at most four lines, and
+/// re-measuring after it could drop the oldest surviving line — possibly
+/// the very line whose picture was just chosen, which would send a
+/// photograph from outside the transcript. Over by a dozen characters on a
+/// forty-thousand-character ceiling is the direction to be wrong in, for
+/// the reason the last line is already allowed to be over by one.
+fn window(now: OffsetDateTime, newest_first: &[HistoryMessage]) -> Vec<&HistoryMessage> {
     let cutoff = now - TimeDuration::days(i64::from(HISTORY_WINDOW_DAYS));
-    let mut lines: Vec<String> = Vec::new();
+    let bare = Numbered::new();
+    let mut kept: Vec<&HistoryMessage> = Vec::new();
     let mut chars = 0usize;
-    // Whether a poll survived the caps, not whether one was fetched: a poll
-    // that fell off the far end of the window is a poll the model cannot
-    // see, and [`POLL_NOTE`] describing markers that are not there is the
-    // exact failure that constant exists to avoid.
-    let mut kept_a_poll = false;
     for message in newest_first {
         // The rows arrive in time order, so the first message older than
         // the window ends the walk rather than skipping one.
-        if message.at < cutoff || lines.len() >= HISTORY_MAX_MESSAGES {
+        if message.at < cutoff || kept.len() >= HISTORY_MAX_MESSAGES {
             break;
         }
-        let Some(line) = history_line(message) else {
+        let Some(line) = history_line(message, &bare) else {
             continue;
         };
         // Plus the newline it will be joined with, so the ceiling counts
@@ -880,13 +1248,38 @@ fn history_note(
             break;
         }
         chars += cost;
-        kept_a_poll |= message.poll.is_some();
-        lines.push(line);
+        kept.push(message);
     }
+    kept
+}
+
+/// The transcript note over a [`window`], oldest first, with the
+/// photographs in `numbered` marked on their lines.
+///
+/// `None` when the window is empty — a brand-new chat, or a family that
+/// turned the setting on this morning. The caller must fall back to the
+/// narrow instruction then, or the prompt promises a transcript that is not
+/// there.
+fn render_history(
+    kept_newest_first: &[&HistoryMessage],
+    assistant_name: &str,
+    numbered: &Numbered,
+) -> Option<String> {
+    let mut lines: Vec<String> = kept_newest_first
+        .iter()
+        .filter_map(|message| history_line(message, numbered))
+        .collect();
     if lines.is_empty() {
         return None;
     }
     lines.reverse();
+    // Whether a poll survived the caps, not whether one was fetched: a poll
+    // that fell off the far end of the window is a poll the model cannot
+    // see, and [`POLL_NOTE`] describing markers that are not there is the
+    // exact failure that constant exists to avoid.
+    let kept_a_poll = kept_newest_first
+        .iter()
+        .any(|message| message.poll.is_some());
     let mut header = history_note_header(assistant_name);
     if kept_a_poll {
         header.push_str(POLL_NOTE);
@@ -928,6 +1321,26 @@ pub async fn family_chat_history(
     before_message_id: i64,
     assistant_id: i64,
 ) -> Result<Option<String>> {
+    let messages = load_history(state, chat_id, before_message_id, assistant_id).await?;
+    Ok(history_note(
+        OffsetDateTime::now_utc(),
+        &messages,
+        &state.cfg.ai.title,
+    ))
+}
+
+/// The rows [`family_chat_history`] renders, NEWEST FIRST and not yet
+/// capped — the mention path needs them before the note is written, so the
+/// third switch can choose photographs off the surviving lines and the
+/// renderer can number them (protocol.md, "Recent photos from the family
+/// chat"). The three caps are applied by [`window`], never here: this
+/// bounds what is FETCHED, that bounds what is SENT.
+async fn load_history(
+    state: &AppState,
+    chat_id: i64,
+    before_message_id: i64,
+    assistant_id: i64,
+) -> Result<Vec<HistoryMessage>> {
     let rows = sqlx::query(
         "SELECT m.id, m.created_at, m.body, m.sender_id, u.display_name
          FROM messages m
@@ -977,6 +1390,7 @@ pub async fn family_chat_history(
     let messages: Vec<HistoryMessage> = rows
         .iter()
         .map(|row| HistoryMessage {
+            id: row.get("id"),
             at: row.get("created_at"),
             sender: if row.get::<i64, _>("sender_id") == assistant_id {
                 state.cfg.ai.title.clone()
@@ -990,12 +1404,7 @@ pub async fn family_chat_history(
             poll: polls_by_message.remove(&row.get::<i64, _>("id")),
         })
         .collect();
-
-    Ok(history_note(
-        OffsetDateTime::now_utc(),
-        &messages,
-        &state.cfg.ai.title,
-    ))
+    Ok(messages)
 }
 
 /// The polls on these messages, as TALLIES, keyed by message id.
@@ -1120,6 +1529,11 @@ enum Ask {
         /// Appended to the configured system prompt for this request only.
         notes: Vec<String>,
         route: ModelRoute,
+        /// Where a picture the MODEL asks for would be made — `Some` on a
+        /// server that can draw, which is also the only server that
+        /// declares the tool, so the two cannot disagree (protocol.md,
+        /// "Drawing without being told to").
+        draw: Option<ModelRoute>,
     },
     /// A picture, from the images deployment. `prompt` is the whole of what
     /// leaves the server (protocol.md, "Pictures").
@@ -1163,28 +1577,62 @@ async fn mention_reply(
     // The history switch: whether this mention may also be shown what was
     // recently said in the chat (docs/protocol.md, "Mentioning the
     // assistant in the family chat").
+    //
+    // The vision switch — the third setting that comment foresaw: whether a
+    // photograph on the mention, or on the message it replies to, may travel
+    // with it (protocol.md, "Showing the assistant a picture from the family
+    // chat"). Read from the CHAT's family rather than the asker's, because
+    // the picture may be somebody else's and the family whose chat it is in
+    // is the one whose owner consented.
+    //
+    // And the fourth, the third SWITCH: whether the transcript's newest
+    // photographs may fill what the mention and its quote leave of the four
+    // (protocol.md, "Recent photos from the family chat"). Read from the
+    // same row for the same reason, and resolved below against everything
+    // it depends on, so that a `true` stored in the column is inert — not
+    // refused, inert — whenever any of that is missing.
     let settings = sqlx::query(
-        "SELECT f.language, f.ai_history
+        "SELECT f.language, f.ai_history, f.ai_vision, f.ai_history_photos
          FROM chats c JOIN families f ON f.id = c.family_id
          WHERE c.id = $1",
     )
     .bind(chat_id)
     .fetch_optional(&state.pool)
     .await?;
-    let (family_language, with_history) = match &settings {
+    let (family_language, with_history, with_vision, with_history_photos) = match &settings {
         Some(row) => (
             row.get::<Option<String>, _>("language"),
             row.get::<bool, _>("ai_history"),
+            row.get::<bool, _>("ai_vision"),
+            row.get::<bool, _>("ai_history_photos"),
         ),
         // No row means the chat went away between the send and this task.
         // The prompt below finds nothing either and this returns — but the
         // narrow behaviour is what it falls back to on the way there,
         // because the wider one must never be reached by a missing row.
-        None => (None, false),
+        None => (None, false, false, false),
     };
+    // Both locks, resolved to one answer: the deployment that can see, or
+    // nothing. Either shut and the mention is the text request it always
+    // was.
+    let vision = state.cfg.ai.vision_route().filter(|_| with_vision);
+    // The third switch needs all three of the others: a deployment that can
+    // see, `ai_vision` (which migration 0033 already guarantees, and is
+    // checked again here because a row is cheaper to trust than to argue
+    // about), and `ai_history` — with no transcript there is nothing for it
+    // to widen, and a photograph outside the transcript never travels.
+    let history_photos = with_history_photos && with_history && vision.is_some();
 
-    let Some(prompt) =
-        mention_prompt(state, chat_id, message_id, with_history, assistant_id).await?
+    let Some(prompt) = mention_prompt(
+        state,
+        chat_id,
+        message_id,
+        with_history,
+        vision,
+        history_photos,
+        assistant_id,
+    )
+    .await?
     else {
         return Ok(());
     };
@@ -1288,13 +1736,20 @@ async fn thread_prompt(
     if let Some(vision) = state.cfg.ai.vision_route()
         && family_allows_vision(state, user_id).await?
     {
-        let looked = vision_images(state, question_id).await?;
-        if !looked.images.is_empty() {
+        let looked = vision_images(state, question_id, VISION_MAX_IMAGES).await?;
+        // The note goes whenever the member pointed at a photograph — shown
+        // OR left out — because a left-out one is a `[photo]` marker on the
+        // question itself, and a marker nothing explains is the silence the
+        // note exists to break. The pixels, and the deployment that can
+        // see, only when something actually travels.
+        if !looked.images.is_empty() || looked.omitted > 0 {
             notes.push(vision_note(
                 looked.images.len(),
                 looked.omitted,
                 !question_body.trim().is_empty(),
             ));
+        }
+        if !looked.images.is_empty() {
             // The images go on the LAST turn, replacing the words-only one
             // built above — same text, now with the pixels the member chose.
             let last = turns.pop().expect("turns is not empty here");
@@ -1308,6 +1763,7 @@ async fn thread_prompt(
             turns,
             notes,
             route,
+            draw: state.cfg.ai.contextual_images_route(),
         },
         reply_to: None,
         // A private thread is private in both directions: nobody else sees
@@ -1360,13 +1816,27 @@ async fn attachments_for(
 /// go in raw, exactly as stored, for the reason they do everywhere else
 /// here: the server parses markup nowhere and this is not where it starts.
 fn turn_content(body: &str, attachments: &[Attachment]) -> Option<String> {
+    numbered_turn_content(body, attachments, &Numbered::new())
+}
+
+/// [`turn_content`] with the photographs that travelled marked by number —
+/// the mention and the message it quotes, under the third switch, read
+/// `[photo 1] @ai which is best?` so the model can tell the picture on the
+/// mention from the one on the quote from the ones in the transcript
+/// (protocol.md, "Recent photos from the family chat"). An empty map is
+/// [`turn_content`] exactly.
+fn numbered_turn_content(
+    body: &str,
+    attachments: &[Attachment],
+    numbered: &Numbered,
+) -> Option<String> {
     let body = body.trim();
     if attachments.is_empty() {
         return (!body.is_empty()).then(|| body.to_string());
     }
     let placeholders = attachments
         .iter()
-        .map(attachment_placeholder)
+        .map(|attachment| numbered_placeholder(attachment, numbered))
         .collect::<Vec<_>>()
         .join(" ");
     Some(if body.is_empty() {
@@ -1394,8 +1864,14 @@ async fn family_allows_vision(state: &AppState, user_id: i64) -> Result<bool> {
 }
 
 /// The photographs of ONE message, loaded and bounded, ready to travel.
+#[derive(Default)]
 struct LookedAt {
     images: Vec<InlineImage>,
+    /// The attachment id of each image, in the same order — what the
+    /// third switch numbers a marker by (protocol.md, "Recent photos from
+    /// the family chat"). Ids and never paths: nothing about where a
+    /// photograph is stored leaves this function.
+    ids: Vec<i64>,
     /// Photographs on that message that were NOT sent — too many, too large,
     /// or in a format the provider cannot read. Counted rather than dropped
     /// in silence: the assistant is told, so it asks instead of inventing.
@@ -1418,10 +1894,19 @@ struct LookedAt {
 /// - **JPEG or PNG only.** An iPhone's HEIC original is a photograph no chat
 ///   deployment can read, and sending it would fail the whole question
 ///   instead of one picture. It counts as omitted, and the assistant is told;
-/// - at most [`VISION_MAX_IMAGES`], at most [`VISION_MAX_IMAGE_BYTES`] each.
-async fn vision_images(state: &AppState, message_id: i64) -> Result<LookedAt> {
+/// - at most `budget` of them — [`VISION_MAX_IMAGES`] for a private
+///   question, and for a mention whatever the mentioning message left of
+///   those four for the message it quotes, and whatever the two of them
+///   left for the transcript's newest under the third switch — so the
+///   ceiling is one number across all of it rather than four each — and at
+///   most [`VISION_MAX_IMAGE_BYTES`] each.
+///
+/// ONE function for every surface, deliberately: the rule about which
+/// pixels may leave lives here and nowhere else, and a second copy for the
+/// family chat, or for its history, would be the copy that drifted.
+async fn vision_images(state: &AppState, message_id: i64, budget: usize) -> Result<LookedAt> {
     let rows = sqlx::query(
-        "SELECT kind, mime, has_preview, storage_key
+        "SELECT id, kind, mime, has_preview, storage_key
          FROM attachments
          WHERE message_id = $1 AND kind = 'photo'
          ORDER BY position, id",
@@ -1430,12 +1915,9 @@ async fn vision_images(state: &AppState, message_id: i64) -> Result<LookedAt> {
     .fetch_all(&state.pool)
     .await?;
 
-    let mut looked = LookedAt {
-        images: Vec::new(),
-        omitted: 0,
-    };
+    let mut looked = LookedAt::default();
     for row in &rows {
-        if looked.images.len() >= VISION_MAX_IMAGES {
+        if looked.images.len() >= budget {
             looked.omitted += 1;
             continue;
         }
@@ -1467,6 +1949,7 @@ async fn vision_images(state: &AppState, message_id: i64) -> Result<LookedAt> {
             looked.omitted += 1;
             continue;
         }
+        looked.ids.push(row.get("id"));
         looked.images.push(InlineImage { mime, bytes });
     }
     Ok(looked)
@@ -1502,11 +1985,42 @@ async fn vision_images(state: &AppState, message_id: i64) -> Result<LookedAt> {
 /// window, the bare question is ALL the model gets, and a model shown
 /// "Sunday lunch — what are we doing?" with nothing after it does not
 /// report that it cannot see the answer, it invents one.
+///
+/// **Either of them may carry PHOTOGRAPHS**, and since #56 those may
+/// travel too — under the same two locks and the same bounds as a private
+/// question, resolved by the caller into `vision`: the deployment that can
+/// see, or `None` when either lock is shut. The two messages are the whole
+/// of it. A photograph anywhere else in the window is `[photo]` in the
+/// transcript and nothing more, at either setting, because that is the case
+/// the old rule worried about most — somebody else's picture leaving because
+/// a third person mentioned the assistant about something unrelated
+/// (protocol.md, "Showing the assistant a picture from the family chat").
+///
+/// **Unless the family's owner turned the THIRD switch on** — `history_photos`,
+/// which the caller has already resolved against `ai_vision`, `ai_history`
+/// and the deployment, so `true` here means all of it holds. Then the
+/// transcript's newest photographs fill whatever those two messages left of
+/// the SAME four, walked newest first over the lines that survived the
+/// window and no others, through the same `vision_images` under the same
+/// bounds; every marker for a picture that travelled is numbered
+/// `[photo N]` wherever it is written, and the note says how many came
+/// from the transcript, that they are the most recent, and how many stayed
+/// bare (protocol.md, "Recent photos from the family chat"). Off, or inert,
+/// and the request is #56's to the byte — the integration tests pin that.
+///
+/// Whatever the locks say, both messages now render what they carry as the
+/// placeholders a private thread and the transcript already use
+/// (`turn_content`). A quoted photograph with no caption used to vanish from
+/// the prompt altogether — an empty body dropped the quote — which left the
+/// model answering "what is this?" with nothing to say it was about a
+/// picture.
 async fn mention_prompt(
     state: &AppState,
     chat_id: i64,
     message_id: i64,
     with_history: bool,
+    vision: Option<ModelRoute>,
+    history_photos: bool,
     assistant_id: i64,
 ) -> Result<Option<Prompt>> {
     let row = sqlx::query(
@@ -1573,42 +2087,173 @@ async fn mention_prompt(
     let mention_poll = polls.remove(&message_id);
     let quoted_poll = quoted_id.and_then(|id| polls.remove(&id));
 
+    // What the two messages CARRY, as placeholders: the same narrow select
+    // the private thread uses, so a location's coordinates are not even
+    // read. A poll and an attachment are mutually exclusive on a message
+    // (handlers_chat), so each message renders as one or the other.
+    let mut attachments = attachments_for(state, &poll_ids).await?;
+    let mention_attachments = attachments.remove(&message_id).unwrap_or_default();
+    let quoted_attachments = quoted_id
+        .and_then(|id| attachments.remove(&id))
+        .unwrap_or_default();
+
+    // The transcript's rows, and the window that survives the three caps —
+    // loaded BEFORE the pictures are chosen, because under the third switch
+    // the pictures are chosen off these lines and no others: a message that
+    // fell out of the window has no line and sends no photograph
+    // (protocol.md, "Recent photos from the family chat"). With
+    // `ai_history` off there are no rows, no transcript, and nothing for
+    // that switch to widen.
+    let recent: Vec<HistoryMessage> = if with_history {
+        load_history(state, chat_id, message_id, assistant_id).await?
+    } else {
+        Vec::new()
+    };
+    let kept = window(OffsetDateTime::now_utc(), &recent);
+
+    // The photographs on those same two messages — and, under the third
+    // switch alone, the transcript's newest — when both locks are open. The
+    // mentioning message's first, the quoted message's after it, the
+    // transcript's last and only into what those two left, under ONE budget
+    // of four across all of it, through the one function that knows which
+    // pixels may leave. When any travel the request goes to the deployment
+    // that can see; when none do, it is the text request it always was,
+    // byte for byte.
+    let mut images: Vec<InlineImage> = Vec::new();
+    let mut vision_note = None;
+    let mut route = state.cfg.ai.text_route();
+    let mut numbered = Numbered::new();
+    if let Some(vision) = vision {
+        let on_mention = vision_images(state, message_id, VISION_MAX_IMAGES).await?;
+        let on_quote = match quoted_id {
+            Some(id) => {
+                let left = VISION_MAX_IMAGES.saturating_sub(on_mention.images.len());
+                vision_images(state, id, left).await?
+            }
+            None => LookedAt::default(),
+        };
+        // The transcript's photographs, newest message first and each
+        // message's in the sender's order, into whatever is left. Every
+        // photo on a surviving line is COUNTED, whether or not it is
+        // reached — the model is told how many bare markers it is looking
+        // at — but only loaded while there is budget for it; and one that
+        // cannot go for size or type is skipped for the next older one, so
+        // a HEIC at the top does not starve the readable photos beneath.
+        // The quoted message's line is skipped: its photos went through
+        // the quote's slot, and a picture is never counted twice.
+        let mut from_history = LookedAt::default();
+        let mut in_transcript = 0usize;
+        if history_photos {
+            let mut left =
+                VISION_MAX_IMAGES.saturating_sub(on_mention.images.len() + on_quote.images.len());
+            for message in &kept {
+                if Some(message.id) == quoted_id {
+                    continue;
+                }
+                let photos = message
+                    .attachments
+                    .iter()
+                    .filter(|attachment| attachment.kind == "photo")
+                    .count();
+                if photos == 0 {
+                    continue;
+                }
+                in_transcript += photos;
+                if left == 0 {
+                    continue;
+                }
+                let looked = vision_images(state, message.id, left).await?;
+                left = left.saturating_sub(looked.images.len());
+                from_history.ids.extend(looked.ids);
+                from_history.images.extend(looked.images);
+            }
+        }
+        let history_pictures = history_photos.then(|| HistoryPictures {
+            shown: from_history.images.len(),
+            not_shown: in_transcript.saturating_sub(from_history.images.len()),
+        });
+        // Told whenever the member pointed at a photograph, whether or not
+        // it could go: a lone HEIC on the mention still leaves `[photo]` on
+        // the very message that asks about it, and the note is what says
+        // what that marker means (protocol.md, "Showing the assistant a
+        // picture from the family chat"). And told, under the third
+        // switch, whenever the transcript holds one, for the same reason.
+        // The pixels — and the deployment that can see — only when
+        // something actually travels; otherwise this is the text request
+        // it always was, plus the note.
+        let pointed_at =
+            on_mention.images.len() + on_quote.images.len() + on_mention.omitted + on_quote.omitted;
+        if pointed_at > 0 || in_transcript > 0 {
+            vision_note = Some(mention_vision_note(
+                on_mention.images.len(),
+                on_quote.images.len(),
+                on_mention.omitted,
+                on_quote.omitted,
+                history_pictures,
+            ));
+        }
+        if !on_mention.images.is_empty()
+            || !on_quote.images.is_empty()
+            || !from_history.images.is_empty()
+        {
+            // Numbered in the order they are attached, and only under the
+            // switch: without it the mention and its transcript read
+            // exactly as #56 wrote them, and the note says nothing about
+            // numbers.
+            if history_photos {
+                let travelling = on_mention
+                    .ids
+                    .iter()
+                    .chain(&on_quote.ids)
+                    .chain(&from_history.ids);
+                for (position, id) in travelling.enumerate() {
+                    numbered.insert(*id, position + 1);
+                }
+            }
+            images = on_mention.images;
+            images.extend(on_quote.images);
+            images.extend(from_history.images);
+            route = vision;
+        }
+    }
+
     // A poll's question IS the message body, so the mention renders as the
     // marker, the words the member typed — `@ai` and all, exactly as the
-    // model has always received them — and then the tallies.
+    // model has always received them — and then the tallies. Otherwise it
+    // is the placeholders for what it carries, then the words: `[photo]
+    // @ai what is this?`, the shape a private question with a photo has —
+    // or `[photo 1] @ai what is this?` when the third switch numbered it.
     let asked = match mention_poll.as_ref() {
         Some(poll) => poll_line(poll, &body),
-        None => body,
+        None => numbered_turn_content(&body, &mention_attachments, &numbered).unwrap_or(body),
     };
 
-    let content = match (quoted, quoted_author) {
-        (Some(quoted), Some(author)) if !quoted.trim().is_empty() => {
-            // And the same for the message a member deliberately replied
-            // to: "@ai what did we settle on here?" pointed at a poll is
-            // unanswerable from the question alone, which is the whole
-            // reason a quote travels at all.
-            let quoted = match quoted_poll.as_ref() {
-                Some(poll) => poll_line(poll, &quoted),
-                None => quoted,
-            };
-            format!(
-                "[The member replied to this message from {author}]\n{quoted}\n[End of quoted message]\n\n{asked}"
-            )
-        }
+    // And the same for the message a member deliberately replied to: "@ai
+    // what did we settle on here?" pointed at a poll is unanswerable from
+    // the question alone, which is the whole reason a quote travels at all
+    // — and "@ai what is this?" pointed at a captionless photo is the same
+    // question, which is why a quote that is only a placeholder now goes.
+    let quoted_text = match (quoted.as_deref(), quoted_poll.as_ref()) {
+        (Some(quoted), Some(poll)) => Some(poll_line(poll, quoted)),
+        (Some(quoted), None) => numbered_turn_content(quoted, &quoted_attachments, &numbered),
+        (None, _) => None,
+    };
+    let content = match (quoted_text, quoted_author) {
+        (Some(quoted), Some(author)) => format!(
+            "[The member replied to this message from {author}]\n{quoted}\n[End of quoted message]\n\n{asked}"
+        ),
         _ => asked,
     };
 
-    // Built BEFORE the instruction is chosen, because the instruction has
-    // to describe what is actually there. A family that switched this on
-    // this morning, or a chat whose first message is the mention, has no
-    // transcript to send — and the wider instruction promises one "below",
-    // so it would be describing a blank. The narrow instruction is true
-    // again in that case, so that is the one that goes.
-    let history = if with_history {
-        family_chat_history(state, chat_id, message_id, assistant_id).await?
-    } else {
-        None
-    };
+    // Rendered AFTER the pictures are chosen, so the lines whose photos
+    // travelled carry their numbers — and BEFORE the instruction is chosen,
+    // because the instruction has to describe what is actually there. A
+    // family that switched this on this morning, or a chat whose first
+    // message is the mention, has no transcript to send — and the wider
+    // instruction promises one "below", so it would be describing a blank.
+    // The narrow instruction is true again in that case, so that is the
+    // one that goes.
+    let history = render_history(&kept, &state.cfg.ai.title, &numbered);
     let mut instruction = if history.is_some() {
         MENTION_WITH_HISTORY_INSTRUCTION.to_string()
     } else {
@@ -1633,26 +2278,41 @@ async fn mention_prompt(
     // The transcript goes AFTER the instruction that introduces it, and
     // both go before the language instruction `compose_system_prompt`
     // appends — notes are notes and the language always has the last word.
-    let notes = match history {
+    // The note about photographs, when there is one, goes after both: it
+    // describes the turn, and the transcript's own `[photo]` markers are
+    // the ones it warns about.
+    let mut notes = match history {
         Some(history) => vec![instruction, history],
         None => vec![instruction],
     };
+    notes.extend(vision_note);
 
     let audience = events::chat_member_ids(&state.pool, chat_id)
         .await
         .unwrap_or_default();
 
+    // With images only when a member pointed the assistant at them — on the
+    // mention or on the message it replies to — and the family's owner has
+    // said pictures may go; or, under the third switch alone, the
+    // transcript's newest. The photograph elsewhere in a family chat is
+    // usually somebody else's, and the member typing `@ai` is in no
+    // position to consent on their behalf, which is why THAT one stays the
+    // `[photo]` placeholder the transcript carries until the OWNER has said
+    // otherwise, in writing, under a sentence that names the cost
+    // (protocol.md, "Pictures", the amendment under it, and "Recent photos
+    // from the family chat").
+    let turn = if images.is_empty() {
+        ChatTurn::user(content)
+    } else {
+        ChatTurn::user_with_images(content, images)
+    };
+
     Ok(Some(Prompt {
         ask: Ask::Words {
-            // NEVER with images, at any setting, on any family. The
-            // photograph in a family chat is usually somebody else's, and
-            // the member typing `@ai` is in no position to consent on their
-            // behalf — so a mention carries the `[photo]` placeholder its
-            // transcript already carries, and nothing more (protocol.md,
-            // "Pictures").
-            turns: vec![ChatTurn::user(content)],
+            turns: vec![turn],
             notes,
-            route: state.cfg.ai.text_route(),
+            route,
+            draw: state.cfg.ai.contextual_images_route(),
         },
         // The answer quotes the question. In a chat where several
         // conversations run at once, an unattached answer belongs to
@@ -1678,8 +2338,17 @@ const DELTA_INTERVAL: Duration = Duration::from_millis(120);
 
 /// What came back from a provider, whichever one was asked.
 enum Finished {
-    Text { text: String, usage: ai::Usage },
-    Picture { image: GeneratedImage },
+    Text {
+        text: String,
+        usage: ai::Usage,
+    },
+    /// A picture — from `/draw`, with no tokens to report, or from the text
+    /// model asking for one, with the tokens it spent deciding. Both are one
+    /// `question`, one `image` (protocol.md, "Family statistics").
+    Picture {
+        image: GeneratedImage,
+        usage: ai::Usage,
+    },
 }
 
 /// Stream a text answer, fanning coalesced fragments at the audience as they
@@ -1690,6 +2359,10 @@ enum Finished {
 /// about a TOKEN STREAM, and an image answer has none. Leaving it inline
 /// would have meant a picture request walking past a channel, a spawn and a
 /// sleep loop that could never fire.
+///
+/// Hands back everything the stream carried — the words, and the tool call
+/// the model may have made instead — because which of the two the reply IS
+/// is `answer`'s decision, not this pump's.
 #[allow(clippy::too_many_arguments)]
 async fn stream_words(
     state: &AppState,
@@ -1699,7 +2372,8 @@ async fn stream_words(
     route: &ModelRoute,
     system_prompt: &str,
     turns: &[ChatTurn],
-) -> Result<Finished> {
+    tools: &[Value],
+) -> Result<ai::Streamed> {
     // One ordered pump, rather than a task per fragment.
     //
     // Two things were wrong with spawning per fragment, and the family chat
@@ -1739,7 +2413,7 @@ async fn stream_words(
         })
     };
 
-    let outcome = ai::stream_reply(&state.http, route, system_prompt, turns, |delta| {
+    let outcome = ai::stream_reply(&state.http, route, system_prompt, turns, tools, |delta| {
         // A closed channel means the pump is gone; the row is still the
         // truth, so losing a cosmetic fragment is not worth an error.
         let _ = deltas.send(delta.to_string());
@@ -1753,7 +2427,39 @@ async fn stream_words(
     drop(deltas);
     let _ = pump.await;
 
-    outcome.map(|(text, usage)| Finished::Text { text, usage })
+    outcome
+}
+
+/// The text model asked for a picture: make it.
+///
+/// This is where the tool call becomes the ONE thing that leaves for the
+/// images deployment — the `prompt`, checked and bounded by
+/// `ToolCall::draw_prompt`, through the same `generate_image` a `/draw`
+/// goes through. Not the question, not the thread, not the transcript, not
+/// the system prompt, and not any photograph (protocol.md, "Drawing without
+/// being told to").
+///
+/// `draw` is `None` only if a model called a tool no request declared —
+/// which is an error, like every other way a call can be wrong: the member
+/// is better served by `ai_error` and asking again than by a guess.
+async fn draw_as_asked(
+    state: &AppState,
+    draw: Option<ModelRoute>,
+    call: &ai::ToolCall,
+    usage: ai::Usage,
+) -> Result<Finished> {
+    let Some(route) = draw else {
+        anyhow::bail!(
+            "the assistant called {:?} on a request that declared no tool",
+            call.name
+        );
+    };
+    // The message-body ceiling, because a prompt is the same kind of thing
+    // as the words after `/draw`, and those could never be longer than a
+    // message.
+    let prompt = call.draw_prompt(state.cfg.limits.max_message_chars)?;
+    let image = ai::generate_image(&state.http, &route, &state.cfg.ai.images, &prompt).await?;
+    Ok(Finished::Picture { image, usage })
 }
 
 /// Write a generated picture to disk and bind it to the message that is
@@ -1903,10 +2609,15 @@ async fn answer(
             turns,
             notes,
             route,
+            draw,
         } => {
             let system_prompt =
                 compose_system_prompt(&state.cfg.ai.system_prompt, &notes, language);
-            stream_words(
+            // The tool is declared exactly when there is somewhere to
+            // honour it: a server that cannot draw sends no `tools` key at
+            // all, and its request is the request it always was.
+            let tools: Vec<Value> = draw.iter().map(|_| ai::draw_picture_tool()).collect();
+            match stream_words(
                 state,
                 chat_id,
                 message_id,
@@ -1914,8 +2625,28 @@ async fn answer(
                 &route,
                 &system_prompt,
                 &turns,
+                &tools,
             )
             .await
+            {
+                Err(error) => Err(error),
+                Ok(ai::Streamed {
+                    text,
+                    tool_call: None,
+                    usage,
+                }) => Ok(Finished::Text { text, usage }),
+                // The model asked for a picture. If it ALSO wrote words, the
+                // picture wins and the words are dropped: one reply, one
+                // attachment, the shape `/draw` already has — and the words
+                // were most likely "here it is". Any that streamed as deltas
+                // are gone when the finished row lands, because the row is
+                // the truth (protocol.md, "Drawing without being told to").
+                Ok(ai::Streamed {
+                    tool_call: Some(call),
+                    usage,
+                    ..
+                }) => draw_as_asked(state, draw, &call, usage).await,
+            }
         }
         // No deltas and no pump: an image model produces no token stream,
         // and the empty row IS the "still working" state (protocol.md,
@@ -1924,7 +2655,10 @@ async fn answer(
         Ask::Picture { prompt, route } => {
             ai::generate_image(&state.http, &route, &state.cfg.ai.images, &prompt)
                 .await
-                .map(|image| Finished::Picture { image })
+                .map(|image| Finished::Picture {
+                    image,
+                    usage: ai::Usage::default(),
+                })
         }
     };
 
@@ -1952,7 +2686,7 @@ async fn answer(
     // request handed back to them is not a caption.
     let (text, usage, image) = match finished {
         Finished::Text { text, usage } => (text, usage, None),
-        Finished::Picture { image } => (String::new(), ai::Usage::default(), Some(image)),
+        Finished::Picture { image, usage } => (String::new(), usage, Some(image)),
     };
 
     if image.is_none() && text.trim().is_empty() {
@@ -2049,9 +2783,11 @@ async fn answer(
         .bind(usage.prompt_tokens)
         .bind(usage.completion_tokens)
         // Its own number rather than one inferred from zero tokens: an image
-        // model reports no usage, so a picture is one question, no tokens and
+        // model reports no usage, so a `/draw` is one question, no tokens and
         // one image — and a family reading only the token counts would see
-        // the expensive half of the assistant as free (protocol.md, "Family
+        // the expensive half of the assistant as free. A picture the text
+        // model asked for is one question, the tokens it spent deciding, and
+        // one image: the only reply that carries both (protocol.md, "Family
         // statistics").
         .bind(i32::from(image.is_some()))
         .execute(&state.pool)
@@ -2077,10 +2813,12 @@ async fn answer(
 #[cfg(test)]
 mod tests {
     use super::{
-        HISTORY_MAX_CHARS, HISTORY_MAX_MESSAGES, HISTORY_WINDOW_DAYS, HistoryMessage, HistoryPoll,
-        HistoryPollOption, MENTION_INSTRUCTION, MENTION_WITH_HISTORY_INSTRUCTION,
-        MIRROR_LANGUAGE_INSTRUCTION, POLL_NOTE, compose_system_prompt, history_note_header,
-        language_instruction, mention_poll_note, poll_line, turn_content, vision_note,
+        HISTORY_MAX_CHARS, HISTORY_MAX_MESSAGES, HISTORY_WINDOW_DAYS, HistoryMessage,
+        HistoryPictures, HistoryPoll, HistoryPollOption, MENTION_INSTRUCTION,
+        MENTION_WITH_HISTORY_INSTRUCTION, MIRROR_LANGUAGE_INSTRUCTION, Numbered, POLL_NOTE,
+        compose_system_prompt, history_note_header, language_instruction, mention_poll_note,
+        mention_vision_note, numbered_turn_content, poll_line, render_history, turn_content,
+        vision_note, window,
     };
     use crate::models::Attachment;
     use time::macros::datetime;
@@ -2088,6 +2826,26 @@ mod tests {
 
     /// The moment every window test measures backwards from.
     const NOW: OffsetDateTime = datetime!(2026-08-25 12:00 UTC);
+
+    /// [`mention_vision_note`] with the third switch OFF — the #56 note,
+    /// which every pin below this line that does not name the switch is
+    /// about. `None` is what the mention path passes whenever
+    /// `ai_history_photos` is off or inert, and these strings are the ones
+    /// the integration suite asserts off the wire in that state.
+    fn mention_note(
+        on_mention: usize,
+        on_quote: usize,
+        omitted_on_mention: usize,
+        omitted_on_quote: usize,
+    ) -> String {
+        mention_vision_note(
+            on_mention,
+            on_quote,
+            omitted_on_mention,
+            omitted_on_quote,
+            None,
+        )
+    }
 
     /// What this family calls the assistant — a configured `[ai] title`
     /// that is deliberately NOT the reserved account's "Assistant", so a
@@ -2140,6 +2898,7 @@ mod tests {
 
     fn said(at: OffsetDateTime, sender: &str, body: &str) -> HistoryMessage {
         HistoryMessage {
+            id: 0,
             at,
             sender: sender.to_string(),
             body: body.to_string(),
@@ -2155,6 +2914,7 @@ mod tests {
         attachment: Attachment,
     ) -> HistoryMessage {
         HistoryMessage {
+            id: 0,
             at,
             sender: sender.to_string(),
             body: body.to_string(),
@@ -2177,6 +2937,7 @@ mod tests {
         options: &[(&str, i64)],
     ) -> HistoryMessage {
         HistoryMessage {
+            id: 0,
             at,
             sender: sender.to_string(),
             body: question.to_string(),
@@ -2396,6 +3157,7 @@ mod tests {
     fn several_attachments_contribute_one_placeholder_each_in_order() {
         let at = datetime!(2026-07-28 19:03 UTC);
         let album = |body: &str| HistoryMessage {
+            id: 0,
             at,
             sender: "Bob".to_string(),
             body: body.to_string(),
@@ -2421,6 +3183,7 @@ mod tests {
         let note = history_note(
             NOW,
             &[HistoryMessage {
+                id: 0,
                 at,
                 sender: "Bob".to_string(),
                 body: String::new(),
@@ -2868,6 +3631,7 @@ mod tests {
         let line = history_note(
             NOW,
             &[HistoryMessage {
+                id: 0,
                 at: datetime!(2026-08-30 12:14 UTC),
                 sender: "Anna".to_string(),
                 body: "@ai which should we pick for Sunday?".to_string(),
@@ -3434,6 +4198,554 @@ mod tests {
         assert!(
             note.contains("no words with it"),
             "a wordless picture is told what to do: {note}"
+        );
+    }
+
+    /// A mention has TWO messages a picture can be on, and the model is
+    /// told which — "what is this?" replying to a photo is about the quoted
+    /// picture — and in what order they come.
+    #[test]
+    fn the_mention_note_says_which_message_each_picture_is_on() {
+        let on_mention = mention_note(1, 0, 0, 0);
+        assert!(
+            on_mention.contains("ONE photograph attached to the message that mentioned you"),
+            "{on_mention}"
+        );
+        assert!(!on_mention.contains("quotes"), "{on_mention}");
+
+        let on_quote = mention_note(0, 2, 0, 0);
+        assert!(
+            on_quote.contains("2 photographs on the message it quotes"),
+            "{on_quote}"
+        );
+        assert!(
+            on_quote.contains("the member replied to"),
+            "and what a quote IS: {on_quote}"
+        );
+
+        let both = mention_note(1, 3, 0, 0);
+        assert!(
+            both.contains(
+                "ONE photograph on the message that mentioned you and 3 photographs on the \
+                 message it quotes"
+            ),
+            "{both}"
+        );
+        assert!(
+            both.contains("the mentioning message's first"),
+            "the order is said, because it is the order they are sent in: {both}"
+        );
+    }
+
+    /// The warning about `[photo]` is WIDER for a mention than for a private
+    /// thread: with a transcript in front of it, every marker there is a
+    /// picture the model was not shown — the case the old rule worried
+    /// about most.
+    #[test]
+    fn the_mention_note_disowns_every_other_photo_marker() {
+        let note = mention_note(1, 0, 0, 0);
+        assert!(note.contains("[photo] marker"), "{note}");
+        assert!(note.contains("in the transcript"), "{note}");
+        assert!(note.contains("NOT shown"), "{note}");
+        assert!(
+            note.contains("pointed you at them deliberately"),
+            "and why it can see the ones it can: {note}"
+        );
+        assert!(
+            note.contains("one-to-one chat"),
+            "what it still cannot see: {note}"
+        );
+        assert!(
+            !note.contains("could not be included"),
+            "nothing was left out here: {note}"
+        );
+    }
+
+    /// Omissions are named PER MESSAGE: a member who put five pictures on a
+    /// mention believes five were sent, and a quoted album over the budget
+    /// is a different sentence from a mention over it.
+    #[test]
+    fn a_mention_names_what_it_left_out_and_where() {
+        let mention_only = mention_note(4, 0, 1, 0);
+        assert!(
+            mention_only
+                .contains("1 further picture(s) on the message that mentioned you could not"),
+            "{mention_only}"
+        );
+        assert!(
+            !mention_only.contains("on the message it quotes could not"),
+            "{mention_only}"
+        );
+
+        let quote_only = mention_note(2, 2, 0, 3);
+        assert!(
+            quote_only.contains("3 further picture(s) on the message it quotes could not"),
+            "{quote_only}"
+        );
+        assert!(
+            quote_only.contains("beyond the four"),
+            "the budget is one of the named reasons: {quote_only}"
+        );
+
+        let both = mention_note(3, 1, 1, 2);
+        assert!(
+            both.contains("1 further picture(s) on the message that mentioned you"),
+            "{both}"
+        );
+        assert!(
+            both.contains("2 further picture(s) on the message it quotes"),
+            "{both}"
+        );
+    }
+
+    /// THE SENTENCE THE PROTOCOL PROMISED AND THE CODE DID NOT SAY.
+    ///
+    /// A lone HEIC on the mention, both locks open: nothing travels, the
+    /// request goes to the text deployment as `[photo] @ai what is this?`,
+    /// and until this note existed nothing in the prompt said what the
+    /// marker meant or that a picture had been left out. Pinned WHOLE,
+    /// because the integration test asserts the same string off the wire.
+    #[test]
+    fn a_lone_unreadable_photo_on_the_mention_is_still_named() {
+        assert_eq!(
+            mention_note(0, 0, 1, 0),
+            "The member pointed you at ONE photograph, but it could not be included, so you can \
+             see NO picture here. Every [photo] marker in front of you, in the transcript or \
+             elsewhere, is a picture you were NOT shown — do not describe it, and say so if it \
+             is what you are being asked about. You still cannot see any member's private chat \
+             with you, or any one-to-one chat between two members. 1 picture(s) on the message \
+             that mentioned you could not be included, because they were too large, in a \
+             format you cannot read, or beyond the four you can be shown at once. Say so rather \
+             than guessing what they showed."
+        );
+    }
+
+    /// The same on the QUOTE: "@ai what is this?" replying to a HEIC-only
+    /// message. The sentence names the message the picture was on.
+    #[test]
+    fn a_lone_unreadable_photo_on_the_quote_is_still_named() {
+        assert_eq!(
+            mention_note(0, 0, 0, 1),
+            "The member pointed you at ONE photograph, but it could not be included, so you can \
+             see NO picture here. Every [photo] marker in front of you, in the transcript or \
+             elsewhere, is a picture you were NOT shown — do not describe it, and say so if it \
+             is what you are being asked about. You still cannot see any member's private chat \
+             with you, or any one-to-one chat between two members. 1 picture(s) on the message \
+             it quotes could not be included, because they were too large, in a format you \
+             cannot read, or beyond the four you can be shown at once. Say so rather than \
+             guessing what they showed."
+        );
+        // Several, across both: counted together up front, then per message.
+        let several = mention_note(0, 0, 2, 1);
+        assert!(
+            several.starts_with("The member pointed you at 3 photographs, but none of them"),
+            "{several}"
+        );
+        assert!(
+            several.contains("2 picture(s) on the message that mentioned you could not"),
+            "{several}"
+        );
+        assert!(
+            several.contains("1 picture(s) on the message it quotes could not"),
+            "{several}"
+        );
+        assert!(
+            !several.contains("further"),
+            "nothing was shown, so nothing is 'further': {several}"
+        );
+    }
+
+    /// "further" is earned per message: a quote that showed nothing while
+    /// the mention took the whole budget has pictures left out, not
+    /// FURTHER pictures left out.
+    #[test]
+    fn further_is_said_only_beside_a_message_that_showed_something() {
+        let note = mention_note(4, 0, 0, 2);
+        assert!(
+            note.contains("2 picture(s) on the message it quotes could not be included"),
+            "{note}"
+        );
+        assert!(!note.contains("further"), "{note}");
+        let note = mention_note(4, 0, 1, 2);
+        assert!(
+            note.contains("1 further picture(s) on the message that mentioned you"),
+            "{note}"
+        );
+        assert!(
+            note.contains("2 picture(s) on the message it quotes"),
+            "{note}"
+        );
+    }
+
+    /// The private thread's own zero case: a question whose ONLY photograph
+    /// was over the ceiling, or a HEIC. Pinned whole for the same reason.
+    #[test]
+    fn a_private_question_whose_only_photo_was_left_out_is_still_told() {
+        assert_eq!(
+            vision_note(0, 1, true),
+            "The member attached ONE photograph to this question, but it could not be included, \
+             because it was too large or in a format you cannot read. You were NOT shown it: \
+             say so rather than guessing what it showed. Any [photo] marker in this \
+             conversation is a picture you were NOT shown — do not describe it. You cannot see \
+             anything from the family chat, from another member's conversation with you, or \
+             from any one-to-one chat between two members."
+        );
+        let several = vision_note(0, 3, false);
+        assert!(
+            several.starts_with("The member attached 3 photographs to this question, but none"),
+            "{several}"
+        );
+        assert!(
+            several.ends_with(
+                "The member sent no words with it. Say, briefly, that you could not be shown \
+                 it, and ask what they would like to know."
+            ),
+            "a wordless, pictureless question is told what to do — and not to describe: \
+             {several}"
+        );
+        assert!(
+            !several.contains("Describe what you see"),
+            "there is nothing to see: {several}"
+        );
+    }
+
+    // -- the third switch: recent photos from the family chat ------------------
+
+    /// An attachment with a real id, which is what the numbering keys on.
+    fn photo_with_id(id: i64) -> Attachment {
+        Attachment {
+            id,
+            ..attachment("photo", None)
+        }
+    }
+
+    /// A message with a real id and its own photographs, for the window
+    /// and numbering tests, which are about WHICH picture is on which line.
+    fn album_with(
+        id: i64,
+        at: OffsetDateTime,
+        sender: &str,
+        body: &str,
+        photo_ids: &[i64],
+    ) -> HistoryMessage {
+        HistoryMessage {
+            id,
+            at,
+            sender: sender.to_string(),
+            body: body.to_string(),
+            attachments: photo_ids.iter().map(|id| photo_with_id(*id)).collect(),
+            poll: None,
+        }
+    }
+
+    /// The switch OFF is #56's note to the byte — `None` reproduces the
+    /// strings the integration suite pins off the wire, and every sentence
+    /// the third switch adds is absent: no numbers, no transcript count.
+    #[test]
+    fn with_the_switch_off_the_mention_note_is_byte_identical_to_56() {
+        for (on_mention, on_quote, omitted_on_mention, omitted_on_quote) in [
+            (1, 0, 0, 0),
+            (0, 2, 0, 0),
+            (2, 2, 0, 1),
+            (0, 0, 1, 0),
+            (0, 0, 0, 1),
+            (4, 0, 1, 2),
+        ] {
+            let note = mention_vision_note(
+                on_mention,
+                on_quote,
+                omitted_on_mention,
+                omitted_on_quote,
+                None,
+            );
+            assert!(!note.contains("[photo 1]"), "{note}");
+            assert!(!note.contains("transcript above"), "{note}");
+            assert!(!note.contains("numbered"), "{note}");
+            assert!(!note.contains("Nobody pointed"), "{note}");
+        }
+        // And the whole string of the load-bearing case, once more.
+        assert_eq!(
+            mention_vision_note(0, 0, 1, 0, None),
+            mention_note(0, 0, 1, 0),
+            "the helper every #56 pin uses is the switch off, and nothing else"
+        );
+    }
+
+    /// The switch on, over a transcript with no photograph in it, and a
+    /// picture on the mention: the pointed-at sentences are #56's, and the
+    /// ONLY thing added is how the numbering works — because the mention
+    /// now reads `[photo 1] @ai …` and a number nobody explained is worse
+    /// than a bare marker.
+    #[test]
+    fn a_switched_on_family_with_no_transcript_photos_is_told_only_about_numbers() {
+        let note = mention_vision_note(1, 0, 0, 0, Some(HistoryPictures::default()));
+        assert!(
+            note.starts_with(
+                "You can see ONE photograph attached to the message that mentioned you. A member \
+                 pointed you at them deliberately — by attaching them to the mention, or by \
+                 replying to them with it. The pictures are attached in this order"
+            ),
+            "{note}"
+        );
+        assert!(
+            note.contains("[photo 1] is the first picture attached"),
+            "{note}"
+        );
+        assert!(
+            note.contains("A bare [photo] with no number, anywhere in front of you, is a picture you were NOT shown"),
+            "{note}"
+        );
+        assert!(
+            !note.contains("transcript above"),
+            "nothing came from it: {note}"
+        );
+        assert!(
+            !note.contains("could not be included"),
+            "nothing was left out: {note}"
+        );
+    }
+
+    /// THE SHAPE OF CASE (3): a picture on the mention, one on the quote,
+    /// two from the transcript, three more in it that stayed bare. The note
+    /// counts the transcript's, says they are the most recent, names the
+    /// numbered lines they are on, disowns the bare ones by count, and
+    /// says who did NOT point the assistant at them.
+    #[test]
+    fn the_note_counts_the_transcripts_pictures_and_says_they_are_the_newest() {
+        let note = mention_vision_note(
+            1,
+            1,
+            0,
+            0,
+            Some(HistoryPictures {
+                shown: 2,
+                not_shown: 3,
+            }),
+        );
+        assert!(
+            note.starts_with(
+                "You can see ONE photograph on the message that mentioned you and ONE photograph \
+                 on the message it quotes, in that order: the mentioning message's first. A \
+                 member pointed you at them deliberately — by attaching them to the mention, or \
+                 by replying to them with it. You can also see 2 photographs from the transcript \
+                 above, on the lines marked [photo 3] to [photo 4]: the most recent pictures sent \
+                 in this chat that could be included. Nobody pointed you at those: this family's \
+                 owner has allowed you to be shown the chat's recent pictures alongside a \
+                 mention, and each one is whatever its line says its sender sent, when they sent \
+                 it. The pictures are attached in this order — the mentioning message's first, \
+                 then the quoted message's, then the transcript's, newest first — and every \
+                 marker for a picture you can see is numbered to match: [photo 1] is the first \
+                 picture attached, [photo 2] the second, and so on, on the message that \
+                 mentioned you, on the message it quotes and on the transcript's lines alike. A \
+                 bare [photo] with no number, anywhere in front of you, is a picture you were \
+                 NOT shown — do not describe it, and say so if it is what you are being asked \
+                 about. You still cannot see any member's private chat with you, or any \
+                 one-to-one chat between two members."
+            ),
+            "{note}"
+        );
+        assert!(
+            note.ends_with(
+                " 3 other picture(s) in the transcript could not be included, because they were \
+                 beyond the four you can be shown at once, too large, or in a format you cannot \
+                 read; their markers are bare. Say so rather than guessing what they showed."
+            ),
+            "{note}"
+        );
+        assert!(
+            !note.contains("on the message that mentioned you could not"),
+            "nothing on the mention was left out: {note}"
+        );
+        // One from the transcript alone, nothing on either message: the
+        // opening says so, and names the one line.
+        let alone = mention_vision_note(
+            0,
+            0,
+            0,
+            0,
+            Some(HistoryPictures {
+                shown: 1,
+                not_shown: 0,
+            }),
+        );
+        assert!(
+            alone.starts_with(
+                "You can see ONE photograph from the transcript above, on the line marked \
+                 [photo 1]: the most recent picture sent in this chat that could be included. \
+                 Nothing was attached to the message that mentioned you or to the message it \
+                 quotes. Nobody pointed you at those"
+            ),
+            "{alone}"
+        );
+        assert!(!alone.contains("deliberately"), "nobody pointed: {alone}");
+        assert!(!alone.contains("could not be included"), "{alone}");
+    }
+
+    /// CASE (7): the transcript's only photograph is a HEIC and nothing is
+    /// on the mention. Nothing travels, the request is a TEXT one, and the
+    /// note still says what happened — pinned whole, because the
+    /// integration test asserts the same string off the wire.
+    #[test]
+    fn a_lone_unreadable_photo_in_the_transcript_is_named_even_though_nothing_travels() {
+        assert_eq!(
+            mention_vision_note(
+                0,
+                0,
+                0,
+                0,
+                Some(HistoryPictures {
+                    shown: 0,
+                    not_shown: 1,
+                })
+            ),
+            "There is ONE photograph in the transcript above, but it could not be included, so \
+             you can see NO picture here. Every [photo] marker in front of you, in the \
+             transcript or elsewhere, is a picture you were NOT shown — do not describe it, and \
+             say so if it is what you are being asked about. You still cannot see any member's \
+             private chat with you, or any one-to-one chat between two members. 1 picture(s) in \
+             the transcript could not be included, because they were too large or in a format \
+             you cannot read. Say so rather than guessing what they showed."
+        );
+        // Several in the transcript AND one pointed at, all unreadable:
+        // counted together up front, then per place.
+        let both = mention_vision_note(
+            0,
+            0,
+            1,
+            0,
+            Some(HistoryPictures {
+                shown: 0,
+                not_shown: 2,
+            }),
+        );
+        assert!(
+            both.starts_with(
+                "The member pointed you at ONE photograph, and there are 2 more in the \
+                 transcript above, but none of them could be included, so you can see NO \
+                 picture here."
+            ),
+            "{both}"
+        );
+        assert!(
+            both.contains("1 picture(s) on the message that mentioned you could not"),
+            "{both}"
+        );
+        assert!(
+            both.contains("2 picture(s) in the transcript could not be included"),
+            "{both}"
+        );
+        assert!(!both.contains("numbered"), "nothing to number: {both}");
+        // The switch on over a transcript with NO photograph, and a lone
+        // unreadable one on the mention, is #56's zero case to the byte.
+        assert_eq!(
+            mention_vision_note(0, 0, 1, 0, Some(HistoryPictures::default())),
+            mention_note(0, 0, 1, 0)
+        );
+    }
+
+    /// A travelling photograph is `[photo N]` wherever it is written — on
+    /// the mention, in the quote, on the transcript's line — keyed by its
+    /// attachment id, so the quoted message's picture reads the same number
+    /// in the quote and on its own line. Every other marker, of every kind,
+    /// is what it always was; and with nothing numbered the transcript is
+    /// byte for byte the one `history_note` writes.
+    #[test]
+    fn a_travelling_photo_is_numbered_wherever_it_is_written() {
+        let at = datetime!(2026-08-24 19:03 UTC);
+        let messages = [
+            album_with(30, at, "Anna", "latest", &[301, 302]),
+            album_with(20, at, "Bob", "", &[201]),
+            HistoryMessage {
+                id: 10,
+                at,
+                sender: "Cy".to_string(),
+                body: "receipt".to_string(),
+                attachments: vec![attachment("file", Some("receipts.pdf")), photo_with_id(101)],
+                poll: None,
+            },
+        ];
+        // The mention's own photo is 1, the quote's (Bob's 201) is 2, then
+        // the transcript's newest: Anna's first two are 3 and 4 and the
+        // budget is spent — Cy's 101 stays bare.
+        let numbered: Numbered = [(999, 1), (201, 2), (301, 3), (302, 4)]
+            .into_iter()
+            .collect();
+        let kept = window(NOW, &messages);
+        let note = render_history(&kept, ASSISTANT, &numbered).expect("a transcript");
+        assert_eq!(
+            transcript_of(&note),
+            "[2026-08-24 19:03 UTC] Cy: [file] receipts.pdf [photo] receipt\n\
+             [2026-08-24 19:03 UTC] Bob: [photo 2]\n\
+             [2026-08-24 19:03 UTC] Anna: [photo 3] [photo 4] latest"
+        );
+        assert_eq!(
+            numbered_turn_content("@ai which?", &[photo_with_id(999)], &numbered).as_deref(),
+            Some("[photo 1] @ai which?")
+        );
+        assert_eq!(
+            numbered_turn_content("", &[photo_with_id(201)], &numbered).as_deref(),
+            Some("[photo 2]"),
+            "the quote's photo carries the same number it has on its own line"
+        );
+        // A number for an attachment that is not a photo is never written:
+        // the map is keyed by id and a file can never be in it, but the
+        // renderer checks the kind rather than trusting that.
+        let file_numbered: Numbered = [(1, 1)].into_iter().collect();
+        assert_eq!(
+            numbered_turn_content("", &[attachment("file", Some("a.pdf"))], &file_numbered)
+                .as_deref(),
+            Some("[file] a.pdf")
+        );
+        // Nothing numbered is the transcript exactly as it was.
+        assert_eq!(
+            render_history(&kept, ASSISTANT, &Numbered::new()),
+            history_note(NOW, &messages)
+        );
+    }
+
+    /// The window is decided BEFORE anything is numbered, over the bare
+    /// rendering, so numbering can never change which lines survive — and
+    /// therefore never send a photograph off a line the model cannot read.
+    /// Built to the character cap exactly: re-measuring after `[photo 1]`
+    /// (two characters longer than `[photo]`) would drop the oldest line.
+    #[test]
+    fn numbering_never_changes_which_lines_survive() {
+        let at = datetime!(2026-08-24 19:03 UTC);
+        let stamp_and_name = "[2026-08-24 19:03 UTC] A: ".len();
+        let newest = album_with(1, at, "A", "latest", &[7]);
+        let newest_cost = stamp_and_name + "[photo] latest".len() + 1;
+        // One older line that brings the BARE total to the ceiling exactly:
+        // the two fit to the character, and one character more on either
+        // would drop the older one.
+        let filler = HISTORY_MAX_CHARS - newest_cost - stamp_and_name - 1;
+        let older = HistoryMessage {
+            id: 2,
+            at,
+            sender: "A".to_string(),
+            body: "x".repeat(filler),
+            attachments: Vec::new(),
+            poll: None,
+        };
+        let messages = [newest, older];
+        let kept = window(NOW, &messages);
+        assert_eq!(kept.len(), 2, "both fit bare, to the character");
+
+        let numbered: Numbered = [(7, 1)].into_iter().collect();
+        let note = render_history(&kept, ASSISTANT, &numbered).expect("a transcript");
+        assert_eq!(kept_lines(&note), 2, "numbering dropped nothing");
+        let sent: usize = transcript_of(&note)
+            .lines()
+            .map(|line| line.chars().count() + 1)
+            .sum();
+        assert_eq!(
+            sent,
+            HISTORY_MAX_CHARS + 2,
+            "over by exactly the two characters the number added — the direction to be wrong in"
+        );
+        assert!(
+            transcript_of(&note).ends_with("A: [photo 1] latest"),
+            "and the newest line carries its number: {}",
+            transcript_of(&note)
         );
     }
 }

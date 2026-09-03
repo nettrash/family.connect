@@ -24,6 +24,8 @@ import android.content.ClipData
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import androidx.compose.runtime.snapshots.Snapshot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -1939,10 +1941,15 @@ class ChatViewModelTest {
         vision: Boolean = true,
         images: Boolean = true,
         familyAllows: Boolean = true,
+        /** The owner's third switch — off by default, as on the wire. */
+        historyPhotos: Boolean = false,
+        familyHistory: Boolean = true,
     ) {
         launch {
             settings.setAssistant(userId = 1L, displayName = "Assistant", vision = vision, images = images)
             settings.setFamilyAiVision(familyAllows)
+            settings.setFamilyAiHistory(familyHistory)
+            settings.setFamilyAiHistoryPhotos(historyPhotos)
         }
         runCurrent()
     }
@@ -1953,10 +1960,14 @@ class ChatViewModelTest {
             val viewModel = newViewModel(kind = kind)
             picturesConfigured()
             runCurrent()
-            // `@ai` in the family chat NEVER sends a picture, at any
-            // setting: the photograph there is very often somebody
-            // else's, and the member typing the mention is in no position
-            // to consent on their behalf.
+            // The DEDICATED door is the assistant's own chat's. Not
+            // because a picture never reaches the assistant from the
+            // family chat — since #56 a photo on an `@ai` message, or on
+            // the message it replies to, travels under these same two
+            // locks (docs/protocol.md, "Showing the assistant a picture
+            // from the family chat") — but because that path rides the
+            // ordinary "Photo or video" door and the reply affordance the
+            // family composer already has.
             assertThat(viewModel.canShowAssistantPicture.value).isEqualTo(kind == "ai")
         }
     }
@@ -2069,8 +2080,13 @@ class ChatViewModelTest {
                 ),
             )
 
-        // The same photo in the family chat says nothing: it is never
-        // shown to the assistant there, so there is nothing to disclose.
+        // The same photo in the family chat raises no strip HERE. This
+        // pins this strip's scope, not a rule about what travels: since
+        // #56 a photo on an `@ai` message there DOES reach the model under
+        // the same two locks (docs/protocol.md, "Showing the assistant a
+        // picture from the family chat"), and the family composer has a
+        // strip of its own for that moment — [ChatViewModel.mentionPictureNotice],
+        // raised by the draft mentioning the assistant, pinned below.
         val familyChat = newViewModel(kind = "family")
         picturesConfigured()
         familyChat.stagePrepared(tempPrepared(tag = 1))
@@ -2113,5 +2129,212 @@ class ChatViewModelTest {
         runCurrent()
 
         assertThat(viewModel.assistantPictureNotice.value).isEqualTo(AiPictureNotice.WillNotShow)
+    }
+
+    // -- The family composer's strip (#56) --------------------------------------
+
+    /**
+     * Type into the composer the way a member does, and let the
+     * ViewModel's snapshot watch see it: a [TextFieldState] write lands in
+     * the global snapshot, and outside a composition nobody sends the
+     * apply notifications `snapshotFlow` listens for.
+     */
+    private fun TestScope.type(viewModel: ChatViewModel, draft: String) {
+        viewModel.inputState.setTextAndPlaceCursorAtEnd(draft)
+        Snapshot.sendApplyNotifications()
+        runCurrent()
+    }
+
+    /** A photo somebody else sent, as its row is held here. */
+    private fun photoMessage(serverId: Long, photos: Int): MessageEntity = MessageEntity(
+        clientMsgId = "s$serverId",
+        serverId = serverId,
+        chatId = CHAT,
+        senderId = PEER,
+        body = "",
+        createdAt = NOON,
+        status = MessageStatus.SENT,
+        attachmentsJson = AttachmentsCodec.encode(
+            List(photos) { index ->
+                AttachmentDto(
+                    id = serverId * 10 + index, kind = AttachmentDto.KIND_PHOTO, mime = "image/jpeg",
+                    size = 40_000L, width = 64, height = 64, hasPreview = true,
+                )
+            },
+        ),
+    )
+
+    /**
+     * With a lock shut nothing leaves, so nothing is announced — and the
+     * family composer, unlike the assistant's own, says nothing at all
+     * rather than naming a lock a non-owner cannot open.
+     */
+    @Test
+    fun theFamilyStripIsAbsentWithALockShut() = runTest(dispatcher) {
+        val familyAllowsNot = newViewModel(kind = "family")
+        picturesConfigured(familyAllows = false)
+        familyAllowsNot.stagePrepared(tempPrepared(tag = 1))
+        type(familyAllowsNot, "@ai what is this?")
+        assertThat(familyAllowsNot.mentionPictureNotice.value).isNull()
+
+        val serverCannotSee = newViewModel(kind = "family")
+        picturesConfigured(vision = false)
+        serverCannotSee.stagePrepared(tempPrepared(tag = 1))
+        type(serverCannotSee, "@ai what is this?")
+        assertThat(serverCannotSee.mentionPictureNotice.value).isNull()
+    }
+
+    /** Without `@ai` the photo is an ordinary attachment on an ordinary message. */
+    @Test
+    fun theFamilyStripIsAbsentWithoutAMention() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        picturesConfigured()
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        type(viewModel, "what is this?")
+        assertThat(viewModel.mentionPictureNotice.value).isNull()
+        // And it appears the moment the mention is typed, off the same
+        // staged photo — the strip follows the draft, not the door.
+        type(viewModel, "@ai what is this?")
+        assertThat(viewModel.mentionPictureNotice.value).isEqualTo(
+            MentionPictureNotice(
+                shownOnMention = 1, shownOnQuote = 0, extraPhotos = 0, otherAttachments = 0, unreadablePhotos = 0,
+            ),
+        )
+    }
+
+    /** The family chat's strip, and only the family chat's. */
+    @Test
+    fun theFamilyStripIsPresentWithAStagedPhotoAndOnlyInTheFamilyChat() = runTest(dispatcher) {
+        val family = newViewModel(kind = "family")
+        picturesConfigured()
+        family.stagePrepared(tempPrepared(tag = 1))
+        type(family, "@ai what is this?")
+        assertThat(family.mentionPictureNotice.value).isEqualTo(
+            MentionPictureNotice(
+                shownOnMention = 1, shownOnQuote = 0, extraPhotos = 0, otherAttachments = 0, unreadablePhotos = 0,
+            ),
+        )
+        // The assistant's own chat has its own strip (assistantPictureNotice)
+        // and a direct chat has no assistant in it at all.
+        for (kind in listOf("ai", "direct")) {
+            val other = newViewModel(kind = kind)
+            picturesConfigured()
+            other.stagePrepared(tempPrepared(tag = 1))
+            type(other, "@ai what is this?")
+            assertThat(other.mentionPictureNotice.value).isNull()
+        }
+    }
+
+    /**
+     * Replying to a photo with `@ai` points the assistant at THAT photo,
+     * and the strip says so — read off this device's own row for the
+     * quoted message, because a ReplyToDto carries an excerpt and nothing
+     * else.
+     */
+    @Test
+    fun theFamilyStripIsPresentWithAQuotedPhoto() = runTest(dispatcher) {
+        seed(photoMessage(serverId = 100, photos = 1))
+        val viewModel = newViewModel(kind = "family")
+        picturesConfigured()
+        viewModel.beginReply(ReplyToDto(messageId = 100, senderId = PEER, excerpt = ""))
+        type(viewModel, "@ai what is this?")
+        assertThat(viewModel.mentionPictureNotice.value).isEqualTo(
+            MentionPictureNotice(
+                shownOnMention = 0, shownOnQuote = 1, extraPhotos = 0, otherAttachments = 0, unreadablePhotos = 0,
+            ),
+        )
+        // Cancelling the reply takes the photo — and the strip — with it.
+        viewModel.cancelReply()
+        runCurrent()
+        assertThat(viewModel.mentionPictureNotice.value).isNull()
+    }
+
+    /**
+     * THE SHARED BUDGET, end to end: three staged and three on the quoted
+     * message is four shown — the staged first — and two named, exactly
+     * as the server will count them.
+     */
+    @Test
+    fun theFamilyStripCountsAcrossMentionAndQuoteAsTheServerDoes() = runTest(dispatcher) {
+        seed(photoMessage(serverId = 100, photos = 3))
+        val viewModel = newViewModel(kind = "family")
+        picturesConfigured()
+        viewModel.beginReply(ReplyToDto(messageId = 100, senderId = PEER, excerpt = ""))
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        viewModel.stagePrepared(tempPrepared(tag = 2))
+        viewModel.stagePrepared(tempPrepared(tag = 3))
+        type(viewModel, "@ai which is best?")
+        assertThat(viewModel.mentionPictureNotice.value).isEqualTo(
+            MentionPictureNotice(
+                shownOnMention = 3, shownOnQuote = 1, extraPhotos = 2, otherAttachments = 0, unreadablePhotos = 0,
+            ),
+        )
+        assertThat(viewModel.mentionPictureNotice.value!!.shown).isEqualTo(AiPictureNotice.MAX_PHOTOS)
+    }
+
+    // -- Recent photos: the owner's third switch --------------------------------
+
+    /**
+     * Under `ai_history_photos` the strip shows for a bare `@ai` draft —
+     * the case #56's strip was absent for — and says "up to four", because
+     * every one of the four may be somebody else's recent picture. It
+     * follows the switch off again, mirrored from the settings the
+     * repository writes on every `GET /families/mine` and on the owner's
+     * own PATCH (docs/protocol.md, "Recent photos from the family chat").
+     */
+    @Test
+    fun theFamilyStripShowsForABareMentionUnderTheThirdSwitch() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        picturesConfigured(historyPhotos = true)
+        type(viewModel, "@ai what time is the match?")
+        assertThat(viewModel.mentionPictureNotice.value).isEqualTo(
+            MentionPictureNotice(
+                shownOnMention = 0, shownOnQuote = 0, extraPhotos = 0, otherAttachments = 0,
+                unreadablePhotos = 0, recentUpTo = AiPictureNotice.MAX_PHOTOS,
+            ),
+        )
+        // A staged photo takes its place first; history gets what is left.
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+        assertThat(viewModel.mentionPictureNotice.value!!.recentUpTo).isEqualTo(3)
+        // The switch off again — the owner's PATCH answer, or the next
+        // resync — and the strip is #56's: a photo of the member's own,
+        // nothing about the history.
+        launch { settings.setFamilyAiHistoryPhotos(false) }
+        runCurrent()
+        assertThat(viewModel.mentionPictureNotice.value!!.recentUpTo).isNull()
+        viewModel.discardStaged(0)
+        runCurrent()
+        assertThat(viewModel.mentionPictureNotice.value).isNull()
+    }
+
+    /**
+     * The third switch is inert with either lock shut or without a
+     * transcript, and the strip must not announce what will not happen:
+     * with `ai_history` off there is no history for a photo to come from.
+     */
+    @Test
+    fun theThirdSwitchIsInertWithoutItsPrerequisites() = runTest(dispatcher) {
+        val noHistory = newViewModel(kind = "family")
+        picturesConfigured(historyPhotos = true, familyHistory = false)
+        type(noHistory, "@ai what is this?")
+        assertThat(noHistory.mentionPictureNotice.value).isNull()
+
+        val familyAllowsNot = newViewModel(kind = "family")
+        picturesConfigured(historyPhotos = true, familyAllows = false)
+        type(familyAllowsNot, "@ai what is this?")
+        assertThat(familyAllowsNot.mentionPictureNotice.value).isNull()
+
+        val serverCannotSee = newViewModel(kind = "family")
+        picturesConfigured(historyPhotos = true, vision = false)
+        type(serverCannotSee, "@ai what is this?")
+        assertThat(serverCannotSee.mentionPictureNotice.value).isNull()
+
+        // And never in the assistant's own chat, whose pictures are the
+        // member's own and never an earlier turn's.
+        val own = newViewModel(kind = "ai")
+        picturesConfigured(historyPhotos = true)
+        type(own, "@ai what is this?")
+        assertThat(own.mentionPictureNotice.value).isNull()
     }
 }
