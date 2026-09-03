@@ -379,3 +379,79 @@ ring_timeout_secs = 45
 # # attributed to in the transcript an @ai mention carries. Change it and the
 # # assistant is called that in front of the family and to itself.
 # title = "Assistant"
+#
+#
+# # ---------------------------------------------------------------------------
+# # Pictures (docs/protocol.md, "Pictures")
+# #
+# # The section above is the TEXT deployment and keeps its meaning exactly: a
+# # server that configures nothing below behaves as it always did. The two
+# # sections here add the other two things no single deployment does — looking
+# # at a photograph, and making one — and each is OFF until you name a
+# # deployment for it.
+# #
+# # Everything they do not say is inherited from [ai]: the endpoint, the key
+# # and the api-version. In practice all three are deployments on one
+# # resource, and pasting a key three times is two chances to paste it wrong.
+# #
+# # Clients are told what this server can do — `assistant.vision` and
+# # `assistant.images` on GET /families/mine — and offer nothing they were not
+# # told about.
+# # ---------------------------------------------------------------------------
+#
+# # The deployment that can SEE. A member may then attach a photograph to a
+# # question in their OWN assistant chat, and only there.
+# #
+# # NAMING IT IS NOT ENOUGH, and that is deliberate. Each family's owner must
+# # also turn `ai_vision` on (PATCH /families/mine), and it is OFF by default
+# # for every family — including families that already exist. A photograph is
+# # not more of the same thing a model was already being told: it is the faces
+# # of people who are not in the conversation, the inside of a home, a child, a
+# # document on a table, and it cannot be recalled once it has left. The member
+# # attaching one to the question they are asking is the third lock, and it is
+# # per picture and per send.
+# #
+# # What leaves with such a question, and the whole of it: up to FOUR photos
+# # off that ONE message, each as the downscaled preview when the client
+# # uploaded one, each at most 5 MiB, JPEG or PNG. Never a photo from an
+# # earlier message, never one from the family chat, never a video, a file or
+# # a location. An @ai mention NEVER sends a picture, at any setting.
+# [ai.vision]
+# deployment = "YOUR-VISION-DEPLOYMENT"
+# model = "gpt-4o"
+# # endpoint / api_key / api_version may be given here too, when this model
+# # answers somewhere else entirely. Omitted, they come from [ai] above.
+#
+# # The deployment that MAKES a picture, reached by writing `/draw something`
+# # at the start of a message (or `@ai /draw something` in the family chat).
+# #
+# # No family switch, and that asymmetry is the point: what leaves the server
+# # on a picture request is the words after `/draw` and NOTHING else — not the
+# # thread, not the transcript, not the system prompt, not even the language
+# # line. That is a smaller disclosure than an ordinary text question, which
+# # carries the last turns of a conversation.
+# [ai.images]
+# deployment = "YOUR-IMAGE-DEPLOYMENT"
+# model = "FLUX.2-pro"
+#
+# # An images endpoint is the one contract this server cannot verify for you,
+# # so the two fields that vary between image models are yours to set and are
+# # OMITTED from the request when empty — which is the body that works
+# # everywhere.
+# #
+# # If your portal shows a full target URI for this deployment, paste it as
+# # `endpoint` here and it is used verbatim, exactly as [ai] does for chat:
+# #
+# #     endpoint = "https://YOUR-RESOURCE.services.ai.azure.com/openai/deployments/YOUR-IMAGE-DEPLOYMENT/images/generations?api-version=2025-04-01-preview"
+# #
+# # `size` goes in the body as-is; empty omits it and lets the deployment
+# # choose.
+# size = "1024x1024"
+# # `response_format` is "b64_json" (bytes inline) or "url" (a link the SERVER
+# # then fetches — never a client). Empty by default and omitted, because some
+# # deployments answer 400 to a field they do not implement; both answers are
+# # parsed whichever way they arrive.
+# response_format = ""
+# # The most bytes one generated picture may be, as a guard against a runaway
+# # response. It bounds the download too, when a deployment answers with a URL.
+# max_bytes = 16777216

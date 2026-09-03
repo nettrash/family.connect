@@ -747,7 +747,7 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 u.birthday_month, u.birthday_day,
                 f.id AS family_id, f.name AS family_name, f.join_policy,
                 f.created_at AS family_created_at, f.owner_user_id, f.invite_code,
-                f.language, f.max_members, f.ai_history
+                f.language, f.max_members, f.ai_history, f.ai_vision
          FROM users u
          LEFT JOIN families f ON f.id = u.family_id
          WHERE u.id = $1",
@@ -780,6 +780,9 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
                 // same family, which is worse than either answer alone.
                 max_members: row.get("max_members"),
                 ai_history: row.get("ai_history"),
+                // And the picture switch, which decides whether a member's
+                // own photographs may leave the server at all.
+                ai_vision: row.get("ai_vision"),
             };
             let role = if is_owner { "owner" } else { "member" };
             (Some(family), Some(role))

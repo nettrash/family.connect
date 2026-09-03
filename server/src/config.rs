@@ -191,6 +191,105 @@ pub struct AiConfig {
     /// What the chat is called in the list.
     #[serde(default = "default_ai_title")]
     pub title: String,
+
+    /// `[ai.vision]` — the deployment that can LOOK at a photograph
+    /// (protocol.md, "Pictures"). Absent means the assistant has no eyes:
+    /// a picture a member attaches is a `[photo]` marker and nothing more,
+    /// which is also the default.
+    #[serde(default)]
+    pub vision: AiDeployment,
+
+    /// `[ai.images]` — the deployment that MAKES one, reached by `/draw`.
+    /// Absent means the assistant has no hands and clients are told not to
+    /// offer the affordance.
+    #[serde(default)]
+    pub images: AiImagesConfig,
+}
+
+/// A second deployment on the same provider: only what DIFFERS from `[ai]`.
+///
+/// Every field falls back to the `[ai]` section when it is empty, because in
+/// practice the three deployments a family server talks to are three
+/// deployments on ONE resource — the same host, the same key, the same dated
+/// api-version, and only the name changes. Making an operator paste the key
+/// three times is three chances to paste two of them right.
+///
+/// `deployment` (or an `endpoint` of its own) is what switches the
+/// capability ON. Neither set means the capability does not exist on this
+/// server, which is what `GET /families/mine` reports to clients as
+/// `assistant.vision` / `assistant.images`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AiDeployment {
+    /// Overrides `[ai] endpoint`. Set it when this model answers somewhere
+    /// else entirely — a Foundry target URI pasted whole, for instance.
+    #[serde(default)]
+    pub endpoint: String,
+    /// The DEPLOYMENT name, which is what routes the request. Setting this
+    /// (or `endpoint`) is what turns the capability on.
+    #[serde(default)]
+    pub deployment: String,
+    /// The model behind it, recorded with usage rather than sent.
+    #[serde(default)]
+    pub model: String,
+    /// Overrides `[ai] api_key`.
+    #[serde(default)]
+    pub api_key: String,
+    /// Overrides `[ai] api_version`.
+    #[serde(default)]
+    pub api_version: String,
+}
+
+/// `[ai.images]` — a deployment plus the two knobs an images endpoint has
+/// that a chat one does not.
+///
+/// Both knobs exist because the images surface is the one place this server
+/// cannot verify the contract from here: an operator points it at whatever
+/// their portal gave them, and a body that model rejects comes back as an
+/// opaque 400. So the two fields that vary between image models are
+/// CONFIGURABLE and both are omitted from the request when empty, which is
+/// the shape that works everywhere.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AiImagesConfig {
+    #[serde(flatten)]
+    pub deployment: AiDeployment,
+
+    /// `size` in the request body — `"1024x1024"` and so on. Empty omits
+    /// the field, which lets the deployment choose its own default.
+    #[serde(default = "default_ai_image_size")]
+    pub size: String,
+
+    /// `response_format`. `"b64_json"` asks for the bytes inline;
+    /// `"url"` asks for a link the server then fetches. EMPTY BY DEFAULT and
+    /// omitted from the request when empty, because some image deployments
+    /// answer 400 to a field they do not implement — and both answers are
+    /// parsed whichever way they arrive, so asking for neither is safe.
+    #[serde(default)]
+    pub response_format: String,
+
+    /// The most bytes one generated picture may be. A ceiling the SERVER
+    /// owns, like `max_tokens`: it bounds what a provider can write onto
+    /// the family's disk, and it bounds the download when a deployment
+    /// answers with a URL instead of bytes.
+    #[serde(default = "default_ai_image_max_bytes")]
+    pub max_bytes: usize,
+}
+
+/// One resolved provider call: where to POST it, which key opens it, what to
+/// name in the body, and the cap the server owns.
+///
+/// Its own type because there are now three of them and they differ in every
+/// field. Building it is the only place the endpoint/deployment/key of a
+/// request are decided, so "which model saw this?" has exactly one answer to
+/// read (protocol.md, "The three deployments").
+#[derive(Debug, Clone)]
+pub struct ModelRoute {
+    pub url: String,
+    pub api_key: String,
+    /// The `model` field of the request body — on Azure the DEPLOYMENT name,
+    /// which is what the v1 surface routes on and what the classic surface
+    /// ignores.
+    pub model: String,
+    pub max_tokens: u32,
 }
 
 /// Hand-written rather than derived, so `AiConfig::default()` agrees with
@@ -215,8 +314,35 @@ impl Default for AiConfig {
             max_tokens: default_ai_max_tokens(),
             history_messages: default_ai_history_messages(),
             title: default_ai_title(),
+            vision: AiDeployment::default(),
+            images: AiImagesConfig::default(),
         }
     }
+}
+
+/// Hand-written for the same reason [`AiConfig`]'s is: a derived `Default`
+/// would give an empty `size` and a zero `max_bytes`, neither of which serde
+/// would ever produce for a half-written `[ai.images]` section.
+impl Default for AiImagesConfig {
+    fn default() -> Self {
+        Self {
+            deployment: AiDeployment::default(),
+            size: default_ai_image_size(),
+            response_format: String::new(),
+            max_bytes: default_ai_image_max_bytes(),
+        }
+    }
+}
+
+fn default_ai_image_size() -> String {
+    "1024x1024".to_string()
+}
+
+/// 16 MiB. Far above any square PNG an image model returns and far below
+/// `limits.max_attachment_bytes`, so it is a guard against a runaway
+/// response rather than a limit a family will ever meet.
+fn default_ai_image_max_bytes() -> usize {
+    16 * 1024 * 1024
 }
 
 fn default_ai_api_version() -> String {
@@ -267,30 +393,11 @@ impl AiConfig {
     /// guessed. `api-version` is still appended when the pasted URL has no
     /// query of its own.
     pub fn completions_url(&self) -> String {
-        let base = self.endpoint.trim_end_matches('/');
-
-        // Already a completions URL: use it as given.
-        if base.contains("/chat/completions") {
-            if base.contains('?') || self.api_version.trim().is_empty() {
-                return base.to_string();
-            }
-            return format!("{base}?api-version={}", self.api_version);
-        }
-
-        // Azure's v1 (OpenAI-compatible) surface: the deployment does NOT
-        // go in the path — it goes in the body as `model` — and there is no
-        // `api-version` query. Splicing the classic
-        // `/openai/deployments/{name}/…` onto one of these produces a
-        // doubled `/openai` and a bare 404 that says only "Resource not
-        // found".
-        if base.ends_with("/openai/v1") {
-            return format!("{base}/chat/completions");
-        }
-
-        // Classic Azure OpenAI: deployment in the path, dated api-version.
-        format!(
-            "{base}/openai/deployments/{}/chat/completions?api-version={}",
-            self.deployment, self.api_version
+        azure_url(
+            &self.endpoint,
+            &self.deployment,
+            &self.api_version,
+            "chat/completions",
         )
     }
 
@@ -309,6 +416,163 @@ impl AiConfig {
             self.deployment.trim()
         }
     }
+
+    /// The TEXT deployment: `[ai]` itself, unchanged from before there were
+    /// three of them. A server that configures nothing else behaves exactly
+    /// as it always did, which is what makes pictures additive.
+    pub fn text_route(&self) -> ModelRoute {
+        ModelRoute {
+            url: self.completions_url(),
+            api_key: self.api_key.trim().to_string(),
+            model: self.request_model().to_string(),
+            max_tokens: self.max_tokens,
+        }
+    }
+
+    /// The deployment that can look at a photograph, or `None` when the
+    /// operator configured none.
+    ///
+    /// `None` is not an error anywhere: it means a picture attached to a
+    /// question stays a `[photo]` marker, which is what the assistant is
+    /// then told (protocol.md, "Pictures").
+    pub fn vision_route(&self) -> Option<ModelRoute> {
+        if !self.is_usable() || !self.vision.is_configured() {
+            return None;
+        }
+        Some(ModelRoute {
+            url: azure_url(
+                self.vision.endpoint_or(&self.endpoint),
+                self.vision.deployment_or(&self.deployment),
+                self.vision.api_version_or(&self.api_version),
+                "chat/completions",
+            ),
+            api_key: self.vision.api_key_or(&self.api_key).trim().to_string(),
+            model: self.vision.request_model_or(&self.deployment).to_string(),
+            // The same cap the text deployment obeys: a description of a
+            // photograph is still an answer in a family chat.
+            max_tokens: self.max_tokens,
+        })
+    }
+
+    /// The deployment that MAKES a picture, or `None`.
+    ///
+    /// `max_tokens` is meaningless to an images endpoint and is carried
+    /// anyway rather than being made an `Option`: one route type with a
+    /// field an image call ignores is simpler to read than two types, and
+    /// [`AiImagesConfig::max_bytes`] is the cap that actually binds here.
+    pub fn images_route(&self) -> Option<ModelRoute> {
+        let images = &self.images;
+        if !self.is_usable() || !images.deployment.is_configured() {
+            return None;
+        }
+        Some(ModelRoute {
+            url: azure_url(
+                images.deployment.endpoint_or(&self.endpoint),
+                images.deployment.deployment_or(&self.deployment),
+                images.deployment.api_version_or(&self.api_version),
+                "images/generations",
+            ),
+            api_key: images
+                .deployment
+                .api_key_or(&self.api_key)
+                .trim()
+                .to_string(),
+            model: images
+                .deployment
+                .request_model_or(&self.deployment)
+                .to_string(),
+            max_tokens: self.max_tokens,
+        })
+    }
+
+    /// Whether this server can look at a picture at all — the answer sent to
+    /// clients as `assistant.vision`.
+    pub fn vision_usable(&self) -> bool {
+        self.vision_route().is_some()
+    }
+
+    /// Whether it can make one — sent as `assistant.images`.
+    pub fn images_usable(&self) -> bool {
+        self.images_route().is_some()
+    }
+}
+
+impl AiDeployment {
+    /// Configured at all: the operator named a deployment, or an endpoint of
+    /// its own. Either is enough — a pasted Foundry target URI needs no
+    /// deployment name, and a deployment on the same resource needs no
+    /// endpoint.
+    pub fn is_configured(&self) -> bool {
+        !self.deployment.trim().is_empty() || !self.endpoint.trim().is_empty()
+    }
+
+    fn endpoint_or<'a>(&'a self, parent: &'a str) -> &'a str {
+        pick(&self.endpoint, parent)
+    }
+
+    fn deployment_or<'a>(&'a self, parent: &'a str) -> &'a str {
+        pick(&self.deployment, parent)
+    }
+
+    fn api_key_or<'a>(&'a self, parent: &'a str) -> &'a str {
+        pick(&self.api_key, parent)
+    }
+
+    fn api_version_or<'a>(&'a self, parent: &'a str) -> &'a str {
+        pick(&self.api_version, parent)
+    }
+
+    /// What goes in the body's `model` field for this deployment, under the
+    /// rule [`AiConfig::request_model`] states: the DEPLOYMENT name routes,
+    /// and `model` is only a record of what answered.
+    fn request_model_or<'a>(&'a self, parent_deployment: &'a str) -> &'a str {
+        let deployment = self.deployment_or(parent_deployment).trim();
+        if deployment.is_empty() {
+            self.model.trim()
+        } else {
+            deployment
+        }
+    }
+}
+
+/// The sub-section's value when it has one, else the `[ai]` section's.
+fn pick<'a>(own: &'a str, parent: &'a str) -> &'a str {
+    if own.trim().is_empty() { parent } else { own }
+}
+
+/// Build a provider URL for one of Azure's several endpoint shapes.
+///
+/// Shared by chat completions and image generations because the shapes are
+/// the SAME three shapes and only the last path segment differs — and
+/// because getting one of them right and the other wrong is the failure this
+/// whole function exists to prevent: a bare `404 Resource not found` that
+/// cannot say which part was wrong.
+///
+/// - an endpoint that ALREADY names this path is used verbatim (paste the
+///   target URI the portal shows), with `api-version` appended only when it
+///   carries no query of its own;
+/// - an endpoint ending in `/openai/v1` is Azure's OpenAI-COMPATIBLE
+///   surface: the deployment goes in the BODY, not the path, and there is no
+///   `api-version` at all. Splicing `/openai/deployments/…` onto one of
+///   these gives a doubled `/openai` and that same bare 404 — which is
+///   exactly what happened in production once already;
+/// - anything else is classic Azure OpenAI: deployment in the path, dated
+///   api-version in the query.
+fn azure_url(endpoint: &str, deployment: &str, api_version: &str, path: &str) -> String {
+    let base = endpoint.trim().trim_end_matches('/');
+
+    if base.contains(&format!("/{path}")) {
+        if base.contains('?') || api_version.trim().is_empty() {
+            return base.to_string();
+        }
+        return format!("{base}?api-version={api_version}");
+    }
+
+    if base.ends_with("/openai/v1") {
+        return format!("{base}/{path}");
+    }
+
+    format!("{base}/openai/deployments/{deployment}/{path}?api-version={api_version}")
 }
 
 /// `[storage]` — where attachment bytes live.
@@ -1196,6 +1460,171 @@ mod tests {
         f.flush().expect("flush");
         let cfg = Config::load(f.path()).expect("load");
         assert_eq!(cfg.server.bind, "0.0.0.0:9999");
+    }
+
+    /// The whole `[ai]` shape as an operator would actually write it, read
+    /// off disk rather than built in Rust — because the two sub-sections use
+    /// `#[serde(flatten)]` and a flattened struct that TOML cannot fill is a
+    /// config file that silently loses its deployment name.
+    #[test]
+    fn the_three_deployments_load_from_one_ai_section() {
+        let mut f = NamedTempFile::new().expect("tempfile");
+        f.write_all(
+            br#"
+[ai]
+enabled = true
+endpoint = "https://nettrash.openai.azure.com"
+deployment = "nettrash-gpt-oss-120b"
+model = "gpt-oss-120b"
+api_key = "secret"
+api_version = "2024-10-21"
+
+[ai.vision]
+deployment = "nettrash-gpt-4o"
+model = "gpt-4o"
+
+[ai.images]
+deployment = "nettrash-FLUX.2-pro"
+model = "FLUX.2-pro"
+size = "1024x1024"
+"#,
+        )
+        .expect("write");
+        f.flush().expect("flush");
+        let cfg = Config::load(f.path()).expect("load");
+
+        assert!(cfg.ai.is_usable());
+        assert!(cfg.ai.vision_usable(), "a named vision deployment is on");
+        assert!(cfg.ai.images_usable(), "a named images deployment is on");
+        assert_eq!(cfg.ai.images.size, "1024x1024");
+        assert_eq!(
+            cfg.ai.images.response_format, "",
+            "omitted unless the operator asked for one: some deployments \
+             answer 400 to a field they do not implement"
+        );
+
+        // Each route goes to its OWN deployment, and inherits the host, the
+        // key and the api-version from [ai] — which is what makes the two
+        // sub-sections three lines rather than fifteen.
+        let text = cfg.ai.text_route();
+        let vision = cfg.ai.vision_route().expect("vision route");
+        let images = cfg.ai.images_route().expect("images route");
+        assert_eq!(
+            text.url,
+            "https://nettrash.openai.azure.com/openai/deployments/nettrash-gpt-oss-120b\
+             /chat/completions?api-version=2024-10-21"
+        );
+        assert_eq!(
+            vision.url,
+            "https://nettrash.openai.azure.com/openai/deployments/nettrash-gpt-4o\
+             /chat/completions?api-version=2024-10-21"
+        );
+        assert_eq!(
+            images.url,
+            "https://nettrash.openai.azure.com/openai/deployments/nettrash-FLUX.2-pro\
+             /images/generations?api-version=2024-10-21"
+        );
+        assert_eq!(
+            vision.api_key, "secret",
+            "the key is inherited, not retyped"
+        );
+        assert_eq!(images.api_key, "secret");
+        assert_eq!(vision.model, "nettrash-gpt-4o", "the DEPLOYMENT routes");
+        assert_eq!(images.model, "nettrash-FLUX.2-pro");
+    }
+
+    /// The default, and the one that matters most: a server that configured
+    /// only the text deployment has no eyes and no hands, and says so.
+    #[test]
+    fn pictures_are_off_until_a_deployment_is_named() {
+        let cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://example.openai.azure.com".to_string(),
+            deployment: "text".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        assert!(cfg.is_usable(), "the assistant itself is on");
+        assert!(!cfg.vision_usable());
+        assert!(!cfg.images_usable());
+        assert!(cfg.vision_route().is_none());
+        assert!(cfg.images_route().is_none());
+    }
+
+    /// And neither half can outlive the assistant: turning `[ai]` off turns
+    /// both of them off, whatever the sub-sections say.
+    #[test]
+    fn pictures_follow_the_master_switch() {
+        let mut cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://example.openai.azure.com".to_string(),
+            deployment: "text".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        cfg.vision.deployment = "sees".to_string();
+        cfg.images.deployment.deployment = "draws".to_string();
+        assert!(cfg.vision_usable() && cfg.images_usable());
+        cfg.enabled = false;
+        assert!(!cfg.vision_usable());
+        assert!(!cfg.images_usable());
+    }
+
+    /// A sub-section may live somewhere else entirely — an image model on a
+    /// Foundry resource, a chat model on an Azure OpenAI one — and a pasted
+    /// target URI is used verbatim there exactly as it is for `[ai]`.
+    #[test]
+    fn a_sub_section_may_override_the_endpoint_and_the_key() {
+        let mut cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://text.openai.azure.com".to_string(),
+            deployment: "text".to_string(),
+            api_key: "text-key".to_string(),
+            api_version: "2024-10-21".to_string(),
+            ..Default::default()
+        };
+        cfg.images.deployment.endpoint =
+            "https://pictures.services.ai.azure.com/openai/deployments/flux/images/generations\
+             ?api-version=2025-04-01-preview"
+                .to_string();
+        cfg.images.deployment.api_key = "picture-key".to_string();
+
+        let images = cfg
+            .images_route()
+            .expect("configured by its endpoint alone");
+        assert_eq!(
+            images.url,
+            "https://pictures.services.ai.azure.com/openai/deployments/flux/images/generations\
+             ?api-version=2025-04-01-preview",
+            "a pasted target URI is used as given, query and all"
+        );
+        assert_eq!(images.api_key, "picture-key");
+        // And the text route is untouched by any of it.
+        assert_eq!(cfg.text_route().api_key, "text-key");
+    }
+
+    /// The v1 (OpenAI-compatible) surface, for images as well as for chat:
+    /// no `/openai/deployments/…` in the path and no api-version query. The
+    /// same trap, one path segment along.
+    #[test]
+    fn the_v1_surface_shapes_the_images_url_too() {
+        let mut cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://nettrash.openai.azure.com/openai/v1".to_string(),
+            deployment: "nettrash-gpt-oss-120b".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        cfg.images.deployment.deployment = "nettrash-FLUX.2-pro".to_string();
+        let images = cfg.images_route().expect("images route");
+        assert_eq!(
+            images.url,
+            "https://nettrash.openai.azure.com/openai/v1/images/generations"
+        );
+        assert_eq!(
+            images.model, "nettrash-FLUX.2-pro",
+            "the deployment routes from the BODY on this surface"
+        );
     }
 
     #[test]

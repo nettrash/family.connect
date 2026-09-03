@@ -152,6 +152,10 @@ struct ConversationView: View {
     /// is materialized — the ground-truth "the user is at the bottom"
     /// signal that the convergence loop and the re-pin hooks key on.
     @State private var isPinnedToBottom = false
+    /// The thread's own width, watched because on an iPad it CHANGES —
+    /// the split view's sidebar toggles and the device rotates. See the
+    /// geometry hook on the scroll view (PIN HOOK 4 of 4).
+    @State private var threadWidth: CGFloat = 0
     /// Focus of the input field. Focusing raises the keyboard; both that
     /// and a growing multi-line draft change the bottom INSET, which
     /// defaultScrollAnchor does not re-anchor for — the snaps below do.
@@ -368,6 +372,11 @@ struct ConversationView: View {
     /// window exists to prevent, and starting the window MUCH wider (which
     /// is what an anchored open does) makes it materially worse.
     private static let maxWindow = 300
+    /// The readable column the thread's content is capped to (#21/#44),
+    /// named because the floating jump-to-newest button has to line up
+    /// with the SAME column — see the overlay for why that is not a
+    /// cosmetic choice.
+    static let threadMaxWidth: CGFloat = 560
 
     private var visibleMessages: ArraySlice<MessageEntity> {
         messages.suffix(visibleCount)
@@ -476,7 +485,7 @@ struct ConversationView: View {
                 // macOS, carrying no #if os(iOS) — is untouched. 560 sits
                 // above every iPhone PORTRAIT width, so the bubble subtree
                 // there sees exactly the proposal it ships with today.
-                .frame(maxWidth: 560)
+                .frame(maxWidth: Self.threadMaxWidth)
                 .frame(maxWidth: .infinity)
             }
             .defaultScrollAnchor(.bottom)
@@ -514,14 +523,35 @@ struct ConversationView: View {
             // every content change that happens to coincide with it inside
             // an animation transaction, which is how a thread starts
             // sliding for reasons nobody asked for.
-            .overlay(alignment: .bottomTrailing) {
-                ZStack {
-                    if showsJumpToNewest {
-                        JumpToNewestButton { pinToBottom(proxy, animated: true) }
-                            .transition(.scale.combined(with: .opacity))
+            .overlay(alignment: .bottom) {
+                // Aligned to the trailing edge of the THREAD COLUMN, not
+                // of the viewport.
+                //
+                // The thread's content is capped to a readable column
+                // (#21/#44) and centred, so on an iPad's detail column the
+                // viewport's trailing edge is 100pt-odd of empty margin
+                // away from the last bubble — a control pinned there is
+                // nowhere near the thing it acts on, which is the same
+                // "phone app stretched across a display" complaint issue
+                // #43 is about. On the phone NOTHING moves: every iPhone
+                // is narrower than the cap, so the column IS the viewport
+                // (measured, iPhone 17: the button's frame is
+                // 353.75,731.75 before and after, to the quarter-point).
+                //
+                // The button's own hit shape is a separate matter and a
+                // real bug; it is fixed where it lives, in
+                // JumpToNewestButton.
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    ZStack {
+                        if showsJumpToNewest {
+                            JumpToNewestButton { pinToBottom(proxy, animated: true) }
+                                .transition(.scale.combined(with: .opacity))
+                        }
                     }
+                    .animation(.spring(duration: 0.25), value: showsJumpToNewest)
                 }
-                .animation(.spring(duration: 0.25), value: showsJumpToNewest)
+                .frame(maxWidth: Self.threadMaxWidth)
             }
             .task {
                 // Un-park a draft an earlier identity of this chat's view
@@ -568,7 +598,7 @@ struct ConversationView: View {
                 // reader deep in history must not be yanked down) — and
                 // never while a history page is being prepended above.
                 //
-                // PIN HOOK 1 of 3. The `!hasSettled` clause is the one that
+                // PIN HOOK 1 of 4. The `!hasSettled` clause is the one that
                 // had to be gated: it exists so a message landing during
                 // the opening window keeps a normal open at the bottom
                 // (where `isPinnedToBottom` is still false because no
@@ -628,7 +658,7 @@ struct ConversationView: View {
                 // newest message above it (twice: as the animation starts
                 // and after it lands; standard messenger behavior).
                 //
-                // PIN HOOK 3 of 3, and deliberately NOT gated on the
+                // PIN HOOK 3 of 4, and deliberately NOT gated on the
                 // opening anchor. Nothing focuses this field on open, so it
                 // cannot fire during the opening window; when it does fire
                 // a person has just tapped into the composer, and a person
@@ -648,6 +678,51 @@ struct ConversationView: View {
                 // The draft wrapped to another line: the bar grew into the
                 // thread — keep the newest message above it while writing.
                 guard inputFocused, !replyStartedFromHistory else { return }
+                pinToBottom(proxy, animated: false)
+            }
+            // The thread can now be RESIZED HORIZONTALLY under a reader:
+            // on an iPad it lives in a split view's detail column (issue
+            // #43), so hiding or showing the sidebar and rotating the
+            // device both change its width. A ScrollView keeps a POINT
+            // OFFSET across that, not a message, and every row re-wraps at
+            // the new width — so a reader sitting at the newest message
+            // comes back somewhere above it.
+            //
+            // The Mac hit this first and fixed it the same way; its
+            // header spells out the reasoning (MacConversationView, "A Mac
+            // window DOES resize"). Only the BOTTOM is restorable without
+            // tracking per-row geometry, and it is the case that actually
+            // bites; away from the bottom the bounded window keeps any
+            // drift to genuine re-wrapping of a page of rows.
+            //
+            // The measure is the width CONTENT can use, not the view's
+            // own — and on this platform they are different things. The
+            // Mac watches `size.width` because there a sidebar toggle
+            // really does resize the detail view. On iPadOS 26 the sidebar
+            // floats OVER a detail column that stays the full width of the
+            // window (verified: the thread's ScrollView reports
+            // {0,0,1032,1376} with the sidebar both shown and hidden), and
+            // what moves is the safe area. Subtracting the horizontal
+            // insets is what makes this hook see the toggle at all; it
+            // also still sees a rotation and a Split View resize, which
+            // move the frame itself.
+            //
+            // PIN HOOK 4 of 4. Inert on the phone by construction: its
+            // width changes only on rotation, and the guard fires only
+            // for a reader who is ALREADY at the newest message, whose
+            // request is "be at the newest message".
+            .onGeometryChange(for: CGFloat.self) {
+                $0.size.width - $0.safeAreaInsets.leading - $0.safeAreaInsets.trailing
+            } action: { width in
+                // The first report is the opening layout, not a resize:
+                // record it and do nothing, or this would scroll a thread
+                // that is still deciding where to open.
+                guard threadWidth != 0, width != threadWidth else {
+                    threadWidth = width
+                    return
+                }
+                threadWidth = width
+                guard isPinnedToBottom else { return }
                 pinToBottom(proxy, animated: false)
             }
         }
@@ -2506,7 +2581,7 @@ struct ConversationView: View {
                     // Fired during the opening pass: the user never left
                     // the bottom — keep them there over the grown content.
                     //
-                    // PIN HOOK 2 of 3. Gated, because an anchored open
+                    // PIN HOOK 2 of 4. Gated, because an anchored open
                     // spends its whole opening window away from the bottom
                     // ON PURPOSE, and this branch is exactly the one that
                     // fires then: the top sentinel is much more likely to

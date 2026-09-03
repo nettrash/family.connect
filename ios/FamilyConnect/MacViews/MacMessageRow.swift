@@ -61,6 +61,13 @@ struct MacMessageRow: View {
     /// receiver may do nothing when the target is not cached.
     var onTapQuote: (Int64) -> Void = { _ in }
     var onOpenAttachment: (AttachmentDTO) -> Void = { _ in }
+    /// A drag out to the Finder found nothing to hand over — offline, a
+    /// 404, or retention swept the attachment. The WINDOW says so, not this
+    /// row: a row scrolls out from under its own message, and the composer
+    /// strip is where every other media failure on this window already
+    /// appears. `DraggedAttachment` has why a silent failure is not an
+    /// option here.
+    var onAttachmentDragFailed: () -> Void = {}
     /// How many people could vote, for a poll's footer.
     var memberCount: Int = 0
     /// Clicking a call record rings the peer again; nil when calls are
@@ -699,6 +706,27 @@ struct MacMessageRow: View {
         } else {
             MacAttachmentBlock(
                 attachment: attachment, isMine: attachmentsOnTint, onBalloon: !isMediaOnly)
+                // Drag out to the Finder, which on a Mac is what people try
+                // on a picture before they look for a menu. A PROMISE, not
+                // a URL — `DraggedAttachment` has the whole reason, and it
+                // is not a small one: the bytes this tile is DRAWING are
+                // usually the 600px preview, and handing those over would
+                // put the wrong picture on somebody's Desktop under the
+                // right name.
+                //
+                // Innermost of the three modifiers on purpose, so the tap
+                // pair below keeps the exact order and precedence it had
+                // (count 2 before count 1, both above this view). A drag
+                // needs pointer movement and a click does not, so they do
+                // not compete — but the ordering here is the part a human
+                // has to confirm at a trackpad, because a drag cannot be
+                // synthesised in a test.
+                //
+                // Only this branch, which is exactly photo / video / file:
+                // a location has no bytes and a voice note's tile is a
+                // scrubber. `DraggedAttachment.isDraggable` is that rule
+                // written down, and refuses both again on the way through.
+                .draggable(dragPromise(for: attachment))
                 // Count 2 BEFORE count 1, and both as onTapGesture:
                 // that is what makes them exclusive. A bare
                 // single-click handler on a CHILD masks the
@@ -708,6 +736,25 @@ struct MacMessageRow: View {
                 .onTapGesture(count: 2) { quickHeart() }
                 .onTapGesture(count: 1) { onOpenAttachment(attachment) }
         }
+    }
+
+    /// The file promise one tile offers the rest of the Mac.
+    ///
+    /// The coordinator and the callback are copied into local lets before
+    /// the closures are written, so neither closure captures `self`. A
+    /// promise outlives the row that made it — the drag is still going
+    /// while the thread scrolls, and the export runs after the drop — and
+    /// the two things it genuinely needs (a `@MainActor` coordinator, and
+    /// somewhere to report to) are the two things worth carrying. The rest
+    /// of the row, environment values and all, is not.
+    private func dragPromise(for attachment: AttachmentDTO) -> DraggedAttachment {
+        let coordinator = coordinator
+        let reportFailure = onAttachmentDragFailed
+        return DraggedAttachment(
+            attachment: attachment,
+            // THE only source of original bytes. See DraggedAttachment.
+            download: { await coordinator.localFileURL(for: attachment) },
+            onFailure: { reportFailure() })
     }
 
     /// True when the body is nothing but a few emoji.

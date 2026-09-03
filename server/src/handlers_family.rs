@@ -63,6 +63,12 @@ pub struct PatchFamilyRequest {
     pub max_members: Option<Option<i32>>,
     #[serde(default)]
     pub ai_history: Option<bool>,
+    /// The picture switch, the same shape and for the same reason as
+    /// `ai_history` — absent leaves it alone, and there is nothing for a
+    /// `null` to mean. It differs only in what it defaults to when nobody
+    /// has ever sent it (protocol.md, "Pictures").
+    #[serde(default)]
+    pub ai_vision: Option<bool>,
 }
 
 /// Deserialize a present key into `Some(...)`, so that `#[serde(default)]`
@@ -121,6 +127,7 @@ struct FamilyRecord {
     language: Option<String>,
     max_members: Option<i32>,
     ai_history: bool,
+    ai_vision: bool,
     owner_user_id: i64,
     created_at: OffsetDateTime,
 }
@@ -135,6 +142,7 @@ impl FamilyRecord {
             language: row.get("language"),
             max_members: row.get("max_members"),
             ai_history: row.get("ai_history"),
+            ai_vision: row.get("ai_vision"),
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
         }
@@ -160,12 +168,17 @@ impl FamilyRecord {
             // for when somebody else mentions the assistant. Only the owner
             // can CHANGE it; everybody gets to know what it is.
             ai_history: self.ai_history,
+            // Not owner-gated either, and for the strongest reason of the
+            // four: this decides whether a member's own PHOTOGRAPHS may
+            // leave the server. Every member gets to know the answer before
+            // they attach one; only the owner can change it.
+            ai_vision: self.ai_vision,
         }
     }
 }
 
 const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, max_members,
-                             ai_history, owner_user_id, created_at FROM families";
+                             ai_history, ai_vision, owner_user_id, created_at FROM families";
 
 async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, ApiError> {
     let row = sqlx::query(&format!("{SELECT_FAMILY} WHERE id = $1"))
@@ -402,8 +415,8 @@ pub async fn create_family(
         let inserted = sqlx::query(
             "INSERT INTO families (name, invite_code, owner_user_id)
              VALUES ($1, $2, $3)
-             RETURNING id, name, invite_code, join_policy, language, max_members, ai_history, owner_user_id,
-                       created_at",
+             RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
+                       ai_vision, owner_user_id, created_at",
         )
         .bind(&name)
         .bind(&invite_code)
@@ -732,6 +745,16 @@ pub async fn my_family(
             "user_id": assistant_id,
             "display_name": state.cfg.ai.title,
             "mention": crate::mentions::MENTION,
+            // The picture half of the same discovery problem the two keys
+            // above solve (protocol.md, "Pictures"). `vision` and `images`
+            // are what this SERVER can do; whether this FAMILY allows the
+            // first of them is `family.ai_vision`, and a client needs both
+            // before it offers to attach a picture in an ai chat. An
+            // affordance that silently does nothing is worse than one that
+            // is not there — which is the whole reason this object exists.
+            "draw": crate::mentions::DRAW,
+            "vision": state.cfg.ai.vision_usable(),
+            "images": state.cfg.ai.images_usable(),
         });
     }
     Ok((StatusCode::OK, Json(body)).into_response())
@@ -831,10 +854,11 @@ pub async fn patch_family(
          SET join_policy = COALESCE($2, join_policy),
              language = CASE WHEN $3 THEN $4 ELSE language END,
              ai_history = COALESCE($5, ai_history),
+             ai_vision = COALESCE($8, ai_vision),
              max_members = CASE WHEN $6 THEN $7 ELSE max_members END
          WHERE id = $1
-         RETURNING id, name, invite_code, join_policy, language, max_members, ai_history, owner_user_id,
-                   created_at",
+         RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
+                   ai_vision, owner_user_id, created_at",
     )
     .bind(family.id)
     .bind(join_policy)
@@ -843,6 +867,7 @@ pub async fn patch_family(
     .bind(req.ai_history)
     .bind(max_members.is_some())
     .bind(max_members.flatten())
+    .bind(req.ai_vision)
     .fetch_one(&state.pool)
     .await?;
     let family = FamilyRecord::from_row(&row);

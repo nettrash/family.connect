@@ -13,6 +13,22 @@ android/local.properties
 android/keystore.properties
 android/*.jks
 android/play-service-account.json
+# Android Studio's "Generate Signed App Bundle / APK" wizard writes to
+# app/<flavor>/<buildType>/, NOT to app/build/ — so nothing above catches
+# it. `*.apk`/`*.aab` below caught the binaries, which is why this went
+# unnoticed: what escaped was the R8 mapping (73 MB, and a fresh 73 MB on
+# every release build), output-metadata.json and the baseline-profile .dm
+# blobs. Untrack what is already in the index with
+#     git rm -r --cached android/app/nettrash/release
+# — the mapping file is a build artefact and belongs in the Play Console
+# upload (Play deobfuscates crash reports with it), not in git history.
+#
+# Named per flavour rather than globbed: `android/app/*/release/` would
+# also swallow a future `android/app/src/release/` source set, and an
+# ignored SOURCE directory is a far worse failure than an unignored
+# artefact one.
+android/app/standard/
+android/app/nettrash/
 *.apk
 *.aab
 
