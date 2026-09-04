@@ -93,8 +93,6 @@ struct ConversationView: View {
     /// For `callsEnabled` — whether this server rings anybody at all.
     @Environment(AppSession.self) private var session
     @Environment(CallManager.self) private var calls
-    /// Owns a media send from the moment it starts; see MediaOutbox.
-    @Environment(MediaOutbox.self) private var outbox
     /// The "app is frontmost" half of ChatPresence. Read here rather than
     /// taken from RootView because this is where the other two facts are,
     /// and all three have to be published together.
@@ -568,11 +566,6 @@ struct ConversationView: View {
                 // Un-park a draft an earlier identity of this chat's view
                 // stashed on its way out — before the opening routine, so
                 // the composer is whole by the time the thread lands.
-                // Recovery FIRST: a failed set carries files and a caption,
-                // the parked draft carries only text, and `ComposerDrafts`
-                // hands its draft over exactly once. Taking the text first
-                // would spend that one chance and leave the caption behind.
-                recoverFailedSend()
                 if model.draft.isEmpty, let parked = ComposerDrafts.take(for: chatID) {
                     model.draft = parked
                 }
@@ -861,12 +854,6 @@ struct ConversationView: View {
             // ChatListView) and the draft is @State: park it, or a tapped
             // notification for another chat discards a half-typed message.
             ComposerDrafts.stash(model.draft, for: chatID)
-        }
-        // A send for this chat failed. Whichever composer is on screen
-        // adopts it — including this one immediately after its own send
-        // failed, which is how the in-place restore now happens.
-        .onChange(of: outbox.failedCount(for: chatID)) {
-            recoverFailedSend()
         }
         .onChange(of: hasSettled) {
             // The opening convergence finished: whatever the sentinel says
@@ -2114,84 +2101,30 @@ struct ConversationView: View {
     /// staged files together — so nothing typed during the upload is
     /// swallowed into the caption and a primed reply cannot leak onto the
     /// next message. Everything goes back if the send never lands.
+    /// Hand a staged set to the outbox and get the composer back.
+    ///
+    /// Nothing is awaited and nothing can be lost here any more: the
+    /// coordinator writes the message row and the item rows — and moves the
+    /// files somewhere the system will not reclaim — before the first byte
+    /// goes out, so the send belongs to the store from this instant. A
+    /// failure is a red bubble with tap-to-retry, exactly like a text
+    /// message, rather than a set this view has to catch and hold.
     private func sendStaged(_ items: [StagedAttachment], caption: String) {
         let handoff = takeComposer()
         withAnimation(.spring(duration: 0.25)) { staged = [] }
-        mediaState = .uploading(nil)
-        // The outbox owns the set from HERE, before the first byte goes
-        // out — not from the failure branch. The window this closes is the
-        // one where the set belongs to nobody but a running Task, so a
-        // reader who leaves mid-upload loses the caption, the reply and the
-        // files with nothing left holding them.
-        let token = outbox.begin(
-            chatID: chatID,
+        if coordinator.sendMedia(
+            items.map(\.prepared),
             caption: handoff.caption,
             replyTo: handoff.replyTo,
-            prepared: items.map(\.prepared))
-        Task {
-            let sent = await coordinator.sendMedia(
-                items.map(\.prepared),
-                caption: handoff.caption,
-                replyTo: handoff.replyTo,
-                in: chatID,
-                onItemStart: { index, total in
-                    // The existing strip carries the progress; one item
-                    // keeps the plain "Sending…" it has always shown.
-                    // Progress stays INSIDE `.uploading` so the composer
-                    // still counts as busy — `.working` would reopen the
-                    // attach menu and the paste door mid-send.
-                    guard total > 1 else { return }
-                    mediaState = .uploading(
-                        String(localized: "Uploading \(index) of \(total)…"))
-                })
-            if sent {
-                // `sendMedia` consumed the files on its way out; the entry
-                // is all that is left to drop.
-                outbox.finish(token)
-                mediaState = .idle
-            } else {
-                // Mark it failed and DO NOT take it here. A take removes
-                // the entry whether or not this view is still alive, and if
-                // it is not, the restore that follows writes into @State
-                // nobody owns — losing the set exactly as before, with its
-                // files now unowned too. Recovery is driven by observation
-                // instead: `.onChange` below fires on whichever composer
-                // for this chat is actually on screen, and that one takes it.
-                outbox.fail(token)
-                mediaState = .failed(String(localized: "Couldn't send that — try again."))
-            }
+            in: chatID) == nil
+        {
+            // Only when not one item could be staged — a full disk, or a
+            // file that vanished between picking and sending.
+            restore(handoff)
+            mediaState = .failed(String(localized: "Couldn't send that — try again."))
+        } else {
+            mediaState = .idle
         }
-    }
-
-    /// Adopt a send that failed with nobody left to hand it back to.
-    ///
-    /// The composer that started it is gone — the reader left the chat
-    /// while the upload ran — so its restore went into `@State` that no
-    /// longer exists. The set is still owned by the outbox; this takes it
-    /// back so the photos, the caption and the reply are where the reader
-    /// left them.
-    ///
-    /// Only when this composer is empty. A reader who has since staged
-    /// something else is mid-thought, and merging an old set into it would
-    /// send photos they did not choose alongside the ones they did.
-    private func recoverFailedSend() {
-        // Only `staged` gates this. An earlier version also required an
-        // empty draft, which lost the photos of anyone who typed their next
-        // message while the upload ran — and the code this replaced put the
-        // set back unconditionally, so that was a regression, not a
-        // tightening. Restoring into `staged` sends nothing on its own:
-        // `send()` still needs a deliberate press.
-        guard staged.isEmpty,
-              // Never over a share import: those arrive into this same
-              // composer and are what the reader is actually looking at.
-              session.shareImportTarget == nil,
-              let waiting = outbox.mostRecentFailed(for: chatID),
-              let recovered = outbox.take(waiting.id)
-        else { return }
-        staged = recovered.prepared.map { StagedAttachment(prepared: $0) }
-        if model.draft.isEmpty { model.draft = recovered.caption }
-        if replyDraft == nil { replyDraft = recovered.replyTo }
-        mediaState = .failed(String(localized: "Couldn't send that — try again."))
     }
 
     /// Throw away ONE staged item and its temp file.
@@ -2758,19 +2691,19 @@ struct ConversationView: View {
                 // was typed travels with the pin, and comes back if the
                 // send never happened.
                 let composer = takeComposer()
-                let sent = await coordinator.sendLocation(
+                if coordinator.sendLocation(
                     latitude: fix.latitude,
                     longitude: fix.longitude,
                     accuracyM: fix.accuracyM,
                     label: nil,
                     caption: composer.caption,
                     replyTo: composer.replyTo,
-                    in: chatID)
-                if sent {
-                    mediaState = .idle
-                } else {
+                    in: chatID) == nil
+                {
                     restore(composer)
                     mediaState = .failed(String(localized: "Could not share your location."))
+                } else {
+                    mediaState = .idle
                 }
             } catch LocationProvider.Failure.denied {
                 // Not the prompt any more — that was settled above. This is

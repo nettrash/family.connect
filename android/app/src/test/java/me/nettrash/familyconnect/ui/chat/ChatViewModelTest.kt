@@ -72,6 +72,7 @@ import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageBody
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
+import me.nettrash.familyconnect.data.repo.MediaStaging
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAttachmentApi
@@ -192,6 +193,8 @@ class ChatViewModelTest {
             posterCache = FakePosterCache(),
             scope = repoScope,
             clock = Clock { NOON },
+            pendingAttachmentDao = db.pendingAttachmentDao(),
+            staging = MediaStaging(RuntimeEnvironment.getApplication()),
         )
         runCurrent()
         // Chat row must exist for read reporting / unread rules.
@@ -528,7 +531,7 @@ class ChatViewModelTest {
     @Test
     fun sendCommitsStagedMediaWithTheTypedCaption() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 1 }) }
+        val file = File.createTempFile("staged", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() }).apply { writeBytes(ByteArray(16) { 1 }) }
         viewModel.stagePrepared(
             MediaPrep.Prepared(
                 file = file,
@@ -561,7 +564,7 @@ class ChatViewModelTest {
     @Test
     fun sendCommitsStagedMediaWithNoCaption() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 2 }) }
+        val file = File.createTempFile("staged", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() }).apply { writeBytes(ByteArray(16) { 2 }) }
         viewModel.stagePrepared(
             MediaPrep.Prepared(
                 file = file,
@@ -592,18 +595,17 @@ class ChatViewModelTest {
      * Apple composers re-stage the survivors the same way).
      */
     @Test
-    fun aFailedAlbumSendRestoresTheUnsentItems() = runTest(dispatcher) {
+    fun aFailedAlbumSendLeavesTheBubbleHoldingTheSet() = runTest(dispatcher) {
+        // The composer used to catch a failed set and put it back, because
+        // there was nowhere else for it to live. Now the send is a row from
+        // the moment it is made: the bubble holds the photos, the caption
+        // and the reply, and the composer is free the instant Send is
+        // pressed. That is why the strip is empty here rather than full.
         val viewModel = newViewModel()
-        var uploads = 0
         attachmentApi.uploadHandler = { _, _, _ ->
-            uploads += 1
-            if (uploads == 1) {
-                ApiResult.Ok(AttachmentResponse(FakeAttachmentApi.attachment(id = 1)))
-            } else {
-                ApiResult.HttpError(413, "attachment_too_large", "too big")
-            }
+            ApiResult.HttpError(413, "attachment_too_large", "no")
         }
-        val items = listOf(tempPrepared(tag = 1), tempPrepared(tag = 2), tempPrepared(tag = 3))
+        val items = List(3) { tempPrepared(tag = it.toByte()) }
         items.forEach { viewModel.stagePrepared(it) }
         runCurrent()
         viewModel.inputState.setTextAndPlaceCursorAtEnd("three of us")
@@ -611,23 +613,17 @@ class ChatViewModelTest {
         viewModel.send()
         advanceUntilIdle()
 
-        // The second upload failed: items 2 and 3 are back in the
-        // composer, files intact, in their original order.
-        assertThat(viewModel.staged.value).containsExactly(items[1], items[2]).inOrder()
-        assertThat(viewModel.staged.value.all { it.file.exists() }).isTrue()
-        // The caption came back too, and the failure is on the strip.
-        assertThat(viewModel.inputState.text.toString()).isEqualTo("three of us")
-        assertThat(viewModel.mediaState.value)
-            .isInstanceOf(ChatViewModel.MediaSendState.Failed::class.java)
+        assertThat(viewModel.staged.value).isEmpty()
+        // And the message exists, with its caption and its photos, waiting
+        // to be retried. A refused upload is terminal, so the row is FAILED
+        // rather than queued — but it is a row, which is the whole point.
+        val rows = db.messageDao().observeMessages(CHAT, 50).first()
+        assertThat(rows).hasSize(1)
+        assertThat(rows.single().body).isEqualTo("three of us")
+        assertThat(rows.single().status).isEqualTo(MessageStatus.FAILED)
+        assertThat(db.pendingAttachmentDao().itemsFor(rows.single().clientMsgId)).hasSize(3)
     }
 
-    /**
-     * stage() is reachable from three scopes at once (the appScope
-     * prepare loops, the share drain, the main thread), so the staged
-     * list is mutated with CAS — no item may be silently lost with its
-     * file leaked. Genuinely parallel on Dispatchers.Default: with plain
-     * read-modify-writes this is flaky, with CAS it is exact.
-     */
     @Test
     fun concurrentStagingLosesNoItemAndHoldsTheCap() = runTest(dispatcher) {
         val viewModel = newViewModel()
@@ -1322,7 +1318,7 @@ class ChatViewModelTest {
     @Test
     fun aPasteAppendsBehindWhateverWasAlreadyStaged() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val first = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 3 }) }
+        val first = File.createTempFile("staged", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() }).apply { writeBytes(ByteArray(16) { 3 }) }
         viewModel.stagePrepared(
             MediaPrep.Prepared(
                 file = first,
@@ -1387,7 +1383,7 @@ class ChatViewModelTest {
     }
 
     private fun tempPrepared(tag: Byte, bytes: Int = 16): MediaPrep.Prepared {
-        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(bytes) { tag }) }
+        val file = File.createTempFile("staged", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() }).apply { writeBytes(ByteArray(bytes) { tag }) }
         return MediaPrep.Prepared(
             file = file,
             mime = "image/jpeg",
@@ -1419,9 +1415,9 @@ class ChatViewModelTest {
 
     /** And the other half of that guard: one upload at a time. */
     @Test
-    fun aPasteIsRefusedWhileAnUploadIsRunning() = runTest(dispatcher) {
+    fun aPasteRightAfterSendStagesBecauseTheSendHasLeft() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 4 }) }
+        val file = File.createTempFile("staged", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() }).apply { writeBytes(ByteArray(16) { 4 }) }
         viewModel.stagePrepared(
             MediaPrep.Prepared(
                 file = file,
@@ -1434,13 +1430,16 @@ class ChatViewModelTest {
             ),
         )
         runCurrent()
-        // send() marks the composer Uploading before it launches anything,
-        // so nothing has to be advanced to be in flight.
+        // A send no longer holds the composer: it becomes a row and its
+        // uploads belong to the outbox, so the person can compose the next
+        // message immediately. Pasting straight after Send therefore
+        // STAGES rather than being refused as BUSY, which is the point of
+        // making a media send durable.
         viewModel.send()
 
         val result = viewModel.pasteAttachment(clipboardItem("blob"), "application/pdf")
 
-        assertThat(result).isEqualTo(ChatViewModel.PasteResult.BUSY)
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.STAGING)
         advanceUntilIdle()
     }
 

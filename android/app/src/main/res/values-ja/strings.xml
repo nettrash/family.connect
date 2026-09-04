@@ -281,7 +281,6 @@
     <string name="s_flip_camera">カメラを切り替え</string>
     <string name="e_camera_permission">Family がカメラを使う許可が必要です。</string>
     <string name="s_video_calls_are_off_on_this_server">このサーバーではビデオ通話は無効です</string>
-    <string name="s_uploading_n_of_m">%1$d/%2$d をアップロード中…</string>
     <string name="e_attachment_limit">1つのメッセージに添付できるのは最大%1$d件です。</string>
     <string name="s_share_choose_chat">共有先を選ぶ</string>
     <string name="s_shared_with_family">Familyに共有</string>

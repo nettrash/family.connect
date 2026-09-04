@@ -61,12 +61,33 @@ sealed class ApiResult<out T> {
         val status: Int,
         val code: String?,
         val message: String?,
+        /** `Retry-After` in delta-seconds, when the server sent one. */
+        val retryAfterSeconds: Long? = null,
     ) : ApiResult<Nothing>()
 
     data class NetworkError(val cause: Throwable) : ApiResult<Nothing>()
 
     /** The success value, or null for any failure. */
     fun okOrNull(): T? = (this as? Ok<T>)?.value
+
+    /**
+     * Whether this failure says anything at all about the REQUEST.
+     *
+     * It does not when the request never arrived or was never answered: a
+     * transport failure, a `408`, a `429`, any `5xx`. Those leave the
+     * outcome UNKNOWN, and the protocol's rule is that a client must never
+     * present an unknown outcome as a refusal — it keeps the message in
+     * the outbox and tries again (docs/protocol.md, "Sending on an
+     * unreliable network"). `429` matters most and is the least obvious:
+     * nginx answers its own rate limit with it, in an HTML body our error
+     * shape does not cover, so `code` is null and only the status says so.
+     */
+    val isTransient: Boolean
+        get() = when (this) {
+            is Ok -> false
+            is NetworkError -> true
+            is HttpError -> status == 408 || status == 429 || status >= 500
+        }
 }
 
 @Singleton
@@ -281,10 +302,19 @@ class ApiClient @Inject constructor(
         val call = if (timeout == Duration.ZERO) {
             client
         } else {
+            // Per-operation only, and NO `callTimeout`: that one is a wall
+            // clock on the whole exchange, so a 100 MB video on a slow
+            // uplink was cancelled at the ceiling however well it was
+            // progressing — the transfer could not be finished by being
+            // patient, only by finding a faster network. `writeTimeout`
+            // and `readTimeout` already do the right thing: they fire when
+            // no bytes move, which is the condition worth giving up on.
+            // The shared client's own 20 s callTimeout is dropped here for
+            // the same reason.
             client.newBuilder()
                 .writeTimeout(timeout)
                 .readTimeout(timeout)
-                .callTimeout(timeout)
+                .callTimeout(Duration.ZERO)
                 .build()
         }
 
@@ -301,7 +331,12 @@ class ApiClient @Inject constructor(
                     if (isSessionGone(response.code, parsed?.code, auth)) {
                         unauthorized.tryEmit(Unit)
                     }
-                    ApiResult.HttpError(response.code, parsed?.code, parsed?.message)
+                    ApiResult.HttpError(
+                        response.code,
+                        parsed?.code,
+                        parsed?.message,
+                        response.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it >= 0 },
+                    )
                 }
             }
         } catch (e: CancellationException) {

@@ -47,10 +47,40 @@ nonisolated enum APIError: Error, Equatable {
     /// "owner_cannot_leave", 400 "validation", …). Carries the human
     /// message for inline display.
     case conflict(code: String?, message: String?)
+    /// 429 — the server, or the proxy in front of it, asked us to slow
+    /// down (docs/protocol.md, "Error shape"). Its own case because it is
+    /// the one 4xx that is NOT a refusal: nginx answers its rate and
+    /// connection limits with it, in an HTML body the protocol's error
+    /// shape does not cover, so the status alone has to carry the meaning.
+    /// `retryAfter` is the header's delta-seconds when one was sent.
+    case throttled(retryAfter: TimeInterval?)
     /// 5xx after the retry budget is spent.
     case server(status: Int, message: String?)
     /// The status was fine but the body did not decode as documented.
     case decoding
+
+    /// Whether this failure says anything at all about the REQUEST.
+    ///
+    /// It does not when the request never arrived or was never answered:
+    /// a transport failure, a throttle, a 5xx. Those leave the outcome
+    /// UNKNOWN, and the protocol's rule is that a client must never show
+    /// an unknown outcome as a refusal — it keeps the message in the
+    /// outbox and tries again (docs/protocol.md, "Sending on an unreliable
+    /// network"). Everything else is the server having read the request
+    /// and refused it, which is a red bubble and a person's decision.
+    var isTransient: Bool {
+        switch self {
+        case .transport, .throttled, .server: true
+        case .notConfigured, .unauthorized, .forbidden, .notFound,
+             .payloadTooLarge, .conflict, .decoding: false
+        }
+    }
+
+    /// How long the server asked us to wait, when it said so.
+    var retryAfter: TimeInterval? {
+        if case .throttled(let seconds) = self { return seconds }
+        return nil
+    }
 }
 
 actor APIClient {
@@ -645,7 +675,7 @@ actor APIClient {
         }
         let (data, http) = try await send(request)
         guard (200..<300).contains(http.statusCode) else {
-            throw Self.mapError(status: http.statusCode, data: data)
+            throw Self.mapError(status: http.statusCode, data: data, retryAfter: Self.retryAfterSeconds(http))
         }
         let decoded: AttachmentResponse = try decodeResponse(data)
         return decoded.attachment
@@ -691,7 +721,7 @@ actor APIClient {
 
         let (data, response) = try await uploadFromFile(request, fileURL: fileURL)
         guard (200..<300).contains(response.statusCode) else {
-            throw Self.mapError(status: response.statusCode, data: data)
+            throw Self.mapError(status: response.statusCode, data: data, retryAfter: Self.retryAfterSeconds(response))
         }
         let decoded: AttachmentResponse = try decodeResponse(data)
         return decoded.attachment
@@ -1058,7 +1088,7 @@ actor APIClient {
         }
 
         guard (200..<300).contains(http.statusCode) else {
-            throw Self.mapError(status: http.statusCode, data: data)
+            throw Self.mapError(status: http.statusCode, data: data, retryAfter: Self.retryAfterSeconds(http))
         }
         return (data, http)
     }
@@ -1080,6 +1110,17 @@ actor APIClient {
         status == 429 || (500..<600).contains(status)
     }
 
+    /// `Retry-After` in its delta-seconds form, uncapped — the caller
+    /// decides what it is willing to wait. `retryDelay(from:fallback:)`
+    /// is the capped version the one-shot GET retry uses.
+    private static func retryAfterSeconds(_ http: HTTPURLResponse) -> TimeInterval? {
+        guard let header = http.value(forHTTPHeaderField: "Retry-After"),
+              let seconds = TimeInterval(header.trimmingCharacters(in: .whitespaces)),
+              seconds >= 0
+        else { return nil }
+        return seconds
+    }
+
     /// Seconds before the retry: `Retry-After` (delta-seconds form) when
     /// the server sent one, otherwise `fallback`. Capped at 5 s — beyond
     /// that the UI's own error handling is a better experience than a hang.
@@ -1096,7 +1137,7 @@ actor APIClient {
     /// `{"error":{code,message}}` body when present. A body that fails to
     /// parse degrades to nil code/message, never to a decode error — the
     /// status alone still routes correctly.
-    private static func mapError(status: Int, data: Data) -> APIError {
+    private static func mapError(status: Int, data: Data, retryAfter: TimeInterval? = nil) -> APIError {
         let body = try? APICoding.decoder().decode(APIErrorBody.self, from: data)
         let code = body?.error.code
         let message = body?.error.message
@@ -1105,6 +1146,9 @@ actor APIClient {
         case 403: return .forbidden(code: code)
         case 404: return .notFound(code: code)
         case 413: return .payloadTooLarge
+        // Before the general 4xx: a throttle is not a refusal, and the
+        // body it arrives in is usually nginx's HTML rather than ours.
+        case 429: return .throttled(retryAfter: retryAfter)
         case 400..<500: return .conflict(code: code, message: message)
         default: return .server(status: status, message: message)
         }

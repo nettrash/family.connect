@@ -285,7 +285,6 @@
     <string name="s_flip_camera">Kamera wechseln</string>
     <string name="e_camera_permission">Family braucht die Erlaubnis, die Kamera zu benutzen.</string>
     <string name="s_video_calls_are_off_on_this_server">Videoanrufe sind auf diesem Server aus</string>
-    <string name="s_uploading_n_of_m">Lade %1$d von %2$d hoch…</string>
     <string name="e_attachment_limit">Eine Nachricht kann höchstens %1$d Anhänge tragen.</string>
     <string name="s_share_choose_chat">Teilen an…</string>
     <string name="s_shared_with_family">Mit Family geteilt</string>

@@ -130,6 +130,8 @@ class MessageRepositoryTest {
             posterCache = FakePosterCache(),
             scope = repoScope,
             clock = Clock { NOW },
+            pendingAttachmentDao = db.pendingAttachmentDao(),
+            staging = MediaStaging(RuntimeEnvironment.getApplication()),
         )
         runCurrent() // frame collector must be subscribed before any emit
         return repository
@@ -160,6 +162,206 @@ class MessageRepositoryTest {
 
     private fun sentClientMsgId(): String =
         socket.sent.filterIsInstance<ClientFrame.Send>().single().clientMsgId
+
+    // -- Transient failures are not refusals ------------------------------------
+    //
+    // docs/protocol.md, "Sending on an unreliable network": a send has
+    // three outcomes, and the most common one on a bad network — unknown —
+    // must never be shown to the user as a refusal.
+
+    @Test
+    fun aTransientHttpFailureKeepsTheRowQueuedAndSchedulesIt() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ -> ApiResult.HttpError(500, "internal", "boom") }
+
+        repository.send(CHAT, "unknown outcome")
+        advanceUntilIdle()
+
+        val row = messageDao.findByClientMsgId(chatApi.postedMessages.single().second)!!
+        assertThat(row.status).isEqualTo(MessageStatus.SENDING)
+        assertThat(row.sendAttempts).isEqualTo(1)
+        assertThat(row.nextAttemptAt).isNotNull()
+    }
+
+    /**
+     * nginx answers its own rate limit with a 429 and an HTML body, so
+     * `code` is null and only the status says what happened — and
+     * `Retry-After` is the server saying how long its bucket needs.
+     */
+    @Test
+    fun aThrottleIsTransientAndItsRetryAfterSetsTheSchedule() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ ->
+            ApiResult.HttpError(429, null, null, retryAfterSeconds = 30)
+        }
+
+        repository.send(CHAT, "too eager")
+        advanceUntilIdle()
+
+        val row = messageDao.findByClientMsgId(chatApi.postedMessages.single().second)!!
+        assertThat(row.status).isEqualTo(MessageStatus.SENDING)
+        assertThat(row.nextAttemptAt!! - NOW).isAtLeast(30_000L)
+    }
+
+    /** Bounded, and it gives up VISIBLY. */
+    @Test
+    fun aTransientFailureThatNeverClearsEventuallyGoesRed() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ -> ApiResult.NetworkError(RuntimeException("down")) }
+
+        repository.send(CHAT, "doomed")
+        advanceUntilIdle()
+        val clientMsgId = chatApi.postedMessages.first().second
+        repeat(MessageRepository.MAX_SEND_ATTEMPTS) {
+            messageDao.scheduleRetry(clientMsgId, it, NOW - 1)
+            repository.flushPending()
+            advanceUntilIdle()
+        }
+
+        assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
+            .isEqualTo(MessageStatus.FAILED)
+    }
+
+    /**
+     * The guard the false-red bubble needed.
+     *
+     * A REST attempt already in flight when the ack landed used to write
+     * FAILED over a DELIVERED message — and `retry` then returned early on
+     * the serverId, so the button under the red bubble did nothing. The
+     * write is now conditional on the row still being unsent, in SQL, so
+     * no amount of interleaving can reorder it.
+     */
+    @Test
+    fun aStaleAttemptNeverPaintsADeliveredMessageRed() = runTest(dispatcher) {
+        newRepository()
+        insertChat()
+        val clientMsgId = "already-delivered"
+        messageDao.insert(
+            MessageEntity(
+                clientMsgId = clientMsgId,
+                serverId = 777,
+                chatId = CHAT,
+                senderId = ME,
+                body = "delivered after all",
+                createdAt = NOW,
+                status = MessageStatus.SENT,
+            ),
+        )
+
+        val rowsWritten = messageDao.markSendFailed(clientMsgId, attempts = 1)
+
+        assertThat(rowsWritten).isEqualTo(0)
+        val row = messageDao.findByClientMsgId(clientMsgId)!!
+        assertThat(row.status).isEqualTo(MessageStatus.SENT)
+        assertThat(row.serverId).isEqualTo(777)
+    }
+
+    /**
+     * An `error` frame with a transient code is no answer at all: the REST
+     * leg runs at once. It used to cancel the coroutine that WAS the REST
+     * leg, so a momentary server hiccup failed the message permanently on
+     * Android while the iPhone beside it sent the same text.
+     */
+    @Test
+    fun aTransientErrorFrameFallsStraightToRest() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+        chatApi.postMessageHandler = { chatId, id, body ->
+            ApiResult.Ok(
+                MessageResponse(
+                    messageDto(id = 555, chatId = chatId, senderId = ME, clientMsgId = id, body = body),
+                ),
+            )
+        }
+
+        repository.send(CHAT, "hiccup")
+        val clientMsgId = sentClientMsgId()
+        socket.emit(ServerFrame.Error(code = "internal", message = "boom", clientMsgId = clientMsgId))
+        advanceUntilIdle()
+
+        assertThat(chatApi.postedMessages).hasSize(1)
+        assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
+            .isEqualTo(MessageStatus.SENT)
+    }
+
+    /** A refusal still goes red, and still cancels the rescue. */
+    @Test
+    fun aTerminalErrorFrameStillFailsTheRow() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        repository.send(CHAT, "rejected")
+        val clientMsgId = sentClientMsgId()
+        socket.emit(
+            ServerFrame.Error(code = "message_too_long", message = "nope", clientMsgId = clientMsgId),
+        )
+        advanceUntilIdle()
+
+        assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
+            .isEqualTo(MessageStatus.FAILED)
+        assertThat(chatApi.postedMessages).isEmpty()
+    }
+
+    @Test
+    fun theOutboxSkipsRowsThatAreNotDueYet() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ -> ApiResult.NetworkError(RuntimeException("down")) }
+
+        repository.send(CHAT, "later")
+        advanceUntilIdle()
+        val clientMsgId = chatApi.postedMessages.single().second
+        messageDao.scheduleRetry(clientMsgId, 1, NOW + 60_000)
+
+        repository.flushPending()
+        advanceUntilIdle()
+        assertThat(chatApi.postedMessages).hasSize(1)
+
+        messageDao.scheduleRetry(clientMsgId, 1, NOW - 1)
+        repository.flushPending()
+        advanceUntilIdle()
+        assertThat(chatApi.postedMessages).hasSize(2)
+    }
+
+    /** A person asking again is a fresh budget. */
+    @Test
+    fun tapToRetryResetsTheAttemptCount() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ ->
+            ApiResult.HttpError(400, "message_too_long", "too long")
+        }
+
+        repository.send(CHAT, "doomed")
+        advanceUntilIdle()
+        val clientMsgId = chatApi.postedMessages.first().second
+        assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
+            .isEqualTo(MessageStatus.FAILED)
+
+        chatApi.postMessageHandler = { chatId, id, body ->
+            ApiResult.Ok(
+                MessageResponse(
+                    messageDto(id = 888, chatId = chatId, senderId = ME, clientMsgId = id, body = body),
+                ),
+            )
+        }
+        repository.retry(clientMsgId)
+        advanceUntilIdle()
+
+        val row = messageDao.findByClientMsgId(clientMsgId)!!
+        assertThat(row.status).isEqualTo(MessageStatus.SENT)
+        assertThat(row.sendAttempts).isEqualTo(0)
+    }
 
     // -- Optimistic send + ack --------------------------------------------------
 
@@ -270,8 +472,11 @@ class MessageRepositoryTest {
         repository.send(CHAT, "retry me")
         advanceUntilIdle()
         val clientMsgId = chatApi.postedMessages.single().second
+        // A dead wifi says nothing about whether the message landed, so
+        // the row stays QUEUED rather than going red (docs/protocol.md,
+        // "Sending on an unreliable network").
         assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
-            .isEqualTo(MessageStatus.FAILED)
+            .isEqualTo(MessageStatus.SENDING)
 
         // Second attempt succeeds — with the SAME UUID, so the server
         // dedups even if the first POST secretly landed.
@@ -624,7 +829,7 @@ class MessageRepositoryTest {
         advanceUntilIdle()
         val clientMsgId = chatApi.postedMessages.single().second
         assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
-            .isEqualTo(MessageStatus.FAILED)
+            .isEqualTo(MessageStatus.SENDING)
 
         socket.setOpen(true)
         repository.retry(clientMsgId)
@@ -1813,10 +2018,10 @@ class MessageRepositoryTest {
 
         repository.sendPoll(CHAT, "Pizza or pasta?", listOf("Pizza", "Pasta"))
         advanceUntilIdle()
-        val failed = messageDao.findByClientMsgId(
+        val queued = messageDao.findByClientMsgId(
             chatApi.postedMessages.single().second,
         )!!
-        assertThat(failed.status).isEqualTo(MessageStatus.FAILED)
+        assertThat(queued.status).isEqualTo(MessageStatus.SENDING)
 
         chatApi.postMessageHandler = { _, clientMsgId, body ->
             ApiResult.Ok(
@@ -1832,7 +2037,7 @@ class MessageRepositoryTest {
                 ),
             )
         }
-        repository.retry(failed.clientMsgId)
+        repository.retry(queued.clientMsgId)
         advanceUntilIdle()
 
         assertThat(chatApi.postedPolls.last()?.options)

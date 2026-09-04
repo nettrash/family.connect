@@ -39,12 +39,15 @@ fun interface LocalDataWiper {
         MessageEntity::class,
         MemberEntity::class,
         NoteEntity::class,
+        PendingAttachmentEntity::class,
     ],
-    version = 19,
+    version = 21,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
+
+    abstract fun pendingAttachmentDao(): PendingAttachmentDao
 
     abstract fun chatDao(): ChatDao
     abstract fun messageDao(): MessageDao
@@ -295,6 +298,70 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_18_19: Migration = object : Migration(18, 19) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN contentSeq INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v20: the outbox's own retry schedule.
+         *
+         * `sendAttempts` NOT NULL DEFAULT 0 because every existing row has
+         * an honest answer — this device has no record of what it already
+         * tried, and 0 gives a stranded message the full budget rather
+         * than none. `nextAttemptAt` is nullable: "due now" is a real
+         * state and 0 would be a timestamp in 1970 that happens to mean
+         * the same thing by accident.
+         */
+        val MIGRATION_19_20: Migration = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN sendAttempts INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN nextAttemptAt INTEGER")
+            }
+        }
+
+        /**
+         * v21: a media send that survives the app.
+         *
+         * A new table only — `messages` is untouched, because the message
+         * row for a media send is an ordinary optimistic row and its
+         * placeholder attachment set rides in the JSON column it already
+         * has. Nothing needs backfilling: sends in flight at upgrade time
+         * were in memory, and memory does not survive an upgrade either.
+         */
+        val MIGRATION_20_21: Migration = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS pending_attachments (
+                        localId INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                        clientMsgId TEXT NOT NULL,
+                        position INTEGER NOT NULL,
+                        localPath TEXT,
+                        previewPath TEXT,
+                        mime TEXT NOT NULL,
+                        kind TEXT NOT NULL,
+                        sizeBytes INTEGER NOT NULL,
+                        width INTEGER,
+                        height INTEGER,
+                        durationMs INTEGER,
+                        name TEXT,
+                        latitude REAL,
+                        longitude REAL,
+                        accuracyM INTEGER,
+                        attachmentId INTEGER,
+                        posterUploaded INTEGER NOT NULL DEFAULT 0,
+                        uploadAttempts INTEGER NOT NULL DEFAULT 0
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_pending_attachments_clientMsgId " +
+                        "ON pending_attachments (clientMsgId)",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "index_pending_attachments_clientMsgId_position " +
+                        "ON pending_attachments (clientMsgId, position)",
+                )
             }
         }
 

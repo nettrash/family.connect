@@ -153,6 +153,8 @@ class SyncEngineTest {
             posterCache = FakePosterCache(),
             scope = repoScope,
             clock = Clock { 1_000_000L },
+            pendingAttachmentDao = db.pendingAttachmentDao(),
+            staging = MediaStaging(RuntimeEnvironment.getApplication()),
         )
         runCurrent()
         val boardRepository = BoardRepository(

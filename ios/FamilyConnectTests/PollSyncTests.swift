@@ -155,6 +155,7 @@ struct PollSyncTests {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            PendingMediaItemEntity.self,
             configurations: configuration)
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!,

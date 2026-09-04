@@ -193,6 +193,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "familyless_since",
         sql: include_str!("../migrations/0034_familyless_since.sql"),
     },
+    Migration {
+        version: 35,
+        name: "expired_attachments",
+        sql: include_str!("../migrations/0035_expired_attachments.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

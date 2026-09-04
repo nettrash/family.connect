@@ -368,7 +368,6 @@
     <string name="s_video_calls_are_off_on_this_server">Video calls are off on this server</string>
     <!-- Multiple attachments per message, and the OS share target
          (docs/protocol.md, "Photos, videos, audio, files and locations"). -->
-    <string name="s_uploading_n_of_m">Uploading %1$d of %2$d…</string>
     <string name="e_attachment_limit">A message can carry at most %1$d attachments.</string>
     <string name="s_share_choose_chat">Share to…</string>
     <string name="s_shared_with_family">Shared with Family</string>

@@ -34,6 +34,11 @@ struct StubResponse: Sendable {
     let status: Int
     let headers: [String: String]
     let body: Data
+    /// When set, the request fails at the transport layer instead of
+    /// answering — no HTTP response at all, which is what a phone losing
+    /// its route actually produces and what the send pipeline's
+    /// transient/terminal rule turns on.
+    var transportError: URLError?
 
     static func json(_ status: Int, _ body: String, headers: [String: String] = [:]) -> StubResponse {
         var merged = headers
@@ -43,6 +48,11 @@ struct StubResponse: Sendable {
 
     static func empty(_ status: Int) -> StubResponse {
         StubResponse(status: status, headers: [:], body: Data())
+    }
+
+    /// The request never gets an answer: DNS, refused, reset, timeout.
+    static func failure(_ error: URLError) -> StubResponse {
+        StubResponse(status: 0, headers: [:], body: Data(), transportError: error)
     }
 }
 
@@ -115,6 +125,10 @@ final class StubURLProtocol: URLProtocol {
         }
 
         let stub = handler(recorded)
+        if let transportError = stub.transportError {
+            client?.urlProtocol(self, didFailWithError: transportError)
+            return
+        }
         let response = HTTPURLResponse(
             url: url,
             statusCode: stub.status,

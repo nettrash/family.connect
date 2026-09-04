@@ -293,7 +293,6 @@
     <string name="s_flip_camera">Сменить камеру</string>
     <string name="e_camera_permission">Family нужно разрешение на использование камеры.</string>
     <string name="s_video_calls_are_off_on_this_server">Видеозвонки отключены на этом сервере</string>
-    <string name="s_uploading_n_of_m">Загрузка %1$d из %2$d…</string>
     <string name="e_attachment_limit">Сообщение может содержать не более %1$d вложений.</string>
     <string name="s_share_choose_chat">Поделиться в…</string>
     <string name="s_shared_with_family">Поделились с Family</string>

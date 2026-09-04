@@ -55,6 +55,7 @@ struct AttachmentTests {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            PendingMediaItemEntity.self,
             configurations: configuration)
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!,
@@ -186,8 +187,8 @@ struct AttachmentTests {
         defer { harness.tearDown() }
 
         let prepared = try preparedPhoto()
-        let sent = await harness.coordinator.sendMedia(prepared, caption: "", in: 42)
-        #expect(sent)
+        let sent = harness.coordinator.sendMedia(prepared, caption: "", in: 42)
+        #expect(sent != nil)
         await harness.settle()
 
         // The message must not exist before the bytes do: a bubble pointing
@@ -234,7 +235,7 @@ struct AttachmentTests {
         }
         defer { harness.tearDown() }
 
-        #expect(await harness.coordinator.sendMedia(try preparedPhoto(), caption: "at the lake", in: 42))
+        #expect(harness.coordinator.sendMedia(try preparedPhoto(), caption: "at the lake", in: 42) != nil)
         await harness.settle()
 
         let send = try #require(
@@ -248,8 +249,12 @@ struct AttachmentTests {
         #expect(body["attachment_id"] == nil)
     }
 
-    @Test("A refused upload sends no message at all")
-    func refusedUploadLeavesNoBubble() async throws {
+    /// The inversion this whole design is: the bubble exists BEFORE the
+    /// bytes do. A refused upload leaves a message the sender can see and
+    /// retry, where it used to leave nothing at all — no bubble, no error,
+    /// and on a suspension no send either.
+    @Test("A refused upload leaves a bubble that can be retried")
+    func refusedUploadLeavesARetryableBubble() async throws {
         let host = "attach-refused.test"
         let harness = try makeHarness(host: host) { request in
             if request.url.path() == "/api/v1/attachments" {
@@ -260,11 +265,24 @@ struct AttachmentTests {
         defer { harness.tearDown() }
 
         let prepared = try preparedPhoto()
-        #expect(await harness.coordinator.sendMedia(prepared, caption: "", in: 42) == false)
+        let localID = try #require(harness.coordinator.sendMedia(prepared, caption: "", in: 42))
         await harness.settle()
-        #expect(harness.messages().isEmpty)
+
+        let row = try #require(harness.messages().first)
+        #expect(row.localID == localID)
+        #expect(row.state != .sent, "a refused upload must never look delivered")
+        // The upload was attempted once and NO message was posted: a
+        // message claiming an attachment the server refused would be a
+        // blank, undeletable bubble.
         #expect(StubURLProtocol.requests(host: host).count == 1)
+        // The bytes moved out of tmp into staging, so the retry has
+        // something to send.
         #expect(!FileManager.default.fileExists(atPath: prepared.fileURL.path))
+        let items = harness.coordinator.pendingMediaItems(for: localID)
+        #expect(items.count == 1)
+        #expect(items[0].attachmentID == nil)
+        #expect(PendingMediaStaging.url(for: try #require(items[0].fileName)) != nil)
+        harness.coordinator.deleteLocalMessage(localID: localID)
     }
 
     /// The preview is best-effort by design: a bubble with no preview just
@@ -293,7 +311,7 @@ struct AttachmentTests {
         }
         defer { harness.tearDown() }
 
-        #expect(await harness.coordinator.sendMedia(try preparedPhoto(), caption: "", in: 42))
+        #expect(harness.coordinator.sendMedia(try preparedPhoto(), caption: "", in: 42) != nil)
         await harness.settle()
         let row = try #require(harness.messages().first)
         #expect(row.attachmentID == 34)
@@ -317,7 +335,7 @@ struct AttachmentTests {
         }
         defer { harness.tearDown() }
 
-        #expect(await harness.coordinator.sendMedia(try preparedPhoto(previewJPEG: nil), caption: "", in: 42))
+        #expect(harness.coordinator.sendMedia(try preparedPhoto(previewJPEG: nil), caption: "", in: 42) != nil)
         await harness.settle()
         let paths = StubURLProtocol.requests(host: host).map(\.url.path)
         #expect(!paths.contains { $0.hasSuffix("/preview") })
@@ -480,7 +498,7 @@ struct AttachmentTests {
             durationMS: nil,
             previewJPEG: TestImages.solid(width: 40, height: 30))
 
-        #expect(await harness.coordinator.sendMedia(prepared, caption: "", in: 42))
+        #expect(harness.coordinator.sendMedia(prepared, caption: "", in: 42) != nil)
         await harness.settle()
 
         // Both halves are drawable straight away, and no GET was needed for
@@ -547,7 +565,7 @@ struct AttachmentTests {
             previewJPEG: poster)
 
         // The send survives a refused poster — that part never changed.
-        #expect(await harness.coordinator.sendMedia(prepared, caption: "", in: 42))
+        #expect(harness.coordinator.sendMedia(prepared, caption: "", in: 42) != nil)
         await harness.settle()
         #expect(store.isPosterUnsent(id: 9110),
                 "a poster the server refused was forgotten on the spot")
@@ -602,7 +620,7 @@ struct AttachmentTests {
             durationMS: nil,
             previewJPEG: TestImages.solid(width: 40, height: 30))
 
-        #expect(await harness.coordinator.sendMedia(prepared, caption: "", in: 42))
+        #expect(harness.coordinator.sendMedia(prepared, caption: "", in: 42) != nil)
         await harness.settle()
 
         #expect(!store.isPosterUnsent(id: 9111))
@@ -640,8 +658,8 @@ struct AttachmentTests {
         defer { harness.tearDown() }
 
         let quote = ReplyToDTO(messageID: 41, senderID: 9, excerpt: "See you at six")
-        #expect(await harness.coordinator.sendMedia(
-            try preparedPhoto(), caption: "", replyTo: quote, in: 42))
+        #expect(harness.coordinator.sendMedia(
+            try preparedPhoto(), caption: "", replyTo: quote, in: 42) != nil)
         await harness.settle()
 
         let send = try #require(
@@ -914,21 +932,14 @@ struct AttachmentTests {
         }
         defer { harness.tearDown() }
 
-        var progress: [(Int, Int)] = []
         let pair = try preparedPair()
-        let sent = await harness.coordinator.sendMedia(
-            pair, caption: "", in: 42,
-            onItemStart: { progress.append(($0, $1)) })
-        #expect(sent)
+        let sent = harness.coordinator.sendMedia(pair, caption: "", in: 42)
+        #expect(sent != nil)
         await harness.settle()
 
         // Whole-send success is the one consumer of the prepared files.
         #expect(!FileManager.default.fileExists(atPath: pair[0].fileURL.path))
         #expect(!FileManager.default.fileExists(atPath: pair[1].fileURL.path))
-
-        // Progress named each item against the total.
-        #expect(progress.map(\.0) == [1, 2])
-        #expect(progress.map(\.1) == [2, 2])
 
         // One send, claiming BOTH ids in upload order — the array
         // spelling, and never the legacy singular.
@@ -950,8 +961,11 @@ struct AttachmentTests {
     /// and EVERY file stays on disk — files are consumed only on
     /// whole-send success — so the composer restores the entire set and
     /// a retry cannot silently send a subset of what was composed.
-    @Test("A mid-way upload failure sends no message and keeps every file")
-    func midWayFailureKeepsUnsentFiles() async throws {
+    /// The resume, in one test: item one's id is REMEMBERED, so the retry
+    /// pushes only item two. Re-uploading everything is what made a large
+    /// set unsendable on a link that kept dropping.
+    @Test("A mid-way upload failure keeps the ids it already has")
+    func midWayFailureKeepsWhatLanded() async throws {
         let host = "attach-midfail.test"
         let uploads = UploadCounter()
         let harness = try makeHarness(host: host) { request in
@@ -966,14 +980,169 @@ struct AttachmentTests {
         defer { harness.tearDown() }
 
         let pair = try preparedPair()
-        #expect(await harness.coordinator.sendMedia(pair, caption: "", in: 42) == false)
+        let localID = try #require(harness.coordinator.sendMedia(pair, caption: "", in: 42))
         await harness.settle()
-        #expect(harness.messages().isEmpty)
-        // BOTH survive — the one whose upload landed too: a retry must
-        // offer the whole set, never just the tail.
-        #expect(FileManager.default.fileExists(atPath: pair[0].fileURL.path))
-        #expect(FileManager.default.fileExists(atPath: pair[1].fileURL.path))
-        for item in pair { try? FileManager.default.removeItem(at: item.fileURL) }
+
+        let row = try #require(harness.messages().first)
+        #expect(row.state != .sent)
+        // No message was posted: the set is incomplete, and a message
+        // claiming half of it would be the wrong message.
+        #expect(!StubURLProtocol.requests(host: host).contains {
+            $0.method == "POST" && $0.url.path().hasSuffix("/messages")
+        })
+        // Item one landed and its id is kept; item two still owes its
+        // bytes. That is what makes the retry cheap.
+        let items = harness.coordinator.pendingMediaItems(for: localID)
+        #expect(items.count == 2)
+        #expect(items[0].attachmentID == 50)
+        #expect(items[1].attachmentID == nil)
+        #expect(row.pendingAttachmentCount == 1)
+        // And both files are still on disk, in staging rather than tmp.
+        for item in items {
+            #expect(PendingMediaStaging.url(for: try #require(item.fileName)) != nil)
+        }
+        harness.coordinator.deleteLocalMessage(localID: localID)
+    }
+
+    // MARK: - The send is durable before the first byte
+
+    /// The whole point, in one assertion: the row and its staged bytes
+    /// exist before anything has been uploaded. Everything else — surviving
+    /// a suspension, a kill, a dead network — follows from that.
+    @Test("The bubble and its bytes exist before the first upload")
+    func theSendIsDurableImmediately() async throws {
+        let host = "attach-durable.test"
+        let blocked = UploadCounter()
+        let harness = try makeHarness(host: host) { request in
+            // Never answers: the send stays in flight for the whole test.
+            if request.url.path() == "/api/v1/attachments" {
+                _ = blocked.next()
+                return .failure(URLError(.networkConnectionLost))
+            }
+            return .json(201, #"{"message": {}}"#)
+        }
+        defer { harness.tearDown() }
+
+        let prepared = try preparedPhoto()
+        let localID = try #require(
+            harness.coordinator.sendMedia(prepared, caption: "at the lake", in: 42))
+
+        // The row is there straight away, before any await.
+        let row = try #require(harness.messages().first)
+        #expect(row.localID == localID)
+        #expect(row.body == "at the lake")
+        #expect(row.pendingAttachmentCount == 1)
+        // And it draws: a provisional attachment, so the sender sees the
+        // photo rather than an empty bubble for the length of the upload.
+        #expect(row.attachmentList.count == 1)
+        #expect(try #require(row.attachmentList.first).id < 0)
+        await harness.settle()
+        harness.coordinator.deleteLocalMessage(localID: localID)
+    }
+
+    /// THE ONE THAT DESTROYS DATA. A media row whose uploads have not
+    /// finished must never be POSTed: with a caption the server would
+    /// happily take a text-only message, the bubble would go green, and
+    /// the pictures would be gone with nothing saying so.
+    @Test("A row still owing uploads is never delivered as text")
+    func aPendingMediaRowIsNeverDeliveredEmpty() async throws {
+        let host = "attach-noempty.test"
+        let harness = try makeHarness(host: host) { request in
+            if request.url.path() == "/api/v1/attachments" {
+                return .failure(URLError(.networkConnectionLost))
+            }
+            return .json(201, #"{"message": {}}"#)
+        }
+        defer { harness.tearDown() }
+
+        let localID = try #require(
+            harness.coordinator.sendMedia(try preparedPhoto(), caption: "look", in: 42))
+        await harness.settle()
+
+        // Every route into the delivery leg, tried directly.
+        await harness.coordinator.deliver(localID: localID)
+        await harness.coordinator.sweepOutbox()
+
+        #expect(!StubURLProtocol.requests(host: host).contains {
+            $0.method == "POST" && $0.url.path().hasSuffix("/messages")
+        }, "a message was sent for a set whose photos never uploaded")
+        harness.coordinator.deleteLocalMessage(localID: localID)
+    }
+
+    /// `attachment_expired` is the server saying "those bytes are gone,
+    /// send them again" — the one 404 that is not a refusal. It is only
+    /// answerable because the bytes are staged durably.
+    @Test("An expired upload is uploaded again rather than failed")
+    func expiredUploadsAreSentAgain() async throws {
+        let host = "attach-expired.test"
+        let uploads = UploadCounter()
+        let sends = UploadCounter()
+        let harness = try makeHarness(host: host) { request in
+            if request.url.path() == "/api/v1/attachments" {
+                return .json(201, Self.attachmentJSON(id: uploads.next() == 1 ? 61 : 62))
+            }
+            if request.method == "POST", request.url.path().hasSuffix("/messages") {
+                if sends.next() == 1 {
+                    return .json(404, #"{"error": {"code": "attachment_expired", "message": "gone"}}"#)
+                }
+                return .json(201, """
+                {"message": {"id": 700, "chat_id": 42, "sender_id": 7,
+                 "client_msg_id": "\(UUID().uuidString)", "body": "",
+                 "created_at": "2026-08-19T17:05:00Z"}}
+                """)
+            }
+            return .empty(204)
+        }
+        defer { harness.tearDown() }
+
+        let localID = try #require(
+            harness.coordinator.sendMedia(try preparedPhoto(), caption: "", in: 42))
+        await harness.settle()
+
+        // The first id was abandoned and the bytes went up again.
+        let row = try #require(harness.messages().first)
+        #expect(row.state != .failed, "an expired upload is not a refusal")
+        let items = harness.coordinator.pendingMediaItems(for: localID)
+        if let item = items.first {
+            #expect(item.attachmentID != 61, "the dead id was claimed again")
+        }
+        harness.coordinator.deleteLocalMessage(localID: localID)
+    }
+
+    /// A delivered send owns nothing: holding 100 MB for a message the
+    /// family has already read is the leak this design has to avoid.
+    @Test("A delivered set drops its rows and its bytes")
+    func aDeliveredSetReleasesEverything() async throws {
+        let host = "attach-released.test"
+        let harness = try makeHarness(host: host) { request in
+            if request.url.path() == "/api/v1/attachments" {
+                return .json(201, Self.attachmentJSON(id: 71))
+            }
+            if request.method == "POST", request.url.path().hasSuffix("/messages") {
+                let clientMsgID = request.bodyJSON()?["client_msg_id"] as? String ?? "?"
+                return .json(201, """
+                {"message": {"id": 701, "chat_id": 42, "sender_id": 7,
+                 "client_msg_id": "\(clientMsgID)", "body": "",
+                 "created_at": "2026-08-19T17:05:00Z"}}
+                """)
+            }
+            return .empty(204)
+        }
+        defer { harness.tearDown() }
+
+        let localID = try #require(
+            harness.coordinator.sendMedia(try preparedPhoto(), caption: "", in: 42))
+        let staged = harness.coordinator.pendingMediaItems(for: localID)
+        let fileName = try #require(staged.first?.fileName)
+        #expect(PendingMediaStaging.url(for: fileName) != nil)
+
+        await harness.settle()
+
+        #expect(harness.messages().first?.state == .sent)
+        #expect(harness.coordinator.pendingMediaItems(for: localID).isEmpty,
+                "the item rows outlived the send")
+        #expect(PendingMediaStaging.url(for: fileName) == nil,
+                "the staged bytes outlived the send")
     }
 
     /// The plural preview rules, mirroring the server's push summaries:

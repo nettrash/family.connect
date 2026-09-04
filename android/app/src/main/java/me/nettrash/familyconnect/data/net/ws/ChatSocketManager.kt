@@ -50,6 +50,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import me.nettrash.familyconnect.calls.CallManager
 import me.nettrash.familyconnect.data.net.ConnectivityObserver
 import me.nettrash.familyconnect.data.push.PushTokenRepository
+import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.repo.SessionRepository
 import me.nettrash.familyconnect.data.repo.SyncEngine
 import me.nettrash.familyconnect.data.settings.ServerUrlNormalizer
@@ -63,6 +64,7 @@ class ChatSocketManager @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val connectivity: ConnectivityObserver,
     private val syncEngine: SyncEngine,
+    private val messageRepository: MessageRepository,
     private val pushTokenRepository: PushTokenRepository,
     private val callManager: CallManager,
     @param:AppScope private val scope: CoroutineScope,
@@ -82,6 +84,31 @@ class ChatSocketManager @Inject constructor(
                 .distinctUntilChanged()
                 .collect { desired -> if (desired) startLoop() else stopLoop() }
         }
+        // THE OUTBOX DOES NOT WAIT FOR A WEBSOCKET.
+        //
+        // `resync()` — and with it the re-send of everything queued — used
+        // to run in exactly one place: inside `if (settled ==
+        // SocketState.Open)` below. On a network that carries HTTP but
+        // blocks the upgrade (a captive portal, a corporate proxy, a
+        // carrier that drops long-lived connections) nothing was ever
+        // re-sent, and a message sat under a clock forever on a phone
+        // whose other traffic worked. Both edges below reach the server
+        // over plain REST, which is all a re-send needs.
+        scope.launch {
+            foregrounded.collect { inForeground ->
+                if (inForeground) runCatching { syncEngine.resync() }
+            }
+        }
+        scope.launch {
+            // A returning network is a trigger (docs/protocol.md, "Sending
+            // on an unreliable network"). The flush alone here, not a full
+            // resync: the socket loop is already re-dialling on this same
+            // signal and will resync when it lands.
+            connectivity.onAvailable.collect {
+                runCatching { messageRepository.flushPending() }
+            }
+        }
+
         // A 4401 close (or a 401 upgrade) is not something to reconnect
         // through — the session is gone, exactly as a REST 401 says it is,
         // and both have to end at the sign-in screen. Without this the

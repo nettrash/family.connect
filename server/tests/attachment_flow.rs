@@ -2062,3 +2062,173 @@ async fn a_zero_floor_lets_uploads_through() {
     let response = upload(&server, &owner, "?kind=photo", "image/jpeg", jpeg_bytes(64)).await;
     assert_eq!(response.status(), 201);
 }
+
+/// An upload the sweep took answers `attachment_expired`, not
+/// `attachment_not_found` (docs/protocol.md, "Sending on an unreliable
+/// network"). The two are different situations and only one has a way out:
+/// a client that still holds the bytes uploads them again and re-sends the
+/// same `client_msg_id`.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_swept_upload_is_expired_rather_than_missing() {
+    let server = spawn_server().await;
+    let (owner, member, chat_id) = family_of_two(&server).await;
+
+    let uploaded: Value = upload(
+        &server,
+        &owner,
+        "?kind=photo",
+        "image/jpeg",
+        jpeg_bytes(128),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let attachment_id = uploaded["attachment"]["id"].as_i64().expect("id");
+
+    sqlx::query("UPDATE attachments SET created_at = now() - interval '48 hours' WHERE id = $1")
+        .bind(attachment_id)
+        .execute(&server.state.pool)
+        .await
+        .expect("age it");
+    assert_eq!(
+        family_connect::handlers_attachment::sweep_unclaimed(&server.state)
+            .await
+            .expect("sweep"),
+        1
+    );
+
+    // The uploader learns it EXPIRED — the answer they can act on.
+    assert_error(
+        server
+            .post(
+                &owner,
+                &format!("/chats/{chat_id}/messages"),
+                json!({
+                    "client_msg_id": Uuid::new_v4().to_string(),
+                    "body": "",
+                    "attachment_ids": [attachment_id],
+                }),
+            )
+            .await,
+        404,
+        "attachment_expired",
+    )
+    .await;
+
+    // Somebody ELSE naming the same id learns nothing: the marker is
+    // scoped to its uploader, exactly as the row was.
+    assert_error(
+        server
+            .post(
+                &member,
+                &format!("/chats/{chat_id}/messages"),
+                json!({
+                    "client_msg_id": Uuid::new_v4().to_string(),
+                    "body": "",
+                    "attachment_ids": [attachment_id],
+                }),
+            )
+            .await,
+        404,
+        "attachment_not_found",
+    )
+    .await;
+
+    // And an id that never existed is still plainly missing.
+    assert_error(
+        server
+            .post(
+                &owner,
+                &format!("/chats/{chat_id}/messages"),
+                json!({
+                    "client_msg_id": Uuid::new_v4().to_string(),
+                    "body": "",
+                    "attachment_ids": [attachment_id + 99_999],
+                }),
+            )
+            .await,
+        404,
+        "attachment_not_found",
+    )
+    .await;
+
+    // Uploading again and re-sending the SAME client_msg_id is the way out.
+    let again: Value = upload(
+        &server,
+        &owner,
+        "?kind=photo",
+        "image/jpeg",
+        jpeg_bytes(128),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let fresh_id = again["attachment"]["id"].as_i64().expect("id");
+    let sent = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_ids": [fresh_id],
+            }),
+        )
+        .await;
+    assert_eq!(
+        sent.status(),
+        201,
+        "{}",
+        sent.text().await.unwrap_or_default()
+    );
+}
+
+/// The marker must not hold the FILE alive: `remove_if_unreferenced` asks
+/// whether any `attachments` row still names the key, which is exactly why
+/// the marker is its own table and names no key (0035).
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_expiry_marker_does_not_keep_the_bytes() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let uploaded: Value = upload(
+        &server,
+        &owner,
+        "?kind=photo",
+        "image/jpeg",
+        jpeg_bytes(256),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let attachment_id = uploaded["attachment"]["id"].as_i64().expect("id");
+    let key: String = sqlx::query_scalar("SELECT storage_key FROM attachments WHERE id = $1")
+        .bind(attachment_id)
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("key");
+    let path = server.state.storage.blob_path(&key);
+    assert!(path.exists());
+
+    sqlx::query("UPDATE attachments SET created_at = now() - interval '48 hours' WHERE id = $1")
+        .bind(attachment_id)
+        .execute(&server.state.pool)
+        .await
+        .expect("age it");
+    family_connect::handlers_attachment::sweep_unclaimed(&server.state)
+        .await
+        .expect("sweep");
+
+    assert!(!path.exists(), "the marker kept the bytes alive");
+    let markers: i64 = sqlx::query_scalar("SELECT count(*) FROM expired_attachments WHERE id = $1")
+        .bind(attachment_id)
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("count");
+    assert_eq!(markers, 1);
+}

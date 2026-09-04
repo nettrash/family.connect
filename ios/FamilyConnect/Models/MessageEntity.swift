@@ -66,6 +66,31 @@ final class MessageEntity {
     var createdAt: Date
     /// 0 pending, 1 sent, 2 failed — see `MessageStatus`.
     var status: Int
+    /// How many delivery attempts this row has already cost, and when the
+    /// next one is due (docs/protocol.md, "Sending on an unreliable
+    /// network"). A transient failure — a timeout, a 429, a 5xx — leaves
+    /// the row PENDING and schedules it here instead of turning it red,
+    /// because none of those say whether the message landed. `nil` means
+    /// no attempt has failed yet, and the outbox sweep then falls back to
+    /// the age of the row. Both default, so this is a lightweight
+    /// SwiftData migration for anyone upgrading over an existing store.
+    var sendAttempts: Int = 0
+    var nextAttemptAt: Date?
+    /// How many attachments this row still owes an upload.
+    ///
+    /// 0 on every text message, every inbound message and every row
+    /// written before this column existed, so it is a plain `Int` with a
+    /// default and the migration stays lightweight.
+    ///
+    /// It is a GUARD, not bookkeeping. A pending media row whose uploads
+    /// have not finished must never reach `deliver`: it would POST with no
+    /// `attachment_ids` at all, and for a photo WITH a caption the server
+    /// would accept a perfectly good text-only message — the bubble turns
+    /// green, the pictures are gone, and nothing anywhere says so.
+    /// Reaching 0 is exactly the condition "this row may now be
+    /// delivered", and it is written in the same save as the last
+    /// attachment id.
+    var pendingAttachmentCount: Int = 0
     /// Full current reaction state, JSON-encoded in the wire shape
     /// (`[{"user_id":9,"emoji":"❤️"}]`). nil = never reacted to; "[]" =
     /// reacted and later cleared — the distinction the protocol keeps.
@@ -201,6 +226,28 @@ final class MessageEntity {
         attachmentLatitude = first.latitude
         attachmentLongitude = first.longitude
         attachmentAccuracyM = first.accuracyM
+    }
+
+    /// Take the whole set back off the row.
+    ///
+    /// The one caller is the expired-upload recovery: the ids the row
+    /// carries name bytes the server no longer has, so they must not be
+    /// claimed again, and the row goes back to being a send that still
+    /// owes its uploads.
+    func clearAttachments() {
+        attachmentsJSON = nil
+        attachmentID = nil
+        attachmentKind = nil
+        attachmentMIME = nil
+        attachmentSize = 0
+        attachmentWidth = nil
+        attachmentHeight = nil
+        attachmentDurationMS = nil
+        attachmentHasPreview = false
+        attachmentName = nil
+        attachmentLatitude = nil
+        attachmentLongitude = nil
+        attachmentAccuracyM = nil
     }
 
     /// The FIRST attachment as the views that predate plurality want it,
