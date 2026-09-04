@@ -12,6 +12,33 @@ Character limits are stated in each heading and were measured, not estimated. Ap
 enforces them at entry: a Description over 4,000 characters cannot be saved, and App Review
 Information notes over 4,000 are truncated mid-sentence.
 
+## Subtitle (29/30 chars)
+
+Private chat, your own server
+
+*The subtitle sits under the name on the product page and is indexed for search, and App Store
+Connect will not save more than 30 characters. This one is deliberately name-independent — it
+repeats neither "Family" nor "Connect" — so it stands whichever way the naming decision in the
+checklist lands, and it spends all 29 characters on the single claim no other messenger's
+subtitle can make: the server is yours.*
+
+*Two alternates, checked against the same rules. "Chat on a server you choose" (27) is the
+strictest reading of the truth, since most customers will start on our server and never leave
+it; "One family, one server, no ads" (30) leads with containment instead and picks up the
+no-advertising point the Description makes. Any of the three can ship.*
+
+*What must never appear here: "secure", "encrypted", "end-to-end", "safe" — messages are stored
+readable on the server and the Description says so in as many words, so a subtitle implying
+otherwise contradicts the listing it sits above and is the kind of claim a reviewer checks. Nor
+"free", a price, an emoji, a superlative, or another app's name.*
+
+*One consequence for the field below: the App Store indexes the name, the subtitle and the
+keyword field as a single bag of terms, and repeating a term buys nothing. Filing this subtitle
+puts "private", "chat" and "server" in twice, so drop those three from Keywords when it is
+entered — the list becomes `messenger,self-hosted,calls,video,voice,photos,relatives,grandparents,group`
+at 75 characters, and the 25 freed are better spent on terms the listing carries nowhere else
+(album, poll, location, notes, open source). The same applies to the macOS list.*
+
 ## Promotional Text (168/170 chars)
 
 A private messenger for one family. Messages, photos, voice notes and calls. Start on our server, move to your own whenever you like. No ads, no analytics, no tracking.
@@ -563,6 +590,17 @@ after seeing one, not before.
 
 Separately, and by protocol design, a Mac is never woken for a CALL. No entitlement changes that,
 so every sentence about ringing stays true whichever variant ships.
+
+### macOS Subtitle (29/30 chars)
+
+Private chat, your own server
+
+*The same string as iOS, on purpose. The subtitle is per-platform, but the Mac-specific angle —
+sidebar, windows of their own — does not survive a 30-character cut without becoming cryptic,
+and "Mac" is left out here for the same reason it is left out of the keywords: every app on this
+store is a Mac app. The iOS notes about what must never appear apply unchanged, as does the
+keyword-overlap consequence: dropping "private", "chat" and "server" leaves
+`messenger,self-hosted,calls,video,voice,photos,relatives,grandparents,desktop` at 77 characters.*
 
 ### macOS Promotional Text (163/170 chars)
 

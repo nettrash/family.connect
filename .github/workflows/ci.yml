@@ -442,6 +442,33 @@ jobs:
       # The result bundle goes under RUNNER_TEMP and is removed first --
       # xcodebuild exits 64 if the path already exists, which is what a
       # re-run of a failed job would otherwise hit.
+      #
+      # -parallel-testing-enabled NO is load-bearing, not tuning. Swift
+      # Testing runs the whole bundle CONCURRENTLY in one process, but 37 of
+      # 76 test files are @MainActor, so those tests do not actually run in
+      # parallel -- they queue on the main actor while their wall clocks keep
+      # running. On a 3-core hosted runner the backlog reaches tens of
+      # seconds, and two kinds of test lose:
+      #
+      #   * one bounded by a wall clock (AttachmentPosterTests' 5s waits)
+      #     gives up before the product's own 20ms retry ladder is served --
+      #     "a 404 answered before the poster landed was treated as final",
+      #     with ONE request spent out of three;
+      #   * one waiting on an EVENT that a main-actor Task.sleep drives
+      #     (CallManagerTests' 50ms ring guard) blows its .timeLimit
+      #     entirely -- "Test exceeded execution time allowance of 1 minute"
+      #     -- and on the macOS lane that took the whole run down with it,
+      #     which is why it kept reporting ~500 of 912 tests.
+      #
+      # The victim is whichever test the backlog lands on, so the failing
+      # names moved run to run (incomingGuard, outgoingGuard,
+      # refusalRetriedAfterGrace, four APIClientTests at 17s each) while
+      # every run since 2026-09-03 failed. Serialising is also FASTER, twice
+      # measured on an M-series Mac against the full 912-test macOS bundle:
+      # 10.8s serial vs 27.0s parallel unloaded, and 49s vs 85s under six
+      # background-QoS spinners emulating a small runner. Parallelism that
+      # the main actor immediately undoes costs interleaving and buys
+      # nothing.
       - name: Run tests
         run: |
           cd "${{ github.workspace }}/ios"
@@ -450,6 +477,7 @@ jobs:
             -project FamilyConnect.xcodeproj \
             -scheme FamilyConnect \
             -only-testing:FamilyConnectTests \
+            -parallel-testing-enabled NO \
             -destination "platform=iOS Simulator,id=$FC_SIM_UDID" \
             -resultBundlePath "$RUNNER_TEMP/FamilyConnect.xcresult" \
             CODE_SIGNING_ALLOWED=NO
@@ -471,8 +499,8 @@ jobs:
           print(f"total={total} failed={failed} skipped={skipped} result={result}")
           if failed:
               print(f"::error::{failed} tests failed"); sys.exit(1)
-          if total < 600:
-              print(f"::error::only {total} tests ran; expected ~686"); sys.exit(1)
+          if total < 850:
+              print(f"::error::only {total} tests ran; expected 913"); sys.exit(1)
           # A skip is coverage that did not run, so it has a ceiling too.
           # Three are EXPECTED here and are not a defect: KeychainStoreTests
           # cannot reach the keychain on an unsigned host, because
@@ -534,6 +562,12 @@ jobs:
       # test for now: it belongs on a developer's machine, not here.
       #
       # `test`, never `archive`: the agvtool bump hangs off ArchiveAction.
+      # Serialised for the reason written out in the iOS lane above: the
+      # bundle is @MainActor-heavy, so concurrency here buys interleaving
+      # and blown timers rather than speed. This lane is where it showed
+      # worst -- a single test over its one-minute limit takes the whole
+      # run down with it, which is why the macOS job kept reporting ~500 of
+      # 912 tests.
       - name: Run tests
         run: |
           cd "${{ github.workspace }}/ios"
@@ -542,13 +576,17 @@ jobs:
             -project FamilyConnect.xcodeproj \
             -scheme FamilyConnect \
             -only-testing:FamilyConnectTests \
+            -parallel-testing-enabled NO \
             -destination 'platform=macOS,arch=arm64' \
             -resultBundlePath "$RUNNER_TEMP/FamilyConnect-macOS.xcresult" \
             CODE_SIGNING_ALLOWED=NO
 
-      # Same reasoning as the iOS lane: an exit code is not a result. The
-      # expected number is LOWER than iOS's 705 because 12 tests are iOS-only
-      # (#if os(iOS)), so the floor is set below 693 rather than at it.
+      # Same reasoning as the iOS lane: an exit code is not a result. The two
+      # platforms run almost the same bundle -- 913 tests on iOS, 912 on
+      # macOS -- but not the same 912: 18 are iOS-only (CallIntents, the
+      # BubbleLayout measurements, the poster's #if os(iOS) halves) and 17
+      # are macOS-only (LaunchWindowBackstopTests). So the floor is set below
+      # both rather than at either.
       - name: Assert the tests actually ran
         if: ${{ !cancelled() }}
         run: |
@@ -562,8 +600,8 @@ jobs:
           print(f"total={total} failed={failed} skipped={skipped} result={result}")
           if failed:
               print(f"::error::{failed} tests failed"); sys.exit(1)
-          if total < 600:
-              print(f"::error::only {total} tests ran; expected ~693"); sys.exit(1)
+          if total < 850:
+              print(f"::error::only {total} tests ran; expected 912"); sys.exit(1)
           PY
 
       - name: Upload result bundle
