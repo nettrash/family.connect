@@ -785,6 +785,42 @@ async fn me_always_carries_the_operators_family_ceiling() {
     ts.create_family(&user, "The Smiths").await;
     let me: Value = ts.get(&user, "/me").await.json().await.expect("me");
     assert_eq!(me["max_family_members"], 12);
+    // And the door is reported open on a default server — always present,
+    // for the same reason (protocol.md, "Starting a family").
+    assert_eq!(me["family_registration_enabled"], true, "{me}");
+}
+
+/// A server closed to NEW families (`[families] registration = false`,
+/// protocol.md "Starting a family"): `POST /families` is refused with its
+/// own code before the name is looked at, `/me` says so up front, and an
+/// account can still be registered — joining a family that already lives
+/// here is what such a server is for.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_server_closed_to_new_families_refuses_creation_and_says_so_on_me() {
+    let ts = spawn_server_with_config(|cfg| cfg.families.registration = false).await;
+    let (user, _) = ts.register("late", "Late Comer").await;
+
+    let me: Value = ts.get(&user, "/me").await.json().await.expect("me");
+    assert_eq!(me["family_registration_enabled"], false, "{me}");
+
+    let refused = ts
+        .post(&user, "/families", serde_json::json!({"name": "The Latecomers"}))
+        .await;
+    assert_error(refused, 403, "family_registration_disabled").await;
+
+    // Refused BEFORE validation: an empty name gets the door, not a lecture
+    // about lengths — the door is the fact that matters.
+    let refused = ts.post(&user, "/families", serde_json::json!({"name": ""})).await;
+    assert_error(refused, 403, "family_registration_disabled").await;
+
+    // Still nobody's member, and still able to ask to join one.
+    let me: Value = ts.get(&user, "/me").await.json().await.expect("me");
+    assert!(me["family"].is_null(), "{me}");
+    let join = ts
+        .post(&user, "/families/join", serde_json::json!({"invite_code": "NOPE1234"}))
+        .await;
+    assert_error(join, 404, "invalid_invite_code").await;
 }
 
 /// D4. An owner who leaves HANDS THE FAMILY ON rather than being refused.

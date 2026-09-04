@@ -22,6 +22,9 @@
     <string name="s_copy_invite_code">Скопировать код приглашения</string>
     <string name="s_create">Создать</string>
     <string name="s_create_a_family">Создать семью</string>
+    <string name="s_no_new_families_title">Этот сервер не принимает новые семьи.</string>
+    <string name="s_no_new_families_body">Family Connect задуман как одна семья на собственном сервере. Чтобы создать свою, запустите свой сервер и пригласите всех оттуда.</string>
+    <string name="s_run_your_own_server">Как запустить свой сервер</string>
     <string name="s_current_password">Текущий пароль</string>
     <string name="s_delete">Удалить</string>
     <string name="s_delete_this_note">Удалить эту заметку?</string>

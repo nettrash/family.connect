@@ -838,6 +838,10 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             // `validation` at the moment somebody tries to set one
             // (protocol.md, "Families").
             "max_family_members": state.cfg.limits.max_family_members,
+            // Whether this server takes NEW families at all — shown shut
+            // in the family gate rather than met as a 403 after somebody
+            // has typed a name (protocol.md, "Starting a family").
+            "family_registration_enabled": state.cfg.families.registration,
             // ALWAYS present, `[]` when the caller has blocked nobody —
             // the one read in this protocol where absence is not allowed
             // to mean "leave what you hold alone". A list that vanished

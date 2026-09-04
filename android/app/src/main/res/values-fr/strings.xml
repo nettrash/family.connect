@@ -22,6 +22,9 @@
     <string name="s_copy_invite_code">Copier le code d’invitation</string>
     <string name="s_create">Créer</string>
     <string name="s_create_a_family">Créer une famille</string>
+    <string name="s_no_new_families_title">Ce serveur n\'accepte pas de nouvelles familles.</string>
+    <string name="s_no_new_families_body">Family Connect est conçu pour une famille sur son propre serveur. Pour créer la vôtre, lancez votre propre serveur et invitez tout le monde depuis celui-ci.</string>
+    <string name="s_run_your_own_server">Comment lancer votre propre serveur</string>
     <string name="s_current_password">Mot de passe actuel</string>
     <string name="s_delete">Supprimer</string>
     <string name="s_delete_this_note">Supprimer cette note ?</string>

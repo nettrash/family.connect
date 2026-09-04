@@ -919,6 +919,12 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// — a report naming the owner never reaches them (protocol.md,
     /// "Reporting a member").
     var supportContact: String?
+    /// Whether this server takes NEW families at all (`[families]
+    /// registration`, docs/protocol.md "Starting a family"). ALWAYS present
+    /// on a current server; defaulted to TRUE for one that predates the
+    /// switch, which is also the right answer there — such a server has
+    /// no door to shut.
+    var familyRegistrationEnabled: Bool = true
 
     enum CodingKeys: String, CodingKey {
         case user
@@ -930,6 +936,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         case blockedUserIDs = "blocked_user_ids"
         case maxFamilyMembers = "max_family_members"
         case supportContact = "support_contact"
+        case familyRegistrationEnabled = "family_registration_enabled"
     }
 
     init(
@@ -941,7 +948,8 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         videoCallsEnabled: Bool = false,
         blockedUserIDs: [Int64] = [],
         maxFamilyMembers: Int? = nil,
-        supportContact: String? = nil
+        supportContact: String? = nil,
+        familyRegistrationEnabled: Bool = true
     ) {
         self.user = user
         self.family = family
@@ -952,6 +960,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         self.blockedUserIDs = blockedUserIDs
         self.maxFamilyMembers = maxFamilyMembers
         self.supportContact = supportContact
+        self.familyRegistrationEnabled = familyRegistrationEnabled
     }
 
     /// Hand-written for the reason every other defaulted field on this
@@ -967,6 +976,9 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         blockedUserIDs = try container.decodeIfPresent([Int64].self, forKey: .blockedUserIDs) ?? []
         maxFamilyMembers = try container.decodeIfPresent(Int.self, forKey: .maxFamilyMembers)
         supportContact = try container.decodeIfPresent(String.self, forKey: .supportContact)
+        // Absent on a server from before the switch, which has no door to
+        // shut — so absence reads as open (docs/protocol.md, `GET /me`).
+        familyRegistrationEnabled = try container.decodeIfPresent(Bool.self, forKey: .familyRegistrationEnabled) ?? true
     }
 }
 

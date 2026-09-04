@@ -22,6 +22,9 @@
     <string name="s_copy_invite_code">Kopiraj pozivni kod</string>
     <string name="s_create">Napravi</string>
     <string name="s_create_a_family">Napravi porodicu</string>
+    <string name="s_no_new_families_title">Ovaj server ne prima nove porodice.</string>
+    <string name="s_no_new_families_body">Family Connect je zamišljen kao jedna porodica na sopstvenom serveru. Da biste započeli svoju, pokrenite svoj server i pozovite sve odatle.</string>
+    <string name="s_run_your_own_server">Kako da pokrenete svoj server</string>
     <string name="s_current_password">Trenutna lozinka</string>
     <string name="s_delete">Obriši</string>
     <string name="s_delete_this_note">Obrisati ovu belešku?</string>

@@ -137,6 +137,11 @@ final class AppSession {
     /// `validation` error at the moment somebody saves. Nil on a server
     /// that predates the cap.
     private(set) var maxFamilyMembers: Int?
+    /// Whether this server takes NEW families (docs/protocol.md, "Starting
+    /// a family"). The family gate replaces "Create a family" with
+    /// directions to run one's own server when it is false; true until a
+    /// `/me` says otherwise, which is also the answer on an older server.
+    private(set) var familyRegistrationEnabled = true
     /// How to reach the operator, when they published anything. Shown on
     /// the report screen: it is the escalation path for when the family's
     /// own moderator is the problem.
@@ -375,6 +380,7 @@ final class AppSession {
         videoCallsEnabled = me.videoCallsEnabled
         maxFamilyMembers = me.maxFamilyMembers
         supportContact = me.supportContact
+        familyRegistrationEnabled = me.familyRegistrationEnabled
         // Replaced wholesale on every /me, which is step 1 of the
         // documented resync — so the block list is a step-1 fact and the
         // `member_blocked` frame is a latency optimisation rather than the

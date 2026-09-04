@@ -270,6 +270,32 @@ class SessionRepositoryTest {
         assertThat(settings.current.blockedUserIds).containsExactly(11L, 14L)
     }
 
+    /**
+     * `family_registration_enabled` (docs/protocol.md, "Starting a
+     * family") is what the family gate reads to decide between a Create
+     * card and directions to run one's own server, so `/me` has to land
+     * it in settings in BOTH directions — a server that reopens must
+     * bring Create back on the next refresh, not the next reinstall.
+     */
+    @Test
+    fun refreshMeRecordsWhetherTheServerTakesNewFamilies() = runTest(dispatcher) {
+        val repository = newRepository()
+        settings.setServerUrl("https://chat.example.com")
+        assertThat(settings.current.familyRegistrationEnabled).isTrue()
+
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(user = userDto(7, "anna"), familyRegistrationEnabled = false),
+        )
+        repository.refreshMe()
+        assertThat(settings.current.familyRegistrationEnabled).isFalse()
+
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(user = userDto(7, "anna"), familyRegistrationEnabled = true),
+        )
+        repository.refreshMe()
+        assertThat(settings.current.familyRegistrationEnabled).isTrue()
+    }
+
     @Test
     fun loginStoresTokenRefreshesMeAndRegistersDevice() = runTest(dispatcher) {
         val repository = newRepository()
