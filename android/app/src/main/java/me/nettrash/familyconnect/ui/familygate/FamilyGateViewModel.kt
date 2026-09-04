@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.repo.FamilyRepository
+import me.nettrash.familyconnect.data.settings.SettingsRepository
 import javax.inject.Inject
 
 @HiltViewModel
@@ -42,6 +43,7 @@ class FamilyGateViewModel @Inject constructor(
      */
     @param:ApplicationContext private val appContext: Context,
     private val familyRepository: FamilyRepository,
+    private val settings: SettingsRepository,
 ) : ViewModel() {
 
     enum class Outcome { JOINED, PENDING }
@@ -54,10 +56,27 @@ class FamilyGateViewModel @Inject constructor(
         val generalError: String? = null,
         val busy: Boolean = false,
         val outcome: Outcome? = null,
+        /**
+         * Whether this server takes NEW families (docs/protocol.md,
+         * "Starting a family"). False swaps the Create card for directions
+         * to run a server of one's own; joining stays either way.
+         */
+        val registrationEnabled: Boolean = true,
     )
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
+
+    init {
+        // `/me` said at login whether this server takes new families and
+        // the session keeps that in settings; the gate follows it live,
+        // so a refresh that flips it redraws without a restart.
+        viewModelScope.launch {
+            settings.state.collect { s ->
+                _state.update { it.copy(registrationEnabled = s.familyRegistrationEnabled) }
+            }
+        }
+    }
 
     fun onFamilyNameChange(value: String) =
         _state.update { it.copy(familyName = value, nameError = null, generalError = null) }
@@ -83,6 +102,11 @@ class FamilyGateViewModel @Inject constructor(
                         busy = false,
                         generalError = when (result.code) {
                             "already_in_family" -> appContext.getString(R.string.e_already_in_family)
+                            // Only on a server that shut its door after this
+                            // screen was drawn — the gate hides Create once
+                            // it knows (docs/protocol.md, "Starting a family").
+                            "family_registration_disabled" ->
+                                appContext.getString(R.string.s_no_new_families_title)
                             else -> result.message ?: appContext.getString(R.string.e_create_family_failed)
                         },
                     )

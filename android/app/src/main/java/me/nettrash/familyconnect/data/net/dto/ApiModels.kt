@@ -890,6 +890,14 @@ data class MeResponse(
      */
     @SerialName("calls_enabled") val callsEnabled: Boolean = false,
     /**
+     * Whether this server takes NEW families at all (`[families]
+     * registration`, docs/protocol.md "Starting a family"). ALWAYS
+     * present on a current server; defaulted to TRUE for one that
+     * predates the switch, which is also the right answer there — such a
+     * server has no door to shut.
+     */
+    @SerialName("family_registration_enabled") val familyRegistrationEnabled: Boolean = true,
+    /**
      * Whether this server allows VIDEO calls (`[calls] video_enabled`,
      * docs/protocol.md, "Video"). Gates the video-call button ALONE —
      * voice is untouched; the default covers a server that predates

@@ -10699,6 +10699,59 @@
         }
       }
     },
+    "Family Connect is built for one family on a server of its own. To start yours, run your own server and invite everyone from there." : {
+      "comment" : "Family gate, under the closed-server title: why, and what to do instead.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family Connect ist für eine Familie auf einem eigenen Server gedacht. Um deine zu starten, betreibe deinen eigenen Server und lade alle von dort aus ein."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family Connect está pensado para una familia en su propio servidor. Para empezar la tuya, pon en marcha tu propio servidor e invita a todos desde allí."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family Connect est conçu pour une famille sur son propre serveur. Pour créer la vôtre, lancez votre propre serveur et invitez tout le monde depuis celui-ci."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family Connect は、家族ごとに専用のサーバーで使うためのものです。自分の家族を始めるには、自分のサーバーを立ち上げてそこから全員を招待してください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family Connect задуман как одна семья на собственном сервере. Чтобы создать свою, запустите свой сервер и пригласите всех оттуда."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family Connect је замишљен као једна породица на сопственом серверу. Да бисте започели своју, покрените свој сервер и позовите све одатле."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family Connect je zamišljen kao jedna porodica na sopstvenom serveru. Da biste započeli svoju, pokrenite svoj server i pozovite sve odatle."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Family Connect 的设计是一个家庭使用一台自己的服务器。要创建你的家庭，请运行自己的服务器并从那里邀请所有人。"
+          }
+        }
+      }
+    },
     "Family doesn't know who that is. Link the contact to a family member from the roster first." : {
       "comment" : "Alert shown when the Phone app or Siri asked Family to call somebody the app cannot match to a family member.",
       "localizations" : {
@@ -11809,6 +11862,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "来自已屏蔽成员的隐藏便签"
+          }
+        }
+      }
+    },
+    "How to run your own server" : {
+      "comment" : "Family gate: the link to the project's repository, which holds the server and its install notes.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "So betreibst du deinen eigenen Server"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cómo poner en marcha tu propio servidor"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comment lancer votre propre serveur"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自分のサーバーを立ち上げる方法"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Как запустить свой сервер"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Како да покренете свој сервер"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kako da pokrenete svoj server"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "如何运行自己的服务器"
           }
         }
       }
@@ -24722,6 +24828,59 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "该服务器尚不支持头像，需要更新。"
+          }
+        }
+      }
+    },
+    "This server doesn't take new families." : {
+      "comment" : "Family gate, when the server has closed itself to new families; also the error if creating one is refused.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Server nimmt keine neuen Familien auf."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este servidor no acepta familias nuevas."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce serveur n'accepte pas de nouvelles familles."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このサーバーは新しい家族を受け付けていません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот сервер не принимает новые семьи."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Овај сервер не прима нове породице."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovaj server ne prima nove porodice."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此服务器不接受新家庭。"
           }
         }
       }

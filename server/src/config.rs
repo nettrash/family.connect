@@ -49,6 +49,35 @@ pub struct Config {
 
     #[serde(default)]
     pub calls: CallsConfig,
+
+    #[serde(default)]
+    pub families: FamiliesConfig,
+}
+
+/// `[families]` — who may start a family here (docs/protocol.md, "Starting
+/// a family").
+///
+/// The product is one family on a server of its own, so a server run for
+/// one family is free to close its door to new ones. With `registration`
+/// false, `POST /families` answers `family_registration_disabled` and
+/// `GET /me` reports `family_registration_enabled: false`, on which the
+/// apps replace "Create a family" with directions to run one's own server.
+/// Joining the families already here, and registering an account to do
+/// so, are untouched.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FamiliesConfig {
+    /// `false` closes this server to NEW families. On by default: a fresh
+    /// server with nobody on it yet has to let its first family in.
+    #[serde(default = "default_family_registration")]
+    pub registration: bool,
+}
+
+impl Default for FamiliesConfig {
+    fn default() -> Self {
+        Self {
+            registration: default_family_registration(),
+        }
+    }
 }
 
 /// `[calls]` — peer-to-peer voice calls (docs/protocol.md, "Voice calls").
@@ -1563,6 +1592,10 @@ fn default_calls_enabled() -> bool {
     true
 }
 
+fn default_family_registration() -> bool {
+    true
+}
+
 fn default_video_calls_enabled() -> bool {
     true
 }
@@ -1591,6 +1624,14 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn family_registration_is_on_unless_the_operator_says_otherwise() {
+        let defaults = Config::from_toml_str("").expect("an empty file is a valid config");
+        assert!(defaults.families.registration, "a fresh server must let its first family in");
+        let closed = Config::from_toml_str("[families]\nregistration = false\n").expect("parses");
+        assert!(!closed.families.registration);
+    }
 
     #[test]
     fn the_checked_in_example_config_parses_and_validates() {

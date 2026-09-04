@@ -31,19 +31,45 @@ struct FamilyGateView: View {
                     }
                 }
 
-                Section {
-                    NavigationLink {
-                        CreateFamilyView()
-                    } label: {
+                // A server closed to NEW families (docs/protocol.md,
+                // "Starting a family") shows the door shut, and where to
+                // build one's own, instead of a Create row that would end
+                // in a 403 after somebody has typed a name. Joining stays:
+                // the families already here are what the server is for.
+                if !session.familyRegistrationEnabled {
+                    Section {
                         Label {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Create a family")
-                                Text("Start fresh — you'll be the owner and can invite everyone else.")
-                                    .font(.caption)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("This server doesn't take new families.")
+                                    .font(.headline)
+                                Text("Family Connect is built for one family on a server of its own. To start yours, run your own server and invite everyone from there.")
+                                    .font(.callout)
                                     .foregroundStyle(.secondary)
                             }
                         } icon: {
-                            Image(systemName: "house")
+                            Image(systemName: "server.rack")
+                        }
+                        Link(destination: AppVersion.repositoryURL) {
+                            Label("How to run your own server", systemImage: "arrow.up.right.square")
+                        }
+                    }
+                }
+
+                Section {
+                    if session.familyRegistrationEnabled {
+                        NavigationLink {
+                            CreateFamilyView()
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Create a family")
+                                    Text("Start fresh — you'll be the owner and can invite everyone else.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: "house")
+                            }
                         }
                     }
 

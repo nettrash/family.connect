@@ -34,6 +34,9 @@
     <string name="s_copy_invite_code">Copy invite code</string>
     <string name="s_create">Create</string>
     <string name="s_create_a_family">Create a family</string>
+    <string name="s_no_new_families_title">This server doesn\'t take new families.</string>
+    <string name="s_no_new_families_body">Family Connect is built for one family on a server of its own. To start yours, run your own server and invite everyone from there.</string>
+    <string name="s_run_your_own_server">How to run your own server</string>
     <string name="s_current_password">Current password</string>
     <string name="s_delete">Delete</string>
     <string name="s_delete_this_note">Delete this note?</string>

@@ -24,6 +24,7 @@ pub mod codes {
     pub const USERNAME_TAKEN: &str = "username_taken";
     pub const VALIDATION: &str = "validation";
     pub const ALREADY_IN_FAMILY: &str = "already_in_family";
+    pub const FAMILY_REGISTRATION_DISABLED: &str = "family_registration_disabled";
     pub const FAMILY_FULL: &str = "family_full";
     pub const NOT_IN_FAMILY: &str = "not_in_family";
     pub const NOT_FAMILY_OWNER: &str = "not_family_owner";

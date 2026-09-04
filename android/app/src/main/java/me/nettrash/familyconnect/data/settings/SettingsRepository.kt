@@ -194,6 +194,13 @@ data class SettingsState(
      * false on an old server, which then correctly offers voice only.
      */
     val videoCallsEnabled: Boolean = false,
+    /**
+     * Whether this server takes NEW families (docs/protocol.md, "Starting
+     * a family"). The family gate swaps "Create a family" for directions
+     * to run one's own server when this is false; true until a `/me`
+     * says otherwise, which is also the answer on an older server.
+     */
+    val familyRegistrationEnabled: Boolean = true,
 )
 
 interface SettingsRepository {
@@ -276,6 +283,9 @@ interface SettingsRepository {
     /** Record what `GET /me` said about VIDEO calls on this server. */
     suspend fun setVideoCallsEnabled(enabled: Boolean)
 
+    /** Record what `GET /me` said about this server taking new families. */
+    suspend fun setFamilyRegistrationEnabled(enabled: Boolean)
+
     /**
      * REPLACE the caller's block list with what the server just said.
      *
@@ -352,6 +362,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val FAMILY_AI_HISTORY_PHOTOS = booleanPreferencesKey("family_ai_history_photos")
         val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
+        val FAMILY_REGISTRATION_ENABLED = booleanPreferencesKey("family_registration_enabled")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -389,6 +400,7 @@ class DataStoreSettingsRepository @Inject constructor(
             familyAiHistoryPhotos = prefs[Keys.FAMILY_AI_HISTORY_PHOTOS] == true,
             callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
+            familyRegistrationEnabled = prefs[Keys.FAMILY_REGISTRATION_ENABLED] != false,
         )
     }
 
@@ -510,6 +522,10 @@ class DataStoreSettingsRepository @Inject constructor(
 
     override suspend fun setVideoCallsEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.VIDEO_CALLS_ENABLED] = enabled }
+    }
+
+    override suspend fun setFamilyRegistrationEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.FAMILY_REGISTRATION_ENABLED] = enabled }
     }
 
     override suspend fun setBlockedUserIds(ids: Collection<Long>) {

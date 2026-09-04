@@ -41,6 +41,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -109,7 +110,14 @@ fun FamilyGateScreen(
             }
 
             Spacer(Modifier.height(24.dp))
-            Card(modifier = Modifier.fillMaxWidth()) {
+            // A server closed to NEW families (docs/protocol.md, "Starting
+            // a family") shows the door shut, and where to build one's own,
+            // instead of a Create card that would end in a 403 after
+            // somebody has typed a name. Joining stays: the families
+            // already here are what the server is for.
+            if (!state.registrationEnabled) {
+                ClosedServerCard()
+            } else Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(stringResource(R.string.s_create_a_family), style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(12.dp))
@@ -173,6 +181,44 @@ fun FamilyGateScreen(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * The project's home — the server and its install notes. Shown by the
+ * family gate when a server takes no new families, as the way to run
+ * one's own. iOS counterpart: `AppVersion.repositoryURL`.
+ */
+internal const val PROJECT_REPOSITORY_URL = "https://github.com/nettrash/family.connect"
+
+/**
+ * What stands where "Create a family" would on a server that takes no
+ * new families: why the door is shut, and the way to a server of one's
+ * own — the project repository, which holds the server and how to run it.
+ */
+@Composable
+private fun ClosedServerCard() {
+    val uriHandler = LocalUriHandler.current
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(stringResource(R.string.s_no_new_families_title), style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(R.string.s_no_new_families_body),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                // A device with nothing to open a web link is not this
+                // screen's problem to crash over; the address is also in
+                // the body's spirit — the user can find the project by name.
+                onClick = { runCatching { uriHandler.openUri(PROJECT_REPOSITORY_URL) } },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.s_run_your_own_server))
             }
         }
     }

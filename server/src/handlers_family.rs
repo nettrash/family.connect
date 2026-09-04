@@ -407,6 +407,16 @@ pub async fn create_family(
     State(state): State<AppState>,
     AppJson(req): AppJson<CreateFamilyRequest>,
 ) -> Result<Response, ApiError> {
+    // The operator's door, before the name is even looked at: a server
+    // run for one family may be closed to new ones (docs/protocol.md,
+    // "Starting a family"). Joining the families already here is not
+    // touched by this — that is what the server is for.
+    if !state.cfg.families.registration {
+        return Err(ApiError::forbidden(
+            codes::FAMILY_REGISTRATION_DISABLED,
+            "this server does not take new families",
+        ));
+    }
     let name = req.name.trim().to_string();
     let name_len = name.chars().count();
     if !(1..=64).contains(&name_len) {

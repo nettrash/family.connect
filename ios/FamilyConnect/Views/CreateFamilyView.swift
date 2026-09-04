@@ -82,6 +82,11 @@ struct CreateFamilyView: View {
             defer { model.isWorking = false }
             do {
                 try await session.createFamily(name: name)
+            } catch APIError.forbidden(let code) where code == "family_registration_disabled" {
+                // Reachable only on a server that closed its door after
+                // this screen was pushed — the gate itself hides the way
+                // in (docs/protocol.md, "Starting a family").
+                model.errorText = String(localized: "This server doesn't take new families.")
             } catch APIError.conflict(let code, let message) {
                 model.errorText = code == "already_in_family"
                     ? String(localized: "You're already in a family. Pull to refresh.")

@@ -23,6 +23,17 @@ bind = "127.0.0.1:8080"
 # for a server strangers can register on.
 # support_contact = "family-admin@example.com"
 
+[families]
+# Whether this server takes NEW families at all. Family Connect is one family
+# on a server of its own, so a server you run for yours can close its door:
+# with this false, POST /families answers family_registration_disabled and
+# the apps replace "Create a family" with directions to run one's own server
+# (the project's repository, https://github.com/nettrash/family.connect).
+# Joining the family already here — and registering an account to do so —
+# still works, which is the whole reason the server exists. Leave it true
+# on a fresh server, or its first family can never get in.
+registration = true
+
 [database]
 # PostgreSQL connection parameters. The server opens a pool of at most
 # max_connections connections and fails startup if the database is not

@@ -22,6 +22,9 @@
     <string name="s_copy_invite_code">拷贝邀请码</string>
     <string name="s_create">创建</string>
     <string name="s_create_a_family">创建一个家庭</string>
+    <string name="s_no_new_families_title">此服务器不接受新家庭。</string>
+    <string name="s_no_new_families_body">Family Connect 的设计是一个家庭使用一台自己的服务器。要创建你的家庭，请运行自己的服务器并从那里邀请所有人。</string>
+    <string name="s_run_your_own_server">如何运行自己的服务器</string>
     <string name="s_current_password">当前密码</string>
     <string name="s_delete">删除</string>
     <string name="s_delete_this_note">要删除这条便签吗？</string>
