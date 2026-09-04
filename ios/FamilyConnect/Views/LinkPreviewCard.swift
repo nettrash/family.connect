@@ -72,7 +72,11 @@ struct LinkPreviewCard: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
         }
-        .background(Color.appBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        // A material, not the window colour: `appBackground` is pure black
+        // in dark mode, a hard rectangle cut out of a grey or blue balloon.
+        // The material takes the balloon's tone behind it and keeps its
+        // own text legible through vibrancy on both balloon colours.
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.appSeparator, lineWidth: 1)

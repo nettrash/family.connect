@@ -51,6 +51,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.semantics.contentType
@@ -62,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.ui.components.BusyButtonContent
@@ -88,6 +91,9 @@ fun AuthScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
                 .imePadding()
+                // Four fields and a button, held to a readable column on
+                // a tablet rather than stretched across it.
+                .readableColumn()
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
@@ -124,6 +130,10 @@ fun AuthScreen(
                     .semantics { contentType = ContentType.Username },
                 label = { Text(stringResource(R.string.s_username)) },
                 singleLine = true,
+                // Enter walks the fields and the last one submits — a form
+                // that ignored the Enter key on a keyboard made everyone
+                // reach for the pointer between every field.
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                 isError = state.usernameError != null,
                 supportingText = state.usernameError?.let { { Text(it) } },
             )
@@ -142,6 +152,7 @@ fun AuthScreen(
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text(stringResource(R.string.s_display_name)) },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                         isError = state.displayNameError != null,
                         supportingText = state.displayNameError?.let { { Text(it) } },
                     )
@@ -161,6 +172,7 @@ fun AuthScreen(
                     },
                 label = { Text(stringResource(R.string.s_password)) },
                 singleLine = true,
+                keyboardActions = KeyboardActions(onGo = { viewModel.submit() }),
                 visualTransformation =
                     if (passwordVisible) VisualTransformation.None
                     else PasswordVisualTransformation(),
@@ -175,7 +187,8 @@ fun AuthScreen(
                         )
                     }
                 },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                // Go submits from the keyboard's own key (keyboardActions above).
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
                 isError = state.passwordError != null,
                 supportingText = state.passwordError?.let { { Text(it) } },
             )

@@ -61,7 +61,7 @@
     <string name="s_no_other_family_members_yet_share_the_invite_code_first">Još nema drugih članova porodice — prvo podeli pozivni kod.</string>
     <string name="s_no_pending_requests">Nema zahteva na čekanju</string>
     <string name="s_note">Beleška</string>
-    <string name="s_open">Otvori</string>
+    <string name="s_open">Otvorena</string>
     <string name="s_open_link">Otvori link</string>
     <string name="s_password">Lozinka</string>
     <string name="s_video">Video</string>
@@ -413,4 +413,59 @@
     <string name="s_assistant_history_photos_needs_vision">Prvo uključite „Asistent sme da gleda fotografije“ — dok je to isključeno, server ovo odbija.</string>
     <string name="s_assistant_history_photos_needs_history">Dok je „Asistent vidi nedavnu istoriju“ isključeno, ovo ne radi ništa: istorija četa se ne šalje, pa ni jedna fotografija iz nje.</string>
     <string name="e_change_assistant_history_photos_failed">Nije uspela promena podešavanja</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">Izaberite razgovor sa spiska.</string>
+    <plurals name="p_members">
+        <item quantity="one">%1$d član</item>
+        <item quantity="few">%1$d člana</item>
+        <item quantity="other">%1$d članova</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">Danas</string>
+    <string name="s_yesterday">Juče</string>
+    <string name="s_owner_caption">vlasnik</string>
+    <string name="s_share_invite_text">Pridruži se našoj porodici na Family Connect! Server: %1$s — pozivni kod: %2$s</string>
+    <string name="e_username_rules">3–32 znaka: slova, cifre, _ ili .</string>
+    <string name="e_display_name_rules">1–64 znaka</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="one">%1$d fotografija</item>
+        <item quantity="few">%1$d fotografije</item>
+        <item quantity="other">%1$d fotografija</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="one">%1$d video</item>
+        <item quantity="few">%1$d videa</item>
+        <item quantity="other">%1$d videa</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="one">%1$d glasovna poruka</item>
+        <item quantity="few">%1$d glasovne poruke</item>
+        <item quantity="other">%1$d glasovnih poruka</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="one">%1$d datoteka</item>
+        <item quantity="few">%1$d datoteke</item>
+        <item quantity="other">%1$d datoteka</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="one">%1$d prilog</item>
+        <item quantity="few">%1$d priloga</item>
+        <item quantity="other">%1$d priloga</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">Pozivi</string>
+    <string name="s_channel_calls_desc">Dolazni pozivi</string>
+    <string name="s_channel_ongoing">Poziv u toku</string>
+    <string name="s_channel_ongoing_desc">Poziv u kome ste</string>
+    <string name="s_channel_messages">Poruke</string>
+    <string name="s_channel_messages_desc">Nove porodične poruke i zahtevi za pridruživanje</string>
+    <string name="s_emoji_smileys">Smajliji</string>
+    <string name="s_emoji_gestures">Gestovi</string>
+    <string name="s_emoji_hearts">Srca</string>
+    <string name="s_emoji_animals">Životinje i priroda</string>
+    <string name="s_emoji_food">Hrana i piće</string>
+    <string name="s_emoji_activities">Aktivnosti</string>
+    <string name="s_emoji_travel">Putovanja i mesta</string>
+    <string name="s_emoji_objects">Predmeti i simboli</string>
 </resources>

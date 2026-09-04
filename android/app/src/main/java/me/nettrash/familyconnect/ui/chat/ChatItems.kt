@@ -279,7 +279,7 @@ sealed interface ChatListItem {
     }
 
     data class DateSeparator(
-        val label: String,
+        val label: TimeFormat.DayLabel,
         override val key: String,
     ) : ChatListItem
 
@@ -410,7 +410,10 @@ fun buildChatItems(
             !TimeFormat.sameDay(older.createdAt, message.createdAt, zone)
         if (dayEnds) {
             val label = TimeFormat.dateSeparator(message.createdAt, nowMillis, zone)
-            items += ChatListItem.DateSeparator(label = label, key = "sep-$label-${message.clientMsgId}")
+            items += ChatListItem.DateSeparator(
+                label = label,
+                key = "sep-${TimeFormat.dayKey(message.createdAt, zone)}-${message.clientMsgId}",
+            )
         }
     }
     return items

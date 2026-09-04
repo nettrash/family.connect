@@ -60,6 +60,14 @@ struct AuthView: View {
     @Environment(AppSession.self) private var session
     @State private var model = AuthModel()
 
+    private enum Field: Hashable {
+        case username, displayName, password
+    }
+    /// Return walks the fields and the last one submits — a form that
+    /// ignored the Return key on an iPad with a keyboard, and on the Mac,
+    /// made everyone reach for the pointer between every field.
+    @FocusState private var focus: Field?
+
     var body: some View {
         NavigationStack {
             Form {
@@ -77,12 +85,21 @@ struct AuthView: View {
                     TextField("Username", text: Bindable(model).username)
                         .textContentType(.username)
                         .literalTextEntry()
+                        .focused($focus, equals: .username)
+                        .submitLabel(.next)
+                        .onSubmit { focus = model.mode == .register ? .displayName : .password }
                     if model.mode == .register {
                         TextField("Display name", text: Bindable(model).displayName)
                             .textContentType(.name)
+                            .focused($focus, equals: .displayName)
+                            .submitLabel(.next)
+                            .onSubmit { focus = .password }
                     }
                     SecureField("Password", text: Bindable(model).password)
                         .textContentType(model.mode == .register ? .newPassword : .password)
+                        .focused($focus, equals: .password)
+                        .submitLabel(.go)
+                        .onSubmit { if model.canSubmit { submit() } }
                 } footer: {
                     if let error = model.errorText {
                         Label(error, systemImage: "xmark.circle")
@@ -120,7 +137,20 @@ struct AuthView: View {
                 }
             }
             .navigationTitle(model.mode == .login ? "Welcome Back" : "Join the Family")
+            .onAppear { focusFirstField() }
         }
+    }
+
+    /// On the Mac the first field takes focus as the form appears — a
+    /// keyboard is the only way in. Not on iOS, an iPad included: with no
+    /// keyboard attached that raises the software keyboard over a screen
+    /// somebody may only want to read, and there is no reliable way to
+    /// tell a Magic Keyboard is present. Return still walks the fields
+    /// once the reader has tapped into one.
+    private func focusFirstField() {
+        #if os(macOS)
+        focus = .username
+        #endif
     }
 
     private func submit() {

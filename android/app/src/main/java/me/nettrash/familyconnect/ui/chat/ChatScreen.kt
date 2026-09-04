@@ -194,6 +194,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -256,6 +263,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import me.nettrash.familyconnect.R
+import me.nettrash.familyconnect.ui.components.readableColumn
+import me.nettrash.familyconnect.ui.components.READABLE_COLUMN
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
@@ -1018,6 +1027,8 @@ fun ChatScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary,
                                     maxLines = 1,
+                                    // An ellipsis, not a hard clip mid-glyph, for a long name.
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
@@ -1060,17 +1071,25 @@ fun ChatScreen(
         ) {
             OfflineBanner(isOnline = isOnline, socketState = socketState)
 
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
             ) {
+                // The readable column (iOS: threadMaxWidth = 560): on a
+                // window wider than it the thread is padded in from BOTH
+                // sides so bubbles, polls and cards keep a phone's measure
+                // instead of running 1,000dp across a tablet. Padding
+                // rather than a narrower list, so a drag anywhere in the
+                // window still scrolls the thread and the empty state's
+                // fillParentMaxSize still means the whole pane.
+                val columnInset = ((maxWidth - READABLE_COLUMN) / 2).coerceAtLeast(0.dp)
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
                     reverseLayout = true,
                     contentPadding = PaddingValues(
-                        horizontal = 12.dp,
+                        horizontal = 12.dp + columnInset,
                         vertical = 8.dp,
                     ),
                 ) {
@@ -1252,9 +1271,12 @@ fun ChatScreen(
                     visible = showScrollToBottom,
                     enter = scaleIn() + fadeIn(),
                     exit = scaleOut() + fadeOut(),
+                    // At the trailing edge of the COLUMN, not of the window:
+                    // a control pinned 300dp right of the last bubble is
+                    // nowhere near the thing it acts on.
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(16.dp),
+                        .padding(start = 16.dp, top = 16.dp, bottom = 16.dp, end = 16.dp + columnInset),
                 ) {
                     SmallFloatingActionButton(
                         onClick = { scope.launch { listState.animateScrollToItem(0) } },
@@ -2098,7 +2120,7 @@ private fun EmojiCatalogGrid(
         EMOJI_CATALOG.forEach { category ->
             item(key = "header:${category.name}", span = { GridItemSpan(maxLineSpan) }) {
                 Text(
-                    text = category.name,
+                    text = stringResource(category.titleRes),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
@@ -2147,7 +2169,12 @@ private fun emojiPressScale(interactionSource: MutableInteractionSource): State<
 }
 
 @Composable
-private fun DateSeparatorPill(label: String) {
+private fun DateSeparatorPill(day: TimeFormat.DayLabel) {
+    val label = when (day) {
+        TimeFormat.DayLabel.Today -> stringResource(R.string.s_today)
+        TimeFormat.DayLabel.Yesterday -> stringResource(R.string.s_yesterday)
+        is TimeFormat.DayLabel.Date -> day.text
+    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -4708,8 +4735,13 @@ private fun InputBar(
     mentionPictureNotice: MentionPictureNotice?,
 ) {
     Surface(tonalElevation = 3.dp) {
-        Column {
+        Column(modifier = Modifier.fillMaxWidth()) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            // The bar spans the window; what is IN it is held to the
+            // thread's readable column, centred the same way, so the
+            // attach button and Send sit over the bubbles they act on
+            // rather than at the window's far edges (iOS does the same).
+            Column(modifier = Modifier.readableColumn()) {
             if (replyDraft != null) {
                 ReplyBanner(
                     authorName = replyAuthorName,
@@ -4997,7 +5029,21 @@ private fun InputBar(
                         .weight(1f)
                         .heightIn(min = 44.dp)
                         .focusRequester(focusRequester)
-                        .contentReceiver(pasteReceiver),
+                        .contentReceiver(pasteReceiver)
+                        // Ctrl+Enter (or Cmd+Enter) sends from a hardware
+                        // keyboard; Enter alone keeps inserting a line
+                        // break, as it always has on a phone.
+                        .onPreviewKeyEvent { event ->
+                            if (event.type == KeyEventType.KeyDown &&
+                                event.key == Key.Enter &&
+                                (event.isCtrlPressed || event.isMetaPressed)
+                            ) {
+                                onSend()
+                                true
+                            } else {
+                                false
+                            }
+                        },
                     // M3's default content padding for an unlabelled field is
                     // 16.dp top and bottom, which is taller than the 44.dp
                     // buttons' own centring — so both icons sat visibly below
@@ -5067,6 +5113,7 @@ private fun InputBar(
                     )
                 }
             }
+        }
         }
     }
 }

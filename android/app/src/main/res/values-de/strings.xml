@@ -61,7 +61,7 @@
     <string name="s_no_other_family_members_yet_share_the_invite_code_first">Noch keine anderen Mitglieder – teile zuerst den Einladungscode.</string>
     <string name="s_no_pending_requests">Keine offenen Anfragen</string>
     <string name="s_note">Notiz</string>
-    <string name="s_open">Öffnen</string>
+    <string name="s_open">Offen</string>
     <string name="s_open_link">Link öffnen</string>
     <string name="s_password">Passwort</string>
     <string name="s_video">Video</string>
@@ -416,4 +416,53 @@
     <string name="s_assistant_history_photos_needs_vision">Schalte zuerst „Assistent darf Fotos ansehen“ ein — solange das aus ist, lehnt der Server dies ab.</string>
     <string name="s_assistant_history_photos_needs_history">Solange „Assistent sieht den letzten Verlauf“ aus ist, bewirkt das nichts: Der Verlauf des Chats wird nicht gesendet, also auch kein Foto daraus.</string>
     <string name="e_change_assistant_history_photos_failed">Einstellung konnte nicht geändert werden</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">Wähle einen Chat aus der Liste.</string>
+    <plurals name="p_members">
+        <item quantity="one">%1$d Mitglied</item>
+        <item quantity="other">%1$d Mitglieder</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">Heute</string>
+    <string name="s_yesterday">Gestern</string>
+    <string name="s_owner_caption">Besitzer</string>
+    <string name="s_share_invite_text">Komm in unsere Familie bei Family Connect! Server: %1$s — Einladungscode: %2$s</string>
+    <string name="e_username_rules">3–32 Zeichen: Buchstaben, Ziffern, _ oder .</string>
+    <string name="e_display_name_rules">1–64 Zeichen</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="one">%1$d Foto</item>
+        <item quantity="other">%1$d Fotos</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="one">%1$d Video</item>
+        <item quantity="other">%1$d Videos</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="one">%1$d Sprachnachricht</item>
+        <item quantity="other">%1$d Sprachnachrichten</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="one">%1$d Datei</item>
+        <item quantity="other">%1$d Dateien</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="one">%1$d Anhang</item>
+        <item quantity="other">%1$d Anhänge</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">Anrufe</string>
+    <string name="s_channel_calls_desc">Eingehende Anrufe</string>
+    <string name="s_channel_ongoing">Laufender Anruf</string>
+    <string name="s_channel_ongoing_desc">Der Anruf, in dem du bist</string>
+    <string name="s_channel_messages">Nachrichten</string>
+    <string name="s_channel_messages_desc">Neue Familiennachrichten und Beitrittsanfragen</string>
+    <string name="s_emoji_smileys">Smileys</string>
+    <string name="s_emoji_gestures">Gesten</string>
+    <string name="s_emoji_hearts">Herzen</string>
+    <string name="s_emoji_animals">Tiere &amp; Natur</string>
+    <string name="s_emoji_food">Essen &amp; Trinken</string>
+    <string name="s_emoji_activities">Aktivitäten</string>
+    <string name="s_emoji_travel">Reisen &amp; Orte</string>
+    <string name="s_emoji_objects">Objekte &amp; Symbole</string>
 </resources>

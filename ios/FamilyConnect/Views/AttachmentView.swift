@@ -48,18 +48,36 @@ struct AttachmentView: View {
     var onBalloon: Bool = true
 
     @Environment(AttachmentStore.self) private var store
+    /// Compact means a phone-width window, whatever the device: an iPad
+    /// in Slide Over or a third of Split View gets the phone's tile, or
+    /// the iPad's 320pt tile would overrun a 320pt window.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    /// Widest a bubble's media gets. Beyond this a photo stops being a
-    /// message and starts being a wall.
-    static let maxWidth: CGFloat = 240
-    private static let maxHeight: CGFloat = 320
+    /// Widest a bubble's media gets in a regular-width window. Beyond
+    /// this a photo stops being a message and starts being a wall. A
+    /// third wider on an iPad, whose 560pt thread column left a
+    /// phone-sized 240pt tile looking like a stamp (the Mac allows 320
+    /// in the same column).
+    static let maxWidth: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 320 : 240
+    private static let maxHeight: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 400 : 320
+    /// The phone's tile, which is also every compact window's.
+    static let compactMaxWidth: CGFloat = 240
+    private static let compactMaxHeight: CGFloat = 320
+
+    /// The cap for a window of the given width class — the one rule the
+    /// single tile and the album pile share.
+    static func maxWidth(compact: Bool) -> CGFloat {
+        compact ? compactMaxWidth : maxWidth
+    }
 
     private var size: CGSize {
+        let compact = horizontalSizeClass == .compact
         let ratio = attachment.aspectRatio
-        var width = Self.maxWidth
+        var width = Self.maxWidth(compact: compact)
         var height = width / ratio
-        if height > Self.maxHeight {
-            height = Self.maxHeight
+        let maxHeight = compact ? Self.compactMaxHeight : Self.maxHeight
+        if height > maxHeight {
+            height = maxHeight
             width = height * ratio
         }
         return CGSize(width: width, height: height)

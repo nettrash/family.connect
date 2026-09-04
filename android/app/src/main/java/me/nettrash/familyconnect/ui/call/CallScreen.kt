@@ -47,6 +47,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -97,6 +99,7 @@ import me.nettrash.familyconnect.calls.CallNotifications
 import me.nettrash.familyconnect.calls.CallState
 import me.nettrash.familyconnect.calls.CallVideoLog
 import me.nettrash.familyconnect.ui.chat.CallRecordWording
+import me.nettrash.familyconnect.ui.components.isWideWindow
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.theme.FamilyConnectTheme
 import org.webrtc.RendererCommon
@@ -384,13 +387,21 @@ private fun RemoteVideo(
     viewModel: CallViewModel,
     modifier: Modifier = Modifier,
 ) {
+    // Fill on a phone, where the far end is another phone held the same
+    // way and the crop is a sliver; FIT on a tablet, where a portrait
+    // caller filling a landscape screen showed a band of their face.
+    val scaling = if (isWideWindow()) {
+        RendererCommon.ScalingType.SCALE_ASPECT_FIT
+    } else {
+        RendererCommon.ScalingType.SCALE_ASPECT_FILL
+    }
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
             SurfaceViewRenderer(ctx).apply {
                 init(viewModel.eglBaseContext, null)
                 setEnableHardwareScaler(true)
-                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                setScalingType(scaling)
                 CallVideoLog.event("remote surface created renderer=${CallVideoLog.id(this)}")
                 viewModel.setRemoteVideoSink(this)
             }
@@ -538,6 +549,12 @@ private fun ActiveControls(
     // line with the others.
     Row(
         modifier = Modifier
+            // Held to a hand's width on a tablet: five discs spread
+            // evenly across 1,280dp sat ~250dp apart, with Answer and
+            // Decline at opposite edges of the screen.
+            .fillMaxWidth()
+            .wrapContentWidth(Alignment.CenterHorizontally)
+            .widthIn(max = 480.dp)
             .fillMaxWidth()
             .then(scrim),
         horizontalArrangement = Arrangement.SpaceEvenly,

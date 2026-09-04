@@ -91,6 +91,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.nettrash.familyconnect.R
+import me.nettrash.familyconnect.ui.components.isWideWindow
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.ui.components.EmptyState
 import kotlin.math.roundToInt
@@ -382,7 +383,10 @@ private fun StickyNote(
         dragY = 0f
     }
 
-    val side = NoteSizes.side(note.size)
+    // The STEP is the wire's name; the points grow with the wall. The
+    // phone's 132dp medium is a stamp on a 10-inch tablet (iOS scales the
+    // iPad's the same 1.45x).
+    val side = NoteSizes.side(note.size) * (if (isWideWindow()) 1.45f else 1f)
     val sidePx = with(LocalDensity.current) { side.roundToPx() }
     val geometry = NoteGeometry(
         boardWidthPx = boardWidthPx,

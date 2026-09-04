@@ -101,6 +101,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.net.dto.BirthdayDto
@@ -188,7 +189,8 @@ fun FamilyAdminScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .readableColumn(),
         ) {
             state.error?.let {
                 ErrorCard(message = it, modifier = Modifier.padding(16.dp))
@@ -722,7 +724,7 @@ fun FamilyAdminScreen(
                                 // nothing here computes an age.
                                 Text(
                                     "@${member.username}" +
-                                        (if (member.role == "owner") " · owner" else "") +
+                                        (if (member.role == "owner") " · " + stringResource(R.string.s_owner_caption) else "") +
                                         (
                                             member.birthday
                                                 ?.let { " · " + TimeFormat.birthday(it.month, it.day) }

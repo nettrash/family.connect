@@ -118,19 +118,34 @@ struct MacChatView: View {
                 }
             }
             ToolbarItem {
-                Button {
-                    openWindow(id: MacWindow.board)
-                    markBoardSeen()
-                } label: {
-                    Label("Board", systemImage: "square.grid.2x2")
-                }
-                .help("The family board")
                 // What is new to READ on the board since this Mac last
                 // showed it (BoardBadge): notes pinned, and notes whose
                 // text changed. Tidying the wall — dragging, resizing,
                 // recolouring — is not news and never counts. NOT the sync
                 // cursor either; see AppSettings.boardSeenContentSeq.
-                .badge(newNoteCount)
+                //
+                // `.badge` on a toolbar item draws only on macOS 26 (the
+                // phone found the same on iOS: a silent no-op below); an
+                // earlier system gets the chat row's capsule as an overlay.
+                if #available(macOS 26, *) {
+                    boardButton
+                        .badge(newNoteCount)
+                } else {
+                    boardButton
+                        .overlay(alignment: .topTrailing) {
+                            if newNoteCount > 0 {
+                                Text("\(newNoteCount)")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.accentColor, in: Capsule())
+                                    .offset(x: 8, y: -6)
+                                    .allowsHitTesting(false)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                }
             }
             ToolbarItem {
                 Button {
@@ -240,6 +255,27 @@ struct MacChatView: View {
         BoardBadge.unreadCount(notes: notes, marks: AppSettings.boardMarks)
     }
 
+
+    /// The way into the board; the badge beside it is `newNoteCount`.
+
+    private var boardButton: some View {
+
+        Button {
+
+            openWindow(id: MacWindow.board)
+
+            markBoardSeen()
+
+        } label: {
+
+            Label("Board", systemImage: "square.grid.2x2")
+
+        }
+
+        .help("The family board")
+
+    }
+
     private func markBoardSeen() {
         AppSettings.boardMarks = BoardBadge.marksAfterShowing(
             notes: notes, marks: AppSettings.boardMarks)
@@ -290,7 +326,11 @@ private struct MacChatRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(chat.title)
                         .font(.body.weight(chat.unreadCount > 0 ? .semibold : .regular))
-                        .lineLimit(1)
+                        // The family chat's title is the family's NAME,
+                        // the one title here that is not a person's, and
+                        // a sidebar column cuts a long one; it gets a
+                        // second line (the iPad's rule).
+                        .lineLimit(chat.kind == "family" ? 2 : 1)
                     Spacer(minLength: 0)
                     if let date = chat.lastMessageDate {
                         // Relative, and short: a sidebar column is narrow

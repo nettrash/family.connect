@@ -61,7 +61,7 @@
     <string name="s_no_other_family_members_yet_share_the_invite_code_first">Aucun autre membre pour l’instant — partage d’abord le code d’invitation.</string>
     <string name="s_no_pending_requests">Aucune demande en attente</string>
     <string name="s_note">Note</string>
-    <string name="s_open">Ouvrir</string>
+    <string name="s_open">Ouverte</string>
     <string name="s_open_link">Ouvrir le lien</string>
     <string name="s_password">Mot de passe</string>
     <string name="s_video">Vidéo</string>
@@ -420,4 +420,53 @@
     <string name="s_assistant_history_photos_needs_vision">Activez d’abord « L’assistant peut regarder les photos » — le serveur refuse ceci tant que c’est désactivé.</string>
     <string name="s_assistant_history_photos_needs_history">Tant que « L’assistant voit l’historique récent » est désactivé, ceci ne fait rien : l’historique de la conversation n’est pas envoyé, donc aucune photo qui en vient non plus.</string>
     <string name="e_change_assistant_history_photos_failed">Impossible de modifier ce réglage</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">Choisissez une conversation dans la liste.</string>
+    <plurals name="p_members">
+        <item quantity="one">%1$d membre</item>
+        <item quantity="other">%1$d membres</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">Aujourd’hui</string>
+    <string name="s_yesterday">Hier</string>
+    <string name="s_owner_caption">propriétaire</string>
+    <string name="s_share_invite_text">Rejoins notre famille sur Family Connect ! Serveur : %1$s — code d’invitation : %2$s</string>
+    <string name="e_username_rules">3 à 32 caractères : lettres, chiffres, _ ou .</string>
+    <string name="e_display_name_rules">1 à 64 caractères</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="one">%1$d photo</item>
+        <item quantity="other">%1$d photos</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="one">%1$d vidéo</item>
+        <item quantity="other">%1$d vidéos</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="one">%1$d message vocal</item>
+        <item quantity="other">%1$d messages vocaux</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="one">%1$d fichier</item>
+        <item quantity="other">%1$d fichiers</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="one">%1$d pièce jointe</item>
+        <item quantity="other">%1$d pièces jointes</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">Appels</string>
+    <string name="s_channel_calls_desc">Appels entrants</string>
+    <string name="s_channel_ongoing">Appel en cours</string>
+    <string name="s_channel_ongoing_desc">L’appel dans lequel vous êtes</string>
+    <string name="s_channel_messages">Messages</string>
+    <string name="s_channel_messages_desc">Nouveaux messages de la famille et demandes d’adhésion</string>
+    <string name="s_emoji_smileys">Smileys</string>
+    <string name="s_emoji_gestures">Gestes</string>
+    <string name="s_emoji_hearts">Cœurs</string>
+    <string name="s_emoji_animals">Animaux et nature</string>
+    <string name="s_emoji_food">Nourriture et boissons</string>
+    <string name="s_emoji_activities">Activités</string>
+    <string name="s_emoji_travel">Voyages et lieux</string>
+    <string name="s_emoji_objects">Objets et symboles</string>
 </resources>

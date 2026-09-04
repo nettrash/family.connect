@@ -61,7 +61,7 @@
     <string name="s_no_other_family_members_yet_share_the_invite_code_first">还没有其他家庭成员——先分享邀请码吧。</string>
     <string name="s_no_pending_requests">没有待处理的申请</string>
     <string name="s_note">便签</string>
-    <string name="s_open">打开</string>
+    <string name="s_open">开放</string>
     <string name="s_open_link">打开链接</string>
     <string name="s_password">密码</string>
     <string name="s_video">视频</string>
@@ -412,4 +412,47 @@
     <string name="s_assistant_history_photos_needs_vision">请先打开“允许助手查看照片”——它关闭时，服务器会拒绝这项设置。</string>
     <string name="s_assistant_history_photos_needs_history">“助手可以查看最近的历史记录”关闭时，这项设置不起作用：聊天历史不会发送，其中的照片自然也不会。</string>
     <string name="e_change_assistant_history_photos_failed">无法更改该设置</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">从列表中选择一个对话。</string>
+    <plurals name="p_members">
+        <item quantity="other">%1$d 位成员</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">今天</string>
+    <string name="s_yesterday">昨天</string>
+    <string name="s_owner_caption">所有者</string>
+    <string name="s_share_invite_text">快来加入我们在 Family Connect 上的家庭！服务器：%1$s — 邀请码：%2$s</string>
+    <string name="e_username_rules">3–32 个字符：字母、数字、_ 或 .</string>
+    <string name="e_display_name_rules">1–64 个字符</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="other">%1$d 张照片</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="other">%1$d 个视频</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="other">%1$d 条语音</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="other">%1$d 个文件</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="other">%1$d 个附件</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">通话</string>
+    <string name="s_channel_calls_desc">来电</string>
+    <string name="s_channel_ongoing">通话中</string>
+    <string name="s_channel_ongoing_desc">当前通话</string>
+    <string name="s_channel_messages">消息</string>
+    <string name="s_channel_messages_desc">新的家庭消息和加入请求</string>
+    <string name="s_emoji_smileys">笑脸</string>
+    <string name="s_emoji_gestures">手势</string>
+    <string name="s_emoji_hearts">爱心</string>
+    <string name="s_emoji_animals">动物与自然</string>
+    <string name="s_emoji_food">食物与饮品</string>
+    <string name="s_emoji_activities">活动</string>
+    <string name="s_emoji_travel">旅行与地点</string>
+    <string name="s_emoji_objects">物品与符号</string>
 </resources>

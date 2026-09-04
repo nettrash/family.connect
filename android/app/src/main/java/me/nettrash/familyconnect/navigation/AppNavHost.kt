@@ -52,7 +52,9 @@ import me.nettrash.familyconnect.ui.stats.StatisticsScreen
 import me.nettrash.familyconnect.ui.auth.AuthScreen
 import me.nettrash.familyconnect.ui.board.BoardScreen
 import me.nettrash.familyconnect.ui.chat.ChatScreen
+import me.nettrash.familyconnect.ui.chatlist.ChatListDetailPane
 import me.nettrash.familyconnect.ui.chatlist.ChatListScreen
+import me.nettrash.familyconnect.ui.components.isTwoPaneWindow
 import me.nettrash.familyconnect.ui.familyadmin.FamilyAdminScreen
 import me.nettrash.familyconnect.ui.familygate.FamilyGateScreen
 import me.nettrash.familyconnect.MainViewModel
@@ -357,11 +359,23 @@ fun AppNavHost(
         }
 
         composable(Routes.CHAT_LIST) {
-            ChatListScreen(
-                onOpenChat = { chatId -> navController.navigate(Routes.chat(chatId)) },
-                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
-                onOpenBoard = { navController.navigate(Routes.BOARD) },
-            )
+            // Two shapes, one route: a tablet (or a foldable open, or a
+            // desktop window) shows the list beside the thread; a phone
+            // pushes the thread over it. Chosen by the WINDOW, so a
+            // split-screen half gets the phone's shape (see
+            // isTwoPaneWindow) — the iPad client's two shapes.
+            if (isTwoPaneWindow()) {
+                ChatListDetailPane(
+                    onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                    onOpenBoard = { navController.navigate(Routes.BOARD) },
+                )
+            } else {
+                ChatListScreen(
+                    onOpenChat = { chatId -> navController.navigate(Routes.chat(chatId)) },
+                    onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                    onOpenBoard = { navController.navigate(Routes.BOARD) },
+                )
+            }
         }
 
         composable(

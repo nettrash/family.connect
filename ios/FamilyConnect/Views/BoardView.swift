@@ -109,6 +109,7 @@ struct BoardView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -200,9 +201,17 @@ private struct StickyNote: View {
             y: min(max(point.y, 0), max(board.height - side, 0)))
     }
 
+    /// The iPad's sticker is bigger than the phone's — the same 132pt
+    /// medium that fills a phone's board was a stamp on a 13-inch canvas
+    /// (the Mac's medium is a 150pt card on a window a third the size).
+    /// The STEP is still the wire's name; only the points scale. Applied
+    /// here rather than in NoteSize, which is shared and pure, and read
+    /// once: the idiom never changes while the app runs.
+    private static let noteScale: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 1.45 : 1
+
     var body: some View {
         let size = NoteSize(name: note.size)
-        let side = size.side
+        let side = size.side * Self.noteScale
         // Where it is drawn RIGHT NOW: the stored corner, held inside the
         // board, plus whatever the drag has moved it, held inside again.
         // Clamping only on release would let a note be dragged off the
@@ -339,7 +348,17 @@ private struct NoteEditor: View {
                                 } label: {
                                     Circle()
                                         .fill(NoteColor.swiftUI(name))
-                                        .frame(width: 30, height: 30)
+                                        // 36, not 30: a tap target near
+                                        // the 44pt guideline, and room for
+                                        // the checkmark on the chosen one.
+                                        .frame(width: 36, height: 36)
+                                        .overlay {
+                                            if color == name {
+                                                Image(systemName: "checkmark")
+                                                    .font(.caption.weight(.bold))
+                                                    .foregroundStyle(.black.opacity(0.7))
+                                            }
+                                        }
                                         .overlay(
                                             Circle().strokeBorder(
                                                 .primary,
@@ -382,6 +401,7 @@ private struct NoteEditor: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
                 if canEdit {
                     ToolbarItem(placement: .confirmationAction) {

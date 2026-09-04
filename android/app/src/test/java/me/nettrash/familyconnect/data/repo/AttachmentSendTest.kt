@@ -15,6 +15,7 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import org.robolectric.RuntimeEnvironment
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -96,6 +97,7 @@ class AttachmentSendTest {
 
     private fun TestScope.newRepository(): MessageRepository {
         val repository = MessageRepository(
+            appContext = RuntimeEnvironment.getApplication(),
             chatApi = chatApi,
             attachmentApi = attachmentApi,
             messageDao = messageDao,

@@ -181,6 +181,7 @@ class ChatViewModelTest {
             scope = repoScope,
         )
         messageRepository = MessageRepository(
+            appContext = RuntimeEnvironment.getApplication(),
             chatApi = chatApi,
             attachmentApi = attachmentApi,
             messageDao = db.messageDao(),

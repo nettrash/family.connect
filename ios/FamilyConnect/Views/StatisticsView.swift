@@ -25,10 +25,15 @@ struct StatisticsView: View {
             if let stats {
                 content(stats)
             } else if failed {
-                ContentUnavailableView(
-                    "Couldn't load statistics",
-                    systemImage: "chart.bar",
-                    description: Text("Check your connection and try again."))
+                ContentUnavailableView {
+                    Label("Couldn't load statistics", systemImage: "chart.bar")
+                } description: {
+                    Text("Check your connection and try again.")
+                } actions: {
+                    // The copy says "try again"; this is the way to.
+                    Button("Retry") { Task { await load() } }
+                        .buttonStyle(.borderedProminent)
+                }
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -37,8 +42,21 @@ struct StatisticsView: View {
         .navigationTitle("Statistics")
         .inlineNavigationTitle()
         .task { await load() }
+        #if os(iOS)
+        // Every other sheet in the app has one. On an iPad this is a
+        // centred form sheet, and a reader with a trackpad or a keyboard
+        // had nothing to click to leave it.
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        #endif
         #if os(macOS)
-        .frame(width: 520, height: 560)
+        // Inside the 460-wide Settings window it hangs from — a 520x560
+        // sheet was wider and taller than its own window.
+        .frame(width: 440, height: 500)
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Spacer()
@@ -47,6 +65,8 @@ struct StatisticsView: View {
             }
             .padding(12)
         }
+        // Esc closes the sheet too; Return was the only key bound.
+        .onExitCommand { dismiss() }
         #endif
     }
 
