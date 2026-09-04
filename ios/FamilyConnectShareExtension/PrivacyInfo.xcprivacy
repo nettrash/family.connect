@@ -43,15 +43,19 @@
 				     the two undefined symbols the appex carries,
 				     _NSFileModificationDate and _NSFileCreationDate.
 
-				     DDA9.1: every path it stats is inside the App Group
+				     C617.1: every path it stats is inside the App Group
 				     container (group.me.nettrash.FamilyConnect), which is what
 				     this reason covers — "files inside the app container, app
 				     group container, or the app's CloudKit container".
-				     NOT C617.1, which is for files the person granted access
+				     NOT 3B52.1, which is for files the person granted access
 				     to through a picker: what the share sheet hands this
 				     extension is read through NSItemProvider, never stat'd.
-				     NOT 3B52.1, which only a third-party SDK may declare. -->
-				<string>DDA9.1</string>
+				     NOT DDA9.1, which is for displaying a timestamp to the
+				     person, and NOT 0A2A.1, which only a third-party SDK may
+				     declare. The app's manifest carries the note on how to
+				     read these codes out of Apple's JSON without shifting the
+				     table by one. -->
+				<string>C617.1</string>
 			</array>
 		</dict>
 	</array>
