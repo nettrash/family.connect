@@ -76,10 +76,17 @@ nonisolated enum MessageLinks {
             // else in the app already asks for.
             built = [.text(attributedBody(text, isMine: isMine))]
         } else {
-            built = parsed.map { block in
+            built = parsed.enumerated().map { index, block in
                 switch block {
                 case .text(let rendered):
-                    return .text(decorated(rendered, isMine: isMine))
+                    // The RAW body goes to the FIRST block only: `/draw` is
+                    // a request at the very beginning of the whole body and
+                    // nowhere else, so a paragraph after a table cannot
+                    // start one.
+                    return .text(
+                        decorated(
+                            rendered, isMine: isMine,
+                            drawSource: index == 0 ? text : nil))
                 case .table:
                     return block
                 }
@@ -191,7 +198,7 @@ nonisolated enum MessageLinks {
         // markup token pointing at the wrong glyphs. Rendering first and
         // detecting over what is actually drawn makes the offsets correct
         // by construction, which is the same rule Android's hit test needs.
-        decorated(MessageMarkdown.render(text), isMine: isMine)
+        decorated(MessageMarkdown.render(text), isMine: isMine, drawSource: text)
     }
 
     /// The three passes over ONE laid-out string: markdown's own
@@ -200,7 +207,13 @@ nonisolated enum MessageLinks {
     /// Everything here indexes the string it was handed, which is why a
     /// table's text blocks can go through it one at a time — each is a
     /// separate `Text` and so a separate offset space.
-    private static func decorated(_ source: AttributedString, isMine: Bool) -> AttributedString {
+    private static func decorated(
+        _ source: AttributedString,
+        isMine: Bool,
+        /// The RAW body this block was rendered from, when this block may
+        /// begin a picture request — see `highlightMentions`.
+        drawSource: String? = nil
+    ) -> AttributedString {
         var attributed = source
         let rendered = String(attributed.characters)
 
@@ -246,23 +259,84 @@ nonisolated enum MessageLinks {
                 attributed[run.range].foregroundColor = .white
             }
         }
-        highlightMentions(in: &attributed, isMine: isMine)
+        highlightMentions(in: &attributed, isMine: isMine, drawSource: drawSource)
         return attributed
     }
 
-    /// Mark `@ai` so it reads as addressed to somebody.
+    /// Mark `@ai` so it reads as addressed to somebody, and `/draw` so it
+    /// reads as an instruction rather than a word.
     ///
-    /// Same grammar the SERVER decides by (AssistantMention, mirrored in
-    /// three places): a highlight the server would not act on, or an
-    /// unhighlighted token it would, is a family watching a question go
-    /// unanswered with no way to tell why.
+    /// Same GRAMMAR the server decides by (AssistantMention, mirrored in
+    /// three places and pinned by one shared table). Getting the grammar
+    /// wrong is what costs a family something: a token the server acts on
+    /// that the bubble draws as ordinary text, or the reverse, is a
+    /// question going unanswered with no way to tell why — and
+    /// `**/draw** a cat`, which looks exactly like a request and is not
+    /// one, is the shape that actually happens.
+    ///
+    /// `/draw` needs the grammar even more than `@ai` does, because the
+    /// consequence is larger: the token decides whether a request goes to
+    /// an entirely different provider, and it counts only at the very front
+    /// of the body. Marked exactly where the grammar says it counts, so a
+    /// `/draw` further along a sentence stays visibly ordinary text — which
+    /// is what the server will treat it as (protocol.md, "Pictures").
+    ///
+    /// **What this is NOT is a claim about the chat.** This function has no
+    /// chat kind and asks for none, so both tokens are marked in a DIRECT
+    /// chat too, where the server acts on neither: there is no assistant in
+    /// a two-member thread, `@ai` reaches nobody there and `/draw` is a
+    /// word. That is deliberate rather than an oversight, for three
+    /// reasons:
+    ///
+    /// - the two tokens then have ONE rule between them. `@ai` has been
+    ///   marked everywhere since it existed, so scoping only `/draw` would
+    ///   leave a bubble drawing its two assistant tokens by two different
+    ///   rules, and this file explaining which;
+    /// - the mark says what the token IS, and a member who learns it in the
+    ///   family chat reads the same thing in a direct one. Nothing here
+    ///   INVITES the token: the `/draw` button, the `@ai` button and the
+    ///   picture door are each scoped to the surface that honours them
+    ///   (`AssistantSurfaces`), so a token in a direct chat is one somebody
+    ///   typed for themselves;
+    /// - and this is memoized per (body, isMine). A chat kind is a third
+    ///   dimension on that cache key, here and on both bubbles and on
+    ///   Android's — bought for a bold word in a chat with no assistant.
+    ///
+    /// If that trade is ever revisited, revisit it for BOTH tokens: `@ai`
+    /// outside the family chat is exactly the same claim as `/draw` outside
+    /// the assistant chat.
     ///
     /// Applied over the RENDERED text, after markdown, for the same reason
     /// the detector is — and it is only a style, so it never fights the
     /// link runs above for a tap.
-    private static func highlightMentions(in attributed: inout AttributedString, isMine: Bool) {
+    ///
+    /// The picture token is DECIDED from `drawSource`, the RAW body, and
+    /// only POSITIONED in the rendered one. The server reads `/draw` off
+    /// the body as typed; everything else here reads the body as drawn,
+    /// after markdown has deleted the `**`, the backticks and the
+    /// `](url)`. Those are different strings wherever markup sits ahead of
+    /// the token, and then the two disagree: `**/draw** a cat` renders to
+    /// `/draw a cat`, so the balloon marked a picture request that the
+    /// server — looking at `**/draw**` — reads as an ordinary message and
+    /// never acts on.
+    ///
+    /// Where markdown has mangled the token past the grammar's
+    /// recognition, nothing is marked. That is the safe half of the
+    /// disagreement: a missing mark on a request the server honours, never
+    /// a mark on one it ignores. `drawSource` is nil for every block of a
+    /// table-split body but the first, because `/draw` is a request only
+    /// at the very beginning of the whole body.
+    private static func highlightMentions(
+        in attributed: inout AttributedString, isMine: Bool, drawSource: String?
+    ) {
         let rendered = String(attributed.characters)
-        for range in AssistantMention.ranges(in: rendered) {
+        var ranges = AssistantMention.ranges(in: rendered)
+        if let source = drawSource,
+           AssistantMention.drawTokenRange(in: source) != nil,
+           let draw = AssistantMention.drawTokenRange(in: rendered) {
+            ranges.append(draw)
+        }
+        for range in ranges {
             let nsRange = NSRange(range, in: rendered)
             guard let target = attributedRange(nsRange, in: attributed, of: rendered) else {
                 continue

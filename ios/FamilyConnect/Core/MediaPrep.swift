@@ -23,6 +23,7 @@ import AVFoundation
 import CoreTransferable
 import ImageIO
 import UniformTypeIdentifiers
+import os
 
 nonisolated enum MediaPrep {
 
@@ -196,6 +197,14 @@ nonisolated enum MediaPrep {
 
     /// The first frame that is not black-ish — a video whose opening frame
     /// is a fade-in would otherwise get an empty poster.
+    ///
+    /// Nil is a real outcome, not just a failure to try: some codecs will
+    /// not yield a still at all. It is worth SAYING so (issue #54) —
+    /// without a line here, a video that never had a poster and one whose
+    /// poster upload failed produce the same grey tile with nothing in the
+    /// log to tell them apart, and they need different fixes. Nothing
+    /// retries this: three seek points have already been tried, and a
+    /// fourth pass over the same file would fail the same way.
     private static func posterFrame(of asset: AVURLAsset) async -> Data? {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
@@ -206,6 +215,8 @@ nonisolated enum MediaPrep {
                 return PlatformImage.jpegData(from: image, quality: previewQuality)
             }
         }
+        AppLog.sync.error(
+            "No poster frame could be read from a video after \(times.count, privacy: .public) seek points; it will be sent without one")
         return nil
     }
 
@@ -465,7 +476,11 @@ nonisolated enum MediaPrep {
     // MARK: - Shared
 
     static func fileSize(of url: URL) -> Int {
-        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) as? Int ?? 0
+        // One cast, not two: `[.size]` is `Any?`, so the inner `as? Int`
+        // already yields `Int?` and `try?` flattens rather than nesting it.
+        // The second `as? Int` was therefore casting `Int?` to `Int?` — a
+        // no-op that read as if it were doing the unwrapping the `?? 0` does.
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
     }
 
     static func temporaryURL(extension ext: String) -> URL {

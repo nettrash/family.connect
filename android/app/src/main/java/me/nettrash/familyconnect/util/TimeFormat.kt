@@ -53,20 +53,35 @@ object TimeFormat {
     fun bubbleTime(epochMillis: Long, zone: ZoneId = ZoneId.systemDefault()): String =
         Instant.ofEpochMilli(epochMillis).atZone(zone).format(HH_MM)
 
-    /** Date-separator pill: "Today" / "Yesterday" / "19 August 2026". */
+    /**
+     * The date-separator pill's label. Today and yesterday are WORDS the
+     * pill translates where it is drawn (this file has no resources);
+     * any other day is the formatted date. It used to return "Today" and
+     * "Yesterday" as English strings, which shipped in all nine languages.
+     */
+    sealed interface DayLabel {
+        data object Today : DayLabel
+        data object Yesterday : DayLabel
+        data class Date(val text: String) : DayLabel
+    }
+
     fun dateSeparator(
         epochMillis: Long,
         nowMillis: Long = System.currentTimeMillis(),
         zone: ZoneId = ZoneId.systemDefault(),
-    ): String {
+    ): DayLabel {
         val day = Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalDate()
         val today = Instant.ofEpochMilli(nowMillis).atZone(zone).toLocalDate()
         return when (day) {
-            today -> "Today"
-            today.minusDays(1) -> "Yesterday"
-            else -> day.format(LONG_DATE)
+            today -> DayLabel.Today
+            today.minusDays(1) -> DayLabel.Yesterday
+            else -> DayLabel.Date(day.format(LONG_DATE))
         }
     }
+
+    /** A stable, language-free key for the day a separator stands for. */
+    fun dayKey(epochMillis: Long, zone: ZoneId = ZoneId.systemDefault()): String =
+        toLocalDate(epochMillis, zone).toString()
 
     /** True when both instants fall on the same calendar day. */
     fun sameDay(aMillis: Long, bMillis: Long, zone: ZoneId = ZoneId.systemDefault()): Boolean =

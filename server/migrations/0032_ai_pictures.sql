@@ -1,0 +1,50 @@
+-- Pictures for the assistant (docs/protocol.md, "Pictures"): whether a
+-- family lets a photograph be SHOWN to the model, and how many pictures it
+-- has had MADE.
+--
+-- Two columns rather than a table, because neither is a new thing: the
+-- switch is a family setting sitting beside `ai_history`, and a generated
+-- picture is an ordinary attachment on an ordinary message whose only new
+-- fact is that it cost a family a per-image bill.
+
+-- NOT NULL DEFAULT FALSE — and the contrast with `ai_history` (0019), which
+-- is NOT NULL DEFAULT TRUE and sits one column away, is the whole argument
+-- of this migration.
+--
+-- 0019 defaulted ON and said why: it widened what a model was already being
+-- told, with more sentences of the same kind, from the same chat, written by
+-- people who already knew they were talking to it, and a feature that stays
+-- off until somebody finds a switch is one most families never see.
+--
+-- None of that transfers to a photograph. A picture is not more of the same
+-- thing; a sentence is what a member chose to say and a photograph is what
+-- the camera happened to see — the faces of people who are not in the
+-- conversation, the inside of a home, a child, a document on a table. A
+-- sentence can be regretted and the next one corrects it; a picture that has
+-- left cannot be recalled. And the family who never open their settings
+-- screen are precisely the family whose photographs should stay where they
+-- are. So this one defaults OFF, for families created after it and for every
+-- family that existed before.
+--
+-- Like `ai_history` it is a switch and therefore NOT NULL: there is no third
+-- state for a NULL to mean, only a second spelling of one of the two.
+--
+-- What it can never do is widen anything but a member's OWN assistant chat.
+-- No `@ai` mention reads it, at either `ai_history` setting, because a
+-- mention never sends a picture at all; no direct chat reads it; and it is
+-- not consent for a particular photograph — the member attaching one to the
+-- question they are asking is that, one send at a time.
+ALTER TABLE families ADD COLUMN ai_vision BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Pictures generated, counted where the tokens are counted (0015).
+--
+-- Its own column rather than being inferred from `prompt_tokens = 0`,
+-- because those two facts are not the same fact: a text reply whose provider
+-- reported no usage would be indistinguishable from a picture, and the whole
+-- reason for counting pictures separately is that they are the half of the
+-- assistant that maps to a per-image bill. A family reading only the token
+-- totals would see the expensive half as free.
+--
+-- INTEGER and not BOOLEAN: one reply is one picture today, and a row that
+-- can hold two costs nothing now and avoids a migration if it ever can.
+ALTER TABLE ai_usage ADD COLUMN images INTEGER NOT NULL DEFAULT 0;

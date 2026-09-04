@@ -10,6 +10,7 @@
  *                 call_offer / call_answer / call_ice / call_end
  *   ServerFrame — ack / message / read / typing / member_joined /
  *                 member_left / member_deleted / family_owner /
+ *                 member_blocked /
  *                 reaction / poll / pong / error /
  *                 call_offer / call_ringing / call_answer / call_ice / call_end
  *
@@ -244,6 +245,35 @@ sealed interface ServerFrame {
     data class FamilyOwner(
         @SerialName("family_id") val familyId: Long,
         @SerialName("user_id") val userId: Long,
+    ) : ServerFrame
+
+    /**
+     * One member blocked or unblocked, delivered to every connection of the
+     * BLOCKER and to NOBODY else.
+     *
+     * The only frame in this protocol about another member that reaches one
+     * person's own devices, stops there, and reports a fact the recipient
+     * alone established — which is exactly what makes blocking silent:
+     * nothing about a block ever reaches the person blocked.
+     *
+     * [blocked] carries full current STATE rather than an event, so an
+     * unblock is this same frame with `false` and a client applies it as a
+     * state-set — the idiom `reaction` and `poll` use. Neither field may
+     * take a Kotlin default: `encodeDefaults = false` would then drop
+     * `"blocked": false` from the re-encoded form and an unblock would
+     * stop round-tripping.
+     *
+     * It carries NO `family_id` — a block is a pair, not a membership — and
+     * NO sequence value, because the whole list is re-read in full from a
+     * per-caller endpoint on every resync, which is what makes this frame a
+     * latency optimisation rather than the only delivery path
+     * (docs/protocol.md, "Blocking a member").
+     */
+    @Serializable
+    @SerialName("member_blocked")
+    data class MemberBlocked(
+        @SerialName("user_id") val userId: Long,
+        val blocked: Boolean,
     ) : ServerFrame
 
     /**

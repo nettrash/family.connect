@@ -22,6 +22,15 @@
     <string name="s_copy_invite_code">Скопировать код приглашения</string>
     <string name="s_create">Создать</string>
     <string name="s_create_a_family">Создать семью</string>
+    <string name="s_no_new_families_title">Этот сервер не принимает новые семьи.</string>
+    <string name="s_no_new_families_body">Family Connect задуман как одна семья на собственном сервере. Чтобы создать свою, запустите свой сервер и пригласите всех оттуда.</string>
+    <string name="s_run_your_own_server">Как запустить свой сервер</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="one">Учётная запись, не вступившая в семью в течение %1$d дня, удаляется с этого сервера.</item>
+        <item quantity="few">Учётная запись, не вступившая в семью в течение %1$d дней, удаляется с этого сервера.</item>
+        <item quantity="many">Учётная запись, не вступившая в семью в течение %1$d дней, удаляется с этого сервера.</item>
+        <item quantity="other">Учётная запись, не вступившая в семью в течение %1$d дня, удаляется с этого сервера.</item>
+    </plurals>
     <string name="s_current_password">Текущий пароль</string>
     <string name="s_delete">Удалить</string>
     <string name="s_delete_this_note">Удалить эту заметку?</string>
@@ -61,7 +70,7 @@
     <string name="s_no_other_family_members_yet_share_the_invite_code_first">Других участников пока нет — сначала поделись кодом приглашения.</string>
     <string name="s_no_pending_requests">Нет заявок</string>
     <string name="s_note">Заметка</string>
-    <string name="s_open">Открыть</string>
+    <string name="s_open">Открытая</string>
     <string name="s_open_link">Открыть ссылку</string>
     <string name="s_password">Пароль</string>
     <string name="s_video">Видео</string>
@@ -70,6 +79,8 @@
     <string name="s_n_of_m">%1$d из %2$d</string>
     <string name="s_photo_or_video">Фото или видео</string>
     <string name="s_privacy">Конфиденциальность</string>
+    <string name="s_privacy_policy">Политика конфиденциальности</string>
+    <string name="s_support">Поддержка</string>
     <string name="s_react">Реакция</string>
     <string name="s_register">Регистрация</string>
     <string name="s_remove">Убрать</string>
@@ -282,7 +293,6 @@
     <string name="s_flip_camera">Сменить камеру</string>
     <string name="e_camera_permission">Family нужно разрешение на использование камеры.</string>
     <string name="s_video_calls_are_off_on_this_server">Видеозвонки отключены на этом сервере</string>
-    <string name="s_uploading_n_of_m">Загрузка %1$d из %2$d…</string>
     <string name="e_attachment_limit">Сообщение может содержать не более %1$d вложений.</string>
     <string name="s_share_choose_chat">Поделиться в…</string>
     <string name="s_shared_with_family">Поделились с Family</string>
@@ -346,4 +356,141 @@
         <item quantity="many">Не менее %1$d символов.</item>
         <item quantity="other">Не менее %1$d символов.</item>
     </plurals>
+    <string name="e_leave_failed">Сейчас не удалось выйти. Попробуйте ещё раз.</string>
+    <string name="s_leave_family_explanation_owner">Владельцем станет %1$s. Вы потеряете доступ к семейному чату и личным чатам; история вернётся, если вы вступите снова.</string>
+    <string name="s_leave_family_explanation_last">Вы последний участник. Если выйти, семья и всё её содержимое будут удалены.</string>
+    <string name="s_ownership_passed_on">Владелец сменился</string>
+    <string name="s_ownership_passed_to">Теперь владелец семьи — %1$s.</string>
+    <string name="s_hidden_blocked_member">Скрыто — заблокированный участник</string>
+    <string name="s_replying_to_hidden">Ответ на скрытое сообщение</string>
+    <string name="s_which_replied_to_hidden">которое было ответом на скрытое сообщение</string>
+    <string name="s_report">Пожаловаться</string>
+    <string name="s_report_ellipsis">Пожаловаться…</string>
+    <string name="s_block">Заблокировать</string>
+    <string name="s_unblock">Разблокировать</string>
+    <string name="s_report_member_title">Почему вы жалуетесь на %1$s?</string>
+    <string name="s_report_reason_spam">Спам</string>
+    <string name="s_report_reason_harassment">Оскорбления</string>
+    <string name="s_report_reason_inappropriate">Неприемлемый контент</string>
+    <string name="s_report_reason_other">Другое</string>
+    <string name="s_report_disclosure">Владелец семьи увидит эту жалобу, ваше имя и текст сообщения.</string>
+    <string name="e_block_failed">Сейчас не удалось изменить. Попробуйте ещё раз.</string>
+    <string name="e_report_failed">Не удалось отправить жалобу. Попробуйте ещё раз.</string>
+    <string name="s_hidden_note_from_blocked">Скрытая заметка от заблокированного участника</string>
+    <string name="s_closed">Закрыта</string>
+    <string name="s_join_closed_caption">Код приглашения перестаёт работать — новые участники вступить не смогут. Уже поданные заявки сохраняются, и вы по-прежнему можете их одобрить.</string>
+    <string name="s_member_limit">Лимит участников</string>
+    <string name="s_limit_members">Ограничить число участников</string>
+    <string name="s_most_members">Максимум участников</string>
+    <string name="s_member_limit_none">Своего лимита нет. Этот сервер допускает до %1$d участников в семье.</string>
+    <string name="s_member_limit_frozen">Сейчас участников: %1$d. Новые не смогут вступить, пока кто-нибудь не выйдет; никого не удаляют.</string>
+    <string name="s_member_limit_room">Занято %1$d из %2$d мест.</string>
+    <string name="s_decrease">Уменьшить</string>
+    <string name="s_increase">Увеличить</string>
+    <string name="e_member_limit_failed">Не удалось изменить лимит участников. Попробуйте ещё раз.</string>
+    <string name="e_family_full_approve">Семья заполнена. Увеличьте лимит участников или дождитесь, пока кто-нибудь выйдет — заявка останется в ожидании.</string>
+    <string name="e_family_full_join">Эта семья сейчас заполнена. Попросите освободить место и попробуйте код ещё раз.</string>
+    <string name="s_reports">Жалобы</string>
+    <string name="s_reported_by">%1$s пожаловался(ась) на %2$s</string>
+    <string name="s_mark_as_handled">Отметить как обработанную</string>
+    <string name="e_resolve_report_failed">Не удалось отметить как обработанную. Попробуйте ещё раз.</string>
+    <string name="s_if_the_problem_is_the_owner">Если проблема — сам владелец</string>
+    <string name="s_operator_published_contact">Оператор этого сервера опубликовал этот контакт.</string>
+    <string name="s_report_disclosure_person">Владелец семьи узнает, что вы пожаловались на этого участника.</string>
+    <string name="s_reports_empty">Участники могут пожаловаться вам на сообщение или на человека.</string>
+    <string name="s_safety">Безопасность</string>
+    <string name="s_safety_for">Настройки безопасности для %1$s</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Показать ассистенту фото</string>
+    <string name="s_show_the_assistant_a_picture_note">Фото уйдёт с этого сервера в модель, с которой он работает</string>
+    <string name="s_ask_for_a_picture">Попросить картинку</string>
+    <string name="s_assistant_sees_this_picture">Ассистенту покажут это фото. Оно уйдёт с этого сервера в модель, с которой он работает.</string>
+    <string name="s_assistant_sees_these_pictures">Ассистенту покажут эти фото. Они уйдут с этого сервера в модель, с которой он работает.</string>
+    <string name="s_assistant_picture_extra_left_out">С одним вопросом уходят только первые %1$d, остальные остаются здесь.</string>
+    <string name="s_assistant_picture_others_left_out">Видео, файлы, аудио и геопозиции ему не отправляются никогда.</string>
+    <string name="s_assistant_picture_unreadable_left_out">Фото, которое слишком большое или в формате, недоступном модели, ей называют, но не показывают.</string>
+    <string name="s_assistant_will_not_see_picture">Ассистенту это фото не покажут. Оно отправляется как обычное вложение.</string>
+    <string name="s_assistant_mention_sees_this_picture">Это сообщение упоминает ассистента, поэтому ему покажут это фото. Оно уйдёт с этого сервера в модель, с которой он работает; больше ни одно фото из этого чата.</string>
+    <string name="s_assistant_mention_sees_these_pictures">Это сообщение упоминает ассистента, поэтому ему покажут эти фото. Они уйдут с этого сервера в модель, с которой он работает; больше ни одно фото из этого чата.</string>
+    <string name="s_assistant_mention_sees_quoted_picture">Этот ответ упоминает ассистента, поэтому ему покажут фото, на которое ты отвечаешь. Оно уйдёт с этого сервера в модель, с которой он работает; больше ни одно фото из этого чата.</string>
+    <string name="s_assistant_mention_sees_quoted_pictures">Этот ответ упоминает ассистента, поэтому ему покажут фото, на которые ты отвечаешь. Они уйдут с этого сервера в модель, с которой он работает; больше ни одно фото из этого чата.</string>
+    <string name="s_assistant_mention_sees_both">Этот ответ упоминает ассистента, поэтому ему покажут фото отсюда и те, на которые ты отвечаешь. Они уйдут с этого сервера в модель, с которой он работает; больше ни одно фото из этого чата.</string>
+    <string name="s_assistant_mention_extra_left_out">С одним сообщением уходят только первые %1$d — сначала те, что в нём, затем те, на которые ты отвечаешь; остальные остаются здесь.</string>
+    <string name="s_assistant_mention_sees_recent_only">Это сообщение упоминает ассистента, поэтому с ним уйдут до %1$d самых недавних фото из этого чата — картинки, на которые ему никто не указывал, от кого бы они ни были. Они уйдут с этого сервера в модель, с которой он работает.</string>
+    <string name="s_assistant_mention_sees_this_picture_and_recent">Это сообщение упоминает ассистента, поэтому ему покажут это фото, и до %1$d самых недавних фото из этого чата могут уйти вместе с ним. Они уйдут с этого сервера в модель, с которой он работает.</string>
+    <string name="s_assistant_mention_sees_these_pictures_and_recent">Это сообщение упоминает ассистента, поэтому ему покажут эти фото, и до %1$d самых недавних фото из этого чата могут уйти вместе с ними. Они уйдут с этого сервера в модель, с которой он работает.</string>
+    <string name="s_assistant_mention_sees_quoted_picture_and_recent">Этот ответ упоминает ассистента, поэтому ему покажут фото, на которое ты отвечаешь, и до %1$d самых недавних фото из этого чата могут уйти вместе с ним. Они уйдут с этого сервера в модель, с которой он работает.</string>
+    <string name="s_assistant_mention_sees_quoted_pictures_and_recent">Этот ответ упоминает ассистента, поэтому ему покажут фото, на которые ты отвечаешь, и до %1$d самых недавних фото из этого чата могут уйти вместе с ними. Они уйдут с этого сервера в модель, с которой он работает.</string>
+    <string name="s_assistant_mention_sees_both_and_recent">Этот ответ упоминает ассистента, поэтому ему покажут фото отсюда и те, на которые ты отвечаешь, и до %1$d самых недавних фото из этого чата могут уйти вместе с ними. Они уйдут с этого сервера в модель, с которой он работает.</string>
+    <string name="s_assistant_answer_failed">Ассистент не смог закончить этот ответ. Спросите ещё раз.</string>
+    <string name="s_assistant_vision">Ассистент может смотреть фото</string>
+    <string name="s_assistant_vision_explanation">Когда кто-то прикрепляет фото к вопросу в своём личном чате с ассистентом, прикрепляет его к сообщению с упоминанием ассистента в семейном чате или отвечает на фото, упоминая ассистента, это фото уходит в модель вместе с вопросом — не больше 4 на вопрос. Фото, на которое ассистенту не указали, не отправляется никогда, даже из более раннего сообщения (если не включено «Ассистент видит недавние фото»); видео, файлы, аудио и геопозиции — тоже. По умолчанию выключено; когда выключено, фото не отправляются никогда.</string>
+    <string name="e_change_assistant_vision_failed">Не удалось изменить настройку</string>
+    <string name="s_assistant_history_photos">Ассистент видит недавние фото</string>
+    <string name="s_assistant_history_photos_explanation">Когда кто-то упоминает ассистента в семейном чате, вместе с вопросом в модель уходят и самые недавние фото из этого чата — до 4, от кого угодно, на которые ассистенту никто не указывал — после фото на самом сообщении или на том, на которое оно отвечает. Почти каждое упоминание тогда отправляет картинки, а это стоит дороже. Нужны «Ассистент может смотреть фото» и «Ассистент видит недавнюю историю»; по умолчанию выключено.</string>
+    <string name="s_assistant_history_photos_no_deployment">Здесь недоступно: ассистент на этом сервере не умеет смотреть картинки.</string>
+    <string name="s_assistant_history_photos_needs_vision">Сначала включите «Ассистент может смотреть фото» — пока оно выключено, сервер это отклоняет.</string>
+    <string name="s_assistant_history_photos_needs_history">Пока «Ассистент видит недавнюю историю» выключено, это ничего не делает: история чата не отправляется, а значит, и ни одно фото из неё.</string>
+    <string name="e_change_assistant_history_photos_failed">Не удалось изменить настройку</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">Выберите чат из списка.</string>
+    <plurals name="p_members">
+        <item quantity="one">%1$d участник</item>
+        <item quantity="few">%1$d участника</item>
+        <item quantity="many">%1$d участников</item>
+        <item quantity="other">%1$d участника</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">Сегодня</string>
+    <string name="s_yesterday">Вчера</string>
+    <string name="s_owner_caption">владелец</string>
+    <string name="s_share_invite_text">Присоединяйся к нашей семье в Family Connect! Сервер: %1$s — код приглашения: %2$s</string>
+    <string name="e_username_rules">3–32 символа: буквы, цифры, _ или .</string>
+    <string name="e_display_name_rules">1–64 символа</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="one">%1$d фото</item>
+        <item quantity="few">%1$d фото</item>
+        <item quantity="many">%1$d фото</item>
+        <item quantity="other">%1$d фото</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="one">%1$d видео</item>
+        <item quantity="few">%1$d видео</item>
+        <item quantity="many">%1$d видео</item>
+        <item quantity="other">%1$d видео</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="one">%1$d голосовое сообщение</item>
+        <item quantity="few">%1$d голосовых сообщения</item>
+        <item quantity="many">%1$d голосовых сообщений</item>
+        <item quantity="other">%1$d голосового сообщения</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="one">%1$d файл</item>
+        <item quantity="few">%1$d файла</item>
+        <item quantity="many">%1$d файлов</item>
+        <item quantity="other">%1$d файла</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="one">%1$d вложение</item>
+        <item quantity="few">%1$d вложения</item>
+        <item quantity="many">%1$d вложений</item>
+        <item quantity="other">%1$d вложения</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">Звонки</string>
+    <string name="s_channel_calls_desc">Входящие звонки</string>
+    <string name="s_channel_ongoing">Текущий звонок</string>
+    <string name="s_channel_ongoing_desc">Звонок, в котором вы находитесь</string>
+    <string name="s_channel_messages">Сообщения</string>
+    <string name="s_channel_messages_desc">Новые сообщения семьи и запросы на вступление</string>
+    <string name="s_emoji_smileys">Смайлики</string>
+    <string name="s_emoji_gestures">Жесты</string>
+    <string name="s_emoji_hearts">Сердечки</string>
+    <string name="s_emoji_animals">Животные и природа</string>
+    <string name="s_emoji_food">Еда и напитки</string>
+    <string name="s_emoji_activities">Занятия</string>
+    <string name="s_emoji_travel">Путешествия и места</string>
+    <string name="s_emoji_objects">Предметы и символы</string>
 </resources>

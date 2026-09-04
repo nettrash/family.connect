@@ -40,16 +40,31 @@ extension CallRequest {
     /// not a call at all.
     static func parse(activity: NSUserActivity) -> CallRequest? {
         guard let intent = activity.interaction?.intent else { return nil }
-        switch intent {
-        case let call as INStartCallIntent:
+        if let call = intent as? INStartCallIntent {
             return CallRequest(person: call.contacts?.first, video: call.callCapability == .videoCall)
-        case let audio as INStartAudioCallIntent:
-            return CallRequest(person: audio.contacts?.first, video: false)
-        case let video as INStartVideoCallIntent:
-            return CallRequest(person: video.contacts?.first, video: true)
-        default:
-            return nil
         }
+        // The pre-iOS 13 audio/video intents, which the system STILL
+        // delivers from Contacts, Recents and Favorites (see
+        // ios-call-provider-gotchas). Matched by class name and read by
+        // key-value coding so this file never names the deprecated
+        // classes — a deprecation warning here would be a warning about
+        // the one thing this branch exists to handle.
+        if let audio = Self.legacyAudioIntent, intent.isKind(of: audio) {
+            return CallRequest(person: Self.legacyContacts(of: intent)?.first, video: false)
+        }
+        if let video = Self.legacyVideoIntent, intent.isKind(of: video) {
+            return CallRequest(person: Self.legacyContacts(of: intent)?.first, video: true)
+        }
+        return nil
+    }
+
+    private static let legacyAudioIntent: AnyClass? = NSClassFromString("INStartAudioCallIntent")
+    private static let legacyVideoIntent: AnyClass? = NSClassFromString("INStartVideoCallIntent")
+
+    /// `contacts` on either legacy intent — an Objective-C property, so
+    /// key-value coding reaches it without the Swift symbol.
+    private static func legacyContacts(of intent: INIntent) -> [INPerson]? {
+        intent.value(forKey: "contacts") as? [INPerson]
     }
 
     /// From the person the system named. Our own handle is recognised in
@@ -102,9 +117,33 @@ enum CallDonation {
             callCapability: video ? .videoCall : .audioCall)
         let interaction = INInteraction(intent: intent, response: nil)
         interaction.direction = .outgoing
+        // The handle, so one person's donations can be withdrawn on their
+        // own when they are blocked. Without a group there is no selective
+        // delete — only `deleteAll`, which would throw away everybody's.
+        interaction.groupIdentifier = handle
         interaction.donate { error in
             if let error {
                 AppLog.call.info("Call donation refused: \(String(describing: error))")
+            }
+        }
+    }
+
+    /// Withdraw the suggestions this app made about one person.
+    ///
+    /// A donation is the app's own statement to the system, and it goes on
+    /// being made in the app's name — in Siri's suggestions, in the Phone
+    /// app's sense of who Family can call — long after it stops being
+    /// true. Blocking somebody is exactly when it stops being true, so the
+    /// statement is retracted (docs/protocol.md, "Calls").
+    ///
+    /// Device hygiene, not part of the silence: it happens on the
+    /// blocker's own device and changes nothing anybody else can observe.
+    /// Nothing puts these back on unblock — they were suggestions, not
+    /// history, and the call RECORDS in the chat are untouched.
+    static func withdraw(peerUserID: Int64) {
+        INInteraction.delete(with: CallHandle.value(userID: peerUserID)) { error in
+            if let error {
+                AppLog.call.info("Call donation withdrawal refused: \(String(describing: error))")
             }
         }
     }

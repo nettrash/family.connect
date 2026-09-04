@@ -191,6 +191,7 @@ struct DeletedMemberStoreTests {
         StubURLProtocol.register(host: host, handler: handler)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            PendingMediaItemEntity.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!,
@@ -543,6 +544,7 @@ struct DeletedAccountChatPruneTests {
         StubURLProtocol.register(host: host, handler: handler)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            PendingMediaItemEntity.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!,

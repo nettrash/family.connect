@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{TestServer, assert_error, spawn_server};
+use common::{TestServer, assert_error, spawn_server, spawn_server_with_config};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -350,6 +350,115 @@ async fn a_preview_is_uploaded_separately_and_flagged() {
         .await
         .expect("JSON");
     assert_eq!(body["message"]["attachment"]["has_preview"], true);
+}
+
+/// The property the clients' poster repair rests on (issue #54).
+///
+/// A preview goes up in its OWN request, so it can fail while the message
+/// that claims the attachment succeeds — and then only the uploading device
+/// still holds the pixels. It has to be able to finish the job later, which
+/// means a second `PUT` must be legal AFTER the message exists, must
+/// overwrite whatever is stored, and must flip `has_preview` from false to
+/// true where every reader can see it. Nothing here asks the server to
+/// decode anything: the repair is the same request, sent again.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_preview_may_be_uploaded_after_the_message_claims_it() {
+    let server = spawn_server().await;
+    let (owner, member, chat_id) = family_of_two(&server).await;
+
+    let body: Value = upload(&server, &owner, "?kind=video", "video/mp4", mp4_bytes(512))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let attachment_id = body["attachment"]["id"].as_i64().expect("id");
+
+    // The send: the poster upload is skipped entirely, exactly as a failed
+    // one leaves things.
+    let sent: Value = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_id": attachment_id,
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(sent["message"]["attachment"]["has_preview"], false);
+
+    // The repair, after the row is claimed. Uploader only — a member who
+    // did not upload it has no business replacing what a bubble draws.
+    assert_error(
+        server
+            .put_bytes(
+                &member,
+                &format!("/attachments/{attachment_id}/preview"),
+                "image/jpeg",
+                jpeg_bytes(128),
+            )
+            .await,
+        404,
+        "attachment_not_found",
+    )
+    .await;
+    assert_eq!(
+        server
+            .put_bytes(
+                &owner,
+                &format!("/attachments/{attachment_id}/preview"),
+                "image/jpeg",
+                jpeg_bytes(256),
+            )
+            .await
+            .status(),
+        204
+    );
+
+    // And it is visible to the OTHER member, which is the whole point: the
+    // grey tile was never the sender's problem.
+    let fetched = server
+        .get(&member, &format!("/attachments/{attachment_id}/preview"))
+        .await;
+    assert_eq!(fetched.status(), 200);
+    let listed: Value = server
+        .get(&member, &format!("/chats/{chat_id}/messages"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let message = listed["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|row| row["attachment"]["id"].as_i64() == Some(attachment_id))
+        .expect("the message carrying the repaired attachment");
+    assert_eq!(message["attachment"]["has_preview"], true);
+
+    // Idempotent: sending it a second time overwrites and stays true, so a
+    // repair that raced a successful one costs nothing.
+    assert_eq!(
+        server
+            .put_bytes(
+                &owner,
+                &format!("/attachments/{attachment_id}/preview"),
+                "image/jpeg",
+                jpeg_bytes(300),
+            )
+            .await
+            .status(),
+        204
+    );
+    let again = server
+        .get(&member, &format!("/attachments/{attachment_id}/preview"))
+        .await;
+    assert_eq!(again.status(), 200);
+    assert_eq!(again.bytes().await.expect("bytes").len(), 300);
 }
 
 /// A send the user abandoned must not leave 100 MB on the server forever.
@@ -1878,4 +1987,248 @@ async fn a_page_of_albums_does_not_duplicate_messages() {
         Some(sent[2][0]),
         "and the legacy first element beside it"
     );
+}
+
+/// The free-space floor, end to end.
+///
+/// The unit tests pin the arithmetic; what they cannot see is whether the
+/// handler ever CALLS it. A check that is correct and unreachable looks
+/// identical to a working one from inside `storage.rs`, and this is a guard
+/// whose whole job is to be there on the one night the disk fills up.
+///
+/// The floor is set to u64::MAX so every filesystem is "full", which is the
+/// only way to test this without actually filling a disk.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_full_disk_refuses_uploads_with_storage_full() {
+    let server = spawn_server_with_config(|cfg| {
+        cfg.limits.min_free_disk_bytes = u64::MAX;
+    })
+    .await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    assert_error(
+        upload(&server, &owner, "?kind=photo", "image/jpeg", jpeg_bytes(64)).await,
+        507,
+        "storage_full",
+    )
+    .await;
+
+    // Nothing written and nothing recorded — the refusal happens BEFORE the
+    // body is read, which is the point of checking early.
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments")
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("count");
+    assert_eq!(rows, 0, "a refused upload must leave no row behind");
+}
+
+/// A location has no bytes, so a full disk must not stop somebody sharing
+/// where they are. It is three numbers in a query string.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_full_disk_still_accepts_a_location() {
+    let server = spawn_server_with_config(|cfg| {
+        cfg.limits.min_free_disk_bytes = u64::MAX;
+    })
+    .await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let response = upload(
+        &server,
+        &owner,
+        "?kind=location&latitude=55.7558&longitude=37.6173&accuracy_m=12",
+        "",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        201,
+        "a location costs the disk nothing and must not be refused"
+    );
+}
+
+/// The documented off switch has to actually switch it off.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_zero_floor_lets_uploads_through() {
+    let server = spawn_server_with_config(|cfg| {
+        cfg.limits.min_free_disk_bytes = 0;
+    })
+    .await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let response = upload(&server, &owner, "?kind=photo", "image/jpeg", jpeg_bytes(64)).await;
+    assert_eq!(response.status(), 201);
+}
+
+/// An upload the sweep took answers `attachment_expired`, not
+/// `attachment_not_found` (docs/protocol.md, "Sending on an unreliable
+/// network"). The two are different situations and only one has a way out:
+/// a client that still holds the bytes uploads them again and re-sends the
+/// same `client_msg_id`.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_swept_upload_is_expired_rather_than_missing() {
+    let server = spawn_server().await;
+    let (owner, member, chat_id) = family_of_two(&server).await;
+
+    let uploaded: Value = upload(
+        &server,
+        &owner,
+        "?kind=photo",
+        "image/jpeg",
+        jpeg_bytes(128),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let attachment_id = uploaded["attachment"]["id"].as_i64().expect("id");
+
+    sqlx::query("UPDATE attachments SET created_at = now() - interval '48 hours' WHERE id = $1")
+        .bind(attachment_id)
+        .execute(&server.state.pool)
+        .await
+        .expect("age it");
+    assert_eq!(
+        family_connect::handlers_attachment::sweep_unclaimed(&server.state)
+            .await
+            .expect("sweep"),
+        1
+    );
+
+    // The uploader learns it EXPIRED — the answer they can act on.
+    assert_error(
+        server
+            .post(
+                &owner,
+                &format!("/chats/{chat_id}/messages"),
+                json!({
+                    "client_msg_id": Uuid::new_v4().to_string(),
+                    "body": "",
+                    "attachment_ids": [attachment_id],
+                }),
+            )
+            .await,
+        404,
+        "attachment_expired",
+    )
+    .await;
+
+    // Somebody ELSE naming the same id learns nothing: the marker is
+    // scoped to its uploader, exactly as the row was.
+    assert_error(
+        server
+            .post(
+                &member,
+                &format!("/chats/{chat_id}/messages"),
+                json!({
+                    "client_msg_id": Uuid::new_v4().to_string(),
+                    "body": "",
+                    "attachment_ids": [attachment_id],
+                }),
+            )
+            .await,
+        404,
+        "attachment_not_found",
+    )
+    .await;
+
+    // And an id that never existed is still plainly missing.
+    assert_error(
+        server
+            .post(
+                &owner,
+                &format!("/chats/{chat_id}/messages"),
+                json!({
+                    "client_msg_id": Uuid::new_v4().to_string(),
+                    "body": "",
+                    "attachment_ids": [attachment_id + 99_999],
+                }),
+            )
+            .await,
+        404,
+        "attachment_not_found",
+    )
+    .await;
+
+    // Uploading again and re-sending the SAME client_msg_id is the way out.
+    let again: Value = upload(
+        &server,
+        &owner,
+        "?kind=photo",
+        "image/jpeg",
+        jpeg_bytes(128),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let fresh_id = again["attachment"]["id"].as_i64().expect("id");
+    let sent = server
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "",
+                "attachment_ids": [fresh_id],
+            }),
+        )
+        .await;
+    assert_eq!(
+        sent.status(),
+        201,
+        "{}",
+        sent.text().await.unwrap_or_default()
+    );
+}
+
+/// The marker must not hold the FILE alive: `remove_if_unreferenced` asks
+/// whether any `attachments` row still names the key, which is exactly why
+/// the marker is its own table and names no key (0035).
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_expiry_marker_does_not_keep_the_bytes() {
+    let server = spawn_server().await;
+    let (owner, _, _) = family_of_two(&server).await;
+
+    let uploaded: Value = upload(
+        &server,
+        &owner,
+        "?kind=photo",
+        "image/jpeg",
+        jpeg_bytes(256),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let attachment_id = uploaded["attachment"]["id"].as_i64().expect("id");
+    let key: String = sqlx::query_scalar("SELECT storage_key FROM attachments WHERE id = $1")
+        .bind(attachment_id)
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("key");
+    let path = server.state.storage.blob_path(&key);
+    assert!(path.exists());
+
+    sqlx::query("UPDATE attachments SET created_at = now() - interval '48 hours' WHERE id = $1")
+        .bind(attachment_id)
+        .execute(&server.state.pool)
+        .await
+        .expect("age it");
+    family_connect::handlers_attachment::sweep_unclaimed(&server.state)
+        .await
+        .expect("sweep");
+
+    assert!(!path.exists(), "the marker kept the bytes alive");
+    let markers: i64 = sqlx::query_scalar("SELECT count(*) FROM expired_attachments WHERE id = $1")
+        .bind(attachment_id)
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("count");
+    assert_eq!(markers, 1);
 }

@@ -194,6 +194,134 @@ class MessageLinksTest {
         assertThat(MessageLinks.firstDrawnWebLinkUrl(blocks)).isEqualTo("https://evil.example")
     }
 
+    // -- The tokens the assistant acts on ---------------------------------
+
+    private val mentionStyle = SpanStyle(textDecoration = TextDecoration.Underline)
+
+    /**
+     * The marks a body gets when it is its own raw source — the shape of
+     * every body with no markdown in it, which is almost all of them.
+     */
+    private fun styledRanges(body: String, drawMayStartHere: Boolean = true): List<String> =
+        markedIn(rendered = body, rawBody = if (drawMayStartHere) body else null)
+
+    /** The marks [rendered] gets when the server is reading [rawBody]. */
+    private fun markedIn(rendered: String, rawBody: String?): List<String> {
+        val styled = MessageLinks.withMentions(AnnotatedString(rendered), mentionStyle, rawBody)
+        return styled.spanStyles
+            .filter { it.item == mentionStyle }
+            .map { rendered.substring(it.start, it.end) }
+    }
+
+    /**
+     * Both tokens are highlighted, and only the tokens — the words after
+     * `/draw` are the member's own prompt and read as ordinary text.
+     */
+    @Test
+    fun theAssistantsTokensAreMarkedAndNothingElseIs() {
+        assertThat(styledRanges("@ai /draw a cat in a hat"))
+            .containsExactly("@ai", "/draw")
+        assertThat(styledRanges("/draw a cat")).containsExactly("/draw")
+        assertThat(styledRanges("hey @ai, what is the weather")).containsExactly("@ai")
+    }
+
+    /**
+     * A `/draw` the SERVER will not act on must not be highlighted: the
+     * whole point of mirroring the grammar is that the bubble and the
+     * server agree about what leaves the building.
+     */
+    @Test
+    fun aDrawTheServerIgnoresIsNotMarked() {
+        assertThat(styledRanges("what does /draw do?")).isEmpty()
+        assertThat(styledRanges("hey @ai /draw a cat")).containsExactly("@ai")
+        // `/draw` alone is an ordinary message.
+        assertThat(styledRanges("/draw")).isEmpty()
+    }
+
+    /**
+     * A body is split into blocks around markdown tables, and the picture
+     * token is a request only at the very start of the WHOLE body — so a
+     * paragraph after a table is told it cannot start one.
+     */
+    @Test
+    fun onlyTheFirstBlockMayCarryThePictureToken() {
+        assertThat(styledRanges("/draw a cat", drawMayStartHere = false)).isEmpty()
+        // The mention needs no such flag: it is one wherever it appears.
+        assertThat(styledRanges("ask @ai about it", drawMayStartHere = false))
+            .containsExactly("@ai")
+    }
+
+    /**
+     * THE MARK IS DECIDED FROM THE RAW BODY, not from the rendered one.
+     *
+     * The server reads `/draw` off the body as typed. Everything else in
+     * this file reads the body as DRAWN, because markdown deletes
+     * characters and every link offset has to index what is on screen. For
+     * this one token the two strings are not interchangeable: wherever
+     * markup sits AHEAD of the token, rendering removes it and the token
+     * slides to the front of a string the server never sees. Each body
+     * below renders to something this grammar would call a picture
+     * request while the server, reading the raw body, calls it an ordinary
+     * message — so a mark computed from the rendered text was a family
+     * watching a marked request go unanswered with no way to tell why.
+     *
+     * Both halves are asserted on purpose. Proving the RENDERED text
+     * would have been marked is what keeps this test from passing
+     * vacuously if the renderer ever stops stripping one of these.
+     *
+     * iOS's `MessageLinksTests.drawMarkComesFromTheRawBody` pins the same
+     * bodies.
+     */
+    @Test
+    fun theDrawMarkIsDecidedFromTheRawBody() {
+        val markupAheadOfTheToken = listOf(
+            "**/draw** a cat",
+            "*/draw* a cat",
+            "`/draw` a cat",
+            "~~/draw~~ a cat",
+            "# /draw a cat",
+        )
+        for (body in markupAheadOfTheToken) {
+            val rendered = MessageMarkdown.blocks(body)
+                .filterIsInstance<MessageMarkdown.Block.Text>()
+                .first().rendered.text
+            // The server, reading what was typed, sees no request.
+            assertThat(AssistantMention.drawRange(body)).isNull()
+            // The bubble, reading what is drawn, used to see one — which
+            // is the divergence itself, asserted so this test cannot pass
+            // vacuously if the renderer ever stops stripping one of these.
+            assertThat(AssistantMention.drawRange(rendered)).isNotNull()
+            // And now nothing is marked, because the two must agree.
+            assertThat(markedIn(rendered = rendered, rawBody = body)).isEmpty()
+        }
+        // A bullet is the near miss that proves the list above is doing
+        // work: its marker renders to U+2022 and a space, so the drawn text
+        // does not begin with the token either and the two AGREE without
+        // any of this. It is here so a reader can see where the line is.
+        val bullet = MessageMarkdown.blocks("- /draw a cat")
+            .filterIsInstance<MessageMarkdown.Block.Text>()
+            .first().rendered.text
+        assertThat(bullet).startsWith("\u2022 ")
+        assertThat(AssistantMention.drawRange(bullet)).isNull()
+    }
+
+    /**
+     * The other direction: markdown in the PROMPT removes nothing ahead of
+     * the token, so a real request is still marked and the mark still sits
+     * on the drawn glyphs rather than on the raw ones.
+     */
+    @Test
+    fun aRealRequestIsStillMarkedThroughMarkdown() {
+        val body = "/draw a **fluffy** cat"
+        val rendered = MessageMarkdown.blocks(body)
+            .filterIsInstance<MessageMarkdown.Block.Text>()
+            .first().rendered.text
+        assertThat(rendered).isEqualTo("/draw a fluffy cat")
+        assertThat(markedIn(rendered = rendered, rawBody = body)).containsExactly("/draw")
+        assertThat(markedIn(rendered = "@ai /draw a cat", rawBody = "@ai /draw a cat"))
+            .containsExactly("@ai", "/draw")
+    }
+
     /** No web link anywhere is no card — a phone number is not one. */
     @Test
     fun aBodyWithNoWebLinkHasNothingToPreview() {

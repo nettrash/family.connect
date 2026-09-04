@@ -22,6 +22,12 @@
     <string name="s_copy_invite_code">拷贝邀请码</string>
     <string name="s_create">创建</string>
     <string name="s_create_a_family">创建一个家庭</string>
+    <string name="s_no_new_families_title">此服务器不接受新家庭。</string>
+    <string name="s_no_new_families_body">Family Connect 的设计是一个家庭使用一台自己的服务器。要创建你的家庭，请运行自己的服务器并从那里邀请所有人。</string>
+    <string name="s_run_your_own_server">如何运行自己的服务器</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="other">%1$d 天内未加入家庭的账户将从此服务器中删除。</item>
+    </plurals>
     <string name="s_current_password">当前密码</string>
     <string name="s_delete">删除</string>
     <string name="s_delete_this_note">要删除这条便签吗？</string>
@@ -61,7 +67,7 @@
     <string name="s_no_other_family_members_yet_share_the_invite_code_first">还没有其他家庭成员——先分享邀请码吧。</string>
     <string name="s_no_pending_requests">没有待处理的申请</string>
     <string name="s_note">便签</string>
-    <string name="s_open">打开</string>
+    <string name="s_open">开放</string>
     <string name="s_open_link">打开链接</string>
     <string name="s_password">密码</string>
     <string name="s_video">视频</string>
@@ -70,6 +76,8 @@
     <string name="s_n_of_m">%1$d / %2$d</string>
     <string name="s_photo_or_video">照片或视频</string>
     <string name="s_privacy">隐私</string>
+    <string name="s_privacy_policy">隐私政策</string>
+    <string name="s_support">支持</string>
     <string name="s_react">回应</string>
     <string name="s_register">注册</string>
     <string name="s_remove">移除</string>
@@ -273,7 +281,6 @@
     <string name="s_flip_camera">切换摄像头</string>
     <string name="e_camera_permission">Family 需要使用相机的权限。</string>
     <string name="s_video_calls_are_off_on_this_server">此服务器已关闭视频通话</string>
-    <string name="s_uploading_n_of_m">正在上传第 %1$d 项，共 %2$d 项…</string>
     <string name="e_attachment_limit">一条消息最多只能携带 %1$d 个附件。</string>
     <string name="s_share_choose_chat">分享到…</string>
     <string name="s_shared_with_family">分享给 Family</string>
@@ -334,4 +341,123 @@
     <plurals name="s_use_at_least_characters">
         <item quantity="other">至少使用 %1$d 个字符。</item>
     </plurals>
+    <string name="e_leave_failed">暂时无法退出，请重试。</string>
+    <string name="s_leave_family_explanation_owner">%1$s将成为所有者。你将失去家庭聊天和私聊的访问权限；重新加入后历史记录会恢复。</string>
+    <string name="s_leave_family_explanation_last">你是最后一名成员。离开将删除这个家庭及其中的所有内容。</string>
+    <string name="s_ownership_passed_on">所有权已转移</string>
+    <string name="s_ownership_passed_to">%1$s现在是这个家庭的所有者。</string>
+    <string name="s_hidden_blocked_member">已隐藏 — 已屏蔽的成员</string>
+    <string name="s_replying_to_hidden">回复一条已隐藏的消息</string>
+    <string name="s_which_replied_to_hidden">该消息回复了一条已隐藏的消息</string>
+    <string name="s_report">举报</string>
+    <string name="s_report_ellipsis">举报…</string>
+    <string name="s_block">屏蔽</string>
+    <string name="s_unblock">取消屏蔽</string>
+    <string name="s_report_member_title">为什么举报%1$s？</string>
+    <string name="s_report_reason_spam">垃圾信息</string>
+    <string name="s_report_reason_harassment">骚扰</string>
+    <string name="s_report_reason_inappropriate">不当内容</string>
+    <string name="s_report_reason_other">其他原因</string>
+    <string name="s_report_disclosure">你的家庭所有者将看到此举报、你的姓名以及消息内容。</string>
+    <string name="e_block_failed">暂时无法更改，请重试。</string>
+    <string name="e_report_failed">举报发送失败，请重试。</string>
+    <string name="s_hidden_note_from_blocked">来自已屏蔽成员的隐藏便签</string>
+    <string name="s_closed">已关闭</string>
+    <string name="s_join_closed_caption">邀请码将停止工作，无人可以加入。已在等待的申请不受影响，你仍然可以批准。</string>
+    <string name="s_member_limit">成员数量上限</string>
+    <string name="s_limit_members">限制成员数量</string>
+    <string name="s_most_members">最多成员</string>
+    <string name="s_member_limit_none">你没有设置上限。此服务器允许每个家庭最多 %1$d 名成员。</string>
+    <string name="s_member_limit_frozen">当前有 %1$d 名成员。在有人离开前无人可加入；不会移除任何人。</string>
+    <string name="s_member_limit_room">已使用 %2$d 个名额中的 %1$d 个。</string>
+    <string name="s_decrease">减少</string>
+    <string name="s_increase">增加</string>
+    <string name="e_member_limit_failed">无法更改成员上限，请重试。</string>
+    <string name="e_family_full_approve">家庭成员已满。请提高成员上限或等待有人离开——该申请仍在等待中。</string>
+    <string name="e_family_full_join">该家庭目前已满。请让他们腾出名额后再试一次邀请码。</string>
+    <string name="s_reports">举报</string>
+    <string name="s_reported_by">%1$s举报了%2$s</string>
+    <string name="s_mark_as_handled">标记为已处理</string>
+    <string name="e_resolve_report_failed">无法标记为已处理，请重试。</string>
+    <string name="s_if_the_problem_is_the_owner">如果问题出在所有者身上</string>
+    <string name="s_operator_published_contact">此服务器的运营者公布了该联系方式。</string>
+    <string name="s_report_disclosure_person">你的家庭所有者会知道你举报了这名成员。</string>
+    <string name="s_reports_empty">成员可以向你举报某条消息或某个人。</string>
+    <string name="s_safety">安全</string>
+    <string name="s_safety_for">%1$s的安全选项</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">给助手看一张照片</string>
+    <string name="s_show_the_assistant_a_picture_note">照片会离开此服务器，发送给服务器所用的模型</string>
+    <string name="s_ask_for_a_picture">请它画一张图</string>
+    <string name="s_assistant_sees_this_picture">助手将看到这张照片。它会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_sees_these_pictures">助手将看到这些照片。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_picture_extra_left_out">一次提问只会发送前 %1$d 张，其余留在此处。</string>
+    <string name="s_assistant_picture_others_left_out">视频、文件、语音和位置永远不会发送给它。</string>
+    <string name="s_assistant_picture_unreadable_left_out">太大的照片，或模型读不了的格式，只会被提到，而不会被展示。</string>
+    <string name="s_assistant_will_not_see_picture">助手不会看到这张照片。它只作为普通附件发送。</string>
+    <string name="s_assistant_mention_sees_this_picture">这条消息提到了助手，所以助手将看到这张照片。它会离开此服务器，发送给服务器所用的模型；这个聊天里的其他照片都不会。</string>
+    <string name="s_assistant_mention_sees_these_pictures">这条消息提到了助手，所以助手将看到这些照片。它们会离开此服务器，发送给服务器所用的模型；这个聊天里的其他照片都不会。</string>
+    <string name="s_assistant_mention_sees_quoted_picture">这条回复提到了助手，所以助手将看到你回复的那张照片。它会离开此服务器，发送给服务器所用的模型；这个聊天里的其他照片都不会。</string>
+    <string name="s_assistant_mention_sees_quoted_pictures">这条回复提到了助手，所以助手将看到你回复的那些照片。它们会离开此服务器，发送给服务器所用的模型；这个聊天里的其他照片都不会。</string>
+    <string name="s_assistant_mention_sees_both">这条回复提到了助手，所以助手将看到这里的照片和你回复的那些照片。它们会离开此服务器，发送给服务器所用的模型；这个聊天里的其他照片都不会。</string>
+    <string name="s_assistant_mention_extra_left_out">一条消息只带前 %1$d 张——先是消息里的，然后是你回复的那些；其余的留在这里。</string>
+    <string name="s_assistant_mention_sees_recent_only">这条消息提到了助手，所以这个聊天里最近的照片最多 %1$d 张会随它一起发送——没有人指给它看的图片，无论是谁发的。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_mention_sees_this_picture_and_recent">这条消息提到了助手，所以助手将看到这张照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_mention_sees_these_pictures_and_recent">这条消息提到了助手，所以助手将看到这些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_mention_sees_quoted_picture_and_recent">这条回复提到了助手，所以助手将看到你回复的那张照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_mention_sees_quoted_pictures_and_recent">这条回复提到了助手，所以助手将看到你回复的那些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_mention_sees_both_and_recent">这条回复提到了助手，所以助手将看到这里的照片和你回复的那些照片，这个聊天里最近的照片也可能一起发送，最多 %1$d 张。它们会离开此服务器，发送给服务器所用的模型。</string>
+    <string name="s_assistant_answer_failed">助手没能完成这条回复。请再问一次。</string>
+    <string name="s_assistant_vision">允许助手查看照片</string>
+    <string name="s_assistant_vision_explanation">当某人在自己与助手的聊天中给问题附上照片、在家庭聊天中给提到助手的消息附上照片，或在提到助手的同时回复一张照片时，这张照片会随问题一起发送给模型，每次提问最多 4 张。没有指给助手看的照片绝不会发送，除非打开了“助手可以查看最近的照片”，否则更早消息中的也不会，视频、文件、语音和位置也一样。默认关闭；关闭时，任何照片都不会被发送。</string>
+    <string name="e_change_assistant_vision_failed">无法更改该设置</string>
+    <string name="s_assistant_history_photos">助手可以查看最近的照片</string>
+    <string name="s_assistant_history_photos_explanation">当有人在家庭聊天里提到助手时，这个聊天里最近的照片——最多 4 张，来自任何人，没有指给助手看的——也会在消息本身或它所回复的消息上的照片之后，随问题一起发送给模型。此后几乎每次提到它都会发送图片，费用更高。需要打开“允许助手查看照片”和“助手可以查看最近的历史记录”；默认关闭，除非你打开它。</string>
+    <string name="s_assistant_history_photos_no_deployment">此处不可用：这个服务器上的助手无法查看图片。</string>
+    <string name="s_assistant_history_photos_needs_vision">请先打开“允许助手查看照片”——它关闭时，服务器会拒绝这项设置。</string>
+    <string name="s_assistant_history_photos_needs_history">“助手可以查看最近的历史记录”关闭时，这项设置不起作用：聊天历史不会发送，其中的照片自然也不会。</string>
+    <string name="e_change_assistant_history_photos_failed">无法更改该设置</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">从列表中选择一个对话。</string>
+    <plurals name="p_members">
+        <item quantity="other">%1$d 位成员</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">今天</string>
+    <string name="s_yesterday">昨天</string>
+    <string name="s_owner_caption">所有者</string>
+    <string name="s_share_invite_text">快来加入我们在 Family Connect 上的家庭！服务器：%1$s — 邀请码：%2$s</string>
+    <string name="e_username_rules">3–32 个字符：字母、数字、_ 或 .</string>
+    <string name="e_display_name_rules">1–64 个字符</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="other">%1$d 张照片</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="other">%1$d 个视频</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="other">%1$d 条语音</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="other">%1$d 个文件</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="other">%1$d 个附件</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">通话</string>
+    <string name="s_channel_calls_desc">来电</string>
+    <string name="s_channel_ongoing">通话中</string>
+    <string name="s_channel_ongoing_desc">当前通话</string>
+    <string name="s_channel_messages">消息</string>
+    <string name="s_channel_messages_desc">新的家庭消息和加入请求</string>
+    <string name="s_emoji_smileys">笑脸</string>
+    <string name="s_emoji_gestures">手势</string>
+    <string name="s_emoji_hearts">爱心</string>
+    <string name="s_emoji_animals">动物与自然</string>
+    <string name="s_emoji_food">食物与饮品</string>
+    <string name="s_emoji_activities">活动</string>
+    <string name="s_emoji_travel">旅行与地点</string>
+    <string name="s_emoji_objects">物品与符号</string>
 </resources>

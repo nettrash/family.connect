@@ -22,6 +22,14 @@
     <string name="s_copy_invite_code">Копирај позивни код</string>
     <string name="s_create">Направи</string>
     <string name="s_create_a_family">Направи породицу</string>
+    <string name="s_no_new_families_title">Овај сервер не прима нове породице.</string>
+    <string name="s_no_new_families_body">Family Connect је замишљен као једна породица на сопственом серверу. Да бисте започели своју, покрените свој сервер и позовите све одатле.</string>
+    <string name="s_run_your_own_server">Како да покренете свој сервер</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="one">Налог који се не придружи породици у року од %1$d дана уклања се са овог сервера.</item>
+        <item quantity="few">Налог који се не придружи породици у року од %1$d дана уклања се са овог сервера.</item>
+        <item quantity="other">Налог који се не придружи породици у року од %1$d дана уклања се са овог сервера.</item>
+    </plurals>
     <string name="s_current_password">Тренутна лозинка</string>
     <string name="s_delete">Обриши</string>
     <string name="s_delete_this_note">Обрисати ову белешку?</string>
@@ -61,7 +69,7 @@
     <string name="s_no_other_family_members_yet_share_the_invite_code_first">Још нема других чланова породице — прво подели позивни код.</string>
     <string name="s_no_pending_requests">Нема захтева на чекању</string>
     <string name="s_note">Белешка</string>
-    <string name="s_open">Отвори</string>
+    <string name="s_open">Отворена</string>
     <string name="s_open_link">Отвори линк</string>
     <string name="s_password">Лозинка</string>
     <string name="s_video">Видео</string>
@@ -107,6 +115,8 @@
     <string name="s_pasted_sound">Налепљени звук</string>
     <string name="s_pasted_file">Налепљена датотека</string>
     <string name="s_privacy">Приватност</string>
+    <string name="s_privacy_policy">Политика приватности</string>
+    <string name="s_support">Подршка</string>
     <string name="s_react">Реагуј</string>
     <string name="s_register">Региструј се</string>
     <string name="s_remove">Уклони</string>
@@ -257,7 +267,6 @@
     <string name="s_flip_camera">Промени камеру</string>
     <string name="e_camera_permission">Family треба дозволу за коришћење камере.</string>
     <string name="s_video_calls_are_off_on_this_server">Видео позиви су искључени на овом серверу</string>
-    <string name="s_uploading_n_of_m">Отпремање %1$d од %2$d…</string>
     <string name="e_attachment_limit">Порука може да носи највише %1$d прилога.</string>
     <string name="s_share_choose_chat">Подели у…</string>
     <string name="s_shared_with_family">Подељено са Family</string>
@@ -335,4 +344,135 @@
         <item quantity="few">Користи бар %1$d знака.</item>
         <item quantity="other">Користи бар %1$d знакова.</item>
     </plurals>
+    <string name="e_leave_failed">Тренутно није успело напуштање. Покушајте поново.</string>
+    <string name="s_leave_family_explanation_owner">%1$s постаје власник. Изгубићете приступ породичном ћаскању и личним ћаскањима; историја се враћа ако се поново придружите.</string>
+    <string name="s_leave_family_explanation_last">Ви сте једини преостали члан. Одласком се породица и све у њој бришу.</string>
+    <string name="s_ownership_passed_on">Власништво пренето</string>
+    <string name="s_ownership_passed_to">%1$s је сада власник породице.</string>
+    <string name="s_hidden_blocked_member">Сакривено — блокирани члан</string>
+    <string name="s_replying_to_hidden">Одговор на сакривену поруку</string>
+    <string name="s_which_replied_to_hidden">која је одговарала на сакривену поруку</string>
+    <string name="s_report">Пријави</string>
+    <string name="s_report_ellipsis">Пријави…</string>
+    <string name="s_block">Блокирај</string>
+    <string name="s_unblock">Одблокирај</string>
+    <string name="s_report_member_title">Зашто пријављујете корисника %1$s?</string>
+    <string name="s_report_reason_spam">Нежељене поруке</string>
+    <string name="s_report_reason_harassment">Узнемиравање</string>
+    <string name="s_report_reason_inappropriate">Неприкладан садржај</string>
+    <string name="s_report_reason_other">Нешто друго</string>
+    <string name="s_report_disclosure">Власник породице ће видети ову пријаву, ваше име и текст поруке.</string>
+    <string name="e_block_failed">Тренутно није успела промена. Покушајте поново.</string>
+    <string name="e_report_failed">Пријава није послата. Покушајте поново.</string>
+    <string name="s_hidden_note_from_blocked">Сакривена белешка блокираног члана</string>
+    <string name="s_closed">Затворена</string>
+    <string name="s_join_closed_caption">Позивни код престаје да важи — нико нов не може да се придружи. Захтеви који већ чекају остају и даље можете да их одобрите.</string>
+    <string name="s_member_limit">Ограничење чланова</string>
+    <string name="s_limit_members">Ограничи чланове</string>
+    <string name="s_most_members">Највише чланова</string>
+    <string name="s_member_limit_none">Немате сопствено ограничење. Овај сервер дозвољава највише %1$d чланова у породици.</string>
+    <string name="s_member_limit_frozen">Тренутно има %1$d чланова. Нико нов не може да се придружи док неко не оде; нико се не уклања.</string>
+    <string name="s_member_limit_room">Заузето %1$d од %2$d места.</string>
+    <string name="s_decrease">Смањи</string>
+    <string name="s_increase">Повећај</string>
+    <string name="e_member_limit_failed">Није успело мењање ограничења чланова. Покушајте поново.</string>
+    <string name="e_family_full_approve">Породица је попуњена. Повећајте ограничење чланова или сачекајте да неко оде — захтев и даље чека.</string>
+    <string name="e_family_full_join">Та породица је тренутно попуњена. Замолите их да ослободе место па поново покушајте са кодом.</string>
+    <string name="s_reports">Пријаве</string>
+    <string name="s_reported_by">%1$s је пријавио/ла %2$s</string>
+    <string name="s_mark_as_handled">Означи као решено</string>
+    <string name="e_resolve_report_failed">Није успело означавање као решено. Покушајте поново.</string>
+    <string name="s_if_the_problem_is_the_owner">Ако је проблем сам власник</string>
+    <string name="s_operator_published_contact">Оператор овог сервера објавио је овај контакт.</string>
+    <string name="s_report_disclosure_person">Власник породице ће сазнати да сте пријавили овог члана.</string>
+    <string name="s_reports_empty">Чланови могу да вам пријаве поруку или особу.</string>
+    <string name="s_safety">Безбедност</string>
+    <string name="s_safety_for">Безбедносне опције за %1$s</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Покажи асистенту фотографију</string>
+    <string name="s_show_the_assistant_a_picture_note">Она напушта овај сервер и иде моделу с којим он разговара</string>
+    <string name="s_ask_for_a_picture">Затражи слику</string>
+    <string name="s_assistant_sees_this_picture">Асистенту ће бити приказана ова фотографија. Она напушта овај сервер и иде моделу с којим он разговара.</string>
+    <string name="s_assistant_sees_these_pictures">Асистенту ће бити приказане ове фотографије. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
+    <string name="s_assistant_picture_extra_left_out">Уз једно питање иду само прве %1$d, остале остају овде.</string>
+    <string name="s_assistant_picture_others_left_out">Видео, фајлови, аудио и локације му се никада не шаљу.</string>
+    <string name="s_assistant_picture_unreadable_left_out">Фотографија која је превелика или у формату који модел не уме да прочита само се помене, а не приказује.</string>
+    <string name="s_assistant_will_not_see_picture">Асистенту неће бити приказана ова фотографија. Шаље се као обичан прилог.</string>
+    <string name="s_assistant_mention_sees_this_picture">Ова порука помиње асистента, па ће му бити приказана ова фотографија. Она напушта овај сервер и иде моделу с којим он разговара; ниједна друга фотографија из овог чета.</string>
+    <string name="s_assistant_mention_sees_these_pictures">Ова порука помиње асистента, па ће му бити приказане ове фотографије. Оне напуштају овај сервер и иду моделу с којим он разговара; ниједна друга фотографија из овог чета.</string>
+    <string name="s_assistant_mention_sees_quoted_picture">Овај одговор помиње асистента, па ће му бити приказана фотографија на коју одговараш. Она напушта овај сервер и иде моделу с којим он разговара; ниједна друга фотографија из овог чета.</string>
+    <string name="s_assistant_mention_sees_quoted_pictures">Овај одговор помиње асистента, па ће му бити приказане фотографије на које одговараш. Оне напуштају овај сервер и иду моделу с којим он разговара; ниједна друга фотографија из овог чета.</string>
+    <string name="s_assistant_mention_sees_both">Овај одговор помиње асистента, па ће му бити приказане фотографије одавде и оне на које одговараш. Оне напуштају овај сервер и иду моделу с којим он разговара; ниједна друга фотографија из овог чета.</string>
+    <string name="s_assistant_mention_extra_left_out">Уз једну поруку иде само првих %1$d — прво оне у њој, па оне на које одговараш; остале остају овде.</string>
+    <string name="s_assistant_mention_sees_recent_only">Ова порука помиње асистента, па с њом иде до %1$d најновијих фотографија из овог чета — слике на које му нико није указао, ко год их послао. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
+    <string name="s_assistant_mention_sees_this_picture_and_recent">Ова порука помиње асистента, па ће му бити приказана ова фотографија, а може да оде и до %1$d најновијих фотографија из овог чета. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
+    <string name="s_assistant_mention_sees_these_pictures_and_recent">Ова порука помиње асистента, па ће му бити приказане ове фотографије, а може да оде и до %1$d најновијих фотографија из овог чета. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
+    <string name="s_assistant_mention_sees_quoted_picture_and_recent">Овај одговор помиње асистента, па ће му бити приказана фотографија на коју одговараш, а може да оде и до %1$d најновијих фотографија из овог чета. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
+    <string name="s_assistant_mention_sees_quoted_pictures_and_recent">Овај одговор помиње асистента, па ће му бити приказане фотографије на које одговараш, а може да оде и до %1$d најновијих фотографија из овог чета. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
+    <string name="s_assistant_mention_sees_both_and_recent">Овај одговор помиње асистента, па ће му бити приказане фотографије одавде и оне на које одговараш, а може да оде и до %1$d најновијих фотографија из овог чета. Оне напуштају овај сервер и иду моделу с којим он разговара.</string>
+    <string name="s_assistant_answer_failed">Асистент није успео да заврши овај одговор. Питајте поново.</string>
+    <string name="s_assistant_vision">Асистент сме да гледа фотографије</string>
+    <string name="s_assistant_vision_explanation">Када неко у свом чету с асистентом приложи фотографију уз питање, приложи је уз поруку која помиње асистента у породичном чету, или одговори на фотографију помињући га, та фотографија иде моделу заједно с питањем — највише 4 по питању. Фотографија на коју асистенту нико није указао не шаље се никада, ни из раније поруке осим ако је укључено „Асистент види недавне фотографије“, као ни видео, фајлови, аудио и локације. Искључено док га не укључите; кад је искључено, ниједна фотографија се не шаље.</string>
+    <string name="e_change_assistant_vision_failed">Није успела промена подешавања</string>
+    <string name="s_assistant_history_photos">Асистент види недавне фотографије</string>
+    <string name="s_assistant_history_photos_explanation">Када неко помене асистента у породичном чету, уз питање моделу иду и најновије фотографије из тог чета — до 4, од било кога, на које асистенту нико није указао — после фотографија уз саму поруку или уз ону на коју одговара. Скоро свако помињање тада шаље слике, а то кошта више. Потребни су „Асистент сме да гледа фотографије“ и „Асистент види недавну историју“; искључено док га не укључите.</string>
+    <string name="s_assistant_history_photos_no_deployment">Овде није доступно: асистент на овом серверу не може да гледа слике.</string>
+    <string name="s_assistant_history_photos_needs_vision">Прво укључите „Асистент сме да гледа фотографије“ — док је то искључено, сервер ово одбија.</string>
+    <string name="s_assistant_history_photos_needs_history">Док је „Асистент види недавну историју“ искључено, ово не ради ништа: историја чета се не шаље, па ни једна фотографија из ње.</string>
+    <string name="e_change_assistant_history_photos_failed">Није успела промена подешавања</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">Изаберите разговор са списка.</string>
+    <plurals name="p_members">
+        <item quantity="one">%1$d члан</item>
+        <item quantity="few">%1$d члана</item>
+        <item quantity="other">%1$d чланова</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">Данас</string>
+    <string name="s_yesterday">Јуче</string>
+    <string name="s_owner_caption">власник</string>
+    <string name="s_share_invite_text">Придружи се нашој породици на Family Connect! Сервер: %1$s — позивни код: %2$s</string>
+    <string name="e_username_rules">3–32 знака: слова, цифре, _ или .</string>
+    <string name="e_display_name_rules">1–64 знака</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="one">%1$d фотографија</item>
+        <item quantity="few">%1$d фотографије</item>
+        <item quantity="other">%1$d фотографија</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="one">%1$d видео</item>
+        <item quantity="few">%1$d видеа</item>
+        <item quantity="other">%1$d видеа</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="one">%1$d гласовна порука</item>
+        <item quantity="few">%1$d гласовне поруке</item>
+        <item quantity="other">%1$d гласовних порука</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="one">%1$d датотека</item>
+        <item quantity="few">%1$d датотеке</item>
+        <item quantity="other">%1$d датотека</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="one">%1$d прилог</item>
+        <item quantity="few">%1$d прилога</item>
+        <item quantity="other">%1$d прилога</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">Позиви</string>
+    <string name="s_channel_calls_desc">Долазни позиви</string>
+    <string name="s_channel_ongoing">Позив у току</string>
+    <string name="s_channel_ongoing_desc">Позив у коме сте</string>
+    <string name="s_channel_messages">Поруке</string>
+    <string name="s_channel_messages_desc">Нове породичне поруке и захтеви за придруживање</string>
+    <string name="s_emoji_smileys">Смајлији</string>
+    <string name="s_emoji_gestures">Гестови</string>
+    <string name="s_emoji_hearts">Срца</string>
+    <string name="s_emoji_animals">Животиње и природа</string>
+    <string name="s_emoji_food">Храна и пиће</string>
+    <string name="s_emoji_activities">Активности</string>
+    <string name="s_emoji_travel">Путовања и места</string>
+    <string name="s_emoji_objects">Предмети и симболи</string>
 </resources>

@@ -47,6 +47,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -61,7 +63,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
@@ -95,7 +97,9 @@ import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.calls.CallEnding
 import me.nettrash.familyconnect.calls.CallNotifications
 import me.nettrash.familyconnect.calls.CallState
+import me.nettrash.familyconnect.calls.CallVideoLog
 import me.nettrash.familyconnect.ui.chat.CallRecordWording
+import me.nettrash.familyconnect.ui.components.isWideWindow
 import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.theme.FamilyConnectTheme
 import org.webrtc.RendererCommon
@@ -369,24 +373,42 @@ private fun Context.findActivity(): Activity? {
  * The far side's picture. init against the factory's ONE EglBase context,
  * registered as the remote sink; onRelease detaches the sink FIRST, then
  * releases the renderer — the reverse order draws into freed GL state.
+ *
+ * The detach names THIS renderer rather than clearing whatever is
+ * registered. Two compositions can be alive at once — an Activity
+ * recreated mid-call builds the new tree before it disposes the old one —
+ * and a blind clear from the dying surface would unhook the live one,
+ * leaving the call with no remote picture for the rest of its life and
+ * nothing to re-attach it. The manager ignores a release that is not the
+ * current sink and logs that it did.
  */
 @Composable
 private fun RemoteVideo(
     viewModel: CallViewModel,
     modifier: Modifier = Modifier,
 ) {
+    // Fill on a phone, where the far end is another phone held the same
+    // way and the crop is a sliver; FIT on a tablet, where a portrait
+    // caller filling a landscape screen showed a band of their face.
+    val scaling = if (isWideWindow()) {
+        RendererCommon.ScalingType.SCALE_ASPECT_FIT
+    } else {
+        RendererCommon.ScalingType.SCALE_ASPECT_FILL
+    }
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
             SurfaceViewRenderer(ctx).apply {
                 init(viewModel.eglBaseContext, null)
                 setEnableHardwareScaler(true)
-                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                setScalingType(scaling)
+                CallVideoLog.event("remote surface created renderer=${CallVideoLog.id(this)}")
                 viewModel.setRemoteVideoSink(this)
             }
         },
         onRelease = { renderer ->
-            viewModel.setRemoteVideoSink(null)
+            CallVideoLog.event("remote surface released renderer=${CallVideoLog.id(renderer)}")
+            viewModel.detachRemoteVideoSink(renderer)
             renderer.release()
         },
     )
@@ -414,7 +436,10 @@ private fun LocalPreview(
         },
         update = { renderer -> renderer.setMirror(isFrontCamera) },
         onRelease = { renderer ->
-            viewModel.setLocalVideoSink(null)
+            // By name, for the same reason as RemoteVideo above — and
+            // this one leaves and re-enters composition on every camera
+            // toggle, so an overlap is that much likelier.
+            viewModel.detachLocalVideoSink(renderer)
             renderer.release()
         },
     )
@@ -524,6 +549,12 @@ private fun ActiveControls(
     // line with the others.
     Row(
         modifier = Modifier
+            // Held to a hand's width on a tablet: five discs spread
+            // evenly across 1,280dp sat ~250dp apart, with Answer and
+            // Decline at opposite edges of the screen.
+            .fillMaxWidth()
+            .wrapContentWidth(Alignment.CenterHorizontally)
+            .widthIn(max = 480.dp)
             .fillMaxWidth()
             .then(scrim),
         horizontalArrangement = Arrangement.SpaceEvenly,
@@ -575,7 +606,7 @@ private fun ActiveControls(
             onClick = onHangUp,
         )
         RoundButton(
-            icon = Icons.Filled.VolumeUp,
+            icon = Icons.AutoMirrored.Filled.VolumeUp,
             label = stringResource(R.string.s_speaker),
             container = if (isSpeaker) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
             content = if (isSpeaker) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,

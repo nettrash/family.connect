@@ -125,6 +125,13 @@ pub struct UserBrief {
 }
 
 /// `Member` object: a user in the context of their family, with role.
+///
+/// It carries NOTHING about blocking, deliberately. Whether one member has
+/// blocked another depends on who is READING, and this object also travels
+/// inside the `member_deleted` frame, which is serialized once and sent to
+/// many — so a per-reader field cannot exist here. The caller's own list
+/// rides on `GET /me` and `GET /families/mine` as `blocked_user_ids`
+/// instead (protocol.md, "Blocking a member").
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Member {
     pub id: i64,
@@ -153,7 +160,7 @@ pub struct Member {
 pub struct Family {
     pub id: i64,
     pub name: String,
-    /// `"open"` or `"approval"`.
+    /// `"open"`, `"approval"` or `"closed"`.
     pub join_policy: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -165,6 +172,17 @@ pub struct Family {
     /// "The family's language".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// The most members this family admits, as set by its owner, or absent
+    /// when the owner has never set one (protocol.md, "Families").
+    ///
+    /// An `Option` for the reason `language` is one and `ai_history` is
+    /// not: a cap has a real third state where a switch has none. Absent
+    /// means "we never set one", which is NOT "we set one equal to the
+    /// operator's ceiling" — the ceiling lives in config and moves between
+    /// boots, so folding the two together would make the family's own
+    /// answer change when nobody in it touched anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_members: Option<i32>,
     /// Whether an `@ai` mention in the family chat is shown the recent
     /// history of that chat (protocol.md, "Mentioning the assistant in the
     /// family chat"). Owner-set, `true` by default.
@@ -175,6 +193,68 @@ pub struct Family {
     /// above are options because "never chosen" is a state that means
     /// something there; here it is not.
     pub ai_history: bool,
+    /// Whether a photograph a member attaches in their OWN assistant chat
+    /// may be shown to the model at all (protocol.md, "Pictures").
+    /// Owner-set, and `false` by default.
+    ///
+    /// Always serialized and not an `Option`, for the reason `ai_history`
+    /// is not one — a switch has no third state. What differs is which way
+    /// it defaults, and that is the argument migration 0032 makes: a
+    /// photograph is not more of the same thing a model was already being
+    /// told, and the family who never open their settings screen are
+    /// precisely the family whose pictures should stay where they are.
+    ///
+    /// It is a PERMISSION and never consent for a particular picture. The
+    /// member attaching one to the question they are asking is that, one
+    /// send at a time.
+    pub ai_vision: bool,
+    /// Whether an `@ai` mention in the family chat may ALSO be shown the
+    /// most recent photographs of that chat — pictures nobody pointed the
+    /// assistant at (protocol.md, "Recent photos from the family chat").
+    /// Owner-set, and `false` by default.
+    ///
+    /// A THIRD switch rather than a widening of `ai_vision`, because every
+    /// owner who turned that one on did so under a sentence ending "never
+    /// from an earlier message", and a switch whose sentence has become
+    /// false is worse than no switch. Always serialized, like its two
+    /// neighbours, for the same reason: a switch has no third state.
+    ///
+    /// It can only be `true` while `ai_vision` is — migration 0033 says so
+    /// as a CHECK, and `PATCH /families/mine` refuses the one and clears
+    /// the other — and it does nothing unless `ai_history` is on and the
+    /// server can see. A client that never heard of it reads an absent key
+    /// as false, which is the truth for every family that predates it.
+    pub ai_history_photos: bool,
+}
+
+/// `Report` object as listed for the owner (protocol.md, "Reporting a
+/// member").
+///
+/// Shaped after [`JoinRequest`] — an id, the people, a timestamp — because
+/// for the owner it IS the join-request screen: a queue of things somebody
+/// raised, each decided once and then off the list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Report {
+    pub id: i64,
+    pub reporter: User,
+    pub reported: User,
+    /// One of `"spam"`, `"harassment"`, `"inappropriate"`, `"other"` — a
+    /// fixed list, so nine locales can render a row from string resources
+    /// rather than shipping untranslated prose to a moderator.
+    pub reason: String,
+    /// The message reported, when one was named AND it still exists.
+    /// Retention drops it; `message_excerpt` outlives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<i64>,
+    /// The WHOLE reported body, frozen when the report was raised. The one
+    /// quotation in this protocol that is stored rather than recomputed:
+    /// the author may edit the body away through the ordinary author-only
+    /// path, and retention deletes the message outright, and either would
+    /// otherwise leave the owner an empty screen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_excerpt: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
 }
 
 /// `JoinRequest` object as listed for the owner.
@@ -758,6 +838,14 @@ pub struct Note {
     )]
     pub updated_at: Option<OffsetDateTime>,
     pub board_seq: i64,
+    /// The `board_seq` of the last change to what this note SAYS — set at
+    /// creation, reset only by a change of `text`. A move, a resize and a
+    /// recolour leave it alone, which is what lets a badge count it: a wall
+    /// somebody tidied has nothing new to read on it (protocol.md,
+    /// "Board"). Always `<= board_seq`, and absent on a tombstone for the
+    /// same reason the text is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_seq: Option<i64>,
     /// Present and true ONLY on a tombstone; absent otherwise, so a live
     /// note never carries `"deleted": false`.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -807,6 +895,7 @@ impl Note {
                 created_at: None,
                 updated_at: None,
                 board_seq: row.get("board_seq"),
+                content_seq: None,
                 deleted: true,
             };
         }
@@ -821,6 +910,7 @@ impl Note {
             created_at: Some(row.get("created_at")),
             updated_at: Some(row.get("updated_at")),
             board_seq: row.get("board_seq"),
+            content_seq: Some(row.get("content_seq")),
             deleted: false,
         }
     }
@@ -849,7 +939,10 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             invite_code: None,
             language: None,
+            max_members: None,
             ai_history: true,
+            ai_vision: false,
+            ai_history_photos: false,
         };
         let json = serde_json::to_value(&family).expect("serialize");
         assert!(
@@ -870,13 +963,17 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             invite_code: None,
             language: None,
+            max_members: None,
             ai_history: true,
+            ai_vision: false,
+            ai_history_photos: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
             serde_json::json!({
                 "id": 3, "name": "The Smiths", "join_policy": "open",
-                "created_at": "2026-08-19T17:03:12Z", "ai_history": true
+                "created_at": "2026-08-19T17:03:12Z", "ai_history": true,
+                "ai_vision": false, "ai_history_photos": false
             })
         );
     }
@@ -890,15 +987,115 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             invite_code: Some("ABCD2345".to_string()),
             language: Some("ru".to_string()),
+            max_members: None,
             ai_history: true,
+            ai_vision: false,
+            ai_history_photos: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
             serde_json::json!({
                 "id": 3, "name": "The Smiths", "join_policy": "open",
                 "created_at": "2026-08-19T17:03:12Z",
-                "invite_code": "ABCD2345", "language": "ru", "ai_history": true
+                "invite_code": "ABCD2345", "language": "ru", "ai_history": true,
+                "ai_vision": false, "ai_history_photos": false
             })
+        );
+    }
+
+    /// A cap the owner HAS set rides on the object for every member, not
+    /// just the owner — the apps draw "8 of 12" from it. Absent means the
+    /// family never set one; it does NOT mean the operator's ceiling.
+    #[test]
+    fn a_family_with_a_member_cap_carries_it_for_everyone() {
+        let family = Family {
+            id: 3,
+            name: "The Smiths".to_string(),
+            join_policy: "closed".to_string(),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+            invite_code: None,
+            language: None,
+            max_members: Some(12),
+            ai_history: true,
+            ai_vision: false,
+            ai_history_photos: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&family).expect("serialize"),
+            serde_json::json!({
+                "id": 3, "name": "The Smiths", "join_policy": "closed",
+                "created_at": "2026-08-19T17:03:12Z",
+                "max_members": 12, "ai_history": true, "ai_vision": false,
+                "ai_history_photos": false
+            })
+        );
+    }
+
+    fn a_reporter() -> User {
+        User {
+            id: 7,
+            username: "anna".to_string(),
+            display_name: "Anna".to_string(),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+            avatar_version: 0,
+            birthday: None,
+            deleted: false,
+        }
+    }
+
+    fn a_reported() -> User {
+        User {
+            id: 9,
+            username: "bob".to_string(),
+            display_name: "Bob".to_string(),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+            avatar_version: 0,
+            birthday: None,
+            deleted: false,
+        }
+    }
+
+    /// A report that names a PERSON carries neither key — and carries them
+    /// as ABSENT, not null, the way the invite code is absent.
+    #[test]
+    fn a_person_report_omits_the_message_keys_entirely() {
+        let report = Report {
+            id: 4,
+            reporter: a_reporter(),
+            reported: a_reported(),
+            reason: "harassment".to_string(),
+            message_id: None,
+            message_excerpt: None,
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+        };
+        let json = serde_json::to_value(&report).expect("serialize");
+        assert!(
+            json.get("message_id").is_none() && json.get("message_excerpt").is_none(),
+            "both message keys must be absent, not null: {json}"
+        );
+    }
+
+    /// Retention drops `message_id` and leaves the excerpt standing. That
+    /// is the whole reason the excerpt is stored rather than recomputed, so
+    /// pin the shape: an owner opening this report still reads what was
+    /// said, and simply cannot jump to it.
+    #[test]
+    fn a_swept_message_report_keeps_its_excerpt_without_an_id() {
+        let report = Report {
+            id: 4,
+            reporter: a_reporter(),
+            reported: a_reported(),
+            reason: "inappropriate".to_string(),
+            message_id: None,
+            message_excerpt: Some("dinner at 7?".to_string()),
+            created_at: datetime!(2026-08-19 17:03:12 UTC),
+        };
+        let json = serde_json::to_value(&report).expect("serialize");
+        assert!(json.get("message_id").is_none(), "id must be gone: {json}");
+        assert_eq!(
+            json.get("message_excerpt").and_then(|v| v.as_str()),
+            Some("dinner at 7?"),
+            "the excerpt outlives the message: {json}"
         );
     }
 

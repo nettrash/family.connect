@@ -1,8 +1,10 @@
-//! Device registration (the v1 push hook) and the health endpoint.
+//! Device registration and the health endpoint.
 //!
 //! Devices exist so the message fan-out can find push tokens for the
-//! devices that are not already being fed by a socket; nothing is delivered
-//! in v1 (the `log` driver). Upsert-by-token matters because APNs/FCM
+//! devices that are not already being fed by a socket. Delivery is real —
+//! APNs, PushKit VoIP and FCM (see `push.rs`); a platform with no
+//! credentials configured logs what it would have sent, which is the only
+//! remnant of the old `log` driver. Upsert-by-token matters because APNs/FCM
 //! tokens migrate between accounts on shared devices — the token, not the
 //! row, is the identity.
 //!

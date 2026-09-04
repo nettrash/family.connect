@@ -12,6 +12,7 @@
 
 package me.nettrash.familyconnect.ui.waiting
 
+import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -82,6 +83,7 @@ fun WaitingScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
+                .readableColumn()
                 .padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,

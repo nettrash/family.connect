@@ -4,10 +4,24 @@
 //
 //  Settings on the Mac: profile, family, server, session.
 //
-//  A sheet rather than a Settings scene, because most of what is here is
-//  account state (who you are, which family, which server) rather than
-//  preferences — and because it has to be reachable while the app is on
-//  its own window, which a Settings scene is not on every macOS version.
+//  THE Settings scene (FamilyConnectApp), which is what ⌘, and the App
+//  menu's "Settings…" open — not the sheet this used to be. It held that
+//  shape because most of what is here is account state (who you are, which
+//  family, which server) rather than preferences, and a Mac keeps account
+//  state in a window it can reach from anywhere; a sheet on the main window
+//  was neither. The two standard doors were simply missing, and pressing ⌘,
+//  in a Mac app and having nothing happen reads as a broken app.
+//
+//  The toolbar's gear survives the move and now calls `openSettings()`, so
+//  there is still exactly ONE panel: a Settings scene is a singleton, so the
+//  gear raises the window the menu item opens rather than making a second
+//  copy of this view. That matters beyond tidiness — `mapPreviewsEnabled`
+//  and `linkPreviewsEnabled` below are @State MIRRORS of non-observable
+//  defaults, so two live copies would show each other's toggles stale.
+//
+//  There is no Done button any more. A window is closed the way every Mac
+//  window is closed (the red button, ⌘W); a Done button that dismissed a
+//  sheet is, in a window, a second Close that also steals Return.
 //
 
 #if os(macOS)
@@ -17,12 +31,19 @@ import SwiftUI
 struct MacSettingsView: View {
     @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
-    @Environment(\.dismiss) private var dismiss
 
     @State private var changingPassword = false
     @State private var editingBirthday = false
     @State private var showingStatistics = false
     @State private var confirmLogout = false
+    /// Leave Family: the roster read before the dialog (who inherits is
+    /// a prediction any join or leave changes), the dialog, who it went
+    /// to, and why it failed — the phone's SettingsModel, in four fields.
+    @State private var confirmLeave = false
+    @State private var leaveRoster: [MemberDTO] = []
+    @State private var leaveNextOwnerID: Int64?
+    @State private var handedOverTo: String?
+    @State private var leaveError: String?
     @State private var deletingAccount = false
     /// Mirrors AppSettings — defaults are not observable, so the view
     /// holds its own copy and writes through on change.
@@ -67,7 +88,8 @@ struct MacSettingsView: View {
         session.currentUser?.birthday?.formatted() ?? String(localized: "Not set")
     }
 
-    var body: some View {
+    /// The panel itself: who you are, then everything you can do.
+    private var panel: some View {
         VStack(alignment: .leading, spacing: 0) {
             identityHeader
             Divider()
@@ -83,8 +105,24 @@ struct MacSettingsView: View {
                     ) { editingBirthday = true }
                     Button("Change Password…") { changingPassword = true }
                 }
-                Section("Family") {
-                    LabeledContent("Family", value: session.family?.name ?? "—")
+                Section {
+                    LabeledContent("Name", value: session.family?.name ?? "—")
+                    // Net-new on the Mac: the phone has had this since
+                    // its Settings existed, and a member who wanted out
+                    // here had no door.
+                    Button("Leave Family", role: .destructive) {
+                        Task {
+                            await loadLeaveContext()
+                            confirmLeave = true
+                        }
+                    }
+                } header: {
+                    Text("Family")
+                } footer: {
+                    if let leaveError {
+                        Label(leaveError, systemImage: "xmark.circle")
+                            .foregroundStyle(.red)
+                    }
                 }
                 Section {
                     Button("Statistics…") { showingStatistics = true }
@@ -103,6 +141,15 @@ struct MacSettingsView: View {
                         .onChange(of: mapPreviewsEnabled) { _, newValue in
                             AppSettings.mapPreviewsEnabled = newValue
                         }
+                    // Guideline 5.1.1(i) wants the policy reachable from
+                    // inside the app, and the Mac app is its own listing
+                    // with its own review — so it needs its own link.
+                    Link(destination: URL(string: "https://nettrash.me/appstore/familyconnect/privacy.html")!) {
+                        Label("Privacy Policy", systemImage: "hand.raised")
+                    }
+                    Link(destination: URL(string: "https://nettrash.me/appstore/familyconnect/support.html")!) {
+                        Label("Support", systemImage: "questionmark.circle")
+                    }
                 } header: {
                     Text("Privacy")
                 } footer: {
@@ -129,21 +176,91 @@ struct MacSettingsView: View {
                 }
             }
             .formStyle(.grouped)
-            Divider()
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(12)
         }
-        // Grown from 420 to make room for the two birthday rows, and
-        // again to 530 for the Delete Account row. The Form would scroll
-        // rather than clip them, but a settings sheet that has to be
-        // scrolled to reach its last section is a settings sheet whose
-        // last section nobody finds — and a Mac sheet cannot be resized
-        // by the person using it.
-        .frame(width: 460, height: 530)
+    }
+
+    /// A fresh read of the family before the dialog names a successor:
+    /// `next_owner_user_id` is a prediction any join or leave changes
+    /// (docs/protocol.md, `POST /families/leave`).
+    private func loadLeaveContext() async {
+        leaveError = nil
+        do {
+            let mine = try await coordinator.api.myFamily()
+            leaveRoster = mine.members
+            leaveNextOwnerID = mine.nextOwnerUserID
+        } catch {
+            leaveRoster = []
+            leaveNextOwnerID = nil
+        }
+    }
+
+    /// What leaving costs — the phone's three sentences, same keys.
+    private var leaveMessage: LocalizedStringKey {
+        let base: LocalizedStringKey = "You'll lose access to the family chat and your direct chats. Your history returns if you rejoin."
+        guard session.isOwner else { return base }
+        guard let successorID = leaveNextOwnerID,
+              let successor = leaveRoster.first(where: { $0.id == successorID })?.displayName
+        else {
+            return "You're the only member left. Leaving deletes the family and everything in it."
+        }
+        return "\(successor) becomes the owner. You'll lose access to the family chat and your direct chats; your history returns if you rejoin."
+    }
+
+    private func leave() {
+        leaveError = nil
+        Task {
+            do {
+                let roster = leaveRoster
+                let name = try await session.leaveFamily { id in
+                    roster.first { $0.id == id }?.displayName
+                }
+                if let name { handedOverTo = name }
+            } catch {
+                leaveError = String(localized: "Couldn't leave right now. Try again.")
+            }
+        }
+    }
+
+    var body: some View {
+        Group {
+            // ⌘, is a GLOBAL shortcut: unlike the toolbar's gear, which only
+            // exists once MacChatView is on screen, the App menu offers it at
+            // the server-setup and sign-in screens too. Every row below reads
+            // `session.currentUser` or acts on a session — "Log Out" and
+            // "Delete Account…" most of all — so signed out this drew a panel
+            // of em-dashes with two destructive buttons under them. Say what
+            // is missing instead.
+            if session.phase == .active {
+                panel
+            } else {
+                // ONE new string, not a title and a subtitle: this app is
+                // localized into nine languages and every sentence added
+                // here is nine sentences somebody has to write.
+                ContentUnavailableView(
+                    "Sign in to see your settings.",
+                    systemImage: "person.crop.circle.badge.questionmark")
+            }
+        }
+        // Sized for a WINDOW, not for the sheet this was. 460x530 is the
+        // same pair the sheet was grown to and for the same reason — 460 is
+        // the width the grouped Form's longest row needs without wrapping,
+        // 530 the height that puts "Delete Account…" on screen without
+        // scrolling — but it is now a STARTING size rather than the whole
+        // story, which is exactly what the old frame's comment said a sheet
+        // could not offer.
+        //
+        // What actually opens the window at it is `.defaultSize` on the
+        // scene: a Settings scene ignores the ideal below and opens at the
+        // system's own default, measured here as 882x444 — nearly twice as
+        // wide as the Form wants and too short for its last section, which
+        // is the one holding Delete Account. The ideal stays as the backstop
+        // for a macOS that ever honours it instead.
+        //
+        // The minimum is deliberately BELOW that: at 420 high the last
+        // section scrolls, and somebody who has dragged the window that
+        // small has chosen to scroll. `.windowResizability(.contentMinSize)`
+        // on the scene is what lets them drag it there at all.
+        .frame(minWidth: 460, idealWidth: 460, minHeight: 420, idealHeight: 530)
         .background(Color.appGroupedBackground)
         .sheet(isPresented: $changingPassword) {
             ChangePasswordView()
@@ -159,6 +276,27 @@ struct MacSettingsView: View {
         .sheet(isPresented: $deletingAccount) {
             DeleteAccountView()
                 .frame(width: 460)
+        }
+        .confirmationDialog(
+            "Leave the family?",
+            isPresented: $confirmLeave,
+            titleVisibility: .visible
+        ) {
+            Button("Leave Family", role: .destructive) { leave() }
+        } message: {
+            Text(leaveMessage)
+        }
+        .alert(
+            "Ownership passed on",
+            isPresented: Binding(
+                get: { handedOverTo != nil },
+                set: { if !$0 { handedOverTo = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            if let name = handedOverTo {
+                Text("\(name) is now the owner of the family.")
+            }
         }
         .confirmationDialog(
             "Log out?",

@@ -46,6 +46,49 @@ impl Storage {
             .with_context(|| format!("creating attachments dir {}", self.root.display()))
     }
 
+    /// Bytes still free on the filesystem the attachments live on, as the
+    /// unprivileged service user sees them (`f_bavail`, not `f_bfree` —
+    /// the difference is the root-only reserve, which this process cannot
+    /// use and must not count).
+    ///
+    /// `None` when the filesystem cannot be interrogated at all, which is
+    /// treated by callers as "do not refuse": a server that stopped
+    /// accepting photos because a syscall failed would be a worse failure
+    /// than the one this guards against.
+    pub fn free_bytes(&self) -> Option<u64> {
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = std::ffi::CString::new(self.root.as_os_str().as_bytes()).ok()?;
+        // SAFETY: `path` is a valid NUL-terminated C string that outlives
+        // the call, and `stat` is a correctly-sized, correctly-aligned
+        // output buffer the callee fully initializes on success.
+        let stats = unsafe {
+            let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+            if libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) != 0 {
+                return None;
+            }
+            stat.assume_init()
+        };
+        // f_frsize is the fragment size and the unit f_bavail counts in;
+        // f_bsize is the preferred I/O block size and is NOT the same
+        // number on every filesystem.
+        (stats.f_bavail as u64).checked_mul(stats.f_frsize as u64)
+    }
+
+    /// Would accepting `incoming` more bytes leave less than `floor` free?
+    ///
+    /// Separated from the syscall so the arithmetic — which is where an
+    /// off-by-a-factor-of-1024 would live — can be tested without a full
+    /// disk. A `floor` of 0 disables the check, and so does a filesystem
+    /// that would not answer.
+    pub fn would_breach_floor(free: Option<u64>, incoming: u64, floor: u64) -> bool {
+        if floor == 0 {
+            return false;
+        }
+        let Some(free) = free else { return false };
+        free.saturating_sub(incoming) < floor
+    }
+
     /// `<root>/ab/cd/<key>` — two levels of shard from the key's tail.
     fn path_for(&self, key: &str, suffix: &str) -> PathBuf {
         let tail: String = key.chars().rev().take(4).collect();
@@ -164,5 +207,76 @@ impl Storage {
                 tracing::warn!(?path, %err, "removing attachment file failed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The free-space floor is arithmetic on two large numbers, which is
+    /// exactly where a factor-of-1024 mistake hides — and it would hide
+    /// silently, because being too generous only shows up as a full disk
+    /// and being too strict only shows up as refused photos.
+    #[test]
+    fn the_floor_refuses_only_what_would_breach_it() {
+        let gib = 1024 * 1024 * 1024;
+        let floor = 2 * gib;
+
+        // Plenty of room: a 100 MB video lands with room to spare.
+        assert!(!Storage::would_breach_floor(
+            Some(50 * gib),
+            100 * 1024 * 1024,
+            floor
+        ));
+        // The upload itself is what would breach it — the free figure alone
+        // is still above the floor, so a check that ignored the incoming
+        // size would wrongly accept this.
+        assert!(Storage::would_breach_floor(Some(2 * gib + 10), 1024, floor));
+        // Already under: refuse even a byte.
+        assert!(Storage::would_breach_floor(Some(gib), 0, floor));
+        // Exactly at the floor after the write is NOT a breach; below is.
+        assert!(!Storage::would_breach_floor(Some(floor + 100), 100, floor));
+        assert!(Storage::would_breach_floor(Some(floor + 100), 101, floor));
+    }
+
+    #[test]
+    fn a_zero_floor_disables_the_check() {
+        // The documented off switch. Note it holds even when the disk is
+        // reporting no free space at all.
+        assert!(!Storage::would_breach_floor(Some(0), u64::MAX, 0));
+    }
+
+    #[test]
+    fn an_unreadable_filesystem_does_not_refuse_uploads() {
+        // A server that stopped accepting photos because statvfs failed
+        // would be a worse failure than the one this guards against.
+        assert!(!Storage::would_breach_floor(None, u64::MAX, 1));
+    }
+
+    #[test]
+    fn a_huge_upload_cannot_wrap_the_subtraction() {
+        // saturating_sub, not `-`: an underflow here would compute a
+        // gigantic "free after" and accept an upload that fills the disk.
+        assert!(Storage::would_breach_floor(Some(10), u64::MAX, 1));
+    }
+
+    #[test]
+    fn free_bytes_reads_a_real_filesystem() {
+        let storage = Storage::new(std::env::temp_dir());
+        let free = storage.free_bytes().expect("temp dir is on a filesystem");
+        // Not a tautology: the bug worth catching is multiplying by the
+        // wrong block size, which lands orders of magnitude out. A dev or
+        // CI machine has more than a megabyte and less than an exabyte.
+        assert!(free > 1024 * 1024, "suspiciously small: {free}");
+        assert!(free < (1u64 << 60), "suspiciously large: {free}");
+    }
+
+    #[test]
+    fn a_missing_directory_reports_nothing_rather_than_zero() {
+        // Zero would mean "full" and refuse every upload. None means "do
+        // not know", which callers treat as "do not refuse".
+        let storage = Storage::new(PathBuf::from("/nonexistent-family-connect-test-path"));
+        assert_eq!(storage.free_bytes(), None);
     }
 }

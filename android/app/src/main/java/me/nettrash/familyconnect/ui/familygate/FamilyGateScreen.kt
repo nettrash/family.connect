@@ -34,6 +34,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -41,10 +42,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.components.BusyButtonContent
 import me.nettrash.familyconnect.ui.components.ErrorCard
@@ -78,6 +81,7 @@ fun FamilyGateScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
                 .imePadding()
+                .readableColumn()
                 .padding(24.dp),
         ) {
             Text(
@@ -107,7 +111,14 @@ fun FamilyGateScreen(
             }
 
             Spacer(Modifier.height(24.dp))
-            Card(modifier = Modifier.fillMaxWidth()) {
+            // A server closed to NEW families (docs/protocol.md, "Starting
+            // a family") shows the door shut, and where to build one's own,
+            // instead of a Create card that would end in a 403 after
+            // somebody has typed a name. Joining stays: the families
+            // already here are what the server is for.
+            if (!state.registrationEnabled) {
+                ClosedServerCard()
+            } else Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(stringResource(R.string.s_create_a_family), style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(12.dp))
@@ -171,6 +182,62 @@ fun FamilyGateScreen(
                         )
                     }
                 }
+            }
+
+            // The deadline, said before it is met: this server removes an
+            // account that stays without a family past its grace
+            // (docs/protocol.md, "Accounts without a family"). 0 is a
+            // server that never does, and says nothing.
+            if (state.familylessAccountTtlDays > 0) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    pluralStringResource(
+                        R.plurals.s_familyless_grace,
+                        state.familylessAccountTtlDays,
+                        state.familylessAccountTtlDays,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The project's home — the server and its install notes. Shown by the
+ * family gate when a server takes no new families, as the way to run
+ * one's own. iOS counterpart: `AppVersion.repositoryURL`.
+ */
+internal const val PROJECT_REPOSITORY_URL = "https://github.com/nettrash/family.connect"
+
+/**
+ * What stands where "Create a family" would on a server that takes no
+ * new families: why the door is shut, and the way to a server of one's
+ * own — the project repository, which holds the server and how to run it.
+ */
+@Composable
+private fun ClosedServerCard() {
+    val uriHandler = LocalUriHandler.current
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(stringResource(R.string.s_no_new_families_title), style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(R.string.s_no_new_families_body),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                // A device with nothing to open a web link is not this
+                // screen's problem to crash over; the address is also in
+                // the body's spirit — the user can find the project by name.
+                onClick = { runCatching { uriHandler.openUri(PROJECT_REPOSITORY_URL) } },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.s_run_your_own_server))
             }
         }
     }

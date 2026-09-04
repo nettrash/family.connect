@@ -34,8 +34,13 @@ struct MacChatView: View {
     @Query private var notes: [NoteEntity]
 
     @Environment(\.openWindow) private var openWindow
+    /// Raises the Settings scene (FamilyConnectApp) — the same window ⌘,
+    /// and the App menu open, never a second copy of it. The gear used to
+    /// present MacSettingsView as a sheet; it now rings the one doorbell
+    /// this app has, so the toolbar path people already use survives the
+    /// move to a window without becoming a rival panel.
+    @Environment(\.openSettings) private var openSettings
     @State private var selectedChatID: Int64?
-    @State private var showingSettings = false
     @State private var showingFamily = false
     /// Files were shared into the app and are waiting for a chat: the
     /// picker sheet is up. See ShareImport.
@@ -113,16 +118,34 @@ struct MacChatView: View {
                 }
             }
             ToolbarItem {
-                Button {
-                    openWindow(id: MacWindow.board)
-                    markBoardSeen()
-                } label: {
-                    Label("Board", systemImage: "square.grid.2x2")
+                // What is new to READ on the board since this Mac last
+                // showed it (BoardBadge): notes pinned, and notes whose
+                // text changed. Tidying the wall — dragging, resizing,
+                // recolouring — is not news and never counts. NOT the sync
+                // cursor either; see AppSettings.boardSeenContentSeq.
+                //
+                // `.badge` on a toolbar item draws only on macOS 26 (the
+                // phone found the same on iOS: a silent no-op below); an
+                // earlier system gets the chat row's capsule as an overlay.
+                if #available(macOS 26, *) {
+                    boardButton
+                        .badge(newNoteCount)
+                } else {
+                    boardButton
+                        .overlay(alignment: .topTrailing) {
+                            if newNoteCount > 0 {
+                                Text("\(newNoteCount)")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.accentColor, in: Capsule())
+                                    .offset(x: 8, y: -6)
+                                    .allowsHitTesting(false)
+                                    .accessibilityHidden(true)
+                            }
+                        }
                 }
-                .help("The family board")
-                // Notes pinned since this Mac last showed the board. NOT
-                // the sync cursor — see AppSettings.boardSeenNoteID.
-                .badge(newNoteCount)
             }
             ToolbarItem {
                 Button {
@@ -134,15 +157,12 @@ struct MacChatView: View {
             }
             ToolbarItem {
                 Button {
-                    showingSettings = true
+                    openSettings()
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
                 .help("Settings")
             }
-        }
-        .sheet(isPresented: $showingSettings) {
-            MacSettingsView()
         }
         .sheet(isPresented: $showingFamily) {
             MacFamilyView(onOpenChat: { selectedChatID = $0 })
@@ -178,10 +198,13 @@ struct MacChatView: View {
             consumePendingRoute() // clicked while the window is up
         }
         .onChange(of: session.pendingShareImport) { _, pending in
-            // A share arrived while the app is up: the sheets step aside
-            // so the picker is what the person sees.
+            // A share arrived while the app is up: the Family sheet steps
+            // aside so the picker is what the person sees. Settings is no
+            // longer among them — it is a window now, and a window is not
+            // something this view may close on somebody's behalf. It also
+            // does not need to be: it is not covering this window, and the
+            // share URL brings this one to the front.
             guard pending != nil else { return }
-            showingSettings = false
             showingFamily = false
             showsShareTarget = true
         }
@@ -201,7 +224,8 @@ struct MacChatView: View {
     private func consumePendingRoute() {
         guard let route = session.pendingPushRoute else { return }
         session.pendingPushRoute = nil
-        showingSettings = false
+        // Settings is not cleared here for the reason the share handler
+        // above gives: it stopped being a sheet on this window.
         showingFamily = false
         switch route {
         case .chat(let chatID):
@@ -217,21 +241,44 @@ struct MacChatView: View {
             // Owner-only; a member who somehow gets this push stays put.
             guard session.isOwner else { return }
             showingFamily = true
+        case .reports:
+            // The Mac's report inbox is a section of the same Family
+            // sheet, so this is the same destination.
+            guard session.isOwner else { return }
+            showingFamily = true
         case .chatList:
             break // Already here.
         }
     }
 
     private var newNoteCount: Int {
-        let seen = AppSettings.boardSeenNoteID
-        return notes.filter { $0.noteID > seen }.count
+        BoardBadge.unreadCount(notes: notes, marks: AppSettings.boardMarks)
+    }
+
+
+    /// The way into the board; the badge beside it is `newNoteCount`.
+
+    private var boardButton: some View {
+
+        Button {
+
+            openWindow(id: MacWindow.board)
+
+            markBoardSeen()
+
+        } label: {
+
+            Label("Board", systemImage: "square.grid.2x2")
+
+        }
+
+        .help("The family board")
+
     }
 
     private func markBoardSeen() {
-        let highest = notes.map(\.noteID).max() ?? 0
-        if highest > AppSettings.boardSeenNoteID {
-            AppSettings.boardSeenNoteID = highest
-        }
+        AppSettings.boardMarks = BoardBadge.marksAfterShowing(
+            notes: notes, marks: AppSettings.boardMarks)
     }
 
     /// Open one conversation on its own. Keyed by chat id, so asking
@@ -244,6 +291,26 @@ struct MacChatView: View {
 
 /// One sidebar row: who, the last thing said, when, and what is unread.
 private struct MacChatRow: View {
+    @Environment(ChatSyncCoordinator.self) private var coordinator
+
+    /// The chat-list preview, with a blocked sender's last message replaced
+    /// by the placeholder.
+    ///
+    /// The COUNT is deliberately untouched: in the family chat a blocked
+    /// member's message still moves `unreadCount` and may still be the last
+    /// message, because the count is the other half of the read marker and
+    /// projecting one without the other desynchronises them.
+    private func previewText(for chat: ChatEntity) -> String {
+        if let sender = chat.lastMessageSenderID,
+            sender != coordinator.currentUserID,
+            coordinator.blockedUserIDs.contains(sender)
+        {
+            return String(localized: "Hidden — blocked member")
+        }
+        // `??` makes this a String, and Text(String) is verbatim — the
+        // fallback has to be localized by hand.
+        return chat.lastMessagePreview ?? String(localized: "No messages yet")
+    }
     let chat: ChatEntity
     let peerAvatarVersion: Int64
 
@@ -259,7 +326,11 @@ private struct MacChatRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(chat.title)
                         .font(.body.weight(chat.unreadCount > 0 ? .semibold : .regular))
-                        .lineLimit(1)
+                        // The family chat's title is the family's NAME,
+                        // the one title here that is not a person's, and
+                        // a sidebar column cuts a long one; it gets a
+                        // second line (the iPad's rule).
+                        .lineLimit(chat.kind == "family" ? 2 : 1)
                     Spacer(minLength: 0)
                     if let date = chat.lastMessageDate {
                         // Relative, and short: a sidebar column is narrow
@@ -274,7 +345,13 @@ private struct MacChatRow: View {
                 HStack(spacing: 6) {
                     // `??` makes this a String, and Text(String) is
                     // verbatim — the fallback has to be localized by hand.
-                    Text(chat.lastMessagePreview ?? String(localized: "No messages yet"))
+                    // A preview from a blocked sender draws the placeholder
+                    // and no sender name — protocol.md settles this in the
+                    // `GET /chats` row, and it is the app's most-visited
+                    // screen, so leaving it unmasked defeats the block outright.
+                    // NOT revealable from the list: the peek belongs to the
+                    // thread, and no gesture is wanted here.
+                    Text(previewText(for: chat))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

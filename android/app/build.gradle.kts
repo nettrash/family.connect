@@ -56,9 +56,13 @@ val skipVersionBump: Boolean = project.hasProperty("noBump")
 //   1. `keystore.properties` next to the root build file (developer machines).
 //   2. FAMILYCONNECT_KEYSTORE_PATH / FAMILYCONNECT_KEYSTORE_PASSWORD /
 //      FAMILYCONNECT_KEY_ALIAS / FAMILYCONNECT_KEY_PASSWORD env vars (CI).
-// Returns `null` when nothing is configured — the release build then falls
-// back to the debug signing config so `assembleRelease` still works locally
-// without keys (it just won't be uploadable to Play).
+// Returns `null` when nothing is configured. `assembleRelease` still
+// SUCCEEDS in that case, but the artefact is
+// `app-standard-release-unsigned.apk` — AGP does NOT silently fall back to
+// the debug key for an explicit `signingConfig = null`, so the output
+// cannot be installed until it is signed. That is the right shape (an
+// accidentally debug-signed "release" is worse), it is just not what an
+// earlier version of this comment claimed.
 // The Google Maps API key, for the map on a shared location.
 //
 // NEVER in the repo. Same shape as the signing config below: a gitignored
@@ -161,8 +165,10 @@ android {
     buildTypes {
         release {
             // If `keystore.properties` / env-vars aren't present, this stays
-            // null and AGP falls back to the debug signing config so local
-            // `assembleRelease` still works (just not uploadable to Play).
+            // null and the build still SUCCEEDS — it just emits
+            // `app-standard-release-unsigned.apk`, which is enough to test
+            // R8/minification but cannot be installed or uploaded until it
+            // is signed. See the note above `releaseSigning`.
             signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
             proguardFiles(

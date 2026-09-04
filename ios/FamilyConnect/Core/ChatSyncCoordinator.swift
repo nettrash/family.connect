@@ -194,8 +194,39 @@ final class ChatSyncCoordinator {
     /// Internal + variable so the send-pipeline tests don't wait 10 s.
     var ackTimeout: TimeInterval = 10
 
-    /// Pending rows older than this are re-sent by the outbox sweep.
-    private let outboxAge: TimeInterval = 30
+    /// Pending rows older than this are re-sent by the outbox sweep —
+    /// the floor for a row that has never been attempted (the app died
+    /// mid-send). A row whose attempt FAILED carries its own schedule in
+    /// `nextAttemptAt` and is not held behind this.
+    var outboxAge: TimeInterval = 30
+
+    /// Automatic re-sends before a transient failure is finally shown to
+    /// the user as a red bubble (docs/protocol.md, "Sending on an
+    /// unreliable network"). Bounded, and it gives up VISIBLY: a failed
+    /// row with a retry affordance is this app promising that nothing
+    /// else is coming.
+    var maxSendAttempts = 6
+
+    /// Backoff between those attempts, full jitter, the same shape the
+    /// reconnect loop uses — a family's devices come back at the same
+    /// instant and must not re-send in lockstep.
+    var sendBackoff = ReconnectBackoff(base: 2, cap: 60)
+
+    /// Wakes the outbox when the earliest `nextAttemptAt` comes due. One
+    /// task at a time; rescheduled whenever a nearer deadline appears.
+    private var outboxWake: Task<Void, Never>?
+
+    /// Retained so the context can never outlive its store — see `init`.
+    private let modelContainer: ModelContainer
+
+    /// Chats with a media upload running. Keeps two sets in one chat from
+    /// racing each other into the wrong order.
+    private var mediaUploadsInFlight: Set<Int64> = []
+
+    /// "The network came back" — a trigger this app did not have. Owned
+    /// here because both things it drives live here: the socket's backoff,
+    /// which is cut short, and the outbox, which is flushed.
+    let reachability: NetworkReachability
 
     /// Push-registration hook (PushRegistrar.ensureRegistered), injected
     /// at composition time and awaited at the end of every resync — see
@@ -254,11 +285,23 @@ final class ChatSyncCoordinator {
     init(
         modelContainer: ModelContainer,
         api: APIClient? = nil,
-        socket: ChatSocket? = nil
+        socket: ChatSocket? = nil,
+        reachability: NetworkReachability? = nil
     ) {
+        // The CONTAINER, not only its context. A context whose container
+        // has been deallocated traps inside SwiftData on the next fetch,
+        // and this object hands work to detached Tasks that outlive their
+        // caller by design — a delivery, an upload, the outbox wake. In
+        // the app the container is immortal anyway; in a test it lives
+        // exactly as long as the harness, and holding it here is what
+        // keeps a send still finishing from taking the process down.
+        self.modelContainer = modelContainer
         self.modelContext = modelContainer.mainContext
         self.api = api ?? APIClient(serverURL: AppSettings.serverURL)
         self.socket = socket ?? ChatSocket()
+        // Constructed but NOT started: `activate()` starts it, so a unit
+        // test that never activates never touches the real network stack.
+        self.reachability = reachability ?? NetworkReachability()
     }
 
     func bind(session: AppSession) {
@@ -319,6 +362,11 @@ final class ChatSyncCoordinator {
                 return
             }
             connectionState = .connecting
+            reachability.onRestored = { [weak self] in
+                guard let self else { return }
+                Task { await self.networkRestored() }
+            }
+            reachability.start()
             let stream = await socket.start(url: wsURL, token: token)
             socketTask = Task { [weak self] in
                 for await event in stream {
@@ -330,8 +378,21 @@ final class ChatSyncCoordinator {
         await resync()
     }
 
+    /// A route appeared where there was none.
+    ///
+    /// Dial immediately instead of finishing a backoff sized for a network
+    /// that no longer exists, and flush the outbox without waiting for the
+    /// handshake — the REST leg works the moment the radio does, and a
+    /// message queued in a tunnel should leave the phone as the person
+    /// walks out of it, not when the socket next gets round to it.
+    private func networkRestored() async {
+        await socket.kick()
+        await sweepOutbox()
+    }
+
     /// Leave the connected world (logout, kicked, server change).
     func deactivate() {
+        reachability.stop()
         socketTask?.cancel()
         socketTask = nil
         typingPruneTask?.cancel()
@@ -412,6 +473,17 @@ final class ChatSyncCoordinator {
         switch event {
         case .connected:
             connectionState = .connected
+            // Photos whose fetch failed while the network was gone are held
+            // back by a `missing` gate that nothing else clears; a reconnect
+            // is the signal that retrying them is worth it.
+            attachmentStore?.retryAfterReconnect()
+            // And the other direction: posters THIS device made that the
+            // server never got. A connect is once per launch plus once per
+            // recovery, which is exactly when a re-send is worth making —
+            // and the only trigger there is, because a repair on a timer
+            // would be a poll (issue #54). Android hangs the same pass off
+            // `connectivity.onAvailable`.
+            attachmentStore?.repairPosters()
             Task { await self.resync() }
         case .disconnected:
             // The socket's own loop is retrying; "offline" is reserved for
@@ -443,6 +515,7 @@ final class ChatSyncCoordinator {
 
         case .message(let message):
             _ = upsert(message, bumpUnread: true)
+            noteAssistantAnswerStarted(message)
             announce(message)
 
         case .boardNote(let note):
@@ -457,11 +530,33 @@ final class ChatSyncCoordinator {
             // partial answer is worth more than a bubble that never
             // resolves. Just stop showing it as still being written.
             streamingMessageIDs.remove(messageID)
+            // …and REMEMBER that it stopped. A text answer that failed
+            // midway has its partial text to show for itself; a picture
+            // answer has nothing at all, because an image model streams no
+            // deltas and the body of such a reply stays empty by design
+            // (protocol.md, "How a picture comes back"). Without this the
+            // row that "has to have somewhere to fail" fails into a
+            // completely blank bubble.
+            failedAssistantMessageIDs.insert(messageID)
 
         case .messageEdited(let message):
             // The authoritative body: whatever was accumulated from deltas
             // is replaced, and the row stops being "still being written".
+            //
+            // The whole Message is applied, not the body alone, and this is
+            // the one frame where that matters: the assistant's own reply
+            // gains its GENERATED PICTURE as an attachment through exactly
+            // this path (protocol.md, "Editing" and "How a picture comes
+            // back"). `upsert` has always applied the whole object —
+            // attachments through `applyAttachment`, under the rule that an
+            // absent field never wipes — so a picture answer draws the
+            // moment the edit lands rather than at the next history page.
             streamingMessageIDs.remove(message.id)
+            // An answer that arrived is not a failed one. It cannot
+            // normally un-fail (asking again makes a NEW message), but a
+            // late edit racing an `ai_error` must not leave the row
+            // apologising underneath a finished answer.
+            failedAssistantMessageIDs.remove(message.id)
             // bumpUnread: false — an edit is not new mail. The body write
             // itself is guarded by edit_seq inside upsert, and the chat's
             // cursor advances so a later catch-up does not replay it.
@@ -487,6 +582,13 @@ final class ChatSyncCoordinator {
                 // Our own read relayed back (or from another device).
                 chat.myLastReadID = max(chat.myLastReadID, lastReadMessageID)
             } else {
+                // Stored in EVERY chat kind, drawn in only one. In a family
+                // chat this is roster data that no bubble may draw
+                // (docs/protocol.md, "Frames") — `MessagePresentation.isRead`
+                // is the gate, and it takes `isFamilyChat` undefaulted so a
+                // new surface cannot start drawing it by accident. Keeping
+                // the value is deliberate: it is a real fact about the
+                // roster, and dropping it here would only move the question.
                 chat.othersReadUpTo = max(chat.othersReadUpTo, lastReadMessageID)
             }
             saveContext()
@@ -550,6 +652,13 @@ final class ChatSyncCoordinator {
             // rather than at its next GET /me.
             applyFamilyOwner(familyID: familyID, userID: userID)
 
+        case .memberBlocked(let userID, let blocked):
+            // A state-set, not an event: an unblock is this same frame with
+            // `false`. It reaches this device and this account only — never
+            // the person blocked — so there is nothing to fan out and
+            // nothing to reconcile against a roster.
+            applyBlock(userID: userID, blocked: blocked)
+
         case .memberLeft(let userID):
             if userID == currentUserID {
                 // We were removed. Resync's /me reconcile routes the
@@ -576,8 +685,19 @@ final class ChatSyncCoordinator {
                 callManager?.handle(frame: frame)
             }
             if let clientMsgID {
-                if let row = fetchMessage(clientMsgID: clientMsgID), row.state != .sent {
+                // A TERMINAL code is the server having read the send and
+                // refused it, and the bubble goes red. Anything else —
+                // `internal`, or a code this build has never heard of — is
+                // treated exactly as no answer at all, so the REST leg
+                // still runs and the outbox still owns the row. Writing
+                // `.failed` for every error frame put a red bubble on a
+                // message a momentary hiccup would have delivered a second
+                // later (docs/protocol.md, "Sending on an unreliable
+                // network").
+                if Self.terminalSendCodes.contains(code),
+                   let row = fetchMessage(clientMsgID: clientMsgID), row.state != .sent {
                     row.state = .failed
+                    row.nextAttemptAt = nil
                     saveContext()
                 }
                 resolveAckWaiter(clientMsgID, delivered: false)
@@ -595,11 +715,121 @@ final class ChatSyncCoordinator {
 
     /// Assistant replies still being written, by server id.
     ///
-    /// Read by the bubble to show a cursor while text is arriving. Cleared
-    /// when the final `message_edited` lands (or an `ai_error` does), so a
-    /// row that was mid-stream when the app was killed is not stuck looking
-    /// live forever — nothing here survives a launch.
+    /// ONE of the two things `isAwaitingAssistant` consults, and the one
+    /// that answers what the row cannot: a text answer part-way through has
+    /// a body, so it no longer "carries nothing" while its cursor still
+    /// belongs after the last fragment. Cleared when the final
+    /// `message_edited` lands (or an `ai_error` does), so a row that was
+    /// mid-stream when the app was killed is not stuck looking live
+    /// forever — nothing here survives a launch, and nothing needs to: the
+    /// ROW is what says an empty answer is still coming.
     private(set) var streamingMessageIDs: Set<Int64> = []
+
+    /// Assistant replies an `ai_error` frame named, by server id.
+    ///
+    /// Read by the bubble so an answer that stopped says so where it would
+    /// otherwise show nothing. In memory only, exactly like the set above
+    /// and for the same reason: a row that failed while the app was running
+    /// has a bubble to correct, and a row from a previous launch has no
+    /// business claiming a failure this process never saw.
+    private(set) var failedAssistantMessageIDs: Set<Int64> = []
+
+    /// Is this row an assistant answer that has not arrived yet?
+    ///
+    /// The two states a waiting row can be in, answered together because a
+    /// bubble draws them in the same place: still coming, or stopped. An
+    /// EMPTY row is the "still working" state — which is what it already
+    /// was before the first delta of a text answer, and the only state a
+    /// picture answer ever has, since an image model produces no token
+    /// stream and there is nothing honest to stream (protocol.md, "How a
+    /// picture comes back").
+    ///
+    /// **Answered from the ROW first and from the set second**, and that
+    /// order is the whole point. `streamingMessageIDs` records what THIS
+    /// PROCESS watched arrive; protocol.md's rule is about the message, and
+    /// says so without scoping it to one launch. Quitting while a `/draw`
+    /// was still generating and reopening used to draw the row completely
+    /// blank — no cursor, no error, nothing, for as long as it never
+    /// arrived — because a history page and a cold start populate no set.
+    ///
+    /// The set is still consulted, because it answers the case the row
+    /// cannot: a TEXT answer part-way through has a body, so the row no
+    /// longer "carries nothing" while the cursor still belongs after its
+    /// last fragment.
+    ///
+    /// A FAILURE outranks both. The two are drawn in the same place and an
+    /// `ai_error` this process saw is newer information than the row's own
+    /// shape, so a row that stopped says so rather than pulsing forever.
+    /// After a relaunch that knowledge is gone and the row reads as working
+    /// again — which is exactly what protocol.md says an empty row means,
+    /// and the member's remedy is the one it names: ask again.
+    func isAwaitingAssistant(messageID: Int64) -> Bool {
+        guard !failedAssistantMessageIDs.contains(messageID) else { return false }
+        if streamingMessageIDs.contains(messageID) { return true }
+        guard let row = fetchMessage(serverID: messageID) else { return false }
+        return MessagePresentation.isAwaitedAssistantAnswer(
+            carriesNothing: row.body.isEmpty && row.attachmentList.isEmpty
+                && row.poll == nil && row.callSnapshot == nil,
+            senderID: row.senderID,
+            isAssistantChat: fetchChat(row.chatID)?.kind == "ai",
+            assistantUserID: AppSettings.assistantUserID,
+            currentUserID: currentUserID)
+    }
+
+    /// The same question of a laid-out row, which is what a bubble has.
+    ///
+    /// The bubble already holds the snapshot and the chat's kind, so this
+    /// asks nothing of the store — a `ForEach` body over a screenful of
+    /// rows must not fetch one message and one chat per row per frame.
+    func isAwaitingAssistant(_ message: MessageSnapshot, isAssistantChat: Bool) -> Bool {
+        if let serverID = message.serverID {
+            guard !failedAssistantMessageIDs.contains(serverID) else { return false }
+            if streamingMessageIDs.contains(serverID) { return true }
+        }
+        return MessagePresentation.isAwaitedAssistantAnswer(
+            message,
+            isAssistantChat: isAssistantChat,
+            assistantUserID: AppSettings.assistantUserID,
+            currentUserID: currentUserID)
+    }
+
+    /// True once an `ai_error` named this row.
+    func assistantAnswerFailed(messageID: Int64) -> Bool {
+        failedAssistantMessageIDs.contains(messageID)
+    }
+
+    /// An empty assistant reply has just been fanned out: the row exists so
+    /// a bubble appears at once, and there is nothing in it yet.
+    ///
+    /// Marked as working HERE rather than on the first `ai_delta`, because
+    /// a picture answer has no deltas at all — the empty row IS the
+    /// progress indicator, and without this it would sit blank until the
+    /// picture landed (protocol.md, "How a picture comes back", step 3).
+    /// A text answer gains the same thing a beat earlier, which is right:
+    /// the row was already the "still working" state before its first
+    /// fragment.
+    ///
+    /// Deliberately narrow, and the SAME rule `isAwaitingAssistant` reads
+    /// off a stored row — one predicate, asked here of the object arriving
+    /// and there of the object kept, so a live frame and a history page
+    /// cannot disagree about what an empty row means.
+    ///
+    /// What this still adds over the row rule alone is the CLEARING of a
+    /// stale failure: an id is never reused, so this only fires for a row
+    /// this device marked failed and the server then re-fanned, but leaving
+    /// the mark would draw "ask again" under an answer that is coming.
+    private func noteAssistantAnswerStarted(_ dto: MessageDTO) {
+        let isWaiting = MessagePresentation.isAwaitedAssistantAnswer(
+            carriesNothing: dto.body.isEmpty && dto.attachmentList.isEmpty
+                && dto.poll == nil && dto.call == nil,
+            senderID: dto.senderID,
+            isAssistantChat: fetchChat(dto.chatID)?.kind == "ai",
+            assistantUserID: AppSettings.assistantUserID,
+            currentUserID: currentUserID)
+        guard isWaiting else { return }
+        streamingMessageIDs.insert(dto.id)
+        failedAssistantMessageIDs.remove(dto.id)
+    }
 
     /// Append one fragment to the assistant's row.
     ///
@@ -621,6 +851,12 @@ final class ChatSyncCoordinator {
         set { AppSettings.boardCursor = newValue }
     }
 
+    /// Whether this launch has already decided about seeding the badge's
+    /// content mark. Not a "seeded" flag: the answer "there was nothing to
+    /// seed" is just as final, and re-asking would fetch the whole board on
+    /// every applied note.
+    private var boardContentMarkChecked = false
+
     /// Apply one note under the per-note seq guard.
     ///
     /// A TOMBSTONE deletes the local row: the server keeps one so its feed
@@ -631,6 +867,11 @@ final class ChatSyncCoordinator {
     /// out-of-order MOVE, which very much can.
     @discardableResult
     func applyNote(_ dto: NoteDTO) -> Bool {
+        // Before the first note that carries a content seq is written, and
+        // only ever once per launch: a device that had shown this board
+        // before the field existed needs its content mark seeded, or the
+        // server's backfill badges the whole wall (BoardBadge).
+        seedBoardContentMarkIfNeeded()
         let existing = fetchNote(dto.id)
         if let existing, dto.boardSeq <= existing.boardSeq { return false }
 
@@ -651,6 +892,10 @@ final class ChatSyncCoordinator {
         // A server from before sizes never sends one; "medium" is the size
         // every note had then, so the wall does not change under it.
         let size = dto.size ?? NoteSize.medium.name
+        // A server from before content seqs sends none either, and 0 is how
+        // this store spells "nobody said" — the badge then judges the note
+        // by its id, exactly as it always did (BoardBadge).
+        let contentSeq = dto.contentSeq ?? 0
         if let existing {
             existing.authorID = authorID
             existing.text = text
@@ -660,6 +905,7 @@ final class ChatSyncCoordinator {
             existing.y = y
             existing.updatedAt = dto.updatedAt ?? existing.updatedAt
             existing.boardSeq = dto.boardSeq
+            existing.contentSeq = contentSeq
         } else {
             modelContext.insert(NoteEntity(
                 noteID: dto.id,
@@ -671,9 +917,24 @@ final class ChatSyncCoordinator {
                 y: y,
                 createdAt: dto.createdAt ?? Date(),
                 updatedAt: dto.updatedAt ?? Date(),
-                boardSeq: dto.boardSeq))
+                boardSeq: dto.boardSeq,
+                contentSeq: contentSeq))
         }
         return true
+    }
+
+    /// One-time repair of the badge marks after the update that brought
+    /// content seqs (docs/protocol.md, "Board"). Cheap to ask: the flag
+    /// costs one comparison, and the fetch behind it happens at most once
+    /// per launch and only on a device that has one to do.
+    private func seedBoardContentMarkIfNeeded() {
+        guard !boardContentMarkChecked else { return }
+        boardContentMarkChecked = true
+        let marks = AppSettings.boardMarks
+        let notes = (try? modelContext.fetch(FetchDescriptor<NoteEntity>())) ?? []
+        guard let seed = BoardBadge.contentMarkSeed(notes: notes, marks: marks) else { return }
+        AppSettings.boardMarks = BoardBadge.Marks(
+            seenNoteID: marks.seenNoteID, seenContentSeq: seed)
     }
 
     private func fetchNote(_ noteID: Int64) -> NoteEntity? {
@@ -862,6 +1123,11 @@ final class ChatSyncCoordinator {
             existing.senderID = dto.senderID
             existing.state = .sent
             entity = existing
+            // It landed: the staged bytes and the item rows have no further
+            // job, and holding 100 MB for a message the family has already
+            // read is the leak this whole design has to avoid.
+            existing.pendingAttachmentCount = 0
+            clearPendingMedia(for: existing.localID)
             resolveAckWaiter(clientMsgID, delivered: true)
             applyReply(dto, to: existing)
             applyCall(dto, to: existing)
@@ -1335,6 +1601,12 @@ final class ChatSyncCoordinator {
     /// that is visibly busy. What differs is that there is nothing to
     /// upload, no file to seed a cache with and none to delete afterwards
     /// (docs/protocol.md, "Locations").
+    /// Share a place. One item, no bytes, same queue as everything else.
+    ///
+    /// The three numbers are persisted BEFORE the upload, exactly as a
+    /// photo's file is: a location has nothing to fall back on, so a fix
+    /// that was never written down is a fix that is lost.
+    @discardableResult
     func sendLocation(
         latitude: Double,
         longitude: Double,
@@ -1343,162 +1615,325 @@ final class ChatSyncCoordinator {
         caption: String = "",
         replyTo: ReplyToDTO? = nil,
         in chatID: Int64
-    ) async -> Bool {
-        let attachment: AttachmentDTO
-        do {
-            attachment = try await api.uploadLocation(
-                latitude: latitude,
-                longitude: longitude,
-                accuracyM: accuracyM,
-                name: label)
-        } catch APIError.unauthorized {
-            session?.handleUnauthorized()
-            return false
-        } catch {
-            // The ERROR only, never `String(describing:)`.
-            //
-            // A location's coordinates ride in the upload's query string,
-            // and a URLError carries the failing URL in its userInfo — so
-            // describing the error writes a family member's position, to
-            // seven decimal places, into the unified log where any
-            // profile-enabled Mac can read it. Every other upload here logs
-            // a describable error safely because its URL carries only an
-            // id; this one does not.
-            AppLog.sync.error("Location upload failed: \(Self.reason(error), privacy: .public)")
-            return false
-        }
-
+    ) -> String? {
         guard let localID = enqueue(
             body: caption, in: chatID, replyTo: replyTo, allowEmpty: true)
-        else {
-            return false
-        }
-        if let row = fetchMessage(localID: localID) {
-            // The own-send write site: JSON set plus flat first-item
-            // columns, like every other write site. A location is always
-            // alone (docs/protocol.md), so the set is one.
-            row.applyAttachmentList([attachment])
-            saveContext()
-        }
-        pendingDelivery = Task { await self.deliver(localID: localID) }
-        return true
+        else { return nil }
+        let item = PendingMediaItemEntity(
+            messageLocalID: localID,
+            chatID: chatID,
+            position: 0,
+            mime: "application/json",
+            kind: AttachmentDTO.Kind.location,
+            name: label,
+            latitude: latitude,
+            longitude: longitude,
+            accuracyM: accuracyM)
+        modelContext.insert(item)
+        fetchMessage(localID: localID)?.pendingAttachmentCount = 1
+        saveContext()
+        pendingDelivery = Task { await self.uploadAndDeliver(localID: localID) }
+        return localID
     }
 
-    /// The one-attachment spelling, kept for its callers and tests. Same
-    /// contract as before plurality: the prepared file is consumed either
-    /// way — deleted on whole-send success by the array path, and
-    /// deleted here on failure.
+    /// The one-attachment spelling, kept for its callers and tests.
+    @discardableResult
     func sendMedia(
         _ prepared: MediaPrep.Prepared,
         caption: String,
         replyTo: ReplyToDTO? = nil,
         in chatID: Int64
-    ) async -> Bool {
-        let sent = await sendMedia([prepared], caption: caption, replyTo: replyTo, in: chatID)
-        if !sent {
-            try? FileManager.default.removeItem(at: prepared.fileURL)
-        }
-        return sent
+    ) -> String? {
+        sendMedia([prepared], caption: caption, replyTo: replyTo, in: chatID)
     }
 
-    /// Send up to ten attachments as ONE message, in the order given.
+    /// Queue up to ten attachments as ONE message, in the order given.
     ///
-    /// Each item is uploaded in order (bytes, then its best-effort
-    /// preview), the ids are collected, and ONE message is enqueued
-    /// claiming the whole array — all-or-nothing on the server's side
-    /// (docs/protocol.md, "Photos, videos, audio, files and locations").
+    /// ENQUEUE FIRST, UPLOAD AFTER, and that inversion is the whole point.
+    /// This used to upload every attachment and only then write the message
+    /// row, which meant a send in flight existed nowhere but a running
+    /// Task: suspend the app, lose the process or run out of background
+    /// allowance and the send was gone — no bubble, no error, nothing to
+    /// retry, and for a camera capture or a voice note the staging file was
+    /// the only copy of the content. Now the row and its item rows are
+    /// written before a single byte leaves, the bytes are moved somewhere
+    /// the system will not reclaim, and the ordinary outbox finishes the
+    /// job on whatever trigger comes next (docs/protocol.md, "Sending on an
+    /// unreliable network").
     ///
-    /// Failure anywhere returns false with the message never enqueued
-    /// and EVERY prepared file left on disk — the files are consumed
-    /// only on whole-send success — so the composer can re-stage the
-    /// entire set and a retry cannot silently send a subset; ids already
-    /// uploaded but never claimed are simply abandoned — the server
-    /// sweeps unclaimed attachments after 24 hours, which is exactly
-    /// what the sweep exists for.
-    ///
-    /// `onItemStart` reports (index, total) as each upload begins, so the
-    /// composer can say "Uploading 2 of 5…" through its existing strip.
+    /// Returns the localID of the bubble, or nil when nothing could be
+    /// staged — the caller has already been given a row to point at, so
+    /// there is no "did it send" answer to wait for any more.
+    @discardableResult
     func sendMedia(
         _ prepared: [MediaPrep.Prepared],
         caption: String,
         replyTo: ReplyToDTO? = nil,
-        in chatID: Int64,
-        onItemStart: ((Int, Int) -> Void)? = nil
-    ) async -> Bool {
-        guard !prepared.isEmpty else { return false }
-        var uploaded: [AttachmentDTO] = []
-        for (index, item) in prepared.enumerated() {
-            onItemStart?(index + 1, prepared.count)
-            let attachment: AttachmentDTO
-            do {
+        in chatID: Int64
+    ) -> String? {
+        guard !prepared.isEmpty else { return nil }
+        guard let localID = enqueue(
+            body: caption, in: chatID, replyTo: replyTo, allowEmpty: true)
+        else { return nil }
+
+        // Armed before a single file is touched. `enqueue` has already
+        // saved the row, so everything after this point is a moment in
+        // which the process can die — and a media row with a count of zero
+        // and no items is exactly the empty send that loses the pictures
+        // and looks delivered.
+        fetchMessage(localID: localID)?.pendingAttachmentCount = prepared.count
+        saveContext()
+
+        var staged = 0
+        for (position, item) in prepared.enumerated() {
+            let itemID = UUID().uuidString.lowercased()
+            guard let adopted = try? PendingMediaStaging.adopt(item, itemID: itemID) else {
+                AppLog.sync.error("Could not stage attachment \(position, privacy: .public) of a send")
+                continue
+            }
+            modelContext.insert(PendingMediaItemEntity(
+                itemID: itemID,
+                messageLocalID: localID,
+                chatID: chatID,
+                position: position,
+                fileName: adopted.fileName,
+                previewFileName: adopted.previewFileName,
+                mime: item.mime,
+                kind: item.kind,
+                width: item.width,
+                height: item.height,
+                durationMS: item.durationMS,
+                name: item.name))
+            staged += 1
+        }
+        guard staged > 0 else {
+            // Nothing could be staged, so there is nothing to send and the
+            // bubble would never resolve. Take it back rather than leave a
+            // row that can only ever fail.
+            deleteLocalMessage(localID: localID)
+            return nil
+        }
+        let items = pendingMediaItems(for: localID)
+        if let row = fetchMessage(localID: localID) {
+            row.pendingAttachmentCount = staged
+            // The bubble draws NOW, from the bytes this device already
+            // holds, under provisional negative ids. Without this the row
+            // exists with nothing on it and the sender watches an empty
+            // bubble for the length of the upload — which is worse than
+            // the old behaviour, where at least the composer still showed
+            // the photos. The real ids replace these the moment they
+            // arrive, and the ack replaces them again.
+            row.applyAttachmentList(items.map(\.provisionalDTO))
+        }
+        saveContext()
+        seedProvisionalPixels(items)
+        pendingDelivery = Task { await self.uploadAndDeliver(localID: localID) }
+        return localID
+    }
+
+    /// Put a queued item's own pixels in the cache under its provisional
+    /// id, so the pending bubble draws from disk instead of asking the
+    /// server for an id the server has never heard of.
+    private func seedProvisionalPixels(_ items: [PendingMediaItemEntity]) {
+        for item in items {
+            guard let previewName = item.previewFileName,
+                  let url = PendingMediaStaging.url(for: previewName),
+                  let jpeg = try? Data(contentsOf: url)
+            else { continue }
+            attachmentStore?.seed(jpeg, id: item.provisionalAttachmentID, preview: true)
+            if item.kind == AttachmentDTO.Kind.photo,
+               let fileName = item.fileName,
+               let full = PendingMediaStaging.url(for: fileName),
+               let bytes = try? Data(contentsOf: full) {
+                attachmentStore?.seed(bytes, id: item.provisionalAttachmentID, preview: false)
+            }
+        }
+    }
+
+    /// Push up whatever a queued media send still owes, then deliver it.
+    ///
+    /// Resumable by construction: an item whose upload has landed carries
+    /// its `attachmentID`, so a second pass skips it — the id stays good
+    /// for the server's unclaimed grace, and re-uploading 100 MB because
+    /// the network died on item four is exactly what made a large set
+    /// unsendable on a flaky link.
+    func uploadAndDeliver(localID: String) async {
+        guard !deliveriesInFlight.contains(localID) else { return }
+        guard let chatID = fetchMessage(localID: localID)?.chatID else { return }
+        // ONE MEDIA UPLOAD PER CHAT. Two sets uploading at once would be
+        // acked in whichever order finished first, so a photo queued second
+        // could land ahead of the video queued first — visibly, for
+        // everyone, because the family chat is ordered by server id. The
+        // one left waiting is picked up by the next sweep.
+        guard !mediaUploadsInFlight.contains(chatID) else { return }
+        mediaUploadsInFlight.insert(chatID)
+        deliveriesInFlight.insert(localID)
+        defer {
+            // Idempotent with the hand-over below, which releases both
+            // BEFORE delivering rather than after.
+            mediaUploadsInFlight.remove(chatID)
+            deliveriesInFlight.remove(localID)
+        }
+
+        guard let row = fetchMessage(localID: localID), row.state != .sent else { return }
+        row.state = .pending
+        saveContext()
+        // The caches directory is evictable, so a send resumed after a
+        // relaunch may have lost the pixels it seeded when it was queued.
+        // The staged bytes are still here; put them back.
+        seedProvisionalPixels(pendingMediaItems(for: localID).filter { $0.attachmentID == nil })
+
+        // Held awake for the duration. The send is durable now, so losing
+        // the allowance merely postpones it to the next trigger rather than
+        // destroying it — but finishing an upload already in progress is
+        // still far better than starting it again later.
+        await UploadLifeline.withLifeline {
+            for item in self.pendingMediaItems(for: localID) where item.attachmentID == nil {
+                guard await self.upload(item: item, localID: localID) else { return }
+            }
+        }
+
+        // Everything landed? Write the set onto the row and hand it to the
+        // ordinary delivery path, which from here cannot tell this message
+        // from a text one.
+        let items = pendingMediaItems(for: localID)
+        guard let row = fetchMessage(localID: localID), row.state != .sent else { return }
+        guard items.allSatisfy({ $0.attachmentID != nil }) else { return }
+        row.applyAttachmentList(items.compactMap(\.uploadedDTO))
+        row.pendingAttachmentCount = 0
+        saveContext()
+
+        // Hand over to the ordinary delivery leg IN THIS TASK. The two
+        // guards are released first because `deliver` takes the same
+        // `deliveriesInFlight` and would refuse itself; doing it here
+        // rather than from a second Task keeps one send one unit of work,
+        // which is what makes it observable from a test and what stops a
+        // relaunch racing its own resume.
+        mediaUploadsInFlight.remove(chatID)
+        deliveriesInFlight.remove(localID)
+        await deliver(localID: localID)
+    }
+
+    /// One item's bytes, its preview and its bookkeeping. Answers whether
+    /// the caller should carry on with the rest of the set.
+    private func upload(item: PendingMediaItemEntity, localID: String) async -> Bool {
+        let attachment: AttachmentDTO
+        do {
+            if item.kind == AttachmentDTO.Kind.location {
+                attachment = try await api.uploadLocation(
+                    latitude: item.latitude ?? 0,
+                    longitude: item.longitude ?? 0,
+                    accuracyM: item.accuracyM,
+                    name: item.name)
+            } else {
+                guard let fileName = item.fileName,
+                      let fileURL = PendingMediaStaging.url(for: fileName)
+                else {
+                    // The bytes are gone and nothing can bring them back:
+                    // an evicted staging directory, or a store restored
+                    // without its files. Better a red bubble that says so
+                    // than a queue that retries nothing forever.
+                    AppLog.sync.error("Staged bytes missing for a queued attachment")
+                    recordSendFailure(localID: localID, error: APIError.conflict(
+                        code: "invalid_attachment", message: nil))
+                    return false
+                }
                 attachment = try await api.uploadAttachment(
-                    fileURL: item.fileURL,
+                    fileURL: fileURL,
                     mime: item.mime,
                     kind: item.kind,
                     width: item.width,
                     height: item.height,
                     durationMS: item.durationMS,
                     name: item.name)
-            } catch APIError.unauthorized {
-                session?.handleUnauthorized()
-                return false
-            } catch {
-                // .error, not .info: an upload that failed is the one thing
-                // the sender will come asking about, and info-level os_log
-                // does not reach Xcode's console.
-                AppLog.sync.error("Attachment upload failed: \(String(describing: error), privacy: .public)")
-                return false
             }
-
-            // Seed the cache with what we already hold, so this device
-            // draws its own bubble immediately instead of fetching back
-            // bytes it just produced.
-            if let preview = item.previewJPEG {
-                attachmentStore?.seed(preview, id: attachment.id, preview: true)
-            }
-            if item.kind == "photo", let full = try? Data(contentsOf: item.fileURL) {
-                attachmentStore?.seed(full, id: attachment.id, preview: false)
-            }
-
-            var hasPreview = false
-            if let preview = item.previewJPEG {
-                // Best-effort: a bubble with no preview fetches the full
-                // image, which is worse but not broken. The RESULT is what
-                // the pending row records — claiming a preview that failed
-                // would leave the bubble waiting for bytes that are not
-                // there until the ack corrects it.
-                do {
-                    try await api.uploadPreview(attachmentID: attachment.id, jpeg: preview)
-                    hasPreview = true
-                } catch {
-                    AppLog.sync.error("Preview upload failed: \(String(describing: error), privacy: .public)")
-                }
-            }
-            uploaded.append(attachment.withPreviewFlag(hasPreview))
-        }
-
-        guard let localID = enqueue(
-            body: caption, in: chatID, replyTo: replyTo, allowEmpty: true)
-        else {
+        } catch APIError.unauthorized {
+            session?.handleUnauthorized()
+            return false
+        } catch {
+            // The ERROR only for a location, never `String(describing:)`:
+            // its coordinates ride in the upload's query string, and a
+            // URLError carries the failing URL in its userInfo — so
+            // describing it writes a family member's position into the
+            // unified log, where any profile-enabled Mac can read it.
+            let described = item.kind == AttachmentDTO.Kind.location
+                ? Self.reason(error) : String(describing: error)
+            AppLog.sync.error("Attachment upload failed: \(described, privacy: .public)")
+            item.uploadAttempts += 1
+            recordSendFailure(localID: localID, error: error)
             return false
         }
-        if let row = fetchMessage(localID: localID) {
-            // The own-send write site: the pending bubble draws its whole
-            // set straight away; the ack replaces it with the server's copy.
-            row.applyAttachmentList(uploaded)
-            saveContext()
+
+        // Seed the cache with what this device already holds, so its own
+        // bubble draws from those bytes instead of fetching back what it
+        // just produced.
+        let previewJPEG = item.previewFileName.flatMap(PendingMediaStaging.url(for:))
+            .flatMap { try? Data(contentsOf: $0) }
+        if let previewJPEG {
+            attachmentStore?.seed(previewJPEG, id: attachment.id, preview: true)
         }
-        // The prepared files are consumed ONLY here, on whole-send
-        // success. Any failure above left every file on disk — even the
-        // ones whose uploads landed — so the composer restores the
-        // ENTIRE set and a retry offers exactly what was composed; the
-        // ids of uploads that landed on a failed send are abandoned to
-        // the server's 24-hour sweep of unclaimed attachments.
-        for item in prepared {
-            try? FileManager.default.removeItem(at: item.fileURL)
+        if item.kind == "photo", let fileName = item.fileName,
+           let url = PendingMediaStaging.url(for: fileName),
+           let full = try? Data(contentsOf: url) {
+            attachmentStore?.seed(full, id: attachment.id, preview: false)
         }
-        pendingDelivery = Task { await self.deliver(localID: localID) }
+
+        // The id and the count move in ONE save. Writing the count without
+        // the id — or before it — leaves a row that will be delivered with
+        // an attachment missing: the set arrives short and looks complete.
+        item.attachmentID = attachment.id
+        fetchMessage(localID: localID)?.pendingAttachmentCount -= 1
+        saveContext()
+
+        var hasPreview = false
+        if let previewJPEG {
+            // Best-effort: a bubble with no preview fetches the full image,
+            // which is worse but not broken. The RESULT is what the row
+            // records — claiming a preview that failed would leave the
+            // bubble waiting for bytes that are not there.
+            do {
+                try await api.uploadPreview(attachmentID: attachment.id, jpeg: previewJPEG)
+                hasPreview = true
+            } catch {
+                AppLog.sync.error("Preview upload failed: \(String(describing: error), privacy: .public)")
+            }
+        } else if item.kind == "video" {
+            // Distinguishable on purpose from the line above: a video that
+            // never HAD a poster and one whose poster upload failed need
+            // different fixes.
+            AppLog.sync.error("Video \(attachment.id, privacy: .public) sent with no poster frame")
+        }
+        if item.kind == "video" {
+            // Best-effort ONCE was the bug (issue #54): a poster is the only
+            // image with no second source of pixels, so a lost one is a grey
+            // tile for every recipient, forever.
+            attachmentStore?.notePosterUpload(id: attachment.id, landed: hasPreview)
+        }
+        item.previewUploaded = hasPreview
+        saveContext()
         return true
+    }
+
+    /// The unfinished attachments of one send, in the sender's order.
+    func pendingMediaItems(for localID: String) -> [PendingMediaItemEntity] {
+        let descriptor = FetchDescriptor<PendingMediaItemEntity>(
+            predicate: #Predicate { $0.messageLocalID == localID },
+            sortBy: [SortDescriptor(\.position)])
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    /// Drop a finished send's item rows and the bytes they own.
+    func clearPendingMedia(for localID: String) {
+        let items = pendingMediaItems(for: localID)
+        guard !items.isEmpty else { return }
+        let ids = items.map(\.itemID)
+        for item in items { modelContext.delete(item) }
+        saveContext()
+        // Rows first, files second: a crash in between leaves directories
+        // nothing names, which the orphan sweep collects. The other order
+        // leaves rows naming files that are gone, which is a send that can
+        // never finish.
+        for id in ids { PendingMediaStaging.remove(itemID: id) }
     }
 
     /// A local URL for a file attachment, downloading it if this device
@@ -1513,11 +1948,8 @@ final class ChatSyncCoordinator {
     /// Returns nil when the bytes could not be fetched; the caller says so.
     func localFileURL(for attachment: AttachmentDTO) async -> URL? {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let directory = caches
-            .appendingPathComponent("files", isDirectory: true)
-            .appendingPathComponent(String(attachment.id), isDirectory: true)
-        let name = Self.safeFileName(attachment.name ?? Self.fallbackName(for: attachment))
-        let destination = directory.appendingPathComponent(name)
+        let destination = Self.cachedFileURL(for: attachment, in: caches)
+        let directory = destination.deletingLastPathComponent()
 
         if FileManager.default.fileExists(atPath: destination.path) {
             return destination
@@ -1537,6 +1969,33 @@ final class ChatSyncCoordinator {
             return nil
         }
         return destination
+    }
+
+    /// What an attachment's bytes are called once they are on disk — and
+    /// therefore what Quick Look titles its window, what Share hands the
+    /// next app, and (issue #47) what a drag out drops in the Finder.
+    ///
+    /// Split out of `localFileURL` so there is exactly ONE spelling of it.
+    /// `DraggedAttachment` has to know the name of a file it has not
+    /// downloaded yet, and a second spelling is precisely how a dragged
+    /// photo arrives called something Save… would never have called it.
+    nonisolated static func cachedFileName(for attachment: AttachmentDTO) -> String {
+        safeFileName(attachment.name ?? fallbackName(for: attachment))
+    }
+
+    /// Where those bytes live under a caches directory.
+    ///
+    /// Split out for the same reason and one more: `DraggedAttachment`
+    /// CHECKS the URL it is about to promise against this shape, because
+    /// `AttachmentStore`'s `<id>.jpg` — which is a 600px preview under a
+    /// `.jpg` extension whatever the real type — is otherwise an easy and
+    /// completely silent substitution. The per-attachment id directory is
+    /// what that flat cache has no equivalent of.
+    nonisolated static func cachedFileURL(for attachment: AttachmentDTO, in caches: URL) -> URL {
+        caches
+            .appendingPathComponent("files", isDirectory: true)
+            .appendingPathComponent(String(attachment.id), isDirectory: true)
+            .appendingPathComponent(cachedFileName(for: attachment))
     }
 
     /// What to call a photo or video, which carry no name of their own.
@@ -1750,6 +2209,20 @@ final class ChatSyncCoordinator {
         guard let row = fetchMessage(localID: localID),
               row.state != .sent,
               let clientMsgID = row.clientMsgID else { return }
+        // THE ONE THAT DESTROYS DATA. A media row whose uploads have not
+        // finished has no attachment list yet, so this would POST with no
+        // `attachment_ids` at all — and for a photo WITH a caption the
+        // server accepts a perfectly good text-only message. The bubble
+        // goes green, the pictures are gone, and nothing says so. Four
+        // paths reach this function, so the guard lives here rather than
+        // at the call sites.
+        //
+        // It simply RETURNS: this function is already holding
+        // `deliveriesInFlight` for this row, so calling the upload leg from
+        // here would be refused by its own guard and silently do nothing.
+        // The outbox is what routes a media row to the upload leg, and it
+        // will come back round.
+        guard row.pendingAttachmentCount == 0 else { return }
         let chatID = row.chatID
         let body = row.body
         let replyToMessageID = row.replyToMessageID
@@ -1796,11 +2269,81 @@ final class ChatSyncCoordinator {
         } catch APIError.unauthorized {
             session?.handleUnauthorized()
         } catch {
-            AppLog.sync.info("Send failed for \(localID, privacy: .public): \(String(describing: error))")
-            if let current = fetchMessage(localID: localID), current.state != .sent {
-                current.state = .failed
-                saveContext()
+            recordSendFailure(localID: localID, error: error)
+        }
+    }
+
+    /// What a failed delivery does to the row — the whole of the
+    /// transient/terminal rule (docs/protocol.md, "Sending on an
+    /// unreliable network").
+    ///
+    /// A transient failure says nothing about the request: the message may
+    /// well be in the family chat already. Turning the bubble red there is
+    /// this app's oldest network bug — the row left PENDING is retried by
+    /// the sweep and by every connect, the row left FAILED is retried by
+    /// nobody until a person notices it and taps, which on the chat list
+    /// looks exactly like a message that was sent.
+    /// Codes that mean the server READ the send and refused it. Every
+    /// other answer leaves the outcome unknown, and an unknown outcome is
+    /// never a red bubble (docs/protocol.md, "Error shape").
+    static let terminalSendCodes: Set<String> = [
+        "validation", "message_empty", "message_too_long", "not_chat_member",
+        "chat_not_found", "blocked", "invalid_poll", "invalid_attachment",
+        "attachment_not_found", "attachment_already_used",
+    ]
+
+    private func recordSendFailure(localID: String, error: Error) {
+        guard let row = fetchMessage(localID: localID), row.state != .sent else { return }
+        // An upload this device made and the server's unclaimed sweep took
+        // (docs/protocol.md, "Sending on an unreliable network"). It is
+        // ordinary on a send that sat in the outbox past the grace, and it
+        // means "upload the bytes again", not "give up" — which is exactly
+        // what `attachment_not_found` cannot say. Only possible because the
+        // bytes are staged durably; without them there is nothing to send
+        // and the refusal stands.
+        if case APIError.notFound(let code) = error, code == "attachment_expired" {
+            let items = pendingMediaItems(for: localID)
+            let recoverable = !items.isEmpty && items.allSatisfy { item in
+                item.kind == AttachmentDTO.Kind.location
+                    || item.fileName.flatMap(PendingMediaStaging.url(for:)) != nil
             }
+            if recoverable {
+                AppLog.sync.info("Uploads expired for \(localID, privacy: .public); sending the bytes again")
+                for item in items {
+                    item.attachmentID = nil
+                    item.previewUploaded = false
+                }
+                row.clearAttachments()
+                row.pendingAttachmentCount = items.count
+                row.state = .pending
+                row.nextAttemptAt = Date()
+                saveContext()
+                scheduleOutboxWake()
+                return
+            }
+        }
+        let apiError = error as? APIError
+        let transient = apiError?.isTransient ?? (error is CancellationError ? true : false)
+        row.sendAttempts += 1
+        if transient && row.sendAttempts < maxSendAttempts {
+            var backoff = sendBackoff
+            backoff.advance(to: row.sendAttempts)
+            // The server's own Retry-After wins when it sent one: it knows
+            // how long its bucket needs, and guessing shorter just spends
+            // the next attempt on another 429.
+            let delay = max(backoff.nextDelay(), apiError?.retryAfter ?? 0)
+            row.state = .pending
+            row.nextAttemptAt = Date().addingTimeInterval(delay)
+            AppLog.sync.info(
+                "Send \(localID, privacy: .public) failed transiently (attempt \(row.sendAttempts, privacy: .public)); retrying in \(Int(delay), privacy: .public)s")
+            saveContext()
+            scheduleOutboxWake()
+        } else {
+            row.state = .failed
+            row.nextAttemptAt = nil
+            AppLog.sync.info(
+                "Send failed for \(localID, privacy: .public) after \(row.sendAttempts, privacy: .public) attempt(s): \(String(describing: error))")
+            saveContext()
         }
     }
 
@@ -1845,14 +2388,34 @@ final class ChatSyncCoordinator {
     func retry(localID: String) {
         guard let row = fetchMessage(localID: localID), row.state == .failed else { return }
         row.state = .pending
+        // A person asking again is a fresh budget: the automatic attempts
+        // were spent on a network that has probably changed since. The
+        // per-item upload budgets are reset for the same reason.
+        row.sendAttempts = 0
+        row.nextAttemptAt = nil
+        let owesUploads = row.pendingAttachmentCount > 0
+        if owesUploads {
+            for item in pendingMediaItems(for: localID) { item.uploadAttempts = 0 }
+        }
         saveContext()
-        Task { await self.deliver(localID: localID) }
+        Task {
+            if owesUploads {
+                await self.uploadAndDeliver(localID: localID)
+            } else {
+                await self.deliver(localID: localID)
+            }
+        }
     }
 
     /// Delete a (typically failed) local message. Only rows without a
     /// serverID can truly disappear — the server has no delete endpoint.
     func deleteLocalMessage(localID: String) {
         guard let row = fetchMessage(localID: localID), row.serverID == nil else { return }
+        // The staged bytes go with the bubble. This is the one place a
+        // person can say "I do not want this after all", and it is the
+        // only thing standing between a queued 100 MB video and disk that
+        // nothing ever reclaims.
+        clearPendingMedia(for: localID)
         modelContext.delete(row)
         saveContext()
     }
@@ -1881,6 +2444,16 @@ final class ChatSyncCoordinator {
         isResyncing = true
         defer { isResyncing = false }
 
+        // 0. The outbox, BEFORE anything can fail.
+        //
+        // It used to be step 6, at the tail of this function, behind two
+        // `return`s — so on the network most likely to have stranded a
+        // message, the one operation that recovers it never ran. It is not
+        // a step of the read pipeline at all and is ordered against nothing
+        // below (docs/protocol.md, "Best-effort delivery"): re-sending is
+        // idempotent on `client_msg_id`, so doing it first is never wrong.
+        await sweepOutbox()
+
         // 1. Membership reconcile. A missing family routes the session to
         // needsFamily (kicked) and there is nothing further to sync.
         do {
@@ -1907,6 +2480,15 @@ final class ChatSyncCoordinator {
             // messages and the composer knows whether to offer `@ai`.
             AppSettings.assistantUserID = mine.assistant?.userID
             AppSettings.assistantName = mine.assistant?.displayName
+            // What this server's assistant can do beyond words. Both
+            // false when the object is absent, which is the same answer a
+            // server with neither deployment configured gives — and the
+            // one that makes every picture surface disappear rather than
+            // sit there disabled, lying about what would happen
+            // (protocol.md, "Pictures").
+            AppSettings.assistantVision = mine.assistant?.vision ?? false
+            AppSettings.assistantImages = mine.assistant?.images ?? false
+            AppSettings.assistantDraw = mine.assistant?.draw
         }
 
         // 3. Chat list: server unread wins; direct chats the server
@@ -1988,10 +2570,6 @@ final class ChatSyncCoordinator {
             await catchUpBoard(serverMaxSeq: mine.maxBoardSeq ?? 0)
         }
 
-        // 6. Outbox sweep: anything still pending after 30 s gets re-sent
-        // (same client_msg_id — the server dedups).
-        await sweepOutbox()
-
         // 6a. Repair any location that was stored without its coordinates.
         await repairLocationsMissingCoordinates()
 
@@ -2060,15 +2638,68 @@ final class ChatSyncCoordinator {
         }
     }
 
-    private func sweepOutbox() async {
-        let cutoff = Date().addingTimeInterval(-outboxAge)
+    /// Re-send everything the outbox owes, in send order.
+    ///
+    /// Two kinds of row are due: one scheduled by a transient failure whose
+    /// `nextAttemptAt` has passed, and one that was never attempted at all
+    /// and is older than `outboxAge` — the app died between the insert and
+    /// the send. Filtered in memory rather than in the predicate because
+    /// the outbox is a handful of rows and an optional date comparison in
+    /// `#Predicate` is not worth the obscurity.
+    func sweepOutbox() async {
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-outboxAge)
         let pendingRaw = MessageStatus.pending.rawValue
         let descriptor = FetchDescriptor<MessageEntity>(
-            predicate: #Predicate { $0.status == pendingRaw && $0.createdAt < cutoff })
-        guard let stale = try? modelContext.fetch(descriptor), !stale.isEmpty else { return }
-        AppLog.sync.info("Outbox sweep re-sending \(stale.count, privacy: .public) message(s)")
-        for row in stale {
-            await deliver(localID: row.localID)
+            predicate: #Predicate { $0.status == pendingRaw },
+            sortBy: [SortDescriptor(\.createdAt)])
+        guard let pending = try? modelContext.fetch(descriptor), !pending.isEmpty else { return }
+        let due = pending.filter { row in
+            if let next = row.nextAttemptAt { return next <= now }
+            return row.createdAt < cutoff
+        }
+        if !due.isEmpty {
+            AppLog.sync.info("Outbox sweep re-sending \(due.count, privacy: .public) message(s)")
+            for row in due {
+                // A media send still owing uploads goes through the upload
+                // leg, which finishes what it can and then delivers. This
+                // is the whole of the resume: because a queued media send
+                // IS a pending message row, it inherits every trigger the
+                // text outbox has — the connect, the foreground, the
+                // network returning, the wake timer.
+                if row.pendingAttachmentCount > 0 {
+                    // NOT awaited. This same sweep is step 0 of `resync()`
+                    // and runs on the network-restored edge, and a 100 MB
+                    // video would otherwise hold the entire read pipeline
+                    // open for as long as it takes to upload. The guards
+                    // inside make a second call a no-op, so firing and
+                    // forgetting is safe.
+                    Task { await self.uploadAndDeliver(localID: row.localID) }
+                } else {
+                    await deliver(localID: row.localID)
+                }
+            }
+        }
+        scheduleOutboxWake()
+    }
+
+    /// Arm a timer for the earliest row that is not due yet, so a message
+    /// scheduled eight seconds out is actually sent eight seconds out
+    /// rather than at the next reconnect.
+    private func scheduleOutboxWake() {
+        outboxWake?.cancel()
+        outboxWake = nil
+        let pendingRaw = MessageStatus.pending.rawValue
+        let descriptor = FetchDescriptor<MessageEntity>(
+            predicate: #Predicate { $0.status == pendingRaw })
+        guard let pending = try? modelContext.fetch(descriptor) else { return }
+        let now = Date()
+        guard let next = pending.compactMap(\.nextAttemptAt).filter({ $0 > now }).min() else { return }
+        let delay = next.timeIntervalSince(now)
+        outboxWake = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(delay, 0.1) * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            await self.sweepOutbox()
         }
     }
 
@@ -2337,6 +2968,11 @@ final class ChatSyncCoordinator {
         // The cached bytes are keyed by attachment id, not chat id, so
         // they can only be found through the rows that are about to go.
         attachmentStore?.forget(attachmentIDs: messages.compactMap(\.attachmentID))
+        // A queued media send in this chat goes too, files included. Its
+        // rows are keyed by the message's localID, so once the messages
+        // are gone nothing could find them and the staged bytes would sit
+        // in Application Support with nothing naming them.
+        for message in messages { clearPendingMedia(for: message.localID) }
         for message in messages { modelContext.delete(message) }
         modelContext.delete(chat)
         // Everything else this object keys by chat id. The read markers
@@ -2465,6 +3101,142 @@ final class ChatSyncCoordinator {
         member.birthdayMonth = nil
         member.birthdayDay = nil
         saveContext()
+    }
+
+    /// Everyone this account has blocked, as the rest of the app reads it.
+    ///
+    /// Published rather than fetched at each call site because it is
+    /// consulted on nearly every row that draws a person, and a
+    /// `FetchDescriptor` per bubble is not a thing to do in a list.
+    private(set) var blockedUserIDs: Set<Int64> = []
+
+    /// Replace the whole set from a `blocked_user_ids` array.
+    ///
+    /// WHOLESALE, because the wire field is a complete state-set and never
+    /// a delta — which is also why the server always sends it, `[]`
+    /// included. Merging instead would leave an unblock made on another
+    /// device in force here for ever (protocol.md, "Blocking a member").
+    func replaceBlocks(with ids: [Int64]) {
+        let incoming = Set(ids)
+        guard let rows = try? modelContext.fetch(FetchDescriptor<BlockEntity>()) else { return }
+        var held: Set<Int64> = []
+        for row in rows {
+            if incoming.contains(row.userID) {
+                held.insert(row.userID)
+            } else {
+                modelContext.delete(row)
+            }
+        }
+        for id in incoming.subtracting(held) {
+            modelContext.insert(BlockEntity(userID: id))
+            // A block made on ANOTHER device arrives here, never through
+            // `applyBlock` — so the prune has to happen on this path too or
+            // a cold start leaves the stale chat standing. Newly-arrived
+            // ids only: re-dropping `held` would delete the chat again on
+            // every `GET /me`.
+            dropDirectChat(peerUserID: id)
+            withdrawCallDonations(peerUserID: id)
+        }
+        blockedUserIDs = incoming
+        saveContext()
+    }
+
+    /// Block a member: the request FIRST, then the local write.
+    ///
+    /// Never optimistic, and that ordering is the point. An optimistic
+    /// block that then failed would hide rows the reader does not know are
+    /// hidden, in a feature with no error surface and no badge to notice —
+    /// they would simply stop seeing somebody and never learn why.
+    ///
+    /// Returns false when the request threw, having applied nothing.
+    @discardableResult
+    func block(userID: Int64) async -> Bool {
+        do {
+            try await api.blockMember(userID: userID)
+        } catch {
+            return false
+        }
+        applyBlock(userID: userID, blocked: true)
+        return true
+    }
+
+    /// Unblock, then RESYNC — because the direct chat this block pruned
+    /// locally comes back from `GET /chats`, not from anything held here.
+    /// That is the protocol's own recovery path: "unblocking puts the chat
+    /// back in `GET /chats` with its true `unread_count` and
+    /// `last_read_message_id`".
+    @discardableResult
+    func unblock(userID: Int64) async -> Bool {
+        do {
+            try await api.unblockMember(userID: userID)
+        } catch {
+            return false
+        }
+        applyBlock(userID: userID, blocked: false)
+        await resync()
+        return true
+    }
+
+    /// File a report. Nothing local changes: a report is a write to the
+    /// owner's inbox, and this reader's own view of the family does not
+    /// move because of it — blocking and reporting are independent.
+    @discardableResult
+    func report(reportedUserID: Int64, reason: String, messageID: Int64?) async -> Bool {
+        do {
+            _ = try await api.createReport(
+                reportedUserID: reportedUserID, reason: reason, messageID: messageID)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Apply one block or unblock — the `member_blocked` frame, and the
+    /// optimistic write behind the Block button.
+    func applyBlock(userID: Int64, blocked: Bool) {
+        let existing = try? modelContext.fetch(
+            FetchDescriptor<BlockEntity>(predicate: #Predicate { $0.userID == userID })
+        ).first
+        if blocked {
+            if existing == nil { modelContext.insert(BlockEntity(userID: userID)) }
+            blockedUserIDs.insert(userID)
+            // "For the blocker that chat is not merely unlisted; it is gone
+            // from every path they can reach it by" (protocol.md, "Blocking
+            // a member"). The server already refuses every request in it
+            // with `blocked`, which nothing in this app maps to a message —
+            // so a chat left in the store is one the reader can open and
+            // then watch fail silently.
+            //
+            // Only on the way IN. Unblocking does not put it back from
+            // here: `GET /chats` does, which is why `unblock` resyncs.
+            dropDirectChat(peerUserID: userID)
+            withdrawCallDonations(peerUserID: userID)
+        } else {
+            if let existing { modelContext.delete(existing) }
+            blockedUserIDs.remove(userID)
+        }
+        saveContext()
+    }
+
+    /// Retract the call suggestions this app donated about one person.
+    ///
+    /// iOS only, and not because macOS forgot: `Intents` donation is where
+    /// Siri's suggestions and the Phone app's sense of who Family can call
+    /// come from, and the Mac has neither surface. Called on BOTH block
+    /// paths — the local one and a block made on another device — for
+    /// newly-blocked ids only (docs/protocol.md, "Calls").
+    private func withdrawCallDonations(peerUserID: Int64) {
+        #if os(iOS)
+        CallDonation.withdraw(peerUserID: peerUserID)
+        #endif
+    }
+
+    /// Load the set from the store at launch, before the first sync — so a
+    /// cold start offline draws hidden rows hidden rather than briefly
+    /// showing everything.
+    func loadBlocksFromStore() {
+        guard let rows = try? modelContext.fetch(FetchDescriptor<BlockEntity>()) else { return }
+        blockedUserIDs = Set(rows.map(\.userID))
     }
 
     /// Apply a `family_owner` frame: the named user is the family's owner

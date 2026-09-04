@@ -58,6 +58,7 @@ struct DeleteAccountView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                         .disabled(isDeleting)
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -128,8 +129,12 @@ struct DeleteAccountView: View {
         Task {
             do {
                 try await session.deleteAccount(password: password)
-                // Nothing to dismiss: the session is now at the sign-in
-                // screen, and this whole subtree went with it.
+                // On iOS there is nothing left to dismiss — the session is
+                // at the sign-in screen and this subtree went with it. On
+                // the Mac the Settings WINDOW outlives the session, and
+                // its sheet stayed up, spinning, with no way to close it.
+                isDeleting = false
+                dismiss()
             } catch APIError.unauthorized {
                 // A WRONG PASSWORD, not a dead session — the server
                 // answers 401 invalid_credentials here, and signing the

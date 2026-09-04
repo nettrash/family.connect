@@ -24,15 +24,30 @@ pub mod codes {
     pub const USERNAME_TAKEN: &str = "username_taken";
     pub const VALIDATION: &str = "validation";
     pub const ALREADY_IN_FAMILY: &str = "already_in_family";
+    pub const FAMILY_REGISTRATION_DISABLED: &str = "family_registration_disabled";
+    pub const FAMILY_FULL: &str = "family_full";
     pub const NOT_IN_FAMILY: &str = "not_in_family";
     pub const NOT_FAMILY_OWNER: &str = "not_family_owner";
     pub const INVALID_INVITE_CODE: &str = "invalid_invite_code";
     pub const JOIN_REQUEST_PENDING: &str = "join_request_pending";
     pub const JOIN_REQUEST_NOT_PENDING: &str = "join_request_not_pending";
     pub const USER_ALREADY_IN_FAMILY: &str = "user_already_in_family";
+    /// RETIRED: no endpoint raises this any more. An owner who leaves now
+    /// hands the family on rather than being refused (protocol.md,
+    /// `POST /families/leave`). The constant stays because clients that
+    /// predate the hand-off still branch on it, and a code deleted here is
+    /// a code somebody deletes from a client still talking to an old
+    /// server.
     pub const OWNER_CANNOT_LEAVE: &str = "owner_cannot_leave";
     pub const CANNOT_REMOVE_OWNER: &str = "cannot_remove_owner";
     pub const CANNOT_DM_SELF: &str = "cannot_dm_self";
+    pub const CANNOT_BLOCK_SELF: &str = "cannot_block_self";
+    /// Raised only ever TOWARDS the blocker — never towards the person they
+    /// blocked, who must not be able to tell (protocol.md, "Blocking a
+    /// member").
+    pub const BLOCKED: &str = "blocked";
+    pub const CANNOT_REPORT_SELF: &str = "cannot_report_self";
+    pub const REPORT_NOT_PENDING: &str = "report_not_pending";
     pub const NOT_SAME_FAMILY: &str = "not_same_family";
     pub const USER_NOT_FOUND: &str = "user_not_found";
     pub const CHAT_NOT_FOUND: &str = "chat_not_found";
@@ -46,7 +61,11 @@ pub mod codes {
     pub const ATTACHMENT_TOO_LARGE: &str = "attachment_too_large";
     pub const INVALID_ATTACHMENT: &str = "invalid_attachment";
     pub const ATTACHMENT_NOT_FOUND: &str = "attachment_not_found";
+    pub const ATTACHMENT_EXPIRED: &str = "attachment_expired";
     pub const ATTACHMENT_ALREADY_USED: &str = "attachment_already_used";
+    /// The disk is nearly full. Says nothing about the request — the same
+    /// upload succeeds unchanged once the operator frees something.
+    pub const STORAGE_FULL: &str = "storage_full";
     pub const NOTE_NOT_FOUND: &str = "note_not_found";
     pub const NOT_NOTE_AUTHOR: &str = "not_note_author";
     pub const INVALID_NOTE_COLOR: &str = "invalid_note_color";
@@ -87,6 +106,10 @@ pub enum ApiError {
     PayloadTooLarge { code: &'static str, message: String },
     /// 415 — the body's content type is not one this route stores.
     UnsupportedMediaType { code: &'static str, message: String },
+    /// 507 — the server has no room. The one refusal that is about the
+    /// SERVER rather than the request, which is why it is not a 4xx: the
+    /// caller did nothing wrong and retrying later is the right response.
+    InsufficientStorage { code: &'static str, message: String },
     /// 500 — anything unexpected. Logged in full, reported generically.
     Internal(anyhow::Error),
 }
@@ -153,6 +176,15 @@ impl ApiError {
         }
     }
 
+    /// 507 — out of disk. Built from the free-space floor rather than taken
+    /// as free text, so every route refuses in the same words.
+    pub fn storage_full() -> Self {
+        Self::InsufficientStorage {
+            code: codes::STORAGE_FULL,
+            message: "the server is out of storage space; try again later".to_string(),
+        }
+    }
+
     /// The HTTP status this error maps to.
     pub fn status(&self) -> StatusCode {
         match self {
@@ -163,6 +195,7 @@ impl ApiError {
             Self::Conflict { .. } => StatusCode::CONFLICT,
             Self::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::UnsupportedMediaType { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::InsufficientStorage { .. } => StatusCode::INSUFFICIENT_STORAGE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -185,7 +218,8 @@ impl ApiError {
             | Self::NotFound { code, message }
             | Self::Conflict { code, message }
             | Self::PayloadTooLarge { code, message }
-            | Self::UnsupportedMediaType { code, message } => (code.to_string(), message),
+            | Self::UnsupportedMediaType { code, message }
+            | Self::InsufficientStorage { code, message } => (code.to_string(), message),
         }
     }
 }
@@ -205,7 +239,8 @@ impl IntoResponse for ApiError {
             | Self::NotFound { code, message }
             | Self::Conflict { code, message }
             | Self::PayloadTooLarge { code, message }
-            | Self::UnsupportedMediaType { code, message } => (code, message),
+            | Self::UnsupportedMediaType { code, message }
+            | Self::InsufficientStorage { code, message } => (code, message),
         };
         let body = json!({"error": {"code": code, "message": message}});
         (status, Json(body)).into_response()
@@ -249,6 +284,29 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    /// `storage_full` is the one refusal in this protocol that is about the
+    /// SERVER rather than the request, and the status has to say so: a 4xx
+    /// would tell a client its upload was wrong and make it give up, when
+    /// the same bytes succeed unchanged once the operator frees a
+    /// gigabyte. protocol.md, "Photos, videos, audio, files and locations".
+    #[test]
+    fn storage_full_is_a_507_and_not_a_client_error() {
+        let error = ApiError::storage_full();
+        assert_eq!(error.status(), StatusCode::INSUFFICIENT_STORAGE);
+        assert_eq!(error.status().as_u16(), 507);
+        assert!(
+            !error.status().is_client_error(),
+            "a 4xx tells the sender they did something wrong; they did not"
+        );
+
+        let (code, message) = ApiError::storage_full().into_ws_parts();
+        assert_eq!(code, codes::STORAGE_FULL);
+        // Not "too large" in any form: shrinking the photo will not help,
+        // and a client that says so sends somebody off to re-encode a
+        // video for nothing.
+        assert!(!message.contains("large"), "misleading message: {message}");
+    }
     use super::*;
 
     async fn body_json(response: Response) -> serde_json::Value {

@@ -34,6 +34,13 @@
     <string name="s_copy_invite_code">Copy invite code</string>
     <string name="s_create">Create</string>
     <string name="s_create_a_family">Create a family</string>
+    <string name="s_no_new_families_title">This server doesn\'t take new families.</string>
+    <string name="s_no_new_families_body">Family Connect is built for one family on a server of its own. To start yours, run your own server and invite everyone from there.</string>
+    <string name="s_run_your_own_server">How to run your own server</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="one">An account that doesn\'t join a family within %1$d day is removed from this server.</item>
+        <item quantity="other">An account that doesn\'t join a family within %1$d days is removed from this server.</item>
+    </plurals>
     <string name="s_current_password">Current password</string>
     <string name="s_delete">Delete</string>
     <string name="s_delete_this_note">Delete this note?</string>
@@ -56,6 +63,45 @@
     <string name="s_join_requests">Join requests</string>
     <string name="s_join_with_an_invite_code">Join with an invite code</string>
     <string name="s_leave">Leave</string>
+    <string name="s_replying_to_hidden">Replying to a hidden message</string>
+    <string name="s_which_replied_to_hidden">which replied to a hidden message</string>
+    <string name="e_block_failed">Couldn\'t change that right now. Try again.</string>
+    <string name="e_report_failed">Couldn\'t send the report. Try again.</string>
+    <string name="s_report_ellipsis">Report…</string>
+    <string name="s_block">Block</string>
+    <string name="s_unblock">Unblock</string>
+    <string name="s_report">Report</string>
+    <string name="s_report_member_title">Why are you reporting %1$s?</string>
+    <string name="s_report_reason_spam">Spam</string>
+    <string name="s_report_reason_harassment">Harassment</string>
+    <string name="s_report_reason_inappropriate">Inappropriate content</string>
+    <string name="s_report_reason_other">Something else</string>
+    <string name="s_report_disclosure">Your family owner will see this report, your name, and the message text.</string>
+    <string name="s_hidden_note_from_blocked">Hidden note from a blocked member</string>
+    <string name="s_closed">Closed</string>
+    <string name="s_join_closed_caption">The invite code stops working — nobody new can join. Requests already waiting are unaffected, and you can still approve them.</string>
+    <string name="s_member_limit">Member limit</string>
+    <string name="s_limit_members">Limit members</string>
+    <string name="s_most_members">Most members</string>
+    <string name="s_member_limit_none">No limit of your own. This server allows up to %1$d members in a family.</string>
+    <string name="s_member_limit_frozen">%1$d members now. Nobody new can join until somebody leaves; no one is removed.</string>
+    <string name="s_member_limit_room">%1$d of %2$d seats used.</string>
+    <string name="e_member_limit_failed">Couldn\'t change the member limit. Try again.</string>
+    <string name="s_decrease">Decrease</string>
+    <string name="s_increase">Increase</string>
+    <string name="e_family_full_approve">The family is full. Raise the member limit or wait for somebody to leave — the request is still waiting.</string>
+    <string name="e_family_full_join">That family is full right now. Ask them to make room, then try the code again.</string>
+    <string name="s_if_the_problem_is_the_owner">If the problem is the owner</string>
+    <string name="s_operator_published_contact">This server\'s operator published this contact.</string>
+    <string name="s_reports">Reports</string>
+    <string name="s_reported_by">%1$s reported %2$s</string>
+    <string name="s_mark_as_handled">Mark as handled</string>
+    <string name="e_resolve_report_failed">Couldn\'t mark that as handled. Try again.</string>
+    <string name="s_report_disclosure_person">Your family owner will be told you reported this member.</string>
+    <string name="s_reports_empty">Members can report a message or a person to you.</string>
+    <string name="s_safety_for">Safety options for %1$s</string>
+    <string name="s_safety">Safety</string>
+    <string name="s_hidden_blocked_member">Hidden — blocked member</string>
     <string name="s_leave_family">Leave family</string>
     <string name="s_leave_the_family">Leave the family?</string>
     <string name="s_link_previews">Link previews</string>
@@ -134,6 +180,8 @@
     <string name="s_pasted_sound">Pasted sound</string>
     <string name="s_pasted_file">Pasted file</string>
     <string name="s_privacy">Privacy</string>
+    <string name="s_privacy_policy">Privacy policy</string>
+    <string name="s_support">Support</string>
     <string name="s_react">React</string>
     <string name="s_register">Register</string>
     <string name="s_remove">Remove</string>
@@ -210,6 +258,11 @@
     <string name="s_password_changed">Password changed</string>
     <string name="s_saved_to_gallery">Saved to gallery</string>
     <string name="s_edited">edited</string>
+    <string name="e_leave_failed">Couldn\'t leave right now. Try again.</string>
+    <string name="s_leave_family_explanation_owner">%1$s becomes the owner. You\'ll lose access to the family chat and your direct chats; your history returns if you rejoin.</string>
+    <string name="s_leave_family_explanation_last">You\'re the only member left. Leaving deletes the family and everything in it.</string>
+    <string name="s_ownership_passed_on">Ownership passed on</string>
+    <string name="s_ownership_passed_to">%1$s is now the owner of the family.</string>
     <string name="s_leave_family_explanation">You\'ll lose access to the family chat and your direct chats. History stays on the server and comes back if you rejoin.</string>
     <string name="s_link_previews_explanation">Shows a preview under links in messages. Building one asks the linked website for its title and image, so that site sees a request from this device.</string>
     <string name="s_map_previews">Map Previews</string>
@@ -315,7 +368,6 @@
     <string name="s_video_calls_are_off_on_this_server">Video calls are off on this server</string>
     <!-- Multiple attachments per message, and the OS share target
          (docs/protocol.md, "Photos, videos, audio, files and locations"). -->
-    <string name="s_uploading_n_of_m">Uploading %1$d of %2$d…</string>
     <string name="e_attachment_limit">A message can carry at most %1$d attachments.</string>
     <string name="s_share_choose_chat">Share to…</string>
     <string name="s_shared_with_family">Shared with Family</string>
@@ -385,4 +437,85 @@
         <item quantity="one">Use at least %1$d character.</item>
         <item quantity="other">Use at least %1$d characters.</item>
     </plurals>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Show the assistant a picture</string>
+    <string name="s_show_the_assistant_a_picture_note">It leaves this server for the model your server talks to</string>
+    <string name="s_ask_for_a_picture">Ask for a picture</string>
+    <string name="s_assistant_sees_this_picture">The assistant will be shown this picture. It leaves this server for the model your server talks to.</string>
+    <string name="s_assistant_sees_these_pictures">The assistant will be shown these pictures. They leave this server for the model your server talks to.</string>
+    <string name="s_assistant_picture_extra_left_out">Only the first %1$d go with one question; the rest stay here.</string>
+    <string name="s_assistant_picture_others_left_out">Videos, files, audio and locations are never sent to it.</string>
+    <string name="s_assistant_picture_unreadable_left_out">A photo that is too large, or in a format the model can\'t read, is named to it rather than shown.</string>
+    <string name="s_assistant_will_not_see_picture">The assistant won\'t be shown this picture. It is sent as an ordinary attachment.</string>
+    <string name="s_assistant_mention_sees_this_picture">This message mentions the assistant, so it will be shown this picture. It leaves this server for the model your server talks to; no other photo in this chat does.</string>
+    <string name="s_assistant_mention_sees_these_pictures">This message mentions the assistant, so it will be shown these pictures. They leave this server for the model your server talks to; no other photo in this chat does.</string>
+    <string name="s_assistant_mention_sees_quoted_picture">This reply mentions the assistant, so it will be shown the photo you are replying to. It leaves this server for the model your server talks to; no other photo in this chat does.</string>
+    <string name="s_assistant_mention_sees_quoted_pictures">This reply mentions the assistant, so it will be shown the photos you are replying to. They leave this server for the model your server talks to; no other photo in this chat does.</string>
+    <string name="s_assistant_mention_sees_both">This reply mentions the assistant, so it will be shown the pictures here and the ones you are replying to. They leave this server for the model your server talks to; no other photo in this chat does.</string>
+    <string name="s_assistant_mention_extra_left_out">Only the first %1$d go with one message — the ones on it first, then the ones you are replying to; the rest stay here.</string>
+    <string name="s_assistant_mention_sees_recent_only">This message mentions the assistant, so up to %1$d of the most recent photos in this chat go with it — pictures nobody pointed it at, whoever sent them. They leave this server for the model your server talks to.</string>
+    <string name="s_assistant_mention_sees_this_picture_and_recent">This message mentions the assistant, so it will be shown this picture, and up to %1$d of the most recent photos in this chat may go too. They leave this server for the model your server talks to.</string>
+    <string name="s_assistant_mention_sees_these_pictures_and_recent">This message mentions the assistant, so it will be shown these pictures, and up to %1$d of the most recent photos in this chat may go too. They leave this server for the model your server talks to.</string>
+    <string name="s_assistant_mention_sees_quoted_picture_and_recent">This reply mentions the assistant, so it will be shown the photo you are replying to, and up to %1$d of the most recent photos in this chat may go too. They leave this server for the model your server talks to.</string>
+    <string name="s_assistant_mention_sees_quoted_pictures_and_recent">This reply mentions the assistant, so it will be shown the photos you are replying to, and up to %1$d of the most recent photos in this chat may go too. They leave this server for the model your server talks to.</string>
+    <string name="s_assistant_mention_sees_both_and_recent">This reply mentions the assistant, so it will be shown the pictures here and the ones you are replying to, and up to %1$d of the most recent photos in this chat may go too. They leave this server for the model your server talks to.</string>
+    <string name="s_assistant_answer_failed">The assistant couldn\'t finish this answer. Ask again.</string>
+    <string name="s_assistant_vision">Assistant may look at photos</string>
+    <string name="s_assistant_vision_explanation">When someone attaches a photo to a question in their own chat with the assistant, attaches one to a message that mentions the assistant in the family chat, or replies to a photo while mentioning it, that photo is sent to the model with the question — at most 4 per question. A photo the assistant was not pointed at is never sent, not even from an earlier message unless “Assistant sees recent photos” is on, and neither are videos, files, audio or locations. Off unless you turn it on; with it off, no photo is ever sent.</string>
+    <string name="e_change_assistant_vision_failed">Couldn\'t change that setting</string>
+    <string name="s_assistant_history_photos">Assistant sees recent photos</string>
+    <string name="s_assistant_history_photos_explanation">When someone mentions the assistant in the family chat, the most recent photos in that chat — up to 4, from anyone, that nobody pointed the assistant at — are also sent to the model with the question, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. Needs “Assistant may look at photos” and “Assistant sees recent history”; off unless you turn it on.</string>
+    <string name="s_assistant_history_photos_no_deployment">Not available here: the assistant on this server can\'t look at pictures.</string>
+    <string name="s_assistant_history_photos_needs_vision">Turn on “Assistant may look at photos” first — the server refuses this while that is off.</string>
+    <string name="s_assistant_history_photos_needs_history">While “Assistant sees recent history” is off this does nothing: the chat\'s history isn\'t sent, so no photo from it is either.</string>
+    <string name="e_change_assistant_history_photos_failed">Couldn\'t change that setting</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">Pick a chat from the list.</string>
+    <plurals name="p_members">
+        <item quantity="one">%1$d member</item>
+        <item quantity="other">%1$d members</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">Today</string>
+    <string name="s_yesterday">Yesterday</string>
+    <string name="s_owner_caption">owner</string>
+    <string name="s_share_invite_text">Join our family on Family Connect! Server: %1$s — invite code: %2$s</string>
+    <string name="e_username_rules">3–32 characters: letters, digits, _ or .</string>
+    <string name="e_display_name_rules">1–64 characters</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="one">%1$d photo</item>
+        <item quantity="other">%1$d photos</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="one">%1$d video</item>
+        <item quantity="other">%1$d videos</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="one">%1$d voice note</item>
+        <item quantity="other">%1$d voice notes</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="one">%1$d file</item>
+        <item quantity="other">%1$d files</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="one">%1$d attachment</item>
+        <item quantity="other">%1$d attachments</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">Calls</string>
+    <string name="s_channel_calls_desc">Incoming calls</string>
+    <string name="s_channel_ongoing">Call in progress</string>
+    <string name="s_channel_ongoing_desc">The call you are on</string>
+    <string name="s_channel_messages">Messages</string>
+    <string name="s_channel_messages_desc">New family messages and join requests</string>
+    <string name="s_emoji_smileys">Smileys</string>
+    <string name="s_emoji_gestures">Gestures</string>
+    <string name="s_emoji_hearts">Hearts</string>
+    <string name="s_emoji_animals">Animals &amp; Nature</string>
+    <string name="s_emoji_food">Food &amp; Drink</string>
+    <string name="s_emoji_activities">Activities</string>
+    <string name="s_emoji_travel">Travel &amp; Places</string>
+    <string name="s_emoji_objects">Objects &amp; Symbols</string>
 </resources>

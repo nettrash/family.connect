@@ -43,6 +43,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ExitToApp
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Cake
@@ -50,6 +51,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.AddAPhoto
 import androidx.compose.material.icons.outlined.ManageAccounts
 import androidx.compose.material.icons.outlined.PersonRemove
@@ -63,6 +65,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.OutlinedTextField
+import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.familyadmin.BirthdayDialog
 import me.nettrash.familyconnect.ui.familyadmin.SetPasswordDialog
@@ -77,6 +80,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -122,6 +126,7 @@ fun SettingsScreen(
     val copiedLabel = stringResource(R.string.s_copied)
     val passwordChangedLabel = stringResource(R.string.s_password_changed)
     val clipboard = LocalClipboard.current
+    val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
@@ -173,7 +178,11 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                // A settings list stretched across a tablet put every
+                // chevron 1,100dp from its label; the readable column
+                // holds it to a phone's measure, centred.
+                .readableColumn(),
         ) {
             // The exit animation still needs text to draw while the card
             // shrinks, so keep the last non-null message around.
@@ -305,14 +314,13 @@ fun SettingsScreen(
                     },
                 )
                 state.inviteCode?.let { code ->
+                    // Resolved in composable scope, so a language change
+                    // re-reads it (lint: LocalContextGetResourceValueCall).
+                    val shareText = stringResource(R.string.s_share_invite_text, state.serverUrl.orEmpty(), code)
                     val shareCode = {
                         val send = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
-                            putExtra(
-                                Intent.EXTRA_TEXT,
-                                "Join our family on Family Connect! " +
-                                    "Server: ${state.serverUrl} — invite code: $code",
-                            )
+                            putExtra(Intent.EXTRA_TEXT, shareText)
                         }
                         context.startActivity(Intent.createChooser(send, shareTitle))
                     }
@@ -486,6 +494,28 @@ fun SettingsScreen(
                     viewModel.setMapPreviewsEnabled(!state.mapPreviewsEnabled)
                 },
             )
+            // Play's Data safety form takes the policy URL, but the policy
+            // has to be reachable from inside the app too — the iOS side
+            // carries the same two rows for guideline 5.1.1(i). These open
+            // in the browser rather than a WebView on purpose: the policy
+            // is a public page and a reader should be able to check the
+            // address bar for themselves. The /play/ pages, not /appstore/:
+            // they describe FCM and Google Maps, which is what this build
+            // actually uses.
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.s_privacy_policy)) },
+                leadingContent = { Icon(Icons.Outlined.Shield, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    uriHandler.openUri("https://nettrash.me/play/familyconnect/privacy.html")
+                },
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.s_support)) },
+                leadingContent = { Icon(Icons.AutoMirrored.Outlined.HelpOutline, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    uriHandler.openUri("https://nettrash.me/play/familyconnect/support.html")
+                },
+            )
             HorizontalDivider(
                 modifier = Modifier.padding(start = 16.dp),
                 color = MaterialTheme.colorScheme.outlineVariant,
@@ -570,8 +600,20 @@ fun SettingsScreen(
             onDismissRequest = { confirmLeave = false },
             title = { Text(stringResource(R.string.s_leave_the_family)) },
             text = {
+                // Three readers, three sentences. An owner is never
+                // refused — they hand the family on — so the dialog says
+                // who to, and an owner standing alone is told the family
+                // goes with them (docs/protocol.md, `POST /families/leave`).
+                // Bound to a local first: `state` is a delegated property,
+                // so a smart cast off `state.nextOwnerName` is refused.
+                val successor = state.nextOwnerName
                 Text(
-                    stringResource(R.string.s_leave_family_explanation),
+                    when {
+                        !state.isOwner -> stringResource(R.string.s_leave_family_explanation)
+                        successor != null ->
+                            stringResource(R.string.s_leave_family_explanation_owner, successor)
+                        else -> stringResource(R.string.s_leave_family_explanation_last)
+                    },
                 )
             },
             confirmButton = {
@@ -586,6 +628,20 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { confirmLeave = false }) {
                     Text(stringResource(R.string.s_cancel))
+                }
+            },
+        )
+    }
+
+    // Where the family went, shown before this screen goes away.
+    state.handedOverTo?.let { newOwner ->
+        AlertDialog(
+            onDismissRequest = { viewModel.acknowledgeHandOver() },
+            title = { Text(stringResource(R.string.s_ownership_passed_on)) },
+            text = { Text(stringResource(R.string.s_ownership_passed_to, newOwner)) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.acknowledgeHandOver() }) {
+                    Text(stringResource(R.string.s_close))
                 }
             },
         )

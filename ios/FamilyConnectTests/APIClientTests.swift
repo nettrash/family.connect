@@ -21,6 +21,42 @@ struct APIClientTests {
             session: StubURLProtocol.makeSession())
     }
 
+    // MARK: - Leaving a family
+
+    /// Two shapes from one endpoint, and the empty one is the COMMON case:
+    /// an ordinary member leaving gets `204` with no body at all, which a
+    /// decoder handed straight to it reads as malformed JSON.
+    @Test("leaving answers with the successor, or with nothing at all")
+    func leaveFamilyBothShapes() async throws {
+        let host = "api-leave.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        // A box rather than captured vars: the stub's handler is a
+        // Sendable closure, and every request here is awaited before the
+        // script changes, so the box is never touched from two sides.
+        final class Script: @unchecked Sendable {
+            var body = ""
+            var status = 204
+        }
+        let script = Script()
+        let client = makeClient(host: host) { _ in
+            script.status == 204 ? .empty(204) : .json(script.status, script.body)
+        }
+
+        // 204, no body: nobody inherited. Must not throw.
+        #expect(try await client.leaveFamily() == nil)
+
+        // 200 with a successor: the id the leaving owner resolves against
+        // the roster it still holds.
+        script.status = 200
+        script.body = #"{"new_owner_user_id": 11}"#
+        #expect(try await client.leaveFamily() == 11)
+
+        // A 200 whose body omits the key — a server that answered 200 for
+        // its own reasons — is "nobody", not a decode failure.
+        script.body = "{}"
+        #expect(try await client.leaveFamily() == nil)
+    }
+
     @Test("URLs are {base}/api/v1{path} with query items")
     func urlBuilding() async throws {
         let host = "api-urls.test"
@@ -257,12 +293,18 @@ struct APIClientTests {
 /// Tiny thread-safe counter for handlers that vary by call ordinal.
 final class Counter: @unchecked Sendable {
     private let lock = NSLock()
-    private var value = 0
+    private var count = 0
+
+    /// How many times it has been incremented so far.
+    var value: Int {
+        lock.lock(); defer { lock.unlock() }
+        return count
+    }
 
     @discardableResult
     func increment() -> Int {
         lock.lock(); defer { lock.unlock() }
-        value += 1
-        return value
+        count += 1
+        return count
     }
 }

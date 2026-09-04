@@ -320,6 +320,27 @@ nonisolated enum PollPresentation {
         return Double(option.votes.count) / Double(total)
     }
 
+    /// The voters on one option whose FACES and NAMES may be drawn — the
+    /// full list minus anyone this reader has blocked.
+    ///
+    /// **Identity only. The arithmetic above is untouched**, and that is the
+    /// whole rule: `fraction`, `voterIDs` and the "N of M voted" line all go
+    /// on counting a blocked member's vote, because integers are not
+    /// presence and a tally that moved when you blocked somebody would tell
+    /// you they had voted (protocol.md, "Blocking a member").
+    ///
+    /// Filtering the votes into the snapshot instead — one filtered list
+    /// that both the faces and the sums read — is the tempting shape and
+    /// the wrong one: it makes the bars stop summing to the total and turns
+    /// every count on the poll into a signal.
+    static func drawableVoters(
+        of option: PollOptionSnapshot,
+        blockedUserIDs: Set<Int64>
+    ) -> [Int64] {
+        guard !blockedUserIDs.isEmpty else { return option.votes }
+        return option.votes.filter { !blockedUserIDs.contains($0) }
+    }
+
     /// What a tap on `optionID` means for this reader: the option they
     /// already hold clears their vote, anything else casts it. The
     /// protocol leaves this to each client deliberately — its own vote is
@@ -445,21 +466,77 @@ nonisolated enum MessagePresentation {
         }
     }
 
+    /// Whether this bubble draws as the "Hidden — blocked member" row.
+    ///
+    /// One rule in one place, because the alternative is the same `contains`
+    /// at forty draw sites and a leak wherever somebody forgets it. A
+    /// hidden row draws the placeholder and the timestamp and NOTHING else:
+    /// no display name, no avatar, no attachment thumbnail, no reaction
+    /// chips — all of which come back with the reveal (protocol.md,
+    /// "Blocking a member").
+    ///
+    /// Own messages are never hidden: blocking yourself is refused, so the
+    /// guard is belt-and-braces against a corrupt store rather than a real
+    /// case.
+    static func isHiddenByBlock(
+        _ message: MessageSnapshot,
+        blockedUserIDs: Set<Int64>,
+        currentUserID: Int64
+    ) -> Bool {
+        guard message.senderID != currentUserID else { return false }
+        return blockedUserIDs.contains(message.senderID)
+    }
+
+    /// Whether a board note draws as the "Hidden — blocked member" note.
+    ///
+    /// The note is the ONE object where a block hides the content as well
+    /// as the author (docs/protocol.md, "Board"): a note is a piece of
+    /// writing pinned to a shared wall with no bubble to collapse into a
+    /// hidden row, so dropping only the name would hide nothing that
+    /// mattered. Everything a third member can measure stays put — the
+    /// slot, the size, the colour, the tilt — because a note the blocker
+    /// hides still occupies its slot and `board_full` is never projected
+    /// per reader.
+    ///
+    /// Deliberately NOT `isHiddenByBlock` overloaded on a note: the two
+    /// take different arguments and mean different things about content,
+    /// and one name for both invites passing a note where a message is
+    /// meant.
+    static func isNoteHiddenByBlock(
+        authorID: Int64,
+        blockedUserIDs: Set<Int64>,
+        currentUserID: Int64
+    ) -> Bool {
+        guard authorID != currentUserID else { return false }
+        return blockedUserIDs.contains(authorID)
+    }
+
     /// Whether the sender's name caption shows above a bubble.
     ///
     /// Rules: only in the family chat (a direct chat has exactly one other
     /// person — the name would be noise), never on own bubbles, and only
     /// when the sender *changes* relative to the previous bubble in the
     /// same day section (the first bubble of a section has no previous).
+    /// A hidden row draws no name at all, and the RUN GROUPING is
+    /// unchanged: a hidden bubble still counts as its sender's run, so the
+    /// next visible message from somebody else still gets its caption.
+    /// Treating a hidden run head as absent instead would silently merge it
+    /// into the run above and drop a caption a reader needs.
     static func showsSenderName(
         at index: Int,
         in section: [MessageSnapshot],
         isFamilyChat: Bool,
-        currentUserID: Int64
+        currentUserID: Int64,
+        // UNDEFAULTED, deliberately. A default here compiles clean at every
+        // call site and silently draws a blocked member's name — the class
+        // of bug that has no compiler pressure behind it at all.
+        blockedUserIDs: Set<Int64>
     ) -> Bool {
         guard isFamilyChat, section.indices.contains(index) else { return false }
         let message = section[index]
         guard message.senderID != currentUserID else { return false }
+        guard !isHiddenByBlock(message, blockedUserIDs: blockedUserIDs, currentUserID: currentUserID)
+        else { return false }
         guard index > 0 else { return true }
         return section[index - 1].senderID != message.senderID
     }
@@ -467,9 +544,91 @@ nonisolated enum MessagePresentation {
     /// Whether an own message counts as read by someone else: it must be
     /// confirmed (has a server id) and covered by the highest read marker
     /// any other member reported. Pending/failed messages are never read.
-    static func isRead(_ message: MessageSnapshot, othersReadUpTo: Int64) -> Bool {
+    ///
+    /// NEVER TRUE IN THE FAMILY CHAT (docs/protocol.md, "Frames"): a `read`
+    /// frame folds into a displayed "seen" marker only in a DIRECT chat,
+    /// where there is exactly one peer and the marker means one person.
+    /// `othersReadUpTo` is a MAX over every other member, so in a family
+    /// chat the tick means "whoever is furthest ahead has got this far" —
+    /// a sentence about nobody. It has to go for the block to be silent:
+    /// inward `read` frames from a blocked member are not relayed, so that
+    /// max would stop incorporating them, and a tick that slowed down the
+    /// day you blocked somebody draws a per-member ABSENCE on screen.
+    ///
+    /// `isFamilyChat` is deliberately UNDEFAULTED. A default would let a
+    /// new surface draw the family tick by saying nothing, which is exactly
+    /// how this shipped wrong the first time.
+    static func isRead(
+        _ message: MessageSnapshot,
+        othersReadUpTo: Int64,
+        isFamilyChat: Bool
+    ) -> Bool {
+        guard !isFamilyChat else { return false }
         guard let serverID = message.serverID else { return false }
         return serverID <= othersReadUpTo
+    }
+
+    /// Does this ROW read as an assistant answer that has not arrived yet?
+    ///
+    /// Asked of the row, and of nothing else. The set of ids a live
+    /// `ai_delta`/`ai_error` populated is a fact about THIS PROCESS; the
+    /// protocol's rule is a fact about the message — *"an EMPTY assistant
+    /// message is stored and fanned out, so a bubble appears at once… The
+    /// empty row is the 'still working' state"* (docs/protocol.md, "How a
+    /// picture comes back"), which it says without scoping to one launch.
+    /// Deciding it from a set meant quitting mid-`/draw` and reopening drew
+    /// the row completely blank — no cursor, no error, nothing — which is
+    /// the exact bubble the working state was added to remove.
+    ///
+    /// Deliberately narrow, and every clause earns its place:
+    ///
+    /// - EMPTY and carrying nothing: a body, an attachment, a poll or a
+    ///   call is an answer that arrived (a picture answer gains its
+    ///   attachment through `message_edited`, and that is what ends this
+    ///   state);
+    /// - not MINE: my own empty row is a send in flight;
+    /// - and from somebody who could be the assistant — its own `ai` chat,
+    ///   where two participants mean anything not mine is its, or the
+    ///   family chat, where only its reserved account names it.
+    ///
+    /// A member's own message cannot reach this shape anyway: the server
+    /// refuses a send with neither body nor attachment (`message_empty`),
+    /// so an empty attachment-less row in an `ai` chat is the placeholder
+    /// and nothing else.
+    ///
+    /// Same rule on Android (`AssistantAnswer.isAwaited` in
+    /// AssistantAnswer.kt), pinned by the same cases.
+    static func isAwaitedAssistantAnswer(
+        carriesNothing: Bool,
+        senderID: Int64,
+        isAssistantChat: Bool,
+        assistantUserID: Int64?,
+        currentUserID: Int64
+    ) -> Bool {
+        guard carriesNothing, senderID != currentUserID else { return false }
+        return isAssistantChat || senderID == assistantUserID
+    }
+
+    /// The same question of a laid-out row, which is what a bubble holds.
+    ///
+    /// The one place "carries nothing" is spelled out for a snapshot; the
+    /// coordinator spells it once more for a stored row and for an arriving
+    /// DTO, because those three types share no field list and a protocol
+    /// over four accessors would be more machinery than the sentence is
+    /// worth.
+    static func isAwaitedAssistantAnswer(
+        _ message: MessageSnapshot,
+        isAssistantChat: Bool,
+        assistantUserID: Int64?,
+        currentUserID: Int64
+    ) -> Bool {
+        isAwaitedAssistantAnswer(
+            carriesNothing: message.body.isEmpty && message.attachments.isEmpty
+                && message.poll == nil && message.call == nil,
+            senderID: message.senderID,
+            isAssistantChat: isAssistantChat,
+            assistantUserID: assistantUserID,
+            currentUserID: currentUserID)
     }
 
     /// True when a message is nothing but photos and/or videos — no
@@ -548,10 +707,18 @@ nonisolated enum MessagePresentation {
     /// emoji, the current user shows as "You" and comes first; everyone
     /// else keeps reaction-list order under their display name from
     /// `names` ("Someone" when a reactor is no longer a known member).
+    /// A blocked reactor is dropped from these ROWS and from nowhere else:
+    /// `reactionChips` above keeps its COUNT, so the chip may read 3 while
+    /// this popover names two. That gap is deliberate and is visible only
+    /// to the blocker, who already knows they blocked somebody — whereas a
+    /// count that moved would tell the BLOCKED person they had been
+    /// (protocol.md, "Blocking a member").
     static func reactionDetails(
         _ reactions: [ReactionSnapshot],
         names: [Int64: String],
-        currentUserID: Int64
+        currentUserID: Int64,
+        // Undefaulted for the reason above.
+        blockedUserIDs: Set<Int64>
     ) -> [ReactionDetail] {
         var order: [String] = []
         var others: [String: [String]] = [:]
@@ -564,7 +731,7 @@ nonisolated enum MessagePresentation {
             }
             if reaction.userID == currentUserID {
                 mine.insert(reaction.emoji)
-            } else {
+            } else if !blockedUserIDs.contains(reaction.userID) {
                 others[reaction.emoji, default: []].append(
                     names[reaction.userID] ?? String(localized: "Someone"))
                 otherIDs[reaction.emoji, default: []].append(reaction.userID)

@@ -208,7 +208,7 @@ nonisolated struct MemberDTO: Codable, Equatable, Identifiable, Sendable {
 nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     let id: Int64
     let name: String
-    /// "open" | "approval"
+    /// "open" | "approval" | "closed"
     let joinPolicy: String
     let createdAt: Date?
     /// Present when (and only when) the caller is the owner.
@@ -217,10 +217,50 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// unset is not English (protocol.md, "The family's language"). The
     /// wire says so by omitting the key, so this must stay an Optional.
     let language: String?
+    /// The most members this family admits, as set by its owner, or nil
+    /// when they have never set one. Absent is NOT the operator's ceiling
+    /// (`MeResponse.maxFamilyMembers`): the ceiling lives in the server's
+    /// config and moves between restarts, so folding the two together
+    /// would make this family's own answer change when nobody in it
+    /// touched anything (protocol.md, "Families").
+    let maxMembers: Int?
     /// Whether a mention of `@ai` in the family chat is shown the last
     /// month of it. ALWAYS present on the wire — a switch has no "unset" —
     /// but `true` here is the fallback for a server that predates it.
     let aiHistory: Bool
+    /// Whether a photograph a member points the assistant at may be shown
+    /// to the model at all: one attached to a question in their OWN
+    /// assistant chat, and — since #56 — one on an `@ai` message in the
+    /// family chat or on the message it replies to (protocol.md,
+    /// "Pictures" and "Showing the assistant a picture from the family
+    /// chat"). One switch for both surfaces, deliberately.
+    ///
+    /// ALWAYS present on the wire for the reason `aiHistory` is, and its
+    /// default is the other one: **false**. Off unless the owner turned it
+    /// on, and off for every family that existed before it — which is also
+    /// the right answer for a server that predates the field, so the
+    /// decoder's fallback and the protocol's default are the same value.
+    ///
+    /// The asymmetry with `aiHistory` is the point rather than an
+    /// inconsistency: history widened what a model was already being told,
+    /// while a photograph is a different kind of disclosure entirely.
+    let aiVision: Bool
+    /// Whether an `@ai` mention in the family chat may ALSO be shown the
+    /// most recent photographs of that chat — pictures nobody pointed the
+    /// assistant at, on messages the mention did not touch (protocol.md,
+    /// "Recent photos from the family chat"). A THIRD switch rather than
+    /// a widening of `aiVision`: every owner who turned that one on did
+    /// so under a sentence ending "never from an earlier message", and
+    /// widening it would make that sentence false for every family that
+    /// already said yes to it.
+    ///
+    /// ALWAYS present on the wire, and **false** by default — for every
+    /// family that predates it, and for a server that predates the field,
+    /// where no such photo can travel at all. It can only be true while
+    /// `aiVision` is: the server refuses to turn it on otherwise and turns
+    /// it off in the same write whenever `aiVision` goes off, so a PATCH
+    /// answer is the only place this client learns either.
+    let aiHistoryPhotos: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -229,7 +269,10 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         case createdAt = "created_at"
         case inviteCode = "invite_code"
         case language
+        case maxMembers = "max_members"
         case aiHistory = "ai_history"
+        case aiVision = "ai_vision"
+        case aiHistoryPhotos = "ai_history_photos"
     }
 
     init(
@@ -239,7 +282,24 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         createdAt: Date?,
         inviteCode: String?,
         language: String? = nil,
-        aiHistory: Bool = true
+        aiHistory: Bool = true,
+        // DELIBERATELY UNDEFAULTED, both of them, and last. A default here
+        // compiles cleanly at every field-by-field rebuild site and then
+        // silently resets the value after a policy change, a code rotation
+        // or an assistant edit — the class of bug the invite-code merge
+        // comment in FamilyManageView already records happening once.
+        // Taking the compile errors is the point.
+        //
+        // `aiVision` earns it twice over: it is the switch that decides
+        // whether photographs leave the server, and a rebuild that dropped
+        // it would show the family a setting their server does not have.
+        aiVision: Bool,
+        // The third switch, undefaulted for the same reason: a rebuild
+        // that dropped it would show "Recent photos" off on this device
+        // while the server had it on — and it decides whether photographs
+        // nobody chose leave the server.
+        aiHistoryPhotos: Bool,
+        maxMembers: Int?
     ) {
         self.id = id
         self.name = name
@@ -247,7 +307,10 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.inviteCode = inviteCode
         self.language = language
+        self.maxMembers = maxMembers
         self.aiHistory = aiHistory
+        self.aiVision = aiVision
+        self.aiHistoryPhotos = aiHistoryPhotos
     }
 
     /// Hand-written for the reason UserDTO's is, and this type had no
@@ -264,7 +327,17 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
         inviteCode = try container.decodeIfPresent(String.self, forKey: .inviteCode)
         language = try container.decodeIfPresent(String.self, forKey: .language)
+        maxMembers = try container.decodeIfPresent(Int.self, forKey: .maxMembers)
         aiHistory = try container.decodeIfPresent(Bool.self, forKey: .aiHistory) ?? true
+        // FALSE, and not for compatibility's sake — it is the protocol's
+        // own default. A server that predates the field is a server where
+        // no photograph can reach a model, which is exactly what `false`
+        // makes this client offer.
+        aiVision = try container.decodeIfPresent(Bool.self, forKey: .aiVision) ?? false
+        // FALSE for the same reason, one notch further: a server that
+        // predates the field never sends a photo nobody pointed at, which
+        // is exactly the state `false` reports.
+        aiHistoryPhotos = try container.decodeIfPresent(Bool.self, forKey: .aiHistoryPhotos) ?? false
     }
 }
 
@@ -290,6 +363,52 @@ nonisolated struct JoinRequestDTO: Codable, Equatable, Sendable, Identifiable {
         case user
         case createdAt = "created_at"
     }
+}
+
+/// One report, as the family OWNER reads it (protocol.md, "Reporting a
+/// member").
+///
+/// Shaped after `JoinRequestDTO` because for the owner it IS the
+/// join-request screen: a queue of things somebody raised, each decided
+/// once and then off the list.
+nonisolated struct ReportDTO: Codable, Equatable, Sendable, Identifiable {
+    let id: Int64
+    let reporter: UserDTO
+    let reported: UserDTO
+    /// One of `spam`, `harassment`, `inappropriate`, `other` — a fixed list
+    /// so nine locales render a row from string resources rather than
+    /// shipping untranslated prose to a moderator. An unrecognised value is
+    /// kept as-is and drawn as "other" rather than failing the decode: a
+    /// newer server must never make an owner's inbox unreadable.
+    let reason: String
+    /// The message reported, when one was named AND it still exists.
+    /// Retention drops it; the excerpt outlives it, so a client draws the
+    /// excerpt always and offers to jump to the message only while this
+    /// survives.
+    let messageID: Int64?
+    /// The WHOLE reported body, frozen when the report was raised — the one
+    /// quotation in this protocol that is stored rather than recomputed,
+    /// because the author may edit it away and retention will sweep it.
+    let messageExcerpt: String?
+    let createdAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case reporter
+        case reported
+        case reason
+        case messageID = "message_id"
+        case messageExcerpt = "message_excerpt"
+        case createdAt = "created_at"
+    }
+}
+
+nonisolated struct ReportsResponse: Codable, Equatable, Sendable {
+    let reports: [ReportDTO]
+}
+
+nonisolated struct ReportResponse: Codable, Equatable, Sendable {
+    let report: ReportDTO
 }
 
 nonisolated struct ChatDTO: Codable, Equatable, Sendable {
@@ -780,6 +899,37 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// video — which is also the right answer there, it would refuse the
     /// offer with `video_calls_disabled`.
     var videoCallsEnabled: Bool = false
+    /// Everyone this caller has blocked. ALWAYS present on the wire and
+    /// `[]` when empty — the one read in this protocol where absence is
+    /// not allowed to mean "leave what you hold alone", because a list
+    /// that vanished when it emptied would never tell a second device
+    /// about the last unblock. It is a complete state-set, so a client
+    /// REPLACES what it stores with this (protocol.md, "Blocking a
+    /// member"). Defaulted to `[]` for a server that predates blocking,
+    /// which is also the right answer there.
+    var blockedUserIDs: [Int64] = []
+    /// The operator's ceiling on a family's size. ALWAYS present on a
+    /// current server, and the range an owner's cap picker draws itself
+    /// from rather than discovering a `validation` error when somebody
+    /// saves. Nil for a server that predates the cap, where there is no
+    /// ceiling to draw.
+    var maxFamilyMembers: Int?
+    /// How to reach the operator, absent when they published nothing. The
+    /// escalation path for when the family's own moderator is the problem
+    /// — a report naming the owner never reaches them (protocol.md,
+    /// "Reporting a member").
+    var supportContact: String?
+    /// Whether this server takes NEW families at all (`[families]
+    /// registration`, docs/protocol.md "Starting a family"). ALWAYS present
+    /// on a current server; defaulted to TRUE for one that predates the
+    /// switch, which is also the right answer there — such a server has
+    /// no door to shut.
+    var familyRegistrationEnabled: Bool = true
+    /// How many days an account may go without a family before this server
+    /// removes it; 0 when it never does, which is also the answer on a
+    /// server that predates the sweep (docs/protocol.md, "Accounts without
+    /// a family"). The gate says so, so the deadline is known before it is met.
+    var familylessAccountTTLDays: Int = 0
 
     enum CodingKeys: String, CodingKey {
         case user
@@ -788,6 +938,11 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         case pendingJoinRequest = "pending_join_request"
         case callsEnabled = "calls_enabled"
         case videoCallsEnabled = "video_calls_enabled"
+        case blockedUserIDs = "blocked_user_ids"
+        case maxFamilyMembers = "max_family_members"
+        case supportContact = "support_contact"
+        case familyRegistrationEnabled = "family_registration_enabled"
+        case familylessAccountTTLDays = "familyless_account_ttl_days"
     }
 
     init(
@@ -796,7 +951,12 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         role: String?,
         pendingJoinRequest: PendingJoinRequestDTO?,
         callsEnabled: Bool = false,
-        videoCallsEnabled: Bool = false
+        videoCallsEnabled: Bool = false,
+        blockedUserIDs: [Int64] = [],
+        maxFamilyMembers: Int? = nil,
+        supportContact: String? = nil,
+        familyRegistrationEnabled: Bool = true,
+        familylessAccountTTLDays: Int = 0
     ) {
         self.user = user
         self.family = family
@@ -804,6 +964,11 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         self.pendingJoinRequest = pendingJoinRequest
         self.callsEnabled = callsEnabled
         self.videoCallsEnabled = videoCallsEnabled
+        self.blockedUserIDs = blockedUserIDs
+        self.maxFamilyMembers = maxFamilyMembers
+        self.supportContact = supportContact
+        self.familyRegistrationEnabled = familyRegistrationEnabled
+        self.familylessAccountTTLDays = familylessAccountTTLDays
     }
 
     /// Hand-written for the reason every other defaulted field on this
@@ -816,6 +981,25 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         pendingJoinRequest = try container.decodeIfPresent(PendingJoinRequestDTO.self, forKey: .pendingJoinRequest)
         callsEnabled = try container.decodeIfPresent(Bool.self, forKey: .callsEnabled) ?? false
         videoCallsEnabled = try container.decodeIfPresent(Bool.self, forKey: .videoCallsEnabled) ?? false
+        blockedUserIDs = try container.decodeIfPresent([Int64].self, forKey: .blockedUserIDs) ?? []
+        maxFamilyMembers = try container.decodeIfPresent(Int.self, forKey: .maxFamilyMembers)
+        supportContact = try container.decodeIfPresent(String.self, forKey: .supportContact)
+        // Absent on a server from before the switch, which has no door to
+        // shut — so absence reads as open (docs/protocol.md, `GET /me`).
+        familyRegistrationEnabled = try container.decodeIfPresent(Bool.self, forKey: .familyRegistrationEnabled) ?? true
+        // Absent on a server from before the sweep, which removes nothing.
+        familylessAccountTTLDays = try container.decodeIfPresent(Int.self, forKey: .familylessAccountTTLDays) ?? 0
+    }
+}
+
+/// The body of a `POST /families/leave` that handed the family on. Absent
+/// entirely when the answer was `204` — an ordinary member leaving, or the
+/// last one, which deletes the family instead of passing it.
+nonisolated struct LeaveFamilyResponse: Codable, Equatable, Sendable {
+    let newOwnerUserID: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case newOwnerUserID = "new_owner_user_id"
     }
 }
 
@@ -843,11 +1027,69 @@ nonisolated struct AssistantDTO: Codable, Equatable, Sendable {
     /// the grammar is shared (AssistantMention) but the spelling belongs to
     /// the protocol, and a client inventing its own would be unanswerable.
     let mention: String
+    /// The picture token, alongside `mention` and for the same reason. Its
+    /// value is fixed and this client still mirrors the grammar by value;
+    /// the field is here so it can be CERTAIN the server it is talking to
+    /// means the same five characters by it (protocol.md, "Pictures").
+    /// Absent on a server that predates pictures, where `images` is false
+    /// too and nothing is offered anyway.
+    let draw: String?
+    /// This SERVER has a deployment that can look at a picture. It says
+    /// nothing about whether THIS family has allowed it — that is
+    /// `ai_vision` on the Family object, and a client needs both to be true
+    /// before it offers to attach a picture in an `ai` chat. Since #56 the
+    /// same pair decides whether a photo on an `@ai` message, or on the
+    /// message it replies to, travels with the mention (protocol.md,
+    /// "Showing the assistant a picture from the family chat").
+    let vision: Bool
+    /// This server can generate one. A client offers the `/draw`
+    /// affordance only when this is true, for the reason the whole
+    /// `assistant` object exists: an affordance that silently does nothing
+    /// is worse than one that is not there. Since #56 it also means the
+    /// assistant may draw unasked; the reply is the picture message a
+    /// `/draw` already produces, so nothing is offered or drawn differently
+    /// for it (protocol.md, "Drawing without being told to").
+    let images: Bool
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
         case displayName = "display_name"
         case mention
+        case draw
+        case vision
+        case images
+    }
+
+    init(
+        userID: Int64,
+        displayName: String,
+        mention: String,
+        draw: String? = nil,
+        vision: Bool = false,
+        images: Bool = false
+    ) {
+        self.userID = userID
+        self.displayName = displayName
+        self.mention = mention
+        self.draw = draw
+        self.vision = vision
+        self.images = images
+    }
+
+    /// Hand-written for the reason `UserDTO`'s is: a property default is
+    /// not a decoding fallback, and all three keys below are absent on
+    /// every server that predates pictures. FALSE is the honest answer
+    /// there — such a server can neither see nor draw — so an old server
+    /// and a server with no vision/images deployment configured produce
+    /// exactly the same client, which is the point of the flags.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        userID = try container.decode(Int64.self, forKey: .userID)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        mention = try container.decode(String.self, forKey: .mention)
+        draw = try container.decodeIfPresent(String.self, forKey: .draw)
+        vision = try container.decodeIfPresent(Bool.self, forKey: .vision) ?? false
+        images = try container.decodeIfPresent(Bool.self, forKey: .images) ?? false
     }
 }
 
@@ -867,6 +1109,25 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
     /// Absent when the server has no assistant configured — which is the
     /// whole of the capability check.
     let assistant: AssistantDTO?
+    /// Everyone this caller has blocked. ALWAYS present on the wire and
+    /// `[]` when empty — the one read in this protocol where absence is
+    /// not allowed to mean "leave what you hold alone", because a list
+    /// that vanished when it emptied would never tell a second device
+    /// about the last unblock. It is a complete state-set, so a client
+    /// REPLACES what it stores with this (protocol.md, "Blocking a
+    /// member"). Defaulted to `[]` for a server that predates blocking,
+    /// which is also the right answer there.
+    let blockedUserIDs: [Int64]
+    /// Who would inherit this family if the owner left right now — present
+    /// for the OWNER only, and absent when they are the last member, which
+    /// is a DIFFERENT dialog: leaving then deletes the family.
+    ///
+    /// A PREDICTION, not a fact. Any join or leave changes the answer and
+    /// none of them raises a frame for it, so a client re-reads
+    /// `GET /families/mine` immediately before it shows the leave dialog
+    /// and never names a successor from a cached value (protocol.md,
+    /// `GET /families/mine`).
+    let nextOwnerUserID: Int64?
     /// The board cursor, omitted while the board has never been written to.
     /// It rides along on the call every client already makes on resync, so
     /// learning whether a board catch-up is needed costs no extra request.
@@ -878,6 +1139,8 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         case formerMembers = "former_members"
         case assistant
         case maxBoardSeq = "max_board_seq"
+        case blockedUserIDs = "blocked_user_ids"
+        case nextOwnerUserID = "next_owner_user_id"
     }
 
     init(
@@ -885,8 +1148,12 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         members: [MemberDTO],
         formerMembers: [MemberDTO] = [],
         assistant: AssistantDTO? = nil,
-        maxBoardSeq: Int64? = nil
+        maxBoardSeq: Int64? = nil,
+        blockedUserIDs: [Int64] = [],
+        nextOwnerUserID: Int64? = nil
     ) {
+        self.blockedUserIDs = blockedUserIDs
+        self.nextOwnerUserID = nextOwnerUserID
         self.family = family
         self.members = members
         self.formerMembers = formerMembers
@@ -905,6 +1172,8 @@ nonisolated struct FamilyMineResponse: Codable, Equatable, Sendable {
         formerMembers = try container.decodeIfPresent([MemberDTO].self, forKey: .formerMembers) ?? []
         assistant = try container.decodeIfPresent(AssistantDTO.self, forKey: .assistant)
         maxBoardSeq = try container.decodeIfPresent(Int64.self, forKey: .maxBoardSeq)
+        blockedUserIDs = try container.decodeIfPresent([Int64].self, forKey: .blockedUserIDs) ?? []
+        nextOwnerUserID = try container.decodeIfPresent(Int64.self, forKey: .nextOwnerUserID)
     }
 }
 
@@ -946,6 +1215,12 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
     let createdAt: Date?
     let updatedAt: Date?
     let boardSeq: Int64
+    /// The `board_seq` of the last change to what the note SAYS — nil on a
+    /// tombstone, and nil from a server that predates the field, which is
+    /// why it is optional and not merely 0 (docs/protocol.md, "Board").
+    /// A move, a resize and a recolour leave it where it was; that is what
+    /// makes it, and not `boardSeq`, the number a badge may count.
+    let contentSeq: Int64?
     let deleted: Bool?
 
     enum CodingKeys: String, CodingKey {
@@ -959,6 +1234,7 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case boardSeq = "board_seq"
+        case contentSeq = "content_seq"
         case deleted
     }
 
@@ -1190,10 +1466,41 @@ nonisolated struct AiStatsDTO: Codable, Equatable, Sendable {
     let questions: Int
     let promptTokens: Int
     let completionTokens: Int
+    /// The pictures the assistant GENERATED, and its own number rather
+    /// than a share of `questions`, because it is the only one of these
+    /// that maps to a per-picture bill: an image model reports no tokens,
+    /// so a picture answer is one question, zero prompt tokens, zero
+    /// completion tokens and one image (protocol.md, "Family statistics").
+    ///
+    /// A family shown only the token counts would therefore see the
+    /// expensive half of their assistant as free, which is the whole
+    /// reason this field is on the wire and the whole reason a client
+    /// draws it.
+    let images: Int
 
     enum CodingKeys: String, CodingKey {
         case questions
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
+        case images
+    }
+
+    init(questions: Int, promptTokens: Int, completionTokens: Int, images: Int = 0) {
+        self.questions = questions
+        self.promptTokens = promptTokens
+        self.completionTokens = completionTokens
+        self.images = images
+    }
+
+    /// Hand-written for the reason `UserDTO`'s is: a property default is
+    /// not a decoding fallback, and `images` is absent from every response
+    /// of a server that predates pictures. Zero is the honest answer
+    /// there — such a server has generated none and can generate none.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        questions = try container.decode(Int.self, forKey: .questions)
+        promptTokens = try container.decode(Int.self, forKey: .promptTokens)
+        completionTokens = try container.decode(Int.self, forKey: .completionTokens)
+        images = try container.decodeIfPresent(Int.self, forKey: .images) ?? 0
     }
 }

@@ -32,6 +32,7 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.graphics.scale
 import androidx.media3.common.Effect
@@ -297,6 +298,21 @@ class MediaPrep @Inject constructor(
                         frame.recycle()
                     }
                 }
+            if (poster == null) {
+                // Nil is a real outcome, not just a failure to try: some
+                // codecs will not yield a still at all. It is worth SAYING
+                // so (issue #54) — without this line, a video that never
+                // had a poster and one whose poster upload failed produce
+                // the same grey tile with nothing in the log to tell them
+                // apart, and they need different fixes. Nothing retries
+                // it: the seek points above have already been tried, and a
+                // second pass over the same file fails the same way.
+                Log.w(
+                    TAG,
+                    "no poster frame from ${POSTER_TIMES_US.size} seek points; " +
+                        "the video will be sent without one",
+                )
+            }
 
             VideoMetadata(
                 width = width?.takeIf { it > 0 },
@@ -582,6 +598,8 @@ class MediaPrep @Inject constructor(
          * answers `attachment_too_large` and the send fails with a message
          * rather than silently. Same value as iOS's MediaPrep.sizeLimit.
          */
+        private const val TAG = "MediaPrep"
+
         const val SIZE_LIMIT = 100L * 1024 * 1024
 
         /** Longest edge of an uploaded photo. Matches iOS. */

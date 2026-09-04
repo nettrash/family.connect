@@ -36,7 +36,7 @@ class AttachmentMigrationTest {
             .name(null)
             .callback(object : SupportSQLiteOpenHelper.Callback(1) {
                 override fun onCreate(db: SupportSQLiteDatabase) = Unit
-                override fun onUpgrade(db: SupportSQLiteDatabase, old: Int, new: Int) = Unit
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
             })
             .build()
         helper = FrameworkSQLiteOpenHelperFactory().create(config)

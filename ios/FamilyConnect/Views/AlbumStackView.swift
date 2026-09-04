@@ -39,9 +39,14 @@ struct AlbumStackView: View {
     var isMine: Bool = false
 
     @Environment(AttachmentStore.self) private var store
+    /// The single tile's rule (AttachmentView): a compact window gets the
+    /// phone's pile, an iPad's regular window the wider one.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var card: CGSize {
-        AttachmentAlbum.cardSize(for: album.items[0], maxWidth: AttachmentView.maxWidth)
+        AttachmentAlbum.cardSize(
+            for: album.items[0],
+            maxWidth: AttachmentView.maxWidth(compact: horizontalSizeClass == .compact))
     }
 
     var body: some View {
@@ -151,8 +156,8 @@ struct AlbumStackView: View {
         isMine ? Color.white.opacity(0.18) : Color.primary.opacity(0.08)
     }
 
-    /// AttachmentView's rule: a video with no preview is not waiting for
-    /// anything, so it gets the badge over the placeholder, not a spinner.
+    /// AttachmentView's rule: a video's poster is always asked for, but
+    /// never promised — the badge over the placeholder, not a spinner.
     private func isAwaitingBytes(_ item: AttachmentDTO) -> Bool {
         AttachmentView.image(for: item, in: store) == nil && (item.hasPreview || !item.isVideo)
     }

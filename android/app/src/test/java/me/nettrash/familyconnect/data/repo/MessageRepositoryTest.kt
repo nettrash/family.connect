@@ -11,6 +11,7 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import org.robolectric.RuntimeEnvironment
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -46,13 +47,16 @@ import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
+import me.nettrash.familyconnect.testutil.FakePosterCache
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
 import me.nettrash.familyconnect.testutil.messageDto
+import me.nettrash.familyconnect.testutil.photoAttachment
 import me.nettrash.familyconnect.testutil.pollDto
 import me.nettrash.familyconnect.testutil.pollState
 import me.nettrash.familyconnect.testutil.reactionState
+import me.nettrash.familyconnect.ui.chat.AssistantAnswer
 import me.nettrash.familyconnect.util.Clock
 import org.junit.After
 import org.junit.Before
@@ -115,6 +119,7 @@ class MessageRepositoryTest {
     private fun TestScope.newRepository(): MessageRepository {
         chatRepository = testChatRepository(chatApi, chatDao, messageDao, socket, repoScope)
         val repository = MessageRepository(
+            appContext = RuntimeEnvironment.getApplication(),
             chatApi = chatApi,
             attachmentApi = attachmentApi,
             messageDao = messageDao,
@@ -122,8 +127,11 @@ class MessageRepositoryTest {
             socket = socket,
             settings = settings,
             chatRepository = chatRepository,
+            posterCache = FakePosterCache(),
             scope = repoScope,
             clock = Clock { NOW },
+            pendingAttachmentDao = db.pendingAttachmentDao(),
+            staging = MediaStaging(RuntimeEnvironment.getApplication()),
         )
         runCurrent() // frame collector must be subscribed before any emit
         return repository
@@ -154,6 +162,206 @@ class MessageRepositoryTest {
 
     private fun sentClientMsgId(): String =
         socket.sent.filterIsInstance<ClientFrame.Send>().single().clientMsgId
+
+    // -- Transient failures are not refusals ------------------------------------
+    //
+    // docs/protocol.md, "Sending on an unreliable network": a send has
+    // three outcomes, and the most common one on a bad network — unknown —
+    // must never be shown to the user as a refusal.
+
+    @Test
+    fun aTransientHttpFailureKeepsTheRowQueuedAndSchedulesIt() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ -> ApiResult.HttpError(500, "internal", "boom") }
+
+        repository.send(CHAT, "unknown outcome")
+        advanceUntilIdle()
+
+        val row = messageDao.findByClientMsgId(chatApi.postedMessages.single().second)!!
+        assertThat(row.status).isEqualTo(MessageStatus.SENDING)
+        assertThat(row.sendAttempts).isEqualTo(1)
+        assertThat(row.nextAttemptAt).isNotNull()
+    }
+
+    /**
+     * nginx answers its own rate limit with a 429 and an HTML body, so
+     * `code` is null and only the status says what happened — and
+     * `Retry-After` is the server saying how long its bucket needs.
+     */
+    @Test
+    fun aThrottleIsTransientAndItsRetryAfterSetsTheSchedule() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ ->
+            ApiResult.HttpError(429, null, null, retryAfterSeconds = 30)
+        }
+
+        repository.send(CHAT, "too eager")
+        advanceUntilIdle()
+
+        val row = messageDao.findByClientMsgId(chatApi.postedMessages.single().second)!!
+        assertThat(row.status).isEqualTo(MessageStatus.SENDING)
+        assertThat(row.nextAttemptAt!! - NOW).isAtLeast(30_000L)
+    }
+
+    /** Bounded, and it gives up VISIBLY. */
+    @Test
+    fun aTransientFailureThatNeverClearsEventuallyGoesRed() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ -> ApiResult.NetworkError(RuntimeException("down")) }
+
+        repository.send(CHAT, "doomed")
+        advanceUntilIdle()
+        val clientMsgId = chatApi.postedMessages.first().second
+        repeat(MessageRepository.MAX_SEND_ATTEMPTS) {
+            messageDao.scheduleRetry(clientMsgId, it, NOW - 1)
+            repository.flushPending()
+            advanceUntilIdle()
+        }
+
+        assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
+            .isEqualTo(MessageStatus.FAILED)
+    }
+
+    /**
+     * The guard the false-red bubble needed.
+     *
+     * A REST attempt already in flight when the ack landed used to write
+     * FAILED over a DELIVERED message — and `retry` then returned early on
+     * the serverId, so the button under the red bubble did nothing. The
+     * write is now conditional on the row still being unsent, in SQL, so
+     * no amount of interleaving can reorder it.
+     */
+    @Test
+    fun aStaleAttemptNeverPaintsADeliveredMessageRed() = runTest(dispatcher) {
+        newRepository()
+        insertChat()
+        val clientMsgId = "already-delivered"
+        messageDao.insert(
+            MessageEntity(
+                clientMsgId = clientMsgId,
+                serverId = 777,
+                chatId = CHAT,
+                senderId = ME,
+                body = "delivered after all",
+                createdAt = NOW,
+                status = MessageStatus.SENT,
+            ),
+        )
+
+        val rowsWritten = messageDao.markSendFailed(clientMsgId, attempts = 1)
+
+        assertThat(rowsWritten).isEqualTo(0)
+        val row = messageDao.findByClientMsgId(clientMsgId)!!
+        assertThat(row.status).isEqualTo(MessageStatus.SENT)
+        assertThat(row.serverId).isEqualTo(777)
+    }
+
+    /**
+     * An `error` frame with a transient code is no answer at all: the REST
+     * leg runs at once. It used to cancel the coroutine that WAS the REST
+     * leg, so a momentary server hiccup failed the message permanently on
+     * Android while the iPhone beside it sent the same text.
+     */
+    @Test
+    fun aTransientErrorFrameFallsStraightToRest() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+        chatApi.postMessageHandler = { chatId, id, body ->
+            ApiResult.Ok(
+                MessageResponse(
+                    messageDto(id = 555, chatId = chatId, senderId = ME, clientMsgId = id, body = body),
+                ),
+            )
+        }
+
+        repository.send(CHAT, "hiccup")
+        val clientMsgId = sentClientMsgId()
+        socket.emit(ServerFrame.Error(code = "internal", message = "boom", clientMsgId = clientMsgId))
+        advanceUntilIdle()
+
+        assertThat(chatApi.postedMessages).hasSize(1)
+        assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
+            .isEqualTo(MessageStatus.SENT)
+    }
+
+    /** A refusal still goes red, and still cancels the rescue. */
+    @Test
+    fun aTerminalErrorFrameStillFailsTheRow() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        repository.send(CHAT, "rejected")
+        val clientMsgId = sentClientMsgId()
+        socket.emit(
+            ServerFrame.Error(code = "message_too_long", message = "nope", clientMsgId = clientMsgId),
+        )
+        advanceUntilIdle()
+
+        assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
+            .isEqualTo(MessageStatus.FAILED)
+        assertThat(chatApi.postedMessages).isEmpty()
+    }
+
+    @Test
+    fun theOutboxSkipsRowsThatAreNotDueYet() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ -> ApiResult.NetworkError(RuntimeException("down")) }
+
+        repository.send(CHAT, "later")
+        advanceUntilIdle()
+        val clientMsgId = chatApi.postedMessages.single().second
+        messageDao.scheduleRetry(clientMsgId, 1, NOW + 60_000)
+
+        repository.flushPending()
+        advanceUntilIdle()
+        assertThat(chatApi.postedMessages).hasSize(1)
+
+        messageDao.scheduleRetry(clientMsgId, 1, NOW - 1)
+        repository.flushPending()
+        advanceUntilIdle()
+        assertThat(chatApi.postedMessages).hasSize(2)
+    }
+
+    /** A person asking again is a fresh budget. */
+    @Test
+    fun tapToRetryResetsTheAttemptCount() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(false)
+        chatApi.postMessageHandler = { _, _, _ ->
+            ApiResult.HttpError(400, "message_too_long", "too long")
+        }
+
+        repository.send(CHAT, "doomed")
+        advanceUntilIdle()
+        val clientMsgId = chatApi.postedMessages.first().second
+        assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
+            .isEqualTo(MessageStatus.FAILED)
+
+        chatApi.postMessageHandler = { chatId, id, body ->
+            ApiResult.Ok(
+                MessageResponse(
+                    messageDto(id = 888, chatId = chatId, senderId = ME, clientMsgId = id, body = body),
+                ),
+            )
+        }
+        repository.retry(clientMsgId)
+        advanceUntilIdle()
+
+        val row = messageDao.findByClientMsgId(clientMsgId)!!
+        assertThat(row.status).isEqualTo(MessageStatus.SENT)
+        assertThat(row.sendAttempts).isEqualTo(0)
+    }
 
     // -- Optimistic send + ack --------------------------------------------------
 
@@ -264,8 +472,11 @@ class MessageRepositoryTest {
         repository.send(CHAT, "retry me")
         advanceUntilIdle()
         val clientMsgId = chatApi.postedMessages.single().second
+        // A dead wifi says nothing about whether the message landed, so
+        // the row stays QUEUED rather than going red (docs/protocol.md,
+        // "Sending on an unreliable network").
         assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
-            .isEqualTo(MessageStatus.FAILED)
+            .isEqualTo(MessageStatus.SENDING)
 
         // Second attempt succeeds — with the SAME UUID, so the server
         // dedups even if the first POST secretly landed.
@@ -618,7 +829,7 @@ class MessageRepositoryTest {
         advanceUntilIdle()
         val clientMsgId = chatApi.postedMessages.single().second
         assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status)
-            .isEqualTo(MessageStatus.FAILED)
+            .isEqualTo(MessageStatus.SENDING)
 
         socket.setOpen(true)
         repository.retry(clientMsgId)
@@ -822,6 +1033,270 @@ class MessageRepositoryTest {
         advanceUntilIdle()
 
         assertThat(chatDao.getById(CHAT)!!.unreadCount).isEqualTo(before)
+    }
+
+    // -- The assistant's picture answer -------------------------------------------------------
+
+    /**
+     * THE case `message_edited` carries the whole message for.
+     *
+     * The assistant's reply is stored EMPTY and fanned out at once, so a
+     * bubble appears while the model is still working; when the picture
+     * arrives the server stores it as an ordinary `photo` attachment on
+     * that same message and fans out `message_edited`
+     * (docs/protocol.md, "Pictures"). A client that merged the body alone
+     * would draw nothing until its next history page or cold start —
+     * "late, not lost" — and this is what makes it live.
+     */
+    @Test
+    fun anEditAddsTheAssistantsPictureToARowThatHadNone() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        // The empty row: the "still working" state, and the reason the
+        // picture has somewhere to land at all.
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
+        advanceUntilIdle()
+        assertThat(messageDao.findByServerId(100)!!.attachmentList).isEmpty()
+
+        socket.emit(
+            ServerFrame.MessageEdited(
+                messageDto(
+                    id = 100, chatId = CHAT, body = "", editSeq = 5,
+                    attachments = listOf(photoAttachment(id = 77)),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100)!!
+        // Through the plural read, which is what the bubble draws from…
+        assertThat(row.attachmentList.map { it.id }).containsExactly(77L)
+        // …and the flat columns, which the pre-plurality consumers use.
+        assertThat(row.attachmentId).isEqualTo(77L)
+        assertThat(row.attachmentKind).isEqualTo("photo")
+        // The body stays empty: a photo needs no caption.
+        assertThat(row.body).isEmpty()
+        assertThat(row.editSeq).isEqualTo(5)
+        // No preview: the server generates none for a generated picture,
+        // so the bubble draws it from the full bytes.
+        assertThat(row.attachmentHasPreview).isFalse()
+    }
+
+    /**
+     * The guard covers the whole message, not just the body: a page
+     * fetched before the picture landed must not take it away again.
+     */
+    @Test
+    fun aStaleCopyNeverRemovesAnAttachmentAnEditAdded() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+
+        repository.applyServerMessage(messageDto(id = 100, chatId = CHAT, body = ""), live = false)
+        repository.applyEdit(
+            messageDto(
+                id = 100, chatId = CHAT, body = "", editSeq = 5,
+                attachments = listOf(photoAttachment(id = 77)),
+            ),
+        )
+        advanceUntilIdle()
+
+        // An older edit, delivered late and carrying no attachment.
+        repository.applyEdit(messageDto(id = 100, chatId = CHAT, body = "", editSeq = 3))
+        advanceUntilIdle()
+
+        assertThat(messageDao.findByServerId(100)!!.attachmentList.map { it.id })
+            .containsExactly(77L)
+    }
+
+    /**
+     * An ordinary edit is still an ordinary edit. Nothing but the
+     * assistant's reply ever gains an attachment this way, so a text edit
+     * of a message that HAS one must leave it exactly where it was.
+     */
+    @Test
+    fun anOrdinaryEditKeepsTheAttachmentItAlreadyHad() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+
+        repository.applyServerMessage(
+            messageDto(
+                id = 100, chatId = CHAT, body = "at the beach",
+                attachments = listOf(photoAttachment(id = 12, hasPreview = true)),
+            ),
+            live = false,
+        )
+        advanceUntilIdle()
+
+        repository.applyEdit(
+            messageDto(
+                id = 100, chatId = CHAT, body = "at the lake", editSeq = 5,
+                attachments = listOf(photoAttachment(id = 12, hasPreview = true)),
+            ),
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100)!!
+        assertThat(row.body).isEqualTo("at the lake")
+        assertThat(row.attachmentList.map { it.id }).containsExactly(12L)
+        assertThat(row.attachmentHasPreview).isTrue()
+    }
+
+    /**
+     * A picture answer streams NOTHING — an image model produces no token
+     * stream, so there is no partial answer to leave on screen. Without a
+     * mark the failure is an empty balloon that never resolves, which is
+     * exactly what creating the row BEFORE calling the provider was meant
+     * to avoid (docs/protocol.md, "Pictures").
+     */
+    @Test
+    fun anAiErrorMarksTheRowSoTheBubbleCanSaySo() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
+        advanceUntilIdle()
+        assertThat(repository.failedAssistantMessageIds.value).isEmpty()
+
+        socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100))
+        advanceUntilIdle()
+
+        assertThat(repository.failedAssistantMessageIds.value).containsExactly(100L)
+        // The row keeps whatever it has, which here is nothing at all.
+        assertThat(messageDao.findByServerId(100)!!.body).isEmpty()
+        assertThat(repository.streamingMessageIds.value).doesNotContain(100L)
+    }
+
+    /**
+     * THE RELAUNCH CASE, and the one the in-memory set could never answer.
+     *
+     * A history page and a cold start go through `applyServerMessage(…,
+     * live = false)` and raise no frame, so nothing puts an id in
+     * [MessageRepository.streamingMessageIds] — and a picture answer puts
+     * none there even live, because an image model streams no deltas. A
+     * member who quit while a `/draw` was still generating therefore came
+     * back to a completely blank balloon.
+     *
+     * protocol.md says the empty row IS the "still working" state, about
+     * the message rather than about one process, so the ROW is what
+     * answers (AssistantAnswer).
+     */
+    @Test
+    fun aWaitingRowLoadedFromHistoryStillReadsAsWorking() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat(kind = "ai", peerUserId = null)
+
+        repository.applyServerMessage(
+            messageDto(id = 100, chatId = CHAT, senderId = PEER, body = ""),
+            live = false,
+        )
+        advanceUntilIdle()
+
+        // Nothing marked it live: this is the state a relaunch starts in.
+        assertThat(repository.streamingMessageIds.value).isEmpty()
+        assertThat(repository.failedAssistantMessageIds.value).isEmpty()
+
+        val row = messageDao.findByServerId(100)!!
+        assertThat(
+            AssistantAnswer.isWorking(
+                entity = row,
+                isAssistantChat = true,
+                assistantUserId = null,
+                myUserId = ME,
+                streamingIds = repository.streamingMessageIds.value,
+                failedIds = repository.failedAssistantMessageIds.value,
+            ),
+        ).isTrue()
+    }
+
+    /**
+     * …and the picture landing ends it, on that same cold-start path: the
+     * attachment arrives on the row through `message_edited`, and a row
+     * that carries something is an answer that arrived.
+     */
+    @Test
+    fun aHistoryRowThatCarriesAPictureIsNotWorking() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat(kind = "ai", peerUserId = null)
+
+        repository.applyServerMessage(
+            messageDto(
+                id = 100, chatId = CHAT, senderId = PEER, body = "",
+                attachments = listOf(photoAttachment(id = 77)),
+            ),
+            live = false,
+        )
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100)!!
+        assertThat(
+            AssistantAnswer.isWorking(
+                entity = row,
+                isAssistantChat = true,
+                assistantUserId = null,
+                myUserId = ME,
+                streamingIds = repository.streamingMessageIds.value,
+                failedIds = repository.failedAssistantMessageIds.value,
+            ),
+        ).isFalse()
+    }
+
+    /**
+     * A failure this launch saw outranks the row's own shape — the cursor
+     * and the "ask again" line are drawn in the same place, and the newer
+     * fact wins.
+     */
+    @Test
+    fun aFailureThisLaunchSawBeatsTheEmptyRow() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat(kind = "ai", peerUserId = null)
+        socket.setOpen(true)
+
+        repository.applyServerMessage(
+            messageDto(id = 100, chatId = CHAT, senderId = PEER, body = ""),
+            live = false,
+        )
+        socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100))
+        advanceUntilIdle()
+
+        val row = messageDao.findByServerId(100)!!
+        assertThat(
+            AssistantAnswer.isWorking(
+                entity = row,
+                isAssistantChat = true,
+                assistantUserId = null,
+                myUserId = ME,
+                streamingIds = repository.streamingMessageIds.value,
+                failedIds = repository.failedAssistantMessageIds.value,
+            ),
+        ).isFalse()
+    }
+
+    /** An answer that arrives after all is not a failed one. */
+    @Test
+    fun anEditClearsTheFailureMark() = runTest(dispatcher) {
+        val repository = newRepository()
+        insertChat()
+        socket.setOpen(true)
+
+        socket.emit(ServerFrame.Message(messageDto(id = 100, chatId = CHAT, body = "")))
+        socket.emit(ServerFrame.AiError(chatId = CHAT, messageId = 100))
+        advanceUntilIdle()
+        assertThat(repository.failedAssistantMessageIds.value).containsExactly(100L)
+
+        socket.emit(
+            ServerFrame.MessageEdited(
+                messageDto(
+                    id = 100, chatId = CHAT, body = "", editSeq = 5,
+                    attachments = listOf(photoAttachment(id = 77)),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        assertThat(repository.failedAssistantMessageIds.value).isEmpty()
     }
 
     @Test
@@ -1543,10 +2018,10 @@ class MessageRepositoryTest {
 
         repository.sendPoll(CHAT, "Pizza or pasta?", listOf("Pizza", "Pasta"))
         advanceUntilIdle()
-        val failed = messageDao.findByClientMsgId(
+        val queued = messageDao.findByClientMsgId(
             chatApi.postedMessages.single().second,
         )!!
-        assertThat(failed.status).isEqualTo(MessageStatus.FAILED)
+        assertThat(queued.status).isEqualTo(MessageStatus.SENDING)
 
         chatApi.postMessageHandler = { _, clientMsgId, body ->
             ApiResult.Ok(
@@ -1562,7 +2037,7 @@ class MessageRepositoryTest {
                 ),
             )
         }
-        repository.retry(failed.clientMsgId)
+        repository.retry(queued.clientMsgId)
         advanceUntilIdle()
 
         assertThat(chatApi.postedPolls.last()?.options)

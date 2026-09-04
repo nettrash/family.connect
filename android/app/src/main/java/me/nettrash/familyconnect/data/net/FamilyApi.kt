@@ -14,6 +14,10 @@ import me.nettrash.familyconnect.data.net.dto.ResetPasswordRequest
 import me.nettrash.familyconnect.data.net.dto.ApproveResponse
 import me.nettrash.familyconnect.data.net.dto.BirthdayRequest
 import me.nettrash.familyconnect.data.net.dto.CreateFamilyRequest
+import me.nettrash.familyconnect.data.net.dto.CreateReportRequest
+import me.nettrash.familyconnect.data.net.dto.LeaveFamilyResponse
+import me.nettrash.familyconnect.data.net.dto.ReportResponse
+import me.nettrash.familyconnect.data.net.dto.ReportsResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
 import me.nettrash.familyconnect.data.net.dto.JoinFamilyRequest
@@ -53,11 +57,78 @@ interface FamilyApi {
      * no third state and no per-member override.
      */
     suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: whether a photograph a member attaches in their OWN
+     * assistant chat may be shown to the model (docs/protocol.md,
+     * "Pictures"). Family-wide, no per-member override, and OFF unless
+     * the owner turned it on — the opposite default to [setAiHistory],
+     * which is the point rather than an inconsistency.
+     *
+     * It is one of THREE locks, and the only one an owner holds: the
+     * operator must also have configured a vision deployment, and the
+     * member must attach the picture to the question themselves. That
+     * third one is never a remembered setting.
+     */
+    suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: whether an `@ai` mention in the family chat may ALSO be
+     * shown that chat's most recent photographs — pictures nobody pointed
+     * the assistant at (docs/protocol.md, "Recent photos from the family
+     * chat"). Family-wide, OFF by default, and only openable while
+     * `ai_vision` is on: the server answers `validation` to `true`
+     * otherwise, and turns this off in the same write whenever
+     * `ai_vision` goes off. Inert, not refused, while `ai_history` is
+     * off — there is no transcript for it to widen.
+     */
+    suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse>
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
     suspend fun approve(requestId: Long): ApiResult<ApproveResponse>
     suspend fun reject(requestId: Long): ApiResult<Unit>
-    suspend fun leave(): ApiResult<Unit>
+    /**
+     * Leave the family, and learn who inherited it.
+     *
+     * Two answers from one endpoint: `204` when nothing passed on (an
+     * ordinary member, or the last one — the family goes with them) and
+     * `200 {new_owner_user_id}` when the caller was the owner and somebody
+     * remained. An owner is NEVER refused; `owner_cannot_leave` is retired
+     * and no endpoint raises it (docs/protocol.md, `POST /families/leave`).
+     */
+    suspend fun leave(): ApiResult<Long?>
     suspend fun removeMember(userId: Long): ApiResult<Unit>
+
+    /**
+     * The most members this family admits; null CLEARS the cap, which is
+     * NOT the same as setting it to the operator's ceiling.
+     *
+     * Its own method rather than a parameter on [setJoinPolicy], so a
+     * patch carries exactly one field — a request that sent two would make
+     * "which of these did the user actually change" a question the server
+     * has to guess at.
+     */
+    suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse>
+
+    /**
+     * Block a member. ANY member may block any other, the OWNER INCLUDED —
+     * there is no owner check here and that is the point
+     * (docs/protocol.md, "Blocking a member").
+     */
+    suspend fun blockMember(userId: Long): ApiResult<Unit>
+    suspend fun unblockMember(userId: Long): ApiResult<Unit>
+
+    /**
+     * Report a member, optionally naming one of their messages. Raising a
+     * report that matches an OPEN row returns that row and creates
+     * nothing, so a double tap is not two rows in the owner's list.
+     */
+    suspend fun report(reportedUserId: Long, reason: String, messageId: Long?): ApiResult<ReportResponse>
+
+    /** Owner-only: the open reports, oldest first. */
+    suspend fun reports(): ApiResult<ReportsResponse>
+
+    /** Owner-only: mark one report handled. */
+    suspend fun resolveReport(reportId: Long): ApiResult<Unit>
 
     /**
      * Owner-only: set a member's password without knowing their old one.
@@ -111,6 +182,12 @@ class DefaultFamilyApi @Inject constructor(
     override suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> =
         client.patch("/families/mine", PatchFamilyRequest.aiHistory(enabled))
 
+    override suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiVision(enabled))
+
+    override suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiHistoryPhotos(enabled))
+
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
         client.get("/families/join-requests")
 
@@ -120,8 +197,50 @@ class DefaultFamilyApi @Inject constructor(
     override suspend fun reject(requestId: Long): ApiResult<Unit> =
         client.postEmpty("/families/join-requests/$requestId/reject")
 
-    override suspend fun leave(): ApiResult<Unit> =
-        client.postEmpty("/families/leave")
+    override suspend fun leave(): ApiResult<Long?> =
+        when (val result = client.raw("POST", "/families/leave", null)) {
+            is ApiResult.Ok ->
+                // A 204 has NO body, and that is the ordinary case here
+                // rather than a malformed answer — decoding it as JSON
+                // would turn every member's departure into an error.
+                if (result.value.isBlank()) {
+                    ApiResult.Ok(null)
+                } else {
+                    when (val decoded = client.decode<LeaveFamilyResponse>(result)) {
+                        is ApiResult.Ok -> ApiResult.Ok(decoded.value.newOwnerUserId)
+                        // A 200 whose body will not parse still LEFT the
+                        // family; report it as "nobody inherited" rather
+                        // than as a failure the caller would retry.
+                        else -> ApiResult.Ok(null)
+                    }
+                }
+            // `ApiResult` is covariant and both failures are
+            // `ApiResult<Nothing>`, so they pass straight through.
+            is ApiResult.HttpError -> result
+            is ApiResult.NetworkError -> result
+        }
+
+    override suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.maxMembers(cap))
+
+    override suspend fun blockMember(userId: Long): ApiResult<Unit> =
+        client.put("/families/members/$userId/block", Unit)
+
+    override suspend fun unblockMember(userId: Long): ApiResult<Unit> =
+        client.delete("/families/members/$userId/block")
+
+    override suspend fun report(
+        reportedUserId: Long,
+        reason: String,
+        messageId: Long?,
+    ): ApiResult<ReportResponse> =
+        client.post("/families/reports", CreateReportRequest(reportedUserId, reason, messageId))
+
+    override suspend fun reports(): ApiResult<ReportsResponse> =
+        client.get("/families/reports")
+
+    override suspend fun resolveReport(reportId: Long): ApiResult<Unit> =
+        client.postEmpty("/families/reports/$reportId/resolve")
 
     override suspend fun removeMember(userId: Long): ApiResult<Unit> =
         client.delete("/families/members/$userId")

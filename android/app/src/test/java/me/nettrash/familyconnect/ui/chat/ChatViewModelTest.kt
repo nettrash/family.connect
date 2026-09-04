@@ -24,6 +24,8 @@ import android.content.ClipData
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import androidx.compose.runtime.snapshots.Snapshot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -70,12 +72,14 @@ import me.nettrash.familyconnect.data.repo.LocationProvider
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.repo.MessageBody
 import me.nettrash.familyconnect.data.repo.VoiceRecorder
+import me.nettrash.familyconnect.data.repo.MediaStaging
 import me.nettrash.familyconnect.data.repo.MessageRepository
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeConnectivityObserver
+import me.nettrash.familyconnect.testutil.FakePosterCache
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
@@ -91,6 +95,13 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import java.time.ZoneOffset
+import me.nettrash.familyconnect.data.repo.FamilyRepository
+import me.nettrash.familyconnect.data.repo.SessionRepository
+import me.nettrash.familyconnect.testutil.FakeFamilyApi
+import me.nettrash.familyconnect.testutil.FakeAuthApi
+import me.nettrash.familyconnect.testutil.FakeTokenStore
+import me.nettrash.familyconnect.testutil.RecordingWiper
+import kotlinx.coroutines.flow.MutableSharedFlow
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -99,6 +110,8 @@ class ChatViewModelTest {
     private companion object {
         const val ME = 7L
         const val PEER = 9L
+        /** A third member, so a block can be about one person and not the set. */
+        const val OTHER = 12L
         const val CHAT = 42L
         val ZONE: ZoneOffset = ZoneOffset.UTC
 
@@ -149,8 +162,27 @@ class ChatViewModelTest {
         unreadCount: Int = 0,
         myLastReadId: Long? = null,
     ): ChatViewModel {
-        chatRepository = testChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope)
+        chatRepository = testChatRepository(chatApi, db.chatDao(), db.messageDao(), socket, repoScope, settings)
+        // Only ever asked to block / unblock / report here; the fakes
+        // under it are enough for that.
+        val familyRepository = FamilyRepository(
+            familyApi = FakeFamilyApi(),
+            authApi = FakeAuthApi(),
+            memberDao = db.memberDao(),
+            settings = settings,
+            sessionRepository = SessionRepository(
+                authApi = FakeAuthApi(),
+                tokenStore = FakeTokenStore("tok"),
+                settings = settings,
+                wiper = RecordingWiper(),
+                unauthorizedEvents = MutableSharedFlow(),
+                scope = repoScope,
+            ),
+            socket = socket,
+            scope = repoScope,
+        )
         messageRepository = MessageRepository(
+            appContext = RuntimeEnvironment.getApplication(),
             chatApi = chatApi,
             attachmentApi = attachmentApi,
             messageDao = db.messageDao(),
@@ -158,8 +190,11 @@ class ChatViewModelTest {
             socket = socket,
             settings = settings,
             chatRepository = chatRepository,
+            posterCache = FakePosterCache(),
             scope = repoScope,
             clock = Clock { NOON },
+            pendingAttachmentDao = db.pendingAttachmentDao(),
+            staging = MediaStaging(RuntimeEnvironment.getApplication()),
         )
         runCurrent()
         // Chat row must exist for read reporting / unread rules.
@@ -186,6 +221,7 @@ class ChatViewModelTest {
             appContext = RuntimeEnvironment.getApplication(),
             savedStateHandle = SavedStateHandle(mapOf("chatId" to CHAT)),
             messageRepository = messageRepository,
+            familyRepository = familyRepository,
             chatRepository = chatRepository,
             settings = settings,
             socket = socket,
@@ -495,7 +531,7 @@ class ChatViewModelTest {
     @Test
     fun sendCommitsStagedMediaWithTheTypedCaption() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 1 }) }
+        val file = File.createTempFile("staged", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() }).apply { writeBytes(ByteArray(16) { 1 }) }
         viewModel.stagePrepared(
             MediaPrep.Prepared(
                 file = file,
@@ -528,7 +564,7 @@ class ChatViewModelTest {
     @Test
     fun sendCommitsStagedMediaWithNoCaption() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 2 }) }
+        val file = File.createTempFile("staged", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() }).apply { writeBytes(ByteArray(16) { 2 }) }
         viewModel.stagePrepared(
             MediaPrep.Prepared(
                 file = file,
@@ -559,18 +595,17 @@ class ChatViewModelTest {
      * Apple composers re-stage the survivors the same way).
      */
     @Test
-    fun aFailedAlbumSendRestoresTheUnsentItems() = runTest(dispatcher) {
+    fun aFailedAlbumSendLeavesTheBubbleHoldingTheSet() = runTest(dispatcher) {
+        // The composer used to catch a failed set and put it back, because
+        // there was nowhere else for it to live. Now the send is a row from
+        // the moment it is made: the bubble holds the photos, the caption
+        // and the reply, and the composer is free the instant Send is
+        // pressed. That is why the strip is empty here rather than full.
         val viewModel = newViewModel()
-        var uploads = 0
         attachmentApi.uploadHandler = { _, _, _ ->
-            uploads += 1
-            if (uploads == 1) {
-                ApiResult.Ok(AttachmentResponse(FakeAttachmentApi.attachment(id = 1)))
-            } else {
-                ApiResult.HttpError(413, "attachment_too_large", "too big")
-            }
+            ApiResult.HttpError(413, "attachment_too_large", "no")
         }
-        val items = listOf(tempPrepared(tag = 1), tempPrepared(tag = 2), tempPrepared(tag = 3))
+        val items = List(3) { tempPrepared(tag = it.toByte()) }
         items.forEach { viewModel.stagePrepared(it) }
         runCurrent()
         viewModel.inputState.setTextAndPlaceCursorAtEnd("three of us")
@@ -578,23 +613,17 @@ class ChatViewModelTest {
         viewModel.send()
         advanceUntilIdle()
 
-        // The second upload failed: items 2 and 3 are back in the
-        // composer, files intact, in their original order.
-        assertThat(viewModel.staged.value).containsExactly(items[1], items[2]).inOrder()
-        assertThat(viewModel.staged.value.all { it.file.exists() }).isTrue()
-        // The caption came back too, and the failure is on the strip.
-        assertThat(viewModel.inputState.text.toString()).isEqualTo("three of us")
-        assertThat(viewModel.mediaState.value)
-            .isInstanceOf(ChatViewModel.MediaSendState.Failed::class.java)
+        assertThat(viewModel.staged.value).isEmpty()
+        // And the message exists, with its caption and its photos, waiting
+        // to be retried. A refused upload is terminal, so the row is FAILED
+        // rather than queued — but it is a row, which is the whole point.
+        val rows = db.messageDao().observeMessages(CHAT, 50).first()
+        assertThat(rows).hasSize(1)
+        assertThat(rows.single().body).isEqualTo("three of us")
+        assertThat(rows.single().status).isEqualTo(MessageStatus.FAILED)
+        assertThat(db.pendingAttachmentDao().itemsFor(rows.single().clientMsgId)).hasSize(3)
     }
 
-    /**
-     * stage() is reachable from three scopes at once (the appScope
-     * prepare loops, the share drain, the main thread), so the staged
-     * list is mutated with CAS — no item may be silently lost with its
-     * file leaked. Genuinely parallel on Dispatchers.Default: with plain
-     * read-modify-writes this is flaky, with CAS it is exact.
-     */
     @Test
     fun concurrentStagingLosesNoItemAndHoldsTheCap() = runTest(dispatcher) {
         val viewModel = newViewModel()
@@ -743,6 +772,41 @@ class ChatViewModelTest {
         runCurrent()
 
         assertThat(chatApi.postedReads).containsExactly(CHAT to 31L)
+        itemsSubscription.cancel()
+    }
+
+    /**
+     * The read marker runs THROUGH a blocked member's messages.
+     *
+     * A marker parked below the hidden row would leap forward the moment a
+     * third member posted, and that leap is a repeatable oracle for the
+     * blocked person watching the other end — reason (c) in
+     * docs/protocol.md's "It follows that the server still DELIVERS",
+     * rebuilt by the client one layer above the server.
+     *
+     * The blocked member sends LAST, which is the only arrangement that
+     * can catch this: with an ordinary message on top, the marker reaches
+     * the right answer through it and a client that skipped hidden rows
+     * would still look correct.
+     */
+    @Test
+    fun theReadMarkerRunsThroughABlockedMembersMessages() = runTest(dispatcher) {
+        settings.setBlockedUserIds(setOf(PEER))
+        val viewModel = newViewModel()
+        val itemsSubscription = repoScope.launch { viewModel.items.collect {} }
+        viewModel.setResumed(true)
+        viewModel.setAtNewest(true)
+        viewModel.setSettled()
+        runCurrent()
+
+        messageRepository.applyServerMessage(messageDto(id = 40, chatId = CHAT, senderId = OTHER), live = false)
+        messageRepository.applyServerMessage(messageDto(id = 41, chatId = CHAT, senderId = PEER), live = false)
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+
+        // 41, the hidden one — not 40.
+        assertThat(chatApi.postedReads).contains(CHAT to 41L)
         itemsSubscription.cancel()
     }
 
@@ -1254,7 +1318,7 @@ class ChatViewModelTest {
     @Test
     fun aPasteAppendsBehindWhateverWasAlreadyStaged() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val first = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 3 }) }
+        val first = File.createTempFile("staged", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() }).apply { writeBytes(ByteArray(16) { 3 }) }
         viewModel.stagePrepared(
             MediaPrep.Prepared(
                 file = first,
@@ -1318,8 +1382,8 @@ class ChatViewModelTest {
         assertThat(c.file.exists()).isTrue()
     }
 
-    private fun tempPrepared(tag: Byte): MediaPrep.Prepared {
-        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { tag }) }
+    private fun tempPrepared(tag: Byte, bytes: Int = 16): MediaPrep.Prepared {
+        val file = File.createTempFile("staged", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() }).apply { writeBytes(ByteArray(bytes) { tag }) }
         return MediaPrep.Prepared(
             file = file,
             mime = "image/jpeg",
@@ -1351,9 +1415,9 @@ class ChatViewModelTest {
 
     /** And the other half of that guard: one upload at a time. */
     @Test
-    fun aPasteIsRefusedWhileAnUploadIsRunning() = runTest(dispatcher) {
+    fun aPasteRightAfterSendStagesBecauseTheSendHasLeft() = runTest(dispatcher) {
         val viewModel = newViewModel()
-        val file = File.createTempFile("staged", ".jpg").apply { writeBytes(ByteArray(16) { 4 }) }
+        val file = File.createTempFile("staged", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() }).apply { writeBytes(ByteArray(16) { 4 }) }
         viewModel.stagePrepared(
             MediaPrep.Prepared(
                 file = file,
@@ -1366,13 +1430,16 @@ class ChatViewModelTest {
             ),
         )
         runCurrent()
-        // send() marks the composer Uploading before it launches anything,
-        // so nothing has to be advanced to be in flight.
+        // A send no longer holds the composer: it becomes a row and its
+        // uploads belong to the outbox, so the person can compose the next
+        // message immediately. Pasting straight after Send therefore
+        // STAGES rather than being refused as BUSY, which is the point of
+        // making a media send durable.
         viewModel.send()
 
         val result = viewModel.pasteAttachment(clipboardItem("blob"), "application/pdf")
 
-        assertThat(result).isEqualTo(ChatViewModel.PasteResult.BUSY)
+        assertThat(result).isEqualTo(ChatViewModel.PasteResult.STAGING)
         advanceUntilIdle()
     }
 
@@ -1858,5 +1925,416 @@ class ChatViewModelTest {
 
         assertThat(viewModel.awaitFailure().reason)
             .isEqualTo(RuntimeEnvironment.getApplication().getString(R.string.e_close_poll_failed))
+    }
+
+    // -- Pictures -------------------------------------------------------------
+    //
+    // The composer's two picture affordances, each behind its own
+    // capability check. What is asserted here is ABSENCE as much as
+    // presence: a surface offered where the server will not act is the
+    // failure mode the whole `assistant` object exists to prevent, and in
+    // the vision case it would be a surface that says pixels are about to
+    // leave when they are not — or, far worse, the reverse.
+
+    /** Both locks open, in the member's own thread: the one place it is offered. */
+    private fun TestScope.picturesConfigured(
+        vision: Boolean = true,
+        images: Boolean = true,
+        familyAllows: Boolean = true,
+        /** The owner's third switch — off by default, as on the wire. */
+        historyPhotos: Boolean = false,
+        familyHistory: Boolean = true,
+    ) {
+        launch {
+            settings.setAssistant(userId = 1L, displayName = "Assistant", vision = vision, images = images)
+            settings.setFamilyAiVision(familyAllows)
+            settings.setFamilyAiHistory(familyHistory)
+            settings.setFamilyAiHistoryPhotos(historyPhotos)
+        }
+        runCurrent()
+    }
+
+    @Test
+    fun aPictureIsOfferedOnlyInTheMembersOwnThreadWithBothLocksOpen() = runTest(dispatcher) {
+        for (kind in listOf("ai", "family", "direct")) {
+            val viewModel = newViewModel(kind = kind)
+            picturesConfigured()
+            runCurrent()
+            // The DEDICATED door is the assistant's own chat's. Not
+            // because a picture never reaches the assistant from the
+            // family chat — since #56 a photo on an `@ai` message, or on
+            // the message it replies to, travels under these same two
+            // locks (docs/protocol.md, "Showing the assistant a picture
+            // from the family chat") — but because that path rides the
+            // ordinary "Photo or video" door and the reply affordance the
+            // family composer already has.
+            assertThat(viewModel.canShowAssistantPicture.value).isEqualTo(kind == "ai")
+        }
+    }
+
+    @Test
+    fun neitherLockOnItsOwnOffersAPicture() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "ai")
+
+        // The operator has no vision deployment: this cannot happen at
+        // all here, whatever the owner switched on.
+        picturesConfigured(vision = false, familyAllows = true)
+        runCurrent()
+        assertThat(viewModel.canShowAssistantPicture.value).isFalse()
+
+        // The server can see, and this family has not said it may.
+        picturesConfigured(vision = true, familyAllows = false)
+        runCurrent()
+        assertThat(viewModel.canShowAssistantPicture.value).isFalse()
+
+        picturesConfigured(vision = true, familyAllows = true)
+        runCurrent()
+        assertThat(viewModel.canShowAssistantPicture.value).isTrue()
+    }
+
+    /**
+     * Generation takes BOTH surfaces — the member's own thread and the
+     * family chat, where the whole family watches the answer arrive. It
+     * is allowed there precisely because what leaves is only the asking
+     * member's own words, which a mention already sends today.
+     */
+    @Test
+    fun drawIsOfferedInBothAssistantSurfacesAndNowhereElse() = runTest(dispatcher) {
+        for (kind in listOf("ai", "family", "direct")) {
+            val viewModel = newViewModel(kind = kind)
+            picturesConfigured()
+            runCurrent()
+            assertThat(viewModel.canAskForPicture.value).isEqualTo(kind != "direct")
+        }
+    }
+
+    /** A server that cannot make one must not offer to: `/draw` is just text there. */
+    @Test
+    fun drawIsNotOfferedWithoutAnImagesDeployment() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "ai")
+        picturesConfigured(images = false)
+        runCurrent()
+        assertThat(viewModel.canAskForPicture.value).isFalse()
+    }
+
+    /**
+     * The composer's output has to be a body the SERVER reads as a
+     * request, so it is checked through the shared grammar rather than
+     * against a literal — including the family chat's leading mention,
+     * without which the server never looks for the token at all.
+     */
+    @Test
+    fun theDrawButtonRewritesTheDraftIntoARequest() = runTest(dispatcher) {
+        val aiChat = newViewModel(kind = "ai")
+        picturesConfigured()
+        runCurrent()
+        aiChat.inputState.setTextAndPlaceCursorAtEnd("a cat in a hat")
+        aiChat.insertDrawToken()
+        assertThat(aiChat.inputState.text.toString()).isEqualTo("/draw a cat in a hat")
+        assertThat(AssistantMention.drawPrompt(aiChat.inputState.text.toString()))
+            .isEqualTo("a cat in a hat")
+
+        val familyChat = newViewModel(kind = "family")
+        picturesConfigured()
+        runCurrent()
+        familyChat.inputState.setTextAndPlaceCursorAtEnd("a cat in a hat")
+        familyChat.insertDrawToken()
+        assertThat(familyChat.inputState.text.toString()).isEqualTo("@ai /draw a cat in a hat")
+        assertThat(AssistantMention.mentions(familyChat.inputState.text.toString())).isTrue()
+        assertThat(AssistantMention.drawPrompt(familyChat.inputState.text.toString()))
+            .isEqualTo("a cat in a hat")
+    }
+
+    /** No capability, no rewrite: the draft is left exactly as it was. */
+    @Test
+    fun theDrawButtonDoesNothingWhereItIsNotOffered() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "direct")
+        picturesConfigured()
+        runCurrent()
+        viewModel.inputState.setTextAndPlaceCursorAtEnd("a cat")
+
+        viewModel.insertDrawToken()
+
+        assertThat(viewModel.inputState.text.toString()).isEqualTo("a cat")
+    }
+
+    /**
+     * The disclosure is raised by what is STAGED, not by the door it came
+     * through — and only in the assistant's own thread, where a picture
+     * can actually be shown to it.
+     */
+    @Test
+    fun theDisclosureIsRaisedByWhatIsStagedAndOnlyInTheAssistantsThread() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "ai")
+        picturesConfigured()
+        runCurrent()
+        // Nothing staged: nothing to say.
+        assertThat(viewModel.assistantPictureNotice.value).isNull()
+
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+        assertThat(viewModel.assistantPictureNotice.value)
+            .isEqualTo(
+                AiPictureNotice.WillShow(
+                    shown = 1, extraPhotos = 0, otherAttachments = 0, unreadablePhotos = 0,
+                ),
+            )
+
+        // The same photo in the family chat raises no strip HERE. This
+        // pins this strip's scope, not a rule about what travels: since
+        // #56 a photo on an `@ai` message there DOES reach the model under
+        // the same two locks (docs/protocol.md, "Showing the assistant a
+        // picture from the family chat"), and the family composer has a
+        // strip of its own for that moment — [ChatViewModel.mentionPictureNotice],
+        // raised by the draft mentioning the assistant, pinned below.
+        val familyChat = newViewModel(kind = "family")
+        picturesConfigured()
+        familyChat.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+        assertThat(familyChat.assistantPictureNotice.value).isNull()
+    }
+
+    /**
+     * THE BOUND THE STRIP CLAIMED AND DID NOT APPLY.
+     *
+     * A photograph over 5 MiB is one the SERVER leaves out and names to
+     * the model — while the strip told the member it "leaves this server
+     * for the model your server talks to". This goes through the real
+     * staging path, so the size it is judged on is the one measured off
+     * the file that will be uploaded.
+     */
+    @Test
+    fun aStagedPhotoTheServerWillLeaveOutIsNotPromisedToTheModel() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "ai")
+        picturesConfigured()
+        runCurrent()
+
+        viewModel.stagePrepared(tempPrepared(tag = 1, bytes = (AiPictureNotice.MAX_BYTES + 1).toInt()))
+        runCurrent()
+
+        assertThat(viewModel.assistantPictureNotice.value).isEqualTo(
+            AiPictureNotice.WillShow(
+                shown = 0, extraPhotos = 0, otherAttachments = 0, unreadablePhotos = 1,
+            ),
+        )
+    }
+
+    /** With a lock shut the sentence flips rather than disappearing. */
+    @Test
+    fun aPictureThatWillNotBeShownSaysSo() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "ai")
+        picturesConfigured(familyAllows = false)
+        runCurrent()
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+
+        assertThat(viewModel.assistantPictureNotice.value).isEqualTo(AiPictureNotice.WillNotShow)
+    }
+
+    // -- The family composer's strip (#56) --------------------------------------
+
+    /**
+     * Type into the composer the way a member does, and let the
+     * ViewModel's snapshot watch see it: a [TextFieldState] write lands in
+     * the global snapshot, and outside a composition nobody sends the
+     * apply notifications `snapshotFlow` listens for.
+     */
+    private fun TestScope.type(viewModel: ChatViewModel, draft: String) {
+        viewModel.inputState.setTextAndPlaceCursorAtEnd(draft)
+        Snapshot.sendApplyNotifications()
+        runCurrent()
+    }
+
+    /** A photo somebody else sent, as its row is held here. */
+    private fun photoMessage(serverId: Long, photos: Int): MessageEntity = MessageEntity(
+        clientMsgId = "s$serverId",
+        serverId = serverId,
+        chatId = CHAT,
+        senderId = PEER,
+        body = "",
+        createdAt = NOON,
+        status = MessageStatus.SENT,
+        attachmentsJson = AttachmentsCodec.encode(
+            List(photos) { index ->
+                AttachmentDto(
+                    id = serverId * 10 + index, kind = AttachmentDto.KIND_PHOTO, mime = "image/jpeg",
+                    size = 40_000L, width = 64, height = 64, hasPreview = true,
+                )
+            },
+        ),
+    )
+
+    /**
+     * With a lock shut nothing leaves, so nothing is announced — and the
+     * family composer, unlike the assistant's own, says nothing at all
+     * rather than naming a lock a non-owner cannot open.
+     */
+    @Test
+    fun theFamilyStripIsAbsentWithALockShut() = runTest(dispatcher) {
+        val familyAllowsNot = newViewModel(kind = "family")
+        picturesConfigured(familyAllows = false)
+        familyAllowsNot.stagePrepared(tempPrepared(tag = 1))
+        type(familyAllowsNot, "@ai what is this?")
+        assertThat(familyAllowsNot.mentionPictureNotice.value).isNull()
+
+        val serverCannotSee = newViewModel(kind = "family")
+        picturesConfigured(vision = false)
+        serverCannotSee.stagePrepared(tempPrepared(tag = 1))
+        type(serverCannotSee, "@ai what is this?")
+        assertThat(serverCannotSee.mentionPictureNotice.value).isNull()
+    }
+
+    /** Without `@ai` the photo is an ordinary attachment on an ordinary message. */
+    @Test
+    fun theFamilyStripIsAbsentWithoutAMention() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        picturesConfigured()
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        type(viewModel, "what is this?")
+        assertThat(viewModel.mentionPictureNotice.value).isNull()
+        // And it appears the moment the mention is typed, off the same
+        // staged photo — the strip follows the draft, not the door.
+        type(viewModel, "@ai what is this?")
+        assertThat(viewModel.mentionPictureNotice.value).isEqualTo(
+            MentionPictureNotice(
+                shownOnMention = 1, shownOnQuote = 0, extraPhotos = 0, otherAttachments = 0, unreadablePhotos = 0,
+            ),
+        )
+    }
+
+    /** The family chat's strip, and only the family chat's. */
+    @Test
+    fun theFamilyStripIsPresentWithAStagedPhotoAndOnlyInTheFamilyChat() = runTest(dispatcher) {
+        val family = newViewModel(kind = "family")
+        picturesConfigured()
+        family.stagePrepared(tempPrepared(tag = 1))
+        type(family, "@ai what is this?")
+        assertThat(family.mentionPictureNotice.value).isEqualTo(
+            MentionPictureNotice(
+                shownOnMention = 1, shownOnQuote = 0, extraPhotos = 0, otherAttachments = 0, unreadablePhotos = 0,
+            ),
+        )
+        // The assistant's own chat has its own strip (assistantPictureNotice)
+        // and a direct chat has no assistant in it at all.
+        for (kind in listOf("ai", "direct")) {
+            val other = newViewModel(kind = kind)
+            picturesConfigured()
+            other.stagePrepared(tempPrepared(tag = 1))
+            type(other, "@ai what is this?")
+            assertThat(other.mentionPictureNotice.value).isNull()
+        }
+    }
+
+    /**
+     * Replying to a photo with `@ai` points the assistant at THAT photo,
+     * and the strip says so — read off this device's own row for the
+     * quoted message, because a ReplyToDto carries an excerpt and nothing
+     * else.
+     */
+    @Test
+    fun theFamilyStripIsPresentWithAQuotedPhoto() = runTest(dispatcher) {
+        seed(photoMessage(serverId = 100, photos = 1))
+        val viewModel = newViewModel(kind = "family")
+        picturesConfigured()
+        viewModel.beginReply(ReplyToDto(messageId = 100, senderId = PEER, excerpt = ""))
+        type(viewModel, "@ai what is this?")
+        assertThat(viewModel.mentionPictureNotice.value).isEqualTo(
+            MentionPictureNotice(
+                shownOnMention = 0, shownOnQuote = 1, extraPhotos = 0, otherAttachments = 0, unreadablePhotos = 0,
+            ),
+        )
+        // Cancelling the reply takes the photo — and the strip — with it.
+        viewModel.cancelReply()
+        runCurrent()
+        assertThat(viewModel.mentionPictureNotice.value).isNull()
+    }
+
+    /**
+     * THE SHARED BUDGET, end to end: three staged and three on the quoted
+     * message is four shown — the staged first — and two named, exactly
+     * as the server will count them.
+     */
+    @Test
+    fun theFamilyStripCountsAcrossMentionAndQuoteAsTheServerDoes() = runTest(dispatcher) {
+        seed(photoMessage(serverId = 100, photos = 3))
+        val viewModel = newViewModel(kind = "family")
+        picturesConfigured()
+        viewModel.beginReply(ReplyToDto(messageId = 100, senderId = PEER, excerpt = ""))
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        viewModel.stagePrepared(tempPrepared(tag = 2))
+        viewModel.stagePrepared(tempPrepared(tag = 3))
+        type(viewModel, "@ai which is best?")
+        assertThat(viewModel.mentionPictureNotice.value).isEqualTo(
+            MentionPictureNotice(
+                shownOnMention = 3, shownOnQuote = 1, extraPhotos = 2, otherAttachments = 0, unreadablePhotos = 0,
+            ),
+        )
+        assertThat(viewModel.mentionPictureNotice.value!!.shown).isEqualTo(AiPictureNotice.MAX_PHOTOS)
+    }
+
+    // -- Recent photos: the owner's third switch --------------------------------
+
+    /**
+     * Under `ai_history_photos` the strip shows for a bare `@ai` draft —
+     * the case #56's strip was absent for — and says "up to four", because
+     * every one of the four may be somebody else's recent picture. It
+     * follows the switch off again, mirrored from the settings the
+     * repository writes on every `GET /families/mine` and on the owner's
+     * own PATCH (docs/protocol.md, "Recent photos from the family chat").
+     */
+    @Test
+    fun theFamilyStripShowsForABareMentionUnderTheThirdSwitch() = runTest(dispatcher) {
+        val viewModel = newViewModel(kind = "family")
+        picturesConfigured(historyPhotos = true)
+        type(viewModel, "@ai what time is the match?")
+        assertThat(viewModel.mentionPictureNotice.value).isEqualTo(
+            MentionPictureNotice(
+                shownOnMention = 0, shownOnQuote = 0, extraPhotos = 0, otherAttachments = 0,
+                unreadablePhotos = 0, recentUpTo = AiPictureNotice.MAX_PHOTOS,
+            ),
+        )
+        // A staged photo takes its place first; history gets what is left.
+        viewModel.stagePrepared(tempPrepared(tag = 1))
+        runCurrent()
+        assertThat(viewModel.mentionPictureNotice.value!!.recentUpTo).isEqualTo(3)
+        // The switch off again — the owner's PATCH answer, or the next
+        // resync — and the strip is #56's: a photo of the member's own,
+        // nothing about the history.
+        launch { settings.setFamilyAiHistoryPhotos(false) }
+        runCurrent()
+        assertThat(viewModel.mentionPictureNotice.value!!.recentUpTo).isNull()
+        viewModel.discardStaged(0)
+        runCurrent()
+        assertThat(viewModel.mentionPictureNotice.value).isNull()
+    }
+
+    /**
+     * The third switch is inert with either lock shut or without a
+     * transcript, and the strip must not announce what will not happen:
+     * with `ai_history` off there is no history for a photo to come from.
+     */
+    @Test
+    fun theThirdSwitchIsInertWithoutItsPrerequisites() = runTest(dispatcher) {
+        val noHistory = newViewModel(kind = "family")
+        picturesConfigured(historyPhotos = true, familyHistory = false)
+        type(noHistory, "@ai what is this?")
+        assertThat(noHistory.mentionPictureNotice.value).isNull()
+
+        val familyAllowsNot = newViewModel(kind = "family")
+        picturesConfigured(historyPhotos = true, familyAllows = false)
+        type(familyAllowsNot, "@ai what is this?")
+        assertThat(familyAllowsNot.mentionPictureNotice.value).isNull()
+
+        val serverCannotSee = newViewModel(kind = "family")
+        picturesConfigured(historyPhotos = true, vision = false)
+        type(serverCannotSee, "@ai what is this?")
+        assertThat(serverCannotSee.mentionPictureNotice.value).isNull()
+
+        // And never in the assistant's own chat, whose pictures are the
+        // member's own and never an earlier turn's.
+        val own = newViewModel(kind = "ai")
+        picturesConfigured(historyPhotos = true)
+        type(own, "@ai what is this?")
+        assertThat(own.mentionPictureNotice.value).isNull()
     }
 }

@@ -30,6 +30,7 @@ use crate::auth::AuthUser;
 use crate::error::{ApiError, codes};
 use crate::models::Attachment;
 use crate::state::AppState;
+use crate::storage::Storage;
 
 #[derive(Debug, Deserialize)]
 pub struct UploadParams {
@@ -182,6 +183,40 @@ async fn upload_location(
 
 /// `POST /attachments` — stream a photo, video, piece of audio or file to
 /// disk, or record a location, which has no bytes at all.
+/// Refuse before reading a body when storing it would take the filesystem
+/// below the operator's free-space floor.
+///
+/// Checked HERE rather than after the write for the obvious reason — a full
+/// disk should cost a refused request, not 100 MB written and then undone
+/// — and it uses `Content-Length` as the size when the client sent one.
+/// Without one the check degrades to "is there already less than the floor
+/// free", which is the honest answer for a body of unknown length: the
+/// write itself is capped at `max_attachment_bytes`, so the worst a lying
+/// or absent length can do is overshoot the floor by one attachment, and
+/// the floor is sized in gigabytes precisely so that margin is affordable.
+fn check_free_space(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let floor = state.cfg.limits.min_free_disk_bytes;
+    if floor == 0 {
+        return Ok(());
+    }
+    let incoming = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let free = state.storage.free_bytes();
+    if Storage::would_breach_floor(free, incoming, floor) {
+        tracing::warn!(
+            free_bytes = free,
+            incoming_bytes = incoming,
+            floor_bytes = floor,
+            "refusing an upload: the attachments filesystem is near full"
+        );
+        return Err(ApiError::storage_full());
+    }
+    Ok(())
+}
+
 pub async fn upload_attachment(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -194,6 +229,11 @@ pub async fn upload_attachment(
     if params.kind.as_deref() == Some(Attachment::KIND_LOCATION) {
         return upload_location(&state, auth.user_id, &params).await;
     }
+
+    // After the location branch on purpose: a location is three numbers in
+    // a query string and costs the disk nothing, so a nearly-full server
+    // still accepts one.
+    check_free_space(&state, &headers)?;
 
     let mime = headers
         .get(header::CONTENT_TYPE)
@@ -407,6 +447,7 @@ pub async fn upload_preview(
             "a preview must be image/jpeg",
         ));
     }
+    check_free_space(&state, &headers)?;
 
     // Uploader only, and only before the row is claimed or after — either
     // way it is theirs; a member who did not upload it has no business
@@ -763,6 +804,11 @@ pub(crate) async fn remove_all_if_unreferenced(
     Ok(())
 }
 
+/// How long an expiry marker outlives the upload it describes. Long
+/// enough that any client still holding the id learns what happened,
+/// short enough that the table stays small (0035).
+const EXPIRY_MARKER_DAYS: i32 = 30;
+
 /// Delete unclaimed uploads past the grace period.
 ///
 /// A send the user abandoned — picked a video, changed their mind — leaves
@@ -770,14 +816,36 @@ pub(crate) async fn remove_all_if_unreferenced(
 /// system would ever remove them.
 pub async fn sweep_unclaimed(state: &AppState) -> Result<u64, ApiError> {
     let hours = state.cfg.limits.attachment_grace_hours;
+    // The row goes and a MARKER stays (0035): a client whose outbox was
+    // holding a message through a long offline stretch comes back with an
+    // id this sweep took, and `attachment_expired` is what tells it to
+    // upload the bytes again rather than fail the message forever. One
+    // statement, so a marker can never be missed for a row that went.
     let rows = sqlx::query(
-        "DELETE FROM attachments
-         WHERE message_id IS NULL
-           AND created_at < now() - make_interval(hours => $1)
-         RETURNING storage_key",
+        "WITH gone AS (
+             DELETE FROM attachments
+              WHERE message_id IS NULL
+                AND created_at < now() - make_interval(hours => $1)
+             RETURNING id, uploader_id, storage_key
+         ), marked AS (
+             INSERT INTO expired_attachments (id, uploader_id)
+             SELECT id, uploader_id FROM gone
+             ON CONFLICT (id) DO NOTHING
+         )
+         SELECT storage_key FROM gone",
     )
     .bind(hours as i32)
     .fetch_all(&state.pool)
+    .await?;
+
+    // And the markers nobody can still be holding. A client's outbox does
+    // not remember an id for a month, and a table that only ever grows is
+    // its own kind of leak.
+    sqlx::query(
+        "DELETE FROM expired_attachments WHERE expired_at < now() - make_interval(days => $1)",
+    )
+    .bind(EXPIRY_MARKER_DAYS)
+    .execute(&state.pool)
     .await?;
 
     // REFCOUNTED, and this is the part that must never regress: since

@@ -27,6 +27,7 @@ final class JoinFamilyModel {
 struct JoinFamilyView: View {
     @Environment(AppSession.self) private var session
     @State private var model = JoinFamilyModel()
+    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         Form {
@@ -34,6 +35,9 @@ struct JoinFamilyView: View {
                 TextField("ABCD2345", text: Bindable(model).code)
                     .literalTextEntry(uppercased: true)
                     .font(.body.monospaced())
+                    .focused($fieldFocused)
+                    .submitLabel(.go)
+                    .onSubmit { if model.canSubmit { submit() } }
                     .onChange(of: model.code) { _, newValue in
                         let upper = newValue.uppercased()
                         if upper != newValue { model.code = upper }
@@ -67,6 +71,12 @@ struct JoinFamilyView: View {
             }
         }
         .navigationTitle("Join a Family")
+        .onAppear {
+            // As CreateFamilyView: the Mac starts in the field.
+            #if os(macOS)
+            fieldFocused = true
+            #endif
+        }
     }
 
     private func submit() {
@@ -87,6 +97,15 @@ struct JoinFamilyView: View {
                 switch errorCode {
                 case "already_in_family": model.errorText = String(localized: "You're already in a family.")
                 case "join_request_pending": model.errorText = String(localized: "You already have a pending request.")
+                // The one thing this endpoint tells a stranger, and
+                // deliberately: telling an invited member their code is
+                // invalid on the day the family filled up costs a real
+                // person a real join (docs/protocol.md,
+                // `POST /families/join`). A CLOSED family is different and
+                // needs nothing here — it answers `invalid_invite_code`,
+                // byte-identical to a code that never existed, and the
+                // branch above already says the right thing about it.
+                case "family_full": model.errorText = String(localized: "That family is full right now. Ask them to make room, then try the code again.")
                 default: model.errorText = message ?? String(localized: "The server rejected that code.")
                 }
             } catch {

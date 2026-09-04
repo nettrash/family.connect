@@ -2,7 +2,10 @@
 //  ShareImportTests.swift
 //  FamilyConnectTests
 //
-//  The share extension's hand-off, from the app's side: the URL parser is
+//  The share extension's hand-off, from the app's side. The contract
+//  itself now lives in ShareHandoff (issue #34) and is exercised producer
+//  → consumer in ShareHandoffTests; what stays here is the app half: the
+//  parser is
 //  TOTAL and paranoid (an id that is not a UUID never becomes a path),
 //  the chat-eligibility rule is one line that must never drift, and the
 //  staging cap is the same ten the protocol caps a message at.
@@ -23,7 +26,7 @@ struct ShareImportTests {
     @Test("A well-formed hand-off yields its ids in shared order")
     func parsesIDs() {
         let url = URL(string: "familyconnect://share?ids=\(a),\(b)")!
-        #expect(ShareImport.ids(from: url) == [a, b])
+        #expect(ShareHandoff.ids(from: url) == [a, b])
     }
 
     @Test("Anything that is not the share hand-off is refused")
@@ -34,7 +37,7 @@ struct ShareImportTests {
             "familyconnect://share",                     // no ids at all
             "familyconnect://share?ids=",                // empty ids
         ] {
-            #expect(ShareImport.ids(from: URL(string: text)!) == nil, "\(text)")
+            #expect(ShareHandoff.ids(from: URL(string: text)!) == nil, "\(text)")
         }
     }
 
@@ -43,15 +46,15 @@ struct ShareImportTests {
     @Test("An id that is not a UUID poisons the whole hand-off")
     func refusesTraversal() {
         let url = URL(string: "familyconnect://share?ids=\(a),..%2F..%2FDocuments")!
-        #expect(ShareImport.ids(from: url) == nil)
+        #expect(ShareHandoff.ids(from: url) == nil)
     }
 
     @Test("More ids than a message may carry are trimmed to the cap")
     func capsAtTen() {
         let ids = (0..<12).map { _ in UUID().uuidString }
         let url = URL(string: "familyconnect://share?ids=\(ids.joined(separator: ","))")!
-        #expect(ShareImport.ids(from: url)?.count == StagedAttachment.maxPerMessage)
-        #expect(ShareImport.ids(from: url) == Array(ids.prefix(10)))
+        #expect(ShareHandoff.ids(from: url)?.count == StagedAttachment.maxPerMessage)
+        #expect(ShareHandoff.ids(from: url) == Array(ids.prefix(10)))
     }
 
     // MARK: - The inbox path
@@ -59,10 +62,10 @@ struct ShareImportTests {
     @Test("The staging directory is built only from a valid UUID")
     func inboxDirectoryValidatesItsID() {
         let container = URL(fileURLWithPath: "/tmp/group")
-        let good = ShareImport.inboxDirectory(container: container, id: a)
+        let good = ShareHandoff.stagingDirectory(container: container, id: a)
         #expect(good?.path == "/tmp/group/ShareInbox/\(a)")
-        #expect(ShareImport.inboxDirectory(container: container, id: "../evil") == nil)
-        #expect(ShareImport.inboxDirectory(container: container, id: "") == nil)
+        #expect(ShareHandoff.stagingDirectory(container: container, id: "../evil") == nil)
+        #expect(ShareHandoff.stagingDirectory(container: container, id: "") == nil)
     }
 
     // MARK: - Where a share may land
@@ -86,8 +89,10 @@ struct ShareImportTests {
         let container = FileManager.default.temporaryDirectory
             .appendingPathComponent("fc-test-share-\(UUID().uuidString)", isDirectory: true)
         for id in ids {
-            let inbox = container
-                .appendingPathComponent("ShareInbox", isDirectory: true)
+            // Through the shared constant, so a rename of the inbox folder
+            // shows up here as a failing test rather than as a share that
+            // silently finds nothing.
+            let inbox = ShareHandoff.inboxURL(container: container)
                 .appendingPathComponent(id, isDirectory: true)
             try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
             try Data("shared".utf8).write(to: inbox.appendingPathComponent("photo.jpg"))

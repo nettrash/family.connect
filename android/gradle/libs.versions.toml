@@ -32,7 +32,7 @@
 # org.webrtc.* classes are used; the app never touches Stream's service.
 
 [versions]
-agp = "9.3.2"
+agp = "9.4.0"
 kotlin = "2.3.20"
 coreKtx = "1.18.0"
 # Family's calls registered with the platform's Telecom (TelecomCalls):

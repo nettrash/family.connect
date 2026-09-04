@@ -24,6 +24,7 @@ final class CreateFamilyModel {
 struct CreateFamilyView: View {
     @Environment(AppSession.self) private var session
     @State private var model = CreateFamilyModel()
+    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         Form {
@@ -32,6 +33,9 @@ struct CreateFamilyView: View {
                     #if os(iOS)
                     .textInputAutocapitalization(.words)
                     #endif
+                    .focused($fieldFocused)
+                    .submitLabel(.go)
+                    .onSubmit { if model.canSubmit { submit() } }
             } header: {
                 Text("Family name")
             } footer: {
@@ -61,6 +65,13 @@ struct CreateFamilyView: View {
             }
         }
         .navigationTitle("Create a Family")
+        .onAppear {
+            // One field: on the Mac it is already the place to type. iOS
+            // waits for the tap (see AuthView.focusFirstField).
+            #if os(macOS)
+            fieldFocused = true
+            #endif
+        }
     }
 
     private func submit() {
@@ -71,6 +82,11 @@ struct CreateFamilyView: View {
             defer { model.isWorking = false }
             do {
                 try await session.createFamily(name: name)
+            } catch APIError.forbidden(let code) where code == "family_registration_disabled" {
+                // Reachable only on a server that closed its door after
+                // this screen was pushed — the gate itself hides the way
+                // in (docs/protocol.md, "Starting a family").
+                model.errorText = String(localized: "This server doesn't take new families.")
             } catch APIError.conflict(let code, let message) {
                 model.errorText = code == "already_in_family"
                     ? String(localized: "You're already in a family. Pull to refresh.")

@@ -2,8 +2,11 @@
 //  AssistantMention.swift
 //  FamilyConnect
 //
-//  Recognising `@ai` in a message body (docs/protocol.md, "Mentioning the
-//  assistant in the family chat").
+//  Recognising what a message body ASKS the assistant for: `@ai`
+//  (docs/protocol.md, "Mentioning the assistant in the family chat") and
+//  `/draw` (protocol.md, "Pictures"). Two grammars, one file, because the
+//  second one is defined in terms of the first — a family-chat picture
+//  request is `@ai` and then the token.
 //
 //  This grammar is a WIRE CONTRACT, not a rendering detail. The SERVER
 //  decides from it whether a family-chat message reaches the assistant at
@@ -89,4 +92,195 @@ nonisolated enum AssistantMention {
         return !(isDigit || isUpper || isLower || byte == UInt8(ascii: "_"))
     }
 
+    // MARK: - `/draw` (docs/protocol.md, "Pictures")
+
+    /// The picture token, so nothing spells it twice.
+    ///
+    /// The SECOND wire-contract grammar in this file, and a contract for
+    /// the reason the first one is: the server decides from it whether a
+    /// request goes to an entirely different provider — an image model, on
+    /// a different deployment — and each client highlights exactly what the
+    /// server will act on. Mirrored by value in `server/src/mentions.rs`
+    /// (`draw_prompt`) and `android/…/ui/chat/AssistantMention.kt`, with
+    /// the same vectors pinned on all three.
+    ///
+    /// The rule, in full:
+    ///
+    /// - the token is the five characters `/draw`, matched
+    ///   case-insensitively but only over ASCII, so `/DRAW` and `/Draw` ask
+    ///   too;
+    /// - it must be the FIRST thing in the body, ignoring leading
+    ///   whitespace and — this is what makes the family chat work — ONE
+    ///   leading `@ai` and the whitespace after it. `@ai /draw a cat` asks
+    ///   for a picture; `hey @ai /draw a cat` does not, and neither does
+    ///   `what does /draw do?`;
+    /// - it must be followed by whitespace or the end of the body, so
+    ///   `/drawer` is just a word;
+    /// - what follows, trimmed, is the PROMPT and must not be empty:
+    ///   `/draw` on its own is an ordinary message.
+    static let drawToken = "/draw"
+
+    /// The picture this body asks for, or nil because it asks for none.
+    ///
+    /// What comes back is the WHOLE of what will leave the server on this
+    /// request — not the thread, not the transcript, not the family's
+    /// language, not any photo. Answering with the prompt rather than a
+    /// bool is deliberate: a call site that can see the words can show
+    /// them, and a test that only asked "is this a draw?" would not notice
+    /// the token travelling along with them.
+    static func drawPrompt(in body: String) -> String? {
+        drawScan(in: body)?.prompt
+    }
+
+    /// Does this body ask for a picture?
+    static func asksForPicture(_ body: String) -> Bool {
+        drawScan(in: body) != nil
+    }
+
+    /// The token itself, as a range into `body`, for the bubble that draws
+    /// it emphasised. Present exactly when `drawPrompt` answers a prompt —
+    /// a highlight the server would not act on is the failure this grammar
+    /// exists to prevent, so the two answers come off ONE scan.
+    static func drawTokenRange(in body: String) -> Range<String.Index>? {
+        drawScan(in: body)?.token
+    }
+
+    /// The one answer both public questions are asked of.
+    private struct DrawScan {
+        /// Where the five characters sit in the caller's own string.
+        let token: Range<String.Index>
+        /// The words after them, trimmed, never empty.
+        let prompt: String
+    }
+
+    /// Read a body once and answer both halves of the picture grammar.
+    ///
+    /// EVERYTHING HERE IS MEASURED IN UNICODE SCALARS, never in Swift
+    /// `Character`s, and that is the whole reason this is one function
+    /// rather than the three it reads as. A `Character` is a grapheme
+    /// CLUSTER — `w` and a combining acute are one of them — so counting
+    /// five of them past the start of `/draw` can step over more than the
+    /// five bytes the server steps over. `/draw` + U+0301 + `" a cat"` is
+    /// the shape: the server sees a combining mark where it wants
+    /// whitespace and reads an ordinary message, while five `Character`s
+    /// landed on the space and Apple's side used to call it a picture
+    /// request. Scalars are what Rust's `char` is, so a scalar walk and the
+    /// server's walk are the same walk.
+    ///
+    /// The token is still compared as UTF-8 BYTES and nothing is sliced
+    /// until it has matched: five leading bytes that match an ASCII token
+    /// are five leading scalars, so the index below is always in bounds.
+    private static func drawScan(in body: String) -> DrawScan? {
+        let scalars = body.unicodeScalars
+        var index = skippingWhitespace(from: scalars.startIndex, in: scalars)
+        // ONE leading mention, and only a leading one — the position is
+        // checked rather than trusted, which is what makes
+        // `look @ai /draw a cat` an ordinary message.
+        if let end = leadingMentionEnd(at: index, in: scalars) {
+            index = skippingWhitespace(from: end, in: scalars)
+        }
+        // The token, scalar by scalar, folded the way Rust's
+        // `eq_ignore_ascii_case` folds: only A–Z move, so no non-letter can
+        // fold onto a letter.
+        var probe = index
+        for expected in drawToken.utf8 {
+            guard probe < scalars.endIndex else { return nil }
+            let value = scalars[probe].value
+            guard value < 0x80 else { return nil }
+            let byte = UInt8(value)
+            let folded = (byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "Z")) ? byte | 0x20 : byte
+            guard folded == expected else { return nil }
+            probe = scalars.index(after: probe)
+        }
+        // End of body is not a request — `/draw` alone is an ordinary
+        // message — and anything that is not whitespace makes a longer
+        // word: `/drawer` and `/draw,a cat` are not requests either.
+        guard probe < scalars.endIndex, isWhitespace(scalars[probe]) else { return nil }
+        let prompt = trimmed(body[probe...])
+        guard !prompt.isEmpty else { return nil }
+        return DrawScan(token: index..<probe, prompt: prompt)
+    }
+
+    /// The first index at or after `from` that is not whitespace.
+    private static func skippingWhitespace(
+        from: String.Index, in scalars: String.UnicodeScalarView
+    ) -> String.Index {
+        var index = from
+        while index < scalars.endIndex, isWhitespace(scalars[index]) {
+            index = scalars.index(after: index)
+        }
+        return index
+    }
+
+    /// `slice` with leading and trailing whitespace removed — Rust's
+    /// `str::trim`, spelled out rather than borrowed from Foundation. See
+    /// `isWhitespace` for why Foundation's is the wrong set.
+    private static func trimmed(_ slice: Substring) -> String {
+        let scalars = slice.unicodeScalars
+        var lower = scalars.startIndex
+        while lower < scalars.endIndex, isWhitespace(scalars[lower]) {
+            lower = scalars.index(after: lower)
+        }
+        var upper = scalars.endIndex
+        while upper > lower {
+            let before = scalars.index(before: upper)
+            guard isWhitespace(scalars[before]) else { break }
+            upper = before
+        }
+        return String(scalars[lower..<upper])
+    }
+
+    /// Unicode `White_Space` — the SERVER's definition of whitespace, and
+    /// therefore this grammar's.
+    ///
+    /// `Unicode.Scalar.Properties.isWhitespace` IS that property, which is
+    /// also exactly what Rust's `char::is_whitespace` answers. The two
+    /// things it deliberately is NOT:
+    ///
+    /// - `Character.isWhitespace`, which reads the same property off the
+    ///   FIRST SCALAR of a grapheme cluster — right for the property,
+    ///   wrong for the walk, because the cluster it belongs to may be
+    ///   longer than the scalar the server steps over.
+    /// - `CharacterSet.whitespacesAndNewlines`, which contains U+200B ZERO
+    ///   WIDTH SPACE. U+200B is not `White_Space`, so the server keeps it
+    ///   in the prompt and trimming with Foundation's set took it out:
+    ///   `/draw \u{200B}` is a picture request to the server and used to
+    ///   be an empty prompt here, which is a token the server acts on left
+    ///   plain in the bubble.
+    ///
+    /// Android hand-rolls the same table against a THIRD answer — Kotlin's
+    /// `Char.isWhitespace()` is Java's, which calls U+001C–U+001F
+    /// whitespace and U+0085 not — and `server/src/mentions.rs` pins the
+    /// property itself, code point by code point, in
+    /// `whitespace_is_the_unicode_property_and_nothing_else`.
+    private static func isWhitespace(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.properties.isWhitespace
+    }
+
+    /// The index just past a `@ai` that starts at `index`, or nil when one
+    /// does not. The same boundary rule `ranges(in:)` uses, applied at one
+    /// position only — and in scalars, for `drawScan`'s reason.
+    private static func leadingMentionEnd(
+        at index: String.Index, in scalars: String.UnicodeScalarView
+    ) -> String.Index? {
+        var probe = index
+        for expected in token.utf8 {
+            guard probe < scalars.endIndex else { return nil }
+            let value = scalars[probe].value
+            guard value < 0x80 else { return nil }
+            let byte = UInt8(value)
+            let folded = (byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "Z")) ? byte | 0x20 : byte
+            guard folded == expected else { return nil }
+            probe = scalars.index(after: probe)
+        }
+        // A fourth scalar that is not a boundary makes it `@aiden`, not a
+        // mention — and then nothing here licenses the picture token
+        // either. A multi-byte scalar is a boundary, exactly as it is for
+        // `ranges(in:)`: its lead byte is never an ASCII letter or digit.
+        if probe < scalars.endIndex {
+            let value = scalars[probe].value
+            guard value >= 0x80 || isBoundary(UInt8(value)) else { return nil }
+        }
+        return probe
+    }
 }

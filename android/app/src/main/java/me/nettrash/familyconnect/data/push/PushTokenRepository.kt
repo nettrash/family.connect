@@ -53,8 +53,8 @@ class PushTokenRepository @Inject constructor(
      * Login / resync hook: ask Firebase for the current token (null when
      * the build has no google-services.json), fall back to the cached one
      * (an onNewToken that arrived while logged out), and (re)register.
-     * A null token still registers the device row — the protocol's v1
-     * push hook — it just can't be pushed to.
+     * A null token still registers the device row — the protocol allows
+     * it (docs/protocol.md, "Devices") — it just can't be pushed to.
      */
     suspend fun registerCurrentToken() {
         register(pushTokenProvider.currentToken() ?: settings.state.first().pushToken)

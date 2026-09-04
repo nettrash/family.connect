@@ -191,6 +191,26 @@ struct CallModelTests {
         #expect(voiceMessage.call?.video == false)
     }
 
+    @Test("family_registration_enabled decodes, and defaults to TRUE on an older server")
+    func familyRegistrationFlag() throws {
+        let user = #"{"id": 7, "username": "nora", "display_name": "Nora", "created_at": "2026-01-01T00:00:00Z"}"#
+        let closed = try APICoding.decoder().decode(MeResponse.self, from: Data(#"{"user": \#(user), "family": null, "role": null, "pending_join_request": null, "family_registration_enabled": false}"#.utf8))
+        #expect(!closed.familyRegistrationEnabled)
+        // An older server never says; it has no door to shut, so the gate
+        // must keep offering Create.
+        let older = try APICoding.decoder().decode(MeResponse.self, from: Data(#"{"user": \#(user), "family": null, "role": null, "pending_join_request": null}"#.utf8))
+        #expect(older.familyRegistrationEnabled)
+    }
+
+    @Test("familyless_account_ttl_days decodes, and is 0 on a server that never sweeps or predates it")
+    func familylessGrace() throws {
+        let user = #"{"id": 7, "username": "nora", "display_name": "Nora", "created_at": "2026-01-01T00:00:00Z"}"#
+        let week = try APICoding.decoder().decode(MeResponse.self, from: Data(#"{"user": \#(user), "family": null, "role": null, "pending_join_request": null, "familyless_account_ttl_days": 7}"#.utf8))
+        #expect(week.familylessAccountTTLDays == 7)
+        let older = try APICoding.decoder().decode(MeResponse.self, from: Data(#"{"user": \#(user), "family": null, "role": null, "pending_join_request": null}"#.utf8))
+        #expect(older.familylessAccountTTLDays == 0)
+    }
+
     @Test("calls_enabled decodes, and defaults to false on an older server")
     func callsEnabled() throws {
         let user = #"{"id": 7, "username": "anna", "display_name": "Anna", "created_at": "2026-08-19T17:03:12Z", "avatar_version": 0}"#
@@ -252,6 +272,7 @@ struct CallRecordPersistenceTests {
     private func makeContainer() throws -> ModelContainer {
         try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            PendingMediaItemEntity.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
     }
 

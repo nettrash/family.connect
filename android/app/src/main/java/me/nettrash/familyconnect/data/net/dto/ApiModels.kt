@@ -129,6 +129,52 @@ data class FamilyDto(
      * successor does.
      */
     @SerialName("ai_history") val aiHistory: Boolean = true,
+    /**
+     * Whether a photograph a member points the assistant at may be shown
+     * to the model at all: one attached to a question in their OWN
+     * assistant chat, and — since #56 — one on an `@ai` message in the
+     * family chat or on the message it replies to (docs/protocol.md,
+     * "Pictures" and "Showing the assistant a picture from the family
+     * chat"). One switch for both surfaces, deliberately.
+     *
+     * ALWAYS present on the wire, exactly like [aiHistory] and for the
+     * same reason — but the default is the OTHER one. FALSE, and
+     * deliberately so: `ai_history` widened what a model was already
+     * being told, while a photograph is a different KIND of disclosure,
+     * and the family who never open this screen are exactly the family
+     * whose pictures should stay where they are. The default here is
+     * therefore both the protocol's default and the compatibility rule —
+     * a server that predates the field has no vision path at all.
+     */
+    @SerialName("ai_vision") val aiVision: Boolean = false,
+    /**
+     * Whether an `@ai` mention in the family chat may ALSO be shown the
+     * most recent photographs of that chat — pictures nobody pointed the
+     * assistant at, on messages the mention did not touch
+     * (docs/protocol.md, "Recent photos from the family chat"). A THIRD
+     * switch rather than a widening of [aiVision]: every owner who turned
+     * that one on did so under a sentence ending "never from an earlier
+     * message", and widening it would make that sentence false for every
+     * family that already said yes to it.
+     *
+     * ALWAYS present on the wire, and FALSE by default — for every family
+     * that predates it and for a server that predates the field, where no
+     * such photo can travel at all. It can only be true while [aiVision]
+     * is: the server refuses to turn it on otherwise and turns it off in
+     * the same write whenever [aiVision] goes off, so a PATCH answer is
+     * where this client learns either.
+     */
+    @SerialName("ai_history_photos") val aiHistoryPhotos: Boolean = false,
+    /**
+     * The most members this family admits, or null for NO cap of the
+     * owner's own — in which case the operator's ceiling
+     * (`MeResponse.maxFamilyMembers`) is what binds at the join door.
+     *
+     * Absent from the wire until an owner sets one, so null is both "no
+     * cap" and "a server that predates the field", and those mean the
+     * same thing here (docs/protocol.md, `PATCH /families/mine`).
+     */
+    @SerialName("max_members") val maxMembers: Int? = null,
 )
 
 @Serializable
@@ -612,15 +658,47 @@ data class PatchFamilyRequest(
     @SerialName("join_policy") val joinPolicy: String? = null,
     val language: JsonElement? = null,
     @SerialName("ai_history") val aiHistory: Boolean? = null,
+    @SerialName("ai_vision") val aiVision: Boolean? = null,
+    @SerialName("ai_history_photos") val aiHistoryPhotos: Boolean? = null,
+    @SerialName("max_members") val maxMembers: JsonElement? = null,
 ) {
     companion object {
         fun joinPolicy(policy: String) = PatchFamilyRequest(joinPolicy = policy)
+
+        /**
+         * A number SETS the cap; null CLEARS it, as a real JSON null.
+         *
+         * `JsonElement` for the same reason `language` uses it: these are
+         * the TWO places in the protocol where sending a `null` means
+         * something a missing key does not, and `encodeDefaults=false`
+         * would otherwise drop the clear entirely and make it a no-op
+         * (docs/protocol.md, `PATCH /families/mine`).
+         */
+        fun maxMembers(cap: Int?) =
+            PatchFamilyRequest(maxMembers = cap?.let(::JsonPrimitive) ?: JsonNull)
 
         /** A tag SETS the language; null CLEARS it, as a real JSON null. */
         fun language(tag: String?) =
             PatchFamilyRequest(language = tag?.let(::JsonPrimitive) ?: JsonNull)
 
         fun aiHistory(enabled: Boolean) = PatchFamilyRequest(aiHistory = enabled)
+
+        /**
+         * The picture switch. A plain boolean like [aiHistory] — absent
+         * leaves it alone and there is nothing for a `null` to mean —
+         * differing only in that its default is FALSE
+         * (docs/protocol.md, "Pictures").
+         */
+        fun aiVision(enabled: Boolean) = PatchFamilyRequest(aiVision = enabled)
+
+        /**
+         * The third switch, of the same shape again. The server refuses
+         * `true` while `ai_vision` is off (`validation`, 400) and turns
+         * it off whenever `ai_vision` goes off — both are the server's to
+         * enforce, and this client learns them from the answer
+         * (docs/protocol.md, "Recent photos from the family chat").
+         */
+        fun aiHistoryPhotos(enabled: Boolean) = PatchFamilyRequest(aiHistoryPhotos = enabled)
     }
 }
 
@@ -726,6 +804,14 @@ data class NoteDto(
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("board_seq") val boardSeq: Long,
+    /**
+     * The board_seq of the last change to what the note SAYS — the only
+     * number the badge counts (docs/protocol.md, "Board"). A move, a resize
+     * and a recolour leave it where it was. Null on a tombstone and from a
+     * server that predates the field, which is why it is nullable rather
+     * than 0: "nobody said" is not "written at the dawn of the board".
+     */
+    @SerialName("content_seq") val contentSeq: Long? = null,
     val deleted: Boolean? = null,
 ) {
     val isTombstone: Boolean get() = deleted == true
@@ -804,12 +890,62 @@ data class MeResponse(
      */
     @SerialName("calls_enabled") val callsEnabled: Boolean = false,
     /**
+     * Whether this server takes NEW families at all (`[families]
+     * registration`, docs/protocol.md "Starting a family"). ALWAYS
+     * present on a current server; defaulted to TRUE for one that
+     * predates the switch, which is also the right answer there — such a
+     * server has no door to shut.
+     */
+    @SerialName("family_registration_enabled") val familyRegistrationEnabled: Boolean = true,
+    /**
+     * How many days an account may go without a family before this server
+     * removes it; 0 when it never does, which is also the default on a
+     * server that predates the sweep (docs/protocol.md, "Accounts without
+     * a family"). The gate says so, so the deadline is known before it is met.
+     */
+    @SerialName("familyless_account_ttl_days") val familylessAccountTtlDays: Int = 0,
+    /**
      * Whether this server allows VIDEO calls (`[calls] video_enabled`,
      * docs/protocol.md, "Video"). Gates the video-call button ALONE —
      * voice is untouched; the default covers a server that predates
      * video, which then correctly offers voice only.
      */
     @SerialName("video_calls_enabled") val videoCallsEnabled: Boolean = false,
+    /**
+     * The operator's ceiling on a family's size
+     * (`limits.max_family_members`). An owner's cap picker draws its range
+     * from this instead of discovering `validation` at the moment somebody
+     * tries to set one.
+     *
+     * ALWAYS present on a current server. Null means one too old to say,
+     * and the cap control hides rather than inventing a bound.
+     */
+    @SerialName("max_family_members") val maxFamilyMembers: Int? = null,
+    /**
+     * The caller's own block list. ALWAYS present and `[]` when they have
+     * blocked nobody — the one read in this protocol where absence is not
+     * allowed to mean "leave what you hold alone", because a list that
+     * vanished when it emptied would never tell a second device about the
+     * last unblock. A complete state-set and never a delta, so a client
+     * REPLACES what it stores (docs/protocol.md, "Blocking a member").
+     *
+     * It rides here as well as on `GET /families/mine` because a block is
+     * a pair and not a membership: a caller with no family at all still
+     * holds blocks.
+     */
+    @SerialName("blocked_user_ids") val blockedUserIds: List<Long> = emptyList(),
+    /**
+     * The operator's published contact (`[server] support_contact`),
+     * absent when unset. Shown on the report screen.
+     *
+     * Free text, at most 256 characters, in whatever form the operator
+     * configured. Clients draw it VERBATIM, selectable and copyable, and
+     * NEVER linkify it — an operator may write an address, a URL or a
+     * sentence, and three apps guessing differently about which it is
+     * would be worse than three apps showing the same text
+     * (docs/protocol.md, `GET /me`).
+     */
+    @SerialName("support_contact") val supportContact: String? = null,
 )
 
 @Serializable
@@ -857,6 +993,35 @@ data class FamilyMineResponse(
     // whole of the capability check (docs/protocol.md, "Mentioning the
     // assistant in the family chat").
     val assistant: AssistantDto? = null,
+    /**
+     * Everybody the CALLER has blocked. A client REPLACES what it stores
+     * with this rather than merging (docs/protocol.md, "Blocking a
+     * member"); the empty default is right both for a server that
+     * predates blocking and for a caller who has blocked nobody.
+     */
+    @SerialName("blocked_user_ids") val blockedUserIds: List<Long> = emptyList(),
+    /**
+     * Who would inherit this family if the owner left right now — present
+     * for the OWNER only, and absent when they are the last member, which
+     * is a DIFFERENT dialog: leaving then deletes the family.
+     *
+     * A PREDICTION, not a fact. Any join or leave changes the answer and
+     * none of them raises a frame for it, so this is only ever read
+     * straight after a fresh `GET /families/mine` and never from a cached
+     * copy (docs/protocol.md, `GET /families/mine`).
+     */
+    @SerialName("next_owner_user_id") val nextOwnerUserId: Long? = null,
+)
+
+/**
+ * The body of a `POST /families/leave` that handed the family on. The
+ * endpoint answers `204` with NO body at all when nothing passed on — an
+ * ordinary member leaving, or the last one, who takes the family with
+ * them — so this type must never be required for the call to succeed.
+ */
+@Serializable
+data class LeaveFamilyResponse(
+    @SerialName("new_owner_user_id") val newOwnerUserId: Long? = null,
 )
 
 /**
@@ -880,6 +1045,34 @@ data class AssistantDto(
      * own would be unanswerable.
      */
     val mention: String,
+    /**
+     * The picture token, alongside [mention] and for the same reason: the
+     * grammar is shared ([me.nettrash.familyconnect.ui.chat.AssistantMention])
+     * but the spelling belongs to the protocol.
+     *
+     * Absent on a server that predates "Pictures", where the composer
+     * offers nothing anyway — [images] is false there too.
+     */
+    val draw: String? = null,
+    /**
+     * This SERVER has a deployment that can look at a picture.
+     *
+     * It says nothing about whether THIS family allows it — that is
+     * [FamilyDto.aiVision], and a client needs BOTH before it offers to
+     * attach a picture in an `ai` chat (docs/protocol.md, "Pictures").
+     * False on an old server, which is also the honest answer there.
+     */
+    val vision: Boolean = false,
+    /**
+     * This server can MAKE one. The whole of the `/draw` capability
+     * check: an affordance that silently does nothing is worse than one
+     * that is not there, which is the reason this object exists at all.
+     * Since #56 it also means the assistant may draw UNASKED, in answer to
+     * an ordinary question; the reply is the picture message `/draw`
+     * already produces, so nothing is offered or drawn differently for it
+     * (docs/protocol.md, "Drawing without being told to").
+     */
+    val images: Boolean = false,
 )
 
 @Serializable
@@ -890,6 +1083,58 @@ data class JoinRequestsResponse(val requests: List<JoinRequestDto>)
 
 @Serializable
 data class ApproveResponse(val member: MemberDto)
+
+/**
+ * One report in the owner's moderation list (docs/protocol.md,
+ * "Reporting a member").
+ */
+@Serializable
+data class ReportDto(
+    val id: Long,
+    val reporter: UserDto,
+    val reported: UserDto,
+    /**
+     * One of `spam`, `harassment`, `inappropriate`, `other` — a fixed list
+     * so nine locales render a row from string resources rather than
+     * shipping untranslated prose to a moderator. An unrecognised value is
+     * KEPT as-is and drawn as "other" rather than failing the decode: a
+     * newer server must never make an owner's inbox unreadable.
+     */
+    val reason: String,
+    /**
+     * The message reported, when one was named AND it still exists.
+     * Retention drops it; the excerpt outlives it, so a client draws the
+     * excerpt always and offers to jump to the message only while this
+     * survives.
+     */
+    @SerialName("message_id") val messageId: Long? = null,
+    /**
+     * The WHOLE reported body, frozen when the report was raised — the one
+     * quotation in this protocol that is STORED rather than recomputed,
+     * because the author may edit it away and retention will sweep it.
+     */
+    @SerialName("message_excerpt") val messageExcerpt: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+)
+
+@Serializable
+data class ReportsResponse(val reports: List<ReportDto>)
+
+@Serializable
+data class ReportResponse(val report: ReportDto)
+
+/**
+ * `POST /families/reports`. [messageId] names one message and is omitted
+ * for a report about the PERSON; `encodeDefaults=false` in the house Json
+ * config is what keeps it off the wire rather than sending an explicit
+ * null.
+ */
+@Serializable
+data class CreateReportRequest(
+    @SerialName("reported_user_id") val reportedUserId: Long,
+    val reason: String,
+    @SerialName("message_id") val messageId: Long? = null,
+)
 
 @Serializable
 data class ChatListItemDto(

@@ -69,6 +69,11 @@ struct PollBubbleView: View {
     var avatarVersions: [Int64: Int64] = [:]
     /// Drawn on the tinted own-message balloon, where .primary is black.
     var isMine: Bool = false
+    /// Everyone this reader has blocked. Filters the FACES and the "+N"
+    /// overflow and nothing else — the count beside the option, the bar and
+    /// the "N of M voted" footer all go on counting a blocked member's
+    /// vote (protocol.md, "Blocking a member").
+    var blockedUserIDs: Set<Int64> = []
     var onVote: (Int64) -> Void = { _ in }
     var onClose: () -> Void = {}
     /// The balloon's own double tap (the quick heart), which a child must
@@ -142,13 +147,22 @@ struct PollBubbleView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .foregroundStyle(contentColor)
                 Spacer(minLength: 4)
+                // NOT filtered, deliberately: this is a TALLY, and
+                // "a poll keeps its tallies and its bars" — a number that
+                // moved when you blocked somebody would tell them so
+                // (protocol.md, "What is NOT hidden, and why").
                 Text("\(option.votes.count)")
                     .font(.caption.weight(.medium).monospacedDigit())
                     .foregroundStyle(contentColor.opacity(0.75))
                     .contentTransition(.numericText())
             }
             bar(fraction: fraction, isMyChoice: isMyChoice)
-            if !option.votes.isEmpty {
+            // On the DRAWABLE list, not the raw one: the faces row carries
+            // a pinned height and a leading inset, so gating on
+            // `option.votes` would reserve an empty band under exactly the
+            // options only a blocked member chose — positional information
+            // about which one they picked, and a hole that reads as a bug.
+            if !PollPresentation.drawableVoters(of: option, blockedUserIDs: blockedUserIDs).isEmpty {
                 faces(of: option)
             }
         }
@@ -175,7 +189,7 @@ struct PollBubbleView: View {
         // to the list has to be published here, as a named action. The
         // reaction chips spell out the identical pair.
         .accessibilityActions {
-            if !option.votes.isEmpty {
+            if !PollPresentation.drawableVoters(of: option, blockedUserIDs: blockedUserIDs).isEmpty {
                 Button("See who voted") { votersShownOptionID = option.id }
             }
         }
@@ -208,16 +222,22 @@ struct PollBubbleView: View {
     /// where the cap starts to hide people, but the faces are the bigger
     /// target and mean the same thing.
     private func faces(of option: PollOptionSnapshot) -> some View {
-        HStack(spacing: -4) {
-            ForEach(option.votes.prefix(Self.maxFaces), id: \.self) { userID in
+        let drawable = PollPresentation.drawableVoters(of: option, blockedUserIDs: blockedUserIDs)
+        return HStack(spacing: -4) {
+            ForEach(drawable.prefix(Self.maxFaces), id: \.self) { userID in
                 InitialsAvatar(
                     title: name(of: userID),
                     userID: userID,
                     avatarVersion: avatarVersions[userID] ?? 0,
                     size: Self.faceSize)
             }
-            if option.votes.count > Self.maxFaces {
-                Text("+\(option.votes.count - Self.maxFaces)")
+            // From `drawable` too. The "+N" is the overflow marker of the
+            // FACES row, not a tally: computed from the raw list it would
+            // print "+3" beside two visible faces — a per-option readout of
+            // exactly how many blocked people chose that option, which is
+            // worse than the faces it replaced.
+            if drawable.count > Self.maxFaces {
+                Text("+\(drawable.count - Self.maxFaces)")
                     .font(.caption2)
                     .foregroundStyle(contentColor.opacity(0.7))
                     .padding(.leading, 6)
@@ -267,7 +287,10 @@ struct PollBubbleView: View {
                 .fixedSize(horizontal: false, vertical: true)
             // In the server's cast order, which is the order the faces
             // are in — the list is the same row, continued.
-            ForEach(option.votes, id: \.self) { userID in
+            ForEach(
+                PollPresentation.drawableVoters(of: option, blockedUserIDs: blockedUserIDs),
+                id: \.self
+            ) { userID in
                 HStack(spacing: 8) {
                     InitialsAvatar(
                         title: name(of: userID),

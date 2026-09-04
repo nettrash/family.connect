@@ -46,13 +46,88 @@ struct ReconnectBackoffTests {
 
     @Test("the random source receives the full-jitter range from zero")
     func fullJitterRange() {
-        var seenRanges: [ClosedRange<Double>] = []
+        // A box, because the random source is a Sendable closure; the
+        // two draws are sequential, so nothing races on it.
+        final class Recorder: @unchecked Sendable {
+            var ranges: [ClosedRange<Double>] = []
+        }
+        let seen = Recorder()
         var backoff = ReconnectBackoff(base: 2, cap: 30, random: { range in
-            seenRanges.append(range)
+            seen.ranges.append(range)
             return range.lowerBound
         })
         _ = backoff.nextDelay()
         _ = backoff.nextDelay()
-        #expect(seenRanges == [0...2, 0...4])
+        #expect(seen.ranges == [0...2, 0...4])
+    }
+
+    // MARK: - What earns a reset
+
+    /// The bug: a proxy that accepts the upgrade and drops immediately used
+    /// to reset the ceiling every cycle, so it never climbed and the socket
+    /// reconnected about twice a second forever, resyncing each time.
+    @Test("an accept-then-drop connection earns nothing")
+    func acceptThenDropEarnsNothing() {
+        let connectedAt = Date()
+        #expect(!ReconnectBackoff.earnsReset(
+            connectedAt: connectedAt,
+            now: connectedAt.addingTimeInterval(0.05),
+            durableAfter: 10))
+    }
+
+    @Test("a connection that lasted earns its reset")
+    func durableConnectionEarnsReset() {
+        let connectedAt = Date()
+        #expect(ReconnectBackoff.earnsReset(
+            connectedAt: connectedAt,
+            now: connectedAt.addingTimeInterval(10),
+            durableAfter: 10))
+        #expect(ReconnectBackoff.earnsReset(
+            connectedAt: connectedAt,
+            now: connectedAt.addingTimeInterval(3600),
+            durableAfter: 10))
+    }
+
+    /// A dial that never handshook cannot have proved anything.
+    @Test("never having connected earns nothing")
+    func noConnectionEarnsNothing() {
+        #expect(!ReconnectBackoff.earnsReset(connectedAt: nil, durableAfter: 10))
+    }
+
+    /// The storm, end to end: repeated accept-then-drop must climb to the
+    /// cap rather than sitting at the first ceiling forever.
+    @Test("repeated accept-then-drop climbs to the cap")
+    func stormClimbsToCap() {
+        var backoff = ReconnectBackoff(base: 1, cap: 30, random: { $0.upperBound })
+        var ceilings: [TimeInterval] = []
+        for _ in 0..<8 {
+            let connectedAt = Date()
+            // The endpoint accepts and drops in milliseconds, every time.
+            if ReconnectBackoff.earnsReset(
+                connectedAt: connectedAt,
+                now: connectedAt.addingTimeInterval(0.02),
+                durableAfter: 10) {
+                backoff.reset()
+            }
+            ceilings.append(backoff.nextDelay())
+        }
+        #expect(ceilings == [1, 2, 4, 8, 16, 30, 30, 30])
+    }
+
+    /// …and one good connection puts it back to cheap.
+    @Test("a durable connection between drops restores the cheap ceiling")
+    func durableConnectionResetsTheClimb() {
+        var backoff = ReconnectBackoff(base: 1, cap: 30, random: { $0.upperBound })
+        for _ in 0..<5 { _ = backoff.nextDelay() }
+        #expect(backoff.nextDelay() == 30)
+
+        let connectedAt = Date()
+        if ReconnectBackoff.earnsReset(
+            connectedAt: connectedAt,
+            now: connectedAt.addingTimeInterval(11),
+            durableAfter: 10) {
+            backoff.reset()
+        }
+        #expect(backoff.nextDelay() == 1)
     }
 }

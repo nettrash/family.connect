@@ -40,6 +40,9 @@ import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import javax.inject.Inject
+import me.nettrash.familyconnect.util.BoardBadge
+import me.nettrash.familyconnect.util.badgeMarks
+import me.nettrash.familyconnect.util.marks
 
 @HiltViewModel
 class ChatListViewModel @Inject constructor(
@@ -92,28 +95,60 @@ class ChatListViewModel @Inject constructor(
      * it is drawing faces on existing rows, including a direct chat with
      * somebody who has since gone.
      */
+    /**
+     * Who the reader has blocked, and their own id — the chat list needs
+     * both to decide whether a row's preview is somebody else's hidden
+     * message.
+     */
+    val blockedUserIds: StateFlow<Set<Long>> = settings.state.map { it.blockedUserIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    val myUserId: StateFlow<Long?> = settings.state.map { it.myUserId }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     val pickableMembers: StateFlow<List<MemberEntity>> =
         combine(familyRepository.observeActiveMembers(), settings.state) { members, s ->
-            members.filter { it.userId != s.myUserId }
+            // Blocked members are left OUT rather than left in to have the
+            // tap answered `blocked` — the protocol's own steer for what a
+            // client does with a complete roster (docs/protocol.md,
+            // "Blocking a member"). The roster itself is untouched: they
+            // are still nameable everywhere a name is needed.
+            members.filter { it.userId != s.myUserId && it.userId !in s.blockedUserIds }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /**
-     * Notes pinned since this device last showed the board.
+     * What is new to READ on the board since this device last showed it:
+     * notes pinned, and notes whose text changed. Dragging, resizing and
+     * recolouring are not news and never count — BoardBadge holds the rule,
+     * shared with the phone and the Mac (issue #53, docs/protocol.md,
+     * "Board").
      *
-     * Counted from the note IDS, against a high-water mark that only moves
-     * when the board is opened — never from `boardCursor`, which a
-     * background resync advances and would silently clear the badge.
+     * Never counted from `boardCursor`, which a background resync advances
+     * and would silently clear the badge for somebody who never looked.
      */
     val newNoteCount: StateFlow<Int> =
         combine(noteDao.observeNotes(), settings.state) { notes, s ->
-            notes.count { it.id > s.boardSeenNoteId }
+            BoardBadge.unreadCount(notes.marks(), s.badgeMarks())
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
-    /** The board is on screen, so everything pinned to it has been seen. */
+    /**
+     * The board is on screen, so everything on it has been shown.
+     *
+     * Called when the board is LEFT as well as when it is opened, which is
+     * the half that was missing: marking at the tap alone marked an empty
+     * cache seen, and then the whole wall — loaded a moment later, while
+     * the user was looking straight at it — came back as unread the moment
+     * they went back.
+     */
     fun markBoardSeen() {
         viewModelScope.launch {
-            val highest = noteDao.observeNotes().first().maxOfOrNull { it.id } ?: 0L
-            settingsRepository.setBoardSeenNoteId(highest)
+            val notes = noteDao.observeNotes().first().marks()
+            val marks = BoardBadge.marksAfterShowing(
+                notes,
+                settingsRepository.state.first().badgeMarks(),
+            )
+            settingsRepository.setBoardSeenNoteId(marks.seenNoteId)
+            settingsRepository.setBoardSeenContentSeq(marks.seenContentSeq)
         }
     }
 

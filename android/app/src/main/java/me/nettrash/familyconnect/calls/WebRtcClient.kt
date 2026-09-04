@@ -128,13 +128,26 @@ class WebRtcClient(
     @Volatile
     private var capturing = false
 
-    @Volatile
+    /**
+     * Guards the four fields below — the sinks and the tracks they hang
+     * on — because the pairing is a read-modify-write across THREE
+     * threads: WebRTC's signaling thread (onAddTrack), the main thread
+     * (a surface entering or leaving composition) and the call machine's
+     * dispatcher (a sink re-applied when media opens). @Volatile alone
+     * gave visibility, never atomicity: interleave
+     * `remoteVideoTrack = track` with `val track = remoteVideoTrack`
+     * and BOTH sides can conclude the other will do the addSink, so
+     * nobody does and nothing ever retries — a call black for its whole
+     * life. Held only across field writes and libwebrtc's own
+     * add/removeSink, which never call back into us; the lock order is
+     * always CallManager's video monitor first, this one second.
+     */
+    private val videoLock = Any()
+
     private var localSink: VideoSink? = null
 
-    @Volatile
     private var remoteSink: VideoSink? = null
 
-    @Volatile
     private var remoteVideoTrack: VideoTrack? = null
 
     // Declared BEFORE init on purpose: Kotlin initializes properties in
@@ -198,8 +211,19 @@ class WebRtcClient(
         override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) {
             val track = receiver.track()
             if (track is VideoTrack) {
-                remoteVideoTrack = track
-                remoteSink?.let(track::addSink)
+                // Note the track and pair it with whatever sink is already
+                // registered in ONE atomic step — see videoLock. The
+                // listener is told OUTSIDE the lock: it hops threads, and
+                // nothing held here may wait on anything.
+                val sink = synchronized(videoLock) {
+                    remoteVideoTrack = track
+                    remoteSink?.also(track::addSink)
+                }
+                CallVideoLog.event(
+                    "onAddTrack remote video track=${CallVideoLog.id(track)} " +
+                        "sinkPresent=${sink != null} addSink=${sink != null} sink=${CallVideoLog.id(sink)} " +
+                        "path=${if (sink != null) "track-after-attach" else "track-before-attach"}",
+                )
                 listener.onRemoteVideoActive(true)
             }
             if (track is AudioTrack) {
@@ -211,7 +235,8 @@ class WebRtcClient(
         override fun onRemoveTrack(receiver: RtpReceiver) {
             val track = runCatching { receiver.track() }.getOrNull()
             if (track is VideoTrack) {
-                remoteVideoTrack = null
+                synchronized(videoLock) { remoteVideoTrack = null }
+                CallVideoLog.event("onRemoveTrack remote video track=${CallVideoLog.id(track)}")
                 listener.onRemoteVideoActive(false)
             }
         }
@@ -382,22 +407,69 @@ class WebRtcClient(
     override fun setLocalVideoSink(sink: VideoSink?) {
         if (closed) return
         val track = videoTrack ?: return
-        localSink?.let(track::removeSink)
-        localSink = sink
-        sink?.let(track::addSink)
+        synchronized(videoLock) {
+            if (closed) return
+            localSink?.let(track::removeSink)
+            localSink = sink
+            sink?.let(track::addSink)
+        }
+    }
+
+    override fun detachLocalVideoSink(sink: VideoSink): Boolean {
+        if (closed) return false
+        val track = videoTrack ?: return false
+        return synchronized(videoLock) {
+            if (closed || localSink !== sink) return@synchronized false
+            track.removeSink(sink)
+            localSink = null
+            true
+        }
     }
 
     override fun setRemoteVideoSink(sink: VideoSink?) {
         if (closed) return
-        val track = remoteVideoTrack
-        if (track != null) {
-            remoteSink?.let(track::removeSink)
-            sink?.let(track::addSink)
+        // ONE critical section over the read AND the write: the track may
+        // be arriving on the signaling thread at this instant, and the
+        // two of us must not both decide the other will attach.
+        val attached = synchronized(videoLock) {
+            if (closed) return
+            val track = remoteVideoTrack
+            if (track != null) {
+                remoteSink?.let(track::removeSink)
+                sink?.let(track::addSink)
+            }
+            // Kept either way: the remote track usually arrives AFTER the
+            // screen registered its renderer — onAddTrack attaches it then.
+            remoteSink = sink
+            track != null && sink != null
         }
-        // Kept either way: the remote track usually arrives AFTER the
-        // screen registered its renderer — onAddTrack attaches it then.
-        remoteSink = sink
+        CallVideoLog.event(
+            "client remote sink=${CallVideoLog.id(sink)} trackPresent=${remoteTrackPresent()} addSink=$attached",
+        )
     }
+
+    override fun detachRemoteVideoSink(sink: VideoSink): Boolean {
+        if (closed) return false
+        val mine = synchronized(videoLock) {
+            if (closed || remoteSink !== sink) return@synchronized false
+            remoteVideoTrack?.removeSink(sink)
+            remoteSink = null
+            true
+        }
+        if (mine) {
+            CallVideoLog.event("client remote sink detached sink=${CallVideoLog.id(sink)}")
+        } else {
+            CallVideoLog.warn(
+                "client remote sink detach IGNORED sink=${CallVideoLog.id(sink)} " +
+                    "registered=${CallVideoLog.id(currentRemoteSink())} (stale surface; the live one keeps drawing)",
+            )
+        }
+        return mine
+    }
+
+    private fun remoteTrackPresent(): Boolean = synchronized(videoLock) { remoteVideoTrack != null }
+
+    private fun currentRemoteSink(): VideoSink? = synchronized(videoLock) { remoteSink }
 
     override fun close() {
         if (closed) return
@@ -415,9 +487,13 @@ class WebRtcClient(
         //      never disposed by hand (that is the classic double-free).
         //   4. The capturer, its SurfaceTextureHelper and the sources go
         //      AFTER the connection that consumed their frames.
-        runCatching { localSink?.let { videoTrack?.removeSink(it) } }
-        runCatching { remoteSink?.let { remoteVideoTrack?.removeSink(it) } }
-        remoteVideoTrack = null
+        synchronized(videoLock) {
+            runCatching { localSink?.let { videoTrack?.removeSink(it) } }
+            runCatching { remoteSink?.let { remoteVideoTrack?.removeSink(it) } }
+            localSink = null
+            remoteSink = null
+            remoteVideoTrack = null
+        }
         remoteAudioTrack = null
         runCatching { videoCapturer?.stopCapture() }
         capturing = false

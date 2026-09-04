@@ -53,13 +53,36 @@ struct MessageBubbleView: View {
     /// The assistant is still writing this one, so the bubble shows a
     /// cursor. Purely cosmetic: the row's body is already whatever has
     /// arrived, and the authoritative text lands as an edit either way.
+    ///
+    /// True for an EMPTY assistant row from the moment it is fanned out,
+    /// not from the first delta — a picture answer has no deltas at all,
+    /// and the empty row is its whole "still working" state (protocol.md,
+    /// "How a picture comes back").
     var isStreaming: Bool = false
+    /// An `ai_error` named this row: the answer stopped.
+    ///
+    /// Only ever drawn where the row would otherwise be BLANK. A text
+    /// answer that failed midway keeps whatever arrived and says nothing
+    /// extra — a partial answer speaks for itself, and the member can ask
+    /// again. A picture answer has nothing to speak with: its body stays
+    /// empty by design and the attachment never came, so without this the
+    /// row that "has to have somewhere to fail" fails into an empty
+    /// balloon.
+    var assistantFailed: Bool = false
     let showsSenderName: Bool
     let senderName: String?
     /// Who sent it, for the run-head avatar. Only consulted when
     /// showsSenderName is true, so direct chats never carry one.
     var senderID: Int64 = 0
     var senderAvatarVersion: Int64 = 0
+    /// Where this bubble sits in a RUN — consecutive messages from one
+    /// sender in one day section (the Mac's and Android's rule, ported).
+    /// The corners between two bubbles of a run are tight, so a burst
+    /// reads as one voice; the time is stamped once, under the last of
+    /// the run, rather than under every bubble. Both default to true, so
+    /// a bubble drawn alone (tests, previews) is a whole run.
+    var isRunStart: Bool = true
+    var isRunEnd: Bool = true
     let isRead: Bool
     var reactionChips: [ReactionChip] = []
     var reactionDetails: [ReactionDetail] = []
@@ -94,6 +117,25 @@ struct MessageBubbleView: View {
     /// scrolled frame — with tall bubbles that is real jank. Only the
     /// pressed bubble's anchor is ever read, so only it publishes.
     var publishesAnchor: Bool = false
+    /// Everyone this reader has blocked, passed down for the surfaces
+    /// inside a bubble that filter by identity — the poll's faces today.
+    /// The bubble's OWN hidden-row decision is made by the caller.
+    var blockedUserIDs: Set<Int64> = []
+    /// This bubble's sender is blocked. Decided by the caller through
+    /// `MessagePresentation.isHiddenByBlock`, which already refuses to
+    /// hide the reader's own messages — so the `isMine` arms below need no
+    /// change.
+    var isHiddenByBlock: Bool = false
+    /// Peeked at. A peek, not a setting: per row, per device, never on the
+    /// wire, and gone on a chat switch.
+    var isRevealed: Bool = false
+    var onReveal: () -> Void = {}
+    /// Which level of a quote a tap revealed. The two are independent
+    /// peeks: revealing a quote never reveals the row it points at.
+    enum QuoteLevel { case reply, parent }
+    var isReplyQuoteRevealed: Bool = false
+    var isParentQuoteRevealed: Bool = false
+    var onRevealQuote: (QuoteLevel) -> Void = { _ in }
 
     /// Drives the "who reacted" popover a chip long-press opens.
     @State private var showsReactionDetails = false
@@ -116,6 +158,18 @@ struct MessageBubbleView: View {
     /// Shared preview cache — asking it for a link's state is what
     /// starts the (single, app-wide) fetch for that link.
     @Environment(LinkPreviewLoader.self) private var previewLoader
+    /// Held so a HIDDEN row can arm the same fetches a visible one does —
+    /// see `armRemoteFetches`.
+    ///
+    /// OPTIONAL, unlike `previewLoader` above: `@Environment(T.self)` in
+    /// its non-optional form TRAPS when the object is absent, and these two
+    /// need an `APIClient` to build, which is far more than a layout test
+    /// measuring text truncation should have to assemble. The link
+    /// preview — the one fetch that reaches a THIRD party, and so the one
+    /// that is actually an oracle — stays non-optional and stays armed
+    /// unconditionally.
+    @Environment(AttachmentStore.self) private var attachmentStore: AttachmentStore?
+    @Environment(AvatarStore.self) private var avatars: AvatarStore?
 
     /// True once this bubble has actually been on screen. The thread
     /// renders a ~60-row window, not just the viewport, so binding the
@@ -165,21 +219,152 @@ struct MessageBubbleView: View {
     }
 
     /// An own message that IS a reply lays its balloon out with
-    /// ReplyContentLayout, where the quote keeps the left edge and the
+    /// BalloonContentLayout, where the quote keeps the left edge and the
     /// body chooses its own by line count: trailing while it fits in two
     /// lines, back to leading from three (`OwnReplyBodyAlignment` — the
     /// product rule as of 2026-08, refined at the owner's ask; see the
     /// content stack's comment in `bubble`). Everyone else's messages,
     /// and own messages without a quote, keep one left edge.
+    /// Drawn as the collapsed placeholder right now.
+    private var isHidden: Bool { isHiddenByBlock && !isRevealed }
+
+    /// The collapsed stand-in for a blocked member's message: the
+    /// placeholder and the timestamp, and nothing else. No display name, no
+    /// avatar, no attachment thumbnail, no reaction chips — all of them
+    /// come back with the reveal.
+    ///
+    /// NO `.frame(height:)`, deliberately. One line of scaled caption
+    /// inside the balloon's own paddings IS the thin row, and it stays thin
+    /// at every Dynamic Type size; a hard-coded height clips its own
+    /// caption at AX5, silently, because this stack is non-lazy and
+    /// real-height. It is the same lesson `emojiFontScale` above records
+    /// about fixed `.system(size:)`.
+    private var hiddenRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "hand.raised.slash")
+                .font(.caption)
+            Text("Hidden — blocked member")
+                .font(.caption)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(.secondarySystemFill)))
+        .contentShape(Rectangle())
+        // A TAP reveals. Not a long press: that opens the menu, which a
+        // hidden row does not get.
+        .onTapGesture { onReveal() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("Hidden message from a blocked member. Double tap to show it."))
+        .accessibilityAddTraits(.isButton)
+        // Not decoration: a bare `.onTapGesture` publishes no accessibility
+        // action, so the trait alone announces a button that does nothing
+        // (measured — ZZAXProbeTests). Same lesson as the quote block and
+        // the reaction chips.
+        .accessibilityAction { onReveal() }
+        // A hidden row STILL FETCHES, and draws none of it.
+        .task(id: hasBeenVisible) { armRemoteFetches() }
+    }
+
+    /// Ask for everything a VISIBLE row would have asked for, and draw none
+    /// of it (protocol.md, "Blocking a member").
+    ///
+    /// This is the requirement with no compile-time signal and no visual
+    /// one: `LinkPreviewLoader.state(for:)`, `AttachmentStore.image(id:)`
+    /// and `AvatarStore.image(userID:version:)` all START the fetch on the
+    /// first ask, and on the hidden path every one of their callers
+    /// disappears — so the natural implementation simply stops asking,
+    /// reads as obviously correct, passes every test, and rebuilds the
+    /// oracle the protocol spends a paragraph refusing: the poster of a
+    /// link owns that host's log and can count distinct fetchers before and
+    /// after being blocked.
+    ///
+    /// `preview: true`, because a hidden row "fetches nothing a visible row
+    /// would not have fetched yet" — the poster frame, never the 90 MB
+    /// video.
+    ///
+    /// MAP TILES ARE ARMED TOO, and they are the one fetch here that needs
+    /// a road of its own. The other three have a loader whose first ask
+    /// starts the request, so calling it is enough; a map has no loader —
+    /// the `Map` view IS the request, and the `if isHidden` branch below
+    /// is exclusive, so a hidden location row never builds one. Hence
+    /// `MapTileWarmer`, which makes the same request through
+    /// `MKMapSnapshotter` and discards the image. protocol.md names map
+    /// tiles in the same breath as the link preview, and the doc decides
+    /// this rather than a judgement about whose server log is readable.
+    private func armRemoteFetches() {
+        // Unconditional, and the load-bearing one: this is the request that
+        // leaves the family's own server.
+        _ = linkPreview
+        // Best-effort. These reach the family's own box, whose operator can
+        // see everything anyway, so a context without the stores loses
+        // defence in depth rather than the oracle itself.
+        if let attachmentStore {
+            _ = attachmentStore.generation
+            for attachment in message.attachments where !attachment.isFile {
+                _ = AttachmentView.image(for: attachment, in: attachmentStore)
+            }
+        }
+        if senderAvatarVersion > 0, let avatars {
+            _ = avatars.image(userID: senderID, version: senderAvatarVersion)
+        }
+        // HIDDEN ONLY, unlike the three above. Those go through loaders
+        // that dedupe, so asking twice costs nothing; a snapshotter does
+        // not, and a visible row has already asked by drawing its map. A
+        // row that fetched twice would be as distinguishable as one that
+        // did not fetch at all.
+        if isHidden {
+            MapTileWarmer.warm(localID: message.localID, attachments: message.attachments)
+        }
+    }
+
     private var isOwnReply: Bool {
         isMine && message.replyTo != nil
     }
+
+    /// The balloon's outline: 18pt corners, except the two on the
+    /// speaker's side that face another bubble of the same run, which
+    /// are tight — the Mac's geometry (MacMessageRow.shape), so three
+    /// messages in a row read as one voice rather than three stickers.
+    private var balloonShape: UnevenRoundedRectangle {
+        let big: CGFloat = 18
+        let tight: CGFloat = 5
+        return UnevenRoundedRectangle(
+            topLeadingRadius: isMine ? big : (isRunStart ? big : tight),
+            bottomLeadingRadius: isMine ? big : (isRunEnd ? big : tight),
+            bottomTrailingRadius: isMine ? (isRunEnd ? big : tight) : big,
+            topTrailingRadius: isMine ? (isRunStart ? big : tight) : big,
+            style: .continuous)
+    }
+
+    /// The narrowest measure a caption is offered under a photo, a pile
+    /// or a poll (BalloonContentLayout's `fillFloor`): the phone's widest
+    /// tile, on every idiom. NOT the iPad's 320pt tile — a floor above a
+    /// 280pt poll would let its question run past the bars it wraps
+    /// against, which is the mismatch the fill rule exists to prevent.
+    static let captionFloor: CGFloat = 240
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
             if isMine { Spacer(minLength: 48) }
 
             VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
+                // The branch is INSIDE the VStack, not at the call site.
+                // `.id(message.localID)`, the unread-divider id and the
+                // bottom sentinel all attach outside this view or to
+                // sibling rows, so swapping the children leaves every
+                // scroll target, the anchor preference key and the jump
+                // highlight untouched — whereas branching at the call site
+                // would put a different view type under `.id()` and break
+                // all three at once.
+                //
+                // The timestamp footer below stays: a hidden row draws the
+                // placeholder AND the timestamp, and nothing else.
+                if isHidden {
+                    hiddenRow
+                } else {
                 if showsSenderName, let senderName {
                     // The sender's face rides the name line at the head of
                     // a run rather than in a gutter beside every bubble:
@@ -200,7 +385,13 @@ struct MessageBubbleView: View {
                 }
 
                 bubble
+                }
 
+                // The footer rides the LAST bubble of a run, plus any
+                // bubble that has something of its own to say there: an
+                // edit, or a send still pending or failed — that footer is
+                // the retry button, and it cannot wait for the run to end.
+                if isRunEnd || message.isEdited || message.state != .sent {
                 HStack(spacing: 4) {
                     Text(message.createdAt, format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
                         .font(.caption2)
@@ -218,6 +409,7 @@ struct MessageBubbleView: View {
                     }
                 }
                 .padding(.horizontal, 4)
+                }
             }
 
             if !isMine { Spacer(minLength: 48) }
@@ -381,6 +573,22 @@ struct MessageBubbleView: View {
         .padding(12)
     }
 
+    /// The placeholder a masked quote level draws, and the same words a
+    /// hidden row draws.
+    private static let hiddenCaption = String(
+        localized: "Hidden — blocked member",
+        comment: "Stands in for a blocked member's message or quoted text")
+
+    /// Is this quote LEVEL masked? Two independent answers, because both
+    /// levels carry their own `senderID` and are separately blockable: a
+    /// reply BY an unblocked member TO a blocked one, whose own parent is a
+    /// third person, is an ordinary shape. One flag for both gets it wrong
+    /// in both directions.
+    private func quoteLevelHidden(senderID: Int64, revealed: Bool) -> Bool {
+        guard !revealed, senderID != currentUserID else { return false }
+        return blockedUserIDs.contains(senderID)
+    }
+
     /// The quoted message, drawn inside the balloon above the reply's own
     /// text: a tinted bar, the author, and the server's excerpt.
     ///
@@ -390,6 +598,11 @@ struct MessageBubbleView: View {
     /// nothing when the target is not loaded.
     @ViewBuilder
     private func quoteBlock(_ quote: ReplyToSnapshot) -> some View {
+        let replyHidden = quoteLevelHidden(
+            senderID: quote.senderID, revealed: isReplyQuoteRevealed)
+        let parentHidden = quote.parent.map {
+            quoteLevelHidden(senderID: $0.senderID, revealed: isParentQuoteRevealed)
+        } ?? false
         HStack(spacing: 6) {
             // The accent bar reads as "quoted" at a glance; on my own
             // balloon it takes the content colour, since .tint on
@@ -403,15 +616,24 @@ struct MessageBubbleView: View {
                 // line only — two levels at two lines each would be a wall
                 // of grey above every reply in a busy thread.
                 if let parent = quote.parent {
-                    Text("\(quoteAuthorName(senderID: parent.senderID)): \(parent.excerpt)")
+                    Text(
+                        parentHidden
+                            ? Self.hiddenCaption
+                            : "\(quoteAuthorName(senderID: parent.senderID)): \(parent.excerpt)"
+                    )
                         .font(.caption2)
                         .foregroundStyle(bubbleContentColor.opacity(0.5))
                         .lineLimit(1)
                 }
-                Text(quoteAuthorName(quote))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(isMine ? bubbleContentColor : Color.accentColor)
-                Text(quote.excerpt)
+                // No name AND no excerpt when masked: the quote "draws as
+                // the same Hidden — blocked member treatment as a row
+                // does, on every surface that draws a quote".
+                if !replyHidden {
+                    Text(quoteAuthorName(quote))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(isMine ? bubbleContentColor : Color.accentColor)
+                }
+                Text(replyHidden ? Self.hiddenCaption : quote.excerpt)
                     .font(.caption)
                     .foregroundStyle(bubbleContentColor.opacity(0.75))
                     .lineLimit(2)
@@ -438,9 +660,18 @@ struct MessageBubbleView: View {
         // jumps and never the heart. simultaneousGesture lets both see
         // the touch; the 2-tap recognizer claims the double.
         .simultaneousGesture(TapGesture(count: 2).onEnded { toggleQuickHeart() })
-        .onTapGesture { onTapQuote(quote.messageID) }
+        // A masked level reveals instead of jumping. Jumping would page
+        // history in and flash a highlight on a row the app is hiding.
+        .onTapGesture {
+            if replyHidden || parentHidden {
+                onRevealQuote(replyHidden ? .reply : .parent)
+            } else {
+                onTapQuote(quote.messageID)
+            }
+        }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(quoteAccessibilityLabel(quote))
+        .accessibilityLabel(
+            quoteAccessibilityLabel(quote, replyHidden: replyHidden, parentHidden: parentHidden))
         .accessibilityAddTraits(.isButton)
         // The trait alone is a LIE: a bare .onTapGesture publishes no
         // accessibility action, so VoiceOver announces "button" and
@@ -448,7 +679,16 @@ struct MessageBubbleView: View {
         // tap-only gives accessibilityActivate()=false, tap + this
         // modifier gives true). Same lesson as the reaction chips above
         // and the Android link spans.
-        .accessibilityAction { onTapQuote(quote.messageID) }
+        // Moved as a PAIR with the gesture above, for the reason the
+        // comment gives: miss this and VoiceOver still fires the jump on a
+        // masked quote.
+        .accessibilityAction {
+            if replyHidden || parentHidden {
+                onRevealQuote(replyHidden ? .reply : .parent)
+            } else {
+                onTapQuote(quote.messageID)
+            }
+        }
     }
 
     private func quoteAuthorName(_ quote: ReplyToSnapshot) -> String {
@@ -456,12 +696,28 @@ struct MessageBubbleView: View {
     }
 
     /// VoiceOver hears the same two levels the eye sees, innermost last.
-    private func quoteAccessibilityLabel(_ quote: ReplyToSnapshot) -> String {
-        let head = String(
-            localized: "Replying to \(quoteAuthorName(quote)): \(quote.excerpt)")
+    ///
+    /// A COMPLETELY SEPARATE code path from the drawn Text above, and the
+    /// one everybody forgets: the server sends `excerpt` unchanged by
+    /// design, so 120 characters of a blocked member's words sit right here
+    /// and get read aloud after the visual mask has landed. Each masked
+    /// half contributes the placeholder and never the excerpt or the name.
+    private func quoteAccessibilityLabel(
+        _ quote: ReplyToSnapshot, replyHidden: Bool, parentHidden: Bool
+    ) -> String {
+        let head =
+            replyHidden
+            ? String(localized: "Replying to a hidden message",
+                       comment: "VoiceOver: a quote whose author is blocked")
+            : String(localized: "Replying to \(quoteAuthorName(quote)): \(quote.excerpt)")
         guard let parent = quote.parent else { return head }
-        let tail = String(
-            localized: "which replied to \(quoteAuthorName(senderID: parent.senderID)): \(parent.excerpt)")
+        let tail =
+            parentHidden
+            ? String(localized: "which replied to a hidden message",
+                       comment: "VoiceOver: the second quote level, when ITS author is blocked")
+            : String(
+                localized:
+                    "which replied to \(quoteAuthorName(senderID: parent.senderID)): \(parent.excerpt)")
         return "\(head), \(tail)"
     }
 
@@ -502,7 +758,7 @@ struct MessageBubbleView: View {
             // share one left edge.
             //
             // How the quote stays left while the body sits right — and
-            // the balloon still HUGS its content: ReplyContentLayout. Its
+            // the balloon still HUGS its content: BalloonContentLayout. Its
             // header records why a frame cannot do this (the only width a
             // frame can borrow is the proposal, which is the documented
             // full-width-slab regression); the container takes its width
@@ -511,11 +767,20 @@ struct MessageBubbleView: View {
             // `.fixedSize(horizontal: false, vertical: true)` on the quote
             // block and the body Text is untouched: vertical pinning is
             // what keeps a reply from truncating its own body
-            // (BubbleLayoutTests pins that).
-            let contentStack = isOwnReply
-                ? AnyLayout(ReplyContentLayout(spacing: 2))
-                : AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
-            contentStack {
+            // (BubbleLayoutTests pins that, and pins the hugging too).
+            // EVERY balloon, since 2026-09-03 — not only an own reply's.
+            // The plain VStack it replaced could not see a sibling's
+            // width, so the caption under a photo or a poll used to be
+            // given `.frame(maxWidth: .infinity)` to wrap against it, and
+            // that frame made every album-with-caption and every poll a
+            // full-width slab (488pt of balloon around a 195pt pile on an
+            // iPad). The layout's fill rule measures the photo, pile,
+            // poll or card first and offers the caption THAT width, never
+            // narrower than the widest tile (`fillFloor`), so the balloon
+            // hugs what it holds on every screen size. For everything
+            // else this is the VStack it replaced: hugs the widest child,
+            // everything on the leading edge.
+            BalloonContentLayout(spacing: 2, fillFloor: Self.captionFloor) {
             if let quote = message.replyTo {
                 quoteBlock(quote)
             }
@@ -532,6 +797,15 @@ struct MessageBubbleView: View {
                     .font(bubbleFont)
                     .foregroundStyle(bubbleContentColor.opacity(0.6))
                     .symbolEffect(.pulse)
+            }
+            // …and where it stopped instead of starting. The bubble is
+            // already in place and already scrolled to; this is the only
+            // thing that can go in it.
+            if assistantFailed && message.body.isEmpty && message.attachments.isEmpty {
+                Label("Couldn't answer that. Ask again.", systemImage: "exclamationmark.circle")
+                    .font(bubbleFont)
+                    .foregroundStyle(bubbleContentColor.opacity(0.7))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             // A call record draws its outcome INSTEAD of the body, which
             // is an English placeholder for clients that predate calls
@@ -595,26 +869,25 @@ struct MessageBubbleView: View {
                                     .offset(x: 8)
                             }
                         }
-                        // The reply rule, all three of its modifiers at once:
-                        // the line ragging, the width-filling frame's edge and
-                        // the ReplyContentLayout tag, from ONE measured line
-                        // count (trailing through two lines, leading from
-                        // three). Placed AFTER the cursor overlay, which
-                        // does not change the Text's size, and BEFORE any
-                        // frame, so the height it counts lines from is the
-                        // Text's own. Off (plain leading, nothing measured)
-                        // for every message that is not an own reply.
+                        // The reply rule, both of its modifiers at once: the
+                        // line ragging and the BalloonContentLayout edge tag,
+                        // from ONE measured line count (trailing through two
+                        // lines, leading from three). Placed AFTER the cursor
+                        // overlay, which does not change the Text's size, so
+                        // the height it counts lines from is the Text's own.
+                        // Off (plain leading, nothing measured) for every
+                        // message that is not an own reply.
                         //
-                        // `fillsWidth`: a sibling block — a link card or a
-                        // photo — has already decided how wide this balloon
-                        // is. Text left to itself reports the width it WANTS
-                        // (SwiftUI balances the lines, so two lines each come
-                        // out around half width), and the result is a narrow
-                        // paragraph floating over a wide card. Filling the
-                        // width makes it wrap against the same edge. Gated on
-                        // there BEING such a block: unconditionally, this is
-                        // the change that made every balloon full width when
-                        // the reply quote did it.
+                        // `fillsWidth`: a sibling block — a link card, a
+                        // photo, a poll — has already decided how wide this
+                        // balloon is, and the text should wrap against the
+                        // same edge. It used to do that with a width-filling
+                        // FRAME, which took the whole column and made every
+                        // captioned photo and every poll a full-width slab;
+                        // it is now a TAG the layout reads, and the layout
+                        // offers the caption the sibling's width (see
+                        // BalloonContentLayout's fill rule). Gated on there
+                        // BEING such a block.
                         .ownReplyBodyAlignment(
                             enabled: isOwnReply,
                             font: bubbleFont,
@@ -650,6 +923,7 @@ struct MessageBubbleView: View {
                     memberNames: memberNames,
                     avatarVersions: avatarVersions,
                     isMine: isMine && !isBare,
+                    blockedUserIDs: blockedUserIDs,
                     onVote: onVote,
                     onClose: onClosePoll,
                     onDoubleTap: { toggleQuickHeart() },
@@ -674,7 +948,7 @@ struct MessageBubbleView: View {
                 isBare
                     ? AnyShapeStyle(Color.clear)
                     : isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.secondarySystemFill)),
-                in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                in: balloonShape)
             // The floating reaction picker grows out of this exact rect;
             // the parent resolves it from the preference by localID. Empty
             // unless this bubble is the picker's host (see publishesAnchor).

@@ -88,6 +88,76 @@ data class ChatEntity(
     @ColumnInfo(defaultValue = "0") val maxPollSeq: Long = 0,
 )
 
+/**
+ * One attachment of a media send that has not been claimed yet — the
+ * durable half of a media send (docs/protocol.md, "Sending on an
+ * unreliable network": "Keep the source bytes until the message is
+ * acked").
+ *
+ * WHY THIS EXISTS. A media send used to be inserted only AFTER every
+ * upload had landed, so until then it lived in a coroutine and its files
+ * lived in `cacheDir`: process death, a cache eviction, or simply leaving
+ * the chat lost a photo with no bubble, no error and nothing to retry. The
+ * message row is now written first, exactly as a text message is, and
+ * these rows are what it still owes the server — which means the outbox
+ * that already re-sends text re-sends media too, on every trigger it has.
+ *
+ * [attachmentId] is the resume key: null means the bytes still have to go
+ * up, non-null means the server holds them and only the claim is left.
+ *
+ * No foreign key, matching the rest of this schema: the parent is deleted
+ * through the repository, which deletes these in the same breath.
+ */
+@Entity(
+    tableName = "pending_attachments",
+    indices = [
+        Index(value = ["clientMsgId"]),
+        Index(value = ["clientMsgId", "position"], unique = true),
+    ],
+)
+data class PendingAttachmentEntity(
+    @PrimaryKey(autoGenerate = true) val localId: Long = 0,
+    /** The message this belongs to — messages.clientMsgId. */
+    val clientMsgId: String,
+    /**
+     * The sender's order, 0-based. `attachment_ids` preserves it and every
+     * read gives it back, so it is stored rather than inferred from a row
+     * order SQLite does not promise.
+     */
+    val position: Int,
+    /**
+     * Absolute path of the bytes, under filesDir. NULL only for a
+     * location, which has no body at all — its three numbers below ARE
+     * the attachment.
+     */
+    val localPath: String?,
+    /**
+     * The JPEG the bubble draws before the bytes land. On disk rather than
+     * in memory because it has to survive the process death this table
+     * exists for — and because it is the only copy of a video's poster.
+     */
+    val previewPath: String?,
+    val mime: String,
+    /** photo | video | audio | file | location. */
+    val kind: String,
+    val sizeBytes: Long,
+    val width: Int?,
+    val height: Int?,
+    val durationMs: Int?,
+    /** Required for a file, a label on audio and locations. */
+    val name: String?,
+    val latitude: Double?,
+    val longitude: Double?,
+    val accuracyM: Int?,
+    /** The server's id, once the upload has answered. THE resume key. */
+    val attachmentId: Long? = null,
+    /** Whether the preview PUT landed. Best-effort, recorded so a resume
+     *  neither re-PUTs one that arrived nor claims one that did not. */
+    @ColumnInfo(defaultValue = "0") val posterUploaded: Boolean = false,
+    /** Answered upload failures spent on THIS item. */
+    @ColumnInfo(defaultValue = "0") val uploadAttempts: Int = 0,
+)
+
 @Entity(
     tableName = "messages",
     indices = [
@@ -106,6 +176,20 @@ data class MessageEntity(
     /** Epoch millis. Local clock until acked; server clock (authoritative) after. */
     val createdAt: Long,
     val status: MessageStatus,
+    /**
+     * How many delivery attempts this row has cost, and when the next one
+     * is due (epoch millis, null = as soon as the outbox next runs).
+     *
+     * A transient failure — a timeout, a 429, a 5xx — leaves the row
+     * SENDING and schedules it here instead of turning it red, because
+     * none of those say whether the message landed (docs/protocol.md,
+     * "Sending on an unreliable network"). Before this existed, one
+     * hiccup made a message FAILED, and FAILED rows are outside every
+     * automatic re-send: the message waited for a person to notice a red
+     * bubble in that conversation and tap it.
+     */
+    @ColumnInfo(defaultValue = "0") val sendAttempts: Int = 0,
+    val nextAttemptAt: Long? = null,
     /**
      * The message's reactions, stored as the wire-shape JSON array
      * (see ReactionsCodec). Null = never reacted, "[]" = cleared —
@@ -297,6 +381,18 @@ data class NoteEntity(
     val createdAt: Long,
     val updatedAt: Long,
     val boardSeq: Long,
+    /**
+     * The seq of the last change to what this note SAYS, and the only
+     * number the board badge counts (BoardBadge, docs/protocol.md,
+     * "Board").
+     *
+     * ZERO MEANS UNKNOWN, and covers two cases at once: a row written
+     * before this column existed, and a note from a server that predates
+     * the field. Both mean "nothing here can say when this text was
+     * written", and both send the badge back to the note-id rule it used
+     * before. The @ColumnInfo default byte-matches MIGRATION_18_19.
+     */
+    @ColumnInfo(defaultValue = "0") val contentSeq: Long = 0,
 )
 
 @Entity(tableName = "members")
@@ -367,4 +463,50 @@ data class MemberEntity(
             val day = birthdayDay ?: return null
             return BirthdayDto(month = month, day = day)
         }
+}
+
+/**
+ * The id this item's bubble draws under before the server has given it a
+ * real one.
+ *
+ * NEGATIVE, so it can never collide with a server id, and derived from the
+ * row's own primary key, so it survives a relaunch and can double as a
+ * cache key.
+ */
+val PendingAttachmentEntity.placeholderId: Long get() = -localId
+
+/** What the bubble draws while the bytes are still going up. */
+fun PendingAttachmentEntity.placeholderDto(): me.nettrash.familyconnect.data.net.dto.AttachmentDto =
+    me.nettrash.familyconnect.data.net.dto.AttachmentDto(
+        id = placeholderId,
+        kind = kind,
+        mime = mime,
+        size = sizeBytes,
+        width = width,
+        height = height,
+        durationMs = durationMs,
+        hasPreview = previewPath != null,
+        name = name,
+        latitude = latitude,
+        longitude = longitude,
+        accuracyM = accuracyM,
+    )
+
+/** This item as the wire shape, once its bytes are on the server. */
+fun PendingAttachmentEntity.uploadedDto(): me.nettrash.familyconnect.data.net.dto.AttachmentDto? {
+    val id = attachmentId ?: return null
+    return me.nettrash.familyconnect.data.net.dto.AttachmentDto(
+        id = id,
+        kind = kind,
+        mime = mime,
+        size = sizeBytes,
+        width = width,
+        height = height,
+        durationMs = durationMs,
+        hasPreview = posterUploaded,
+        name = name,
+        latitude = latitude,
+        longitude = longitude,
+        accuracyM = accuracyM,
+    )
 }

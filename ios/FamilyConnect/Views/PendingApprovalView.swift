@@ -42,6 +42,12 @@ struct PendingApprovalView: View {
                 }
                 .frame(maxWidth: .infinity)
             }
+            // The stack's own fill is the window colour, which inside the
+            // 460pt setup column drew a white stripe down a grey iPad
+            // screen; the page's colour instead, so the column is invisible.
+            #if os(iOS)
+            .background(Color(.systemGroupedBackground))
+            #endif
             .refreshable {
                 await session.pollPending()
             }

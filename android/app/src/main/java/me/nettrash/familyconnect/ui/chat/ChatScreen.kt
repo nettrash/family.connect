@@ -124,16 +124,17 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.CallMade
-import androidx.compose.material.icons.filled.CallMissed
-import androidx.compose.material.icons.filled.CallReceived
+import androidx.compose.material.icons.automirrored.filled.CallMade
+import androidx.compose.material.icons.automirrored.filled.CallMissed
+import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Poll
@@ -146,6 +147,9 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.Block
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -190,6 +194,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -222,6 +233,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -251,6 +263,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import me.nettrash.familyconnect.R
+import me.nettrash.familyconnect.ui.components.readableColumn
+import me.nettrash.familyconnect.ui.components.READABLE_COLUMN
 import me.nettrash.familyconnect.data.db.ChatEntity
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
@@ -282,6 +296,15 @@ import me.nettrash.familyconnect.ui.components.EmptyState
 import me.nettrash.familyconnect.ui.components.OfflineBanner
 import me.nettrash.familyconnect.util.TimeFormat
 import kotlin.math.roundToInt
+import androidx.annotation.StringRes
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.RadioButton
+import androidx.compose.foundation.text.selection.SelectionContainer
+import me.nettrash.familyconnect.ui.components.ReportSheet
+import androidx.compose.runtime.mutableStateSetOf
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 
 /**
  * The long-pressed message plus its bubble's window bounds — the
@@ -293,6 +316,20 @@ import kotlin.math.roundToInt
 private data class ReactionPickerTarget(
     val item: ChatListItem.MessageItem,
     val anchorBounds: Rect,
+)
+
+/**
+ * Who is being reported, and about what.
+ *
+ * [messageId] names one message; null reports the PERSON. Captured when
+ * the sheet opens rather than read back when it is submitted, because the
+ * row underneath can be edited or swept while the sheet is up — and the
+ * report is about what was there when somebody objected to it.
+ */
+private data class ReportTarget(
+    val userId: Long,
+    val displayName: String,
+    val messageId: Long?,
 )
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -313,6 +350,18 @@ fun ChatScreen(
     // row that was mid-stream when the app was killed is not stuck looking
     // live after a relaunch.
     val streamingIds by viewModel.streamingMessageIds.collectAsStateWithLifecycle()
+    // Rows an `ai_error` frame named. A picture answer streams nothing, so
+    // its failure is an empty balloon and nothing else unless the bubble
+    // says so (docs/protocol.md, "Pictures").
+    val failedAssistantIds by viewModel.failedAssistantMessageIds.collectAsStateWithLifecycle()
+    // The two picture affordances, each behind its own capability check —
+    // no surface at all where the server cannot do the thing, rather than
+    // a disabled one that lies about what would happen.
+    val canShowAssistantPicture by viewModel.canShowAssistantPicture.collectAsStateWithLifecycle()
+    val canAskForPicture by viewModel.canAskForPicture.collectAsStateWithLifecycle()
+    // What the composer must say out loud about what is staged, right now.
+    val assistantPictureNotice by viewModel.assistantPictureNotice.collectAsStateWithLifecycle()
+    val mentionPictureNotice by viewModel.mentionPictureNotice.collectAsStateWithLifecycle()
     // Null when the server has no assistant configured, which is what
     // decides whether the composer offers `@ai` at all.
     val assistantUserId by viewModel.assistantUserId.collectAsStateWithLifecycle()
@@ -366,6 +415,19 @@ fun ChatScreen(
     // The message the floating capsule is open for, and the one the "+"
     // full-picker sheet is open for. Both are transient snapshots.
     var pickerTarget by remember { mutableStateOf<ReactionPickerTarget?>(null) }
+    var reportTarget by remember { mutableStateOf<ReportTarget?>(null) }
+    // Held by the SCREEN, not by the row. A reveal is a peek — per row,
+    // per device, never on the wire and never stored — but "per row" has
+    // to survive the row leaving the LazyColumn and coming back, or
+    // scrolling away silently re-hides what somebody chose to look at.
+    // Cleared with the screen, which is what makes it not a setting.
+    val revealedMessages = remember { mutableStateSetOf<String>() }
+    // Stands in for a sender the roster cannot name — somebody who left,
+    // or a roster still catching up.
+    val memberFallbackName = stringResource(R.string.s_someone)
+
+    val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
+    val supportContact by viewModel.supportContact.collectAsStateWithLifecycle()
     var fullPickerTarget by remember { mutableStateOf<ChatListItem.MessageItem?>(null) }
     val listState = rememberLazyListState()
     // Set by tapping a quote, or by the opening anchor; cleared once the
@@ -406,6 +468,14 @@ fun ChatScreen(
     val savedToGalleryLabel = stringResource(R.string.s_saved_to_gallery)
     val preparingLabel = stringResource(R.string.s_preparing)
     val context = LocalContext.current
+    // A failed block or report has no other surface: the menu has already
+    // closed and nothing on screen changed, so without this the tap would
+    // read as having worked.
+    LaunchedEffect(Unit) {
+        viewModel.transientMessages.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // The system photo picker: no permission, no gallery access — it
     // hands back the picked Uris and nothing else, which is the whole
@@ -957,6 +1027,8 @@ fun ChatScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary,
                                     maxLines = 1,
+                                    // An ellipsis, not a hard clip mid-glyph, for a long name.
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
@@ -999,17 +1071,25 @@ fun ChatScreen(
         ) {
             OfflineBanner(isOnline = isOnline, socketState = socketState)
 
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
             ) {
+                // The readable column (iOS: threadMaxWidth = 560): on a
+                // window wider than it the thread is padded in from BOTH
+                // sides so bubbles, polls and cards keep a phone's measure
+                // instead of running 1,000dp across a tablet. Padding
+                // rather than a narrower list, so a drag anywhere in the
+                // window still scrolls the thread and the empty state's
+                // fillParentMaxSize still means the whole pane.
+                val columnInset = ((maxWidth - READABLE_COLUMN) / 2).coerceAtLeast(0.dp)
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
                     reverseLayout = true,
                     contentPadding = PaddingValues(
-                        horizontal = 12.dp,
+                        horizontal = 12.dp + columnInset,
                         vertical = 8.dp,
                     ),
                 ) {
@@ -1063,11 +1143,26 @@ fun ChatScreen(
                                 is ChatListItem.NewMessagesDivider ->
                                     NewMessagesDividerRow(item.count)
                                 is ChatListItem.MessageItem -> MessageBubble(
+                                    blockedUserIds = blockedUserIds,
+                                    revealedMessages = revealedMessages,
                                     item = item,
                                     chat = chat,
                                     isMine = item.entity.senderId == myUserId,
-                                    isStreaming = item.entity.serverId
-                                        ?.let { it in streamingIds } == true,
+                                    // Asked of the ROW, not only of the
+                                    // live set: a picture answer produces
+                                    // no deltas to put an id in it, and a
+                                    // relaunch mid-answer starts with it
+                                    // empty (AssistantAnswer).
+                                    isStreaming = AssistantAnswer.isWorking(
+                                        entity = item.entity,
+                                        isAssistantChat = chat?.kind == "ai",
+                                        assistantUserId = assistantUserId,
+                                        myUserId = myUserId,
+                                        streamingIds = streamingIds,
+                                        failedIds = failedAssistantIds,
+                                    ),
+                                    answerFailed = item.entity.serverId
+                                        ?.let { it in failedAssistantIds } == true,
                                     myUserId = myUserId,
                                     memberNames = memberNames,
                                     memberAvatars = memberAvatars,
@@ -1176,9 +1271,12 @@ fun ChatScreen(
                     visible = showScrollToBottom,
                     enter = scaleIn() + fadeIn(),
                     exit = scaleOut() + fadeOut(),
+                    // At the trailing edge of the COLUMN, not of the window:
+                    // a control pinned 300dp right of the last bubble is
+                    // nowhere near the thing it acts on.
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(16.dp),
+                        .padding(start = 16.dp, top = 16.dp, bottom = 16.dp, end = 16.dp + columnInset),
                 ) {
                     SmallFloatingActionButton(
                         onClick = { scope.launch { listState.animateScrollToItem(0) } },
@@ -1246,6 +1344,24 @@ fun ChatScreen(
                 onDismissMediaError = viewModel::clearMediaState,
                 showsAssistantMention = chat?.kind == "family" && assistantUserId != null,
                 onShareLocation = shareLocation,
+                // The picture affordances. Each is absent, not disabled,
+                // wherever the server cannot do the thing — an affordance
+                // that silently does nothing is worse than one that is not
+                // there (docs/protocol.md, "Pictures").
+                showsAssistantPicture = canShowAssistantPicture,
+                onShowAssistantPicture = {
+                    // Images only. A video is never shown to the
+                    // assistant at any setting, so offering to pick one
+                    // from THIS door would be offering something that
+                    // cannot happen.
+                    pickMedia.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                    )
+                },
+                showsDraw = canAskForPicture,
+                onAskForPicture = viewModel::insertDrawToken,
+                pictureNotice = assistantPictureNotice,
+                mentionPictureNotice = mentionPictureNotice,
             )
         }
     }
@@ -1331,7 +1447,48 @@ fun ChatScreen(
                     context.startActivity(Intent.createChooser(send, null))
                 }
             },
+            onReport = {
+                val entity = target.item.entity
+                pickerTarget = null
+                reportTarget = ReportTarget(
+                    userId = entity.senderId,
+                    // Resolved OUTSIDE the lambda: `context.getString` in a
+                    // composable is what LocalContextGetResourceValueCall
+                    // exists to catch, and the fallback is the same for
+                    // every sender anyway.
+                    displayName = target.item.senderName ?: memberFallbackName,
+                    messageId = entity.serverId,
+                )
+            },
+            onToggleBlock = {
+                val entity = target.item.entity
+                val wasBlocked = entity.senderId in blockedUserIds
+                pickerTarget = null
+                viewModel.setBlocked(entity.senderId, blocked = !wasBlocked)
+            },
+            blockedUserIds = blockedUserIds,
+            assistantUserId = assistantUserId,
+            isAiChat = chat?.kind == "ai",
             onDismiss = { pickerTarget = null },
+        )
+    }
+
+    reportTarget?.let { target ->
+        ReportSheet(
+            displayName = target.displayName,
+            supportContact = supportContact,
+            // From a bubble, so a message is always named.
+            isAboutMessage = target.messageId != null,
+            onDismiss = { reportTarget = null },
+            onSubmit = { reason ->
+                viewModel.report(
+                    reportedUserId = target.userId,
+                    reason = reason,
+                    messageId = target.messageId,
+                ) {
+                    reportTarget = null
+                }
+            },
         )
     }
 
@@ -1419,6 +1576,14 @@ private fun ReactionPickerPopup(
     onCopy: () -> Unit,
     onShare: () -> Unit,
     onSave: () -> Unit,
+    onReport: () -> Unit,
+    onToggleBlock: () -> Unit,
+    /** Everybody the reader has blocked, for the Block/Unblock label. */
+    blockedUserIds: Set<Long>,
+    /** The assistant's reserved account, which may be neither blocked nor reported. */
+    assistantUserId: Long?,
+    /** Whether this is the assistant's own chat, where every sender is it. */
+    isAiChat: Boolean,
     onDismiss: () -> Unit,
 ) {
     val atWindowOrigin = remember {
@@ -1456,6 +1621,10 @@ private fun ReactionPickerPopup(
         var containerSize by remember { mutableStateOf(IntSize.Zero) }
         var capsuleSize by remember { mutableStateOf(IntSize.Zero) }
         var menuSize by remember { mutableStateOf(IntSize.Zero) }
+    // Which page the menu shows. Reset with the popup, so a reader who
+    // left it on Safety does not reopen into Safety on another message,
+    // one tap from Block.
+    var onSafetyPage by remember { mutableStateOf(false) }
         val density = LocalDensity.current
         val margin = with(density) { 12.dp.roundToPx() }
         val gap = with(density) { 8.dp.roundToPx() }
@@ -1537,6 +1706,18 @@ private fun ReactionPickerPopup(
                 exit = fadeOut() + scaleOut(),
                 modifier = Modifier.offset { IntOffset(menuX, menuY) },
             ) {
+                // Two pages in the same measured panel: Safety swaps the
+                // rows, `onSizeChanged` re-measures, and the placement
+                // arithmetic above follows for free.
+                if (onSafetyPage) {
+                    MessageSafetyMenu(
+                        isSenderBlocked = target.item.entity.senderId in blockedUserIds,
+                        onBack = { onSafetyPage = false },
+                        onReport = { exitThen(onReport) },
+                        onToggleBlock = { exitThen(onToggleBlock) },
+                        modifier = Modifier.onSizeChanged { menuSize = it },
+                    )
+                } else {
                 MessageContextMenu(
                     onReply = { exitThen(onReply) },
                     onEdit = { exitThen(onEdit) },
@@ -1558,7 +1739,24 @@ private fun ReactionPickerPopup(
                         target.item.entity.serverId != null &&
                         target.item.entity.senderId == myUserId,
                     canCopy = target.item.entity.body.isNotEmpty(),
+                    // Somebody else's message, and one the server can name.
+                    // Never my own: `cannot_report_self` refuses that, and
+                    // blocking yourself is refused too.
+                    //
+                    // NEVER THE ASSISTANT either. Its reserved account
+                    // belongs to no family (`family_id IS NULL`), so both
+                    // endpoints answer `not_same_family` — and a VISIBLE
+                    // refusal is exactly what this feature may not produce.
+                    // iOS and macOS exclude it the same way; without this
+                    // the three apps disagree in public on every `@ai`
+                    // answer.
+                    canModerate = target.item.entity.serverId != null &&
+                        target.item.entity.senderId != myUserId &&
+                        target.item.entity.senderId != assistantUserId &&
+                        !isAiChat,
+                    showSafety = { onSafetyPage = true },
                 )
+                }
             }
         }
     }
@@ -1676,6 +1874,14 @@ private fun MessageContextMenu(
     canCopy: Boolean = true,
     /** Photos and videos only — what the gallery will take. */
     canSave: Boolean = false,
+    /**
+     * Somebody else's message, so it can be reported and its sender
+     * blocked. Never true on my own — reporting yourself is refused
+     * (`cannot_report_self`) and blocking yourself likewise.
+     */
+    canModerate: Boolean = false,
+    /** Open the Safety page. */
+    showSafety: () -> Unit = {},
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -1727,6 +1933,68 @@ private fun MessageContextMenu(
                 icon = Icons.Outlined.Share,
                 onClick = onShare,
             )
+            if (canModerate) {
+                // Report and Block live one level down, under Safety —
+                // matching iOS and macOS. The panel MEASURES itself here
+                // (Modifier.onSizeChanged at the popup), so swapping the
+                // rows needs no arithmetic; iOS has to compute both pages'
+                // heights by hand.
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_safety),
+                    icon = Icons.Outlined.Shield,
+                    onClick = showSafety,
+                )
+            }
+        }
+    }
+}
+
+/** The Safety page of [MessageContextMenu]: Report and Block, plus the way back. */
+@Composable
+private fun MessageSafetyMenu(
+    isSenderBlocked: Boolean,
+    onBack: () -> Unit,
+    onReport: () -> Unit,
+    onToggleBlock: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 3.dp,
+        shadowElevation = 6.dp,
+        modifier = modifier.width(IntrinsicSize.Max),
+    ) {
+        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+            // First, so the way out is the first thing to find and the two
+            // destructive rows are not where the finger already was.
+            MessageContextMenuItem(
+                label = stringResource(R.string.s_back),
+                icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                onClick = onBack,
+            )
+            MessageContextMenuItem(
+                label = stringResource(R.string.s_report_ellipsis),
+                icon = Icons.Outlined.Flag,
+                onClick = onReport,
+                tint = MaterialTheme.colorScheme.error,
+            )
+            MessageContextMenuItem(
+                label = if (isSenderBlocked) {
+                    stringResource(R.string.s_unblock)
+                } else {
+                    stringResource(R.string.s_block)
+                },
+                icon = if (isSenderBlocked) Icons.Outlined.LockOpen else Icons.Outlined.Block,
+                onClick = onToggleBlock,
+                // Unblocking is not destructive — it gives something
+                // back — so only the Block direction is tinted.
+                tint = if (isSenderBlocked) {
+                    LocalContentColor.current
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
         }
     }
 }
@@ -1736,6 +2004,7 @@ private fun MessageContextMenuItem(
     label: String,
     icon: ImageVector,
     onClick: () -> Unit,
+    tint: Color = LocalContentColor.current,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -1745,8 +2014,8 @@ private fun MessageContextMenuItem(
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
-        Text(text = label, style = MaterialTheme.typography.bodyLarge)
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        Text(text = label, style = MaterialTheme.typography.bodyLarge, color = tint)
     }
 }
 
@@ -1851,7 +2120,7 @@ private fun EmojiCatalogGrid(
         EMOJI_CATALOG.forEach { category ->
             item(key = "header:${category.name}", span = { GridItemSpan(maxLineSpan) }) {
                 Text(
-                    text = category.name,
+                    text = stringResource(category.titleRes),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
@@ -1900,7 +2169,12 @@ private fun emojiPressScale(interactionSource: MutableInteractionSource): State<
 }
 
 @Composable
-private fun DateSeparatorPill(label: String) {
+private fun DateSeparatorPill(day: TimeFormat.DayLabel) {
+    val label = when (day) {
+        TimeFormat.DayLabel.Today -> stringResource(R.string.s_today)
+        TimeFormat.DayLabel.Yesterday -> stringResource(R.string.s_yesterday)
+        is TimeFormat.DayLabel.Date -> day.text
+    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -1963,8 +2237,20 @@ private fun MessageBubble(
     item: ChatListItem.MessageItem,
     chat: ChatEntity?,
     isMine: Boolean,
+    /** Handed down for the who-reacted list; the row's own hiding is on [item]. */
+    blockedUserIds: Set<Long>,
+    /**
+     * The rows the reader has peeked at, held by the screen so a reveal
+     * survives the row scrolling out of the list and back.
+     */
+    revealedMessages: MutableSet<String>,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
+    /**
+     * An `ai_error` frame named this row: the answer stopped early and
+     * nothing more is coming (docs/protocol.md, "Pictures").
+     */
+    answerFailed: Boolean,
     myUserId: Long?,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
@@ -2033,7 +2319,16 @@ private fun MessageBubble(
     // below: an 18dp balloon corner over the tile's own 14dp corner at
     // zero inset would shave the tile into a shape neither of them has.
     val mediaOnly = remember(entity, isStreaming) { isMediaOnly(entity, isStreaming) }
-    val surfaceShape = if (mediaOnly) RectangleShape else bubbleShape
+    // A reveal is a PEEK, not a setting: per row and per device, never on
+    // the wire, never stored, and gone on the next launch. Keyed on the
+    // message so a recycled row cannot inherit somebody else's reveal, and
+    // held by the SCREEN so scrolling away does not undo it
+    // (docs/protocol.md, "Blocking a member").
+    val isHidden = item.isHiddenByBlock && item.key !in revealedMessages
+    // A hidden row is never bare and never media-shaped: it draws one line
+    // of placeholder text in an ordinary balloon, whatever the message
+    // underneath it turns out to be.
+    val surfaceShape = if (mediaOnly && !isHidden) RectangleShape else bubbleShape
     // MARKDOWN FIRST, and the order is load-bearing. Markdown DELETES
     // characters (`**`, backticks, `](url)`), so detecting links over the
     // raw body and drawing the rendered one would leave every link after
@@ -2123,13 +2418,24 @@ private fun MessageBubble(
                     Modifier.combinedClickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = {},
+                        // Normally a no-op. On a HIDDEN row it is the
+                        // reveal — one tap, and nothing else happens: no
+                        // frame, no request, and no movement of the read
+                        // marker, which advances through hidden rows as
+                        // they scroll past whether they were revealed or
+                        // not (docs/protocol.md, "Blocking a member").
+                        onClick = { if (isHidden) revealedMessages.add(item.key) },
                         // Double-tap = the quick heart (Tapback idiom),
                         // through the same toggle path as the capsule,
                         // so a second double-tap removes it. onClick is
                         // a no-op, so the double-tap wait delays nothing.
+                        // Refused while hidden: hearting a message you
+                        // cannot read is not something to make easy, and
+                        // the reaction would be visible to its sender.
                         onDoubleClick = {
-                            entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
+                            if (!isHidden) {
+                                onToggleReaction(entity.serverId, DOUBLE_TAP_REACTION)
+                            }
                         },
                         onLongClick = { onLongPress(item, bubbleBounds) },
                     )
@@ -2143,7 +2449,7 @@ private fun MessageBubble(
                 .padding(vertical = 2.dp),
             horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
         ) {
-            if (item.showSenderName) {
+            if (item.showSenderName && !isHidden) {
                 // The sender's face rides the name line at the head of a
                 // run rather than in a gutter beside every bubble: the
                 // thread's layout — and the run-corner geometry above —
@@ -2180,7 +2486,7 @@ private fun MessageBubble(
             // emoji-only, and media-only (which also drops the inset and
             // the clip — see `surfaceShape`). One flag for both, so
             // nothing adapts to one half of the rule and not the other.
-            val isBare = isEmojiOnly || mediaOnly
+            val isBare = (isEmojiOnly || mediaOnly) && !isHidden
             Surface(
                 shape = surfaceShape,
                 color = when {
@@ -2198,9 +2504,12 @@ private fun MessageBubble(
                 BubbleContent(
                     entity = entity,
                     item = item,
+                    isHidden = isHidden,
+                    blockedUserIds = blockedUserIds,
                     chat = chat,
                     isMine = isMine,
                     isStreaming = isStreaming,
+                    answerFailed = answerFailed,
                     mediaOnly = mediaOnly,
                     emojiFontSize = emojiFontSize,
                     blocks = bodyBlocks,
@@ -2303,6 +2612,10 @@ private fun QuoteBlock(
     isMine: Boolean,
     /** The second level, already resolved to "<name>: <excerpt>", or null. */
     parentLine: String? = null,
+    /** The quoted author is blocked, so neither name nor excerpt is drawn. */
+    replyHidden: Boolean = false,
+    /** The second level's author is blocked. Independent of [replyHidden]. */
+    parentHidden: Boolean = false,
     onClick: () -> Unit,
     onDoubleClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -2314,10 +2627,20 @@ private fun QuoteBlock(
     val accent = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
     // Resolved here, not inside `semantics` — that lambda is not
     // composable, and the sentence is localised like the visible one.
-    val quoteDescription = if (parentLine == null) {
-        stringResource(R.string.s_replying_to_excerpt, authorName, excerpt)
+    // TalkBack gets the SAME masking the screen does. Reading the name
+    // and excerpt aloud would defeat the whole thing for the one reader
+    // most dependent on the label being honest — and this label is
+    // pre-resolved from `authorName`/`excerpt`, so masking only the
+    // visible text would have left it leaking.
+    val replyPhrase = if (replyHidden) {
+        stringResource(R.string.s_replying_to_hidden)
     } else {
-        stringResource(R.string.s_replying_to_excerpt_with_parent, authorName, excerpt, parentLine)
+        stringResource(R.string.s_replying_to_excerpt, authorName, excerpt)
+    }
+    val quoteDescription = when {
+        parentLine == null -> replyPhrase
+        parentHidden -> "$replyPhrase, ${stringResource(R.string.s_which_replied_to_hidden)}"
+        else -> stringResource(R.string.s_replying_to_excerpt_with_parent, authorName, excerpt, parentLine)
     }
     Row(
         modifier = Modifier
@@ -2400,6 +2723,11 @@ private val RoundedRectangle6 = RoundedCornerShape(6.dp)
 @Composable
 private fun ReactionChipsRow(
     item: ChatListItem.MessageItem,
+    /**
+     * Filters the WHO-REACTED list only. The chip's count comes from
+     * [buildReactionChips] and is deliberately not filtered.
+     */
+    blockedUserIds: Set<Long>,
     memberNames: Map<Long, String>,
     memberAvatars: Map<Long, Long>,
     myUserId: Long?,
@@ -2450,6 +2778,7 @@ private fun ReactionChipsRow(
             myUserId = myUserId ?: -1L,
             youLabel = youLabel,
             memberFallback = { memberTemplate.format(it) },
+            blockedUserIds = blockedUserIds,
         )
     }
     Box(modifier = Modifier.onGloballyPositioned { rowLeft[0] = it.boundsInWindow().left }) {
@@ -2666,10 +2995,10 @@ private fun CallRecordRow(
     onLongPress: () -> Unit,
 ) {
     val icon = when (line) {
-        is CallRecordLine.Missed, is CallRecordLine.DeclinedByMe -> Icons.Filled.CallMissed
-        is CallRecordLine.NoAnswer, is CallRecordLine.DeclinedByThem -> Icons.Filled.CallMade
+        is CallRecordLine.Missed, is CallRecordLine.DeclinedByMe -> Icons.AutoMirrored.Filled.CallMissed
+        is CallRecordLine.NoAnswer, is CallRecordLine.DeclinedByThem -> Icons.AutoMirrored.Filled.CallMade
         is CallRecordLine.Completed, is CallRecordLine.Failed ->
-            if (isMine) Icons.Filled.CallMade else Icons.Filled.CallReceived
+            if (isMine) Icons.AutoMirrored.Filled.CallMade else Icons.AutoMirrored.Filled.CallReceived
     }
     val text = when (line) {
         is CallRecordLine.Completed -> stringResource(
@@ -3083,10 +3412,20 @@ private fun PollComposerSheet(
 private fun BubbleContent(
     entity: MessageEntity,
     item: ChatListItem.MessageItem,
+    /**
+     * Draw the placeholder instead of the message. NOT `item.isHiddenByBlock`
+     * directly: the bubble folds the per-device reveal into it, and this
+     * view must never see one without the other.
+     */
+    isHidden: Boolean,
+    /** For the who-reacted list, which drops blocked reactors by name. */
+    blockedUserIds: Set<Long>,
     chat: ChatEntity?,
     isMine: Boolean,
     /** The assistant is still writing into this row. */
     isStreaming: Boolean,
+    /** The answer stopped early — see [MessageBubble]. */
+    answerFailed: Boolean,
     /**
      * Nothing but photos/videos: the balloon is gone (MessageBubble), so
      * the content's inset goes with it — the tile's edge is the message's
@@ -3159,6 +3498,42 @@ private fun BubbleContent(
         modifier = if (mediaOnly) Modifier else Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.Start,
     ) {
+        // Everything above the timestamp is skipped while hidden — no
+        // body, no quote, no attachment, no poll, no link preview, no
+        // reaction chips. The timestamp below STAYS: "a hidden row draws
+        // the placeholder AND the timestamp, and nothing else"
+        // (docs/protocol.md, "Blocking a member").
+        if (isHidden) {
+            // ASK FOR WHAT A VISIBLE ROW WOULD ASK FOR, AND DRAW NONE OF IT.
+            //
+            // This is the requirement with no compile-time signal and no
+            // visual one. The natural implementation simply stops
+            // fetching, reads as obviously correct, and rebuilds the
+            // oracle protocol.md spends a paragraph refusing: a link
+            // preview is a request to a THIRD party, the poster of the
+            // link owns that host's log, and a family that is one distinct
+            // fetcher short from the day somebody blocked them has said so
+            // out loud, repeatably and on demand.
+            //
+            // The link preview alone, and deliberately: attachments and
+            // avatars reach the family's OWN server, whose operator can
+            // see everything anyway, so skipping those loses defence in
+            // depth rather than the oracle itself. `previewsEnabled` still
+            // decides it — the setting "decides the fetch for every row
+            // alike and is never evaluated per sender".
+            val hiddenPreviewUrl = remember(blocks) {
+                MessageLinks.firstDrawnWebLinkUrl(blocks.map { it.block })
+            }
+            if (hiddenPreviewUrl != null && previewsEnabled) {
+                LaunchedEffect(hiddenPreviewUrl) { onRequestPreview(hiddenPreviewUrl) }
+            }
+            Text(
+                text = stringResource(R.string.s_hidden_blocked_member),
+                style = MaterialTheme.typography.bodyMedium,
+                fontStyle = FontStyle.Italic,
+                color = LocalContentColor.current.copy(alpha = 0.62f),
+            )
+        } else {
         // The quote sits inside the balloon, above the reply's own text —
         // same placement as iOS.
         val quotedId = entity.replyToMessageId
@@ -3170,23 +3545,44 @@ private fun BubbleContent(
             // reply, or its own parent has been swept by retention.
             val parentSender = entity.replyParentSenderId
             val parentExcerpt = entity.replyParentExcerpt
+            // The two levels mask INDEPENDENTLY. A reply by an unblocked
+            // member to a blocked one, whose own parent is a third person,
+            // is the ordinary shape that proves it: one flag for both gets
+            // this wrong in both directions — over-masking a readable
+            // parent, or leaking a blocked reply.
+            val replyHidden = item.isReplyHidden
+            val parentHidden = item.isParentHidden
+            val hiddenLabel = stringResource(R.string.s_hidden_blocked_member)
             val parentLine = if (parentSender != null && parentExcerpt != null) {
-                val name = when (parentSender) {
-                    myUserId -> stringResource(R.string.s_you)
-                    else -> memberNames[parentSender] ?: stringResource(R.string.s_someone)
+                if (parentHidden) {
+                    // No name and no text: the placeholder is the whole
+                    // line, or the excerpt carries 120 characters of a
+                    // blocked member into a bubble that is not hidden.
+                    hiddenLabel
+                } else {
+                    val name = when (parentSender) {
+                        myUserId -> stringResource(R.string.s_you)
+                        else -> memberNames[parentSender] ?: stringResource(R.string.s_someone)
+                    }
+                    "$name: $parentExcerpt"
                 }
-                "$name: $parentExcerpt"
             } else {
                 null
             }
             QuoteBlock(
-                authorName = when (quotedSender) {
-                    myUserId -> stringResource(R.string.s_you)
-                    else -> memberNames[quotedSender] ?: stringResource(R.string.s_someone)
+                authorName = if (replyHidden) {
+                    hiddenLabel
+                } else {
+                    when (quotedSender) {
+                        myUserId -> stringResource(R.string.s_you)
+                        else -> memberNames[quotedSender] ?: stringResource(R.string.s_someone)
+                    }
                 },
-                excerpt = quotedExcerpt,
+                excerpt = if (replyHidden) "" else quotedExcerpt,
                 isMine = isMine,
                 parentLine = parentLine,
+                replyHidden = replyHidden,
+                parentHidden = parentHidden,
                 onClick = { onTapQuote(quotedId) },
                 onDoubleClick = onDoubleTap,
                 onLongClick = onTextLongPress,
@@ -3251,6 +3647,21 @@ private fun BubbleContent(
         // the same thing.
         if (isStreaming && entity.body.isEmpty()) {
             StreamingCursor()
+        } else if (answerFailed && entity.body.isEmpty() && bubbleAttachments.isEmpty()) {
+            // The answer stopped with nothing on the row at all — which is
+            // every PICTURE answer that failed, because an image model
+            // produces no token stream and so there are no deltas to have
+            // left something behind (docs/protocol.md, "Pictures"). The
+            // empty row was created before the provider was called
+            // precisely so a failure would have somewhere to fail; this is
+            // that somewhere. A text answer that failed half-written keeps
+            // its half instead, and says nothing extra.
+            Text(
+                text = stringResource(R.string.s_assistant_answer_failed),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontStyle = FontStyle.Italic,
+            )
         }
         // A call record draws its own wording from the outcome and the
         // side, never the body — which is the server's English placeholder
@@ -3287,6 +3698,11 @@ private fun BubbleContent(
                     is MessageMarkdown.Block.Text -> TextBlock(
                         rendered = block.rendered,
                         links = bodyBlock.links,
+                        // `/draw` is a request only at the very start of
+                        // the body, so only the first block may carry the
+                        // highlight for it — and it is decided from the RAW
+                        // body, which is the string the server parses.
+                        drawSource = if (index == 0) entity.body else null,
                         // The cursor rides the LAST block, and only when
                         // that block is text — see below for a body that
                         // ends in a table.
@@ -3375,6 +3791,7 @@ private fun BubbleContent(
             Box(modifier = Modifier.align(if (isMine) Alignment.End else Alignment.Start)) {
                 ReactionChipsRow(
                     item = item,
+                    blockedUserIds = blockedUserIds,
                     memberNames = memberNames,
                     memberAvatars = memberAvatars,
                     myUserId = myUserId,
@@ -3383,6 +3800,8 @@ private fun BubbleContent(
                 )
             }
         }
+        }
+
         if (item.showTimestamp || isMine) {
             Spacer(Modifier.size(2.dp))
             Row(
@@ -3464,6 +3883,17 @@ private fun ColumnScope.TextBlock(
     links: List<LinkSpan>,
     /** The assistant's cursor rides this block — the last one only. */
     showCursor: Boolean,
+    /**
+     * The RAW message body when this is the FIRST block — the only place a
+     * `/draw` can be the picture token rather than five characters of text
+     * — and null otherwise.
+     *
+     * The BODY rather than a flag because the server decides from the raw
+     * string and this block draws the rendered one; `MessageLinks.withMentions`
+     * explains why handing it only the rendered text made the bubble and
+     * the server disagree.
+     */
+    drawSource: String?,
     /** Emoji-ladder size for an emoji-only body, else null. */
     emojiFontSize: Float?,
     linkColor: Color,
@@ -3482,7 +3912,7 @@ private fun ColumnScope.TextBlock(
     onDoubleTap: () -> Unit,
     onLongPress: () -> Unit,
 ) {
-    val body = remember(rendered, links, linkColor, mentionColor, showCursor) {
+    val body = remember(rendered, links, linkColor, mentionColor, showCursor, drawSource) {
         val linked = MessageLinks.styled(
             rendered.annotated,
             links,
@@ -3491,6 +3921,7 @@ private fun ColumnScope.TextBlock(
         val styled = MessageLinks.withMentions(
             linked,
             SpanStyle(color = mentionColor, fontWeight = FontWeight.Bold),
+            rawBody = drawSource,
         )
         // While the assistant is writing, the text ends in a cursor
         // rather than just stopping mid-word — the same signal iOS and
@@ -3791,6 +4222,216 @@ private fun StatusGlyph(
     }
 }
 
+/**
+ * What the composer says, in the member's own assistant chat, about the
+ * photographs staged on the message they are about to send.
+ *
+ * This strip is where the protocol's "say what it is about to do, at the
+ * moment it matters" actually lands. It hangs off the STAGED list rather
+ * than off any one door into it, so the picker, a paste, a drop onto the
+ * field and the camera all raise the same sentence — there is no way to
+ * put a photograph in front of the assistant without having read it.
+ *
+ * When something will be left out it says so too, and names it. That
+ * mirrors what the server does with the model itself: a picture left out
+ * is told, never silently dropped, "for the reason every other note in
+ * this section exists: a model that is not told what is missing invents
+ * it" (docs/protocol.md, "Pictures"). The member deserves the same
+ * courtesy — the alternative is a photo they believe they showed it.
+ */
+@Composable
+private fun AssistantPictureStrip(notice: AiPictureNotice) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.AutoAwesome,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = when (notice) {
+                    is AiPictureNotice.WillShow -> stringResource(
+                        // One picture or several: two whole sentences
+                        // rather than a formatted count, so nine locales
+                        // agree with themselves without a plural table
+                        // for a number that is only ever 0..4.
+                        //
+                        // ZERO is the case where everything staged is too
+                        // large or in an encoding no deployment reads: the
+                        // locks are open and nothing goes through them
+                        // anyway, so the sentence is the same one a shut
+                        // lock earns and the line below says why.
+                        when (notice.shown) {
+                            0 -> R.string.s_assistant_will_not_see_picture
+                            1 -> R.string.s_assistant_sees_this_picture
+                            else -> R.string.s_assistant_sees_these_pictures
+                        },
+                    )
+                    AiPictureNotice.WillNotShow ->
+                        stringResource(R.string.s_assistant_will_not_see_picture)
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (notice is AiPictureNotice.WillShow) {
+                if (notice.extraPhotos > 0) {
+                    Text(
+                        text = stringResource(
+                            R.string.s_assistant_picture_extra_left_out,
+                            AiPictureNotice.MAX_PHOTOS,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (notice.unreadablePhotos > 0) {
+                    // Named rather than dropped in silence, which is the
+                    // rule the server applies to the MODEL and the member
+                    // is owed the same courtesy (docs/protocol.md,
+                    // "Pictures").
+                    Text(
+                        text = stringResource(R.string.s_assistant_picture_unreadable_left_out),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (notice.otherAttachments > 0) {
+                    Text(
+                        text = stringResource(R.string.s_assistant_picture_others_left_out),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The family composer's sentence for an `@ai` draft that is about to carry
+ * a photograph — staged on it, on the message it replies to, or both (#56;
+ * docs/protocol.md, "What a client's family-chat composer must say").
+ *
+ * The same shape as [AssistantPictureStrip], and the same courtesy: what
+ * goes is said, which photo it is is said, and what will be left out — past
+ * the shared budget, or unreadable — is named rather than dropped in
+ * silence. What it deliberately does NOT say is "nothing else from this
+ * chat": with `ai_history` on a transcript goes with the mention, so the
+ * honest promise is about PHOTOS — no other photo in this chat does.
+ * And since the owner's third switch, not even that where it is false:
+ * with `ai_history_photos` in effect and places left of the four, the
+ * sentence says "up to N of the most recent photos in this chat may go
+ * too" instead — and shows for a bare `@ai` draft, on which all four may
+ * be somebody else's recent picture (docs/protocol.md, "Recent photos
+ * from the family chat").
+ */
+@Composable
+private fun MentionPictureStrip(notice: MentionPictureNotice) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.AutoAwesome,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // The owner's third switch, in effect and with places left of
+            // the four: the sentence says "up to N recent photos may go
+            // too" and drops "no other photo in this chat does", which
+            // would be false. With the four spent by the member's own
+            // photos nothing from the history travels, and #56's sentence
+            // is exactly right — so it is the one shown, the same words a
+            // family without the switch reads, because the same thing
+            // happens (docs/protocol.md, "Recent photos from the family
+            // chat" — the strip's rule).
+            val recent = notice.recentUpTo ?: 0
+            Text(
+                // Which photo, and one or several: whole sentences rather
+                // than a formatted count, for the reason the private strip
+                // gives — nine locales agree with themselves without a
+                // plural table for a number that is only ever 0..4. The
+                // "up to N" is a count all the same, and one a partitive
+                // ("N of the most recent photos") keeps grammatical at
+                // every N in every language shipped.
+                //
+                // ZERO is every pointed-at photo being unreadable: the
+                // locks are open and nothing goes through them anyway, so
+                // the sentence is the private strip's shut-lock one and the
+                // line below says why — unless recent photos may still fill
+                // the places it did not spend, which the first row says.
+                text = if (recent > 0) {
+                    stringResource(
+                        when {
+                            notice.shown == 0 -> R.string.s_assistant_mention_sees_recent_only
+                            notice.shownOnMention > 0 && notice.shownOnQuote > 0 ->
+                                R.string.s_assistant_mention_sees_both_and_recent
+                            notice.shownOnMention == 1 ->
+                                R.string.s_assistant_mention_sees_this_picture_and_recent
+                            notice.shownOnMention > 1 ->
+                                R.string.s_assistant_mention_sees_these_pictures_and_recent
+                            notice.shownOnQuote == 1 ->
+                                R.string.s_assistant_mention_sees_quoted_picture_and_recent
+                            else -> R.string.s_assistant_mention_sees_quoted_pictures_and_recent
+                        },
+                        recent,
+                    )
+                } else {
+                    stringResource(
+                        when {
+                            notice.shown == 0 -> R.string.s_assistant_will_not_see_picture
+                            notice.shownOnMention > 0 && notice.shownOnQuote > 0 ->
+                                R.string.s_assistant_mention_sees_both
+                            notice.shownOnMention == 1 -> R.string.s_assistant_mention_sees_this_picture
+                            notice.shownOnMention > 1 -> R.string.s_assistant_mention_sees_these_pictures
+                            notice.shownOnQuote == 1 -> R.string.s_assistant_mention_sees_quoted_picture
+                            else -> R.string.s_assistant_mention_sees_quoted_pictures
+                        },
+                    )
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (notice.extraPhotos > 0) {
+                // The "4" is the protocol's, held once in AiPictureNotice,
+                // and the sentence says the order it is counted in.
+                Text(
+                    text = stringResource(
+                        R.string.s_assistant_mention_extra_left_out,
+                        AiPictureNotice.MAX_PHOTOS,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (notice.unreadablePhotos > 0) {
+                Text(
+                    text = stringResource(R.string.s_assistant_picture_unreadable_left_out),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (notice.otherAttachments > 0) {
+                Text(
+                    text = stringResource(R.string.s_assistant_picture_others_left_out),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
 /** What the composer shows while a photo or video is on its way. */
 @Composable
 private fun MediaStrip(
@@ -3958,7 +4599,7 @@ private fun StagedAttachmentChip(
                 )
             } else {
                 Icon(
-                    Icons.Filled.InsertDriveFile,
+                    Icons.AutoMirrored.Filled.InsertDriveFile,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -4056,10 +4697,51 @@ private fun InputBar(
      * (docs/protocol.md, "Mentioning the assistant in the family chat").
      */
     showsAssistantMention: Boolean,
+    /**
+     * Offer to show the assistant a photograph. The member's OWN `ai`
+     * chat only, and only when BOTH locks are open — this server has a
+     * deployment that can see, and the family's owner has turned
+     * `ai_vision` on (docs/protocol.md, "Pictures"). False is the common
+     * case and means no such item exists at all. The family chat gets no
+     * item of its own: since #56 a photo on an `@ai` message, or on the
+     * message it replies to, travels under the same two locks through the
+     * ordinary "Photo or video" door and the reply affordance already
+     * here (docs/protocol.md, "Showing the assistant a picture from the
+     * family chat").
+     */
+    showsAssistantPicture: Boolean,
+    onShowAssistantPicture: () -> Unit,
+    /**
+     * Offer `/draw`. Only where this server can MAKE a picture: on one
+     * that cannot, `/draw` is just text answered in words, so the
+     * affordance would promise something that will not happen.
+     */
+    showsDraw: Boolean,
+    onAskForPicture: () -> Unit,
+    /**
+     * What must be said, right now, about the pictures staged in an `ai`
+     * chat — including what will be left out. Null when there is nothing
+     * to say, which is every chat that is not the assistant's and every
+     * message with no photograph on it.
+     */
+    pictureNotice: AiPictureNotice?,
+    /**
+     * The FAMILY chat's counterpart (#56): what must be said when an `@ai`
+     * draft is about to carry a photo — staged on it, or on the message
+     * it replies to. Null everywhere else and whenever nothing will go —
+     * except under the owner's `ai_history_photos`, when a bare `@ai`
+     * draft may carry the chat's recent photos and the strip says so.
+     */
+    mentionPictureNotice: MentionPictureNotice?,
 ) {
     Surface(tonalElevation = 3.dp) {
-        Column {
+        Column(modifier = Modifier.fillMaxWidth()) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            // The bar spans the window; what is IN it is held to the
+            // thread's readable column, centred the same way, so the
+            // attach button and Send sit over the bubbles they act on
+            // rather than at the window's far edges (iOS does the same).
+            Column(modifier = Modifier.readableColumn()) {
             if (replyDraft != null) {
                 ReplyBanner(
                     authorName = replyAuthorName,
@@ -4079,6 +4761,14 @@ private fun InputBar(
                     onStop = onStopRecording,
                     onCancel = onCancelRecording,
                 )
+            }
+            if (pictureNotice != null) {
+                AssistantPictureStrip(notice = pictureNotice)
+            }
+            // Never both: the one above is the assistant's own chat, this
+            // one the family chat.
+            if (mentionPictureNotice != null) {
+                MentionPictureStrip(notice = mentionPictureNotice)
             }
             if (staged.isNotEmpty()) {
                 StagedAttachmentRow(staged = staged, onDiscard = onDiscardStaged)
@@ -4124,6 +4814,35 @@ private fun InputBar(
                         expanded = attachMenuOpen,
                         onDismissRequest = { attachMenuOpen = false },
                     ) {
+                        if (showsAssistantPicture) {
+                            // Above "Photo or video", and worded as what it
+                            // DOES rather than what it attaches: this is the
+                            // one item in this menu that sends pixels off
+                            // this server, and the protocol asks a client to
+                            // say so where the choice is made rather than
+                            // only on a settings screen somebody read once.
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(stringResource(R.string.s_show_the_assistant_a_picture))
+                                        Text(
+                                            text = stringResource(
+                                                R.string.s_show_the_assistant_a_picture_note,
+                                            ),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.AutoAwesome, contentDescription = null)
+                                },
+                                onClick = {
+                                    attachMenuOpen = false
+                                    onShowAssistantPicture()
+                                },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.s_photo_or_video)) },
                             leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
@@ -4135,7 +4854,7 @@ private fun InputBar(
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.s_file)) },
                             leadingIcon = {
-                                Icon(Icons.Filled.InsertDriveFile, contentDescription = null)
+                                Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null)
                             },
                             onClick = {
                                 attachMenuOpen = false
@@ -4188,6 +4907,27 @@ private fun InputBar(
                                 onClick = {
                                     attachMenuOpen = false
                                     onStartPoll()
+                                },
+                            )
+                        }
+                        if (showsDraw) {
+                            // Inside the attach menu for the same reason the
+                            // poll is: asking for a picture is one more thing
+                            // a message can be, and it inherits that button's
+                            // guard (nothing is composed mid-edit) for free.
+                            // It does not attach anything — it rewrites the
+                            // draft into a request, because the token has to
+                            // be FIRST and, in the family chat, has to sit
+                            // after one leading `@ai`.
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.s_ask_for_a_picture)) },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Brush, contentDescription = null)
+                                },
+                                onClick = {
+                                    attachMenuOpen = false
+                                    onAskForPicture()
+                                    focusRequester.requestFocus()
                                 },
                             )
                         }
@@ -4289,7 +5029,21 @@ private fun InputBar(
                         .weight(1f)
                         .heightIn(min = 44.dp)
                         .focusRequester(focusRequester)
-                        .contentReceiver(pasteReceiver),
+                        .contentReceiver(pasteReceiver)
+                        // Ctrl+Enter (or Cmd+Enter) sends from a hardware
+                        // keyboard; Enter alone keeps inserting a line
+                        // break, as it always has on a phone.
+                        .onPreviewKeyEvent { event ->
+                            if (event.type == KeyEventType.KeyDown &&
+                                event.key == Key.Enter &&
+                                (event.isCtrlPressed || event.isMetaPressed)
+                            ) {
+                                onSend()
+                                true
+                            } else {
+                                false
+                            }
+                        },
                     // M3's default content padding for an unlabelled field is
                     // 16.dp top and bottom, which is taller than the 44.dp
                     // buttons' own centring — so both icons sat visibly below
@@ -4359,6 +5113,7 @@ private fun InputBar(
                     )
                 }
             }
+        }
         }
     }
 }

@@ -47,6 +47,7 @@ struct MacConversationView: View {
     let chatID: Int64
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
+
     /// For `callsEnabled` — whether this server rings anybody at all.
     @Environment(AppSession.self) private var session
     @Environment(CallManager.self) private var calls
@@ -86,6 +87,10 @@ struct MacConversationView: View {
     @State private var staged: [StagedAttachment] = []
     /// The message being answered, while the composer is primed.
     @State private var replyDraft: ReplyToDTO?
+    /// What the message being replied to carries, looked up once per reply
+    /// target — the family composer's picture strip reads it
+    /// (`mentionPictureNotice`), and the phone's reason applies here too.
+    @State private var quotedAttachments: [AttachmentDTO] = []
     /// Live height of the composer, watched for the same reason the phone
     /// watches its input bar: the thread and the composer are siblings in
     /// one VStack, so anything that GROWS the composer — a reply banner, an
@@ -121,8 +126,15 @@ struct MacConversationView: View {
     /// True while the poll form is up. A sheet, sized in the view itself:
     /// a macOS sheet cannot be resized by the person using it.
     @State private var showPollComposer = false
+    /// Owned by the window rather than by a row, which scrolls away.
+    @State private var reportTarget: ReportTarget?
     /// One fix, on demand — never a running location service.
     @State private var locationProvider = LocationProvider()
+    /// A drag is over this window and would be accepted. Drawn, because a
+    /// drop target that gives no feedback is one nobody discovers: the
+    /// pointer says "copy" over every window on the Mac, so only the window
+    /// itself can say that THIS one will take it.
+    @State private var isDropTargeted = false
 
     /// What the composer is saying above the field.
     ///
@@ -188,6 +200,13 @@ struct MacConversationView: View {
     /// The row a quote jump just landed on, tinted briefly so the eye
     /// finds it in a wall of text — the phone's flag, same fade.
     @State private var highlightedMessageID: String?
+    /// Quote peeks, keyed by host + level. See MacMessageRow's props.
+    @State private var revealedQuoteIDs: Set<String> = []
+    /// Rows peeked at. Owned here rather than by a row for the reason the
+    /// quote peeks are: this thread renders a SLIDING SUFFIX that drops old
+    /// rows while the reader sits at the bottom, so per-row `@State` dies
+    /// in exactly the case the protocol names.
+    @State private var revealedMessageIDs: Set<String> = []
 
     /// The two ways a chat can open. The phone's twin.
     private enum OpenAnchor: Equatable {
@@ -256,10 +275,20 @@ struct MacConversationView: View {
 
     private var chat: ChatEntity? { chats.first }
 
+    /// The family chat draws no "seen" tick — the marker there is a max
+    /// over N members and means nobody. See `MessagePresentation.isRead`.
+    private var isFamilyChat: Bool { chat?.kind == "family" }
+
     /// Whether there is somebody to ring from here (docs/protocol.md,
     /// "Voice calls"): a direct chat, on a server that has calls on.
     private var canCall: Bool {
         session.callsEnabled && chat?.kind == "direct" && chat?.peerUserID != nil
+            // The blocker calling somebody they blocked is refused with
+            // `blocked`, so the button does not offer it. Defence in depth
+            // behind the direct-chat prune: if the prune landed this is
+            // unreachable, and if it did not this stops the one visible
+            // refusal.
+            && !(chat?.peerUserID.map { coordinator.blockedUserIDs.contains($0) } ?? false)
     }
 
     private func startCall() {
@@ -307,6 +336,34 @@ struct MacConversationView: View {
         // Narrower than this and a balloon has nowhere to go; the split
         // view honours it too, so the sidebar cannot squeeze the thread.
         .frame(minWidth: 420, minHeight: 320)
+        // Files dragged onto the window, which on a Mac is how people move
+        // a file into a conversation. The WHOLE window is the target — the
+        // thread and the composer both — because the composer is one line
+        // tall and a strip that thin is a target nobody hits.
+        //
+        // `for: URL.self` and not a wider type on purpose. It is the
+        // narrowest thing that catches a Finder drag, and it also settles
+        // the not-a-file cases by not matching them: dragging selected TEXT
+        // out of another app offers `public.utf8-plain-text` and no URL, so
+        // this modifier never highlights and never fires, and the drag
+        // springs back where it came from. What DOES match and is not a
+        // file is a link, and what matches and is not sendable is a folder
+        // — DroppedAttachment.decide settles both.
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .padding(2)
+                    // Feedback only; the drop is the window's, and a shape
+                    // that ate the pointer would be the drop target.
+                    .allowsHitTesting(false)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            drop(urls)
+        } isTargeted: { targeted in
+            isDropTargeted = targeted
+        }
         // ⌘V, and deliberately NOT a ⌘V keyboard shortcut on a button: a
         // shortcut would outrank the field editor and steal every ordinary
         // text paste. This reaches the view only when the responder chain
@@ -322,6 +379,20 @@ struct MacConversationView: View {
         // clipboard is the rule's answer, not this list's.
         .onPasteCommand(of: ClipboardAttachment.pasteCommandTypes) { _ in
             pasteFromClipboard()
+        }
+        .sheet(item: $reportTarget) { target in
+            ReportSheet(
+                target: target,
+                onSubmit: { reason in
+                    reportTarget = nil
+                    Task {
+                        await coordinator.report(
+                            reportedUserID: target.senderID,
+                            reason: reason.rawValue,
+                            messageID: target.messageID)
+                    }
+                },
+                onCancel: { reportTarget = nil })
         }
         .sheet(isPresented: $showPollComposer) {
             PollComposerView(
@@ -514,6 +585,9 @@ struct MacConversationView: View {
         let showsSenderName: Bool
         let isRunStart: Bool
         let isRunEnd: Bool
+        /// Computed here rather than at the call site: the row builder is
+        /// already a big enough expression for the type checker.
+        let isHiddenByBlock: Bool
         var id: String { message.localID }
     }
 
@@ -530,11 +604,16 @@ struct MacConversationView: View {
                     at: index,
                     in: section.messages,
                     isFamilyChat: isFamily,
-                    currentUserID: me),
+                    currentUserID: me,
+                    blockedUserIDs: coordinator.blockedUserIDs),
                 isRunStart: previous?.senderID != message.senderID,
                 // The last of a run carries the time, so a burst of four
                 // messages is stamped once rather than four times.
-                isRunEnd: next?.senderID != message.senderID)
+                isRunEnd: next?.senderID != message.senderID,
+                isHiddenByBlock: MessagePresentation.isHiddenByBlock(
+                    message,
+                    blockedUserIDs: coordinator.blockedUserIDs,
+                    currentUserID: me))
         }
     }
 
@@ -572,8 +651,10 @@ struct MacConversationView: View {
                                 senderName: senderName(for: row.message.senderID),
                                 nameFor: quoteAuthorName,
                                 avatarVersionFor: { avatarVersions[$0] ?? 0 },
-                                isStreaming: row.message.serverID.map {
-                                    coordinator.streamingMessageIDs.contains($0)
+                                isStreaming: coordinator.isAwaitingAssistant(
+                                    row.message, isAssistantChat: isAssistantChat),
+                                assistantFailed: row.message.serverID.map {
+                                    coordinator.assistantAnswerFailed(messageID: $0)
                                 } ?? false,
                                 isMine: row.isMine,
                                 showsSenderName: row.showsSenderName,
@@ -582,9 +663,32 @@ struct MacConversationView: View {
                                 isRunEnd: row.isRunEnd,
                                 isRead: MessagePresentation.isRead(
                                     row.message,
-                                    othersReadUpTo: chat?.othersReadUpTo ?? 0),
+                                    othersReadUpTo: chat?.othersReadUpTo ?? 0,
+                                    isFamilyChat: isFamilyChat),
                                 onReply: { beginReply(row.message) },
                                 onEdit: { beginEdit(row.message) },
+                                onReport: {
+                                    reportTarget = ReportTarget(
+                                        senderID: row.message.senderID,
+                                        senderName: senderName(for: row.message.senderID)
+                                            ?? String(localized: "Someone"),
+                                        messageID: row.message.serverID)
+                                },
+                                isHiddenByBlock: row.isHiddenByBlock,
+                                isRevealed: revealedMessageIDs.contains(row.message.localID),
+                                onReveal: {
+                                    revealedMessageIDs.insert(row.message.localID)
+                                },
+                                isReplyQuoteRevealed: revealedQuoteIDs.contains(
+                                    "\(row.message.localID)#reply"),
+                                isParentQuoteRevealed: revealedQuoteIDs.contains(
+                                    "\(row.message.localID)#parent"),
+                                onRevealQuote: { isReply in
+                                    revealedQuoteIDs.insert(
+                                        isReply
+                                            ? "\(row.message.localID)#reply"
+                                            : "\(row.message.localID)#parent")
+                                },
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
                                 onOpenAttachment: { attachment in
                                     if attachment.isFile {
@@ -601,6 +705,22 @@ struct MacConversationView: View {
                                             id: MacWindow.attachment,
                                             value: AttachmentAlbum(items: media, index: index))
                                     }
+                                },
+                                onAttachmentDragFailed: {
+                                    // The same strip a failed drop, a
+                                    // failed paste and a failed recording
+                                    // use, and the same words the viewer's
+                                    // Save… uses for the same three causes
+                                    // (offline, gone, swept) — which
+                                    // `localFileURL` cannot tell apart and
+                                    // neither can anybody reading this.
+                                    //
+                                    // It matters that this says ANYTHING: a
+                                    // thrown file promise just springs the
+                                    // drag back, which looks exactly like a
+                                    // drag that never took hold.
+                                    mediaNotice = .failed(
+                                        String(localized: "The file could not be downloaded."))
                                 },
                                 memberCount: familyMemberCount,
                                 onCallBack: canCall ? { startCall() } : nil)
@@ -724,6 +844,9 @@ struct MacConversationView: View {
                         description: Text("Say something to get started."))
                 }
             }
+            // A send for this chat failed. Whichever composer is on screen
+            // adopts it — including this one right after its own send
+            // failed, which is how the in-place restore happens now.
             .onChange(of: composerHeight) {
                 // The composer just grew or shrank into the thread. Re-pin,
                 // so the newest message stays above it — this is the phone's
@@ -979,6 +1102,19 @@ struct MacConversationView: View {
     private func jumpToMessage(_ serverID: Int64, proxy: ScrollViewProxy) {
         guard let index = messages.firstIndex(where: { $0.serverID == serverID }) else { return }
         let target = messages[index]
+        // BEFORE the widen, and the Mac's widen is the worse of the two:
+        // up to `maxWindow` non-lazy rows in one layout pass, the hang this
+        // file was rewritten to avoid. Jumping to a hidden row would also
+        // tint a thin placeholder for 1.6 seconds, pointing the eye at the
+        // thing the feature is hiding.
+        if MessagePresentation.isHiddenByBlock(
+            MessageSnapshot(target),
+            blockedUserIDs: coordinator.blockedUserIDs,
+            currentUserID: coordinator.currentUserID),
+            !revealedMessageIDs.contains(target.localID)
+        {
+            return
+        }
 
         let needed = messages.count - index + Self.jumpMargin
         // The window is a SUFFIX and the rows are non-lazy, so reaching a
@@ -1147,8 +1283,39 @@ struct MacConversationView: View {
             if !staged.isEmpty {
                 StagedAttachmentRow(items: staged) { discardStaged($0) }
             }
+            // Two strips, never both — the phone's arrangement: the
+            // assistant's own chat, and (#56) the family chat for a photo
+            // an `@ai` draft is about to carry.
+            if let notice = pictureNotice ?? mentionPictureNotice {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "eye")
+                    Text(notice)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
+                    // The Mac's answer to the phone's photo picker: its own
+                    // open panel, filtered to images and capped at the four
+                    // the model is shown (MacFilePicker.pickPictures).
+                    // Present only when BOTH locks are open — the operator
+                    // configured a deployment that can see, and this
+                    // family's owner turned `ai_vision` on — and absent
+                    // rather than disabled when they are not, because a
+                    // server without the deployment must show no surface at
+                    // all rather than one that lies (protocol.md,
+                    // "Pictures").
+                    if showsPictureAttach {
+                        Button {
+                            pickPictures()
+                        } label: {
+                            Label("Show the Assistant a Photo…", systemImage: "photo")
+                        }
+                    }
                     Button {
                         pickAttachment()
                     } label: {
@@ -1170,7 +1337,7 @@ struct MacConversationView: View {
                         Label("Paste", systemImage: "doc.on.clipboard")
                     }
                     Button {
-                        Task { await recorder.start() }
+                        Task { await startRecording() }
                     } label: {
                         Label("Record Audio", systemImage: "mic")
                     }
@@ -1222,6 +1389,20 @@ struct MacConversationView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Ask the assistant")
+                    .disabled(editTarget != nil)
+                }
+
+                if showsPictureRequest {
+                    Button {
+                        insertDrawToken()
+                    } label: {
+                        Image(systemName: "paintbrush")
+                            .font(.system(size: 15))
+                            .frame(width: composerControl, height: composerControl)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Ask for a picture")
                     .disabled(editTarget != nil)
                 }
 
@@ -1285,6 +1466,10 @@ struct MacConversationView: View {
         } action: { height in
             composerHeight = height
         }
+        // On the composer, which reads it — the phone's placement.
+        .onChange(of: replyDraft?.messageID, initial: true) { _, messageID in
+            quotedAttachments = quotedAttachmentList(for: messageID)
+        }
     }
 
     private var canSend: Bool {
@@ -1304,8 +1489,33 @@ struct MacConversationView: View {
     /// CoreLocation refuses without explaining itself.
     private func shareLocation() {
         guard !isSending else { return }
-        isSending = true
         Task {
+            // Permission is settled BEFORE `isSending`, which here disables
+            // the attach menu AND `canSend` — the Send button itself. A
+            // person reading the system alert would otherwise find the
+            // composer bricked for as long as they took over it, and the
+            // Mac's alert has no time limit at all. The phone does the same
+            // thing for the same reason (#41).
+            switch await locationProvider.requestPermission() {
+            case .allowed:
+                break
+            case .denied:
+                mediaNotice = .failed(String(
+                    localized:
+                        "Family needs permission to use your location. Turn it on in System Settings."
+                ))
+                return
+            case .unanswered:
+                // Nothing was taken and nothing is running: the menu item
+                // is still there and asking again is one click. On the Mac
+                // this is rare — the alert stays up until it is answered —
+                // and there is deliberately no "became active" hook here to
+                // manufacture it, because a cmd-tab would then declare
+                // silence over an alert still on screen.
+                return
+            }
+            guard !isSending else { return }
+            isSending = true
             defer { isSending = false }
             do {
                 let fix = try await locationProvider.currentFix()
@@ -1319,7 +1529,7 @@ struct MacConversationView: View {
                 draft = ""
                 replyDraft = nil
                 owesSendPin = true
-                let sent = await coordinator.sendLocation(
+                let queued = coordinator.sendLocation(
                     latitude: fix.latitude,
                     longitude: fix.longitude,
                     accuracyM: fix.accuracyM,
@@ -1327,7 +1537,7 @@ struct MacConversationView: View {
                     caption: caption,
                     replyTo: quote,
                     in: chatID)
-                if !sent {
+                if queued == nil {
                     // Through the guarded restore, like every other send
                     // here: a location fix can take twenty seconds, and
                     // assigning unconditionally would wipe whatever was
@@ -1336,6 +1546,9 @@ struct MacConversationView: View {
                     mediaNotice = .failed(String(localized: "Could not share your location."))
                 }
             } catch LocationProvider.Failure.denied {
+                // The prompt was settled above; reaching here means the
+                // permission was taken away in System Settings while the
+                // hunt was running.
                 mediaNotice = .failed(String(
                     localized:
                         "Family needs permission to use your location. Turn it on in System Settings."
@@ -1352,6 +1565,107 @@ struct MacConversationView: View {
     /// (docs/protocol.md, "Mentioning the assistant in the family chat").
     private var showsAssistantMention: Bool {
         chat?.kind == "family" && AppSettings.assistantUserID != nil
+    }
+
+    /// The assistant's own chat: two participants, so a message that is
+    /// not mine is its.
+    private var isAssistantChat: Bool { chat?.kind == "ai" }
+
+    /// Both locks, and only in the assistant's own chat — the phone's rule,
+    /// from the same two facts, so a family that turned pictures on cannot
+    /// find them on one device and not the other.
+    ///
+    /// Neither lock is consent for a particular photograph: that is the
+    /// third thing, and it is the member choosing this one in this panel
+    /// for this question (protocol.md, "Pictures").
+    private var showsPictureAttach: Bool {
+        AssistantSurfaces.offersPictureAttach(
+            isAssistantChat: isAssistantChat,
+            serverCanSee: AppSettings.assistantVision,
+            familyAllows: session.family?.aiVision == true)
+    }
+
+    /// The `/draw` affordance. No family switch, deliberately: what leaves
+    /// on such a request is the words after the token and nothing else.
+    private var showsPictureRequest: Bool {
+        isAssistantChat && AppSettings.offersPictureRequests
+    }
+
+    /// What the composer says out loud before a photograph goes — the
+    /// phone's sentences, because it is the same disclosure and a family
+    /// reading two different ones would reasonably wonder which is true.
+    private var pictureNotice: String? {
+        guard isAssistantChat else { return nil }
+        // EVERY staged photograph, before any bound — the phone's rule and
+        // the phone's reason (ConversationView.pictureNotice).
+        let photos = staged.filter { $0.prepared.kind == AttachmentDTO.Kind.photo }
+        guard !photos.isEmpty else { return nil }
+        guard showsPictureAttach else {
+            return String(localized: "The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it.")
+        }
+        let carried = AssistantPictureLimits.carried(
+            photos,
+            kind: { $0.prepared.kind },
+            mime: { $0.assistantWireMIME },
+            bytes: { $0.assistantWireBytes })
+        if carried.count < photos.count {
+            return String(localized: "A photo here is too large, or in a format the model can't read, so it will be told it's here but won't be shown it.")
+        }
+        if photos.count > AssistantPictureLimits.maxPerQuestion {
+            return String(localized: "The first \(AssistantPictureLimits.maxPerQuestion) photos go to the model your server is set up to use. The rest are named to it, not shown.")
+        }
+        return String(localized: "This goes to the model your server is set up to use, with your question. Nothing else from this chat does.")
+    }
+
+    /// The family composer's sentence for an `@ai` draft about to carry a
+    /// photo (#56) — the phone's rule, `MentionPictureNotice`, for the
+    /// phone's reason: one disclosure, one sentence, on both platforms.
+    /// With the owner's `ai_history_photos` on it also says that the chat's
+    /// most recent photos may go, "up to N", and shows for a bare `@ai`
+    /// draft (protocol.md, "Recent photos from the family chat").
+    private var mentionPictureNotice: String? {
+        guard isFamilyChat else { return nil }
+        return MentionPictureNotice.of(
+            draft: draft,
+            staged: staged.map(\.assistantPictureCandidate),
+            quoted: quotedAttachments.map(AssistantPictureCandidate.init(attachment:)),
+            serverCanSee: AppSettings.assistantVision,
+            familyAllows: session.family?.aiVision == true,
+            familyHistory: session.family?.aiHistory == true,
+            familyHistoryPhotos: session.family?.aiHistoryPhotos == true,
+            serverCanDraw: AppSettings.offersPictureRequests
+        )?.sentence
+    }
+
+    /// The attachments of the message a reply is primed on, from this
+    /// chat's own rows — `ReplyToDTO` carries an excerpt and nothing else.
+    private func quotedAttachmentList(for serverID: Int64?) -> [AttachmentDTO] {
+        guard let serverID else { return [] }
+        return messages.first { $0.serverID == serverID }?.attachmentList ?? []
+    }
+
+    /// The picture door: an image-only open panel, then the ordinary
+    /// ingestion path so the downscale, the ceiling and the cap all still
+    /// apply. Not a second staging path — that is the whole rule `ingest`
+    /// exists to keep.
+    private func pickPictures() {
+        ingest(MacFilePicker.pickPictures())
+    }
+
+    /// Put `/draw ` at the FRONT of the draft and put the caret back.
+    ///
+    /// At the front rather than appended, which is the one place this
+    /// differs from the mention button: the token is only a request when it
+    /// is the first thing in the body (protocol.md, "Pictures").
+    private func insertDrawToken() {
+        let token = AssistantMention.drawToken
+        guard !AssistantMention.asksForPicture(draft) else {
+            composerFocused = true
+            return
+        }
+        let rest = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft = rest.isEmpty ? "\(token) " : "\(token) \(rest)"
+        composerFocused = true
     }
 
     /// Put `@ai ` in the draft and put the caret back in the field.
@@ -1558,17 +1872,39 @@ struct MacConversationView: View {
 
     /// An open panel rather than PhotosPicker: on the Mac what people
     /// attach lives in the file system, and the same panel covers photos,
-    /// videos and documents alike. Multi-select since a message carries
-    /// up to ten; sequential preparation, because ten re-encodes at once
-    /// is how a machine stalls.
+    /// videos and documents alike. Multi-select since a message carries up
+    /// to ten. What happens to the chosen files is `ingest`'s, which is
+    /// also what a drop lands in.
     private func pickAttachment() {
-        let urls = MacFilePicker.pickMany()
+        ingest(MacFilePicker.pickMany())
+    }
+
+    /// THE file-ingestion path on this window: prepare each file and stage
+    /// it, in order, one at a time.
+    ///
+    /// Extracted so the drop destination cannot become a second one. That
+    /// is the whole risk in adding drag and drop — a parallel path that
+    /// skips the 100 MB ceiling, or the photo downscale, or the animated-GIF
+    /// rule, or the ten-per-message cap, and then differs from the attach
+    /// panel in ways nobody notices until a send fails. Every one of those
+    /// lives below `MediaPrep.prepare(fileAt:)` and `stage`, so both doors
+    /// inherit all of them by construction.
+    ///
+    /// Sequential, because ten re-encodes at once is how a machine stalls.
+    private func ingest(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         mediaNotice = .busy(String(localized: "Preparing…"))
         Task {
             for url in urls {
                 do {
-                    stage(try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit))
+                    // Stop at the cap instead of preparing the rest and
+                    // throwing them away: `stage` refuses past ten and says
+                    // so, and a drop of twenty videos would otherwise spend
+                    // minutes re-encoding ten it is about to delete. The cap
+                    // and its notice stay `stage`'s — this only asks whether
+                    // the last one landed.
+                    guard stage(try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit))
+                    else { break }
                 } catch MediaPrep.PrepError.tooLargeAfterCompression {
                     mediaNotice = .failed(String(localized: "That file is over the 100 MB limit."))
                 } catch {
@@ -1578,11 +1914,76 @@ struct MacConversationView: View {
         }
     }
 
+    /// Something was dropped on the window. True when this view took it.
+    ///
+    /// The rule is `DroppedAttachment.decide` and lives outside this view so
+    /// it can be tested; this is only the doing.
+    ///
+    /// THE SANDBOX: a dropped file needs no entitlement this app is missing.
+    /// `com.apple.security.files.user-selected.read-write` is already in
+    /// FamilyConnect-macOS.entitlements (widened from read-only on
+    /// 2026-08-31 for the viewer's Save a copy) and read-write subsumes the
+    /// read a drop needs — a drag is a user-selection gesture like the open
+    /// panel, and AppKit hands the pasteboard's sandbox extension over with
+    /// the URL. Security-scoping is handled where it always was: both
+    /// `MediaPrep.prepareFile` and `prepareAudio` bracket their copy in
+    /// start/stopAccessingSecurityScopedResource, and the photo branch of
+    /// `prepare(fileAt:)` brackets its read. Those calls are correct for a
+    /// dragged URL without knowing it is one — `startAccessing…` returns
+    /// false for a panel or drag URL and true for a bookmark, and the guard
+    /// on the Bool is what makes both right.
+    private func drop(_ urls: [URL]) -> Bool {
+        guard !composerIsBusy else {
+            mediaNotice = .failed(composerBusyNotice)
+            return false
+        }
+        switch DroppedAttachment.decide(urls, isDirectory: isDirectory) {
+        case .attach(let files):
+            ingest(files)
+            return true
+        case .link(let links):
+            // Nothing to attach — the bytes are on somebody else's server —
+            // so it goes where the clipboard already sends a link: into the
+            // draft, as words, through the one appender that knows the
+            // 4000-character ceiling. Nothing is sent; it sits in the field
+            // to be edited or deleted.
+            appendToDraft(links.map(\.absoluteString).joined(separator: "\n"))
+            return true
+        case .nothing:
+            // A folder, or a bundle, or an empty drop. Refusing it is the
+            // answer AND the feedback: the drag springs back to where it
+            // came from, which is what every Mac app does with something it
+            // cannot take, and is more honest than a notice under a
+            // composer the person was not looking at.
+            return false
+        }
+    }
+
+    /// The one piece of file-system IO the drop rule needs, done here
+    /// because here is where the drag's sandbox grant applies.
+    ///
+    /// Unreadable counts as a directory — i.e. as "not something to
+    /// attach". A URL this cannot even probe is one `MediaPrep` could not
+    /// have read either, and refusing it springs the drag back instead of
+    /// staging something that fails later.
+    private func isDirectory(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? true
+    }
+
     /// The guard every attachment door carries: the composer is borrowed
     /// for an edit, or a send is already running. Named once so the menu,
     /// the paste command and the rule's `busy` branch cannot drift apart.
     private var composerIsBusy: Bool {
         editTarget != nil || isSending
+    }
+
+    /// WHICH busy it is, because the two have different ways out. Said by
+    /// the paste door and the drop door from one place, so a person who
+    /// drops a file mid-upload reads the same sentence as one who pastes.
+    private var composerBusyNotice: String {
+        editTarget != nil
+            ? String(localized: "Finish editing before attaching something.")
+            : String(localized: "Wait until the current attachment is done.")
     }
 
     /// EVERY paste door on this window, and the only one.
@@ -1600,10 +2001,7 @@ struct MacConversationView: View {
         case .type:
             pasteText()
         case .busy:
-            // Which busy it is, because the two have different ways out.
-            mediaNotice = .failed(editTarget != nil
-                ? String(localized: "Finish editing before attaching something.")
-                : String(localized: "Wait until the current attachment is done."))
+            mediaNotice = .failed(composerBusyNotice)
         case .nothing:
             mediaNotice = .failed(String(localized: "There's nothing to paste."))
         }
@@ -1629,6 +2027,17 @@ struct MacConversationView: View {
             mediaNotice = .failed(String(localized: "There's nothing to paste."))
             return
         }
+        appendToDraft(text)
+    }
+
+    /// Words onto the end of the draft, against the protocol's ceiling.
+    ///
+    /// Shared by the paste door and by a dropped link, so both refuse at the
+    /// same 4000 characters with the same sentence. The wording still says
+    /// "pasted" for the truncation case: a dropped link is a handful of
+    /// characters and can only hit it against a draft that was already
+    /// nearly full, which is the paste story anyway.
+    private func appendToDraft(_ text: String) {
         switch ComposerText.appending(text, to: draft) {
         case .appended(let updated):
             draft = updated
@@ -1700,16 +2109,24 @@ struct MacConversationView: View {
     /// already staged — up to the protocol's ten per message. At the cap
     /// the pick is refused with a dismissible notice and the prepared
     /// file cleaned up, because nothing else owns it now.
-    private func stage(_ prepared: MediaPrep.Prepared) {
+    ///
+    /// Returns whether it took the item, which is how a BATCH door — the
+    /// attach panel, a drop, a share import — knows to stop rather than
+    /// prepare nine more it would only delete. Discardable, because the
+    /// single-item doors (paste, the recorder) have nothing to do with the
+    /// answer: the notice has already been shown.
+    @discardableResult
+    private func stage(_ prepared: MediaPrep.Prepared) -> Bool {
         guard StagedAttachment.canAdd(to: staged.count) else {
             try? FileManager.default.removeItem(at: prepared.fileURL)
             mediaNotice = .failed(String(
                 localized: "You can attach up to \(StagedAttachment.maxPerMessage) items."))
-            return
+            return false
         }
         mediaNotice = nil
         staged.append(StagedAttachment(prepared: prepared))
         composerFocused = true
+        return true
     }
 
     /// Throw away ONE staged item and its temp file.
@@ -1737,53 +2154,46 @@ struct MacConversationView: View {
         draft = ""
         replyDraft = nil
         staged = []
-        mediaNotice = .busy(String(localized: "Sending…"))
-        // A media send IS a send: `composerIsBusy` and `canSend` read
-        // this, so the attach menu, the paste door and a second Send
-        // stay closed until the upload resolves — the same gate the
-        // phone keys on its `.uploading` state. The notice alone gates
-        // nothing, which is right: a download's `.busy` notice must
-        // leave the composer usable.
-        isSending = true
         // Declared at the door, because that is the only moment this is
         // knowable without guessing (see `owesSendPin`).
         owesSendPin = true
-        Task {
-            defer { isSending = false }
-            let sent = await coordinator.sendMedia(
-                items.map(\.prepared),
-                caption: caption,
-                replyTo: quote,
-                in: chatID,
-                onItemStart: { index, total in
-                    // The same line that already says "Sending…" carries
-                    // the count once there is more than one to count.
-                    guard total > 1 else { return }
-                    mediaNotice = .busy(
-                        String(localized: "Uploading \(index) of \(total)…"))
-                })
-            if sent {
-                mediaNotice = nil
-            } else {
-                mediaNotice = .failed(String(localized: "Couldn't send that."))
-                // Through the guarded restore, which is also what disarms
-                // the pin: no row is coming, and one left armed would yank
-                // the next reader out of history for somebody else's
-                // message.
-                restoreComposer(caption: caption, quote: quote)
-                // Put the attachments back too — ALL of them: `sendMedia`
-                // consumes the temp files only on whole-send success, so
-                // after a failure every file is still on disk and the
-                // retry offers exactly the set that was composed; ids
-                // uploaded but never claimed are left to the server's 24h
-                // sweep of unclaimed attachments.
-                staged = items + staged
-            }
+        // Nothing is awaited and nothing can be lost: the coordinator
+        // writes the message row and the item rows — and moves the files
+        // somewhere the system will not reclaim — before the first byte
+        // goes out. That matters more here than on the phone, where
+        // `.id(selectedChatID)` replaces this view the moment the reader
+        // clicks another chat, and an upload started here routinely
+        // outlived it. A failure is now a red bubble with tap-to-retry.
+        if coordinator.sendMedia(
+            items.map(\.prepared),
+            caption: caption,
+            replyTo: quote,
+            in: chatID) == nil
+        {
+            // Only when not one item could be staged.
+            restoreComposer(caption: caption, quote: quote)
+            owesSendPin = false
+            mediaNotice = .failed(String(localized: "Couldn't send that."))
+        } else {
+            mediaNotice = nil
         }
     }
 
     /// Put the composer back when the send never happened — but never over
     /// something typed in the meantime.
+    /// Start a voice note, and say so if it does not start. Same reasoning
+    /// as the phone: the recorder recorded its failure and nobody read it,
+    /// so a denied microphone made this button silently inert.
+    ///
+    /// The Settings sentence differs by platform — a Mac has no Settings
+    /// app — so it names System Settings and where the switch lives.
+    private func startRecording() async {
+        await recorder.start()
+        if let failure = recorder.failure {
+            mediaNotice = .failed(AudioRecorder.message(for: failure))
+        }
+    }
+
     private func restoreComposer(caption: String, quote: ReplyToDTO?) {
         if draft.isEmpty { draft = caption }
         if replyDraft == nil { replyDraft = quote }

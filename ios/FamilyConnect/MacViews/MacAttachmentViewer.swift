@@ -31,7 +31,13 @@ struct MacAttachmentViewer: View {
 
     /// 1 = the whole picture fits the window. Above that it is scrollable.
     @State private var zoom: CGFloat = 1
+    /// Where the last pinch ended: a MagnifyGesture's magnification is
+    /// relative to the pinch's start, so used as the zoom itself every
+    /// pinch snapped the picture back to 1x before growing again.
+    @State private var pinchBase: CGFloat = 1
     @State private var busy = false
+    /// Set when a save fails, so the refusal is visible rather than silent.
+    @State private var saveFailure: String?
 
     init(album: AttachmentAlbum) {
         _album = State(initialValue: album)
@@ -55,6 +61,13 @@ struct MacAttachmentViewer: View {
             .id(attachment.id)
             .frame(minWidth: 480, minHeight: 360)
             .navigationTitle(title)
+            .alert("Couldn't save that file",
+                   isPresented: Binding(get: { saveFailure != nil },
+                                        set: { if !$0 { saveFailure = nil } })) {
+                Button("OK", role: .cancel) { saveFailure = nil }
+            } message: {
+                if let saveFailure { Text(saveFailure) }
+            }
             .toolbar {
                 ToolbarItem {
                     if busy { ProgressView().controlSize(.small) }
@@ -130,10 +143,12 @@ struct MacAttachmentViewer: View {
                             height: geometry.size.height * zoom)
                         .gesture(
                             MagnifyGesture()
-                                .onChanged { zoom = min(max($0.magnification, 1), 6) })
+                                .onChanged { zoom = min(max(pinchBase * $0.magnification, 1), 6) }
+                                .onEnded { _ in pinchBase = zoom })
                         .onTapGesture(count: 2) {
                             withAnimation(.easeOut(duration: 0.15)) {
                                 zoom = zoom > 1 ? 1 : 2
+                                pinchBase = zoom
                             }
                         }
                 }
@@ -156,15 +171,32 @@ struct MacAttachmentViewer: View {
         Task {
             busy = true
             defer { busy = false }
-            guard let source = await coordinator.localFileURL(for: attachment) else { return }
+            guard let source = await coordinator.localFileURL(for: attachment) else {
+                // The other way this button goes dead: no bytes to copy,
+                // because the fetch failed or the server has nothing. Say
+                // so rather than returning into silence.
+                saveFailure = String(localized: "The file could not be downloaded.")
+                return
+            }
             let panel = NSSavePanel()
             panel.nameFieldStringValue = attachment.name
                 ?? ChatSyncCoordinator.fallbackName(for: attachment)
             guard panel.runModal() == .OK, let destination = panel.url else { return }
-            // Replace rather than fail: the panel already asked about
-            // overwriting, and the person said yes.
-            try? FileManager.default.removeItem(at: destination)
-            try? FileManager.default.copyItem(at: source, to: destination)
+            do {
+                // Replace rather than fail: the panel already asked about
+                // overwriting, and the person said yes. A missing file is
+                // the normal case, so only a real removal failure counts.
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: source, to: destination)
+            } catch {
+                // Never swallow this. Both calls used to be `try?`, so when
+                // the sandbox refused the write the button did nothing and
+                // said nothing — the failure looked exactly like a click
+                // that had not registered.
+                saveFailure = error.localizedDescription
+            }
         }
     }
 
@@ -227,32 +259,31 @@ private struct MacVideoPlayer: View {
     let attachment: AttachmentDTO
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
-    @State private var player: AVPlayer?
+    /// Same loader as the iOS page, for the same reason: the stream URL
+    /// comes from the API actor, so building the player suspends. This
+    /// view has only ONE reason to start (it appears), so it cannot
+    /// double-start the way the iOS pager can — but the other half of the
+    /// problem is entirely real here. The viewer is keyed by attachment,
+    /// so a fast arrow-key page turn or closing the window tears this down
+    /// while the load is suspended, and the load must be abandoned rather
+    /// than hand a playing player to a window that has gone. Keeping the
+    /// two platforms on one loader is also how this stays fixed: only the
+    /// macOS build compiles this file.
+    @State private var stream = AttachmentStreamPlayer()
 
     var body: some View {
         Group {
-            if let player {
+            if let player = stream.player {
                 MacPlayerSurface(player: player)
             } else {
                 ProgressView()
             }
         }
         .onAppear {
-            guard player == nil,
-                  let stream = coordinator.api.attachmentStreamURL(id: attachment.id)
-            else { return }
-            // AVURLAsset again: AVPlayer(url:) sends no Authorization
-            // header, and every byte-range request needs one.
-            let asset = AVURLAsset(
-                url: stream.url,
-                options: ["AVURLAssetHTTPHeaderFieldsKey": stream.headers])
-            let created = AVPlayer(playerItem: AVPlayerItem(asset: asset))
-            created.play()
-            player = created
+            stream.start(attachment: attachment.id, from: coordinator.api)
         }
         .onDisappear {
-            player?.pause()
-            player = nil
+            stream.stop()
         }
     }
 }

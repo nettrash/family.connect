@@ -53,6 +53,7 @@ struct EditSyncTests {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            PendingMediaItemEntity.self,
             configurations: configuration)
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!,
@@ -72,12 +73,14 @@ struct EditSyncTests {
         body: String,
         editSeq: Int64? = nil,
         editedAt: Date? = nil,
-        replyTo: ReplyToDTO? = nil
+        replyTo: ReplyToDTO? = nil,
+        attachments: [AttachmentDTO]? = nil
     ) -> MessageDTO {
         MessageDTO(
             id: id, chatID: 42, senderID: 9, clientMsgID: nil,
             body: body, createdAt: Self.serverDate,
-            replyTo: replyTo, editedAt: editedAt, editSeq: editSeq)
+            replyTo: replyTo, editedAt: editedAt, editSeq: editSeq,
+            attachments: attachments)
     }
 
     // MARK: - The guard
@@ -218,4 +221,110 @@ struct EditSyncTests {
 
         #expect(harness.chat(42)?.unreadCount == before)
     }
+    // MARK: - The one edit that changes more than the body
+
+    /// The generated picture, arriving the only way it can.
+    ///
+    /// A `message_edited` may ADD attachments to a message that had none,
+    /// and the assistant's own reply is the only message for which it ever
+    /// does (docs/protocol.md, "Editing" and "How a picture comes back").
+    /// So the whole `Message` is applied, not the body alone — which is the
+    /// rule this feed has always carried whole objects FOR, and the reason
+    /// protocol.md states it generally rather than only under "Pictures".
+    ///
+    /// A client that merged only the body is not broken by it — the
+    /// attachment is on the row, so its next history page or cold start
+    /// draws the picture — but late is not the same as live, and a bubble
+    /// that fills in a minute after the answer arrived reads as a bug.
+    @Test("an edit that adds an attachment puts the picture on the row")
+    func editAddsTheGeneratedPicture() throws {
+        let harness = try makeHarness(host: "edit-adds-picture.test")
+        defer { harness.tearDown() }
+
+        // Step 2 of the answer: an EMPTY row, stored and fanned out so a
+        // bubble appears at once.
+        harness.coordinator.handle(frame: .message(dto(id: 1339, body: "")))
+        #expect(harness.message(serverID: 1339)?.attachmentList.isEmpty == true)
+
+        // Step 4: the picture lands as an ordinary photo attachment on that
+        // same message, under a real edit_seq. The body STAYS EMPTY — a
+        // photo needs no caption, and the member's own words handed back to
+        // them are not one.
+        harness.coordinator.handle(frame: .messageEdited(
+            dto(id: 1339, body: "", editSeq: 12, editedAt: Self.editDate,
+                attachments: [Self.generatedPicture])))
+
+        let row = try #require(harness.message(serverID: 1339))
+        #expect(row.body.isEmpty)
+        #expect(row.editSeq == 12)
+        let drawn = row.attachmentList
+        #expect(drawn.count == 1)
+        #expect(drawn.first?.id == 77)
+        #expect(drawn.first?.kind == AttachmentDTO.Kind.photo)
+        // No preview: the server generates none, here as everywhere, so
+        // clients draw it from its full bytes.
+        #expect(drawn.first?.hasPreview == false)
+    }
+
+    /// The same picture, reached the other way: a device that was asleep
+    /// for the whole answer and catches up through `GET /chats/{id}/edits`.
+    /// That path applies each row through the ordinary upsert, so it must
+    /// gain the attachment too — "late, not lost" is only true if the late
+    /// path actually carries it.
+    @Test("the edits catch-up carries the picture too")
+    func catchUpCarriesThePicture() throws {
+        let harness = try makeHarness(host: "edit-catchup-picture.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.handle(frame: .message(dto(id: 1339, body: "")))
+        _ = harness.coordinator.upsert(
+            dto(id: 1339, body: "", editSeq: 12, editedAt: Self.editDate,
+                attachments: [Self.generatedPicture]),
+            bumpUnread: false)
+
+        #expect(harness.message(serverID: 1339)?.attachmentList.count == 1)
+    }
+
+    /// The guard that keeps the other direction safe: a history page
+    /// fetched BEFORE the picture landed, delivered after it, carries no
+    /// attachments — and an absent field must never wipe stored state.
+    /// Without this rule the bubble would flicker the picture away on the
+    /// next resync.
+    @Test("a page that predates the picture does not wipe it")
+    func stalePageKeepsThePicture() throws {
+        let harness = try makeHarness(host: "edit-picture-stale.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.handle(frame: .message(dto(id: 1339, body: "")))
+        harness.coordinator.handle(frame: .messageEdited(
+            dto(id: 1339, body: "", editSeq: 12, editedAt: Self.editDate,
+                attachments: [Self.generatedPicture])))
+        // The stale copy: the empty row as it looked before the edit.
+        _ = harness.coordinator.upsert(dto(id: 1339, body: ""), bumpUnread: false)
+
+        #expect(harness.message(serverID: 1339)?.attachmentList.count == 1)
+    }
+
+    /// The chat list has to catch up with the answer as well, or the row
+    /// keeps saying the assistant sent an empty message.
+    @Test("the chat-list preview follows the picture in")
+    func previewFollowsThePicture() throws {
+        let harness = try makeHarness(host: "edit-picture-preview.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.handle(frame: .message(dto(id: 1339, body: "")))
+        harness.coordinator.handle(frame: .messageEdited(
+            dto(id: 1339, body: "", editSeq: 12, editedAt: Self.editDate,
+                attachments: [Self.generatedPicture])))
+
+        #expect(harness.chat(42)?.lastMessagePreview == "Photo")
+    }
+
+    /// The picture the assistant made: an ordinary photo attachment in
+    /// every respect but one — it carries no preview, because the server
+    /// generates none, so a client draws it from its full bytes.
+    private static let generatedPicture = AttachmentDTO(
+        id: 77, kind: AttachmentDTO.Kind.photo, mime: "image/png", size: 480_000,
+        width: 1024, height: 1024, durationMS: nil, hasPreview: false, name: nil,
+        latitude: nil, longitude: nil, accuracyM: nil)
 }

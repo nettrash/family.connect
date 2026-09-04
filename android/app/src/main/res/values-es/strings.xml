@@ -22,6 +22,14 @@
     <string name="s_copy_invite_code">Copiar código de invitación</string>
     <string name="s_create">Crear</string>
     <string name="s_create_a_family">Crear una familia</string>
+    <string name="s_no_new_families_title">Este servidor no acepta familias nuevas.</string>
+    <string name="s_no_new_families_body">Family Connect está pensado para una familia en su propio servidor. Para empezar la tuya, pon en marcha tu propio servidor e invita a todos desde allí.</string>
+    <string name="s_run_your_own_server">Cómo poner en marcha tu propio servidor</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="one">Una cuenta que no se una a una familia en %1$d día se elimina de este servidor.</item>
+        <item quantity="many">Una cuenta que no se una a una familia en %1$d días se elimina de este servidor.</item>
+        <item quantity="other">Una cuenta que no se una a una familia en %1$d días se elimina de este servidor.</item>
+    </plurals>
     <string name="s_current_password">Contraseña actual</string>
     <string name="s_delete">Eliminar</string>
     <string name="s_delete_this_note">¿Eliminar esta nota?</string>
@@ -61,7 +69,7 @@
     <string name="s_no_other_family_members_yet_share_the_invite_code_first">Todavía no hay más miembros: comparte primero el código de invitación.</string>
     <string name="s_no_pending_requests">Sin solicitudes pendientes</string>
     <string name="s_note">Nota</string>
-    <string name="s_open">Abrir</string>
+    <string name="s_open">Abierta</string>
     <string name="s_open_link">Abrir enlace</string>
     <string name="s_password">Contraseña</string>
     <string name="s_video">Vídeo</string>
@@ -70,6 +78,8 @@
     <string name="s_n_of_m">%1$d de %2$d</string>
     <string name="s_photo_or_video">Foto o vídeo</string>
     <string name="s_privacy">Privacidad</string>
+    <string name="s_privacy_policy">Política de privacidad</string>
+    <string name="s_support">Soporte</string>
     <string name="s_react">Reaccionar</string>
     <string name="s_register">Registrarse</string>
     <string name="s_remove">Quitar</string>
@@ -279,7 +289,6 @@
     <string name="s_flip_camera">Cambiar de cámara</string>
     <string name="e_camera_permission">Family necesita permiso para usar la cámara.</string>
     <string name="s_video_calls_are_off_on_this_server">Las videollamadas están desactivadas en este servidor</string>
-    <string name="s_uploading_n_of_m">Subiendo %1$d de %2$d…</string>
     <string name="e_attachment_limit">Un mensaje puede llevar como máximo %1$d adjuntos.</string>
     <string name="s_share_choose_chat">Compartir en…</string>
     <string name="s_shared_with_family">Compartido con Family</string>
@@ -342,4 +351,129 @@
         <item quantity="many">Usa al menos %1$d caracteres.</item>
         <item quantity="other">Usa al menos %1$d caracteres.</item>
     </plurals>
+    <string name="e_leave_failed">No se pudo salir ahora mismo. Inténtalo de nuevo.</string>
+    <string name="s_leave_family_explanation_owner">%1$s pasa a ser el propietario. Perderás el acceso al chat familiar y a tus chats directos; tu historial vuelve si te unes de nuevo.</string>
+    <string name="s_leave_family_explanation_last">Eres el único miembro que queda. Si te vas, se eliminarán la familia y todo su contenido.</string>
+    <string name="s_ownership_passed_on">Propiedad transferida</string>
+    <string name="s_ownership_passed_to">%1$s es ahora el propietario de la familia.</string>
+    <string name="s_hidden_blocked_member">Oculto: miembro bloqueado</string>
+    <string name="s_replying_to_hidden">Respondiendo a un mensaje oculto</string>
+    <string name="s_which_replied_to_hidden">que respondía a un mensaje oculto</string>
+    <string name="s_report">Denunciar</string>
+    <string name="s_report_ellipsis">Denunciar…</string>
+    <string name="s_block">Bloquear</string>
+    <string name="s_unblock">Desbloquear</string>
+    <string name="s_report_member_title">¿Por qué denuncias a %1$s?</string>
+    <string name="s_report_reason_spam">Spam</string>
+    <string name="s_report_reason_harassment">Acoso</string>
+    <string name="s_report_reason_inappropriate">Contenido inapropiado</string>
+    <string name="s_report_reason_other">Otra cosa</string>
+    <string name="s_report_disclosure">El propietario de tu familia verá esta denuncia, tu nombre y el texto del mensaje.</string>
+    <string name="e_block_failed">No se pudo cambiar ahora mismo. Inténtalo de nuevo.</string>
+    <string name="e_report_failed">No se pudo enviar la denuncia. Inténtalo de nuevo.</string>
+    <string name="s_hidden_note_from_blocked">Nota oculta de un miembro bloqueado</string>
+    <string name="s_closed">Cerrada</string>
+    <string name="s_join_closed_caption">El código de invitación deja de funcionar: nadie nuevo puede unirse. Las solicitudes en espera no se ven afectadas y aún puedes aprobarlas.</string>
+    <string name="s_member_limit">Límite de miembros</string>
+    <string name="s_limit_members">Limitar miembros</string>
+    <string name="s_most_members">Máximo de miembros</string>
+    <string name="s_member_limit_none">Sin límite propio. Este servidor permite hasta %1$d miembros en una familia.</string>
+    <string name="s_member_limit_frozen">Ahora hay %1$d miembros. Nadie nuevo puede unirse hasta que alguien se vaya; no se expulsa a nadie.</string>
+    <string name="s_member_limit_room">%1$d de %2$d plazas ocupadas.</string>
+    <string name="s_decrease">Reducir</string>
+    <string name="s_increase">Aumentar</string>
+    <string name="e_member_limit_failed">No se pudo cambiar el límite de miembros. Inténtalo de nuevo.</string>
+    <string name="e_family_full_approve">La familia está llena. Aumenta el límite de miembros o espera a que alguien se vaya: la solicitud sigue en espera.</string>
+    <string name="e_family_full_join">Esa familia está llena ahora mismo. Pídeles que hagan sitio y vuelve a probar el código.</string>
+    <string name="s_reports">Denuncias</string>
+    <string name="s_reported_by">%1$s denunció a %2$s</string>
+    <string name="s_mark_as_handled">Marcar como resuelto</string>
+    <string name="e_resolve_report_failed">No se pudo marcar como resuelto. Inténtalo de nuevo.</string>
+    <string name="s_if_the_problem_is_the_owner">Si el problema es el propietario</string>
+    <string name="s_operator_published_contact">El operador de este servidor publicó este contacto.</string>
+    <string name="s_report_disclosure_person">Se informará al propietario de tu familia de que has denunciado a este miembro.</string>
+    <string name="s_reports_empty">Los miembros pueden denunciarte un mensaje o una persona.</string>
+    <string name="s_safety">Seguridad</string>
+    <string name="s_safety_for">Opciones de seguridad para %1$s</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">Mostrar una foto al asistente</string>
+    <string name="s_show_the_assistant_a_picture_note">Sale de este servidor hacia el modelo con el que habla</string>
+    <string name="s_ask_for_a_picture">Pedir una imagen</string>
+    <string name="s_assistant_sees_this_picture">Al asistente se le mostrará esta foto. Sale de este servidor hacia el modelo con el que habla.</string>
+    <string name="s_assistant_sees_these_pictures">Al asistente se le mostrarán estas fotos. Salen de este servidor hacia el modelo con el que habla.</string>
+    <string name="s_assistant_picture_extra_left_out">Solo las %1$d primeras van con una pregunta; el resto se queda aquí.</string>
+    <string name="s_assistant_picture_others_left_out">Los vídeos, archivos, audios y ubicaciones nunca se le envían.</string>
+    <string name="s_assistant_picture_unreadable_left_out">Una foto demasiado grande, o en un formato que el modelo no puede leer, se le menciona en lugar de mostrársela.</string>
+    <string name="s_assistant_will_not_see_picture">Al asistente no se le mostrará esta foto. Se envía como un adjunto normal.</string>
+    <string name="s_assistant_mention_sees_this_picture">Este mensaje menciona al asistente, así que se le mostrará esta foto. Sale de este servidor hacia el modelo con el que habla; ninguna otra foto de este chat lo hace.</string>
+    <string name="s_assistant_mention_sees_these_pictures">Este mensaje menciona al asistente, así que se le mostrarán estas fotos. Salen de este servidor hacia el modelo con el que habla; ninguna otra foto de este chat lo hace.</string>
+    <string name="s_assistant_mention_sees_quoted_picture">Esta respuesta menciona al asistente, así que se le mostrará la foto a la que respondes. Sale de este servidor hacia el modelo con el que habla; ninguna otra foto de este chat lo hace.</string>
+    <string name="s_assistant_mention_sees_quoted_pictures">Esta respuesta menciona al asistente, así que se le mostrarán las fotos a las que respondes. Salen de este servidor hacia el modelo con el que habla; ninguna otra foto de este chat lo hace.</string>
+    <string name="s_assistant_mention_sees_both">Esta respuesta menciona al asistente, así que se le mostrarán las fotos de aquí y aquellas a las que respondes. Salen de este servidor hacia el modelo con el que habla; ninguna otra foto de este chat lo hace.</string>
+    <string name="s_assistant_mention_extra_left_out">Solo las primeras %1$d van con un mensaje: primero las que lleva, luego aquellas a las que respondes; el resto se queda aquí.</string>
+    <string name="s_assistant_mention_sees_recent_only">Este mensaje menciona al asistente, así que hasta %1$d de las fotos más recientes de este chat van con él: imágenes que nadie le ha señalado, las haya enviado quien las haya enviado. Salen de este servidor hacia el modelo con el que habla.</string>
+    <string name="s_assistant_mention_sees_this_picture_and_recent">Este mensaje menciona al asistente, así que se le mostrará esta foto, y hasta %1$d de las fotos más recientes de este chat pueden ir también. Salen de este servidor hacia el modelo con el que habla.</string>
+    <string name="s_assistant_mention_sees_these_pictures_and_recent">Este mensaje menciona al asistente, así que se le mostrarán estas fotos, y hasta %1$d de las fotos más recientes de este chat pueden ir también. Salen de este servidor hacia el modelo con el que habla.</string>
+    <string name="s_assistant_mention_sees_quoted_picture_and_recent">Esta respuesta menciona al asistente, así que se le mostrará la foto a la que respondes, y hasta %1$d de las fotos más recientes de este chat pueden ir también. Salen de este servidor hacia el modelo con el que habla.</string>
+    <string name="s_assistant_mention_sees_quoted_pictures_and_recent">Esta respuesta menciona al asistente, así que se le mostrarán las fotos a las que respondes, y hasta %1$d de las fotos más recientes de este chat pueden ir también. Salen de este servidor hacia el modelo con el que habla.</string>
+    <string name="s_assistant_mention_sees_both_and_recent">Esta respuesta menciona al asistente, así que se le mostrarán las fotos de aquí y aquellas a las que respondes, y hasta %1$d de las fotos más recientes de este chat pueden ir también. Salen de este servidor hacia el modelo con el que habla.</string>
+    <string name="s_assistant_answer_failed">El asistente no pudo terminar esta respuesta. Vuelve a preguntar.</string>
+    <string name="s_assistant_vision">El asistente puede mirar fotos</string>
+    <string name="s_assistant_vision_explanation">Cuando alguien adjunta una foto a una pregunta en su propio chat con el asistente, la adjunta a un mensaje que menciona al asistente en el chat familiar, o responde a una foto mencionándolo, esa foto se envía al modelo junto con la pregunta: como máximo 4 por pregunta. Una foto que nadie le haya señalado al asistente nunca se envía, ni siquiera desde un mensaje anterior salvo que «El asistente ve las fotos recientes» esté activado, y tampoco los vídeos, archivos, audios ni ubicaciones. Desactivado salvo que lo actives; desactivado, no se envía ninguna foto.</string>
+    <string name="e_change_assistant_vision_failed">No se pudo cambiar ese ajuste</string>
+    <string name="s_assistant_history_photos">El asistente ve las fotos recientes</string>
+    <string name="s_assistant_history_photos_explanation">Cuando alguien menciona al asistente en el chat familiar, las fotos más recientes de ese chat —hasta 4, de cualquiera, que nadie le haya señalado al asistente— también se envían al modelo con la pregunta, después de las fotos del propio mensaje o del mensaje al que responde. Casi cada mención envía entonces imágenes, y eso cuesta más. Requiere «El asistente puede mirar fotos» y «El asistente ve el historial reciente»; desactivado salvo que lo actives.</string>
+    <string name="s_assistant_history_photos_no_deployment">No disponible aquí: el asistente de este servidor no puede mirar imágenes.</string>
+    <string name="s_assistant_history_photos_needs_vision">Activa primero «El asistente puede mirar fotos»: el servidor rechaza esto mientras eso esté desactivado.</string>
+    <string name="s_assistant_history_photos_needs_history">Mientras «El asistente ve el historial reciente» esté desactivado, esto no hace nada: el historial del chat no se envía, así que tampoco ninguna foto de él.</string>
+    <string name="e_change_assistant_history_photos_failed">No se pudo cambiar ese ajuste</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">Elige un chat de la lista.</string>
+    <plurals name="p_members">
+        <item quantity="one">%1$d miembro</item>
+        <item quantity="other">%1$d miembros</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">Hoy</string>
+    <string name="s_yesterday">Ayer</string>
+    <string name="s_owner_caption">propietario</string>
+    <string name="s_share_invite_text">¡Únete a nuestra familia en Family Connect! Servidor: %1$s — código de invitación: %2$s</string>
+    <string name="e_username_rules">3–32 caracteres: letras, dígitos, _ o .</string>
+    <string name="e_display_name_rules">1–64 caracteres</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="one">%1$d foto</item>
+        <item quantity="other">%1$d fotos</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="one">%1$d vídeo</item>
+        <item quantity="other">%1$d vídeos</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="one">%1$d nota de voz</item>
+        <item quantity="other">%1$d notas de voz</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="one">%1$d archivo</item>
+        <item quantity="other">%1$d archivos</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="one">%1$d adjunto</item>
+        <item quantity="other">%1$d adjuntos</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">Llamadas</string>
+    <string name="s_channel_calls_desc">Llamadas entrantes</string>
+    <string name="s_channel_ongoing">Llamada en curso</string>
+    <string name="s_channel_ongoing_desc">La llamada en la que estás</string>
+    <string name="s_channel_messages">Mensajes</string>
+    <string name="s_channel_messages_desc">Nuevos mensajes de la familia y solicitudes de ingreso</string>
+    <string name="s_emoji_smileys">Caritas</string>
+    <string name="s_emoji_gestures">Gestos</string>
+    <string name="s_emoji_hearts">Corazones</string>
+    <string name="s_emoji_animals">Animales y naturaleza</string>
+    <string name="s_emoji_food">Comida y bebida</string>
+    <string name="s_emoji_activities">Actividades</string>
+    <string name="s_emoji_travel">Viajes y lugares</string>
+    <string name="s_emoji_objects">Objetos y símbolos</string>
 </resources>
