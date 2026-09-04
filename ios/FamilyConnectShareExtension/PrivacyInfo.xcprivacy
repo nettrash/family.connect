@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	The Share Extension needs a manifest OF ITS OWN. Apple's required-reason
+	check runs per BINARY, not per app: the app's PrivacyInfo.xcprivacy at
+	FamilyConnect/PrivacyInfo.xcprivacy covers FamilyConnect.app/FamilyConnect
+	and nothing else, and WebRTC's covers only WebRTC. An appex with no
+	manifest whose code references a required-reason API is ITMS-91053 at
+	upload — the build is refused and never reaches a human. That rule applies
+	to iOS, iPadOS, tvOS, watchOS and visionOS and NOT to macOS, which is why
+	the same bundle can be rejected on one platform and accepted on the other.
+
+	The data-use keys below are deliberately EMPTY. The extension sends nothing
+	anywhere: it copies what was shared into the App Group staging inbox and
+	hands the ids to the app over a URL. Everything that leaves the device
+	leaves from the app, and is declared in the app's manifest — which is the
+	file that must agree with the App Privacy answers in App Store Connect.
+	Declaring the same collection twice here would double-count it in the
+	privacy report and say something untrue about this binary.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<!-- One call site, compiled into this binary from the shared
+				     file: FileManager.attributesOfItem(atPath:) in
+				     ShareHandoff.sweepOrphanedStaging, which reads
+				     .modificationDate / .creationDate to drop staging
+				     directories the app never collected. The linker's proof is
+				     the two undefined symbols the appex carries,
+				     _NSFileModificationDate and _NSFileCreationDate.
+
+				     DDA9.1: every path it stats is inside the App Group
+				     container (group.me.nettrash.FamilyConnect), which is what
+				     this reason covers — "files inside the app container, app
+				     group container, or the app's CloudKit container".
+				     NOT C617.1, which is for files the person granted access
+				     to through a picker: what the share sheet hands this
+				     extension is read through NSItemProvider, never stat'd.
+				     NOT 3B52.1, which only a third-party SDK may declare. -->
+				<string>DDA9.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
