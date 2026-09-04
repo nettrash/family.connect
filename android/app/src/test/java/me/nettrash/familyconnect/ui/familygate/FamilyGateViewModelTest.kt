@@ -111,6 +111,18 @@ class FamilyGateViewModelTest {
         assertThat(viewModel.state.value.registrationEnabled).isTrue()
     }
 
+    /** The grace rides the same way, and 0 — a server that never sweeps — is the default. */
+    @Test
+    fun theGateFollowsTheGraceAnAccountWithoutAFamilyGets() = runTest(dispatcher) {
+        val viewModel = newViewModel()
+        runCurrent()
+        assertThat(viewModel.state.value.familylessAccountTtlDays).isEqualTo(0)
+
+        settings.setFamilylessAccountTtlDays(7)
+        runCurrent()
+        assertThat(viewModel.state.value.familylessAccountTtlDays).isEqualTo(7)
+    }
+
     /**
      * Reachable only when the door shut after the Create card was drawn;
      * the server's English goes unused and the app says it in its own
@@ -150,5 +162,11 @@ class FamilyGateViewModelTest {
             """{"user": $user, "family": null, "role": null, "pending_join_request": null, "family_registration_enabled": false}""",
         )
         assertThat(closed.familyRegistrationEnabled).isFalse()
+        assertThat(closed.familylessAccountTtlDays).isEqualTo(0)
+
+        val week = json.decodeFromString<MeResponse>(
+            """{"user": $user, "family": null, "role": null, "pending_join_request": null, "familyless_account_ttl_days": 7}""",
+        )
+        assertThat(week.familylessAccountTtlDays).isEqualTo(7)
     }
 }

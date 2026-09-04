@@ -334,6 +334,10 @@ pub(crate) async fn pass_ownership_on(
 ///
 /// `POST` rather than `DELETE /me` because the request carries a body and
 /// RFC 9110 gives content on a DELETE no defined semantics.
+///
+/// The deletion itself is `scrub_account`, shared with the familyless sweep
+/// (`sweep_familyless_accounts`): what this handler adds is the proof that
+/// it is really them.
 pub async fn delete_account(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -350,18 +354,67 @@ pub async fn delete_account(
     //    for the same reason: the case this protects against is an
     //    unattended unlocked phone, where a session is what the attacker
     //    already has.
-    let row = sqlx::query(
-        "SELECT password_hash, family_id FROM users WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(auth.user_id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let stored_hash: Option<String> = row.as_ref().map(|row| row.get("password_hash"));
+    let stored_hash: Option<String> =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL")
+            .bind(auth.user_id)
+            .fetch_optional(&state.pool)
+            .await?;
     if !auth::verify_login_password(stored_hash, req.password).await? {
         return Err(ApiError::invalid_credentials());
     }
-    let row = row.expect("password verified, so the user row exists");
-    let family_id: Option<i64> = row.get("family_id");
+
+    // 2. The scrub itself, shared with the familyless sweep — the one other
+    //    thing in this server that deletes an account. Whether it found the
+    //    row is not this handler's concern: a `Spared` here means another
+    //    device deleted the account a moment ago, and the answer to "delete
+    //    my account" is then still that it is deleted.
+    scrub_account(&state, auth.user_id, None).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The familyless sweep's guard: the grace an account must have outlived,
+/// re-checked under the row's lock by `scrub_account` (docs/protocol.md,
+/// "Accounts without a family").
+#[derive(Debug, Clone, Copy)]
+pub struct FamilylessGuard {
+    pub ttl_days: i64,
+}
+
+/// What `scrub_account` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scrubbed {
+    /// The account is gone: the tombstone is written and everyone is told.
+    Done,
+    /// Nothing was written. Either the row was already a tombstone, or the
+    /// sweep's guard found the account no longer a candidate — it joined a
+    /// family, or asked to, since the scan named it.
+    Spared,
+}
+
+/// Scrub one account: the shared body of `POST /me/delete` and of the
+/// familyless sweep (docs/protocol.md, "Deleting an account" and "Accounts
+/// without a family"). Everything the former promises, the latter gets,
+/// because it is this one routine.
+///
+/// The caller has already decided the account may go — by password for a
+/// request, by age for the sweep — and this reads the family membership
+/// afresh rather than being told it, because a request's family is what it
+/// was a moment ago and the sweep's candidate list is older still.
+pub async fn scrub_account(
+    state: &AppState,
+    user_id: i64,
+    guard: Option<FamilylessGuard>,
+) -> Result<Scrubbed, ApiError> {
+    let family_id: Option<i64> = match sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT family_id FROM users WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.pool)
+    .await?
+    {
+        Some(family_id) => family_id,
+        None => return Ok(Scrubbed::Spared),
+    };
 
     // 2. Everything that has to be known BEFORE the write, because the
     //    write is what makes it unknowable.
@@ -369,7 +422,7 @@ pub async fn delete_account(
     // Their sessions: the rows are deleted below, and a socket cannot be
     // closed by an id nothing remembers.
     let session_ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM sessions WHERE user_id = $1")
-        .bind(auth.user_id)
+        .bind(user_id)
         .fetch_all(&state.pool)
         .await?;
 
@@ -387,7 +440,7 @@ pub async fn delete_account(
           WHERE c.user_a_id = $2 OR c.user_b_id = $2",
     )
     .bind(family_id)
-    .bind(auth.user_id)
+    .bind(user_id)
     .fetch_all(&state.pool)
     .await?;
 
@@ -407,7 +460,7 @@ pub async fn delete_account(
            JOIN chats c ON c.id = m.chat_id
           WHERE c.user_a_id = $1 OR c.user_b_id = $1",
     )
-    .bind(auth.user_id)
+    .bind(user_id)
     .fetch_all(&state.pool)
     .await?;
 
@@ -415,6 +468,41 @@ pub async fn delete_account(
     //    does — a half-deleted account is an account nobody can finish
     //    deleting.
     let mut tx = state.pool.begin().await?;
+
+    // The sweep's guard, and ONLY the sweep's: the row is re-read under its
+    // own lock and the scrub goes ahead only if the account is still a
+    // candidate — no family, past the grace, no join request waiting. The
+    // scan that named it ran a moment ago on a different connection, and a
+    // join in between is the whole point of a grace period; `grant_membership`
+    // writes this row and would otherwise land on a tombstone (its
+    // `deleted_at IS NULL` is the other half of that answer). A candidate
+    // has no family, so nothing below takes a family row's lock, and the
+    // lock order everything else in this server observes — family row,
+    // then user row — has no cycle to close with this one.
+    //
+    // A REQUESTED deletion takes no such lock, exactly as before: its caller
+    // proved the password a moment ago, and the family lock in (a) is what
+    // serializes it against the roster.
+    if let Some(guard) = guard {
+        let still_a_candidate: Option<bool> = sqlx::query_scalar(
+            "SELECT family_id IS NULL
+                    AND familyless_since IS NOT NULL
+                    AND familyless_since <= now() - make_interval(days => $2)
+                    AND NOT EXISTS (SELECT 1 FROM join_requests jr
+                                     WHERE jr.user_id = users.id AND jr.status = 'pending')
+               FROM users
+              WHERE id = $1 AND deleted_at IS NULL
+                FOR UPDATE",
+        )
+        .bind(user_id)
+        .bind(guard.ttl_days as i32)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if still_a_candidate != Some(true) {
+            // Dropped, not committed: nothing has been written yet.
+            return Ok(Scrubbed::Spared);
+        }
+    }
 
     // (a) Ownership passes on, or the family goes.
     //
@@ -447,13 +535,13 @@ pub async fn delete_account(
         None => None,
     };
     let owned_family_id: Option<i64> = match (family_id, locked_owner_id) {
-        (Some(family_id), Some(owner_user_id)) if owner_user_id == auth.user_id => Some(family_id),
+        (Some(family_id), Some(owner_user_id)) if owner_user_id == user_id => Some(family_id),
         _ => None,
     };
     let mut successor: Option<i64> = None;
     let mut family_to_delete: Option<i64> = None;
     if let Some(owned_family_id) = owned_family_id {
-        successor = pass_ownership_on(&mut tx, owned_family_id, auth.user_id).await?;
+        successor = pass_ownership_on(&mut tx, owned_family_id, user_id).await?;
         if successor.is_none() {
             // Nobody else is here: the family is deleted in (f), once the
             // rows that point into it have gone.
@@ -466,7 +554,7 @@ pub async fn delete_account(
     //     message_reactions, the attachment rows, polls, and the SET NULLs
     //     on ai_usage.message_id and messages.reply_to_message_id.
     sqlx::query("DELETE FROM chats WHERE user_a_id = $1 OR user_b_id = $1")
-        .bind(auth.user_id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
 
@@ -481,7 +569,7 @@ pub async fn delete_account(
            JOIN polls p ON p.message_id = pv.poll_id
           WHERE pv.user_id = $1 AND p.closed_at IS NULL",
     )
-    .bind(auth.user_id)
+    .bind(user_id)
     .fetch_all(&mut *tx)
     .await?;
     let mut retracted: Vec<crate::handlers_poll::PollState> =
@@ -504,7 +592,7 @@ pub async fn delete_account(
         };
         sqlx::query("DELETE FROM poll_votes WHERE poll_id = $1 AND user_id = $2")
             .bind(poll_id)
-            .bind(auth.user_id)
+            .bind(user_id)
             .execute(&mut *tx)
             .await?;
         // A retraction is a change to the poll like any other, so it takes
@@ -529,7 +617,7 @@ pub async fn delete_account(
     //     the constraint is what makes sure no push token outlives the
     //     account nobody remembered to think about it).
     sqlx::query("DELETE FROM user_avatars WHERE user_id = $1")
-        .bind(auth.user_id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
     //     The blocks this account MADE go with the avatar and the
@@ -543,11 +631,11 @@ pub async fn delete_account(
     //     on `users` never fires here, because 0023 SCRUBS this row rather
     //     than deleting it, so both halves are this handler's to decide.
     sqlx::query("DELETE FROM member_blocks WHERE blocker_user_id = $1")
-        .bind(auth.user_id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-        .bind(auth.user_id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
     // And any device row the cascade above could not reach. Every
@@ -562,19 +650,19 @@ pub async fn delete_account(
     // DELETE CASCADE, which never fires, because the users row survives the
     // scrub on purpose.
     sqlx::query("DELETE FROM devices WHERE user_id = $1")
-        .bind(auth.user_id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM chat_members WHERE user_id = $1")
-        .bind(auth.user_id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM chat_reads WHERE user_id = $1")
-        .bind(auth.user_id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM join_requests WHERE user_id = $1")
-        .bind(auth.user_id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
     // An upload NO message ever claimed is a half-finished action of an
@@ -582,7 +670,7 @@ pub async fn delete_account(
     // hours. A CLAIMED one is not touched: its message is part of the
     // shared record and keeps its picture.
     sqlx::query("DELETE FROM attachments WHERE uploader_id = $1 AND message_id IS NULL")
-        .bind(auth.user_id)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
 
@@ -605,6 +693,7 @@ pub async fn delete_account(
                 display_name = 'Deleted account',
                 password_hash = '!',
                 family_id = NULL,
+                familyless_since = NULL,
                 deleted_at = now(),
                 deleted_family_id = $2,
                 avatar_version = 0,
@@ -614,14 +703,14 @@ pub async fn delete_account(
           RETURNING id, username, display_name, avatar_version,
                     birthday_month, birthday_day, deleted_at",
     )
-    .bind(auth.user_id)
+    .bind(user_id)
     .bind(family_id)
     .fetch_one(&mut *tx)
     .await?;
     // The frame carries exactly the row that was written. The owner id
     // passed here decides nothing: the row is a tombstone, and a tombstone
     // is given no role at all.
-    let member = crate::handlers_family::member_from_row(&scrubbed, auth.user_id);
+    let member = crate::handlers_family::member_from_row(&scrubbed, user_id);
 
     // (f) Sole owner: the family goes with them — its chat, its board, its
     //     attachments and its invite code. Last, because everything above
@@ -647,7 +736,7 @@ pub async fn delete_account(
     //    harmlessly; the worst a propagated error costs is an account the
     //    user believes is still there.
     if let Err(err) =
-        crate::handlers_attachment::remove_all_if_unreferenced(&state, &storage_keys).await
+        crate::handlers_attachment::remove_all_if_unreferenced(state, &storage_keys).await
     {
         tracing::warn!(error = ?err, "sweeping a deleted account's attachments failed");
     }
@@ -665,7 +754,7 @@ pub async fn delete_account(
     if let Some(family_id) = family_id {
         events::log_fanout_error(
             "member_left",
-            events::deliver_member_left(&state, family_id, auth.user_id).await,
+            events::deliver_member_left(state, family_id, user_id).await,
         );
     }
     // `member_deleted` is NOT family-scoped, and this is the whole reason
@@ -677,18 +766,64 @@ pub async fn delete_account(
     // `GET /chats` (protocol.md, "Deleting an account").
     events::log_fanout_error(
         "member_deleted",
-        events::deliver_member_deleted(&state, family_id, member, &recipients).await,
+        events::deliver_member_deleted(state, family_id, member, &recipients).await,
     );
     if let (Some(family_id), Some(new_owner_id)) = (family_id, successor) {
         events::log_fanout_error(
             "family_owner",
-            events::deliver_family_owner(&state, family_id, new_owner_id).await,
+            events::deliver_family_owner(state, family_id, new_owner_id).await,
         );
     }
     for poll_state in &retracted {
-        events::log_fanout_error("poll", events::deliver_poll(&state, poll_state).await);
+        events::log_fanout_error("poll", events::deliver_poll(state, poll_state).await);
     }
-    Ok(StatusCode::NO_CONTENT.into_response())
+    Ok(Scrubbed::Done)
+}
+
+/// The familyless sweep (docs/protocol.md, "Accounts without a family"):
+/// scrub every account that has been without a family for longer than
+/// `[families] familyless_account_ttl_days`, sparing one with a join request
+/// still pending and the assistant's. Answers how many went. Runs on the
+/// hourly sweep clock in `main`; `0` in the config makes it a no-op.
+///
+/// The candidates are named by one scan and scrubbed one by one, each under
+/// its own re-check (`FamilylessGuard`), so a join that lands between the
+/// two is honoured — the sweep must never be the reason somebody's code
+/// stopped working in the hour they finally typed it.
+pub async fn sweep_familyless_accounts(state: &AppState) -> Result<u64, ApiError> {
+    let ttl_days = state.cfg.families.familyless_account_ttl_days;
+    if ttl_days <= 0 {
+        return Ok(0);
+    }
+    // The assistant is excluded by name, the way `assistant_user_id` finds
+    // it, and not only by its NULL `familyless_since`: 0034 blanks that
+    // once, and a defence that lives in one migration's UPDATE is a defence
+    // the next data fix can undo.
+    let candidates: Vec<i64> = sqlx::query_scalar(
+        "SELECT u.id
+           FROM users u
+          WHERE u.deleted_at IS NULL
+            AND u.family_id IS NULL
+            AND u.familyless_since IS NOT NULL
+            AND u.familyless_since <= now() - make_interval(days => $1)
+            AND lower(u.username) <> 'assistant'
+            AND NOT EXISTS (SELECT 1 FROM join_requests jr
+                             WHERE jr.user_id = u.id AND jr.status = 'pending')
+          ORDER BY u.id",
+    )
+    .bind(ttl_days as i32)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut swept = 0;
+    for user_id in candidates {
+        if scrub_account(state, user_id, Some(FamilylessGuard { ttl_days })).await?
+            == Scrubbed::Done
+        {
+            swept += 1;
+            tracing::info!(user_id, ttl_days, "swept an account that has no family");
+        }
+    }
+    Ok(swept)
 }
 
 /// `PUT /me/birthday` — your own birthday, a day and a month.
@@ -842,6 +977,11 @@ pub async fn me(auth: AuthUser, State(state): State<AppState>) -> Result<Respons
             // in the family gate rather than met as a 403 after somebody
             // has typed a name (protocol.md, "Starting a family").
             "family_registration_enabled": state.cfg.families.registration,
+            // ALWAYS present, 0 when the server never removes such
+            // accounts: how many days one may go without a family. The
+            // gate says so, so the deadline is known before it is met
+            // (protocol.md, "Accounts without a family").
+            "familyless_account_ttl_days": state.cfg.families.familyless_account_ttl_days,
             // ALWAYS present, `[]` when the caller has blocked nobody —
             // the one read in this protocol where absence is not allowed
             // to mean "leave what you hold alone". A list that vanished

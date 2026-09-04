@@ -201,6 +201,12 @@ data class SettingsState(
      * says otherwise, which is also the answer on an older server.
      */
     val familyRegistrationEnabled: Boolean = true,
+    /**
+     * Days an account may go without a family before this server removes
+     * it; 0 when it never does (docs/protocol.md, "Accounts without a
+     * family"). The family gate says so under its two doors.
+     */
+    val familylessAccountTtlDays: Int = 0,
 )
 
 interface SettingsRepository {
@@ -286,6 +292,9 @@ interface SettingsRepository {
     /** Record what `GET /me` said about this server taking new families. */
     suspend fun setFamilyRegistrationEnabled(enabled: Boolean)
 
+    /** Record what `GET /me` said about the grace an account without a family gets. */
+    suspend fun setFamilylessAccountTtlDays(days: Int)
+
     /**
      * REPLACE the caller's block list with what the server just said.
      *
@@ -363,6 +372,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
         val FAMILY_REGISTRATION_ENABLED = booleanPreferencesKey("family_registration_enabled")
+        val FAMILYLESS_ACCOUNT_TTL_DAYS = intPreferencesKey("familyless_account_ttl_days")
     }
 
     override val state: Flow<SettingsState> = dataStore.data.map { prefs ->
@@ -401,6 +411,7 @@ class DataStoreSettingsRepository @Inject constructor(
             callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
             familyRegistrationEnabled = prefs[Keys.FAMILY_REGISTRATION_ENABLED] != false,
+            familylessAccountTtlDays = prefs[Keys.FAMILYLESS_ACCOUNT_TTL_DAYS] ?: 0,
         )
     }
 
@@ -526,6 +537,10 @@ class DataStoreSettingsRepository @Inject constructor(
 
     override suspend fun setFamilyRegistrationEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.FAMILY_REGISTRATION_ENABLED] = enabled }
+    }
+
+    override suspend fun setFamilylessAccountTtlDays(days: Int) {
+        dataStore.edit { it[Keys.FAMILYLESS_ACCOUNT_TTL_DAYS] = days }
     }
 
     override suspend fun setBlockedUserIds(ids: Collection<Long>) {

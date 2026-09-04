@@ -34,6 +34,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -181,6 +182,24 @@ fun FamilyGateScreen(
                         )
                     }
                 }
+            }
+
+            // The deadline, said before it is met: this server removes an
+            // account that stays without a family past its grace
+            // (docs/protocol.md, "Accounts without a family"). 0 is a
+            // server that never does, and says nothing.
+            if (state.familylessAccountTtlDays > 0) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    pluralStringResource(
+                        R.plurals.s_familyless_grace,
+                        state.familylessAccountTtlDays,
+                        state.familylessAccountTtlDays,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
             }
         }
     }

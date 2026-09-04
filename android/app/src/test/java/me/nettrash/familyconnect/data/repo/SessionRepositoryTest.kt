@@ -296,6 +296,24 @@ class SessionRepositoryTest {
         assertThat(settings.current.familyRegistrationEnabled).isTrue()
     }
 
+    /** The grace an account without a family gets rides `/me` the same way, 0 meaning never. */
+    @Test
+    fun refreshMeRecordsTheGraceAnAccountWithoutAFamilyGets() = runTest(dispatcher) {
+        val repository = newRepository()
+        settings.setServerUrl("https://chat.example.com")
+        assertThat(settings.current.familylessAccountTtlDays).isEqualTo(0)
+
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(user = userDto(7, "anna"), familylessAccountTtlDays = 7),
+        )
+        repository.refreshMe()
+        assertThat(settings.current.familylessAccountTtlDays).isEqualTo(7)
+
+        authApi.meResult = ApiResult.Ok(MeResponse(user = userDto(7, "anna")))
+        repository.refreshMe()
+        assertThat(settings.current.familylessAccountTtlDays).isEqualTo(0)
+    }
+
     @Test
     fun loginStoresTokenRefreshesMeAndRegistersDevice() = runTest(dispatcher) {
         val repository = newRepository()

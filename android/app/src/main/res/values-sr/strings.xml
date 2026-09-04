@@ -25,6 +25,11 @@
     <string name="s_no_new_families_title">Овај сервер не прима нове породице.</string>
     <string name="s_no_new_families_body">Family Connect је замишљен као једна породица на сопственом серверу. Да бисте започели своју, покрените свој сервер и позовите све одатле.</string>
     <string name="s_run_your_own_server">Како да покренете свој сервер</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="one">Налог који се не придружи породици у року од %1$d дана уклања се са овог сервера.</item>
+        <item quantity="few">Налог који се не придружи породици у року од %1$d дана уклања се са овог сервера.</item>
+        <item quantity="other">Налог који се не придружи породици у року од %1$d дана уклања се са овог сервера.</item>
+    </plurals>
     <string name="s_current_password">Тренутна лозинка</string>
     <string name="s_delete">Обриши</string>
     <string name="s_delete_this_note">Обрисати ову белешку?</string>

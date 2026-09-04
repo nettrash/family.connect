@@ -345,13 +345,26 @@ async fn grant_membership(
         Some(true) | None => return Ok(Granted::FamilyFull),
     }
 
-    let updated =
-        sqlx::query("UPDATE users SET family_id = $1 WHERE id = $2 AND family_id IS NULL")
-            .bind(family_id)
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+    // `familyless_since` stops here (0034): a member's clock is not running.
+    //
+    // `deleted_at IS NULL` because this UPDATE can otherwise land on a
+    // TOMBSTONE. The scrub — a deletion the person asked for, or the
+    // familyless sweep — blanks `family_id`, and a join that was already
+    // past authentication when the scrub committed would then find the
+    // row exactly as this predicate wants it and make a "Deleted account"
+    // with `password_hash = '!'` a member of the family. The session it
+    // rode in on is gone, so the caller learns nothing either way; refusing
+    // as `AlreadyInAFamily` is the nearest honest answer this helper has.
+    let updated = sqlx::query(
+        "UPDATE users
+            SET family_id = $1, familyless_since = NULL
+          WHERE id = $2 AND family_id IS NULL AND deleted_at IS NULL",
+    )
+    .bind(family_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     if updated == 0 {
         return Ok(Granted::AlreadyInAFamily);
     }
@@ -613,6 +626,22 @@ pub async fn join_family(
     // `FOR UPDATE`: a pending request reserves nothing, so this read
     // decides nothing that the grant does not decide again under the lock.
     let mut tx = state.pool.begin().await?;
+    // Still a live account, read under a share lock on its own row. The
+    // familyless sweep scrubs under FOR UPDATE, and a request that was past
+    // authentication when the scrub committed would otherwise ride the
+    // INSERT's own FK lock — which waits for the scrub and then proceeds —
+    // into a `pending` request from "Deleted account" that the owner is
+    // pushed about. FOR SHARE waits the same way but is re-evaluated after
+    // the wait, so it sees the tombstone. The session is gone with the
+    // account, so the caller is answered as one whose session is gone.
+    let alive: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR SHARE")
+            .bind(auth.user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if alive.is_none() {
+        return Err(ApiError::unauthorized());
+    }
     let inserted = sqlx::query(
         "INSERT INTO join_requests (family_id, user_id, invite_code_used) VALUES ($1, $2, $3)",
     )
@@ -1222,6 +1251,17 @@ pub async fn leave_family(
         // Sole member: delete the family. Cascades remove chats, messages,
         // members, and join requests; users.family_id resets via
         // ON DELETE SET NULL. Nobody is left to notify.
+        //
+        // The FK blanks `family_id` and nothing else, so the familyless
+        // clock is started HERE, by hand — the one departure that does
+        // not go through `remove_membership`. Without it the row would be
+        // {family NULL, familyless_since NULL}: alive, alone, and invisible
+        // to the sweep for good, while `/me` went on promising the grace
+        // (docs/protocol.md, "Accounts without a family").
+        sqlx::query("UPDATE users SET familyless_since = now() WHERE id = $1")
+            .bind(auth.user_id)
+            .execute(&mut *tx)
+            .await?;
         let storage_keys = delete_family_in_tx(&mut tx, family_id).await?;
         tx.commit().await?;
         // After the commit, never inside it — and so this may not fail the
@@ -1603,12 +1643,20 @@ async fn remove_membership(
     family_id: i64,
     user_id: i64,
 ) -> Result<(), ApiError> {
-    let updated = sqlx::query("UPDATE users SET family_id = NULL WHERE id = $1 AND family_id = $2")
-        .bind(user_id)
-        .bind(family_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    // `familyless_since` starts AGAIN here (0034): whatever the account's
+    // age, somebody leaving or removed today has the full grace to be let
+    // back in before the sweep takes the account (docs/protocol.md,
+    // "Accounts without a family").
+    let updated = sqlx::query(
+        "UPDATE users
+            SET family_id = NULL, familyless_since = now()
+          WHERE id = $1 AND family_id = $2",
+    )
+    .bind(user_id)
+    .bind(family_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     if updated == 0 {
         // They already left in a parallel request; nothing to undo.
         return Err(ApiError::conflict(

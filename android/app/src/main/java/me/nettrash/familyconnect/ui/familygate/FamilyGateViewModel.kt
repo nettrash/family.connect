@@ -62,6 +62,12 @@ class FamilyGateViewModel @Inject constructor(
          * to run a server of one's own; joining stays either way.
          */
         val registrationEnabled: Boolean = true,
+        /**
+         * Days an account may go without a family before this server
+         * removes it; 0 when it never does, and then nothing is said
+         * (docs/protocol.md, "Accounts without a family").
+         */
+        val familylessAccountTtlDays: Int = 0,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -73,7 +79,12 @@ class FamilyGateViewModel @Inject constructor(
         // so a refresh that flips it redraws without a restart.
         viewModelScope.launch {
             settings.state.collect { s ->
-                _state.update { it.copy(registrationEnabled = s.familyRegistrationEnabled) }
+                _state.update {
+                    it.copy(
+                        registrationEnabled = s.familyRegistrationEnabled,
+                        familylessAccountTtlDays = s.familylessAccountTtlDays,
+                    )
+                }
             }
         }
     }

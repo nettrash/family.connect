@@ -17,7 +17,9 @@ use tracing_subscriber::EnvFilter;
 
 use family_connect::config::Config;
 use family_connect::state::AppState;
-use family_connect::{app, calls, db, handlers_attachment, handlers_chat, migrate, push};
+use family_connect::{
+    app, calls, db, handlers_attachment, handlers_auth, handlers_chat, migrate, push,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -86,9 +88,10 @@ async fn main() -> Result<()> {
     // (spawned by axum, out of our reach) must be able to observe it.
     let shutdown = state.registry.shutdown_token();
 
-    // Two sweeps, one loop, at boot and hourly after: unclaimed uploads (a
-    // send the user abandoned, up to 100 MB each) and messages past the
-    // retention age. Nothing else in the system would ever remove either.
+    // Three sweeps, one loop, at boot and hourly after: unclaimed uploads (a
+    // send the user abandoned, up to 100 MB each), messages past the
+    // retention age, and accounts past their familyless grace. Nothing else
+    // in the system would ever remove any of them.
     {
         let sweeper_state = state.clone();
         let sweeper_shutdown = shutdown.clone();
@@ -106,6 +109,16 @@ async fn main() -> Result<()> {
                     Ok(0) => {}
                     Ok(count) => info!(count, "swept messages past the retention age"),
                     Err(err) => warn!(error = ?err, "sweeping expired messages failed"),
+                }
+                // And accounts that never joined a family, or left one and
+                // never came back, past their grace (docs/protocol.md,
+                // "Accounts without a family"). Hourly rather than nightly
+                // for the reason above — and so that "7 days" means seven
+                // days, not "some night this week".
+                match handlers_auth::sweep_familyless_accounts(&sweeper_state).await {
+                    Ok(0) => {}
+                    Ok(count) => info!(count, "swept accounts that have no family"),
+                    Err(err) => warn!(error = ?err, "sweeping familyless accounts failed"),
                 }
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}

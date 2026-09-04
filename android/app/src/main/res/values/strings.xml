@@ -37,6 +37,10 @@
     <string name="s_no_new_families_title">This server doesn\'t take new families.</string>
     <string name="s_no_new_families_body">Family Connect is built for one family on a server of its own. To start yours, run your own server and invite everyone from there.</string>
     <string name="s_run_your_own_server">How to run your own server</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="one">An account that doesn\'t join a family within %1$d day is removed from this server.</item>
+        <item quantity="other">An account that doesn\'t join a family within %1$d days is removed from this server.</item>
+    </plurals>
     <string name="s_current_password">Current password</string>
     <string name="s_delete">Delete</string>
     <string name="s_delete_this_note">Delete this note?</string>

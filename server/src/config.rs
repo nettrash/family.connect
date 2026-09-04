@@ -70,12 +70,26 @@ pub struct FamiliesConfig {
     /// server with nobody on it yet has to let its first family in.
     #[serde(default = "default_family_registration")]
     pub registration: bool,
+
+    /// How many days an account may go WITHOUT a family before the sweep
+    /// scrubs it, exactly as `POST /me/delete` would (docs/protocol.md,
+    /// "Accounts without a family"). Somebody who registers and never
+    /// joins would otherwise stay on the server for good. Measured from
+    /// registration, or from the moment they last left a family; an
+    /// account with a join request still pending is never touched, nor is
+    /// the assistant's. 7 by default.
+    ///
+    /// **0 turns the sweep off** — "off" is a state rather than a very
+    /// large number, the way `limits.retention_days` spells it.
+    #[serde(default = "default_familyless_account_ttl_days")]
+    pub familyless_account_ttl_days: i64,
 }
 
 impl Default for FamiliesConfig {
     fn default() -> Self {
         Self {
             registration: default_family_registration(),
+            familyless_account_ttl_days: default_familyless_account_ttl_days(),
         }
     }
 }
@@ -1329,6 +1343,18 @@ impl Config {
         if self.auth.session_ttl_days < 1 {
             anyhow::bail!("auth.session_ttl_days must be at least 1");
         }
+        // Bounded above as well: the sweep binds it as a PostgreSQL `int`
+        // for `make_interval`, and a "practically never" such as
+        // 999999999999 would wrap — to a NEGATIVE count, which sweeps
+        // everybody at once. 0 is how "never" is spelled.
+        if !(0..=MAX_FAMILYLESS_ACCOUNT_TTL_DAYS)
+            .contains(&self.families.familyless_account_ttl_days)
+        {
+            anyhow::bail!(
+                "families.familyless_account_ttl_days must be 0 (off) or a number of days up \
+                 to {MAX_FAMILYLESS_ACCOUNT_TTL_DAYS} — for \"never\", write 0"
+            );
+        }
         if self.auth.session_touch_interval_mins < 1 {
             anyhow::bail!("auth.session_touch_interval_mins must be at least 1");
         }
@@ -1596,6 +1622,14 @@ fn default_family_registration() -> bool {
     true
 }
 
+fn default_familyless_account_ttl_days() -> i64 {
+    7
+}
+
+/// A century. Above this the sweep's `int` bind could wrap, and an
+/// operator who means "never" has `0` for it.
+pub const MAX_FAMILYLESS_ACCOUNT_TTL_DAYS: i64 = 36_500;
+
 fn default_video_calls_enabled() -> bool {
     true
 }
@@ -1628,9 +1662,43 @@ mod tests {
     #[test]
     fn family_registration_is_on_unless_the_operator_says_otherwise() {
         let defaults = Config::from_toml_str("").expect("an empty file is a valid config");
-        assert!(defaults.families.registration, "a fresh server must let its first family in");
+        assert!(
+            defaults.families.registration,
+            "a fresh server must let its first family in"
+        );
         let closed = Config::from_toml_str("[families]\nregistration = false\n").expect("parses");
         assert!(!closed.families.registration);
+    }
+
+    #[test]
+    fn familyless_accounts_are_swept_after_a_week_unless_the_operator_says_otherwise() {
+        let defaults = Config::from_toml_str("").expect("an empty file is a valid config");
+        assert_eq!(defaults.families.familyless_account_ttl_days, 7);
+        let off =
+            Config::from_toml_str("[families]\nfamilyless_account_ttl_days = 0\n").expect("parses");
+        assert_eq!(off.families.familyless_account_ttl_days, 0);
+        off.validate().expect("0 is off, and off is valid");
+        let month = Config::from_toml_str("[families]\nfamilyless_account_ttl_days = 30\n")
+            .expect("parses");
+        assert_eq!(month.families.familyless_account_ttl_days, 30);
+        // `from_toml_str` validates, so a negative grace never becomes a config.
+        let err = Config::from_toml_str("[families]\nfamilyless_account_ttl_days = -1\n")
+            .expect_err("a negative grace is not a grace");
+        assert!(
+            err.to_string().contains("familyless_account_ttl_days"),
+            "{err}"
+        );
+        // Nor does one the sweep's `int` bind would wrap: 0 is "never".
+        let err = Config::from_toml_str("[families]\nfamilyless_account_ttl_days = 999999999999\n")
+            .expect_err("a grace beyond a century is a typo for 0");
+        assert!(err.to_string().contains("write 0"), "{err}");
+        let century = Config::from_toml_str("[families]\nfamilyless_account_ttl_days = 36500\n")
+            .expect("the ceiling itself is allowed");
+        assert_eq!(century.families.familyless_account_ttl_days, 36_500);
+        assert!(
+            err.to_string().contains("familyless_account_ttl_days"),
+            "{err}"
+        );
     }
 
     #[test]

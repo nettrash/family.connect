@@ -142,6 +142,10 @@ final class AppSession {
     /// directions to run one's own server when it is false; true until a
     /// `/me` says otherwise, which is also the answer on an older server.
     private(set) var familyRegistrationEnabled = true
+    /// Days an account may go without a family before this server removes
+    /// it; 0 when it never does (docs/protocol.md, "Accounts without a
+    /// family"). The family gate says so under its two doors.
+    private(set) var familylessAccountTTLDays = 0
     /// How to reach the operator, when they published anything. Shown on
     /// the report screen: it is the escalation path for when the family's
     /// own moderator is the problem.
@@ -381,6 +385,7 @@ final class AppSession {
         maxFamilyMembers = me.maxFamilyMembers
         supportContact = me.supportContact
         familyRegistrationEnabled = me.familyRegistrationEnabled
+        familylessAccountTTLDays = me.familylessAccountTTLDays
         // Replaced wholesale on every /me, which is step 1 of the
         // documented resync — so the block list is a step-1 fact and the
         // `member_blocked` frame is a latency optimisation rather than the
@@ -443,8 +448,18 @@ final class AppSession {
         let response = try await api.register(username: username, displayName: displayName, password: password)
         try await adopt(session: response)
         // A brand-new account can't be in a family or have a pending
-        // request; skip the /me round-trip.
-        phase = .needsFamily
+        // request — but the gate it lands on is drawn from what /me says
+        // about THIS server: whether it takes new families at all, and how
+        // long an account may wait to join one. The person who just
+        // registered is exactly who those two facts are for, so the
+        // round-trip is not skipped (docs/protocol.md, "Starting a family"
+        // and "Accounts without a family").
+        do {
+            apply(me: try await api.me())
+        } catch {
+            AppLog.app.error("Post-register /me failed: \(String(describing: error))")
+            phase = .needsFamily
+        }
     }
 
     func login(username: String, password: String) async throws {
@@ -580,6 +595,15 @@ final class AppSession {
         currentUser = nil
         family = nil
         role = nil
+        // What the server said about itself goes too: the next sign-in may
+        // be to a different server, and a gate that quoted the old one's
+        // grace or door until /me answered would be quoting the wrong server.
+        callsEnabled = false
+        videoCallsEnabled = false
+        maxFamilyMembers = nil
+        supportContact = nil
+        familyRegistrationEnabled = true
+        familylessAccountTTLDays = 0
         phase = .needsAuth
     }
 

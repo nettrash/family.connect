@@ -3211,6 +3211,185 @@
         }
       }
     },
+    "An account that doesn't join a family within %lld days is removed from this server." : {
+      "comment" : "Family gate footer; %lld is the number of days the server gives an account to join a family before removing it.",
+      "localizations" : {
+        "de" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ein Konto, das innerhalb von %lld Tag keiner Familie beitritt, wird von diesem Server entfernt."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Ein Konto, das innerhalb von %lld Tagen keiner Familie beitritt, wird von diesem Server entfernt."
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "An account that doesn't join a family within %lld day is removed from this server."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "An account that doesn't join a family within %lld days is removed from this server."
+                }
+              }
+            }
+          }
+        },
+        "es" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Una cuenta que no se una a una familia en %lld día se elimina de este servidor."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Una cuenta que no se una a una familia en %lld días se elimina de este servidor."
+                }
+              }
+            }
+          }
+        },
+        "fr" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Un compte qui ne rejoint pas de famille sous %lld jour est supprimé de ce serveur."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Un compte qui ne rejoint pas de famille sous %lld jours est supprimé de ce serveur."
+                }
+              }
+            }
+          }
+        },
+        "ja" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld日以内に家族に参加しなかったアカウントは、このサーバーから削除されます。"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Учётная запись, не вступившая в семью в течение %lld дней, удаляется с этого сервера."
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Учётная запись, не вступившая в семью в течение %lld дней, удаляется с этого сервера."
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Учётная запись, не вступившая в семью в течение %lld дня, удаляется с этого сервера."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Учётная запись, не вступившая в семью в течение %lld дня, удаляется с этого сервера."
+                }
+              }
+            }
+          }
+        },
+        "sr" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Налог који се не придружи породици у року од %lld дана уклања се са овог сервера."
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Налог који се не придружи породици у року од %lld дана уклања се са овог сервера."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Налог који се не придружи породици у року од %lld дана уклања се са овог сервера."
+                }
+              }
+            }
+          }
+        },
+        "sr-Latn" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Nalog koji se ne pridruži porodici u roku od %lld dana uklanja se sa ovog servera."
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Nalog koji se ne pridruži porodici u roku od %lld dana uklanja se sa ovog servera."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Nalog koji se ne pridruži porodici u roku od %lld dana uklanja se sa ovog servera."
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld 天内未加入家庭的账户将从此服务器中删除。"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "An owner can only leave once everyone else has left (the family is then deleted). Remove the other members first, or keep the family going." : {
       "extractionState" : "stale",
       "localizations" : {

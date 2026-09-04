@@ -25,6 +25,9 @@
     <string name="s_no_new_families_title">このサーバーは新しい家族を受け付けていません。</string>
     <string name="s_no_new_families_body">Family Connect は、家族ごとに専用のサーバーで使うためのものです。自分の家族を始めるには、自分のサーバーを立ち上げてそこから全員を招待してください。</string>
     <string name="s_run_your_own_server">自分のサーバーを立ち上げる方法</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="other">%1$d日以内に家族に参加しなかったアカウントは、このサーバーから削除されます。</item>
+    </plurals>
     <string name="s_current_password">現在のパスワード</string>
     <string name="s_delete">削除</string>
     <string name="s_delete_this_note">このメモを削除しますか？</string>
