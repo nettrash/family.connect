@@ -46,7 +46,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.outlined.StickyNote2
+import androidx.compose.material.icons.automirrored.outlined.StickyNote2
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -250,7 +250,7 @@ fun BoardScreen(
 
             if (notes.isEmpty()) {
                 EmptyState(
-                    icon = Icons.Outlined.StickyNote2,
+                    icon = Icons.AutoMirrored.Outlined.StickyNote2,
                     title = stringResource(R.string.s_the_board_is_empty),
                     subtitle = stringResource(R.string.s_add_a_note_everyone_in_the_family_sees_it),
                     modifier = Modifier.align(Alignment.Center),

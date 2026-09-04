@@ -56,7 +56,7 @@ sealed interface LinkPreviewState {
 @Singleton
 class LinkPreviewRepository @Inject constructor(
     okHttp: OkHttpClient,
-    @AppScope private val scope: CoroutineScope,
+    @param:AppScope private val scope: CoroutineScope,
 ) {
 
     private val _states = MutableStateFlow<Map<String, LinkPreviewState>>(emptyMap())
@@ -141,12 +141,12 @@ class LinkPreviewRepository @Inject constructor(
                 .build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@use null
-                val contentType = response.body?.contentType()
+                val contentType = response.body.contentType()
                 val isHtml = contentType == null ||
                     contentType.type == "text" ||
                     contentType.subtype.contains("html")
                 if (!isHtml) return@use null
-                val stream = response.body?.byteStream() ?: return@use null
+                val stream = response.body.byteStream()
                 // Stops at the end of <head>, leaving the rest of the
                 // page un-downloaded — which is what makes the 1MB cap
                 // affordable. This was peekBody(MAX_HTML_BYTES), which

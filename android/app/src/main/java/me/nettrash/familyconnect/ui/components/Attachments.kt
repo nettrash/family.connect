@@ -41,7 +41,7 @@ import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.VideoFile
@@ -750,7 +750,7 @@ private fun iconFor(mime: String): ImageVector = when {
     mime.startsWith("image/") -> Icons.Filled.Image
     mime.startsWith("text/") -> Icons.Filled.Description
     mime in ARCHIVE_TYPES -> Icons.Filled.FolderZip
-    else -> Icons.Filled.InsertDriveFile
+    else -> Icons.AutoMirrored.Filled.InsertDriveFile
 }
 
 private val ARCHIVE_TYPES = setOf(

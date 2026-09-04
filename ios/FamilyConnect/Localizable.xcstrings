@@ -996,7 +996,7 @@
       }
     },
     "%lld members" : {
-      "comment" : "Subtitle of the family sheet: how many people are in the family.",
+      "comment" : "Under the family name on the iPad's empty detail column; %lld is the number of members still in the family.",
       "localizations" : {
         "de" : {
           "variations" : {
@@ -14420,7 +14420,6 @@
       }
     },
     "Name" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {

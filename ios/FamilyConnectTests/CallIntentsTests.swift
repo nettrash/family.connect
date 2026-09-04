@@ -88,6 +88,11 @@ struct CallIntentsTests {
     @Test("the activity types are the three intent class names, in the order the plist lists them")
     func activityTypes() {
         #expect(CallRequest.activityTypes == ["INStartCallIntent", "INStartAudioCallIntent", "INStartVideoCallIntent"])
+        // The two legacy intents are matched by CLASS NAME in the parser
+        // (so the deprecated symbols are never named); the names have to
+        // resolve on this SDK or those routes silently stop working.
+        #expect(NSClassFromString("INStartAudioCallIntent") != nil)
+        #expect(NSClassFromString("INStartVideoCallIntent") != nil)
         let declared = Bundle.main.object(forInfoDictionaryKey: "NSUserActivityTypes") as? [String]
         // The host app's plist when the tests run in it; absent under a bare
         // test host, which is not a failure.

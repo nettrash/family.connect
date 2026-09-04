@@ -37,7 +37,7 @@ import Foundation
 enum BoardBadge {
 
     /// How much of the board this device has actually shown its user.
-    struct Marks: Equatable, Sendable {
+    nonisolated struct Marks: Equatable, Sendable {
         /// Highest note id shown. The fallback rule's mark, kept for notes
         /// that carry no content seq.
         var seenNoteID: Int64

@@ -49,7 +49,7 @@ import me.nettrash.familyconnect.R
  * shipping untranslated prose to a moderator (docs/protocol.md,
  * "Reporting a member").
  */
-internal enum class ReportReason(val wire: String, @StringRes val label: Int) {
+internal enum class ReportReason(val wire: String, @param:StringRes val label: Int) {
     SPAM("spam", R.string.s_report_reason_spam),
     HARASSMENT("harassment", R.string.s_report_reason_harassment),
     INAPPROPRIATE("inappropriate", R.string.s_report_reason_inappropriate),
