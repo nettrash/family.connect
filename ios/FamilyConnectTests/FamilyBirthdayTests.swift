@@ -364,6 +364,7 @@ struct FamilyBirthdayTests {
         StubURLProtocol.register(host: host, handler: handler)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            PendingMediaItemEntity.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!,

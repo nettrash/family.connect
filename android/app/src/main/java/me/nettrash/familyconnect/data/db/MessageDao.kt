@@ -269,6 +269,45 @@ interface MessageDao {
     @Query("UPDATE messages SET status = :status WHERE clientMsgId = :clientMsgId")
     suspend fun setStatus(clientMsgId: String, status: MessageStatus)
 
+    /**
+     * Keep the row queued and say when to try again — what a TRANSIENT
+     * failure does instead of turning the bubble red (docs/protocol.md,
+     * "Sending on an unreliable network").
+     */
+    @Query(
+        "UPDATE messages SET status = 'SENDING', sendAttempts = :attempts, nextAttemptAt = :nextAttemptAt " +
+            "WHERE clientMsgId = :clientMsgId AND serverId IS NULL",
+    )
+    suspend fun scheduleRetry(clientMsgId: String, attempts: Int, nextAttemptAt: Long)
+
+    /**
+     * Give up visibly. `serverId IS NULL` is the guard that keeps a
+     * DELIVERED message from being painted red by a stale attempt that
+     * finished after its ack landed.
+     */
+    @Query(
+        "UPDATE messages SET status = 'FAILED', sendAttempts = :attempts, nextAttemptAt = NULL " +
+            "WHERE clientMsgId = :clientMsgId AND serverId IS NULL",
+    )
+    suspend fun markSendFailed(clientMsgId: String, attempts: Int): Int
+
+    /**
+     * Replace an own-send's placeholder attachments with the real ones,
+     * once every upload has landed.
+     */
+    @Query(
+        "UPDATE messages SET attachmentId = :attachmentId, attachmentsJson = :attachmentsJson " +
+            "WHERE clientMsgId = :clientMsgId AND serverId IS NULL",
+    )
+    suspend fun applyOwnAttachments(clientMsgId: String, attachmentId: Long, attachmentsJson: String)
+
+    /** Tap-to-retry: a person asking again is a fresh budget. */
+    @Query(
+        "UPDATE messages SET status = 'SENDING', sendAttempts = 0, nextAttemptAt = NULL " +
+            "WHERE clientMsgId = :clientMsgId",
+    )
+    suspend fun resetSendBudget(clientMsgId: String)
+
     @Query("DELETE FROM messages WHERE clientMsgId = :clientMsgId")
     suspend fun deleteByClientMsgId(clientMsgId: String)
 

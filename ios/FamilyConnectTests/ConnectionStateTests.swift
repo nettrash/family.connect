@@ -40,6 +40,7 @@ struct ConnectionStateTests {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self, NoteEntity.self,
+            PendingMediaItemEntity.self,
             configurations: configuration)
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!,
@@ -108,5 +109,52 @@ struct ConnectionStateTests {
         // The socket's own loop is retrying — "offline" is reserved for a
         // deliberate suspension, so the banner must say connecting.
         #expect(coordinator.connectionState == .connecting)
+    }
+}
+
+@MainActor
+@Suite("Network reachability")
+struct NetworkReachabilityTests {
+
+    /// The one signal this app did not have: a route appearing where
+    /// there was none. It fires on the TRANSITION only — a path that was
+    /// already satisfied is not news, and treating it as news would make
+    /// every interface update a reconnect.
+    @Test("restored fires only on the unsatisfied → satisfied edge")
+    func firesOnTheEdge() {
+        let reachability = NetworkReachability()
+        var restored = 0
+        reachability.onRestored = { restored += 1 }
+
+        reachability.apply(satisfied: true)
+        #expect(restored == 0, "already online is not an event")
+
+        reachability.apply(satisfied: false)
+        #expect(restored == 0)
+
+        let comeBack = Date()
+        reachability.apply(satisfied: true, now: comeBack)
+        #expect(restored == 1)
+        #expect(reachability.isOnline)
+    }
+
+    /// Switching from cellular to Wi-Fi fires several satisfied paths in
+    /// a second; undebounced, that is its own little reconnect storm.
+    @Test("bursts of path updates are debounced into one restore")
+    func debouncesBursts() {
+        let reachability = NetworkReachability(debounce: 2)
+        var restored = 0
+        reachability.onRestored = { restored += 1 }
+        let start = Date()
+
+        reachability.apply(satisfied: false, now: start)
+        reachability.apply(satisfied: true, now: start)
+        reachability.apply(satisfied: false, now: start.addingTimeInterval(0.2))
+        reachability.apply(satisfied: true, now: start.addingTimeInterval(0.4))
+        #expect(restored == 1, "the second flap is inside the debounce window")
+
+        reachability.apply(satisfied: false, now: start.addingTimeInterval(5))
+        reachability.apply(satisfied: true, now: start.addingTimeInterval(6))
+        #expect(restored == 2, "a genuinely later restore still counts")
     }
 }

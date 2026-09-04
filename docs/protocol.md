@@ -54,8 +54,24 @@ Canonical codes: `unauthorized`, `invalid_credentials`, `username_taken`, `valid
 `board_full`, `invalid_pagination`, `device_not_found`, `invalid_poll`, `poll_closed`,
 `calls_disabled`, `video_calls_disabled`, `invalid_call`, `call_not_found`, `call_busy`,
 `peer_busy`, `peer_unreachable`, `avatar_too_large`, `invalid_image`, `attachment_too_large`,
-`invalid_attachment`, `attachment_not_found`, `attachment_already_used`, `storage_full`,
-`internal`.
+`invalid_attachment`, `attachment_not_found`, `attachment_expired`, `attachment_already_used`,
+`storage_full`, `too_many_requests`, `internal`.
+
+**Transient or terminal — every failure is one or the other, and a client must tell them apart.**
+A TRANSIENT failure says nothing about the request except that it did not arrive or was not
+answered: every transport failure (DNS, refused, reset, timeout), `408`, `429`, every `5xx`, and
+the `internal` code. A TERMINAL failure is the server having read the request and refused it:
+every other 4xx with a code from the list above. The rule that follows is the whole point of the
+distinction — **a transient failure is not a refusal, and a client must never present one as
+one.** It retries, with backoff, for as long as the user has not withdrawn the request; it shows a
+failed state only on a terminal code. See "Sending on an unreliable network".
+
+`429 too_many_requests` deserves its own note because of where it comes from. The reference
+deployment puts nginx in front of this server (see `docs/operations.md`), and nginx answers its own
+rate and connection limits with `429` and an **HTML body** — so a `429` may arrive WITHOUT the JSON
+error shape above, and status alone must be enough for a client to classify it. It carries
+`Retry-After` in delta-seconds, which a client honours on every method, `POST` included, capping
+the wait at something sane. A `429` is never a failed message.
 
 `owner_cannot_leave` is RETIRED: no endpoint raises it any more (see `POST /families/leave`). It
 stays listed because clients that predate the hand-off still branch on it, and a code that vanishes
@@ -1906,7 +1922,9 @@ An attachment can be claimed once — by one message, alongside up to nine other
 naming it is `attachment_already_used`, and the same id twice in one `attachment_ids` array is
 `invalid_attachment`.
 **Unclaimed attachments are deleted after 24 hours** — a send the user abandoned must not leave
-100 MB on the server forever.
+100 MB on the server forever. The id is remembered for a further 30 days, without the bytes, so a
+client coming back with it is answered `attachment_expired` rather than `attachment_not_found` and
+knows to upload again (see "Sending on an unreliable network").
 
 A message carrying an attachment MAY have an empty body: a photo needs no caption. `message_empty`
 applies only to a message with neither.
@@ -2882,6 +2900,64 @@ apply it under the same rule the board catch-up uses: a note is written only whe
      be lost until the poll holding it next changed. One redundant catch-up page is the cheaper
      mistake.
   4. Re-send any locally pending outbound messages (safe: `client_msg_id` dedups).
+
+  **Step 4 is not a step.** It is written fourth because it reads well fourth, and that is the
+  only sense in which it comes last. The outbox is an obligation in its own right, ordered against
+  nothing above it: a client that could not finish — or could not start — steps 1 to 3 must flush
+  it anyway. Both ports of this app originally implemented the list literally, with the flush as
+  the tail of one function that returned early whenever a read failed, which put the one operation
+  that recovers a stuck message behind the reads most likely to fail on the network that stuck it.
+  Flush FIRST if anything is outstanding; it costs one request per queued message and it is
+  idempotent, so an early flush is never wrong.
+
+### Sending on an unreliable network
+
+The dedup key makes a send safe to repeat; this section is about a client's duty to repeat it.
+Everything here is client behaviour — the wire does not change — but it is written down because
+two ports that each invented their own answer produced two different apps, and because the
+failure it prevents is the worst one this product has: a message the sender believes they sent.
+
+**A send has three outcomes, not two: delivered, refused, and unknown.** Unknown is by far the
+most common on a bad network, and it is the one that must not be shown to the user. A frame that
+got no `ack`, a `POST` that timed out, a `429`, a `502` from a proxy, a socket that closed
+mid-write: none of these say whether the message landed. The message stays in the outbox and the
+client keeps trying.
+
+- **The ack deadline is 10 seconds, and so is the frame write.** A `send` frame with no `ack` and
+  no `error` within that window is unanswered; the client re-sends over `POST /chats/{id}/messages`
+  with the same `client_msg_id`. The write itself gets the same deadline, because a socket whose
+  TCP connection is dead absorbs a write and the keepalive horizon is far longer than a person's
+  patience. An `error` frame carrying a TRANSIENT code is treated exactly as no answer at all.
+- **Only a terminal code marks a message failed.** `validation`, `message_empty`,
+  `message_too_long`, `not_chat_member`, `chat_not_found`, `blocked`, `invalid_poll`,
+  `invalid_attachment`, `attachment_not_found` and `attachment_already_used` are refusals: the
+  message will never be accepted as it stands, and the user has to be told. Everything else leaves
+  the row queued.
+- **Queued rows are retried with backoff, without being asked.** The same full-jitter shape the
+  reconnect loop uses. A client bounds the attempts and, when it gives up, gives up VISIBLY — a
+  failed row with a retry affordance is a promise to the user that nothing else is coming.
+- **A returning network is a trigger.** Flush the outbox when connectivity is restored, when the
+  app returns to the foreground, and when the socket connects. Waiting for the next reconnect to
+  come round on its own is what makes a message sit unsent under a full signal bar.
+- **A media send is represented before the first byte.** The message row and the attachments it
+  still owes are written down — and the bytes moved somewhere the system will not reclaim — BEFORE
+  the first upload starts, so an interrupted send is a bubble that can be finished rather than
+  nothing at all. Until every upload has landed that row must never be posted: a message claiming
+  no attachments is a text message, and for a photo with a caption the server would accept it
+  happily, leaving a delivered bubble with the pictures gone. Ids that DID land are kept and reused
+  within the grace, so a retry pushes only the remainder.
+- **Keep the source bytes until the message is acked.** An attachment id is only valid while the
+  server still holds the upload it names — unclaimed uploads are swept after
+  `limits.attachment_grace_hours` — so a client that has thrown its copy away has no way to
+  recover, and the message can never be sent.
+- **`attachment_expired` means upload it again, not give up.** A send naming an upload the sweep
+  has already taken is answered `attachment_expired` (404) rather than `attachment_not_found`, and
+  only for an upload the CALLER made: the two are different situations and only one of them has a
+  way out. The server keeps a marker for 30 days after it removes such an upload, which is what
+  lets it tell them apart. A client that still holds the bytes drops the dead ids, uploads them
+  again and re-sends the same `client_msg_id`; one that does not tells the person the media is
+  gone rather than retrying something that can never succeed. `attachment_not_found` and
+  `attachment_already_used` remain terminal.
 
 ## Push notifications
 

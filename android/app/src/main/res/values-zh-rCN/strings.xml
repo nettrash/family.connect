@@ -281,7 +281,6 @@
     <string name="s_flip_camera">切换摄像头</string>
     <string name="e_camera_permission">Family 需要使用相机的权限。</string>
     <string name="s_video_calls_are_off_on_this_server">此服务器已关闭视频通话</string>
-    <string name="s_uploading_n_of_m">正在上传第 %1$d 项，共 %2$d 项…</string>
     <string name="e_attachment_limit">一条消息最多只能携带 %1$d 个附件。</string>
     <string name="s_share_choose_chat">分享到…</string>
     <string name="s_shared_with_family">分享给 Family</string>

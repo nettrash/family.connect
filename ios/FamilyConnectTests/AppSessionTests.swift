@@ -554,6 +554,7 @@ struct AppSessionTransitionTests {
         AppSettings.serverURL = URL(string: "https://socket-unauthorized.test")!
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self, NoteEntity.self,
+            PendingMediaItemEntity.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let (session, spies) = makeSession()
         let coordinator = ChatSyncCoordinator(modelContainer: container)

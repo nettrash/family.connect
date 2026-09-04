@@ -61,6 +61,7 @@ pub mod codes {
     pub const ATTACHMENT_TOO_LARGE: &str = "attachment_too_large";
     pub const INVALID_ATTACHMENT: &str = "invalid_attachment";
     pub const ATTACHMENT_NOT_FOUND: &str = "attachment_not_found";
+    pub const ATTACHMENT_EXPIRED: &str = "attachment_expired";
     pub const ATTACHMENT_ALREADY_USED: &str = "attachment_already_used";
     /// The disk is nearly full. Says nothing about the request — the same
     /// upload succeeds unchanged once the operator frees something.

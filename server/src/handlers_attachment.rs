@@ -804,6 +804,11 @@ pub(crate) async fn remove_all_if_unreferenced(
     Ok(())
 }
 
+/// How long an expiry marker outlives the upload it describes. Long
+/// enough that any client still holding the id learns what happened,
+/// short enough that the table stays small (0035).
+const EXPIRY_MARKER_DAYS: i32 = 30;
+
 /// Delete unclaimed uploads past the grace period.
 ///
 /// A send the user abandoned — picked a video, changed their mind — leaves
@@ -811,14 +816,36 @@ pub(crate) async fn remove_all_if_unreferenced(
 /// system would ever remove them.
 pub async fn sweep_unclaimed(state: &AppState) -> Result<u64, ApiError> {
     let hours = state.cfg.limits.attachment_grace_hours;
+    // The row goes and a MARKER stays (0035): a client whose outbox was
+    // holding a message through a long offline stretch comes back with an
+    // id this sweep took, and `attachment_expired` is what tells it to
+    // upload the bytes again rather than fail the message forever. One
+    // statement, so a marker can never be missed for a row that went.
     let rows = sqlx::query(
-        "DELETE FROM attachments
-         WHERE message_id IS NULL
-           AND created_at < now() - make_interval(hours => $1)
-         RETURNING storage_key",
+        "WITH gone AS (
+             DELETE FROM attachments
+              WHERE message_id IS NULL
+                AND created_at < now() - make_interval(hours => $1)
+             RETURNING id, uploader_id, storage_key
+         ), marked AS (
+             INSERT INTO expired_attachments (id, uploader_id)
+             SELECT id, uploader_id FROM gone
+             ON CONFLICT (id) DO NOTHING
+         )
+         SELECT storage_key FROM gone",
     )
     .bind(hours as i32)
     .fetch_all(&state.pool)
+    .await?;
+
+    // And the markers nobody can still be holding. A client's outbox does
+    // not remember an id for a month, and a table that only ever grows is
+    // its own kind of leak.
+    sqlx::query(
+        "DELETE FROM expired_attachments WHERE expired_at < now() - make_interval(days => $1)",
+    )
+    .bind(EXPIRY_MARKER_DAYS)
+    .execute(&state.pool)
     .await?;
 
     // REFCOUNTED, and this is the part that must never regress: since

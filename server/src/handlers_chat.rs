@@ -939,16 +939,33 @@ async fn claim_attachment(
             .await?
             .flatten();
     if exists.is_some() {
-        Err(ApiError::conflict(
+        return Err(ApiError::conflict(
             codes::ATTACHMENT_ALREADY_USED,
             "that attachment is already on another message",
-        ))
-    } else {
-        Err(ApiError::not_found(
-            codes::ATTACHMENT_NOT_FOUND,
-            "no such attachment",
-        ))
+        ));
     }
+    // The third answer, and the one a client can act on: an upload THIS
+    // caller made and the unclaimed sweep took (0035). It is ordinary on a
+    // client whose outbox held a message through a long offline stretch,
+    // and it means "upload the bytes again", not "give up" — which is
+    // exactly what `attachment_not_found` cannot say.
+    let expired: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM expired_attachments WHERE id = $1 AND uploader_id = $2)",
+    )
+    .bind(attachment_id)
+    .bind(uploader_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if expired {
+        return Err(ApiError::not_found(
+            codes::ATTACHMENT_EXPIRED,
+            "that upload was not claimed in time and has been removed — upload it again",
+        ));
+    }
+    Err(ApiError::not_found(
+        codes::ATTACHMENT_NOT_FOUND,
+        "no such attachment",
+    ))
 }
 
 /// Advance a read marker, monotonically (the max ever reported wins).

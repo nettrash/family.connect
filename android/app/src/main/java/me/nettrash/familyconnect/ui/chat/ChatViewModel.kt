@@ -1145,50 +1145,36 @@ class ChatViewModel @Inject constructor(
         if (_replyDraft.value == null) _replyDraft.value = quote
     }
 
+    /**
+     * Hand a staged set to the outbox and get the composer back.
+     *
+     * Nothing is awaited and nothing can be lost here any more: the
+     * repository writes the message row and its item rows — and moves the
+     * bytes out of the evictable cache — before the first byte goes out,
+     * so the send belongs to the database from this instant. A failure is
+     * a red bubble with a Retry button, exactly like a text message,
+     * rather than a set this view model has to catch and hold.
+     */
     private fun sendStaged(prepared: List<MediaPrep.Prepared>, caption: String) {
         val quote = _replyDraft.value
         inputState.clearText()
         _replyDraft.value = null
-        // send() already took the staged set atomically; clearing it again
-        // here would clobber anything staged in between.
-        _mediaState.value = MediaSendState.Uploading
-        // App scope, not viewModelScope: navigating away used to take a
-        // 90 MB upload with it — no bubble, no FAILED row, no error.
+        // App scope, not viewModelScope: the staging and the first upload
+        // must not be cancelled by navigating away.
         appScope.launch {
-            val sent = messageRepository.sendMedia(
-                prepared,
-                caption,
-                chatId,
-                quote,
-            ) { index, total ->
-                // "Uploading 2 of 5…" — only a set worth counting gets a
-                // counter; a single upload keeps the plain busy strip.
-                if (total > 1) {
-                    _mediaState.value = MediaSendState.Working(
-                        appContext.getString(R.string.s_uploading_n_of_m, index, total),
-                    )
-                }
-            }
-            if (sent) {
-                _mediaState.value = MediaSendState.Idle
-            } else {
+            val queued = messageRepository.sendMedia(prepared, caption, chatId, quote)
+            if (queued == null) {
+                // Only when not one item could be staged — a full disk, or
+                // a file that vanished between picking and sending.
                 _mediaState.value =
                     MediaSendState.Failed(appContext.getString(R.string.e_send_failed))
-                // sendMedia deletes an item's prepared file only once
-                // ITS upload has landed (iOS parity), so the files still
-                // on disk are exactly the unsent tail — put them back in
-                // the composer for a one-tap retry. Uploads that landed
-                // before the failure are left to the server's 24-hour
-                // sweep of unclaimed attachments. PREPENDED atomically:
-                // they were staged before anything added mid-upload.
                 val remainder = prepared.filter { it.file.exists() }
                 if (remainder.isNotEmpty()) {
                     _staged.update { current -> remainder + current }
                 }
-                if (inputState.text.isEmpty()) {
-                    inputState.setTextAndPlaceCursorAtEnd(caption)
-                }
-                if (_replyDraft.value == null) _replyDraft.value = quote
+                restoreComposer(caption, quote)
+            } else {
+                _mediaState.value = MediaSendState.Idle
             }
         }
     }

@@ -68,7 +68,6 @@ struct FamilyConnectApp: App {
     /// the cache away every time anything above it changed.
     private let avatars: AvatarStore?
     private let attachments: AttachmentStore?
-    private let outbox: MediaOutbox?
 
     init() {
         // UI-test hook: launch with a clean slate so the smoke test can
@@ -93,6 +92,7 @@ struct FamilyConnectApp: App {
 
         let schema = Schema([
             ChatEntity.self, MessageEntity.self, MemberEntity.self, NoteEntity.self,
+            PendingMediaItemEntity.self,
             BlockEntity.self,
         ])
         let configuration = ModelConfiguration(
@@ -196,6 +196,11 @@ struct FamilyConnectApp: App {
             session.clearChatStore = {
                 let context = container.mainContext
                 try? context.delete(model: MessageEntity.self)
+                // The unfinished half of any queued media send goes with
+                // the messages it belonged to. Its FILES are removed
+                // separately (`clearMediaOutbox`): deleting rows here
+                // would otherwise strand directories nothing names.
+                try? context.delete(model: PendingMediaItemEntity.self)
                 try? context.delete(model: ChatEntity.self)
                 try? context.delete(model: MemberEntity.self)
                 try? context.delete(model: NoteEntity.self)
@@ -294,15 +299,29 @@ struct FamilyConnectApp: App {
             self.pushRegistrar = registrar
             let avatars = AvatarStore(api: coordinator.api)
             let attachments = AttachmentStore(api: coordinator.api)
-            // App-scoped on purpose: it owns sends that outlive the view
-            // that started them, which is the whole point of it.
-            let outbox = MediaOutbox()
-            // A set composed in one account must never reach the next.
-            session.clearMediaOutbox = { outbox.purgeAll() }
-            // Files left by a process killed mid-upload have no owner and
-            // nothing else will ever look at them; this is the only cleanup
-            // that survives a kill.
-            _ = MediaOutbox.sweepOrphans(keeping: outbox.liveFileURLs)
+            // Composer litter: files staged for a set that was never sent,
+            // orphaned by a kill. A process that has just started owns
+            // none of them. This must NOT touch PendingMediaStaging —
+            // those bytes belong to messages somebody pressed Send on.
+            MediaOutbox.sweepOrphans()
+            // Staging directories no row names any more: a send that was
+            // delivered while the process died between deleting its rows
+            // and deleting its files, or a store the app had to recreate.
+            // AFTER the container is open, because it needs the rows to
+            // know what to keep.
+            let liveItemIDs = Set(((try? container.mainContext.fetch(
+                FetchDescriptor<PendingMediaItemEntity>())) ?? []).map(\.itemID))
+            PendingMediaStaging.sweepOrphans(keeping: liveItemIDs)
+            // A queued media send composed in one account must never reach
+            // the next: rows AND the bytes they own.
+            session.clearMediaOutbox = {
+                let context = container.mainContext
+                let staged = (try? context.fetch(
+                    FetchDescriptor<PendingMediaItemEntity>())) ?? []
+                for item in staged { PendingMediaStaging.remove(itemID: item.itemID) }
+                try? context.delete(model: PendingMediaItemEntity.self)
+                try? context.save()
+            }
             coordinator.bind(attachmentStore: attachments)
             // Logout wipes the store; faces must go with it, or the next
             // account inherits this one's.
@@ -314,7 +333,6 @@ struct FamilyConnectApp: App {
             avatars.onUnauthorized = { [weak session] in session?.handleUnauthorized() }
             self.avatars = avatars
             self.attachments = attachments
-            self.outbox = outbox
         } else {
             self.session = nil
             self.coordinator = nil
@@ -327,7 +345,6 @@ struct FamilyConnectApp: App {
             #endif
             self.avatars = nil
             self.attachments = nil
-            self.outbox = nil
         }
     }
 
@@ -352,7 +369,6 @@ struct FamilyConnectApp: App {
                     .environment(previewLoader)
                     .environment(avatars ?? AvatarStore(api: coordinator.api))
                     .environment(attachments ?? AttachmentStore(api: coordinator.api))
-                    .environment(outbox ?? MediaOutbox())
             }
         case .failure(let error):
             StoreErrorView(error: error)

@@ -48,9 +48,6 @@ struct MacConversationView: View {
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
 
-    /// Owns a media send from the moment it starts; see MediaOutbox.
-
-    @Environment(MediaOutbox.self) private var outbox
     /// For `callsEnabled` — whether this server rings anybody at all.
     @Environment(AppSession.self) private var session
     @Environment(CallManager.self) private var calls
@@ -779,9 +776,6 @@ struct MacConversationView: View {
             // with nothing left to release it. See the note there; it ends
             // in a permanently and silently read conversation.
             .task(id: chatID) {
-                // Recovery first; see the phone's note on why the set wins
-                // over the parked text.
-                recoverFailedSend()
                 if draft.isEmpty, let parked = ComposerDrafts.take(for: chatID) {
                     draft = parked
                 }
@@ -853,9 +847,6 @@ struct MacConversationView: View {
             // A send for this chat failed. Whichever composer is on screen
             // adopts it — including this one right after its own send
             // failed, which is how the in-place restore happens now.
-            .onChange(of: outbox.failedCount(for: chatID)) {
-                recoverFailedSend()
-            }
             .onChange(of: composerHeight) {
                 // The composer just grew or shrank into the thread. Re-pin,
                 // so the newest message stays above it — this is the phone's
@@ -1538,7 +1529,7 @@ struct MacConversationView: View {
                 draft = ""
                 replyDraft = nil
                 owesSendPin = true
-                let sent = await coordinator.sendLocation(
+                let queued = coordinator.sendLocation(
                     latitude: fix.latitude,
                     longitude: fix.longitude,
                     accuracyM: fix.accuracyM,
@@ -1546,7 +1537,7 @@ struct MacConversationView: View {
                     caption: caption,
                     replyTo: quote,
                     in: chatID)
-                if !sent {
+                if queued == nil {
                     // Through the guarded restore, like every other send
                     // here: a location fix can take twenty seconds, and
                     // assigning unconditionally would wipe whatever was
@@ -2163,90 +2154,33 @@ struct MacConversationView: View {
         draft = ""
         replyDraft = nil
         staged = []
-        mediaNotice = .busy(String(localized: "Sending…"))
-        // The outbox owns the set from here — before the first byte, not
-        // from the failure branch. Same reasoning as the phone: between
-        // clearing `staged` and the failure returning, the set belongs to
-        // nobody but a running Task, and this window is wider on the Mac,
-        // where a sidebar selection can replace the view at any moment.
-        let token = outbox.begin(
-            chatID: chatID,
-            caption: caption,
-            replyTo: quote,
-            prepared: items.map(\.prepared))
-        // A media send IS a send: `composerIsBusy` and `canSend` read
-        // this, so the attach menu, the paste door and a second Send
-        // stay closed until the upload resolves — the same gate the
-        // phone keys on its `.uploading` state. The notice alone gates
-        // nothing, which is right: a download's `.busy` notice must
-        // leave the composer usable.
-        isSending = true
         // Declared at the door, because that is the only moment this is
         // knowable without guessing (see `owesSendPin`).
         owesSendPin = true
-        Task {
-            defer { isSending = false }
-            let sent = await coordinator.sendMedia(
-                items.map(\.prepared),
-                caption: caption,
-                replyTo: quote,
-                in: chatID,
-                onItemStart: { index, total in
-                    // The same line that already says "Sending…" carries
-                    // the count once there is more than one to count.
-                    guard total > 1 else { return }
-                    mediaNotice = .busy(
-                        String(localized: "Uploading \(index) of \(total)…"))
-                })
-            if sent {
-                // `sendMedia` consumed the files; only the entry is left.
-                outbox.finish(token)
-                mediaNotice = nil
-            } else {
-                // Marked, NOT taken. A take removes the entry whether or
-                // not this view still exists, and on the Mac it very often
-                // does not — the sidebar replaces it. Observation decides
-                // who adopts it; see `.onChange` on the outbox below.
-                outbox.fail(token)
-                // Disarm the pin HERE, not as a side effect of adoption.
-                // This branch is the only place that knows for certain no
-                // row is coming; recovery may be declined or deferred, and
-                // a pin left armed pulls the next reader out of history for
-                // somebody else's message. Idempotent with the disarm in
-                // `restoreComposer`.
-                owesSendPin = false
-                mediaNotice = .failed(String(localized: "Couldn't send that."))
-            }
+        // Nothing is awaited and nothing can be lost: the coordinator
+        // writes the message row and the item rows — and moves the files
+        // somewhere the system will not reclaim — before the first byte
+        // goes out. That matters more here than on the phone, where
+        // `.id(selectedChatID)` replaces this view the moment the reader
+        // clicks another chat, and an upload started here routinely
+        // outlived it. A failure is now a red bubble with tap-to-retry.
+        if coordinator.sendMedia(
+            items.map(\.prepared),
+            caption: caption,
+            replyTo: quote,
+            in: chatID) == nil
+        {
+            // Only when not one item could be staged.
+            restoreComposer(caption: caption, quote: quote)
+            owesSendPin = false
+            mediaNotice = .failed(String(localized: "Couldn't send that."))
+        } else {
+            mediaNotice = nil
         }
     }
 
     /// Put the composer back when the send never happened — but never over
     /// something typed in the meantime.
-    /// Adopt a send that failed with nobody left to hand it back to.
-    ///
-    /// On the Mac this is the common case, not the edge one: the sidebar's
-    /// `.id(selectedChatID)` replaces this view whenever the reader clicks
-    /// another chat, so an upload started here routinely outlives it.
-    ///
-    /// Only into an empty composer, and never over a share import — that
-    /// arrives through `consumeShareImport()` in the same `.task` and is
-    /// what the reader is actually looking at.
-    private func recoverFailedSend() {
-        // Only `staged` gates this — see the phone's note: requiring an
-        // empty draft lost the photos of anyone who typed while uploading.
-        guard staged.isEmpty,
-              session.shareImportTarget == nil,
-              let waiting = outbox.mostRecentFailed(for: chatID),
-              let recovered = outbox.take(waiting.id)
-        else { return }
-        staged = recovered.prepared.map { StagedAttachment(prepared: $0) }
-        // Through `restoreComposer`, which is also what disarms the send
-        // pin: no row is coming for this set, and a pin left armed pulls
-        // the next reader out of history for somebody else's message.
-        restoreComposer(caption: recovered.caption, quote: recovered.replyTo)
-        mediaNotice = .failed(String(localized: "Couldn't send that."))
-    }
-
     /// Start a voice note, and say so if it does not start. Same reasoning
     /// as the phone: the recorder recorded its failure and nobody read it,
     /// so a denied microphone made this button silently inert.

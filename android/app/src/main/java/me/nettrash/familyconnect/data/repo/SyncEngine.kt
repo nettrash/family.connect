@@ -43,6 +43,16 @@ class SyncEngine @Inject constructor(
 ) {
 
     suspend fun resync() {
+        // 0. The outbox, BEFORE anything can fail.
+        //
+        // It used to be step 4, at the end of this function, behind the
+        // `return` below — so on the network most likely to have stranded
+        // a message, the one thing that recovers it never ran. It is not a
+        // step of the read pipeline and is ordered against nothing after it
+        // (docs/protocol.md, "Best-effort delivery"): re-sending is
+        // idempotent on client_msg_id, so doing it first is never wrong.
+        messageRepository.flushPending()
+
         // 1. Membership first — if we were removed or the session died,
         // the event handlers reroute and the rest is moot.
         val me = sessionRepository.refreshMe().okOrNull() ?: return
@@ -115,9 +125,6 @@ class SyncEngine @Inject constructor(
         // reason as edits above: `after_id` can never see an older row, so
         // nothing else would ever fix one.
         messageRepository.repairLocationsMissingCoordinates()
-
-        // 4. Re-send anything still pending — safe, client_msg_id dedups.
-        messageRepository.flushPending()
     }
 
     companion object {

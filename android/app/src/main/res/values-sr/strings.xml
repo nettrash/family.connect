@@ -267,7 +267,6 @@
     <string name="s_flip_camera">Промени камеру</string>
     <string name="e_camera_permission">Family треба дозволу за коришћење камере.</string>
     <string name="s_video_calls_are_off_on_this_server">Видео позиви су искључени на овом серверу</string>
-    <string name="s_uploading_n_of_m">Отпремање %1$d од %2$d…</string>
     <string name="e_attachment_limit">Порука може да носи највише %1$d прилога.</string>
     <string name="s_share_choose_chat">Подели у…</string>
     <string name="s_shared_with_family">Подељено са Family</string>

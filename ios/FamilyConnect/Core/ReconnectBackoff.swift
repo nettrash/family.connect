@@ -53,6 +53,14 @@ nonisolated struct ReconnectBackoff: Sendable {
         attempt = 0
     }
 
+    /// Position the counter, for a caller whose attempt count lives
+    /// somewhere else — the outbox keeps its own per-message tally on the
+    /// row, so that a retry schedule survives a relaunch, and then borrows
+    /// this shape to turn it into a delay.
+    mutating func advance(to attempt: Int) {
+        self.attempt = max(0, min(attempt, 62))
+    }
+
     /// Whether a finished connection earned its reset.
     ///
     /// A COMPLETED HANDSHAKE IS NOT ENOUGH, and that distinction is the

@@ -272,6 +272,7 @@ struct CallRecordPersistenceTests {
     private func makeContainer() throws -> ModelContainer {
         try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            PendingMediaItemEntity.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
     }
 

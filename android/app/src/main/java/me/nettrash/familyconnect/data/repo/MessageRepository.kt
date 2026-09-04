@@ -41,6 +41,12 @@ import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.AnchorRow
 import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.MessageDao
+import java.io.File
+import me.nettrash.familyconnect.data.db.uploadedDto
+import me.nettrash.familyconnect.data.db.placeholderId
+import me.nettrash.familyconnect.data.db.placeholderDto
+import me.nettrash.familyconnect.data.db.PendingAttachmentEntity
+import me.nettrash.familyconnect.data.db.PendingAttachmentDao
 import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.db.MessageStatus
 import me.nettrash.familyconnect.data.net.ApiResult
@@ -84,6 +90,8 @@ class MessageRepository @Inject constructor(
     private val posterCache: PosterCache,
     @param:AppScope private val scope: CoroutineScope,
     private val clock: Clock,
+    private val pendingAttachmentDao: PendingAttachmentDao,
+    private val staging: MediaStaging,
 ) {
     /** The device's words for the chat-list previews (see [PreviewLabels]). */
     private val previewLabels: PreviewLabels by lazy { PreviewLabels.from(appContext) }
@@ -92,7 +100,27 @@ class MessageRepository @Inject constructor(
     /** Ack timers keyed by client_msg_id; the ack cancels its timer. */
     private val pendingAcks = ConcurrentHashMap<String, Job>()
 
+    /** Media sends whose uploads are running: one per send at a time. */
+    private val mediaUploads = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** The outbox's own alarm clock: one pending wake at a time. */
+    private var outboxWake: Job? = null
+    @Volatile private var outboxWakeAt: Long? = null
+
+    /** Jitter source; a seam so a test can pin the schedule. */
+    internal var random: kotlin.random.Random = kotlin.random.Random.Default
+
     init {
+        // Staging directories no row names any more: a send delivered while
+        // the process died between deleting its rows and deleting its
+        // files, or a database the app had to recreate. Once per process,
+        // and only ever removing what nothing points at — these bytes
+        // belong to messages somebody pressed Send on.
+        scope.launch {
+            val kept = pendingAttachmentDao.stagedPaths().toSet()
+            val swept = staging.sweepOrphans(kept)
+            if (swept > 0) Log.i(TAG, "swept $swept orphaned media staging director(ies)")
+        }
         scope.launch {
             socket.frames.collect { frame ->
                 when (frame) {
@@ -321,96 +349,75 @@ class MessageRepository @Inject constructor(
         return true
     }
 
+    /**
+     * Queue up to ten attachments as ONE message, in the order given.
+     *
+     * ENQUEUE FIRST, UPLOAD AFTER, and that inversion is the whole point.
+     * This used to upload everything and only then insert the message row,
+     * so until the last byte landed the send existed only in a coroutine
+     * and its files only in `cacheDir`: process death, a cache eviction or
+     * simply leaving the chat lost a photo with no bubble, no error and
+     * nothing to retry. Now the row, its item rows and its bytes are
+     * written before the first byte goes out, and the ordinary outbox
+     * finishes the job on whatever trigger comes next (docs/protocol.md,
+     * "Sending on an unreliable network").
+     *
+     * Returns the clientMsgId of the bubble, or null when nothing could be
+     * staged — there is no "did it send" answer to wait for any more.
+     */
     suspend fun sendMedia(
         prepared: List<MediaPrep.Prepared>,
         caption: String,
         chatId: Long,
         replyTo: ReplyToDto? = null,
-        /** Told before each item's upload starts: (1-based index, total). */
-        onProgress: (index: Int, total: Int) -> Unit = { _, _ -> },
-    ): Boolean {
-        if (prepared.isEmpty()) return false
-        val me = settings.state.first().myUserId ?: return false
-        // Each item's bytes go up in the SENDER'S order, because that
-        // order is what `attachment_ids` preserves and what every read
-        // gives back (protocol.md, "Photos, videos, audio, files and
-        // locations"). A mid-way failure returns false with earlier
-        // uploads already landed: nothing has claimed them, so the
-        // server's 24-hour sweep of unclaimed attachments is what
-        // cleans them up — re-uploading on retry is the cheaper
-        // mistake, not a leak.
-        //
-        // Each item's prepared FILE is deleted only once its own upload
-        // has landed (mirroring iOS ChatSyncCoordinator.sendMedia): on a
-        // mid-way failure the files of the failed item and everything
-        // after it are LEFT ON DISK, which is what lets the composer
-        // re-stage exactly the unsent tail for a one-tap retry.
-        val uploadedAttachments = ArrayList<AttachmentDto>(prepared.size)
-        prepared.forEachIndexed { index, item ->
-            onProgress(index + 1, prepared.size)
-            val uploaded = attachmentApi.upload(
-                file = item.file,
+    ): String? {
+        if (prepared.isEmpty()) return null
+        val me = settings.state.first().myUserId ?: return null
+        val clientMsgId = UUID.randomUUID().toString()
+
+        // The bytes move somewhere the system will not reclaim BEFORE
+        // anything is written, so a row can never name a file that is not
+        // there.
+        val staged = prepared.mapIndexedNotNull { position, item ->
+            val adopted = staging.adopt(item) ?: return@mapIndexedNotNull null
+            PendingAttachmentEntity(
+                clientMsgId = clientMsgId,
+                position = position,
+                localPath = adopted.path,
+                previewPath = adopted.previewPath,
                 mime = item.mime,
                 kind = item.kind,
+                sizeBytes = File(adopted.path).length(),
                 width = item.width,
                 height = item.height,
                 durationMs = item.durationMs,
                 name = item.name,
+                latitude = null,
+                longitude = null,
+                accuracyM = null,
             )
-            val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment ?: return false
-
-            // Per-item and best-effort, exactly as it was for one: a
-            // failed preview costs a thumbnail, never the send.
-            var hasPreview = false
-            val poster = item.previewJpeg
-            if (poster != null) {
-                // Kept BEFORE the upload, so a failure still leaves this
-                // device holding the only copy of the pixels — which is
-                // what makes the repair possible at all (issue #54).
-                if (item.kind == AttachmentDto.KIND_VIDEO) {
-                    posterCache.seedPoster(attachment.id, poster)
-                }
-                hasPreview = attachmentApi.uploadPreview(attachment.id, poster) is ApiResult.Ok
-            } else if (item.kind == AttachmentDto.KIND_VIDEO) {
-                // Distinguishable on purpose from a failed upload: a video
-                // that never HAD a poster and one whose poster upload
-                // failed need different fixes, and until issue #54 the
-                // first of the two said nothing at all (MediaPrep logs the
-                // grab itself; this is what it cost).
-                Log.w(TAG, "video ${attachment.id} sent with no poster frame")
-            }
-            if (item.kind == AttachmentDto.KIND_VIDEO) {
-                // Best-effort ONCE was the bug (issue #54): a poster is
-                // the only image with no second source of pixels, so a
-                // lost one is a grey tile for every recipient, forever.
-                // The note is what lets the next `onAvailable` finish the
-                // job; a landed poster clears it.
-                posterCache.notePosterUpload(attachment.id, hasPreview)
-            }
-            uploadedAttachments += attachment.copy(hasPreview = hasPreview)
-            // This item's bytes are on the server; its prepared file is
-            // consumed. Items after this one keep theirs until their own
-            // upload lands, so a mid-way failure leaves them restorable.
-            item.file.delete()
         }
+        if (staged.isEmpty()) return null
+        pendingAttachmentDao.insertAll(staged)
 
-        val first = uploadedAttachments.first()
+        // The bubble draws NOW, from the bytes this device already holds,
+        // under provisional NEGATIVE ids — the same trick the optimistic
+        // poll plays with its option ids. Without it the sender watches an
+        // empty bubble for the length of the upload.
+        val items = pendingAttachmentDao.itemsFor(clientMsgId)
+        val placeholders = items.map { it.placeholderDto() }
         val body = caption.trim()
-        val clientMsgId = UUID.randomUUID().toString()
         val now = clock.now()
+        val first = placeholders.first()
         messageDao.insert(
             MessageEntity(
                 clientMsgId = clientMsgId,
                 serverId = null,
                 chatId = chatId,
                 senderId = me,
-                // A photo needs no caption: an empty body is allowed
-                // WITH an attachment (protocol.md), and only then.
                 body = body,
                 createdAt = now,
                 status = MessageStatus.SENDING,
-                // The flat columns mirror the FIRST element; the full
-                // set rides in attachmentsJson.
                 attachmentId = first.id,
                 attachmentKind = first.kind,
                 attachmentMime = first.mime,
@@ -423,27 +430,134 @@ class MessageRepository @Inject constructor(
                 attachmentLatitude = first.latitude,
                 attachmentLongitude = first.longitude,
                 attachmentAccuracyM = first.accuracyM,
-                attachmentsJson = AttachmentsCodec.encode(uploadedAttachments),
-                // A photo can answer a message like any other reply;
-                // this used to be dropped on the floor, so the quote
-                // vanished and its banner stayed armed.
+                attachmentsJson = AttachmentsCodec.encode(placeholders),
                 replyToMessageId = replyTo?.messageId,
                 replySenderId = replyTo?.senderId,
                 replyExcerpt = replyTo?.excerpt,
             ),
         )
-        // What arrived, not an empty string: a caption-less photo left
-        // the chat-list row blank because "" is not null and the
-        // fallback never fired.
-        chatDao.updateLastMessage(chatId, previewText(body, uploadedAttachments, labels = previewLabels), now, me)
-        dispatch(
-            clientMsgId,
-            chatId,
-            body,
-            replyTo?.messageId,
-            uploadedAttachments.map { it.id },
-        )
+        chatDao.updateLastMessage(chatId, previewText(body, placeholders, labels = previewLabels), now, me)
+        // The bubble's own pixels, so this device never asks the server for
+        // an id the server has never heard of.
+        items.forEach { item ->
+            item.previewPath?.let { path ->
+                runCatching { File(path).readBytes() }.getOrNull()?.let { jpeg ->
+                    posterCache.seedPoster(item.placeholderId, jpeg)
+                }
+            }
+        }
+        scope.launch { uploadPending(clientMsgId) }
+        return clientMsgId
+    }
+
+    /**
+     * Push up whatever a queued media send still owes, then dispatch it.
+     *
+     * Resumable by construction: an item whose upload landed carries its
+     * `attachmentId`, so a second pass skips it. Re-uploading 100 MB
+     * because the network died on item four is what made a large set
+     * unsendable on a link that kept dropping.
+     */
+    suspend fun uploadPending(clientMsgId: String) {
+        if (!mediaUploads.add(clientMsgId)) return
+        try {
+            val row = messageDao.findByClientMsgId(clientMsgId) ?: return
+            if (row.serverId != null || row.status == MessageStatus.FAILED) return
+            val items = pendingAttachmentDao.itemsFor(clientMsgId)
+            if (items.isEmpty()) return
+
+            for (item in items.filter { it.attachmentId == null }) {
+                if (!uploadItem(clientMsgId, item)) return
+            }
+
+            // Everything landed: write the real set onto the row and hand
+            // it to the ordinary dispatch, which from here cannot tell
+            // this message from a text one.
+            val done = pendingAttachmentDao.itemsFor(clientMsgId)
+            if (done.any { it.attachmentId == null }) return
+            val attachments = done.mapNotNull { it.uploadedDto() }
+            messageDao.applyOwnAttachments(
+                clientMsgId,
+                attachments.first().id,
+                AttachmentsCodec.encode(attachments),
+            )
+            dispatch(
+                clientMsgId,
+                row.chatId,
+                row.body,
+                row.replyToMessageId,
+                attachments.map { it.id },
+            )
+        } finally {
+            mediaUploads.remove(clientMsgId)
+        }
+    }
+
+    /** One item's bytes, its preview and its bookkeeping. */
+    private suspend fun uploadItem(clientMsgId: String, item: PendingAttachmentEntity): Boolean {
+        val uploaded = if (item.kind == AttachmentDto.KIND_LOCATION) {
+            attachmentApi.uploadLocation(
+                latitude = item.latitude ?: 0.0,
+                longitude = item.longitude ?: 0.0,
+                accuracyM = item.accuracyM,
+                name = item.name,
+            )
+        } else {
+            val file = item.localPath?.let(::File)
+            if (file == null || !file.exists()) {
+                // The bytes are gone and nothing can bring them back.
+                // Better a red bubble that says so than a queue retrying
+                // nothing forever.
+                Log.w(TAG, "staged bytes missing for a queued attachment")
+                messageDao.markSendFailed(clientMsgId, MAX_SEND_ATTEMPTS)
+                return false
+            }
+            attachmentApi.upload(
+                file = file,
+                mime = item.mime,
+                kind = item.kind,
+                width = item.width,
+                height = item.height,
+                durationMs = item.durationMs,
+                name = item.name,
+            )
+        }
+        val attachment = (uploaded as? ApiResult.Ok)?.value?.attachment ?: run {
+            pendingAttachmentDao.noteUploadAttempt(item.localId)
+            recordSendFailure(clientMsgId, uploaded)
+            return false
+        }
+
+        // Per-item and best-effort: a failed preview costs a thumbnail,
+        // never the send.
+        var hasPreview = false
+        val poster = item.previewPath?.let { path -> runCatching { File(path).readBytes() }.getOrNull() }
+        if (poster != null) {
+            // Seeded BEFORE the upload, so a failure still leaves this
+            // device holding the only copy of the pixels (issue #54).
+            if (item.kind == AttachmentDto.KIND_VIDEO) {
+                posterCache.seedPoster(attachment.id, poster)
+            }
+            hasPreview = attachmentApi.uploadPreview(attachment.id, poster) is ApiResult.Ok
+        } else if (item.kind == AttachmentDto.KIND_VIDEO) {
+            Log.w(TAG, "video ${attachment.id} sent with no poster frame")
+        }
+        if (item.kind == AttachmentDto.KIND_VIDEO) {
+            posterCache.notePosterUpload(attachment.id, hasPreview)
+        }
+        pendingAttachmentDao.markUploaded(item.localId, attachment.id, hasPreview)
         return true
+    }
+
+    /** Drop a finished send's item rows and the bytes they own. */
+    suspend fun clearPendingMedia(clientMsgId: String) {
+        val items = pendingAttachmentDao.itemsFor(clientMsgId)
+        if (items.isEmpty()) return
+        pendingAttachmentDao.deleteFor(clientMsgId)
+        // Rows first, files second: a crash in between leaves directories
+        // nothing names, which the orphan sweep collects. The other order
+        // leaves rows naming files that are gone.
+        items.forEach { staging.remove(it.localPath) }
     }
 
     /**
@@ -513,7 +627,15 @@ class MessageRepository @Inject constructor(
     suspend fun retry(clientMsgId: String) {
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // already landed
-        messageDao.setStatus(clientMsgId, MessageStatus.SENDING)
+        // A person asking again is a fresh budget: the automatic attempts
+        // were spent on a network that has probably changed since.
+        messageDao.resetSendBudget(clientMsgId)
+        val items = pendingAttachmentDao.itemsFor(clientMsgId)
+        if (items.any { it.attachmentId == null }) {
+            // Still owes bytes: the upload leg, not the dispatch.
+            scope.launch { uploadPending(clientMsgId) }
+            return
+        }
         dispatch(
             clientMsgId,
             row.chatId,
@@ -543,12 +665,42 @@ class MessageRepository @Inject constructor(
         val row = messageDao.findByClientMsgId(clientMsgId) ?: return
         if (row.serverId != null) return // acked rows are history, not drafts
         pendingAcks.remove(clientMsgId)?.cancel()
+        // The staged bytes go with the bubble. This is the one place a
+        // person can say "not this after all", and it is all that stands
+        // between a queued 100 MB video and disk nothing reclaims.
+        clearPendingMedia(clientMsgId)
         messageDao.deleteByClientMsgId(clientMsgId)
     }
 
-    /** Reconnect step 4: re-send everything still awaiting an ack. */
+    /**
+     * The outbox: re-send everything still awaiting an ack whose next
+     * attempt is due.
+     *
+     * NOT a step of the resync — it is called from the socket connecting,
+     * from the app coming to the foreground, from the network returning
+     * and from its own wake timer, because the read pipeline it used to
+     * hang off can fail on exactly the network that stranded these rows
+     * (docs/protocol.md, "Best-effort delivery").
+     */
     suspend fun flushPending() {
+        val now = clock.now()
+        val owingUploads = pendingAttachmentDao.sendsOwingUploads().toSet()
         messageDao.pendingSending().forEach { row ->
+            val due = row.nextAttemptAt?.let { it <= now } ?: true
+            if (!due) return@forEach
+            // A media send still owing uploads goes through the upload
+            // leg, which finishes what it can and then dispatches. This is
+            // the whole of the resume: because a queued media send IS a
+            // pending message row, it inherits every trigger the text
+            // outbox has — the socket connecting, the foreground edge, the
+            // network returning, its own wake timer.
+            if (row.clientMsgId in owingUploads) {
+                // NOT awaited: a 100 MB video would otherwise hold the
+                // whole resync open. The guard inside makes a second call
+                // a no-op.
+                scope.launch { uploadPending(row.clientMsgId) }
+                return@forEach
+            }
             if (!pendingAcks.containsKey(row.clientMsgId)) {
                 dispatch(
                     row.clientMsgId,
@@ -562,6 +714,13 @@ class MessageRepository @Inject constructor(
         }
     }
 
+    /**
+     * THE ONE THAT DESTROYS DATA. A media row whose uploads have not
+     * finished carries PLACEHOLDER ids — negative, meaningless to the
+     * server — and sending them would be refused, or worse, sending none
+     * would post a perfectly good text-only message and leave the sender
+     * looking at a delivered bubble with no photos in it.
+     */
     private fun dispatch(
         clientMsgId: String,
         chatId: Long,
@@ -570,6 +729,10 @@ class MessageRepository @Inject constructor(
         attachmentIds: List<Long>?,
         poll: NewPollDto? = null,
     ) {
+        if (attachmentIds?.any { it < 0 } == true) {
+            scope.launch { uploadPending(clientMsgId) }
+            return
+        }
         val overSocket = socket.state.value == SocketState.Open &&
             socket.trySend(
                 ClientFrame.Send(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll),
@@ -603,7 +766,96 @@ class MessageRepository @Inject constructor(
             chatApi.postMessage(chatId, clientMsgId, body, replyToMessageId, attachmentIds, poll)
         when (result) {
             is ApiResult.Ok -> ackMessage(clientMsgId, result.value.message)
-            else -> messageDao.setStatus(clientMsgId, MessageStatus.FAILED)
+            else -> recordSendFailure(clientMsgId, result)
+        }
+    }
+
+    /**
+     * What a failed delivery does to the row.
+     *
+     * Two rules, and this app had neither. **A transient failure is not a
+     * refusal**: a timeout, a 429 from nginx, a 502 from a proxy and a
+     * 500 from the server all leave the outcome unknown, so the row stays
+     * SENDING with a schedule and comes back on its own — turning it red
+     * handed it to a person who had to notice a bubble in that
+     * conversation and tap it, because FAILED rows are outside
+     * `flushPending`. **And the row is re-read first**: the attempt that
+     * failed may be a stale one whose ack landed while it was in flight,
+     * and writing FAILED over a delivered message produced a red bubble
+     * on a message the whole family had already read, with a Retry button
+     * that did nothing (`retry` returns early once `serverId` is set).
+     * The DAO guards do the re-read atomically (docs/protocol.md,
+     * "Sending on an unreliable network").
+     */
+    private suspend fun recordSendFailure(clientMsgId: String, result: ApiResult<*>) {
+        val row = messageDao.findByClientMsgId(clientMsgId) ?: return
+        if (row.serverId != null) return // it landed after all
+        // An upload this device made and the server's unclaimed sweep took
+        // (docs/protocol.md, "Sending on an unreliable network"). It is
+        // ordinary on a send that sat in the outbox past the grace, and it
+        // means "upload the bytes again", not "give up" — which is exactly
+        // what `attachment_not_found` cannot say. Only answerable because
+        // the bytes are staged durably.
+        if ((result as? ApiResult.HttpError)?.code == "attachment_expired") {
+            val items = pendingAttachmentDao.itemsFor(clientMsgId)
+            val recoverable = items.isNotEmpty() && items.all { item ->
+                item.kind == AttachmentDto.KIND_LOCATION ||
+                    item.localPath?.let { File(it).exists() } == true
+            }
+            if (recoverable) {
+                Log.i(TAG, "uploads expired for $clientMsgId; sending the bytes again")
+                pendingAttachmentDao.forgetUploads(clientMsgId)
+                messageDao.applyOwnAttachments(
+                    clientMsgId,
+                    items.first().placeholderId,
+                    AttachmentsCodec.encode(items.map { it.placeholderDto() }),
+                )
+                scope.launch { uploadPending(clientMsgId) }
+                return
+            }
+        }
+        val attempts = row.sendAttempts + 1
+        val terminal = !result.isTransient
+        if (terminal || attempts >= MAX_SEND_ATTEMPTS) {
+            messageDao.markSendFailed(clientMsgId, attempts)
+            return
+        }
+        // The server's own Retry-After wins when it sent one: it knows how
+        // long its bucket needs, and guessing shorter spends the next
+        // attempt on another 429.
+        val retryAfterMs = (result as? ApiResult.HttpError)?.retryAfterSeconds?.times(1000L) ?: 0L
+        val delay = maxOf(backoffMillis(attempts), retryAfterMs)
+        messageDao.scheduleRetry(clientMsgId, attempts, clock.now() + delay)
+        scheduleOutboxWake(delay)
+    }
+
+    /**
+     * Full jitter, the shape the reconnect loop uses: a family's devices
+     * come back at the same instant and must not re-send in lockstep.
+     */
+    private fun backoffMillis(attempt: Int): Long {
+        // `shl attempt`, not `attempt - 1`: the ceilings are 4 s, 8, 16,
+        // 32, 60 — the same ladder iOS climbs, so the two ports wait the
+        // same amount of time before the same red bubble.
+        val ceiling = minOf(SEND_BACKOFF_CAP_MS, SEND_BACKOFF_BASE_MS shl attempt.coerceIn(0, 20))
+        return random.nextLong(ceiling + 1)
+    }
+
+    /**
+     * Wake the outbox when a scheduled attempt comes due, so a message
+     * queued for eight seconds is sent in eight seconds rather than at
+     * whatever time the socket next reconnects.
+     */
+    private fun scheduleOutboxWake(delayMs: Long) {
+        val at = clock.now() + delayMs
+        val current = outboxWakeAt
+        if (outboxWake?.isActive == true && current != null && current <= at) return
+        outboxWake?.cancel()
+        outboxWakeAt = at
+        outboxWake = scope.launch {
+            delay(delayMs.coerceAtLeast(50L))
+            outboxWakeAt = null
+            flushPending()
         }
     }
 
@@ -621,6 +873,10 @@ class MessageRepository @Inject constructor(
         }
         val createdAt = TimeFormat.parseTimestamp(message.createdAt) ?: clock.now()
         messageDao.markAcked(clientMsgId, message.id, createdAt)
+        // It landed: the staged bytes and the item rows have no further
+        // job, and holding 100 MB for a message the family has already
+        // read is the leak this design has to avoid.
+        clearPendingMedia(clientMsgId)
         // The server's recomputed snippet replaces the one this device
         // guessed when it enqueued the row — same rule as iOS's applyReply.
         messageDao.setReply(
@@ -881,10 +1137,36 @@ class MessageRepository @Inject constructor(
         }
     }
 
+    /**
+     * An `error` frame answering one of our sends.
+     *
+     * A TERMINAL code is the server having read the send and refused it,
+     * and the bubble goes red. A transient one — `internal`, or anything
+     * this client does not recognise — is treated exactly as no answer at
+     * all, and the REST leg runs at once instead of after the ack timeout.
+     *
+     * The `cancel()` here used to be unconditional, and it cancelled the
+     * coroutine that WAS the REST fallback: a momentary server hiccup
+     * therefore failed the message permanently on Android while the
+     * iPhone next to it sent the same text fine.
+     */
     private suspend fun onSendError(frame: ServerFrame.Error) {
         val clientMsgId = frame.clientMsgId ?: return
         pendingAcks.remove(clientMsgId)?.cancel()
-        messageDao.setStatus(clientMsgId, MessageStatus.FAILED)
+        val row = messageDao.findByClientMsgId(clientMsgId) ?: return
+        if (row.serverId != null) return
+        if (frame.code in TERMINAL_SEND_ERRORS) {
+            messageDao.markSendFailed(clientMsgId, row.sendAttempts + 1)
+            return
+        }
+        restFallback(
+            clientMsgId,
+            row.chatId,
+            row.body,
+            row.replyToMessageId,
+            row.attachmentIds,
+            pendingPollOf(row),
+        )
     }
 
     // -- Reactions ------------------------------------------------------------------
@@ -1382,7 +1664,41 @@ class MessageRepository @Inject constructor(
         /** Most broken locations repaired per resync — see the note above. */
         private const val REPAIR_BATCH = 25
 
-        private const val ACK_TIMEOUT_MS = 15_000L
+        /**
+         * The ack deadline, and the same number iOS uses. The protocol
+         * names 10 s as the recommendation, and the sooner the REST rescue
+         * starts on a half-open socket the better (docs/protocol.md,
+         * "Sending on an unreliable network").
+         */
+        private const val ACK_TIMEOUT_MS = 10_000L
+
+        /**
+         * Automatic re-sends before a transient failure is finally shown
+         * as a red bubble. Bounded, and it gives up VISIBLY: a failed row
+         * with a Retry button is this app promising nothing else is coming.
+         */
+        internal const val MAX_SEND_ATTEMPTS = 6
+        private const val SEND_BACKOFF_BASE_MS = 2_000L
+        private const val SEND_BACKOFF_CAP_MS = 60_000L
+
+        /**
+         * Codes that mean the server READ the send and refused it. Every
+         * other answer — `internal`, an unknown code, no answer at all —
+         * leaves the outcome unknown, and an unknown outcome is never a
+         * red bubble (docs/protocol.md, "Error shape").
+         */
+        internal val TERMINAL_SEND_ERRORS = setOf(
+            "validation",
+            "message_empty",
+            "message_too_long",
+            "not_chat_member",
+            "chat_not_found",
+            "blocked",
+            "invalid_poll",
+            "invalid_attachment",
+            "attachment_not_found",
+            "attachment_already_used",
+        )
         private const val HISTORY_PAGE = 50
         private const val EDIT_PAGE = 200
         private const val REACTION_PAGE = 200

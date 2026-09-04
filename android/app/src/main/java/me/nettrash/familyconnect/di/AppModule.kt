@@ -55,6 +55,7 @@ import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.MessageDao
+import me.nettrash.familyconnect.data.db.PendingAttachmentDao
 import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.net.AndroidConnectivityObserver
 import me.nettrash.familyconnect.data.net.ApiClient
@@ -185,6 +186,16 @@ abstract class AppModule {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
+            // The end-to-end ceiling the per-operation timeouts do not give:
+            // connect + write + read could each be slow without any of them
+            // firing, and a send could sit at "Sending…" for the better part
+            // of a minute and a half. iOS resolves a bubble in ~25 s; a
+            // client that has to wait three times longer for the same verdict
+            // is the divergence, not the network (docs/protocol.md, "Sending
+            // on an unreliable network"). Uploads override this — see
+            // ApiClient's `timeout` parameter — because a large file legitimately
+            // takes longer than any request-shaped ceiling.
+            .callTimeout(20, TimeUnit.SECONDS)
             .build()
 
         @Provides
@@ -225,6 +236,7 @@ abstract class AppModule {
                     AppDatabase.MIGRATION_16_17,
                     AppDatabase.MIGRATION_17_18,
                     AppDatabase.MIGRATION_18_19,
+                    AppDatabase.MIGRATION_19_20,
                 )
                 .build()
 
@@ -244,6 +256,10 @@ abstract class AppModule {
 
         @Provides
         fun provideMemberDao(db: AppDatabase): MemberDao = db.memberDao()
+
+        @Provides
+        fun providePendingAttachmentDao(db: AppDatabase): PendingAttachmentDao =
+            db.pendingAttachmentDao()
 
         @Provides
         @Singleton
