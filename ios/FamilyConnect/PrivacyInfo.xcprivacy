@@ -214,12 +214,19 @@
 			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
-				<!-- 54BD.1: defaults reachable only by this app itself.
-				     NOT CA92.1, which is the App Group reason — the app reads
-				     and writes UserDefaults.standard (AppSettings, ContactLinks)
-				     and shares no defaults suite with the Share Extension, which
-				     uses the App Group container for files only. -->
-				<string>54BD.1</string>
+				<!-- CA92.1: defaults reachable only by this app itself. The app
+				     reads and writes UserDefaults.standard (AppSettings,
+				     ContactLinks) and shares no defaults suite with the Share
+				     Extension, which uses the App Group container for files only.
+				     NOT 1C8F.1, which is the App Group reason; NOT C56D.1, which
+				     only a third-party SDK may declare; NOT AC6B.1, which is for
+				     MDM managed configuration.
+
+				     This key shipped as 54BD.1 and came back as ITMS-91055 on
+				     2026-09-04: 54BD.1 is an ACTIVE KEYBOARDS reason, not a user
+				     defaults one. The mistake is systematic and easy to repeat —
+				     see the note on the file timestamp entry below. -->
+				<string>CA92.1</string>
 			</array>
 		</dict>
 		<dict>
@@ -232,16 +239,32 @@
 				     recording path. The category is required for that API even
 				     though only .size is read.
 
-				     DDA9.1: the file is in the app's own container or temporary
+				     C617.1: the file is in the app's own container or temporary
 				     directory (a recording just made, a compressed copy).
-				     C617.1: the file is one the person selected through a
-				     picker or the macOS open panel.
+				     3B52.1: the file is one the person selected through a
+				     picker or the macOS open panel (security-scoped URLs,
+				     ConversationView / MacFilePicker).
 				     Both apply, on different paths, so both are declared.
-				     3B52.1 is deliberately absent: it is the reason for a
-				     third-party SDK acting on the app's behalf, which is not
-				     this case. -->
-				<string>DDA9.1</string>
+				     DDA9.1 is deliberately absent: it is for DISPLAYING a file's
+				     timestamp to the person, which this app never does — it
+				     reads a size. 0A2A.1 is the third-party-SDK wrapper reason
+				     and may not be declared by an app.
+
+				     HOW TO CHECK THESE CODES, because getting them one position
+				     out is what produced the ITMS-91055 above. Apple's rendered
+				     page is JS-only; the constants live in
+				     .../app-privacy-configuration/nsprivacyaccessedapitypes/
+				     nsprivacyaccessedapitypereasons.json, where each entry is
+				     {"content": [...], "name": "CODE"}. Pair a code with the
+				     content object it SITS IN — reading the text that follows a
+				     code in the raw JSON gives you the NEXT entry's description
+				     and silently shifts the whole table by one. The categories
+				     run: file timestamp (DDA9.1, C617.1, 3B52.1, 0A2A.1), system
+				     boot time (35F9.1, 8FFB.1, 3D61.1), disk space (85F4.1,
+				     E174.1, 7D9E.1, B728.1), active keyboards (3EC4.1, 54BD.1),
+				     user defaults (CA92.1, 1C8F.1, C56D.1, AC6B.1). -->
 				<string>C617.1</string>
+				<string>3B52.1</string>
 			</array>
 		</dict>
 	</array>
