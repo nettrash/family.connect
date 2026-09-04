@@ -290,6 +290,7 @@ class SessionRepository @Inject constructor(
                 settings.setCallsEnabled(me.callsEnabled)
                 settings.setVideoCallsEnabled(me.videoCallsEnabled)
                 settings.setFamilyRegistrationEnabled(me.familyRegistrationEnabled)
+                settings.setFamilylessAccountTtlDays(me.familylessAccountTtlDays)
                 // The AUTHORITATIVE apply. `/me` is step 1 of the resync,
                 // it is the only one on the login path, and it is the only
                 // one a caller with NO family reaches at all — a block is a

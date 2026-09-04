@@ -925,6 +925,11 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// switch, which is also the right answer there — such a server has
     /// no door to shut.
     var familyRegistrationEnabled: Bool = true
+    /// How many days an account may go without a family before this server
+    /// removes it; 0 when it never does, which is also the answer on a
+    /// server that predates the sweep (docs/protocol.md, "Accounts without
+    /// a family"). The gate says so, so the deadline is known before it is met.
+    var familylessAccountTTLDays: Int = 0
 
     enum CodingKeys: String, CodingKey {
         case user
@@ -937,6 +942,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         case maxFamilyMembers = "max_family_members"
         case supportContact = "support_contact"
         case familyRegistrationEnabled = "family_registration_enabled"
+        case familylessAccountTTLDays = "familyless_account_ttl_days"
     }
 
     init(
@@ -949,7 +955,8 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         blockedUserIDs: [Int64] = [],
         maxFamilyMembers: Int? = nil,
         supportContact: String? = nil,
-        familyRegistrationEnabled: Bool = true
+        familyRegistrationEnabled: Bool = true,
+        familylessAccountTTLDays: Int = 0
     ) {
         self.user = user
         self.family = family
@@ -961,6 +968,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         self.maxFamilyMembers = maxFamilyMembers
         self.supportContact = supportContact
         self.familyRegistrationEnabled = familyRegistrationEnabled
+        self.familylessAccountTTLDays = familylessAccountTTLDays
     }
 
     /// Hand-written for the reason every other defaulted field on this
@@ -979,6 +987,8 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         // Absent on a server from before the switch, which has no door to
         // shut — so absence reads as open (docs/protocol.md, `GET /me`).
         familyRegistrationEnabled = try container.decodeIfPresent(Bool.self, forKey: .familyRegistrationEnabled) ?? true
+        // Absent on a server from before the sweep, which removes nothing.
+        familylessAccountTTLDays = try container.decodeIfPresent(Int.self, forKey: .familylessAccountTTLDays) ?? 0
     }
 }
 

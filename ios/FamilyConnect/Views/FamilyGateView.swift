@@ -91,6 +91,14 @@ struct FamilyGateView: View {
                     if let user = session.currentUser {
                         Text("Hi, \(user.displayName)")
                     }
+                } footer: {
+                    // The deadline, said before it is met: this server
+                    // removes an account that stays without a family past
+                    // its grace (docs/protocol.md, "Accounts without a
+                    // family"). 0 is a server that never does, and says nothing.
+                    if session.familylessAccountTTLDays > 0 {
+                        Text("An account that doesn't join a family within \(session.familylessAccountTTLDays) days is removed from this server.")
+                    }
                 }
 
                 Section {

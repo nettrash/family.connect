@@ -212,6 +212,29 @@ struct AppSessionTransitionTests {
         #expect(!AppSettings.joinPending)
     }
 
+    @Test("apply: what the server said about its door and its grace reaches the gate")
+    func applyCarriesTheGateFacts() {
+        resetGlobals()
+        defer { resetGlobals() }
+        let (session, _) = makeSession()
+        #expect(session.familyRegistrationEnabled)
+        #expect(session.familylessAccountTTLDays == 0)
+
+        session.apply(me: MeResponse(
+            user: Self.user, family: nil, role: nil, pendingJoinRequest: nil,
+            familyRegistrationEnabled: false, familylessAccountTTLDays: 7
+        ))
+
+        #expect(session.phase == .needsFamily)
+        #expect(!session.familyRegistrationEnabled)
+        #expect(session.familylessAccountTTLDays == 7)
+
+        // And back, on a server that takes families and never sweeps.
+        session.apply(me: MeResponse(user: Self.user, family: nil, role: nil, pendingJoinRequest: nil))
+        #expect(session.familyRegistrationEnabled)
+        #expect(session.familylessAccountTTLDays == 0)
+    }
+
     @Test("apply: pending request → pendingApproval, persists the waiting bit")
     func applyPending() {
         resetGlobals()

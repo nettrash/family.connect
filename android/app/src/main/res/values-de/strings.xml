@@ -25,6 +25,10 @@
     <string name="s_no_new_families_title">Dieser Server nimmt keine neuen Familien auf.</string>
     <string name="s_no_new_families_body">Family Connect ist für eine Familie auf einem eigenen Server gedacht. Um deine zu starten, betreibe deinen eigenen Server und lade alle von dort aus ein.</string>
     <string name="s_run_your_own_server">So betreibst du deinen eigenen Server</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="one">Ein Konto, das innerhalb von %1$d Tag keiner Familie beitritt, wird von diesem Server entfernt.</item>
+        <item quantity="other">Ein Konto, das innerhalb von %1$d Tagen keiner Familie beitritt, wird von diesem Server entfernt.</item>
+    </plurals>
     <string name="s_current_password">Aktuelles Passwort</string>
     <string name="s_delete">Löschen</string>
     <string name="s_delete_this_note">Diese Notiz löschen?</string>

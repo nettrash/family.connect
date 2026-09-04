@@ -225,6 +225,10 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         _state.value = _state.value.copy(familyRegistrationEnabled = enabled)
     }
 
+    override suspend fun setFamilylessAccountTtlDays(days: Int) {
+        _state.value = _state.value.copy(familylessAccountTtlDays = days)
+    }
+
     override suspend fun resetKeepingServerUrl() {
         // Mirrors production: server URL AND the device-scoped FCM token
         // survive; the account-scoped device id does not.

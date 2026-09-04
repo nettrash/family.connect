@@ -898,6 +898,13 @@ data class MeResponse(
      */
     @SerialName("family_registration_enabled") val familyRegistrationEnabled: Boolean = true,
     /**
+     * How many days an account may go without a family before this server
+     * removes it; 0 when it never does, which is also the default on a
+     * server that predates the sweep (docs/protocol.md, "Accounts without
+     * a family"). The gate says so, so the deadline is known before it is met.
+     */
+    @SerialName("familyless_account_ttl_days") val familylessAccountTtlDays: Int = 0,
+    /**
      * Whether this server allows VIDEO calls (`[calls] video_enabled`,
      * docs/protocol.md, "Video"). Gates the video-call button ALONE —
      * voice is untouched; the default covers a server that predates

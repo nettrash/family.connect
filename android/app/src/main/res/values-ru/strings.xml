@@ -25,6 +25,12 @@
     <string name="s_no_new_families_title">Этот сервер не принимает новые семьи.</string>
     <string name="s_no_new_families_body">Family Connect задуман как одна семья на собственном сервере. Чтобы создать свою, запустите свой сервер и пригласите всех оттуда.</string>
     <string name="s_run_your_own_server">Как запустить свой сервер</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="one">Учётная запись, не вступившая в семью в течение %1$d дня, удаляется с этого сервера.</item>
+        <item quantity="few">Учётная запись, не вступившая в семью в течение %1$d дней, удаляется с этого сервера.</item>
+        <item quantity="many">Учётная запись, не вступившая в семью в течение %1$d дней, удаляется с этого сервера.</item>
+        <item quantity="other">Учётная запись, не вступившая в семью в течение %1$d дня, удаляется с этого сервера.</item>
+    </plurals>
     <string name="s_current_password">Текущий пароль</string>
     <string name="s_delete">Удалить</string>
     <string name="s_delete_this_note">Удалить эту заметку?</string>

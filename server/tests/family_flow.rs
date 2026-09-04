@@ -805,20 +805,30 @@ async fn a_server_closed_to_new_families_refuses_creation_and_says_so_on_me() {
     assert_eq!(me["family_registration_enabled"], false, "{me}");
 
     let refused = ts
-        .post(&user, "/families", serde_json::json!({"name": "The Latecomers"}))
+        .post(
+            &user,
+            "/families",
+            serde_json::json!({"name": "The Latecomers"}),
+        )
         .await;
     assert_error(refused, 403, "family_registration_disabled").await;
 
     // Refused BEFORE validation: an empty name gets the door, not a lecture
     // about lengths — the door is the fact that matters.
-    let refused = ts.post(&user, "/families", serde_json::json!({"name": ""})).await;
+    let refused = ts
+        .post(&user, "/families", serde_json::json!({"name": ""}))
+        .await;
     assert_error(refused, 403, "family_registration_disabled").await;
 
     // Still nobody's member, and still able to ask to join one.
     let me: Value = ts.get(&user, "/me").await.json().await.expect("me");
     assert!(me["family"].is_null(), "{me}");
     let join = ts
-        .post(&user, "/families/join", serde_json::json!({"invite_code": "NOPE1234"}))
+        .post(
+            &user,
+            "/families/join",
+            serde_json::json!({"invite_code": "NOPE1234"}),
+        )
         .await;
     assert_error(join, 404, "invalid_invite_code").await;
 }
