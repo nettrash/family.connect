@@ -88,6 +88,7 @@ struct ShareTargetPicker: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
             }
         }

@@ -84,6 +84,7 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
             }
             .sheet(isPresented: $changingPassword) {
@@ -163,16 +164,20 @@ struct SettingsView: View {
     private var profileSection: some View {
         Section("Profile") {
             if let user = session.currentUser {
-                HStack(spacing: 12) {
+                // The identity row the Mac's settings got in its
+                // beautification pass: a larger face and a title3 name,
+                // so the screen opens on WHO this is rather than on a row.
+                HStack(spacing: 14) {
                     InitialsAvatar(
                         title: user.displayName,
                         userID: user.id,
                         avatarVersion: user.avatarVersion,
-                        size: 56)
+                        size: 64)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(user.displayName)
+                            .font(.title3.weight(.semibold))
                         Text("@\(user.username)")
-                            .font(.caption)
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -180,6 +185,7 @@ struct SettingsView: View {
                         ProgressView()
                     }
                 }
+                .padding(.vertical, 4)
                 // The picker hands back an item, not bytes; the transfer
                 // and the downscale happen in setAvatar.
                 // No `photoLibrary:` argument on purpose. Passing `.shared()`
@@ -305,7 +311,8 @@ struct SettingsView: View {
     private var familySection: some View {
         Section {
             if let family = model.family ?? session.family {
-                LabeledContent("Family", value: family.name)
+                // "Name", under a section already headed "Family".
+                LabeledContent("Name", value: family.name)
                 // `value:` is a String, not a key — localized by hand.
                 LabeledContent(
                     "Join policy",
@@ -315,6 +322,16 @@ struct SettingsView: View {
                         Text(code)
                             .font(.body.monospaced())
                             .textSelection(.enabled)
+                    }
+                    // An explicit Copy beside the selection: on an iPad
+                    // with a pointer, selecting text in a list row is a
+                    // guess; a menu item is not.
+                    .contextMenu {
+                        Button {
+                            UIPasteboard.general.string = code
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
                     }
                     let server = AppSettings.serverURL?.absoluteString ?? ""
                     ShareLink(
@@ -389,11 +406,23 @@ struct SettingsView: View {
     @ViewBuilder
     private var serverSection: some View {
         Section {
-            Button("Statistics") { model.showsStatistics = true }
+            Button {
+                model.showsStatistics = true
+            } label: {
+                Label("Statistics", systemImage: "chart.bar")
+            }
         }
 
         Section("Server") {
-            LabeledContent("Address", value: AppSettings.serverURL?.absoluteString ?? "—")
+            let address = AppSettings.serverURL?.absoluteString ?? "—"
+            LabeledContent("Address", value: address)
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = address
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                }
         }
     }
 

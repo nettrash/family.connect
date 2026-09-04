@@ -33,6 +33,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -99,6 +100,8 @@ fun ChatListScreen(
     onOpenChat: (Long) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenBoard: () -> Unit,
+    /** The chat open beside this list in the two-pane shape, drawn as selected; null on the phone. */
+    selectedChatId: Long? = null,
     viewModel: ChatListViewModel = hiltViewModel(),
 ) {
     // The chats StateFlow seeds with null in the ViewModel until Room's
@@ -231,12 +234,19 @@ fun ChatListScreen(
                     }
                 }
                 else -> {
-                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    // Bottom room for the New-chat FAB, which otherwise
+                    // sat over the last row's time and unread badge.
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 96.dp),
+                    ) {
                         items(chatList, key = { it.id }) { chat ->
                             ChatRow(
                                 chat = chat,
                                 previewHidden = chat.lastMessageSenderId
                                     ?.let { it != myUserId && it in blockedUserIds } == true,
+                                selected = chat.id == selectedChatId,
                                 onClick = { onOpenChat(chat.id) },
                                 peerAvatarVersion = chat.peerUserId
                                     ?.let { avatarVersions[it] } ?: 0L,
@@ -310,11 +320,20 @@ private fun ChatRow(
     modifier: Modifier = Modifier,
     /** The peer's profile-picture version; 0 for the family chat. */
     peerAvatarVersion: Long = 0,
+    /** Open beside the list (two-pane shape): drawn as the selected row. */
+    selected: Boolean = false,
 ) {
     val hasUnread = chat.unreadCount > 0
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .then(
+                if (selected) {
+                    Modifier.background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f))
+                } else {
+                    Modifier
+                },
+            )
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -338,7 +357,11 @@ private fun ChatRow(
                 text = chat.title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = if (hasUnread) FontWeight.SemiBold else null,
-                maxLines = 1,
+                // The family chat's title is the family's NAME — "The
+                // Harper-Whittington Family" — the one title here that is
+                // not a person's, and the one the top bar no longer
+                // carries. It gets a second line; a person's name keeps one.
+                maxLines = if (chat.kind == "family") 2 else 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
@@ -381,17 +404,18 @@ private fun ChatRow(
 }
 
 @Composable
-private fun FamilyAvatarMark() {
+internal fun FamilyAvatarMark(size: Int = 48) {
     Box(
         modifier = Modifier
-            .size(48.dp)
+            .size(size.dp)
             .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             imageVector = Icons.Outlined.Home,
             contentDescription = null,
-            modifier = Modifier.size(22.dp),
+            // The glyph keeps its proportion of the disc at every size.
+            modifier = Modifier.size((size * 22 / 48).dp),
             tint = MaterialTheme.colorScheme.onPrimaryContainer,
         )
     }

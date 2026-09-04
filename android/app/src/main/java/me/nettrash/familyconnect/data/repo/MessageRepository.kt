@@ -25,6 +25,9 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import me.nettrash.familyconnect.R
+import dagger.hilt.android.qualifiers.ApplicationContext
+import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -70,6 +73,7 @@ import javax.inject.Singleton
 
 @Singleton
 class MessageRepository @Inject constructor(
+    @param:ApplicationContext private val appContext: Context,
     private val chatApi: ChatApi,
     private val attachmentApi: AttachmentApi,
     private val messageDao: MessageDao,
@@ -81,6 +85,9 @@ class MessageRepository @Inject constructor(
     @param:AppScope private val scope: CoroutineScope,
     private val clock: Clock,
 ) {
+    /** The device's words for the chat-list previews (see [PreviewLabels]). */
+    private val previewLabels: PreviewLabels by lazy { PreviewLabels.from(appContext) }
+
 
     /** Ack timers keyed by client_msg_id; the ack cancels its timer. */
     private val pendingAcks = ConcurrentHashMap<String, Job>()
@@ -309,7 +316,7 @@ class MessageRepository @Inject constructor(
                 replyExcerpt = replyTo?.excerpt,
             ),
         )
-        chatDao.updateLastMessage(chatId, previewText(body, listOf(attachment)), now, me)
+        chatDao.updateLastMessage(chatId, previewText(body, listOf(attachment), labels = previewLabels), now, me)
         dispatch(clientMsgId, chatId, body, replyTo?.messageId, listOf(attachment.id))
         return true
     }
@@ -428,7 +435,7 @@ class MessageRepository @Inject constructor(
         // What arrived, not an empty string: a caption-less photo left
         // the chat-list row blank because "" is not null and the
         // fallback never fired.
-        chatDao.updateLastMessage(chatId, previewText(body, uploadedAttachments), now, me)
+        chatDao.updateLastMessage(chatId, previewText(body, uploadedAttachments, labels = previewLabels), now, me)
         dispatch(
             clientMsgId,
             chatId,
@@ -450,7 +457,7 @@ class MessageRepository @Inject constructor(
         body: String,
         attachments: List<AttachmentDto>,
         call: CallDto? = null,
-    ): String = Companion.previewText(body, attachments, call)
+    ): String = Companion.previewText(body, attachments, call, previewLabels)
 
     /**
      * Assistant replies still being written, by server id.
@@ -661,7 +668,7 @@ class MessageRepository @Inject constructor(
         applyEmbeddedPoll(message)
         chatDao.updateLastMessage(
             message.chatId,
-            previewText(message.body, acked, message.call),
+            previewText(message.body, acked, message.call, previewLabels),
             createdAt,
             message.senderId,
         )
@@ -1262,10 +1269,59 @@ class MessageRepository @Inject constructor(
          * not null — so the row rendered blank rather than falling back.
          * Mirrors iOS's ChatSyncCoordinator.preview.
          */
+        /**
+         * The words a preview is made of. The default is the English the
+         * server's own placeholders use (and the unit tests pin);
+         * [PreviewLabels.from] reads the device's language, which is what
+         * the repositories hand in — the list is the most-visited screen,
+         * and it showed "Missed video call" under a Russian title.
+         */
+        class PreviewLabels(
+            val missedVideoCall: String = "Missed video call",
+            val videoCall: String = "Video call",
+            val missedVoiceCall: String = "Missed voice call",
+            val voiceCall: String = "Voice call",
+            val video: String = "Video",
+            val audio: String = "Audio",
+            val location: String = "Location",
+            val file: String = "File",
+            val photo: String = "Photo",
+            val videos: (Int) -> String = { "$it Videos" },
+            val audios: (Int) -> String = { "$it Audio" },
+            val files: (Int) -> String = { "$it Files" },
+            val photos: (Int) -> String = { "$it Photos" },
+            val attachments: (Int) -> String = { "$it attachments" },
+        ) {
+            companion object {
+                val ENGLISH = PreviewLabels()
+
+                fun from(context: android.content.Context): PreviewLabels {
+                    val r = context.resources
+                    return PreviewLabels(
+                        missedVideoCall = r.getString(R.string.s_missed_video_call),
+                        videoCall = r.getString(R.string.s_video_call),
+                        missedVoiceCall = r.getString(R.string.s_missed_voice_call),
+                        voiceCall = r.getString(R.string.s_voice_call),
+                        video = r.getString(R.string.s_video),
+                        audio = r.getString(R.string.s_audio),
+                        location = r.getString(R.string.s_location),
+                        file = r.getString(R.string.s_file),
+                        photo = r.getString(R.string.s_photo),
+                        videos = { r.getQuantityString(R.plurals.p_videos, it, it) },
+                        audios = { r.getQuantityString(R.plurals.p_audio, it, it) },
+                        files = { r.getQuantityString(R.plurals.p_files, it, it) },
+                        photos = { r.getQuantityString(R.plurals.p_photos, it, it) },
+                        attachments = { r.getQuantityString(R.plurals.p_attachments, it, it) },
+                    )
+                }
+            }
+        }
+
         fun previewText(
             body: String,
             attachments: List<AttachmentDto>,
             call: CallDto? = null,
+            labels: PreviewLabels = PreviewLabels.ENGLISH,
         ): String {
             // A call record's body is the server's English placeholder,
             // and the preview says the same thing in the same words — the
@@ -1276,10 +1332,10 @@ class MessageRepository @Inject constructor(
                 // (protocol.md, "Video") — same English-in-the-DB
                 // convention as the attachment summaries below.
                 return when {
-                    call.video && call.outcome == CallDto.MISSED -> "Missed video call"
-                    call.video -> "Video call"
-                    call.outcome == CallDto.MISSED -> "Missed voice call"
-                    else -> "Voice call"
+                    call.video && call.outcome == CallDto.MISSED -> labels.missedVideoCall
+                    call.video -> labels.videoCall
+                    call.outcome == CallDto.MISSED -> labels.missedVoiceCall
+                    else -> labels.voiceCall
                 }
             }
             if (body.isNotEmpty()) return body
@@ -1294,26 +1350,26 @@ class MessageRepository @Inject constructor(
                 val kinds = attachments.mapTo(HashSet()) { it.kind }
                 return if (kinds.size == 1) {
                     when {
-                        attachment.isVideo -> "$n Videos"
-                        attachment.isAudio -> "$n Audio"
-                        attachment.isFile -> "$n Files"
+                        attachment.isVideo -> labels.videos(n)
+                        attachment.isAudio -> labels.audios(n)
+                        attachment.isFile -> labels.files(n)
                         // A location is always alone (protocol), so a
                         // uniform multi-set here can only be photos — or
                         // a kind added later, which falls through.
-                        attachment.kind == AttachmentDto.KIND_PHOTO -> "$n Photos"
-                        else -> "$n attachments"
+                        attachment.kind == AttachmentDto.KIND_PHOTO -> labels.photos(n)
+                        else -> labels.attachments(n)
                     }
                 } else {
-                    "$n attachments"
+                    labels.attachments(n)
                 }
             }
             return when {
-                attachment.isVideo -> "Video"
-                attachment.isAudio -> attachment.name?.takeIf { it.isNotEmpty() } ?: "Audio"
+                attachment.isVideo -> labels.video
+                attachment.isAudio -> attachment.name?.takeIf { it.isNotEmpty() } ?: labels.audio
                 attachment.isLocation ->
-                    attachment.name?.takeIf { it.isNotEmpty() } ?: "Location"
-                attachment.isFile -> attachment.name?.takeIf { it.isNotEmpty() } ?: "File"
-                else -> "Photo"
+                    attachment.name?.takeIf { it.isNotEmpty() } ?: labels.location
+                attachment.isFile -> attachment.name?.takeIf { it.isNotEmpty() } ?: labels.file
+                else -> labels.photo
             }
         }
 

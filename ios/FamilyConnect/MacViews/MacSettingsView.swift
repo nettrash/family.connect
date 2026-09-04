@@ -36,6 +36,14 @@ struct MacSettingsView: View {
     @State private var editingBirthday = false
     @State private var showingStatistics = false
     @State private var confirmLogout = false
+    /// Leave Family: the roster read before the dialog (who inherits is
+    /// a prediction any join or leave changes), the dialog, who it went
+    /// to, and why it failed — the phone's SettingsModel, in four fields.
+    @State private var confirmLeave = false
+    @State private var leaveRoster: [MemberDTO] = []
+    @State private var leaveNextOwnerID: Int64?
+    @State private var handedOverTo: String?
+    @State private var leaveError: String?
     @State private var deletingAccount = false
     /// Mirrors AppSettings — defaults are not observable, so the view
     /// holds its own copy and writes through on change.
@@ -97,8 +105,24 @@ struct MacSettingsView: View {
                     ) { editingBirthday = true }
                     Button("Change Password…") { changingPassword = true }
                 }
-                Section("Family") {
-                    LabeledContent("Family", value: session.family?.name ?? "—")
+                Section {
+                    LabeledContent("Name", value: session.family?.name ?? "—")
+                    // Net-new on the Mac: the phone has had this since
+                    // its Settings existed, and a member who wanted out
+                    // here had no door.
+                    Button("Leave Family", role: .destructive) {
+                        Task {
+                            await loadLeaveContext()
+                            confirmLeave = true
+                        }
+                    }
+                } header: {
+                    Text("Family")
+                } footer: {
+                    if let leaveError {
+                        Label(leaveError, systemImage: "xmark.circle")
+                            .foregroundStyle(.red)
+                    }
                 }
                 Section {
                     Button("Statistics…") { showingStatistics = true }
@@ -152,6 +176,48 @@ struct MacSettingsView: View {
                 }
             }
             .formStyle(.grouped)
+        }
+    }
+
+    /// A fresh read of the family before the dialog names a successor:
+    /// `next_owner_user_id` is a prediction any join or leave changes
+    /// (docs/protocol.md, `POST /families/leave`).
+    private func loadLeaveContext() async {
+        leaveError = nil
+        do {
+            let mine = try await coordinator.api.myFamily()
+            leaveRoster = mine.members
+            leaveNextOwnerID = mine.nextOwnerUserID
+        } catch {
+            leaveRoster = []
+            leaveNextOwnerID = nil
+        }
+    }
+
+    /// What leaving costs — the phone's three sentences, same keys.
+    private var leaveMessage: LocalizedStringKey {
+        let base: LocalizedStringKey = "You'll lose access to the family chat and your direct chats. Your history returns if you rejoin."
+        guard session.isOwner else { return base }
+        guard let successorID = leaveNextOwnerID,
+              let successor = leaveRoster.first(where: { $0.id == successorID })?.displayName
+        else {
+            return "You're the only member left. Leaving deletes the family and everything in it."
+        }
+        return "\(successor) becomes the owner. You'll lose access to the family chat and your direct chats; your history returns if you rejoin."
+    }
+
+    private func leave() {
+        leaveError = nil
+        Task {
+            do {
+                let roster = leaveRoster
+                let name = try await session.leaveFamily { id in
+                    roster.first { $0.id == id }?.displayName
+                }
+                if let name { handedOverTo = name }
+            } catch {
+                leaveError = String(localized: "Couldn't leave right now. Try again.")
+            }
         }
     }
 
@@ -210,6 +276,27 @@ struct MacSettingsView: View {
         .sheet(isPresented: $deletingAccount) {
             DeleteAccountView()
                 .frame(width: 460)
+        }
+        .confirmationDialog(
+            "Leave the family?",
+            isPresented: $confirmLeave,
+            titleVisibility: .visible
+        ) {
+            Button("Leave Family", role: .destructive) { leave() }
+        } message: {
+            Text(leaveMessage)
+        }
+        .alert(
+            "Ownership passed on",
+            isPresented: Binding(
+                get: { handedOverTo != nil },
+                set: { if !$0 { handedOverTo = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            if let name = handedOverTo {
+                Text("\(name) is now the owner of the family.")
+            }
         }
         .confirmationDialog(
             "Log out?",

@@ -46,8 +46,15 @@ struct CallVideoSurface: UIViewRepresentable {
 
     func makeUIView(context: Context) -> RTCMTLVideoView {
         let view = RTCMTLVideoView()
-        // Fill the surface; a call window is never the frame's aspect.
-        view.videoContentMode = .scaleAspectFill
+        // Fill the surface; a call window is never the frame's aspect —
+        // on a PHONE, where the far end is another phone held the same
+        // way and the crop is a sliver. On an iPad the far end's portrait
+        // frame filling a landscape 13-inch screen showed ~40% of it, the
+        // face usually outside; the remote picture is fitted there and
+        // the surface's black shows either side, as FaceTime does. The
+        // local preview tile keeps filling: it is a thumbnail.
+        let fitsRemote = role == .remote && UIDevice.current.userInterfaceIdiom == .pad
+        view.videoContentMode = fitsRemote ? .scaleAspectFit : .scaleAspectFill
         view.clipsToBounds = true
         attach(view, coordinator: context.coordinator)
         return view

@@ -90,6 +90,7 @@ struct ChangePasswordView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                         .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -178,6 +179,7 @@ struct ResetPasswordView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                         .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {

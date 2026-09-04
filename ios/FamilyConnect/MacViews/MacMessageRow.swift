@@ -197,10 +197,22 @@ struct MacMessageRow: View {
                     hiddenRow
                 } else {
                 if showsSenderName, let senderName {
-                    Text(senderName)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, 2)
+                    // The phone's run head: a face beside a tinted name,
+                    // not a grey caption — the one place a family thread
+                    // tells its speakers apart at a glance.
+                    HStack(spacing: 5) {
+                        InitialsAvatar(
+                            title: senderName,
+                            userID: message.senderID,
+                            avatarVersion: avatarVersionFor(message.senderID),
+                            size: 18)
+                            .accessibilityHidden(true)
+                        Text(senderName)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.tint)
+                    }
+                    .padding(.leading, 2)
+                    .accessibilityElement(children: .combine)
                 }
                 balloon
                     // Double-click is ❤️, as on the phone
@@ -243,19 +255,22 @@ struct MacMessageRow: View {
                     // three placeholders, two of them literally nothing.
                     // "A hidden row draws the placeholder and the timestamp
                     // and nothing else.
+                    // The phone's order and tone: the time first, "edited"
+                    // after it, in .secondary — .tertiary vanished on the
+                    // window's grey in dark mode.
                     HStack(spacing: 4) {
-                        if message.isEdited {
-                            Text("edited")
-                        }
                         Text(
                             message.createdAt,
                             format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+                        if message.isEdited {
+                            Text("edited")
+                        }
                         if isMine {
                             statusGlyph
                         }
                     }
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .padding(.horizontal, 2)
                 }
             }
@@ -481,15 +496,21 @@ struct MacMessageRow: View {
         // OwnReplyBodyAlignment, shared with the phone, measures the
         // count and owns every alignment-dependent modifier on the body.
         // Everything else — others' messages, own messages without a
-        // quote — is unchanged. ReplyContentLayout (shared with the
+        // quote — is unchanged. BalloonContentLayout (shared with the
         // phone) is what lets the body sit trailing while the quote keeps
         // the leading edge AND the balloon still hugs its widest child —
         // the frame-based version of this rule took the row's width, the
         // documented slab regression.
-        let contentStack = isOwnReply
-            ? AnyLayout(ReplyContentLayout(spacing: 5))
-            : AnyLayout(VStackLayout(alignment: .leading, spacing: 5))
-        contentStack {
+        // EVERY balloon, as on the phone since 2026-09-03 — not only an
+        // own reply's. The VStack the others used could not see a
+        // sibling's width, so a poll's question and a table's text were
+        // given a width-filling frame to wrap against them, and that
+        // frame made the balloon as wide as the row (the poll slab in the
+        // store screenshot). BalloonContentLayout's fill rule measures the
+        // poll or table first and offers the text THAT width; no floor,
+        // because the Mac does not tag captions under photos. For every
+        // other balloon this is the VStack it replaces.
+        BalloonContentLayout(spacing: 5) {
             if let quote = message.replyTo {
                 MacQuoteBlock(
                     quote: quote,
@@ -549,7 +570,7 @@ struct MacMessageRow: View {
                         }
                         // The reply rule, all three of its modifiers at
                         // once — line ragging, the frame's edge and the
-                        // ReplyContentLayout tag — from one measured line
+                        // BalloonContentLayout tag — from one measured line
                         // count: trailing through two lines, leading from
                         // three. After the cursor overlay (which does not
                         // change the Text's size) and before any frame, so
@@ -837,7 +858,7 @@ struct MacMessageRow: View {
         hasTable || message.poll != nil
     }
 
-    /// An own message that IS a reply lays out with ReplyContentLayout:
+    /// An own message that IS a reply lays out with BalloonContentLayout:
     /// the quote keeps the left edge and the body picks its own by line
     /// count — trailing through two lines, leading from three — the
     /// product rule, shared with the phone (see the balloon stack's
@@ -962,7 +983,9 @@ private struct MacReactionRow: View {
     let onPick: (ReactionChip) -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
+        // Wraps, as on the phone: a family that reacts with six different
+        // emoji used to push the chips past the balloon's edge.
+        FlowLayout(spacing: 4) {
             ForEach(chips, id: \.emoji) { chip in
                 Button {
                     onPick(chip)
@@ -1052,7 +1075,7 @@ private struct MacQuoteBlock: View {
         // fixed-width slab regardless of what the reply said. The balloon
         // already caps itself at 460 after its background, which is the
         // bound that was actually wanted. (In an OWN reply the balloon
-        // uses ReplyContentLayout, which hugs its widest child and places
+        // uses BalloonContentLayout, which hugs its widest child and places
         // this block on the leading edge — BalloonEdgeKey's default; it is
         // never given a width at the call site either. Only the BODY
         // carries a trailing tag, via OwnReplyBodyAlignment.)
@@ -1136,6 +1159,19 @@ private struct MacQuoteBlock: View {
 
 /// A photo, video or file inside a Mac balloon.
 private struct MacAttachmentBlock: View {
+    /// The tile at the attachment's own shape, capped at 320 either way —
+    /// the Mac's cap, which the pile's card shares.
+    private var tileSize: CGSize {
+        let ratio = attachment.aspectRatio
+        var width: CGFloat = 320
+        var height = width / ratio
+        if height > 320 {
+            height = 320
+            width = height * ratio
+        }
+        return CGSize(width: width, height: height)
+    }
+
     let attachment: AttachmentDTO
     /// For CONTRAST: an own balloon is filled with the tint, so anything
     /// drawn in the accent colour there would be invisible.
@@ -1183,10 +1219,14 @@ private struct MacAttachmentBlock: View {
             .hoverCursor(.pointingHand)
         } else if let image = store.image(id: attachment.id, preview: true)
             ?? store.image(id: attachment.id, preview: false) {
+            // Sized from the attachment's METADATA, as the phone's tile is,
+            // not from whatever width the row happened to be proposed: a
+            // fit-inside-a-max-frame image answers a different size for
+            // every proposal, and the row grew and shrank with the window.
             image
                 .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(maxWidth: 320, maxHeight: 320)
+                .aspectRatio(contentMode: .fill)
+                .frame(width: tileSize.width, height: tileSize.height)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay {
                     if attachment.isVideo {
@@ -1260,7 +1300,7 @@ private struct MacAlbumStack: View {
     @Environment(AttachmentStore.self) private var store
 
     /// The balloon's media width, so the pile is as wide as a lone photo.
-    private static let cardWidth: CGFloat = 300
+    private static let cardWidth: CGFloat = 320
 
     private var card: CGSize {
         AttachmentAlbum.cardSize(for: album.items[0], maxWidth: Self.cardWidth)

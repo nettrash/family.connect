@@ -169,6 +169,12 @@ struct ConversationView: View {
     /// it against the capsule's bottom edge. Scaled, because the capsule
     /// grows with Dynamic Type and a hard-coded 36 would drift apart from it.
     @ScaledMetric(relativeTo: .body) private var composerControl: CGFloat = 36
+    /// The glyphs inside those controls scale with them: fixed point
+    /// sizes left a 20pt paperclip in a 52pt control at the largest
+    /// accessibility sizes, and a 26pt arrow in a 36pt one at the
+    /// smallest.
+    @ScaledMetric(relativeTo: .body) private var attachGlyph: CGFloat = 20
+    @ScaledMetric(relativeTo: .body) private var sendGlyph: CGFloat = 26
 
     /// Live height of the input bar; changes exactly when the draft wraps
     /// to more (or fewer) lines.
@@ -793,10 +799,14 @@ struct ConversationView: View {
                 VStack(spacing: 0) {
                     Text(chat?.title ?? "")
                         .font(.headline)
+                        .lineLimit(1)
                     if let typingLine {
+                        // One line: three people typing at once wrapped
+                        // the caption and pushed the title off its bar.
                         Text(typingLine)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                             .transition(.opacity)
                     }
                 }
@@ -962,6 +972,13 @@ struct ConversationView: View {
                                 senderName: displayName(for: message.senderID),
                                 senderID: message.senderID,
                                 senderAvatarVersion: avatarVersion(for: message.senderID),
+                                // The Mac's run rule (MacConversationView.rows):
+                                // a run is one sender's consecutive messages
+                                // within the day section.
+                                isRunStart: index == 0
+                                    || section.messages[index - 1].senderID != message.senderID,
+                                isRunEnd: index == section.messages.count - 1
+                                    || section.messages[index + 1].senderID != message.senderID,
                                 isRead: MessagePresentation.isRead(
                                     message,
                                     othersReadUpTo: chat?.othersReadUpTo ?? 0,
@@ -1397,7 +1414,7 @@ struct ConversationView: View {
                     }
                 } label: {
                     Image(systemName: "paperclip")
-                        .font(.system(size: 20))
+                        .font(.system(size: attachGlyph))
                         .foregroundStyle(.tint)
                         .frame(width: composerControl, height: composerControl)
                         .contentShape(Rectangle())
@@ -1462,22 +1479,38 @@ struct ConversationView: View {
                     .lineLimit(1...5)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
-                    .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .composerFieldBackground()
                 Button {
                     send()
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 26))
+                        .font(.system(size: sendGlyph))
                         .foregroundStyle(.tint)
                         .frame(width: composerControl, height: composerControl)
                         .contentShape(Rectangle())
                 }
                 .disabled(!canSend)
                 .accessibilityLabel("Send")
+                // ⌘↩ from a hardware keyboard. Return alone keeps inserting
+                // a line break, as it always has on a phone; the Mac's
+                // Return-sends habit is one modifier away on an iPad.
+                .keyboardShortcut(.return, modifiers: .command)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
+        // The same readable column the thread is held to (#21/#44),
+        // centred the same way: on an iPad's detail column the bar used to
+        // run the full width while the bubbles sat in a centred 560pt
+        // band, so the attach button was 200pt left of the messages it
+        // attaches to and the send button 100pt right of them. The bar's
+        // material still spans the column — only its controls are held.
+        // Every iPhone is narrower than the cap in PORTRAIT, so nothing
+        // moves there; in landscape a phone is wider than 560, and its
+        // composer now sits over its thread column exactly as the
+        // thread itself already did.
+        .frame(maxWidth: Self.threadMaxWidth)
+        .frame(maxWidth: .infinity)
         .background(.bar)
         .background { pasteShortcut }
         .onGeometryChange(for: CGFloat.self) { geometry in
@@ -3059,6 +3092,21 @@ private struct AttachmentSurfaces: ViewModifier {
             .fullScreenCover(item: $viewingAlbum) { album in
                 AttachmentViewer(album: album, onShare: onShareAttachment)
             }
+    }
+}
+
+private extension View {
+    /// The message field's backdrop. On iOS 26 the system's own text
+    /// fields in bars are glass, and a flat grey capsule beside glass
+    /// toolbar buttons read as last year's control; earlier systems keep
+    /// the fill they have always had.
+    @ViewBuilder
+    func composerFieldBackground() -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else {
+            self.background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
     }
 }
 

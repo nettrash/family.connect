@@ -38,6 +38,7 @@ struct MacFamilyView: View {
 
     @State private var requests: [JoinRequestDTO] = []
     @State private var inviteCode: String?
+    @State private var confirmRotate = false
     @State private var busy = false
     @State private var errorText: String?
     @State private var resetting: MemberDTO?
@@ -94,6 +95,8 @@ struct MacFamilyView: View {
             .padding(12)
         }
         .frame(width: 520, height: 520)
+        // Esc closes the sheet too; Return was the only key bound.
+        .onExitCommand { dismiss() }
         .task { await reload() }
         .sheet(item: $reportingMember) { member in
             ReportSheet(
@@ -125,6 +128,7 @@ struct MacFamilyView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.family?.name ?? String(localized: "Family"))
                     .font(.title3.weight(.semibold))
+                    .lineLimit(2)
                 Text("\(members.count) members")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -147,8 +151,19 @@ struct MacFamilyView: View {
                     NSPasteboard.general.setString(inviteCode, forType: .string)
                 }
                 .disabled(inviteCode == nil)
-                Button("Rotate") { rotate() }
+                // Asks first, as iOS does: one click next to Copy
+                // invalidated the code every member had been given.
+                Button("Rotate") { confirmRotate = true }
                     .disabled(busy)
+                    .confirmationDialog(
+                        "Rotate the invite code?",
+                        isPresented: $confirmRotate,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Rotate Code", role: .destructive) { rotate() }
+                    } message: {
+                        Text("Rotating invalidates the current code immediately.")
+                    }
             }
             Text("Rotating invalidates the current code immediately.")
                 .font(.caption)

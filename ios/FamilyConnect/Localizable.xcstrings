@@ -11070,55 +11070,55 @@
         }
       }
     },
-    "Family remembers the link on this iPhone only; nothing about the contact is sent anywhere." : {
+    "Family remembers the link on this device only; nothing about the contact is sent anywhere." : {
       "comment" : "Footer of the sheet that links a device contact to a family member.",
       "localizations" : {
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Family merkt sich die Verknüpfung nur auf diesem iPhone; nichts über den Kontakt wird irgendwohin gesendet."
+            "value" : "Family merkt sich die Verknüpfung nur auf diesem Gerät; nichts über den Kontakt wird irgendwohin gesendet."
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Family recuerda el enlace solo en este iPhone; no se envía nada sobre el contacto a ningún sitio."
+            "value" : "Family recuerda el enlace solo en este dispositivo; no se envía nada sobre el contacto a ningún sitio."
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Family ne mémorise le lien que sur cet iPhone ; rien concernant le contact n'est envoyé nulle part."
+            "value" : "Family ne mémorise le lien que sur cet appareil ; rien concernant le contact n'est envoyé nulle part."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "このリンクはこの iPhone にのみ保存され、連絡先に関する情報はどこにも送信されません。"
+            "value" : "このリンクはこのデバイスにのみ保存され、連絡先に関する情報はどこにも送信されません。"
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Family запоминает связь только на этом iPhone; данные контакта никуда не отправляются."
+            "value" : "Family запоминает связь только на этом устройстве; данные контакта никуда не отправляются."
           }
         },
         "sr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Family памти везу само на овом iPhone-у; ништа о контакту се нигде не шаље."
+            "value" : "Family памти везу само на овом уређају; ништа о контакту се нигде не шаље."
           }
         },
         "sr-Latn" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Family pamti vezu samo na ovom iPhone-u; ništa o kontaktu se nigde ne šalje."
+            "value" : "Family pamti vezu samo na ovom uređaju; ništa o kontaktu se nigde ne šalje."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Family 仅在这台 iPhone 上记住此关联；不会向任何地方发送联系人的信息。"
+            "value" : "Family 仅在这台设备上记住此关联；不会向任何地方发送联系人的信息。"
           }
         }
       }
@@ -18244,6 +18244,59 @@
         }
       }
     },
+    "Remove %@ from the family?" : {
+      "comment" : "Asks the owner to confirm removing a member; %@ is their display name.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ aus der Familie entfernen?"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "¿Quitar a %@ de la familia?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Retirer %@ de la famille ?"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ を家族から削除しますか？"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать %@ из семьи?"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уклонити %@ из породице?"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ukloniti %@ iz porodice?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要将 %@ 移出家庭吗？"
+          }
+        }
+      }
+    },
     "Remove attachment" : {
       "comment" : "A button that discards the staged attachment.",
       "localizations" : {
@@ -20967,7 +21020,57 @@
       }
     },
     "Sign in to see your settings." : {
-      "comment" : "Shown in the Mac's Settings window when nobody is signed in — ⌘, opens it at the sign-in screen too."
+      "comment" : "Shown in the Mac's Settings window when nobody is signed in — ⌘, opens it at the sign-in screen too.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Melde dich an, um deine Einstellungen zu sehen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inicia sesión para ver tus ajustes."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connectez-vous pour voir vos réglages."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "設定を表示するにはサインインしてください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Войдите, чтобы увидеть настройки."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пријавите се да бисте видели подешавања."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prijavite se da biste videli podešavanja."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登录后即可查看设置。"
+          }
+        }
+      }
     },
     "Size" : {
       "comment" : "A section of the note editor (a submenu on the Mac) for choosing how big a note is drawn: small, medium or large.",

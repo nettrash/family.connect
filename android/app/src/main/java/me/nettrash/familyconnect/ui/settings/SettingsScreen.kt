@@ -65,6 +65,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.OutlinedTextField
+import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.familyadmin.BirthdayDialog
 import me.nettrash.familyconnect.ui.familyadmin.SetPasswordDialog
@@ -177,7 +178,11 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                // A settings list stretched across a tablet put every
+                // chevron 1,100dp from its label; the readable column
+                // holds it to a phone's measure, centred.
+                .readableColumn(),
         ) {
             // The exit animation still needs text to draw while the card
             // shrinks, so keep the last non-null message around.
@@ -309,14 +314,13 @@ fun SettingsScreen(
                     },
                 )
                 state.inviteCode?.let { code ->
+                    // Resolved in composable scope, so a language change
+                    // re-reads it (lint: LocalContextGetResourceValueCall).
+                    val shareText = stringResource(R.string.s_share_invite_text, state.serverUrl.orEmpty(), code)
                     val shareCode = {
                         val send = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
-                            putExtra(
-                                Intent.EXTRA_TEXT,
-                                "Join our family on Family Connect! " +
-                                    "Server: ${state.serverUrl} — invite code: $code",
-                            )
+                            putExtra(Intent.EXTRA_TEXT, shareText)
                         }
                         context.startActivity(Intent.createChooser(send, shareTitle))
                     }

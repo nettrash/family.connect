@@ -75,6 +75,14 @@ struct MessageBubbleView: View {
     /// showsSenderName is true, so direct chats never carry one.
     var senderID: Int64 = 0
     var senderAvatarVersion: Int64 = 0
+    /// Where this bubble sits in a RUN — consecutive messages from one
+    /// sender in one day section (the Mac's and Android's rule, ported).
+    /// The corners between two bubbles of a run are tight, so a burst
+    /// reads as one voice; the time is stamped once, under the last of
+    /// the run, rather than under every bubble. Both default to true, so
+    /// a bubble drawn alone (tests, previews) is a whole run.
+    var isRunStart: Bool = true
+    var isRunEnd: Bool = true
     let isRead: Bool
     var reactionChips: [ReactionChip] = []
     var reactionDetails: [ReactionDetail] = []
@@ -211,7 +219,7 @@ struct MessageBubbleView: View {
     }
 
     /// An own message that IS a reply lays its balloon out with
-    /// ReplyContentLayout, where the quote keeps the left edge and the
+    /// BalloonContentLayout, where the quote keeps the left edge and the
     /// body chooses its own by line count: trailing while it fits in two
     /// lines, back to leading from three (`OwnReplyBodyAlignment` — the
     /// product rule as of 2026-08, refined at the owner's ask; see the
@@ -316,6 +324,28 @@ struct MessageBubbleView: View {
         isMine && message.replyTo != nil
     }
 
+    /// The balloon's outline: 18pt corners, except the two on the
+    /// speaker's side that face another bubble of the same run, which
+    /// are tight — the Mac's geometry (MacMessageRow.shape), so three
+    /// messages in a row read as one voice rather than three stickers.
+    private var balloonShape: UnevenRoundedRectangle {
+        let big: CGFloat = 18
+        let tight: CGFloat = 5
+        return UnevenRoundedRectangle(
+            topLeadingRadius: isMine ? big : (isRunStart ? big : tight),
+            bottomLeadingRadius: isMine ? big : (isRunEnd ? big : tight),
+            bottomTrailingRadius: isMine ? (isRunEnd ? big : tight) : big,
+            topTrailingRadius: isMine ? (isRunStart ? big : tight) : big,
+            style: .continuous)
+    }
+
+    /// The narrowest measure a caption is offered under a photo, a pile
+    /// or a poll (BalloonContentLayout's `fillFloor`): the phone's widest
+    /// tile, on every idiom. NOT the iPad's 320pt tile — a floor above a
+    /// 280pt poll would let its question run past the bars it wraps
+    /// against, which is the mismatch the fill rule exists to prevent.
+    static let captionFloor: CGFloat = 240
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
             if isMine { Spacer(minLength: 48) }
@@ -357,6 +387,11 @@ struct MessageBubbleView: View {
                 bubble
                 }
 
+                // The footer rides the LAST bubble of a run, plus any
+                // bubble that has something of its own to say there: an
+                // edit, or a send still pending or failed — that footer is
+                // the retry button, and it cannot wait for the run to end.
+                if isRunEnd || message.isEdited || message.state != .sent {
                 HStack(spacing: 4) {
                     Text(message.createdAt, format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
                         .font(.caption2)
@@ -374,6 +409,7 @@ struct MessageBubbleView: View {
                     }
                 }
                 .padding(.horizontal, 4)
+                }
             }
 
             if !isMine { Spacer(minLength: 48) }
@@ -722,7 +758,7 @@ struct MessageBubbleView: View {
             // share one left edge.
             //
             // How the quote stays left while the body sits right — and
-            // the balloon still HUGS its content: ReplyContentLayout. Its
+            // the balloon still HUGS its content: BalloonContentLayout. Its
             // header records why a frame cannot do this (the only width a
             // frame can borrow is the proposal, which is the documented
             // full-width-slab regression); the container takes its width
@@ -731,11 +767,20 @@ struct MessageBubbleView: View {
             // `.fixedSize(horizontal: false, vertical: true)` on the quote
             // block and the body Text is untouched: vertical pinning is
             // what keeps a reply from truncating its own body
-            // (BubbleLayoutTests pins that).
-            let contentStack = isOwnReply
-                ? AnyLayout(ReplyContentLayout(spacing: 2))
-                : AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
-            contentStack {
+            // (BubbleLayoutTests pins that, and pins the hugging too).
+            // EVERY balloon, since 2026-09-03 — not only an own reply's.
+            // The plain VStack it replaced could not see a sibling's
+            // width, so the caption under a photo or a poll used to be
+            // given `.frame(maxWidth: .infinity)` to wrap against it, and
+            // that frame made every album-with-caption and every poll a
+            // full-width slab (488pt of balloon around a 195pt pile on an
+            // iPad). The layout's fill rule measures the photo, pile,
+            // poll or card first and offers the caption THAT width, never
+            // narrower than the widest tile (`fillFloor`), so the balloon
+            // hugs what it holds on every screen size. For everything
+            // else this is the VStack it replaced: hugs the widest child,
+            // everything on the leading edge.
+            BalloonContentLayout(spacing: 2, fillFloor: Self.captionFloor) {
             if let quote = message.replyTo {
                 quoteBlock(quote)
             }
@@ -824,26 +869,25 @@ struct MessageBubbleView: View {
                                     .offset(x: 8)
                             }
                         }
-                        // The reply rule, all three of its modifiers at once:
-                        // the line ragging, the width-filling frame's edge and
-                        // the ReplyContentLayout tag, from ONE measured line
-                        // count (trailing through two lines, leading from
-                        // three). Placed AFTER the cursor overlay, which
-                        // does not change the Text's size, and BEFORE any
-                        // frame, so the height it counts lines from is the
-                        // Text's own. Off (plain leading, nothing measured)
-                        // for every message that is not an own reply.
+                        // The reply rule, both of its modifiers at once: the
+                        // line ragging and the BalloonContentLayout edge tag,
+                        // from ONE measured line count (trailing through two
+                        // lines, leading from three). Placed AFTER the cursor
+                        // overlay, which does not change the Text's size, so
+                        // the height it counts lines from is the Text's own.
+                        // Off (plain leading, nothing measured) for every
+                        // message that is not an own reply.
                         //
-                        // `fillsWidth`: a sibling block — a link card or a
-                        // photo — has already decided how wide this balloon
-                        // is. Text left to itself reports the width it WANTS
-                        // (SwiftUI balances the lines, so two lines each come
-                        // out around half width), and the result is a narrow
-                        // paragraph floating over a wide card. Filling the
-                        // width makes it wrap against the same edge. Gated on
-                        // there BEING such a block: unconditionally, this is
-                        // the change that made every balloon full width when
-                        // the reply quote did it.
+                        // `fillsWidth`: a sibling block — a link card, a
+                        // photo, a poll — has already decided how wide this
+                        // balloon is, and the text should wrap against the
+                        // same edge. It used to do that with a width-filling
+                        // FRAME, which took the whole column and made every
+                        // captioned photo and every poll a full-width slab;
+                        // it is now a TAG the layout reads, and the layout
+                        // offers the caption the sibling's width (see
+                        // BalloonContentLayout's fill rule). Gated on there
+                        // BEING such a block.
                         .ownReplyBodyAlignment(
                             enabled: isOwnReply,
                             font: bubbleFont,
@@ -904,7 +948,7 @@ struct MessageBubbleView: View {
                 isBare
                     ? AnyShapeStyle(Color.clear)
                     : isMine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.secondarySystemFill)),
-                in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                in: balloonShape)
             // The floating reaction picker grows out of this exact rect;
             // the parent resolves it from the preference by localID. Empty
             // unless this bubble is the picker's host (see publishesAnchor).

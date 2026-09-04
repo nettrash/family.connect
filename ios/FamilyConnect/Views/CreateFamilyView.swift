@@ -24,6 +24,7 @@ final class CreateFamilyModel {
 struct CreateFamilyView: View {
     @Environment(AppSession.self) private var session
     @State private var model = CreateFamilyModel()
+    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         Form {
@@ -32,6 +33,9 @@ struct CreateFamilyView: View {
                     #if os(iOS)
                     .textInputAutocapitalization(.words)
                     #endif
+                    .focused($fieldFocused)
+                    .submitLabel(.go)
+                    .onSubmit { if model.canSubmit { submit() } }
             } header: {
                 Text("Family name")
             } footer: {
@@ -61,6 +65,13 @@ struct CreateFamilyView: View {
             }
         }
         .navigationTitle("Create a Family")
+        .onAppear {
+            // One field: on the Mac it is already the place to type. iOS
+            // waits for the tap (see AuthView.focusFirstField).
+            #if os(macOS)
+            fieldFocused = true
+            #endif
+        }
     }
 
     private func submit() {

@@ -31,6 +31,10 @@ struct MacAttachmentViewer: View {
 
     /// 1 = the whole picture fits the window. Above that it is scrollable.
     @State private var zoom: CGFloat = 1
+    /// Where the last pinch ended: a MagnifyGesture's magnification is
+    /// relative to the pinch's start, so used as the zoom itself every
+    /// pinch snapped the picture back to 1x before growing again.
+    @State private var pinchBase: CGFloat = 1
     @State private var busy = false
     /// Set when a save fails, so the refusal is visible rather than silent.
     @State private var saveFailure: String?
@@ -139,10 +143,12 @@ struct MacAttachmentViewer: View {
                             height: geometry.size.height * zoom)
                         .gesture(
                             MagnifyGesture()
-                                .onChanged { zoom = min(max($0.magnification, 1), 6) })
+                                .onChanged { zoom = min(max(pinchBase * $0.magnification, 1), 6) }
+                                .onEnded { _ in pinchBase = zoom })
                         .onTapGesture(count: 2) {
                             withAnimation(.easeOut(duration: 0.15)) {
                                 zoom = zoom > 1 ? 1 : 2
+                                pinchBase = zoom
                             }
                         }
                 }

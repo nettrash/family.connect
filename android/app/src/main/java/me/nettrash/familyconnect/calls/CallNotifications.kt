@@ -58,10 +58,10 @@ object CallNotifications {
         val manager = context.getSystemService(NotificationManager::class.java)
         val ringing = NotificationChannel(
             CHANNEL_RINGING,
-            "Calls",
+            context.getString(R.string.s_channel_calls),
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
-            description = "Incoming calls"
+            description = context.getString(R.string.s_channel_calls_desc)
             setSound(
                 RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
                 AudioAttributes.Builder()
@@ -74,10 +74,10 @@ object CallNotifications {
         }
         val ongoing = NotificationChannel(
             CHANNEL_ONGOING,
-            "Call in progress",
+            context.getString(R.string.s_channel_ongoing),
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "The call you are on"
+            description = context.getString(R.string.s_channel_ongoing_desc)
             setSound(null, null)
             enableVibration(false)
         }

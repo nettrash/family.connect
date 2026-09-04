@@ -1169,6 +1169,7 @@ fun testChatRepository(
     scope: CoroutineScope,
     settings: SettingsRepository = FakeSettingsRepository(),
 ): ChatRepository = ChatRepository(
+    RuntimeEnvironment.getApplication(),
     chatApi,
     chatDao,
     messageDao,

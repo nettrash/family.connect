@@ -27,6 +27,7 @@ final class JoinFamilyModel {
 struct JoinFamilyView: View {
     @Environment(AppSession.self) private var session
     @State private var model = JoinFamilyModel()
+    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         Form {
@@ -34,6 +35,9 @@ struct JoinFamilyView: View {
                 TextField("ABCD2345", text: Bindable(model).code)
                     .literalTextEntry(uppercased: true)
                     .font(.body.monospaced())
+                    .focused($fieldFocused)
+                    .submitLabel(.go)
+                    .onSubmit { if model.canSubmit { submit() } }
                     .onChange(of: model.code) { _, newValue in
                         let upper = newValue.uppercased()
                         if upper != newValue { model.code = upper }
@@ -67,6 +71,12 @@ struct JoinFamilyView: View {
             }
         }
         .navigationTitle("Join a Family")
+        .onAppear {
+            // As CreateFamilyView: the Mac starts in the field.
+            #if os(macOS)
+            fieldFocused = true
+            #endif
+        }
     }
 
     private func submit() {

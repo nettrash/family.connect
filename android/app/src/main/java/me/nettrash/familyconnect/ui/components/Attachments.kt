@@ -195,7 +195,7 @@ fun AttachmentGroup(
     val media = AttachmentAlbum.media(attachments)
     val rows = AttachmentAlbum.rows(attachments)
     Column(
-        modifier = modifier.widthIn(max = MAX_WIDTH.dp),
+        modifier = modifier.widthIn(max = attachmentMaxWidth()),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         when {
@@ -279,7 +279,7 @@ private fun AlbumStack(
         stringResource(R.string.s_n_of_m, 1, media.size)
     Box(
         modifier = modifier
-            .widthIn(max = MAX_WIDTH.dp)
+            .widthIn(max = attachmentMaxWidth())
             // Gestures and semantics before the padding: the peek strip is
             // part of the one button, not a dead band above it.
             .combinedClickable(
@@ -551,7 +551,7 @@ private fun LocationRow(
     val ink = LocalContentColor.current
     Column(
         modifier = modifier
-            .widthIn(max = MAX_WIDTH.dp)
+            .widthIn(max = attachmentMaxWidth())
             .clip(RoundedCornerShape(12.dp))
             .background(ink.copy(alpha = 0.10f))
             .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
@@ -693,7 +693,7 @@ private fun FileRow(
     val ink = LocalContentColor.current
     Row(
         modifier = modifier
-            .widthIn(max = MAX_WIDTH.dp)
+            .widthIn(max = attachmentMaxWidth())
             .clip(RoundedCornerShape(12.dp))
             .background(ink.copy(alpha = 0.10f))
             .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
@@ -784,7 +784,7 @@ private fun MediaThumbnail(
 
     Box(
         modifier = modifier
-            .widthIn(max = MAX_WIDTH.dp)
+            .widthIn(max = attachmentMaxWidth())
             .aspectRatio(attachment.aspectRatio.coerceIn(MIN_RATIO, MAX_RATIO))
             .clip(RoundedCornerShape(14.dp))
             // A soft ramp rather than a flat slab: while the bytes are still
@@ -870,7 +870,15 @@ fun formatDuration(millis: Int): String {
     return "%d:%02d".format(minutes, seconds)
 }
 
+/**
+ * The phone's tile. The LIVE cap is [attachmentMaxWidth] — 320dp on a
+ * wide window — and every composable above reads that; this constant
+ * remains only for the pile's peek reservation below.
+ */
 private const val MAX_WIDTH = 240
+
+/** The widest a tile ever is (a wide window); the pile reserves for it. */
+private const val MAX_WIDTH_WIDE = 320
 
 /**
  * The album stack's pile: the second card a touch smaller and tilted one
@@ -894,7 +902,7 @@ private const val LIFT = 6f
  * than a reservation that moves with the window.
  */
 private val PEEK: Float =
-    2 * LIFT + MAX_WIDTH * BACK_SCALE * sin(Math.toRadians(TILT.toDouble())).toFloat() / 2
+    2 * LIFT + MAX_WIDTH_WIDE * BACK_SCALE * sin(Math.toRadians(TILT.toDouble())).toFloat() / 2
 
 /** The one wash under every badge on a preview — play, duration, count. */
 private val BADGE_SCRIM = Color.Black.copy(alpha = 0.45f)
@@ -957,7 +965,7 @@ private fun AudioPlayerRow(
 
     Row(
         modifier = modifier
-            .widthIn(max = MAX_WIDTH.dp)
+            .widthIn(max = attachmentMaxWidth())
             .clip(RoundedCornerShape(12.dp))
             .background(ink.copy(alpha = 0.10f))
             .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(12.dp))

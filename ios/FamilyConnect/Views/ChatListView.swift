@@ -54,6 +54,13 @@ import SwiftUI
 import UIKit
 
 struct ChatListView: View {
+    /// Read for ONE thing only — whether the sidebar has a title — and
+    /// never for the shape (see the header). At regular width the sidebar
+    /// bar holds four buttons and iOS 26 squeezes an inline title beside
+    /// them to "Ch…", so it is left blank there; collapsed to a stack in a
+    /// compact width (Slide Over) the same bar has room and the title is
+    /// also the detail's Back label.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(CallManager.self) private var calls
@@ -119,8 +126,26 @@ struct ChatListView: View {
             set: { path = ChatSelection.path(opening: $0) })
     }
 
+    /// "Chats", on both shapes, and no longer the family's name. A large
+    /// title cannot wrap and cannot shrink, so any family name past
+    /// ~16 characters came out as "The Harper-Whittington…" on a phone
+    /// and was dropped altogether from the iPad sidebar, whose bar holds
+    /// four buttons and had no room left for a title at all. The family's
+    /// name now lives where it can be read whole: on the family chat's
+    /// own row (two lines allowed, `ChatRowView`), on the iPad's empty
+    /// detail column, and in Settings.
     private var navigationTitleText: String {
-        session.family?.name ?? String(localized: "Chats")
+        String(localized: "Chats")
+    }
+
+    /// What the family is called, for the places that draw it whole.
+    private var familyName: String {
+        session.family?.name ?? String(localized: "Family")
+    }
+
+    /// Members still in the family, for the detail column's placeholder.
+    private var activeMemberCount: Int {
+        members.filter { !$0.hasLeft && !$0.accountDeleted }.count
     }
 
     var body: some View {
@@ -227,23 +252,45 @@ struct ChatListView: View {
         NavigationSplitView {
             presentations(
                 on: chatList(selectable: true)
-                    .navigationTitle(navigationTitleText)
+                    .navigationTitle(horizontalSizeClass == .compact ? navigationTitleText : "")
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar { chatListToolbar }
-                    // The banner is at the BOTTOM of the sidebar, where the
-                    // Mac puts it, and not on the top edge where the phone
-                    // has it. A `.safeAreaInset(edge: .top)` here would
-                    // band only the sidebar and only under its own title,
-                    // so a reader looking at the thread — which is most of
-                    // the screen — would never learn the wire had dropped.
-                    .safeAreaInset(edge: .bottom) {
-                        ConnectionBanner()
-                            .padding(.bottom, 8)
+                    // In a COMPACT window (Slide Over, a third of Split
+                    // View) the split view is a stack and the detail — and
+                    // the banner it carries — is off screen while the list
+                    // shows. The phone's placement, for the phone's shape.
+                    .safeAreaInset(edge: .top) {
+                        if horizontalSizeClass == .compact {
+                            ConnectionBanner()
+                        }
                     }
                     .refreshable {
                         await coordinator.resync()
                     })
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
+                // Wider than the Mac's 280: the same rows are set in the
+                // iPad's 17pt body, not the Mac's 13pt, and at 280 a
+                // two-word family name and its time shared 248pt. The
+                // minimum is what an iPad mini gets in portrait, and 280
+                // is where "Whittington Family" stops losing its last word.
+                .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
         } detail: {
+            detailColumn
+                // The banner is on the DETAIL column, top edge, where the
+                // phone has it — and not at the foot of the sidebar, where
+                // the Mac puts it. The sidebar is hidden whenever the
+                // reader toggles it away or the iPad is in Slide Over, and
+                // a banner in a hidden column tells nobody the wire has
+                // dropped; the detail is on screen in every state.
+                .safeAreaInset(edge: .top) {
+                    ConnectionBanner()
+                }
+        }
+    }
+
+    /// The right-hand column: the open thread, or the family's name over
+    /// an invitation to pick one.
+    @ViewBuilder
+    private var detailColumn: some View {
             // The path's own open chat, NOT `chats.first(where:)`: a
             // push-routed chat
             // may not be cached yet after a reinstall, and routing to one
@@ -268,12 +315,32 @@ struct ChatListView: View {
                 // that auto-selected the family chat would satisfy all
                 // three of ChatPresence's conditions and mark it read
                 // before anybody had asked to see it.
-                ContentUnavailableView(
-                    "No conversation selected",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Pick a chat from the sidebar."))
+                // The family's name, whole, where the iPad has the room
+                // for it — this column is most of the screen and used to
+                // hold nothing but a generic glyph. Not a stock
+                // ContentUnavailableView: its title is one line.
+                VStack(spacing: 14) {
+                    InitialsAvatar(title: familyName, isFamily: true, size: 88)
+                        .accessibilityHidden(true)
+                    Text(familyName)
+                        .font(.title2.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.7)
+                    Text("\(activeMemberCount) members", comment: "Under the family name on the iPad's empty detail column; %lld is the number of members still in the family.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("Pick a chat from the sidebar.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 6)
+                }
+                .padding(40)
+                .frame(maxWidth: 420)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.appBackground)
+                .accessibilityElement(children: .combine)
             }
-        }
     }
 
     // MARK: - Shared pieces
@@ -333,6 +400,15 @@ struct ChatListView: View {
             } label: {
                 Label("New Chat", systemImage: "square.and.pencil")
             }
+            // The Mac's shortcuts, for an iPad with a keyboard attached;
+            // harmless on a phone, which has no way to press them.
+            .keyboardShortcut("n", modifiers: .command)
+        }
+        // iOS 26 groups adjacent trailing items into ONE glass pill, which
+        // read as "compose and its option". New Chat and Board are two
+        // unrelated places; a fixed spacer gives each its own pill.
+        if #available(iOS 26.0, *) {
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
         }
         ToolbarItem(placement: .topBarLeading) {
             Button {
@@ -340,6 +416,7 @@ struct ChatListView: View {
             } label: {
                 Label("Settings", systemImage: "gearshape")
             }
+            .keyboardShortcut(",", modifiers: .command)
         }
         ToolbarItem(placement: .topBarTrailing) {
             // What is new to READ on the board since this device
@@ -396,9 +473,19 @@ struct ChatListView: View {
                 JoinRequestsSheet()
             }
             .sheet(isPresented: $showsReports) {
-                NavigationStack { ReportInboxView() }
+                ReportsSheet()
             }
-            .sheet(isPresented: $showsBoard) {
+            // The board is a CANVAS of sticky notes, and on an iPad a
+            // .sheet is a centred form sheet about a third of the screen —
+            // the notes sat in a 540pt box with a 13-inch display around
+            // it. The Mac gives the board a window of its own; the iPad
+            // gives it the screen. The phone keeps its sheet, which is
+            // full-height there anyway. The idiom never changes while the
+            // app runs, so the other presenter is simply never armed.
+            .sheet(isPresented: usesSplitView ? .constant(false) : $showsBoard) {
+                BoardView()
+            }
+            .fullScreenCover(isPresented: usesSplitView ? $showsBoard : .constant(false)) {
                 BoardView()
             }
             // Fires on both transitions, which is exactly what is wanted:
@@ -427,6 +514,7 @@ struct ChatListView: View {
         } label: {
             Label("Board", systemImage: "square.grid.2x2")
         }
+        .keyboardShortcut("b", modifiers: [.command, .shift])
     }
 
     private var newNoteCount: Int {
@@ -518,8 +606,20 @@ struct ChatListView: View {
         showsNewChat = false
         showsSettings = false
         showsJoinRequests = false
+        showsReports = false
         showsBoard = false
         showsShareTarget = false
+    }
+
+    /// A route that opens a SHEET over the list clears the pushed thread
+    /// on the phone, so the reader comes back to the list the sheet was
+    /// opened over. On the iPad the sheet floats over the split view and
+    /// the thread beside it is not in the way — clearing the path there
+    /// closed the conversation somebody was reading just to show a board
+    /// beside where it had been.
+    private func popToListForSheet() {
+        guard !usesSplitView else { return }
+        path = []
     }
 
     /// Act on a parked notification tap, then clear it so it fires once.
@@ -535,12 +635,17 @@ struct ChatListView: View {
             showsNewChat = false
             showsSettings = false
             showsJoinRequests = false
+            showsReports = false
+            // The board too: on the iPad it is a full-screen cover, and a
+            // thread routed in underneath it would be marked read unseen.
+            showsBoard = false
             path = [chatID]
         case .board:
             showsNewChat = false
             showsSettings = false
             showsJoinRequests = false
-            path = []
+            showsReports = false
+            popToListForSheet()
             showsBoard = true
         case .joinRequests:
             // Owner-only screen; a member who somehow gets this push
@@ -548,7 +653,8 @@ struct ChatListView: View {
             guard session.isOwner else { return }
             showsNewChat = false
             showsSettings = false
-            path = []
+            showsReports = false
+            popToListForSheet()
             showsJoinRequests = true
         case .reports:
             // Owner-only, like the requests above: a member who somehow
@@ -557,7 +663,8 @@ struct ChatListView: View {
             guard session.isOwner else { return }
             showsNewChat = false
             showsSettings = false
-            path = []
+            showsJoinRequests = false
+            popToListForSheet()
             showsReports = true
         case .chatList:
             // "joined" and unknown kinds: this list is the destination.
@@ -580,6 +687,27 @@ private struct JoinRequestsSheet: View {
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { dismiss() }
+                            .keyboardShortcut(.cancelAction)
+                    }
+                }
+        }
+    }
+}
+
+/// The owner's report inbox as a sheet: its own stack, an inline title
+/// (a large one inside a 540pt iPad form sheet took a third of it), and a
+/// Done — a sheet with no button out is a trap for anyone on a trackpad.
+private struct ReportsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ReportInboxView()
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                            .keyboardShortcut(.cancelAction)
                     }
                 }
         }
@@ -627,6 +755,19 @@ struct ChatRowView: View {
     /// big-screen clients, which is the point of issue #43.
     var isNarrow = false
 
+    /// The family chat is titled with the family's name, which is the
+    /// one title in this list that is not a person's — "The
+    /// Harper-Whittington Family", "Семья Ивановых-Петровых" — and the one
+    /// the navigation bar can no longer carry (see `navigationTitleText`).
+    /// It gets a second line on the phone's wide row and a third in the
+    /// narrow sidebar row, whose title shares its measure with the time
+    /// and, on an iPad mini in portrait, has ~150pt to wrap in ("The
+    /// Harper-" / "Whittington" / "Family"). A person's name keeps one.
+    private var titleLines: Int {
+        guard chat.kind == "family" else { return 1 }
+        return isNarrow ? 3 : 2
+    }
+
     var body: some View {
         if isNarrow {
             narrowBody
@@ -649,7 +790,7 @@ struct ChatRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(chat.title)
                     .font(.body.weight(chat.unreadCount > 0 ? .semibold : .regular))
-                    .lineLimit(1)
+                    .lineLimit(titleLines)
                 // `??` makes this a String, and Text(String) is verbatim —
                 // the fallback has to be localized by hand.
                 // A preview from a blocked sender draws the placeholder
@@ -703,7 +844,7 @@ struct ChatRowView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(chat.title)
                         .font(.body.weight(chat.unreadCount > 0 ? .semibold : .regular))
-                        .lineLimit(1)
+                        .lineLimit(titleLines)
                     Spacer(minLength: 0)
                     if let date = chat.lastMessageDate {
                         // NUMERIC and narrow, not the phone's named style:
@@ -712,7 +853,7 @@ struct ChatRowView: View {
                         // the title into an ellipsis. The Mac's choice,
                         // for the Mac's reason.
                         Text(date, format: .relative(presentation: .numeric, unitsStyle: .narrow))
-                            .font(.caption2)
+                            .font(.caption)
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                     }
@@ -720,8 +861,11 @@ struct ChatRowView: View {
                 HStack(spacing: 6) {
                     // The blocked-sender placeholder, for the reason the
                     // wide row gives.
+                    // Subheadline, not the Mac's caption: this is a
+                    // 17pt-body platform, and a 12pt preview beside a
+                    // 17pt title read as a footnote to it.
                     Text(previewText(for: chat))
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 0)

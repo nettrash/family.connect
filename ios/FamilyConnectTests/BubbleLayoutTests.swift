@@ -157,13 +157,137 @@ struct BubbleLayoutTests {
             """)
     }
 
+    // MARK: - The balloon hugs what it holds
+
+    /// A thread column wide enough that "hugs its content" and "takes the
+    /// column" are far apart: the widest tile is 240pt and a poll is
+    /// capped at 280pt, so a balloon that took this column would be ~512pt
+    /// and one that hugs, ~260-310pt. (At the phone-ish 320pt render width
+    /// above the two cannot be told apart, which is how the slab shipped.)
+    private static let wideColumn: CGFloat = 560
+
+    /// The balloon's inset on each side of its content, plus the 48pt
+    /// spacer an own message leaves on its far side: the room every
+    /// balloon takes around what it draws.
+    private static let balloonInsets: CGFloat = 12 * 2
+
+    @Test("a photo with a caption makes a balloon as wide as the photo, not the column")
+    func captionedPhotoBalloonHugsThePhoto() throws {
+        // 800×600 → a 240×180 tile, the widest a tile gets.
+        let width = try balloonWidth(
+            body: "Sunday at the lake 🦆",
+            attachments: [photo(width: 800, height: 600)])
+        #expect(
+            width <= AttachmentView.maxWidth + Self.balloonInsets + 4,
+            """
+            a captioned photo's balloon is \(Int(width))pt wide around a \
+            \(Int(AttachmentView.maxWidth))pt tile — the caption is taking the \
+            column's width instead of the photo's (the full-width-slab \
+            regression: a .frame(maxWidth: .infinity) on the body Text). \
+            BalloonContentLayout must offer the caption the photo's width.
+            """)
+        #expect(width >= AttachmentView.maxWidth, "the balloon cannot be narrower than its tile")
+    }
+
+    @Test("a long caption under a tall photo wraps at the widest tile, not at the tall photo's own width")
+    func longCaptionUnderPortraitPhotoWrapsAtTheFloor() throws {
+        // 600×1200 → height capped at 320, so a 160×320 tile.
+        let width = try balloonWidth(
+            body: Self.body,
+            attachments: [photo(width: 600, height: 1200)])
+        // Wider than the 160pt tile — a paragraph at 160pt is a ribbon —
+        // and no wider than the 240pt floor the layout is given.
+        #expect(width > 160 + Self.balloonInsets + 8, "the caption wrapped at the portrait tile's own width (\(Int(width))pt)")
+        #expect(
+            width <= AttachmentView.maxWidth + Self.balloonInsets + 4,
+            "the caption took \(Int(width))pt — more than the \(Int(AttachmentView.maxWidth))pt floor a caption is offered")
+    }
+
+    @Test("a poll's balloon is as wide as the poll, not the column")
+    func pollBalloonHugsThePoll() throws {
+        let poll = PollSnapshot(
+            pollSeq: 1, closed: false,
+            options: [
+                PollOptionSnapshot(id: 1, text: "Roast at ours", votes: [7]),
+                PollOptionSnapshot(id: 2, text: "Everyone brings a dish", votes: []),
+                PollOptionSnapshot(id: 3, text: "Café by the park", votes: []),
+            ])
+        // A question LONGER than the poll is wide: without the fill rule
+        // it wraps at the column (~512pt) and the balloon follows it; with
+        // the rule it wraps at the poll's 280pt. A short question fits
+        // either way and would prove nothing.
+        let width = try balloonWidth(
+            body: "Sunday lunch — what are we doing this week, and who is bringing what?",
+            poll: poll)
+        // PollBubbleView caps itself at 280pt; the balloon adds its insets.
+        #expect(
+            width <= 280 + Self.balloonInsets + 4,
+            """
+            a poll's balloon is \(Int(width))pt wide around a poll capped at \
+            280pt — the question is taking the column's width instead of the \
+            poll's. BalloonContentLayout must offer it the poll's width.
+            """)
+        #expect(width >= 200, "a three-option poll cannot be this narrow (\(Int(width))pt)")
+    }
+
+    @Test("a plain text balloon still hugs its one line")
+    func textBalloonStillHugsItsText() throws {
+        let width = try balloonWidth(body: "Ellie.")
+        #expect(width < 120, "a one-word balloon came out \(Int(width))pt wide")
+    }
+
+    /// The balloon's drawn width in a wide column: the horizontal extent
+    /// of every opaque pixel. The canvas is transparent, an own balloon is
+    /// filled with the tint, and its timestamp and tick sit under its
+    /// trailing edge — so the extent IS the balloon.
+    private func balloonWidth(
+        body: String, attachments: [AttachmentDTO] = [], poll: PollSnapshot? = nil
+    ) throws -> CGFloat {
+        let renderer = ImageRenderer(
+            content: bubble(body: body, replyTo: nil, attachments: attachments, poll: poll, width: Self.wideColumn))
+        renderer.scale = 1
+        let image = try #require(renderer.cgImage, "the bubble did not render")
+        let extent = try opaqueExtent(in: image)
+        return CGFloat(extent.right - extent.left)
+    }
+
+    /// The left-most and right-most column holding any opaque pixel.
+    private func opaqueExtent(in image: CGImage) throws -> (left: Int, right: Int) {
+        let width = image.width
+        let height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let context = try #require(
+            CGContext(
+                data: &pixels,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        var left = width
+        var right = 0
+        for y in 0..<height {
+            for x in 0..<width where pixels[(y * width + x) * 4 + 3] > 0 {
+                left = min(left, x)
+                right = max(right, x + 1)
+            }
+        }
+        #expect(right > left, "nothing was drawn")
+        return (left, right)
+    }
+
     // MARK: - Fixtures
 
     private var quote: ReplyToSnapshot {
         ReplyToSnapshot(messageID: 41, senderID: 7, excerpt: Self.excerpt)
     }
 
-    private func snapshot(body: String, replyTo: ReplyToSnapshot?) -> MessageSnapshot {
+    private func snapshot(
+        body: String, replyTo: ReplyToSnapshot?,
+        attachments: [AttachmentDTO] = [], poll: PollSnapshot? = nil
+    ) -> MessageSnapshot {
         MessageSnapshot(
             localID: "local-1",
             serverID: 1338,
@@ -172,26 +296,56 @@ struct BubbleLayoutTests {
             body: body,
             createdAt: Date(timeIntervalSince1970: 1_700_000_000),
             state: .sent,
-            replyTo: replyTo)
+            replyTo: replyTo,
+            attachment: attachments.first,
+            attachments: attachments,
+            poll: poll)
+    }
+
+    /// A photo the tile can size from its metadata alone — nothing is
+    /// fetched, the placeholder draws at the shape the numbers give.
+    private func photo(width: Int, height: Int) -> AttachmentDTO {
+        AttachmentDTO(
+            id: 900, kind: "photo", mime: "image/jpeg", size: 1234,
+            width: width, height: height, durationMS: nil, hasPreview: true,
+            name: nil, latitude: nil, longitude: nil, accuracyM: nil)
+    }
+
+    /// An attachment store that answers nothing: the tile under test is
+    /// sized by metadata, and the balloon around it is the subject.
+    private func inertAttachmentStore() -> AttachmentStore {
+        let api = APIClient(serverURL: URL(string: "https://attachments.invalid"))
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("bubble-layout-\(UUID().uuidString)")
+        return AttachmentStore(api: api, directory: directory)
     }
 
     // MARK: - Rendering
 
     /// The real bubble at a fixed width as an own message: white ink on the
     /// tint is what makes a text row detectable.
-    private func bubble(body: String, replyTo: ReplyToSnapshot?) -> some View {
+    private func bubble(
+        body: String, replyTo: ReplyToSnapshot?,
+        attachments: [AttachmentDTO] = [], poll: PollSnapshot? = nil,
+        width: CGFloat = BubbleLayoutTests.renderWidth
+    ) -> some View {
         MessageBubbleView(
-            message: snapshot(body: body, replyTo: replyTo),
+            message: snapshot(body: body, replyTo: replyTo, attachments: attachments, poll: poll),
             isMine: true,
             showsSenderName: false,
             senderName: nil,
             isRead: true,
             memberNames: [7: "You"],
             currentUserID: 7)
-            .frame(width: Self.renderWidth)
+            .frame(width: width)
             .tint(.blue)
             .environment(\.dynamicTypeSize, .large)
             .environment(LinkPreviewLoader())
+            .environment(inertAttachmentStore())
+            // A poll's voter faces read the avatar store, and the store is
+            // a hard requirement of that view rather than the bubble's
+            // optional one. Same inert client: nothing is fetched.
+            .environment(AvatarStore(api: APIClient(serverURL: URL(string: "https://avatars.invalid"))))
     }
 
     /// That bubble, rendered. `height` pins the canvas instead of letting

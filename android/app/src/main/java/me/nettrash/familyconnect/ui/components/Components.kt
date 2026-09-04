@@ -150,7 +150,10 @@ fun Avatar(
     // Stable per-user hue from the id hash; lightness is split by theme
     // (0.40 light / 0.35 dark) so white SemiBold initials stay >= 4.5:1
     // across the whole hue wheel.
-    val hue = (userId.hashCode().absoluteValue % 360).toFloat()
+    // Golden-angle spread, not `id % 360`: user ids are a BIGSERIAL, so
+    // a family of 1, 2, 3, 4, 5 all landed within five degrees of red —
+    // every avatar the same colour. Consecutive ids now sit ~137° apart.
+    val hue = ((userId * 137.508) % 360.0).toFloat().let { if (it < 0f) it + 360f else it }
     val lightness = if (isSystemInDarkTheme()) 0.35f else 0.40f
     val background = containerColor ?: Color.hsl(hue, 0.45f, lightness)
     val foreground = contentColor ?: Color.White

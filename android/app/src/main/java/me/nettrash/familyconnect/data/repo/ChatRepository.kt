@@ -47,6 +47,8 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import dagger.hilt.android.qualifiers.ApplicationContext
+import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -76,6 +78,7 @@ data class ServerCursors(val reactions: Long, val edits: Long, val polls: Long)
 
 @Singleton
 class ChatRepository @Inject constructor(
+    @param:ApplicationContext private val appContext: Context,
     private val chatApi: ChatApi,
     private val chatDao: ChatDao,
     private val messageDao: MessageDao,
@@ -97,6 +100,9 @@ class ChatRepository @Inject constructor(
     private val settings: SettingsRepository,
     @param:AppScope private val scope: CoroutineScope,
 ) {
+    /** The device's words for the chat-list previews (MessageRepository.PreviewLabels). */
+    private val previewLabels by lazy { MessageRepository.Companion.PreviewLabels.from(appContext) }
+
 
     private val _openChatId = MutableStateFlow<Long?>(null)
 
@@ -280,6 +286,7 @@ class ChatRepository @Inject constructor(
                                     it.body,
                                     it.resolvedAttachments,
                                     it.call,
+                                    previewLabels,
                                 )
                             }
                             ?: existing?.lastMessageBody,

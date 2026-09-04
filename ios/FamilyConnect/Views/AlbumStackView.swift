@@ -39,9 +39,14 @@ struct AlbumStackView: View {
     var isMine: Bool = false
 
     @Environment(AttachmentStore.self) private var store
+    /// The single tile's rule (AttachmentView): a compact window gets the
+    /// phone's pile, an iPad's regular window the wider one.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var card: CGSize {
-        AttachmentAlbum.cardSize(for: album.items[0], maxWidth: AttachmentView.maxWidth)
+        AttachmentAlbum.cardSize(
+            for: album.items[0],
+            maxWidth: AttachmentView.maxWidth(compact: horizontalSizeClass == .compact))
     }
 
     var body: some View {

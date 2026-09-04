@@ -116,9 +116,11 @@ struct ReportSheet: View {
                 }
             }
             .navigationTitle(Text("Report", comment: "Report sheet title and its confirm button"))
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
+                        .keyboardShortcut(.cancelAction)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(String(localized: "Report", comment: "Report sheet title and its confirm button")) { onSubmit(reason) }

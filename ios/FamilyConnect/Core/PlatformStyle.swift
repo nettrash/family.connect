@@ -102,12 +102,18 @@ extension View {
     /// the centred column, and the bar is transparent at rest so no chrome
     /// floats. Clamping inside the Form instead strands the title at the
     /// far left of the window, hundreds of points from the form it names.
+    ///
+    /// The backdrop ignores the KEYBOARD's safe area on purpose. The
+    /// outer frame shrinks when a keyboard (or its shortcut bar, with a
+    /// hardware keyboard) rises, and a background that stopped with it
+    /// left the window's white showing either side of the column below
+    /// the fields — measured on a 13-inch iPad with a keyboard attached.
     @ViewBuilder
     func setupColumn() -> some View {
         #if os(iOS)
         frame(maxWidth: 460)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(.systemGroupedBackground))
+            .background { Color(.systemGroupedBackground).ignoresSafeArea() }
         #else
         frame(maxWidth: 460)
             .frame(maxWidth: .infinity, maxHeight: .infinity)

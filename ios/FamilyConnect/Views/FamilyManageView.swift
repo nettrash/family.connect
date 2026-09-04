@@ -39,7 +39,22 @@ struct FamilyManageView: View {
     @Environment(AppSession.self) private var session
     /// The stepper's own value while the debounced write is in flight, and
     /// nil whenever the server's answer is the one to trust.
-    @State private var capDraft: Int?
+    /// Two levels of optional on purpose. `.none` — no draft, the stepper
+    /// shows the server's cap. `.some(nil)` — the owner switched the limit
+    /// OFF and the PATCH is on its way. `.some(n)` — a cap being stepped.
+    /// With one level, "off" and "no draft" were the same value, so the
+    /// toggle read the family's still-set cap and sprang back ON for the
+    /// 600ms until the server answered; a second tap then cancelled the
+    /// removal it looked like it was requesting.
+    @State private var capDraft: Int??
+    /// A member the owner asked to remove, held while the confirmation
+    /// is up — every other destructive action here asks first.
+    @State private var removing: MemberDTO?
+    /// Separate from `removing` on purpose: the dialog's title reads the
+    /// name while it animates away, and a binding that nils the member
+    /// on dismiss left it saying "Remove  from the family?" for a frame.
+    @State private var confirmRemove = false
+    private var removingName: String { removing?.displayName ?? "" }
     /// The pending cap write, cancelled and replaced on every tap.
     @State private var capCommit: Task<Void, Never>?
     /// The member being reported from the roster, if any.
@@ -77,6 +92,47 @@ struct FamilyManageView: View {
             membersSection
         }
         .navigationTitle(session.isOwner ? "Manage Family" : "Family Members")
+        // A failure is said where it is SEEN, whatever is scrolled into
+        // view: the sections above run to ~1,000pt inside an iPad's 540pt
+        // sheet, so an error in the Members footer was off-screen for
+        // every owner control, and one at the top would be off-screen
+        // for the roster's own actions. A banner over the bottom edge is
+        // in front of the reader either way, and goes with a tap.
+        .overlay(alignment: .bottom) {
+            if let error = model.errorText {
+                HStack(spacing: 8) {
+                    Label(error, systemImage: "xmark.circle")
+                        .font(.subheadline)
+                        .foregroundStyle(.red)
+                    Button {
+                        model.errorText = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .padding(6)
+                            .contentShape(Circle())
+                    }
+                    .accessibilityLabel("Dismiss")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .padding(12)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: model.errorText)
+        // Removal is the one action on this screen that used to fire on
+        // a single tap; Leave, Delete Account and Rotate Code all ask.
+        .confirmationDialog(
+            Text("Remove \(removingName) from the family?", comment: "Asks the owner to confirm removing a member; %@ is their display name."),
+            isPresented: $confirmRemove,
+            titleVisibility: .visible,
+            presenting: removing
+        ) { member in
+            Button("Remove", role: .destructive) { remove(member) }
+        }
         .sheet(item: $reportingMember) { member in
             ReportSheet(
                 target: ReportTarget(senderID: member.id, senderName: member.displayName, messageID: nil),
@@ -283,7 +339,10 @@ struct FamilyManageView: View {
     /// server holds, because the stepper commits on a delay (see
     /// `commitCap`). Seeded from the family and re-seeded whenever the
     /// server's answer changes under it.
-    private var draftCap: Int? { capDraft ?? settingsModel.family?.maxMembers }
+    private var draftCap: Int? {
+        if let draft = capDraft { return draft }
+        return settingsModel.family?.maxMembers
+    }
 
     private var capEnabledBinding: Binding<Bool> {
         Binding(
@@ -377,11 +436,6 @@ struct FamilyManageView: View {
             membersRows
         } header: {
             Text("Members")
-        } footer: {
-            if let error = model.errorText {
-                Label(error, systemImage: "xmark.circle")
-                    .foregroundStyle(.red)
-            }
         }
     }
 
@@ -419,9 +473,14 @@ struct FamilyManageView: View {
                     }
                     Spacer()
                     if member.role == "owner" {
+                        // The Mac's capsule, not a grey caption: the one
+                        // role on the roster that means something.
                         Text("Owner")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tint)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(.tint.opacity(0.14), in: Capsule())
                     }
                 }
                 .contextMenu {
@@ -442,6 +501,35 @@ struct FamilyManageView: View {
                             }
                         }
                         Divider()
+                    }
+                    // The owner's actions, which were swipe-only: a swipe
+                    // is a touch gesture, and on an iPad with a trackpad
+                    // this menu — secondary click, or a long press — is
+                    // the route a pointer finds. Same gates as the swipe.
+                    if session.isOwner {
+                        if member.role != "owner" {
+                            Button {
+                                resettingPassword = member
+                            } label: {
+                                Label("Password", systemImage: "key")
+                            }
+                        }
+                        Button {
+                            editingBirthday = member
+                        } label: {
+                            Label("Birthday", systemImage: "birthday.cake")
+                        }
+                        if member.role != "owner" {
+                            Button(role: .destructive) {
+                                removing = member
+                                confirmRemove = true
+                            } label: {
+                                Label("Remove", systemImage: "person.badge.minus")
+                            }
+                        }
+                        Divider()
+                    }
+                    if member.id != AppSettings.currentUserID {
                         // Grouped under Safety, matching the message menu.
                         // Report and Block are NOT owner actions, and this
                         // is the one place in this screen where that
@@ -486,7 +574,8 @@ struct FamilyManageView: View {
                     // own password from Settings, with the current one.
                     if session.isOwner, member.role != "owner" {
                         Button(role: .destructive) {
-                            remove(member)
+                            removing = member
+                            confirmRemove = true
                         } label: {
                             Label("Remove", systemImage: "person.badge.minus")
                         }

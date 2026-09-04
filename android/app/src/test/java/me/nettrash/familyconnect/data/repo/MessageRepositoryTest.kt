@@ -11,6 +11,7 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import org.robolectric.RuntimeEnvironment
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -118,6 +119,7 @@ class MessageRepositoryTest {
     private fun TestScope.newRepository(): MessageRepository {
         chatRepository = testChatRepository(chatApi, chatDao, messageDao, socket, repoScope)
         val repository = MessageRepository(
+            appContext = RuntimeEnvironment.getApplication(),
             chatApi = chatApi,
             attachmentApi = attachmentApi,
             messageDao = messageDao,

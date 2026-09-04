@@ -463,4 +463,53 @@
     <string name="s_assistant_history_photos_needs_vision">Turn on “Assistant may look at photos” first — the server refuses this while that is off.</string>
     <string name="s_assistant_history_photos_needs_history">While “Assistant sees recent history” is off this does nothing: the chat\'s history isn\'t sent, so no photo from it is either.</string>
     <string name="e_change_assistant_history_photos_failed">Couldn\'t change that setting</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">Pick a chat from the list.</string>
+    <plurals name="p_members">
+        <item quantity="one">%1$d member</item>
+        <item quantity="other">%1$d members</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">Today</string>
+    <string name="s_yesterday">Yesterday</string>
+    <string name="s_owner_caption">owner</string>
+    <string name="s_share_invite_text">Join our family on Family Connect! Server: %1$s — invite code: %2$s</string>
+    <string name="e_username_rules">3–32 characters: letters, digits, _ or .</string>
+    <string name="e_display_name_rules">1–64 characters</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="one">%1$d photo</item>
+        <item quantity="other">%1$d photos</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="one">%1$d video</item>
+        <item quantity="other">%1$d videos</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="one">%1$d voice note</item>
+        <item quantity="other">%1$d voice notes</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="one">%1$d file</item>
+        <item quantity="other">%1$d files</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="one">%1$d attachment</item>
+        <item quantity="other">%1$d attachments</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">Calls</string>
+    <string name="s_channel_calls_desc">Incoming calls</string>
+    <string name="s_channel_ongoing">Call in progress</string>
+    <string name="s_channel_ongoing_desc">The call you are on</string>
+    <string name="s_channel_messages">Messages</string>
+    <string name="s_channel_messages_desc">New family messages and join requests</string>
+    <string name="s_emoji_smileys">Smileys</string>
+    <string name="s_emoji_gestures">Gestures</string>
+    <string name="s_emoji_hearts">Hearts</string>
+    <string name="s_emoji_animals">Animals &amp; Nature</string>
+    <string name="s_emoji_food">Food &amp; Drink</string>
+    <string name="s_emoji_activities">Activities</string>
+    <string name="s_emoji_travel">Travel &amp; Places</string>
+    <string name="s_emoji_objects">Objects &amp; Symbols</string>
 </resources>

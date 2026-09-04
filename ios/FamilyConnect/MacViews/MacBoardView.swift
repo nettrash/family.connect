@@ -153,6 +153,7 @@ struct MacBoardView: View {
 
 /// One sticker: positioned by fraction, dragged locally, committed once.
 private struct MacNoteView: View {
+    @State private var confirmDelete = false
     let note: NoteEntity
     let board: CGSize
     let isMine: Bool
@@ -228,6 +229,11 @@ private struct MacNoteView: View {
                 radius: isDragging ? 10 : 3, y: 2)
         .scaleEffect(isDragging ? 1.04 : 1)
         .animation(.easeOut(duration: 0.12), value: isDragging)
+        // Asks first, as the phone does: one menu click used to take a
+        // note off the whole family's wall.
+        .confirmationDialog("Delete this note?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive, action: onDelete)
+        }
         // A tiny id-derived tilt: a wall of perfectly square notes reads
         // as a table, not a pinboard. Derived, so it never changes.
         .rotationEffect(.degrees(Double(note.noteID % 7) - 3))
@@ -288,7 +294,7 @@ private struct MacNoteView: View {
                             set: { on in if on { onResize(size) } }))
                     }
                 }
-                Button("Delete", role: .destructive, action: onDelete)
+                Button("Delete", role: .destructive) { confirmDelete = true }
             } else {
                 // Anyone may MOVE a note; only its author may change it.
                 Text("Written by someone else")

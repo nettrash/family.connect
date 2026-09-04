@@ -111,6 +111,8 @@ struct AttachmentViewer: View {
             }
             .padding(16)
             .accessibilityLabel("Close")
+            // Esc on a hardware keyboard, the way every other cover closes.
+            .keyboardShortcut(.cancelAction)
         }
         .overlay(alignment: .top) {
             // Only when there is somewhere to page: a lone photo needs no
@@ -211,9 +213,12 @@ private struct ZoomablePhoto: View {
                     // never lifted) is not picked up by the pan — a fresh
                     // touch is; the alternative was the pan eating every
                     // swipe at 1x, which is the bug this replaced.
-                    .gesture(magnification)
-                    .simultaneousGesture(pan, including: zoom > 1 ? .all : .subviews)
-                    .onTapGesture(count: 2) { toggleZoom() }
+                    .gesture(magnification(in: geometry.size))
+                    .simultaneousGesture(pan(in: geometry.size), including: zoom > 1 ? .all : .subviews)
+                    // The tap's own point, so a double-tap zooms INTO the
+                    // face that was tapped rather than into the centre of
+                    // the frame.
+                    .onTapGesture(count: 2) { point in toggleZoom(at: point, in: geometry.size) }
                     .accessibilityLabel("Photo")
             } else {
                 // While the full photo is on its way, show the preview
@@ -243,10 +248,14 @@ private struct ZoomablePhoto: View {
         }
     }
 
-    private var magnification: some Gesture {
+    private func magnification(in container: CGSize) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
                 zoom = min(max(pinchBase * value.magnification, 1), Self.maxZoom)
+                // Zooming OUT shrinks the room to pan; a pan that was legal
+                // at 4x would leave the picture off-centre at 2x.
+                offset = clamped(offset, zoom: zoom, in: container)
+                dragBase = offset
             }
             .onEnded { _ in
                 pinchBase = zoom
@@ -254,27 +263,59 @@ private struct ZoomablePhoto: View {
             }
     }
 
-    private var pan: some Gesture {
+    private func pan(in container: CGSize) -> some Gesture {
         DragGesture()
             .onChanged { value in
                 // Masked out at 1x (see the body), so this only ever runs
                 // zoomed; the guard is belt and braces for a drag that
                 // began zoomed and outlived a double-tap back to 1x.
                 guard zoom > 1 else { return }
-                offset = CGSize(
-                    width: dragBase.width + value.translation.width,
-                    height: dragBase.height + value.translation.height)
+                offset = clamped(
+                    CGSize(
+                        width: dragBase.width + value.translation.width,
+                        height: dragBase.height + value.translation.height),
+                    zoom: zoom, in: container)
             }
             .onEnded { _ in dragBase = offset }
     }
 
-    private func toggleZoom() {
+    /// The pan held to the picture: a zoomed photo can be dragged until
+    /// its edge meets the frame's, and no further — it used to be
+    /// draggable clean off a 13-inch screen, leaving black and no way
+    /// back but a double-tap. The picture's fitted size comes from the
+    /// attachment's own aspect ratio (metadata), which is what the
+    /// `.fit` frame above draws it at.
+    private func clamped(_ proposed: CGSize, zoom: CGFloat, in container: CGSize) -> CGSize {
+        let ratio = attachment.aspectRatio
+        let fitted = container.width / max(container.height, 1) > ratio
+            ? CGSize(width: container.height * ratio, height: container.height)
+            : CGSize(width: container.width, height: container.width / ratio)
+        let maxX = max(0, (fitted.width * zoom - container.width) / 2)
+        let maxY = max(0, (fitted.height * zoom - container.height) / 2)
+        return CGSize(
+            width: min(max(proposed.width, -maxX), maxX),
+            height: min(max(proposed.height, -maxY), maxY))
+    }
+
+    private func toggleZoom(at point: CGPoint, in container: CGSize) {
         withAnimation(.snappy(duration: 0.2)) {
             if zoom > 1 {
                 zoom = 1
                 resetPan()
             } else {
                 zoom = 2.5
+                // Keep what was under the finger under the finger: the
+                // scale is about the frame's centre, so the tapped point
+                // moves by (point − centre) × (zoom − 1) and the offset
+                // walks it back — then clamped, so a tap near an edge
+                // lands on the edge rather than past it.
+                let centre = CGPoint(x: container.width / 2, y: container.height / 2)
+                offset = clamped(
+                    CGSize(
+                        width: (point.x - centre.x) * (1 - zoom),
+                        height: (point.y - centre.y) * (1 - zoom)),
+                    zoom: zoom, in: container)
+                dragBase = offset
             }
             pinchBase = zoom
         }
