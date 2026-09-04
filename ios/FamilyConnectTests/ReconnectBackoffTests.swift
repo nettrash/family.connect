@@ -46,14 +46,19 @@ struct ReconnectBackoffTests {
 
     @Test("the random source receives the full-jitter range from zero")
     func fullJitterRange() {
-        var seenRanges: [ClosedRange<Double>] = []
+        // A box, because the random source is a Sendable closure; the
+        // two draws are sequential, so nothing races on it.
+        final class Recorder: @unchecked Sendable {
+            var ranges: [ClosedRange<Double>] = []
+        }
+        let seen = Recorder()
         var backoff = ReconnectBackoff(base: 2, cap: 30, random: { range in
-            seenRanges.append(range)
+            seen.ranges.append(range)
             return range.lowerBound
         })
         _ = backoff.nextDelay()
         _ = backoff.nextDelay()
-        #expect(seenRanges == [0...2, 0...4])
+        #expect(seen.ranges == [0...2, 0...4])
     }
 
     // MARK: - What earns a reset

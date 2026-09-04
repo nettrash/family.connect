@@ -603,7 +603,7 @@ struct MessageBubbleView: View {
         let parentHidden = quote.parent.map {
             quoteLevelHidden(senderID: $0.senderID, revealed: isParentQuoteRevealed)
         } ?? false
-        return HStack(spacing: 6) {
+        HStack(spacing: 6) {
             // The accent bar reads as "quoted" at a glance; on my own
             // balloon it takes the content colour, since .tint on
             // primaryContainer is nearly invisible.

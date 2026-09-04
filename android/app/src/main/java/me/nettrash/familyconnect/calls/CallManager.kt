@@ -287,7 +287,7 @@ class CallManager @Inject constructor(
                         finish(CallEnding.DECLINE)
                     }
                     is CallState.Connecting, is CallState.Active -> {
-                        socket.trySend(ClientFrame.CallEnd((current as CallState.Live).callId, CallEndReason.HANGUP))
+                        socket.trySend(ClientFrame.CallEnd(current.callId, CallEndReason.HANGUP))
                         finish(CallEnding.HANGUP)
                     }
                     CallState.Idle, is CallState.Ended -> Unit

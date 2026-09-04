@@ -18,7 +18,7 @@ import Foundation
 enum MemberCap {
 
     /// What the footer says, which is three different sentences.
-    enum State: Equatable {
+    nonisolated enum State: Equatable {
         /// No cap of the owner's own; the operator's ceiling is what binds.
         case openToCeiling(ceiling: Int)
         /// The cap is at or below the current roster. Legal and deliberate:

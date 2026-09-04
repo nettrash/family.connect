@@ -40,16 +40,31 @@ extension CallRequest {
     /// not a call at all.
     static func parse(activity: NSUserActivity) -> CallRequest? {
         guard let intent = activity.interaction?.intent else { return nil }
-        switch intent {
-        case let call as INStartCallIntent:
+        if let call = intent as? INStartCallIntent {
             return CallRequest(person: call.contacts?.first, video: call.callCapability == .videoCall)
-        case let audio as INStartAudioCallIntent:
-            return CallRequest(person: audio.contacts?.first, video: false)
-        case let video as INStartVideoCallIntent:
-            return CallRequest(person: video.contacts?.first, video: true)
-        default:
-            return nil
         }
+        // The pre-iOS 13 audio/video intents, which the system STILL
+        // delivers from Contacts, Recents and Favorites (see
+        // ios-call-provider-gotchas). Matched by class name and read by
+        // key-value coding so this file never names the deprecated
+        // classes — a deprecation warning here would be a warning about
+        // the one thing this branch exists to handle.
+        if let audio = Self.legacyAudioIntent, intent.isKind(of: audio) {
+            return CallRequest(person: Self.legacyContacts(of: intent)?.first, video: false)
+        }
+        if let video = Self.legacyVideoIntent, intent.isKind(of: video) {
+            return CallRequest(person: Self.legacyContacts(of: intent)?.first, video: true)
+        }
+        return nil
+    }
+
+    private static let legacyAudioIntent: AnyClass? = NSClassFromString("INStartAudioCallIntent")
+    private static let legacyVideoIntent: AnyClass? = NSClassFromString("INStartVideoCallIntent")
+
+    /// `contacts` on either legacy intent — an Objective-C property, so
+    /// key-value coding reaches it without the Swift symbol.
+    private static func legacyContacts(of intent: INIntent) -> [INPerson]? {
+        intent.value(forKey: "contacts") as? [INPerson]
     }
 
     /// From the person the system named. Our own handle is recognised in

@@ -55,7 +55,7 @@ struct BubbleLayoutTests {
     /// Wide enough for several lines at the default body size, narrow
     /// enough that the body is guaranteed to wrap past the threshold where
     /// the squeeze used to bite (measured: 4+ lines).
-    private static let renderWidth: CGFloat = 320
+    private nonisolated static let renderWidth: CGFloat = 320
 
     private static let body = """
         Yes I totally agree with you about that, let's meet tomorrow at the \

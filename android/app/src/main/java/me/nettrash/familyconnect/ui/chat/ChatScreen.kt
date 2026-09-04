@@ -124,9 +124,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.CallMade
-import androidx.compose.material.icons.filled.CallMissed
-import androidx.compose.material.icons.filled.CallReceived
+import androidx.compose.material.icons.automirrored.filled.CallMade
+import androidx.compose.material.icons.automirrored.filled.CallMissed
+import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -134,7 +134,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Poll
@@ -2434,7 +2434,7 @@ private fun MessageBubble(
                         // the reaction would be visible to its sender.
                         onDoubleClick = {
                             if (!isHidden) {
-                                entity.serverId?.let { onToggleReaction(it, DOUBLE_TAP_REACTION) }
+                                onToggleReaction(entity.serverId, DOUBLE_TAP_REACTION)
                             }
                         },
                         onLongClick = { onLongPress(item, bubbleBounds) },
@@ -2995,10 +2995,10 @@ private fun CallRecordRow(
     onLongPress: () -> Unit,
 ) {
     val icon = when (line) {
-        is CallRecordLine.Missed, is CallRecordLine.DeclinedByMe -> Icons.Filled.CallMissed
-        is CallRecordLine.NoAnswer, is CallRecordLine.DeclinedByThem -> Icons.Filled.CallMade
+        is CallRecordLine.Missed, is CallRecordLine.DeclinedByMe -> Icons.AutoMirrored.Filled.CallMissed
+        is CallRecordLine.NoAnswer, is CallRecordLine.DeclinedByThem -> Icons.AutoMirrored.Filled.CallMade
         is CallRecordLine.Completed, is CallRecordLine.Failed ->
-            if (isMine) Icons.Filled.CallMade else Icons.Filled.CallReceived
+            if (isMine) Icons.AutoMirrored.Filled.CallMade else Icons.AutoMirrored.Filled.CallReceived
     }
     val text = when (line) {
         is CallRecordLine.Completed -> stringResource(
@@ -4599,7 +4599,7 @@ private fun StagedAttachmentChip(
                 )
             } else {
                 Icon(
-                    Icons.Filled.InsertDriveFile,
+                    Icons.AutoMirrored.Filled.InsertDriveFile,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -4854,7 +4854,7 @@ private fun InputBar(
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.s_file)) },
                             leadingIcon = {
-                                Icon(Icons.Filled.InsertDriveFile, contentDescription = null)
+                                Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null)
                             },
                             onClick = {
                                 attachMenuOpen = false

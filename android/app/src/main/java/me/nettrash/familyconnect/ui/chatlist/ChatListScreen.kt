@@ -51,7 +51,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.StickyNote2
+import androidx.compose.material.icons.automirrored.outlined.StickyNote2
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material3.Badge
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -179,7 +179,7 @@ fun ChatListScreen(
                             },
                         ) {
                             Icon(
-                                Icons.Outlined.StickyNote2,
+                                Icons.AutoMirrored.Outlined.StickyNote2,
                                 contentDescription = stringResource(R.string.s_board),
                             )
                         }

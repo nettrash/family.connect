@@ -35,7 +35,7 @@ struct KeychainStoreTests {
     /// change mid-run, and unlike an authorization prompt this probe does
     /// not alter the thing it measures — it writes and deletes its own
     /// unique account.
-    nonisolated(unsafe) static let keychainWritable: Bool = {
+    static let keychainWritable: Bool = {
         let probe = "probe-\(UUID().uuidString)"
         defer { try? KeychainStore.delete(account: probe) }
         return (try? KeychainStore.setString("x", account: probe)) != nil

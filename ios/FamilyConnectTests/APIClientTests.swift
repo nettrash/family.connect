@@ -30,10 +30,16 @@ struct APIClientTests {
     func leaveFamilyBothShapes() async throws {
         let host = "api-leave.test"
         defer { StubURLProtocol.unregister(host: host) }
-        var body = ""
-        var status = 204
+        // A box rather than captured vars: the stub's handler is a
+        // Sendable closure, and every request here is awaited before the
+        // script changes, so the box is never touched from two sides.
+        final class Script: @unchecked Sendable {
+            var body = ""
+            var status = 204
+        }
+        let script = Script()
         let client = makeClient(host: host) { _ in
-            status == 204 ? .empty(204) : .json(status, body)
+            script.status == 204 ? .empty(204) : .json(script.status, script.body)
         }
 
         // 204, no body: nobody inherited. Must not throw.
@@ -41,13 +47,13 @@ struct APIClientTests {
 
         // 200 with a successor: the id the leaving owner resolves against
         // the roster it still holds.
-        status = 200
-        body = #"{"new_owner_user_id": 11}"#
+        script.status = 200
+        script.body = #"{"new_owner_user_id": 11}"#
         #expect(try await client.leaveFamily() == 11)
 
         // A 200 whose body omits the key — a server that answered 200 for
         // its own reasons — is "nobody", not a decode failure.
-        body = "{}"
+        script.body = "{}"
         #expect(try await client.leaveFamily() == nil)
     }
 
