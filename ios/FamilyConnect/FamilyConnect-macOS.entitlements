@@ -11,18 +11,40 @@
 	  a socket at all. (The same entitlement, missed, is what crashed
 	  md.macOS's WebContent process on launch.)
 
-	  user-selected.read-only covers the document picker — a file the user
-	  chose, and nothing else. There is deliberately no
-	  downloads-folder or documents-folder entitlement: everything this app
-	  writes goes to its own container, and anything leaving it goes
-	  through the share sheet, which needs no entitlement of its own.
+	  user-selected.read-WRITE covers both directions of "a file the person
+	  chose in a panel, and nothing else": the NSOpenPanel that attaches a
+	  file, and the NSSavePanel behind the viewer's "Save a copy". It was
+	  read-only until 2026-08-31, which made that Save a copy a dead
+	  control — the copy was refused and both `try?`s threw the refusal
+	  away, so the button did nothing and said nothing. read-write subsumes
+	  read, so the open panel is unaffected.
+
+	  There is still deliberately no downloads-folder or documents-folder
+	  entitlement: this widens what the person can pick, not what the app
+	  can reach on its own. Everything the app writes unasked goes to its
+	  own container, and anything leaving it goes through the share sheet,
+	  which needs no entitlement at all.
 	-->
 	<!--
 	  Push. Same note as the iOS entitlements: "development" is what
 	  source carries, and Xcode rewrites it to "production" when an
 	  archive is exported.
+
+	  THE KEY NAME IS NOT THE iOS ONE. macOS spells this
+	  `com.apple.developer.aps-environment`; iOS spells it `aps-environment`.
+	  Both Mac provisioning profiles grant the macOS spelling only — the
+	  development profile with "development", the store profile with
+	  "production" — so a request for the iOS key matches nothing and Xcode
+	  drops it while signing, WITHOUT failing the build. That is how build
+	  100 reached TestFlight with no push entitlement of any spelling in the
+	  binary: a quit Mac was never woken, while in-app banners kept working
+	  because ChatNotifier raises those locally off the live socket, so
+	  nothing looked broken from inside the app.
+
+	  Check the product, not this file, after touching it:
+	      codesign -d --entitlements - --xml <FamilyConnect.app> | plutil -p -
 	-->
-	<key>aps-environment</key>
+	<key>com.apple.developer.aps-environment</key>
 	<string>development</string>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
@@ -34,7 +56,7 @@
 	     nothing on them. -->
 	<key>com.apple.security.network.server</key>
 	<true/>
-	<key>com.apple.security.files.user-selected.read-only</key>
+	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
 	<!--
 	  Recording a voice note. A sandboxed Mac app WITHOUT this does not

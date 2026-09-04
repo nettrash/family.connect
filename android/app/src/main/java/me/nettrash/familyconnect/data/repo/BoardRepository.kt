@@ -33,7 +33,10 @@ import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.di.AppScope
+import me.nettrash.familyconnect.util.BoardBadge
+import me.nettrash.familyconnect.util.badgeMarks
 import me.nettrash.familyconnect.util.TimeFormat
+import me.nettrash.familyconnect.util.marks
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -54,6 +57,14 @@ class BoardRepository @Inject constructor(
         }
     }
 
+    /**
+     * Whether this process has already decided about seeding the badge's
+     * content mark. Not a "seeded" flag: the answer "there was nothing to
+     * seed" is just as final, and re-asking would read the whole board on
+     * every applied note.
+     */
+    private var contentMarkChecked = false
+
     fun observeNotes(): Flow<List<NoteEntity>> = noteDao.observeNotes()
 
     private suspend fun boardCursor(): Long = settings.state.first().boardCursor
@@ -63,6 +74,11 @@ class BoardRepository @Inject constructor(
      * changed.
      */
     suspend fun applyNote(note: NoteDto): Boolean {
+        // Before the first note carrying a content seq is written, and only
+        // ever once per process: a device that had shown this board before
+        // the field existed needs its badge mark seeded, or the server's
+        // backfill badges the whole wall (BoardBadge.contentMarkSeed).
+        seedContentMarkIfNeeded()
         val existing = noteDao.findById(note.id)
         if (existing != null && note.boardSeq <= existing.boardSeq) return false
 
@@ -100,9 +116,28 @@ class BoardRepository @Inject constructor(
                 createdAt = note.createdAt?.let(TimeFormat::parseTimestamp) ?: existing?.createdAt ?: now,
                 updatedAt = note.updatedAt?.let(TimeFormat::parseTimestamp) ?: now,
                 boardSeq = note.boardSeq,
+                // A server from before content seqs sends none, and 0 is
+                // how this table spells "nobody said" — the badge then
+                // judges the note by its id, as it always did.
+                contentSeq = note.contentSeq ?: 0L,
             ),
         )
         return true
+    }
+
+    /**
+     * One-time repair of the badge marks after the update that brought
+     * content seqs (docs/protocol.md, "Board"). The flag makes it one read
+     * of the notes table per process at most, and only on a device that has
+     * a seed to do.
+     */
+    private suspend fun seedContentMarkIfNeeded() {
+        if (contentMarkChecked) return
+        contentMarkChecked = true
+        val marks = settings.state.first().badgeMarks()
+        val seed = BoardBadge.contentMarkSeed(noteDao.observeNotes().first().marks(), marks)
+            ?: return
+        settings.setBoardSeenContentSeq(seed)
     }
 
     /** Full board read — the first open, and any time the cursor is 0. */

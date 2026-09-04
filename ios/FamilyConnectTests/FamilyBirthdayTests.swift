@@ -154,6 +154,27 @@ struct FamilyBirthdayTests {
         #expect(body.count == 1)
     }
 
+    @Test("the member cap patches alone, and null clears it")
+    func memberCapPatchBody() async throws {
+        let host = "family-cap.test"
+        defer { StubURLProtocol.unregister(host: host) }
+        let client = makeClient(host: host) { _ in .json(200, Self.familyJSON) }
+
+        _ = try await client.setMemberCap(12)
+        var body = try #require(StubURLProtocol.requests(host: host).first?.bodyJSON())
+        #expect(body["max_members"] as? Int == 12)
+        #expect(body.count == 1, "one field per patch: \(body)")
+
+        // Clearing is a real JSON null, not an omitted key — the two mean
+        // different things here, exactly as they do for the language.
+        StubURLProtocol.unregister(host: host)
+        let clearing = makeClient(host: host) { _ in .json(200, Self.familyJSON) }
+        _ = try await clearing.setMemberCap(nil)
+        body = try #require(StubURLProtocol.requests(host: host).first?.bodyJSON())
+        #expect(body.count == 1)
+        #expect(body["max_members"] is NSNull, "null CLEARS the cap: \(body)")
+    }
+
     // MARK: - Birthday endpoints
 
     @Test("my birthday PUTs two integers and DELETEs by itself")
@@ -343,6 +364,7 @@ struct FamilyBirthdayTests {
         StubURLProtocol.register(host: host, handler: handler)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            PendingMediaItemEntity.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!,

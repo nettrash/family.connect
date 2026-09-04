@@ -55,8 +55,26 @@ pub struct PatchFamilyRequest {
     pub join_policy: Option<String>,
     #[serde(default, deserialize_with = "present_option")]
     pub language: Option<Option<String>>,
+    /// The family's own member cap. Three states like the language, and
+    /// for the same reason: absent leaves it alone, `null` CLEARS it, and
+    /// a number sets it. Clearing is not the same as setting it to the
+    /// operator's ceiling — see [`crate::models::Family::max_members`].
+    #[serde(default, deserialize_with = "present_option")]
+    pub max_members: Option<Option<i32>>,
     #[serde(default)]
     pub ai_history: Option<bool>,
+    /// The picture switch, the same shape and for the same reason as
+    /// `ai_history` — absent leaves it alone, and there is nothing for a
+    /// `null` to mean. It differs only in what it defaults to when nobody
+    /// has ever sent it (protocol.md, "Pictures").
+    #[serde(default)]
+    pub ai_vision: Option<bool>,
+    /// The third switch, the same shape again — and the one with a rule
+    /// between it and its neighbour: `true` is refused while `ai_vision`
+    /// is off, and turning `ai_vision` off turns this off in the same write
+    /// (protocol.md, "Recent photos from the family chat").
+    #[serde(default)]
+    pub ai_history_photos: Option<bool>,
 }
 
 /// Deserialize a present key into `Some(...)`, so that `#[serde(default)]`
@@ -113,7 +131,10 @@ struct FamilyRecord {
     invite_code: String,
     join_policy: String,
     language: Option<String>,
+    max_members: Option<i32>,
     ai_history: bool,
+    ai_vision: bool,
+    ai_history_photos: bool,
     owner_user_id: i64,
     created_at: OffsetDateTime,
 }
@@ -126,7 +147,10 @@ impl FamilyRecord {
             invite_code: row.get("invite_code"),
             join_policy: row.get("join_policy"),
             language: row.get("language"),
+            max_members: row.get("max_members"),
             ai_history: row.get("ai_history"),
+            ai_vision: row.get("ai_vision"),
+            ai_history_photos: row.get("ai_history_photos"),
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
         }
@@ -144,17 +168,31 @@ impl FamilyRecord {
             // the assistant answers the whole family in, so the whole
             // family sees it.
             language: self.language.clone(),
+            // Not owner-gated either: every member may see how many people
+            // their family admits, even though only the owner may set it.
+            max_members: self.max_members,
             // Not owner-gated either, and for a stronger reason than the
             // language: this decides what a member's own words may be used
             // for when somebody else mentions the assistant. Only the owner
             // can CHANGE it; everybody gets to know what it is.
             ai_history: self.ai_history,
+            // Not owner-gated either, and for the strongest reason of the
+            // four: this decides whether a member's own PHOTOGRAPHS may
+            // leave the server. Every member gets to know the answer before
+            // they attach one; only the owner can change it.
+            ai_vision: self.ai_vision,
+            // And the third, for the reason that tops the other three: it
+            // decides whether a member's photographs may leave WITHOUT
+            // anybody pointing the assistant at them. Every member gets to
+            // know that before they send one; only the owner can change it.
+            ai_history_photos: self.ai_history_photos,
         }
     }
 }
 
-const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, ai_history,
-                             owner_user_id, created_at FROM families";
+const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, max_members,
+                             ai_history, ai_vision, ai_history_photos, owner_user_id, created_at
+                             FROM families";
 
 async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, ApiError> {
     let row = sqlx::query(&format!("{SELECT_FAMILY} WHERE id = $1"))
@@ -162,6 +200,17 @@ async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, 
         .fetch_one(&state.pool)
         .await?;
     Ok(FamilyRecord::from_row(&row))
+}
+
+/// The id of the family the caller owns, or `not_family_owner`.
+///
+/// A thin wrapper over [`require_owner`] for callers outside this module
+/// that need the ownership check and not the whole record.
+pub(crate) async fn require_owner_family(
+    state: &AppState,
+    auth: &AuthUser,
+) -> Result<i64, ApiError> {
+    Ok(require_owner(state, auth).await?.id)
 }
 
 /// Resolve the caller's family and require them to be its owner.
@@ -183,25 +232,141 @@ async fn require_owner(state: &AppState, auth: &AuthUser) -> Result<FamilyRecord
     Ok(family)
 }
 
+/// What a membership grant can answer.
+///
+/// Three states rather than a `bool`, because the two failures need
+/// different words: somebody who is already in a family is told so, and
+/// somebody arriving at a full one is told THAT, and a caller cannot tell
+/// them apart from a single `false`.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Granted {
+    Yes,
+    AlreadyInAFamily,
+    FamilyFull,
+}
+
+/// Who WOULD inherit this family if `owner_user_id` left right now.
+///
+/// The read-only twin of `handlers_auth::pass_ownership_on`'s ordering
+/// query — same `ORDER BY cm.joined_at ASC, cm.user_id ASC`, same exclusion
+/// of tombstones — with no lock, no re-check and no write, because this
+/// answers a question rather than settling one. Computed server-side and
+/// not by the clients: the roster carries no join times, so no client could
+/// work it out, and two that guessed would eventually disagree.
+async fn next_owner_user_id(
+    pool: &sqlx::PgPool,
+    family_id: i64,
+    owner_user_id: i64,
+) -> Result<Option<i64>, ApiError> {
+    let candidate: Option<i64> = sqlx::query_scalar(
+        "SELECT cm.user_id
+           FROM chat_members cm
+           JOIN chats c ON c.id = cm.chat_id
+           JOIN users u ON u.id = cm.user_id
+          WHERE c.family_id = $1 AND c.kind = 'family' AND cm.user_id <> $2
+            AND u.family_id = $1 AND u.deleted_at IS NULL
+          ORDER BY cm.joined_at ASC, cm.user_id ASC
+          LIMIT 1",
+    )
+    .bind(family_id)
+    .bind(owner_user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(candidate)
+}
+
+/// Is this family at its cap? Its own `max_members` when it set one, the
+/// operator's `ceiling` when it did not, and never more than the ceiling —
+/// "a valve that limited only what an owner may TYPE would hold nothing
+/// shut" (protocol.md, "Families"). `None` when the family is gone.
+///
+/// One expression, two doors, so they cannot drift: `grant_membership`
+/// calls it under the family row's `FOR UPDATE`, because there the count
+/// and the insert are one decision; the approval door calls it without a
+/// lock, because a pending request reserves nothing.
+async fn family_is_full(
+    conn: &mut PgConnection,
+    family_id: i64,
+    ceiling: i64,
+) -> Result<Option<bool>, ApiError> {
+    let cap: Option<Option<i32>> =
+        sqlx::query_scalar("SELECT max_members FROM families WHERE id = $1")
+            .bind(family_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some(cap) = cap else {
+        return Ok(None);
+    };
+    let cap = i64::from(cap.unwrap_or(i32::MAX)).min(ceiling);
+    let head_count: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE family_id = $1")
+        .bind(family_id)
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok(Some(head_count >= cap))
+}
+
 /// Grant `user_id` membership of `family_id` inside `tx`.
 ///
 /// Runs the race-proof guarded update, joins the family chat, and
 /// auto-rejects the user's other pending join requests (they just got a
 /// family; a later approval elsewhere would only 409).
+///
+/// This is the ONLY place membership is granted — `create_family`,
+/// `join_family` and `approve_join_request` all come through here — which
+/// is why the member cap is enforced here rather than at each door.
 async fn grant_membership(
     tx: &mut PgConnection,
     family_id: i64,
     user_id: i64,
-) -> Result<bool, ApiError> {
-    let updated =
-        sqlx::query("UPDATE users SET family_id = $1 WHERE id = $2 AND family_id IS NULL")
-            .bind(family_id)
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+    ceiling: i64,
+) -> Result<Granted, ApiError> {
+    // Serialize on the family row BEFORE counting. Without this the count
+    // and the insert are two statements with a gap in the middle, and two
+    // concurrent joins into a family with one seat left both read "one
+    // fewer than the cap" and both insert. The FK's implicit FOR KEY SHARE
+    // does not conflict with itself and so does not close it.
+    //
+    // This joins an existing lock order rather than inventing one:
+    // `leave_family`, `remove_member` and `delete_account` already take
+    // this same row FOR UPDATE, so a caller can never hold one of those
+    // and wait on this.
+    sqlx::query("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+        .bind(family_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+    // Read under the lock, so it cannot move between here and the insert.
+    // A family that has vanished under us is reported as full rather than
+    // as a 500: the caller is not getting in either way, and the only
+    // other answer this helper could give is a `RowNotFound` the error
+    // layer maps to Internal.
+    match family_is_full(&mut *tx, family_id, ceiling).await? {
+        Some(false) => {}
+        Some(true) | None => return Ok(Granted::FamilyFull),
+    }
+
+    // `familyless_since` stops here (0034): a member's clock is not running.
+    //
+    // `deleted_at IS NULL` because this UPDATE can otherwise land on a
+    // TOMBSTONE. The scrub — a deletion the person asked for, or the
+    // familyless sweep — blanks `family_id`, and a join that was already
+    // past authentication when the scrub committed would then find the
+    // row exactly as this predicate wants it and make a "Deleted account"
+    // with `password_hash = '!'` a member of the family. The session it
+    // rode in on is gone, so the caller learns nothing either way; refusing
+    // as `AlreadyInAFamily` is the nearest honest answer this helper has.
+    let updated = sqlx::query(
+        "UPDATE users
+            SET family_id = $1, familyless_since = NULL
+          WHERE id = $2 AND family_id IS NULL AND deleted_at IS NULL",
+    )
+    .bind(family_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     if updated == 0 {
-        return Ok(false);
+        return Ok(Granted::AlreadyInAFamily);
     }
     let chat_id: i64 =
         sqlx::query_scalar("SELECT id FROM chats WHERE family_id = $1 AND kind = 'family'")
@@ -222,7 +387,7 @@ async fn grant_membership(
     .bind(user_id)
     .execute(&mut *tx)
     .await?;
-    Ok(true)
+    Ok(Granted::Yes)
 }
 
 /// One member's birthday, read on its own.
@@ -255,6 +420,16 @@ pub async fn create_family(
     State(state): State<AppState>,
     AppJson(req): AppJson<CreateFamilyRequest>,
 ) -> Result<Response, ApiError> {
+    // The operator's door, before the name is even looked at: a server
+    // run for one family may be closed to new ones (docs/protocol.md,
+    // "Starting a family"). Joining the families already here is not
+    // touched by this — that is what the server is for.
+    if !state.cfg.families.registration {
+        return Err(ApiError::forbidden(
+            codes::FAMILY_REGISTRATION_DISABLED,
+            "this server does not take new families",
+        ));
+    }
     let name = req.name.trim().to_string();
     let name_len = name.chars().count();
     if !(1..=64).contains(&name_len) {
@@ -277,8 +452,8 @@ pub async fn create_family(
         let inserted = sqlx::query(
             "INSERT INTO families (name, invite_code, owner_user_id)
              VALUES ($1, $2, $3)
-             RETURNING id, name, invite_code, join_policy, language, ai_history, owner_user_id,
-                       created_at",
+             RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
+                       ai_vision, ai_history_photos, owner_user_id, created_at",
         )
         .bind(&name)
         .bind(&invite_code)
@@ -301,13 +476,34 @@ pub async fn create_family(
             .execute(&mut *tx)
             .await?;
 
-        if !grant_membership(&mut tx, family.id, auth.user_id).await? {
+        // A family one statement old cannot be full — its creator is the
+        // first member and the cap is at least one — so `FamilyFull` here
+        // would be a bug rather than a state, and it is reported as the
+        // conflict it is rather than silently mapped onto something else.
+        match grant_membership(
+            &mut tx,
+            family.id,
+            auth.user_id,
+            state.cfg.limits.max_family_members,
+        )
+        .await?
+        {
+            Granted::Yes => {}
             // Lost a race against another create/join from the same account.
-            tx.rollback().await?;
-            return Err(ApiError::conflict(
-                codes::ALREADY_IN_FAMILY,
-                "you already belong to a family",
-            ));
+            Granted::AlreadyInAFamily => {
+                tx.rollback().await?;
+                return Err(ApiError::conflict(
+                    codes::ALREADY_IN_FAMILY,
+                    "you already belong to a family",
+                ));
+            }
+            Granted::FamilyFull => {
+                tx.rollback().await?;
+                return Err(ApiError::conflict(
+                    codes::FAMILY_FULL,
+                    "this family is full",
+                ));
+            }
         }
         tx.commit().await?;
 
@@ -345,6 +541,30 @@ pub async fn join_family(
     };
     let family = FamilyRecord::from_row(&row);
 
+    // A closed family admits nobody, and says so in the words of a code
+    // that never existed: byte-identical to a wrong one, so a shut door
+    // tells a stranger nothing — the same non-enumeration reasoning the
+    // avatar and password-reset endpoints follow.
+    //
+    // BEFORE the already-in-a-family check, which is the order protocol.md
+    // pins: "closed, then already in a family, then a pending request,
+    // then full — so a closed family answers `invalid_invite_code`
+    // whatever else is true of it". The other way round, a caller who is
+    // in any family at all gets 409 for a real closed code and 404 for a
+    // made-up one, and telling those apart is one `POST /families` away
+    // for anybody.
+    //
+    // Without this branch a closed family is worse than an open bug: the
+    // `else` below inserts a join request, so the door would read as shut
+    // in the app while a queue filled up behind it, and the owner would be
+    // asked to decide on people they never invited.
+    if family.join_policy == "closed" {
+        return Err(ApiError::not_found(
+            codes::INVALID_INVITE_CODE,
+            "no family with this invite code",
+        ));
+    }
+
     if auth.family_id.is_some() {
         return Err(ApiError::conflict(
             codes::ALREADY_IN_FAMILY,
@@ -354,12 +574,29 @@ pub async fn join_family(
 
     if family.join_policy == "open" {
         let mut tx = state.pool.begin().await?;
-        if !grant_membership(&mut tx, family.id, auth.user_id).await? {
-            tx.rollback().await?;
-            return Err(ApiError::conflict(
-                codes::ALREADY_IN_FAMILY,
-                "you already belong to a family",
-            ));
+        match grant_membership(
+            &mut tx,
+            family.id,
+            auth.user_id,
+            state.cfg.limits.max_family_members,
+        )
+        .await?
+        {
+            Granted::Yes => {}
+            Granted::AlreadyInAFamily => {
+                tx.rollback().await?;
+                return Err(ApiError::conflict(
+                    codes::ALREADY_IN_FAMILY,
+                    "you already belong to a family",
+                ));
+            }
+            Granted::FamilyFull => {
+                tx.rollback().await?;
+                return Err(ApiError::conflict(
+                    codes::FAMILY_FULL,
+                    "this family is full",
+                ));
+            }
         }
         tx.commit().await?;
 
@@ -373,42 +610,94 @@ pub async fn join_family(
 
     // approval policy: create a pending request; the partial unique index
     // (family_id, user_id) WHERE pending turns a duplicate into a 409.
+    //
+    // In a transaction because the cap is read at THIS door too
+    // (protocol.md: "under policy `approval` this door is where the
+    // REQUEST is created and the cap is read there too, then read again at
+    // approval"). Without it a family at its cap answers `pending` to
+    // everybody and the owner collects requests that every approval
+    // refuses and leaves pending for ever — the queue-behind-a-shut-door
+    // failure the `closed` branch exists to prevent, arriving through the
+    // cap instead of the policy.
+    //
+    // The INSERT runs FIRST so the documented order holds — a pending
+    // request is reported as one before the room is counted — and it goes
+    // back with the rollback when the family turns out to be full. No
+    // `FOR UPDATE`: a pending request reserves nothing, so this read
+    // decides nothing that the grant does not decide again under the lock.
+    let mut tx = state.pool.begin().await?;
+    // Still a live account, read under a share lock on its own row. The
+    // familyless sweep scrubs under FOR UPDATE, and a request that was past
+    // authentication when the scrub committed would otherwise ride the
+    // INSERT's own FK lock — which waits for the scrub and then proceeds —
+    // into a `pending` request from "Deleted account" that the owner is
+    // pushed about. FOR SHARE waits the same way but is re-evaluated after
+    // the wait, so it sees the tombstone. The session is gone with the
+    // account, so the caller is answered as one whose session is gone.
+    let alive: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR SHARE")
+            .bind(auth.user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if alive.is_none() {
+        return Err(ApiError::unauthorized());
+    }
     let inserted = sqlx::query(
         "INSERT INTO join_requests (family_id, user_id, invite_code_used) VALUES ($1, $2, $3)",
     )
     .bind(family.id)
     .bind(auth.user_id)
     .bind(&invite_code)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await;
     match inserted {
-        Ok(_) => {
-            // The owner learns about the request by push when offline; the
-            // request itself is already committed, so failures here must
-            // not fail the response.
-            events::log_fanout_error(
-                "join_request_push",
-                events::push_join_request_created(
-                    &state,
-                    family.id,
-                    &family.name,
-                    family.owner_user_id,
-                    auth.user_id,
-                )
-                .await,
-            );
-            Ok((StatusCode::OK, Json(json!({"status": "pending"}))).into_response())
-        }
+        Ok(_) => {}
         Err(sqlx::Error::Database(db_err))
             if db_err.constraint() == Some("join_requests_pending_uq") =>
         {
-            Err(ApiError::conflict(
+            tx.rollback().await?;
+            return Err(ApiError::conflict(
                 codes::JOIN_REQUEST_PENDING,
                 "a join request for this family is already pending",
-            ))
+            ));
         }
-        Err(err) => Err(err.into()),
+        Err(err) => return Err(err.into()),
     }
+    match family_is_full(&mut tx, family.id, state.cfg.limits.max_family_members).await? {
+        Some(false) => {}
+        Some(true) => {
+            tx.rollback().await?;
+            return Err(ApiError::conflict(
+                codes::FAMILY_FULL,
+                "this family is full",
+            ));
+        }
+        // The FK held the family in place across the INSERT, so this is
+        // unreachable; answered as the door's own truth rather than a 500.
+        None => {
+            tx.rollback().await?;
+            return Err(ApiError::not_found(
+                codes::INVALID_INVITE_CODE,
+                "no family with this invite code",
+            ));
+        }
+    }
+    tx.commit().await?;
+    // The owner learns about the request by push when offline; the request
+    // itself is already committed, so failures here must not fail the
+    // response.
+    events::log_fanout_error(
+        "join_request_push",
+        events::push_join_request_created(
+            &state,
+            family.id,
+            &family.name,
+            family.owner_user_id,
+            auth.user_id,
+        )
+        .await,
+    );
+    Ok((StatusCode::OK, Json(json!({"status": "pending"}))).into_response())
 }
 
 /// `GET /families/mine`
@@ -488,6 +777,18 @@ pub async fn my_family(
     // It is deliberately NOT added to `members`: it is not a member, it
     // cannot be messaged, removed, made owner or given a password, and
     // every screen that lists people would have to special-case it.
+    // Owner-only, and a PREDICTION rather than a fact: any join or leave
+    // can change the answer, so a client re-reads this immediately before
+    // it shows the leave dialog and never names a successor from a cached
+    // value. Absent means the owner is the last member and leaving DELETES
+    // the family — a different dialog and a different confirmation.
+    // As on `GET /me`: always present, `[]` when empty, a complete
+    // state-set the client replaces what it stores with.
+    body["blocked_user_ids"] = json!(crate::blocks::blocked_by(&state.pool, auth.user_id).await?);
+    if is_owner && let Some(next) = next_owner_user_id(&state.pool, family.id, auth.user_id).await?
+    {
+        body["next_owner_user_id"] = json!(next);
+    }
     if state.cfg.ai.is_usable()
         && let Some(assistant_id) = crate::handlers_ai::assistant_user_id(&state)
             .await
@@ -497,6 +798,16 @@ pub async fn my_family(
             "user_id": assistant_id,
             "display_name": state.cfg.ai.title,
             "mention": crate::mentions::MENTION,
+            // The picture half of the same discovery problem the two keys
+            // above solve (protocol.md, "Pictures"). `vision` and `images`
+            // are what this SERVER can do; whether this FAMILY allows the
+            // first of them is `family.ai_vision`, and a client needs both
+            // before it offers to attach a picture in an ai chat. An
+            // affordance that silently does nothing is worse than one that
+            // is not there — which is the whole reason this object exists.
+            "draw": crate::mentions::DRAW,
+            "vision": state.cfg.ai.vision_usable(),
+            "images": state.cfg.ai.images_usable(),
         });
     }
     Ok((StatusCode::OK, Json(body)).into_response())
@@ -535,13 +846,19 @@ pub async fn rotate_invite_code(
 }
 
 /// `PATCH /families/mine` (owner) — the join policy, the family's main
-/// language, whether a mention sees the chat's recent history, or any
-/// combination of the three.
+/// language, the cap, the three assistant switches, or any combination.
 ///
 /// Which fields are PRESENT decides what changes, exactly as on a board
 /// note. Everything is validated before anything is written, so a request
 /// naming a good policy and a bad language changes neither and the owner is
 /// never left guessing which half of it landed.
+///
+/// One rule binds two of the switches (protocol.md, "Recent photos from
+/// the family chat"): `ai_history_photos` may only be on while `ai_vision`
+/// is. Turning it on otherwise is `validation`; turning `ai_vision` off
+/// turns it off in the same write, whether or not the request said so.
+/// The check needs the row, so it is the one validation that runs after
+/// `require_owner` — still before anything is written.
 pub async fn patch_family(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -549,10 +866,10 @@ pub async fn patch_family(
 ) -> Result<Response, ApiError> {
     let join_policy = match req.join_policy.as_deref() {
         None => None,
-        Some(policy @ ("open" | "approval")) => Some(policy.to_string()),
+        Some(policy @ ("open" | "approval" | "closed")) => Some(policy.to_string()),
         Some(_) => {
             return Err(ApiError::validation(
-                "join_policy must be \"open\" or \"approval\"",
+                "join_policy must be \"open\", \"approval\" or \"closed\"",
             ));
         }
     };
@@ -563,27 +880,74 @@ pub async fn patch_family(
         Some(None) => Some(None),
         Some(Some(requested)) => Some(Some(validate_language(requested)?)),
     };
+    // Same three states, and validated here rather than after
+    // `require_owner` because this handler promises all-validation-first.
+    //
+    // A cap BELOW the family's current head count is accepted and acts as
+    // a freeze — nobody new until people leave — rather than being
+    // refused: an owner who inherits a large family must still be able to
+    // shut the door, and the cap is read AT the door and never enforced
+    // over the room.
+    let ceiling = state.cfg.limits.max_family_members;
+    let max_members = match &req.max_members {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(requested)) => {
+            if i64::from(*requested) < 1 || i64::from(*requested) > ceiling {
+                return Err(ApiError::validation(format!(
+                    "max_members must be between 1 and {ceiling}"
+                )));
+            }
+            Some(Some(*requested))
+        }
+    };
 
     let family = require_owner(&state, &auth).await?;
-    // COALESCE for the policy and for the history switch, because an unsent
-    // field binds NULL and the column should keep what it had — which is
-    // exactly what COALESCE says. The language cannot use it — NULL is a
-    // VALUE there rather than "unchanged" — so a separate flag says whether
-    // to write that column at all.
+    // The third switch may only be on while `ai_vision` is, judged against
+    // what `ai_vision` WILL be once this same request has applied: turning
+    // both on at once is fine, turning `ai_vision` off and this on is not,
+    // and turning this on alone while `ai_vision` is off is the case an
+    // owner most needs an answer to rather than a silent no. Refused here
+    // with the reason; and enforced AGAIN in the UPDATE below, so a racing
+    // request cannot write the state migration 0033's CHECK forbids.
+    let vision_after = req.ai_vision.unwrap_or(family.ai_vision);
+    if req.ai_history_photos == Some(true) && !vision_after {
+        return Err(ApiError::validation(
+            "ai_history_photos can only be turned on while ai_vision is on",
+        ));
+    }
+    // COALESCE for the policy and for the switches, because an unsent field
+    // binds NULL and the column should keep what it had — which is exactly
+    // what COALESCE says. The language cannot use it — NULL is a VALUE
+    // there rather than "unchanged" — so a separate flag says whether to
+    // write that column at all.
+    //
+    // `ai_history_photos` is what was asked (or what it was) AND what
+    // `ai_vision` is about to be. That one expression is both halves of
+    // the rule at once: `ai_vision` going off takes it down in the same
+    // write, whether or not the request mentioned it, and nothing this
+    // handler can be sent leaves it on over a shut `ai_vision`.
     let row = sqlx::query(
         "UPDATE families
          SET join_policy = COALESCE($2, join_policy),
              language = CASE WHEN $3 THEN $4 ELSE language END,
-             ai_history = COALESCE($5, ai_history)
+             ai_history = COALESCE($5, ai_history),
+             ai_vision = COALESCE($8, ai_vision),
+             ai_history_photos = COALESCE($9, ai_history_photos) AND COALESCE($8, ai_vision),
+             max_members = CASE WHEN $6 THEN $7 ELSE max_members END
          WHERE id = $1
-         RETURNING id, name, invite_code, join_policy, language, ai_history, owner_user_id,
-                   created_at",
+         RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
+                   ai_vision, ai_history_photos, owner_user_id, created_at",
     )
     .bind(family.id)
     .bind(join_policy)
     .bind(language.is_some())
     .bind(language.flatten())
     .bind(req.ai_history)
+    .bind(max_members.is_some())
+    .bind(max_members.flatten())
+    .bind(req.ai_vision)
+    .bind(req.ai_history_photos)
     .fetch_one(&state.pool)
     .await?;
     let family = FamilyRecord::from_row(&row);
@@ -669,23 +1033,49 @@ pub async fn approve_join_request(
     }
     let applicant_id: i64 = row.get("user_id");
 
-    if !grant_membership(&mut tx, family.id, applicant_id).await? {
-        // The applicant found a family elsewhere in the meantime. The
-        // request can never be satisfied, so it is closed as rejected —
-        // committed, not rolled back — before reporting the conflict.
-        sqlx::query(
-            "UPDATE join_requests SET status = 'rejected', decided_at = now(), decided_by = $2
-             WHERE id = $1",
-        )
-        .bind(request_id)
-        .bind(auth.user_id)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        return Err(ApiError::conflict(
-            codes::USER_ALREADY_IN_FAMILY,
-            "this user already belongs to a family",
-        ));
+    match grant_membership(
+        &mut tx,
+        family.id,
+        applicant_id,
+        state.cfg.limits.max_family_members,
+    )
+    .await?
+    {
+        Granted::Yes => {}
+        Granted::AlreadyInAFamily => {
+            // The applicant found a family elsewhere in the meantime. The
+            // request can never be satisfied, so it is closed as rejected —
+            // committed, not rolled back — before reporting the conflict.
+            sqlx::query(
+                "UPDATE join_requests SET status = 'rejected', decided_at = now(), decided_by = $2
+                 WHERE id = $1",
+            )
+            .bind(request_id)
+            .bind(auth.user_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Err(ApiError::conflict(
+                codes::USER_ALREADY_IN_FAMILY,
+                "this user already belongs to a family",
+            ));
+        }
+        Granted::FamilyFull => {
+            // The OPPOSITE disposition to the case above, and the
+            // difference is whether the refusal can ever stop being true.
+            // "Already in a family" is permanent from this request's point
+            // of view, so the row is closed. "Full" is a fact about today:
+            // somebody leaves and the same approval works. So the request
+            // is left PENDING and the transaction rolled back — the owner
+            // keeps the row on their list and decides again later, rather
+            // than having the server quietly reject somebody they said yes
+            // to.
+            tx.rollback().await?;
+            return Err(ApiError::conflict(
+                codes::FAMILY_FULL,
+                "this family is full",
+            ));
+        }
     }
     // grant_membership auto-rejected the applicant's *other* pending
     // requests; this one becomes the approved record.
@@ -796,20 +1186,82 @@ pub async fn leave_family(
     };
 
     if owner_user_id == auth.user_id {
-        let member_count: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM users WHERE family_id = $1")
+        // An owner who leaves HANDS THE FAMILY ON; they are never refused.
+        // This used to answer `owner_cannot_leave` to anybody who was not
+        // the sole member, which left a family whose owner had lost
+        // interest with no way to change hands at all.
+        //
+        // The same rule as "Deleting an account", reached now from two
+        // doors rather than one — see `handlers_auth::pass_ownership_on`,
+        // which is called under the lock this function already holds.
+        let successor =
+            crate::handlers_auth::pass_ownership_on(&mut tx, family_id, auth.user_id).await?;
+        if let Some(new_owner_user_id) = successor {
+            // Ownership is committed together with the departure, so no
+            // reader ever sees a family owned by somebody who has left.
+            remove_membership(&mut tx, family_id, auth.user_id).await?;
+            tx.commit().await?;
+
+            // The successor is told FIRST, so no client momentarily holds a
+            // family whose `owner_user_id` names nobody in `members`.
+            events::log_fanout_error(
+                "family_owner",
+                events::deliver_family_owner(&state, family_id, new_owner_user_id).await,
+            );
+            events::log_fanout_error(
+                "member_left",
+                events::deliver_member_left(&state, family_id, auth.user_id).await,
+            );
+            return Ok((
+                StatusCode::OK,
+                Json(json!({"new_owner_user_id": new_owner_user_id})),
+            )
+                .into_response());
+        }
+
+        // Nobody inherits. Before believing that, check the head count:
+        // `pass_ownership_on` can only see members who hold a
+        // `chat_members` row for the family chat, and a `users` row that
+        // names the family without one is invisible there while still
+        // counting everywhere else. Falling through would then DELETE A
+        // FAMILY WITH A LIVE MEMBER IN IT. This is a guard against a
+        // divergence that should not exist, so it is logged loudly rather
+        // than handled quietly.
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM users WHERE family_id = $1 AND id <> $2")
                 .bind(family_id)
+                .bind(auth.user_id)
                 .fetch_one(&mut *tx)
                 .await?;
-        if member_count > 1 {
-            return Err(ApiError::conflict(
-                codes::OWNER_CANNOT_LEAVE,
-                "the owner may leave only as the sole member",
-            ));
+        if remaining > 0 {
+            tx.rollback().await?;
+            // Reported as `internal`, NOT as `owner_cannot_leave`. That
+            // code is retired and protocol.md says no endpoint raises it;
+            // reviving it here would make the doc false and would also
+            // tell the owner they may not leave, which is not true — the
+            // server simply cannot work out to whom. This is a database in
+            // a state it should not be able to reach, which is what a 500
+            // is for, and the log line is the half that matters.
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "family {family_id} has {remaining} member(s) but no successor could be found — \
+                 a users row names the family with no family-chat membership"
+            )));
         }
+
         // Sole member: delete the family. Cascades remove chats, messages,
         // members, and join requests; users.family_id resets via
         // ON DELETE SET NULL. Nobody is left to notify.
+        //
+        // The FK blanks `family_id` and nothing else, so the familyless
+        // clock is started HERE, by hand — the one departure that does
+        // not go through `remove_membership`. Without it the row would be
+        // {family NULL, familyless_since NULL}: alive, alone, and invisible
+        // to the sweep for good, while `/me` went on promising the grace
+        // (docs/protocol.md, "Accounts without a family").
+        sqlx::query("UPDATE users SET familyless_since = now() WHERE id = $1")
+            .bind(auth.user_id)
+            .execute(&mut *tx)
+            .await?;
         let storage_keys = delete_family_in_tx(&mut tx, family_id).await?;
         tx.commit().await?;
         // After the commit, never inside it — and so this may not fail the
@@ -841,6 +1293,86 @@ pub async fn leave_family(
     events::log_fanout_error(
         "member_left",
         events::deliver_member_left(&state, family_id, auth.user_id).await,
+    );
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `PUT /families/members/{user_id}/block`
+///
+/// ANY member may block ANY other member of their own family, **the owner
+/// included** — there is no `require_owner` here and that is the point.
+/// A block affordance is weakest exactly where the person you want to stop
+/// reading is the one with power (protocol.md, "Blocking a member").
+///
+/// Idempotent: blocking somebody already blocked is still `204`, which is
+/// what the primary key on the pair buys.
+pub async fn block_member(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(target_user_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let Some(family_id) = auth.family_id else {
+        return Err(ApiError::conflict(
+            codes::NOT_IN_FAMILY,
+            "you do not belong to a family",
+        ));
+    };
+    if target_user_id == auth.user_id {
+        return Err(ApiError::bad_request(
+            codes::CANNOT_BLOCK_SELF,
+            "you cannot block yourself",
+        ));
+    }
+    let family = fetch_family(&state, family_id).await?;
+    require_same_family(&state, &family, target_user_id).await?;
+
+    sqlx::query(
+        "INSERT INTO member_blocks (blocker_user_id, blocked_user_id) VALUES ($1, $2)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(auth.user_id)
+    .bind(target_user_id)
+    .execute(&state.pool)
+    .await?;
+
+    // Only the blocker's own devices, ever.
+    events::log_fanout_error(
+        "member_blocked",
+        events::deliver_member_blocked(&state, auth.user_id, target_user_id, true).await,
+    );
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `DELETE /families/members/{user_id}/block`
+///
+/// Unblocks. Idempotent — clearing a block nobody set is still `204`.
+///
+/// Scoped to the CALLER'S OWN LIST and not to the roster: any id in
+/// `blocked_user_ids` may be cleared, including one that has since left the
+/// family or deleted its account, so `not_same_family` is NOT raised here
+/// and neither is `not_in_family`. A block is a pair and not a membership;
+/// a block the blocker could not lift would be a permanent entry on their
+/// own screen and one that came back to life on a rejoin.
+pub async fn unblock_member(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(target_user_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    if target_user_id == auth.user_id {
+        return Err(ApiError::bad_request(
+            codes::CANNOT_BLOCK_SELF,
+            "you cannot block yourself",
+        ));
+    }
+    sqlx::query("DELETE FROM member_blocks WHERE blocker_user_id = $1 AND blocked_user_id = $2")
+        .bind(auth.user_id)
+        .bind(target_user_id)
+        .execute(&state.pool)
+        .await?;
+
+    events::log_fanout_error(
+        "member_blocked",
+        events::deliver_member_blocked(&state, auth.user_id, target_user_id, false).await,
     );
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -1111,12 +1643,20 @@ async fn remove_membership(
     family_id: i64,
     user_id: i64,
 ) -> Result<(), ApiError> {
-    let updated = sqlx::query("UPDATE users SET family_id = NULL WHERE id = $1 AND family_id = $2")
-        .bind(user_id)
-        .bind(family_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    // `familyless_since` starts AGAIN here (0034): whatever the account's
+    // age, somebody leaving or removed today has the full grace to be let
+    // back in before the sweep takes the account (docs/protocol.md,
+    // "Accounts without a family").
+    let updated = sqlx::query(
+        "UPDATE users
+            SET family_id = NULL, familyless_since = now()
+          WHERE id = $1 AND family_id = $2",
+    )
+    .bind(user_id)
+    .bind(family_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     if updated == 0 {
         // They already left in a parallel request; nothing to undo.
         return Err(ApiError::conflict(
@@ -1211,6 +1751,19 @@ mod tests {
         assert_eq!(set.language, Some(Some("ru".to_string())));
     }
 
+    /// The third policy parses like the other two. A unit test on the
+    /// deserializer is not enough on its own — nothing here would notice a
+    /// missing migration 0030 — but it is what fails first when somebody
+    /// narrows the field to an enum of two.
+    #[test]
+    fn closed_is_a_join_policy_like_any_other() {
+        for policy in ["open", "approval", "closed"] {
+            let parsed: PatchFamilyRequest =
+                serde_json::from_str(&format!(r#"{{"join_policy": "{policy}"}}"#)).expect("parses");
+            assert_eq!(parsed.join_policy.as_deref(), Some(policy));
+        }
+    }
+
     /// An empty body is a valid no-op rather than a 400: every field is
     /// optional, and "which fields are present decides what happens" has to
     /// survive none of them being present.
@@ -1219,5 +1772,24 @@ mod tests {
         let empty: PatchFamilyRequest = serde_json::from_str("{}").expect("parses");
         assert_eq!(empty.join_policy, None);
         assert_eq!(empty.language, None);
+        assert_eq!(empty.max_members, None);
+    }
+
+    /// The cap's three states, pinned where a serde regression shows up as
+    /// one failing line rather than as a confusing integration failure:
+    /// absent leaves it alone, `null` CLEARS it, a number sets it. Absent
+    /// and `null` are the pair that a plain `Option<i32>` would collapse.
+    #[test]
+    fn the_member_cap_parses_as_three_distinct_states() {
+        let absent: PatchFamilyRequest = serde_json::from_str("{}").expect("parses");
+        assert_eq!(absent.max_members, None, "absent: leave it alone");
+
+        let cleared: PatchFamilyRequest =
+            serde_json::from_str(r#"{"max_members": null}"#).expect("parses");
+        assert_eq!(cleared.max_members, Some(None), "null: clear it");
+
+        let set: PatchFamilyRequest =
+            serde_json::from_str(r#"{"max_members": 12}"#).expect("parses");
+        assert_eq!(set.max_members, Some(Some(12)), "a number: set it");
     }
 }

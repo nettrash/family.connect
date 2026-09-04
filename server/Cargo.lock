@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "family-connect"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -540,6 +540,7 @@ dependencies = [
  "hex",
  "hmac",
  "jsonwebtoken",
+ "libc",
  "p256",
  "rand 0.8.7",
  "reqwest",

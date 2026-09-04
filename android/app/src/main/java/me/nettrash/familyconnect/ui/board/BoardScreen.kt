@@ -46,7 +46,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.outlined.StickyNote2
+import androidx.compose.material.icons.automirrored.outlined.StickyNote2
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -91,9 +91,12 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.nettrash.familyconnect.R
+import me.nettrash.familyconnect.ui.components.isWideWindow
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.ui.components.EmptyState
 import kotlin.math.roundToInt
+import androidx.compose.ui.text.font.FontStyle
+import me.nettrash.familyconnect.ui.chat.BlockedMessageRule
 
 /** The six names the protocol allows. Unknown values fall back to yellow. */
 object NoteColors {
@@ -192,10 +195,17 @@ fun BoardScreen(
 ) {
     val notes by viewModel.notes.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
+    val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf<NoteDraft?>(null) }
 
     LaunchedEffect(Unit) { viewModel.refresh() }
+    // The wall is in front of somebody, so everything on it has been shown
+    // — including whatever lands WHILE they are looking, which is why this
+    // keys on the notes and not on Unit. Marking only at the tap that opens
+    // the board (ChatListScreen) marked an empty cache seen and then let the
+    // whole wall, loaded a moment later, come back as unread (issue #53).
+    LaunchedEffect(notes) { viewModel.markBoardSeen() }
 
     Scaffold(
         topBar = {
@@ -240,7 +250,7 @@ fun BoardScreen(
 
             if (notes.isEmpty()) {
                 EmptyState(
-                    icon = Icons.Outlined.StickyNote2,
+                    icon = Icons.AutoMirrored.Outlined.StickyNote2,
                     title = stringResource(R.string.s_the_board_is_empty),
                     subtitle = stringResource(R.string.s_add_a_note_everyone_in_the_family_sees_it),
                     modifier = Modifier.align(Alignment.Center),
@@ -250,6 +260,9 @@ fun BoardScreen(
             notes.forEach { note ->
                 StickyNote(
                     note = note,
+                    isHiddenByBlock = BlockedMessageRule.isNoteHidden(
+                        note.authorId, myUserId ?: -1L, blockedUserIds,
+                    ),
                     authorName = when (note.authorId) {
                         myUserId -> stringResource(R.string.s_you)
                         else -> memberNames[note.authorId]
@@ -325,6 +338,18 @@ fun BoardScreen(
 private fun StickyNote(
     note: NoteEntity,
     authorName: String,
+    /**
+     * Its author is blocked, so the note hides its CONTENT as well as its
+     * author — the one object where a block takes the text too. A note is
+     * a piece of writing pinned to a shared wall with no bubble to
+     * collapse into a hidden row, so dropping only the name would hide
+     * nothing that mattered (docs/protocol.md, "Board").
+     *
+     * The slot, size, colour and tilt all stay: a note the blocker hides
+     * still occupies its slot, and the note ceiling is never projected per
+     * reader.
+     */
+    isHiddenByBlock: Boolean,
     boardWidthPx: Int,
     boardHeightPx: Int,
     onMoved: (Double, Double) -> Unit,
@@ -332,8 +357,21 @@ private fun StickyNote(
 ) {
     var dragX by remember(note.id) { mutableFloatStateOf(0f) }
     var dragY by remember(note.id) { mutableFloatStateOf(0f) }
+    // A peek, not a setting: per note, per device, never on the wire and
+    // never stored, and gone on the next launch. Keyed on the note so a
+    // recomposition cannot carry a reveal onto a different one.
+    var isRevealed by remember(note.id) { mutableStateOf(false) }
+    val isHidden = isHiddenByBlock && !isRevealed
+    val hiddenLabel = stringResource(R.string.s_hidden_blocked_member)
     // Resolved out here: a semantics block is not a composable context.
-    val noteDescription = stringResource(R.string.s_note_from, authorName, note.text)
+    // TalkBack gets the SAME masking the screen does — this label
+    // concatenates the author AND the text, so masking only what is drawn
+    // would have left both being read aloud.
+    val noteDescription = if (isHidden) {
+        stringResource(R.string.s_hidden_note_from_blocked)
+    } else {
+        stringResource(R.string.s_note_from, authorName, note.text)
+    }
 
     // Reset the local offset when the AUTHORITATIVE position arrives.
     // Zeroing it on every drag-end instead would snap the note back to
@@ -345,7 +383,10 @@ private fun StickyNote(
         dragY = 0f
     }
 
-    val side = NoteSizes.side(note.size)
+    // The STEP is the wire's name; the points grow with the wall. The
+    // phone's 132dp medium is a stamp on a 10-inch tablet (iOS scales the
+    // iPad's the same 1.45x).
+    val side = NoteSizes.side(note.size) * (if (isWideWindow()) 1.45f else 1f)
     val sidePx = with(LocalDensity.current) { side.roundToPx() }
     val geometry = NoteGeometry(
         boardWidthPx = boardWidthPx,
@@ -396,7 +437,12 @@ private fun StickyNote(
                     },
                 )
             }
-            .pointerInput(note.id) { detectTapGestures { onTap() } }
+            // The FIRST tap on a hidden note reveals it and does nothing
+            // else. Falling through to `onTap` would open the note dialog,
+            // which draws the very text the note is hiding.
+            .pointerInput(note.id, isHidden) {
+                detectTapGestures { if (isHidden) isRevealed = true else onTap() }
+            }
             // A raw pointerInput publishes no click semantics, so without
             // this the note is invisible to TalkBack — the same trap the
             // link spans and the reply quote hit.
@@ -408,20 +454,25 @@ private fun StickyNote(
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             Text(
-                text = note.text,
+                text = if (isHidden) hiddenLabel else note.text,
                 style = NoteSizes.textStyle(note.size, MaterialTheme.typography),
-                color = Color.Black.copy(alpha = 0.85f),
+                color = Color.Black.copy(alpha = if (isHidden) 0.45f else 0.85f),
+                fontStyle = if (isHidden) FontStyle.Italic else null,
                 maxLines = NoteSizes.maxLines(note.size),
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
             // The byline keeps its small style at every size: it is who
-            // wrote the note, not part of what they wrote.
-            Text(
-                text = authorName,
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.Black.copy(alpha = 0.5f),
-            )
+            // wrote the note, not part of what they wrote. While hidden
+            // there is no byline at all — not an empty one, which would
+            // still say a note came from somebody.
+            if (!isHidden) {
+                Text(
+                    text = authorName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Black.copy(alpha = 0.5f),
+                )
+            }
         }
     }
 }

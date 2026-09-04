@@ -57,6 +57,26 @@ class CallBackRegistry(private val store: CallBackStore) {
 
     fun find(uuid: String): CallBackEntry? = all().firstOrNull { it.uuid == uuid }
 
+    /**
+     * Forget every call-back entry naming one person.
+     *
+     * Called when they are blocked. What the app itself PUT on an
+     * operating-system surface, it takes back: this index is what lets the
+     * system dialer's call log ring somebody through Family, and it goes
+     * on offering that long after the app would refuse the call
+     * (docs/protocol.md, "Calls").
+     *
+     * Device hygiene, not part of the silence: it happens on the blocker's
+     * own device and changes nothing anybody else can observe. Nothing
+     * restores these on unblock — they were an index of past calls, not
+     * the history itself, which the server keeps.
+     */
+    fun forget(peerUserId: Long) {
+        val kept = all().filterNot { it.peerUserId == peerUserId }
+        if (kept.size == all().size) return
+        store.write(if (kept.isEmpty()) null else json.encodeToString(kept))
+    }
+
     /** A logout, or leaving the family: the ids mean nothing to the next session. */
     fun clear() = store.write(null)
 

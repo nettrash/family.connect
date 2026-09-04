@@ -35,6 +35,11 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
     static weak var callManager: CallManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // "After any launch, at least one window exists" (#52). Cheap, once,
+        // and a no-op on every launch that went normally — see
+        // LaunchWindowBackstop for why an app can get here with none.
+        LaunchWindowBackstop.start()
+
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.setNotificationCategories([ChatNotifier.incomingCallCategory()])

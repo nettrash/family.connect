@@ -29,12 +29,12 @@
 import Foundation
 
 /// The state of a composer that has been primed from an existing message.
-struct ComposerPriming: Equatable {
+nonisolated struct ComposerPriming: Equatable {
 
     /// The two ways a message can borrow the composer. Mutually exclusive
     /// by construction, which is also the rule both views state: you are
     /// answering a message or rewriting one, never both.
-    enum Kind: Equatable {
+    nonisolated enum Kind: Equatable {
         case reply
         case edit
     }

@@ -17,10 +17,16 @@ use tracing_subscriber::EnvFilter;
 
 use family_connect::config::Config;
 use family_connect::state::AppState;
-use family_connect::{app, calls, db, handlers_attachment, handlers_chat, migrate, push};
+use family_connect::{
+    app, calls, db, handlers_attachment, handlers_auth, handlers_chat, migrate, push,
+};
 
 #[derive(Parser, Debug)]
-#[command(name = "family-connect", about = "Self-hosted family chat server")]
+#[command(
+    name = "family-connect",
+    version,
+    about = "Self-hosted family chat server"
+)]
 struct Cli {
     /// Path to the TOML configuration file.
     #[arg(short, long, default_value = "/etc/family-connect/config.toml")]
@@ -60,6 +66,11 @@ async fn main() -> Result<()> {
         "config loaded"
     );
 
+    // Bound argon2 before anything can serve a request: both endpoints that
+    // hash are unauthenticated, and 19 MiB per hash across a 512-thread
+    // blocking pool is how an unbounded login flood OOMs this process.
+    family_connect::auth::configure_hash_concurrency(cfg.limits.max_password_hashes_in_flight);
+
     let pool = db::connect(&cfg.database).await?;
     migrate::run(&pool).await.context("running migrations")?;
 
@@ -77,9 +88,10 @@ async fn main() -> Result<()> {
     // (spawned by axum, out of our reach) must be able to observe it.
     let shutdown = state.registry.shutdown_token();
 
-    // Two sweeps, one loop, at boot and hourly after: unclaimed uploads (a
-    // send the user abandoned, up to 100 MB each) and messages past the
-    // retention age. Nothing else in the system would ever remove either.
+    // Three sweeps, one loop, at boot and hourly after: unclaimed uploads (a
+    // send the user abandoned, up to 100 MB each), messages past the
+    // retention age, and accounts past their familyless grace. Nothing else
+    // in the system would ever remove any of them.
     {
         let sweeper_state = state.clone();
         let sweeper_shutdown = shutdown.clone();
@@ -97,6 +109,16 @@ async fn main() -> Result<()> {
                     Ok(0) => {}
                     Ok(count) => info!(count, "swept messages past the retention age"),
                     Err(err) => warn!(error = ?err, "sweeping expired messages failed"),
+                }
+                // And accounts that never joined a family, or left one and
+                // never came back, past their grace (docs/protocol.md,
+                // "Accounts without a family"). Hourly rather than nightly
+                // for the reason above — and so that "7 days" means seven
+                // days, not "some night this week".
+                match handlers_auth::sweep_familyless_accounts(&sweeper_state).await {
+                    Ok(0) => {}
+                    Ok(count) => info!(count, "swept accounts that have no family"),
+                    Err(err) => warn!(error = ?err, "sweeping familyless accounts failed"),
                 }
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}

@@ -1,0 +1,47 @@
+# One backup run. Started by family-connect-backup.timer, not enabled itself.
+#
+# Runs as the `family-connect` user, which is both the database owner and the
+# owner of the attachments directory — so no password and no sudo: PostgreSQL
+# peer authentication over the local socket is the credential.
+
+[Unit]
+Description=family-connect backup (database + attachment bytes)
+Documentation=https://github.com/nettrash/family.connect
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=family-connect
+Group=family-connect
+
+ExecStart=/usr/local/bin/family-connect-backup.sh
+
+# The script's own settings — repository URL, credentials, retention.
+EnvironmentFile=-/etc/family-connect/backup.env
+
+# Writable: the staging directory for the dump, and restic's cache.
+ReadWritePaths=/var/backups/family-connect
+CacheDirectory=family-connect-backup
+
+# Sandboxing, matching the service unit. Weaker in one place: ProtectSystem
+# is `full` rather than `strict` because restic and rsync need to reach a
+# remote, and PrivateNetwork must stay off for the same reason.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+# A backup that fails silently is worse than no backup, because it is
+# believed. This puts a line in the journal that a monitor can alert on;
+# see docs/operations.md for wiring it to something you actually read.
+ExecStopPost=/bin/sh -c 'test "$EXIT_STATUS" = "0" || echo "family-connect backup FAILED: $EXIT_STATUS"'
+
+[Install]
+WantedBy=multi-user.target

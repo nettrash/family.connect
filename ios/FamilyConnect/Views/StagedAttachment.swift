@@ -26,11 +26,56 @@ struct StagedAttachment: Identifiable {
     let id = UUID()
     let prepared: MediaPrep.Prepared
 
+    /// How many bytes of THIS item would reach a model, if it were shown to
+    /// one — the preview's length where there is a preview, because that is
+    /// what the server prefers, and the file's own otherwise
+    /// (docs/protocol.md, "Pictures"; `AssistantPictureLimits.wireBytes`).
+    ///
+    /// Measured ONCE, here, rather than in the composer's notice: that
+    /// notice is a computed property of a view body and is re-evaluated on
+    /// every keystroke, so asking the file system there would stat the disk
+    /// per character typed. Nothing about a staged item changes after it is
+    /// staged, so once is also correct.
+    let assistantWireBytes: Int
+
+    init(prepared: MediaPrep.Prepared) {
+        self.prepared = prepared
+        self.assistantWireBytes = AssistantPictureLimits.wireBytes(
+            previewBytes: prepared.previewJPEG?.count,
+            originalBytes: Self.fileBytes(at: prepared.fileURL))
+    }
+
+    /// The media type this item would travel as: a preview is a JPEG by
+    /// definition, so a photo that has one is judged as one.
+    var assistantWireMIME: String {
+        AssistantPictureLimits.wireMIME(
+            mime: prepared.mime, hasPreview: prepared.previewJPEG != nil)
+    }
+
+    /// The three facts the family composer's strip reads off a staged item
+    /// (`MentionPictureNotice`): what it is, and what it will travel as.
+    var assistantPictureCandidate: AssistantPictureCandidate {
+        AssistantPictureCandidate(
+            kind: prepared.kind, mime: assistantWireMIME, bytes: assistantWireBytes)
+    }
+
+    /// `Int.max` when the file cannot be measured, which is the safe
+    /// direction: an unmeasurable photograph is described as one that will
+    /// not be shown, rather than promised to a model it may never reach.
+    private static func fileBytes(at url: URL) -> Int {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+        return values?.fileSize ?? Int.max
+    }
+
     /// The protocol's ceiling on one message's attachments
     /// (docs/protocol.md, "Limits": `limits.max_attachments_per_message`).
     /// Both composers refuse the eleventh pick against this, with a
     /// notice — the same number the server would refuse it with.
-    static let maxPerMessage = 10
+    ///
+    /// An alias, not a second 10: the Share Extension has to cap what it
+    /// stages against the same ceiling and cannot see this type, so the
+    /// literal lives in ShareHandoff where both targets compile it.
+    nonisolated static let maxPerMessage = ShareHandoff.maxAttachmentsPerMessage
 
     /// May one more item be staged beside `count` already staged?
     ///

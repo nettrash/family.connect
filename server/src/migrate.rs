@@ -158,6 +158,46 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "note_size",
         sql: include_str!("../migrations/0027_note_size.sql"),
     },
+    Migration {
+        version: 28,
+        name: "member_blocks",
+        sql: include_str!("../migrations/0028_member_blocks.sql"),
+    },
+    Migration {
+        version: 29,
+        name: "member_reports",
+        sql: include_str!("../migrations/0029_member_reports.sql"),
+    },
+    Migration {
+        version: 30,
+        name: "family_membership",
+        sql: include_str!("../migrations/0030_family_membership.sql"),
+    },
+    Migration {
+        version: 31,
+        name: "note_content_seq",
+        sql: include_str!("../migrations/0031_note_content_seq.sql"),
+    },
+    Migration {
+        version: 32,
+        name: "ai_pictures",
+        sql: include_str!("../migrations/0032_ai_pictures.sql"),
+    },
+    Migration {
+        version: 33,
+        name: "ai_history_photos",
+        sql: include_str!("../migrations/0033_ai_history_photos.sql"),
+    },
+    Migration {
+        version: 34,
+        name: "familyless_since",
+        sql: include_str!("../migrations/0034_familyless_since.sql"),
+    },
+    Migration {
+        version: 35,
+        name: "expired_attachments",
+        sql: include_str!("../migrations/0035_expired_attachments.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

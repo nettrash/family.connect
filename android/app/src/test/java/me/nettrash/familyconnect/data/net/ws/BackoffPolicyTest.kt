@@ -89,4 +89,74 @@ class BackoffPolicyTest {
             assertThat(delay).isAtMost(30_000L)
         }
     }
+
+    // --- What earns a reset -------------------------------------------------
+
+    /** The bug: an accept-then-drop endpoint used to reset the ceiling every
+     *  cycle, so it never climbed and the socket reconnected about twice a
+     *  second forever, resyncing each time. */
+    @Test
+    fun acceptThenDropEarnsNothing() {
+        assertThat(
+            BackoffPolicy.earnsReset(openedElapsedMillis = 1_000L, nowElapsedMillis = 1_050L)
+        ).isFalse()
+    }
+
+    @Test
+    fun durableConnectionEarnsReset() {
+        assertThat(
+            BackoffPolicy.earnsReset(openedElapsedMillis = 1_000L, nowElapsedMillis = 11_000L)
+        ).isTrue()
+        assertThat(
+            BackoffPolicy.earnsReset(openedElapsedMillis = 1_000L, nowElapsedMillis = 3_601_000L)
+        ).isTrue()
+    }
+
+    /** A dial that never opened cannot have proved anything. */
+    @Test
+    fun neverOpenedEarnsNothing() {
+        assertThat(
+            BackoffPolicy.earnsReset(openedElapsedMillis = null, nowElapsedMillis = 99_000L)
+        ).isFalse()
+    }
+
+    /** The storm end to end: repeated accept-then-drop must climb to the cap
+     *  instead of sitting at the first ceiling forever. */
+    @Test
+    fun repeatedAcceptThenDropClimbsToTheCap() {
+        // A random that always returns its upper bound exposes the ceiling.
+        val policy = BackoffPolicy(random = Random(seed = 7))
+        val ceilings = mutableListOf<Long>()
+        repeat(8) {
+            val openedAt = 1_000L
+            if (BackoffPolicy.earnsReset(
+                    openedElapsedMillis = openedAt,
+                    nowElapsedMillis = openedAt + 20L,
+                )
+            ) {
+                policy.reset()
+            }
+            ceilings.add(policy.nextDelayMillis())
+        }
+        // Not the exact values (the seed decides those), but the ceiling must
+        // grow: the last delay can exceed the first ceiling of 1s, which is
+        // impossible if reset() ran every cycle.
+        assertThat(ceilings.max()).isGreaterThan(1_000L)
+    }
+
+    @Test
+    fun aDurableConnectionRestoresTheCheapCeiling() {
+        val policy = BackoffPolicy(random = Random(seed = 3))
+        repeat(6) { policy.nextDelayMillis() }
+        val openedAt = 5_000L
+        if (BackoffPolicy.earnsReset(
+                openedElapsedMillis = openedAt,
+                nowElapsedMillis = openedAt + 11_000L,
+            )
+        ) {
+            policy.reset()
+        }
+        // Back to the first ceiling: the delay cannot exceed base.
+        assertThat(policy.nextDelayMillis()).isAtMost(1_000L)
+    }
 }

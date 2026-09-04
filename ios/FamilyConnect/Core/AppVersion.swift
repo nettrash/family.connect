@@ -18,6 +18,11 @@ import Foundation
 
 enum AppVersion {
 
+    /// The project's home — the server and its install notes. Shown by the
+    /// family gate when a server takes no new families, as the way to run
+    /// one's own (docs/protocol.md, "Starting a family").
+    static let repositoryURL = URL(string: "https://github.com/nettrash/family.connect")!
+
     /// `CFBundleShortVersionString` — the one people say out loud ("1.0").
     static var short: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"

@@ -47,10 +47,40 @@ nonisolated enum APIError: Error, Equatable {
     /// "owner_cannot_leave", 400 "validation", …). Carries the human
     /// message for inline display.
     case conflict(code: String?, message: String?)
+    /// 429 — the server, or the proxy in front of it, asked us to slow
+    /// down (docs/protocol.md, "Error shape"). Its own case because it is
+    /// the one 4xx that is NOT a refusal: nginx answers its rate and
+    /// connection limits with it, in an HTML body the protocol's error
+    /// shape does not cover, so the status alone has to carry the meaning.
+    /// `retryAfter` is the header's delta-seconds when one was sent.
+    case throttled(retryAfter: TimeInterval?)
     /// 5xx after the retry budget is spent.
     case server(status: Int, message: String?)
     /// The status was fine but the body did not decode as documented.
     case decoding
+
+    /// Whether this failure says anything at all about the REQUEST.
+    ///
+    /// It does not when the request never arrived or was never answered:
+    /// a transport failure, a throttle, a 5xx. Those leave the outcome
+    /// UNKNOWN, and the protocol's rule is that a client must never show
+    /// an unknown outcome as a refusal — it keeps the message in the
+    /// outbox and tries again (docs/protocol.md, "Sending on an unreliable
+    /// network"). Everything else is the server having read the request
+    /// and refused it, which is a red bubble and a person's decision.
+    var isTransient: Bool {
+        switch self {
+        case .transport, .throttled, .server: true
+        case .notConfigured, .unauthorized, .forbidden, .notFound,
+             .payloadTooLarge, .conflict, .decoding: false
+        }
+    }
+
+    /// How long the server asked us to wait, when it said so.
+    var retryAfter: TimeInterval? {
+        if case .throttled(let seconds) = self { return seconds }
+        return nil
+    }
 }
 
 actor APIClient {
@@ -235,11 +265,31 @@ actor APIClient {
         var joinPolicy: String?
         var language: String??
         var aiHistory: Bool?
+        /// A second boolean of exactly `ai_history`'s shape, differing only
+        /// in defaulting to FALSE server-side (protocol.md, "Pictures") —
+        /// so, like it, absent leaves it alone and there is nothing for a
+        /// null to mean.
+        var aiVision: Bool?
+        /// The third boolean, of the same shape again (protocol.md,
+        /// "Recent photos from the family chat"). The server refuses
+        /// `true` while `ai_vision` is off, and turns it off whenever
+        /// `ai_vision` goes off — both are the server's to enforce, and
+        /// this client learns them from the answer.
+        var aiHistoryPhotos: Bool?
+        /// The same double Optional the language uses, and for the same
+        /// reason: the outer is "was this field touched", the inner is the
+        /// value, and a real JSON `null` CLEARS the cap. These are the two
+        /// places in this protocol where sending a null means something a
+        /// missing key does not.
+        var maxMembers: Int??
 
         enum CodingKeys: String, CodingKey {
             case joinPolicy = "join_policy"
             case language
             case aiHistory = "ai_history"
+            case aiVision = "ai_vision"
+            case aiHistoryPhotos = "ai_history_photos"
+            case maxMembers = "max_members"
         }
 
         func encode(to encoder: Encoder) throws {
@@ -256,6 +306,15 @@ actor APIClient {
                 }
             }
             try container.encodeIfPresent(aiHistory, forKey: .aiHistory)
+            try container.encodeIfPresent(aiVision, forKey: .aiVision)
+            try container.encodeIfPresent(aiHistoryPhotos, forKey: .aiHistoryPhotos)
+            if let maxMembers {
+                if let cap = maxMembers {
+                    try container.encode(cap, forKey: .maxMembers)
+                } else {
+                    try container.encodeNil(forKey: .maxMembers)
+                }
+            }
         }
     }
 
@@ -263,6 +322,69 @@ actor APIClient {
         let response: FamilyResponse = try await request(
             "PATCH", "/families/mine", body: FamilyPatchRequest(joinPolicy: policy))
         return response.family
+    }
+
+    /// Owner-only: the most members this family admits. `nil` CLEARS the
+    /// cap, which is NOT the same as setting it to the operator's ceiling
+    /// — see FamilyPatchRequest.
+    ///
+    /// Its own method rather than a parameter on `setJoinPolicy`, so a
+    /// patch carries exactly one field. That rule is worth keeping: a
+    /// request that sent two would make "which of these did the user
+    /// actually change" a question the server has to guess at.
+    func setMemberCap(_ cap: Int?) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(maxMembers: .some(cap)))
+        return response.family
+    }
+
+    /// Block a member of this family. Any member may block any other, the
+    /// OWNER INCLUDED — there is no owner check here and that is the point
+    /// (protocol.md, "Blocking a member").
+    func blockMember(userID: Int64) async throws {
+        try await requestVoid("PUT", "/families/members/\(userID)/block")
+    }
+
+    /// Unblock. Idempotent, and deliberately raises no membership error:
+    /// any id on the caller's own list may be cleared, including one that
+    /// has since left the family, or the blocker holds a permanent entry
+    /// they cannot remove.
+    func unblockMember(userID: Int64) async throws {
+        try await requestVoid("DELETE", "/families/members/\(userID)/block")
+    }
+
+    /// File a report. `messageID` names one message of theirs, or nil to
+    /// report the person. Raising the same report twice answers 200 with
+    /// the open row rather than creating a second.
+    func createReport(reportedUserID: Int64, reason: String, messageID: Int64?) async throws -> ReportDTO {
+        struct Body: Encodable {
+            let reportedUserID: Int64
+            let reason: String
+            let messageID: Int64?
+            enum CodingKeys: String, CodingKey {
+                case reportedUserID = "reported_user_id"
+                case reason
+                case messageID = "message_id"
+            }
+        }
+        let response: ReportResponse = try await request(
+            "POST", "/families/reports",
+            body: Body(reportedUserID: reportedUserID, reason: reason, messageID: messageID))
+        return response.report
+    }
+
+    /// Owner-only: the open reports, oldest first. Reports naming the owner
+    /// themselves are not listed — see protocol.md, "Reporting a member".
+    func reports() async throws -> [ReportDTO] {
+        let response: ReportsResponse = try await request("GET", "/families/reports")
+        return response.reports
+    }
+
+    /// Owner-only: take a report off the list. What "dealt with" MEANS is
+    /// the owner's business; this protocol has removing a member, resetting
+    /// a password and closing the family, not deleting somebody's message.
+    func resolveReport(id: Int64) async throws {
+        try await requestVoid("POST", "/families/reports/\(id)/resolve")
     }
 
     /// Owner-only: the language `@ai` answers in when it is asked in the
@@ -282,6 +404,36 @@ actor APIClient {
         return response.family
     }
 
+    /// Owner-only: whether a photograph a member attaches in their OWN
+    /// assistant chat may be shown to the model (protocol.md, "Pictures").
+    ///
+    /// One of the two locks that have to be open before a single pixel can
+    /// leave; the other is the operator's, and this client learns it from
+    /// `assistant.vision` on `GET /families/mine`. Neither is consent for a
+    /// particular photograph — that is the member attaching it, one send at
+    /// a time, and it is deliberately not a setting anywhere.
+    func setAIVision(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiVision: enabled))
+        return response.family
+    }
+
+    /// Owner-only: whether an `@ai` mention in the family chat may also be
+    /// shown that chat's most recent photographs — pictures nobody pointed
+    /// the assistant at (protocol.md, "Recent photos from the family
+    /// chat").
+    ///
+    /// Sends this one key and nothing else. The server answers `validation`
+    /// (400) to `true` while `ai_vision` is off, which is why the switch
+    /// that calls this is disabled in that state rather than left to find
+    /// out; and the family it answers with is the truth for BOTH switches,
+    /// since turning `ai_vision` off turns this off in the same write.
+    func setAIHistoryPhotos(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiHistoryPhotos: enabled))
+        return response.family
+    }
+
     func joinRequests() async throws -> [JoinRequestDTO] {
         let response: JoinRequestsResponse = try await request("GET", "/families/join-requests")
         return response.requests
@@ -296,8 +448,25 @@ actor APIClient {
         try await requestVoid("POST", "/families/join-requests/\(id)/reject")
     }
 
-    func leaveFamily() async throws {
-        try await requestVoid("POST", "/families/leave")
+    /// Leave the family, and learn who inherited it.
+    ///
+    /// Two answers, not one: `204` when nothing passed on (an ordinary
+    /// member leaving, or the last member — the family goes with them),
+    /// and `200 {new_owner_user_id}` when the caller was the owner and
+    /// somebody remained. The id is what the leaving owner resolves
+    /// against the roster it STILL HOLDS to say who it went to, before
+    /// tearing that roster down (docs/protocol.md, `POST /families/leave`).
+    ///
+    /// An owner is never refused: `owner_cannot_leave` is retired and no
+    /// endpoint raises it any more.
+    func leaveFamily() async throws -> Int64? {
+        let (data, _) = try await perform("POST", "/families/leave", query: [], bodyData: nil)
+        // A 204 has no body at all, and a 200 has one — so an empty
+        // payload is the ordinary case here rather than a malformed
+        // answer, and must not be decoded as a failure.
+        guard !data.isEmpty else { return nil }
+        let response: LeaveFamilyResponse? = try? decodeResponse(data)
+        return response?.newOwnerUserID
     }
 
     func removeMember(userID: Int64) async throws {
@@ -506,7 +675,7 @@ actor APIClient {
         }
         let (data, http) = try await send(request)
         guard (200..<300).contains(http.statusCode) else {
-            throw Self.mapError(status: http.statusCode, data: data)
+            throw Self.mapError(status: http.statusCode, data: data, retryAfter: Self.retryAfterSeconds(http))
         }
         let decoded: AttachmentResponse = try decodeResponse(data)
         return decoded.attachment
@@ -552,7 +721,7 @@ actor APIClient {
 
         let (data, response) = try await uploadFromFile(request, fileURL: fileURL)
         guard (200..<300).contains(response.statusCode) else {
-            throw Self.mapError(status: response.statusCode, data: data)
+            throw Self.mapError(status: response.statusCode, data: data, retryAfter: Self.retryAfterSeconds(response))
         }
         let decoded: AttachmentResponse = try decodeResponse(data)
         return decoded.attachment
@@ -919,7 +1088,7 @@ actor APIClient {
         }
 
         guard (200..<300).contains(http.statusCode) else {
-            throw Self.mapError(status: http.statusCode, data: data)
+            throw Self.mapError(status: http.statusCode, data: data, retryAfter: Self.retryAfterSeconds(http))
         }
         return (data, http)
     }
@@ -941,6 +1110,17 @@ actor APIClient {
         status == 429 || (500..<600).contains(status)
     }
 
+    /// `Retry-After` in its delta-seconds form, uncapped — the caller
+    /// decides what it is willing to wait. `retryDelay(from:fallback:)`
+    /// is the capped version the one-shot GET retry uses.
+    private static func retryAfterSeconds(_ http: HTTPURLResponse) -> TimeInterval? {
+        guard let header = http.value(forHTTPHeaderField: "Retry-After"),
+              let seconds = TimeInterval(header.trimmingCharacters(in: .whitespaces)),
+              seconds >= 0
+        else { return nil }
+        return seconds
+    }
+
     /// Seconds before the retry: `Retry-After` (delta-seconds form) when
     /// the server sent one, otherwise `fallback`. Capped at 5 s — beyond
     /// that the UI's own error handling is a better experience than a hang.
@@ -957,7 +1137,7 @@ actor APIClient {
     /// `{"error":{code,message}}` body when present. A body that fails to
     /// parse degrades to nil code/message, never to a decode error — the
     /// status alone still routes correctly.
-    private static func mapError(status: Int, data: Data) -> APIError {
+    private static func mapError(status: Int, data: Data, retryAfter: TimeInterval? = nil) -> APIError {
         let body = try? APICoding.decoder().decode(APIErrorBody.self, from: data)
         let code = body?.error.code
         let message = body?.error.message
@@ -966,6 +1146,9 @@ actor APIClient {
         case 403: return .forbidden(code: code)
         case 404: return .notFound(code: code)
         case 413: return .payloadTooLarge
+        // Before the general 4xx: a throttle is not a refusal, and the
+        // body it arrives in is usually nginx's HTML rather than ours.
+        case 429: return .throttled(retryAfter: retryAfter)
         case 400..<500: return .conflict(code: code, message: message)
         default: return .server(status: status, message: message)
         }

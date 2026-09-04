@@ -37,6 +37,11 @@ import SwiftUI
 struct MacBoardView: View {
     @Environment(AppSession.self) private var session
     @Environment(ChatSyncCoordinator.self) private var coordinator
+    /// Whether this window is the one in front of somebody, the same test
+    /// a conversation window uses before it dares call a message read
+    /// (ChatPresence). A board window restored at login behind everything
+    /// else has shown nobody anything.
+    @Environment(\.controlActiveState) private var windowActivation
 
     @Query(sort: [SortDescriptor(\NoteEntity.createdAt)]) private var notes: [NoteEntity]
     @Query private var members: [MemberEntity]
@@ -57,6 +62,10 @@ struct MacBoardView: View {
                         board: geometry.size,
                         isMine: note.authorID == coordinator.currentUserID,
                         authorName: displayName(for: note.authorID),
+                        isHiddenByBlock: MessagePresentation.isNoteHiddenByBlock(
+                            authorID: note.authorID,
+                            blockedUserIDs: coordinator.blockedUserIDs,
+                            currentUserID: coordinator.currentUserID),
                         onMove: { x, y in
                             _ = await coordinator.updateNote(id: note.noteID, x: x, y: y)
                         },
@@ -94,6 +103,15 @@ struct MacBoardView: View {
             }
         }
         .task { await coordinator.loadBoard() }
+        // The board on the Mac is a WINDOW, not a sheet: it is opened once
+        // and left open, and notes land on a wall somebody is already
+        // looking at. Marking seen only where it is OPENED (MacChatView's
+        // toolbar) therefore left every one of those counted as new until
+        // the next click on a window that was never closed. So the window
+        // marks what it is showing, whenever what it shows changes and
+        // whenever it becomes the front one.
+        .onChange(of: boardMark, initial: true) { _, _ in markSeenIfFrontmost() }
+        .onChange(of: windowActivation, initial: true) { _, _ in markSeenIfFrontmost() }
         .sheet(isPresented: $composing) {
             MacNoteEditor(text: $draftText, color: $draftColor, size: $draftSize, title: "New Note") {
                 Task {
@@ -113,6 +131,19 @@ struct MacBoardView: View {
         }
     }
 
+    /// What the marks WOULD be if this wall counted as shown — an
+    /// Equatable value, so `onChange` fires on a note arriving, on one
+    /// being rewritten, and on nothing else. A drag changes no part of it.
+    private var boardMark: BoardBadge.Marks {
+        BoardBadge.marksAfterShowing(notes: notes, marks: .zero)
+    }
+
+    private func markSeenIfFrontmost() {
+        guard windowActivation == .key else { return }
+        AppSettings.boardMarks = BoardBadge.marksAfterShowing(
+            notes: notes, marks: AppSettings.boardMarks)
+    }
+
     private func displayName(for userID: Int64) -> String {
         if userID == coordinator.currentUserID { return String(localized: "You") }
         return members.first { $0.userID == userID }?.resolvedDisplayName
@@ -122,10 +153,14 @@ struct MacBoardView: View {
 
 /// One sticker: positioned by fraction, dragged locally, committed once.
 private struct MacNoteView: View {
+    @State private var confirmDelete = false
     let note: NoteEntity
     let board: CGSize
     let isMine: Bool
     let authorName: String
+    /// Its author is blocked, so the note draws the placeholder and no
+    /// author line — content included (docs/protocol.md, "Board").
+    let isHiddenByBlock: Bool
     /// Awaited, so the sticker knows when the move is over (see the drag).
     let onMove: (Double, Double) async -> Void
     let onResize: (NoteSize) -> Void
@@ -134,6 +169,11 @@ private struct MacNoteView: View {
 
     @State private var drag: CGSize = .zero
     @State private var committing = false
+    /// A peek, not a setting: per note, per device, never on the wire and
+    /// never stored, and gone on the next launch.
+    @State private var isRevealed = false
+
+    private var isHidden: Bool { isHiddenByBlock && !isRevealed }
 
     private var isDragging: Bool { drag != .zero && !committing }
 
@@ -163,17 +203,22 @@ private struct MacNoteView: View {
             size: size, board: board)
 
         VStack(alignment: .leading, spacing: 4) {
-            Text(note.text)
+            (isHidden ? Text("Hidden — blocked member") : Text(note.text))
                 .font(noteSize.font)
                 // Forced ink, matching BoardView: the pastels are fixed
                 // light colors in both appearances, so .primary’s dark-mode
                 // white was unreadable on them.
-                .foregroundStyle(.black.opacity(0.85))
+                .foregroundStyle(.black.opacity(isHidden ? 0.45 : 0.85))
+                .italic(isHidden)
                 .lineLimit(noteSize.lineLimit)
             Spacer(minLength: 0)
-            Text(authorName)
-                .font(.caption2)
-                .foregroundStyle(.black.opacity(0.5))
+            // No author line at all while hidden — not an empty one, which
+            // would still say a note came from somebody.
+            if !isHidden {
+                Text(authorName)
+                    .font(.caption2)
+                    .foregroundStyle(.black.opacity(0.5))
+            }
         }
         .padding(10)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
@@ -184,6 +229,11 @@ private struct MacNoteView: View {
                 radius: isDragging ? 10 : 3, y: 2)
         .scaleEffect(isDragging ? 1.04 : 1)
         .animation(.easeOut(duration: 0.12), value: isDragging)
+        // Asks first, as the phone does: one menu click used to take a
+        // note off the whole family's wall.
+        .confirmationDialog("Delete this note?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive, action: onDelete)
+        }
         // A tiny id-derived tilt: a wall of perfectly square notes reads
         // as a table, not a pinboard. Derived, so it never changes.
         .rotationEffect(.degrees(Double(note.noteID % 7) - 3))
@@ -221,11 +271,17 @@ private struct MacNoteView: View {
         .onChange(of: note.y) { _, _ in drag = .zero; committing = false }
         // A note is draggable, and on a Mac only the cursor says so.
         .hoverCursor(.openHand)
-        .accessibilityLabel(isMine
-            ? Text("Your note: \(note.text)")
-            : Text("Note from \(authorName): \(note.text)"))
+        // A click on a note is otherwise a no-op here — the Mac edits from
+        // the context menu — so this costs nothing and matches the phone.
+        .onTapGesture { if isHidden { isRevealed = true } }
+        .accessibilityLabel(accessibilityText)
         .contextMenu {
-            if isMine {
+            if isHidden {
+                // The one item a hidden note offers. Its size and delete
+                // are the author's anyway, and "Written by someone else"
+                // below would be a hint about who.
+                Button("Reveal") { isRevealed = true }
+            } else if isMine {
                 Button("Edit…", action: onEdit)
                 // A Toggle in a menu is the native checkmarked item, so the
                 // current size reads as a state rather than an icon. Each
@@ -238,12 +294,24 @@ private struct MacNoteView: View {
                             set: { on in if on { onResize(size) } }))
                     }
                 }
-                Button("Delete", role: .destructive, action: onDelete)
+                Button("Delete", role: .destructive) { confirmDelete = true }
             } else {
                 // Anyone may MOVE a note; only its author may change it.
                 Text("Written by someone else")
             }
         }
+    }
+}
+
+private extension MacNoteView {
+    /// What VoiceOver reads. A hidden note announces that it is hidden and
+    /// stops: reading the text aloud would defeat the whole thing for the
+    /// one reader most dependent on the label being honest.
+    var accessibilityText: Text {
+        if isHidden { return Text("Hidden note from a blocked member") }
+        return isMine
+            ? Text("Your note: \(note.text)")
+            : Text("Note from \(authorName): \(note.text)")
     }
 }
 

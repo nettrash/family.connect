@@ -24,6 +24,13 @@ nonisolated enum PushRoute: Equatable, Sendable {
     case board
     /// kind "join_request" — the owner's pending-requests screen.
     case joinRequests
+    /// kind "report" — the owner's moderation inbox.
+    ///
+    /// A report raises a push and NO WebSocket frame, exactly as a join
+    /// request does (protocol.md, "Reporting a member"), so this push is
+    /// the owner's only live signal that one arrived — a tap that landed
+    /// on the chat list instead would leave them hunting for it.
+    case reports
     /// kind "joined" and anything unrecognised — the chat list.
     case chatList
 
@@ -38,6 +45,8 @@ nonisolated enum PushRoute: Equatable, Sendable {
             return .board
         case "join_request":
             return .joinRequests
+        case "report":
+            return .reports
         default:
             // "joined" plus forward compatibility with future kinds.
             return .chatList

@@ -87,7 +87,7 @@ struct CallRequestLinkSheet: View {
                             }
                         } footer: {
                             if contactIdentifier != nil {
-                                Text("Family remembers the link on this iPhone only; nothing about the contact is sent anywhere.")
+                                Text("Family remembers the link on this device only; nothing about the contact is sent anywhere.")
                             }
                         }
                     }
@@ -98,6 +98,7 @@ struct CallRequestLinkSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
             }
         }

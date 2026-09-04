@@ -74,6 +74,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -111,6 +112,10 @@ import me.nettrash.familyconnect.util.Clock
 import me.nettrash.familyconnect.util.resolvedDisplayNames
 import java.io.File
 import javax.inject.Inject
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import me.nettrash.familyconnect.data.repo.FamilyRepository
+import me.nettrash.familyconnect.data.net.ApiResult
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -131,6 +136,7 @@ class ChatViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val messageRepository: MessageRepository,
     private val chatRepository: ChatRepository,
+    private val familyRepository: FamilyRepository,
     private val settings: SettingsRepository,
     private val socket: ChatSocket,
     private val clock: Clock,
@@ -213,6 +219,66 @@ class ChatViewModel @Inject constructor(
      */
     val callsEnabled: StateFlow<Boolean> = settings.state.map { it.callsEnabled }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /**
+     * One-shot, already-localised messages for the screen to toast.
+     *
+     * A SharedFlow with no replay: these are transient reports about an
+     * action that has just failed, and a replayed one would fire again on
+     * every recomposition after a rotation.
+     */
+    private val _transientMessages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val transientMessages: SharedFlow<String> = _transientMessages
+
+    /**
+     * Everybody this reader has blocked, for the menu's Block/Unblock row.
+     * The message LIST does not need this — `buildChatItems` already folds
+     * it into each item — but the menu asks about one sender at a time.
+     */
+    val blockedUserIds: StateFlow<Set<Long>> = settings.state.map { it.blockedUserIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    /** The operator's published contact, for the report sheet. */
+    val supportContact: StateFlow<String?> = settings.state.map { it.supportContact }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * Block or unblock one member.
+     *
+     * The request first, then the local write — never optimistic (see
+     * FamilyRepository.block). A failure surfaces as an error rather than
+     * silently hiding rows the reader does not know are hidden.
+     */
+    fun setBlocked(userId: Long, blocked: Boolean) {
+        viewModelScope.launch {
+            val result = if (blocked) {
+                familyRepository.block(userId)
+            } else {
+                familyRepository.unblock(userId)
+            }
+            if (result !is ApiResult.Ok<*>) {
+                _transientMessages.tryEmit(appContext.getString(R.string.e_block_failed))
+            }
+        }
+    }
+
+    /**
+     * Report a member, optionally naming one of their messages.
+     *
+     * Raising a report that matches an OPEN one returns that row and
+     * creates nothing, so a double tap is not two rows in the owner's
+     * list — which is why this needs no local de-duplication.
+     */
+    fun report(reportedUserId: Long, reason: String, messageId: Long?, onDone: () -> Unit) {
+        viewModelScope.launch {
+            val result = familyRepository.report(reportedUserId, reason, messageId)
+            if (result is ApiResult.Ok<*>) {
+                onDone()
+            } else {
+                _transientMessages.tryEmit(appContext.getString(R.string.e_report_failed))
+            }
+        }
+    }
 
     /**
      * Whether it also allows VIDEO calls (`GET /me` → video_calls_enabled,
@@ -335,6 +401,9 @@ class ChatViewModel @Inject constructor(
             familyMemberCount = memberCount,
             firstUnreadServerId = (anchor as? OpenAnchor.Message)?.serverId,
             newMessageCount = (anchor as? OpenAnchor.Message)?.newCount ?: 0,
+            // Rides in on `settings.state`, which is already the third
+            // flow here — the combine is at its five-flow ceiling.
+            blockedUserIds = settingsState.blockedUserIds,
         )
     }
         .onEach { _initialLoadSettled.value = true }
@@ -410,6 +479,93 @@ class ChatViewModel @Inject constructor(
     val canCreatePoll: StateFlow<Boolean> = chat
         .map { it?.kind == "family" }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    // -- Pictures -----------------------------------------------------------------
+
+    /**
+     * Whether this composer may offer to show the assistant a picture.
+     *
+     * TWO locks, and both have to be open before a single pixel can leave
+     * (docs/protocol.md, "Pictures"): the operator has configured a
+     * deployment that can SEE (`assistant.vision`), and the family's
+     * OWNER has turned `ai_vision` on — which is false by default, the
+     * deliberate opposite of `ai_history`. Neither is consent for a
+     * particular photograph: that is a third thing, the member attaching
+     * it to the question, and it is never a remembered setting.
+     *
+     * The member's OWN `ai` chat and nowhere else — and that is a fact
+     * about this DOOR, the "Show the assistant a picture" item, not about
+     * what travels. Since #56 a photo on an `@ai` message in the family
+     * chat, or on the message it replies to, goes to the model under the
+     * same two locks (docs/protocol.md, "Showing the assistant a picture
+     * from the family chat"); it rides the ordinary "Photo or video" door
+     * and the reply affordance the family composer has always had, and
+     * either is the member pointing the assistant at that picture. So
+     * this stays false in the family chat even with both locks open, for
+     * a narrower reason than it used to: a second item there would offer
+     * nothing the first does not. What still never goes is a photo the
+     * member did not point at — somebody else's picture elsewhere in the
+     * window stays `[photo]`.
+     */
+    val canShowAssistantPicture: StateFlow<Boolean> =
+        combine(chat, settings.state) { chatEntity, settingsState ->
+            chatEntity?.kind == "ai" &&
+                settingsState.assistantVision &&
+                settingsState.familyAiVision
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * Whether this composer may offer `/draw`.
+     *
+     * One lock and no family switch, because what leaves the server on a
+     * picture request is strictly SMALLER than what an ordinary text
+     * question sends: the words after the token and nothing else — not
+     * the thread, not the transcript, not the system prompt, not the
+     * family's language, not the member's name, and not any picture the
+     * message carries (docs/protocol.md, "Pictures").
+     *
+     * Both surfaces take it: the member's own `ai` chat, and the family
+     * chat, where the whole family sees the answer arrive. Never a direct
+     * chat, which the assistant is not in. And never on a server with no
+     * images deployment: `/draw` is just text there, answered in words,
+     * so the affordance would be one that silently does nothing.
+     */
+    val canAskForPicture: StateFlow<Boolean> =
+        combine(chat, settings.state) { chatEntity, settingsState ->
+            settingsState.assistantImages &&
+                when (chatEntity?.kind) {
+                    "ai" -> true
+                    "family" -> settingsState.assistantUserId != null
+                    else -> false
+                }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * Turn whatever is in the composer into a picture request.
+     *
+     * The token cannot be appended the way `@ai` is — it has to be FIRST,
+     * and in the family chat it has to sit after one leading mention — so
+     * the whole body is rebuilt by the shared grammar rather than
+     * assembled here. Pressing it twice is a no-op: a body that already
+     * asks for a picture comes back untouched.
+     */
+    fun insertDrawToken() {
+        if (!canAskForPicture.value) return
+        if (_editTarget.value != null) return
+        val inFamilyChat = chat.value?.kind == "family"
+        val rewritten = AssistantMention.withDraw(inputState.text.toString(), inFamilyChat)
+        inputState.setTextAndPlaceCursorAtEnd(rewritten)
+    }
+
+    /**
+     * Assistant replies an `ai_error` frame named, by server id.
+     *
+     * The bubble needs it: a picture answer that failed has an empty row
+     * and no deltas ever arrived, so without this it is a blank balloon
+     * that never resolves (docs/protocol.md, "Pictures").
+     */
+    val failedAssistantMessageIds: StateFlow<Set<Long>> =
+        messageRepository.failedAssistantMessageIds
 
     /** Open the poll sheet on a fresh draft — two empty options, no question. */
     fun beginPoll() {
@@ -665,6 +821,113 @@ class ChatViewModel @Inject constructor(
     private val _staged = MutableStateFlow<List<MediaPrep.Prepared>>(emptyList())
     val staged: StateFlow<List<MediaPrep.Prepared>> = _staged
 
+    /**
+     * Whether a picture is staged right now — which, in an `ai` chat, is
+     * the moment the disclosure has to be on screen.
+     *
+     * The switch lives on a settings screen somebody read once; the
+     * photograph is chosen in a composer, later, by someone who may not
+     * have been the one who read it. So the notice hangs off the STAGED
+     * items rather than off the door they came through — the picker, a
+     * paste, a drop and the camera all end up here.
+     *
+     * Started EAGERLY, like the two capability flags it sits beside: a
+     * lazily started flow would hand the composer a null on the frame a
+     * photo is staged and the sentence one frame later, so the disclosure
+     * would appear AFTER the thumbnail it is about. It has to be there
+     * when the picture is.
+     */
+    val assistantPictureNotice: StateFlow<AiPictureNotice?> =
+        combine(chat, staged, canShowAssistantPicture) { chatEntity, items, allowed ->
+            if (chatEntity?.kind != "ai") {
+                null
+            } else {
+                AiPictureNotice.of(
+                    items.map { item ->
+                        // What the item will BE on the wire, not what was
+                        // picked: the server prefers the preview, so the
+                        // preview's type and length are what its rule
+                        // reads (docs/protocol.md, "Pictures").
+                        StagedPicture(
+                            kind = item.kind,
+                            mime = AiPictureNotice.wireMime(
+                                item.mime, hasPreview = item.previewJpeg != null),
+                            bytes = AiPictureNotice.wireBytes(
+                                item.previewJpeg?.size) { item.file.length() },
+                        )
+                    },
+                    allowed,
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * The draft as typed, as a flow — the field is a [TextFieldState], so
+     * this is the same snapshot watch the typing indicator keeps, shared
+     * here so the family composer's strip can read the draft for `@ai`.
+     */
+    private val draftText: StateFlow<String> =
+        snapshotFlow { inputState.text.toString() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    /**
+     * What the message being replied to carries, looked up once per reply
+     * target — from this device's own rows, because a [ReplyToDto] holds
+     * an excerpt and nothing else. Empty while nothing is primed.
+     */
+    private val quotedAttachments: StateFlow<List<AttachmentDto>> =
+        _replyDraft
+            .mapLatest { quote -> quote?.let { messageRepository.attachmentsOf(it.messageId) } ?: emptyList() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * The FAMILY composer's own disclosure, for the case that did not
+     * exist before #56: an `@ai` draft with a photo staged on it, or
+     * replying to a message that carries one, is about to send that photo
+     * to the model under the same two locks a private question needs
+     * (docs/protocol.md, "Showing the assistant a picture from the family
+     * chat" — "What a client's family-chat composer must say"). Null in
+     * every other chat and whenever there is nothing to say; the rule is
+     * [AiPictureNotice.forMention], pinned by its own tests, and the
+     * counting is the server's.
+     *
+     * With the owner's third switch on (`ai_history_photos`, and
+     * `ai_history` with it) the same rule also says that the chat's most
+     * recent photos may go — "up to N", N being what the draft and the
+     * quote left of the four — and the strip then shows for an `@ai`
+     * draft with no photo of its own at all, since that is the mention on
+     * which every one of the four may be somebody else's picture
+     * (docs/protocol.md, "Recent photos from the family chat").
+     *
+     * Eager, for [assistantPictureNotice]'s reason: the line has to be
+     * there on the frame the photo is, not one frame later.
+     */
+    val mentionPictureNotice: StateFlow<MentionPictureNotice?> =
+        combine(chat, draftText, staged, quotedAttachments, settings.state) {
+                chatEntity, draft, items, quoted, settingsState ->
+            if (chatEntity?.kind != "family") {
+                null
+            } else {
+                AiPictureNotice.forMention(
+                    draft = draft,
+                    staged = items.map { item ->
+                        StagedPicture(
+                            kind = item.kind,
+                            mime = AiPictureNotice.wireMime(
+                                item.mime, hasPreview = item.previewJpeg != null),
+                            bytes = AiPictureNotice.wireBytes(
+                                item.previewJpeg?.size) { item.file.length() },
+                        )
+                    },
+                    quoted = quoted.map(StagedPicture::of),
+                    allowed = settingsState.assistantVision && settingsState.familyAiVision,
+                    serverCanDraw = settingsState.assistantImages,
+                    familyHistory = settingsState.familyAiHistory,
+                    familyHistoryPhotos = settingsState.familyAiHistoryPhotos,
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     /** Screen calls this from a LifecycleResumeEffect. */
     fun setResumed(isResumed: Boolean) {
         resumed.value = isResumed
@@ -882,50 +1145,36 @@ class ChatViewModel @Inject constructor(
         if (_replyDraft.value == null) _replyDraft.value = quote
     }
 
+    /**
+     * Hand a staged set to the outbox and get the composer back.
+     *
+     * Nothing is awaited and nothing can be lost here any more: the
+     * repository writes the message row and its item rows — and moves the
+     * bytes out of the evictable cache — before the first byte goes out,
+     * so the send belongs to the database from this instant. A failure is
+     * a red bubble with a Retry button, exactly like a text message,
+     * rather than a set this view model has to catch and hold.
+     */
     private fun sendStaged(prepared: List<MediaPrep.Prepared>, caption: String) {
         val quote = _replyDraft.value
         inputState.clearText()
         _replyDraft.value = null
-        // send() already took the staged set atomically; clearing it again
-        // here would clobber anything staged in between.
-        _mediaState.value = MediaSendState.Uploading
-        // App scope, not viewModelScope: navigating away used to take a
-        // 90 MB upload with it — no bubble, no FAILED row, no error.
+        // App scope, not viewModelScope: the staging and the first upload
+        // must not be cancelled by navigating away.
         appScope.launch {
-            val sent = messageRepository.sendMedia(
-                prepared,
-                caption,
-                chatId,
-                quote,
-            ) { index, total ->
-                // "Uploading 2 of 5…" — only a set worth counting gets a
-                // counter; a single upload keeps the plain busy strip.
-                if (total > 1) {
-                    _mediaState.value = MediaSendState.Working(
-                        appContext.getString(R.string.s_uploading_n_of_m, index, total),
-                    )
-                }
-            }
-            if (sent) {
-                _mediaState.value = MediaSendState.Idle
-            } else {
+            val queued = messageRepository.sendMedia(prepared, caption, chatId, quote)
+            if (queued == null) {
+                // Only when not one item could be staged — a full disk, or
+                // a file that vanished between picking and sending.
                 _mediaState.value =
                     MediaSendState.Failed(appContext.getString(R.string.e_send_failed))
-                // sendMedia deletes an item's prepared file only once
-                // ITS upload has landed (iOS parity), so the files still
-                // on disk are exactly the unsent tail — put them back in
-                // the composer for a one-tap retry. Uploads that landed
-                // before the failure are left to the server's 24-hour
-                // sweep of unclaimed attachments. PREPENDED atomically:
-                // they were staged before anything added mid-upload.
                 val remainder = prepared.filter { it.file.exists() }
                 if (remainder.isNotEmpty()) {
                     _staged.update { current -> remainder + current }
                 }
-                if (inputState.text.isEmpty()) {
-                    inputState.setTextAndPlaceCursorAtEnd(caption)
-                }
-                if (_replyDraft.value == null) _replyDraft.value = quote
+                restoreComposer(caption, quote)
+            } else {
+                _mediaState.value = MediaSendState.Idle
             }
         }
     }

@@ -21,10 +21,15 @@
 
 package me.nettrash.familyconnect.ui.chat
 
+import androidx.annotation.StringRes
+import me.nettrash.familyconnect.R
+
 /** One section of the full emoji picker. */
 data class EmojiCategory(
-    /** Section header text. */
+    /** The category's stable English name — the grid's key and the tests' handle, never drawn. */
     val name: String,
+    /** The section header, through the catalogue (nine languages). */
+    @param:StringRes val titleRes: Int,
     val emoji: List<String>,
 )
 
@@ -32,6 +37,7 @@ data class EmojiCategory(
 val EMOJI_CATALOG: List<EmojiCategory> = listOf(
     EmojiCategory(
         name = "Smileys",
+        titleRes = R.string.s_emoji_smileys,
         emoji = listOf(
             "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "🙂", "😉", "😊", "😇",
             "🥰", "😍", "🤩", "😘", "😗", "😚", "😙", "😋", "😛", "😜", "🤪", "😝",
@@ -45,6 +51,7 @@ val EMOJI_CATALOG: List<EmojiCategory> = listOf(
     ),
     EmojiCategory(
         name = "Gestures",
+        titleRes = R.string.s_emoji_gestures,
         emoji = listOf(
             "👋", "🤚", "🖐", "✋", "🖖", "👌", "🤏", "✌️", "🤞", "🤟", "🤘", "🤙",
             "👈", "👉", "👆", "🖕", "👇", "☝️", "👍", "👎", "✊", "👊", "🤛", "🤜",
@@ -54,6 +61,7 @@ val EMOJI_CATALOG: List<EmojiCategory> = listOf(
     ),
     EmojiCategory(
         name = "Hearts",
+        titleRes = R.string.s_emoji_hearts,
         emoji = listOf(
             "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "❣️", "💕",
             "💞", "💓", "💗", "💖", "💘", "💝", "💟", "♥️", "💌", "💤", "💢", "💥",
@@ -63,6 +71,7 @@ val EMOJI_CATALOG: List<EmojiCategory> = listOf(
     ),
     EmojiCategory(
         name = "Animals & Nature",
+        titleRes = R.string.s_emoji_animals,
         emoji = listOf(
             "🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐮",
             "🐷", "🐸", "🐵", "🙈", "🙉", "🙊", "🐔", "🐧", "🐦", "🐤", "🦆", "🦅",
@@ -77,6 +86,7 @@ val EMOJI_CATALOG: List<EmojiCategory> = listOf(
     ),
     EmojiCategory(
         name = "Food & Drink",
+        titleRes = R.string.s_emoji_food,
         emoji = listOf(
             "🍏", "🍎", "🍐", "🍊", "🍋", "🍌", "🍉", "🍇", "🍓", "🍈", "🍒", "🍑",
             "🥭", "🍍", "🥥", "🥝", "🍅", "🍆", "🥑", "🥦", "🥬", "🥒", "🌶", "🌽",
@@ -91,6 +101,7 @@ val EMOJI_CATALOG: List<EmojiCategory> = listOf(
     ),
     EmojiCategory(
         name = "Activities",
+        titleRes = R.string.s_emoji_activities,
         emoji = listOf(
             "⚽", "🏀", "🏈", "⚾", "🥎", "🎾", "🏐", "🏉", "🥏", "🎱", "🪀", "🏓",
             "🏸", "🏒", "🏑", "🥍", "🏏", "🥅", "⛳", "🪁", "🏹", "🎣", "🤿", "🥊",
@@ -102,6 +113,7 @@ val EMOJI_CATALOG: List<EmojiCategory> = listOf(
     ),
     EmojiCategory(
         name = "Travel & Places",
+        titleRes = R.string.s_emoji_travel,
         emoji = listOf(
             "🚗", "🚕", "🚙", "🚌", "🚎", "🏎", "🚓", "🚑", "🚒", "🚐", "🚚", "🚛",
             "🚜", "🛴", "🚲", "🛵", "🏍", "🚨", "🚔", "🚍", "🚘", "🚖", "🚡", "🚠",
@@ -117,6 +129,7 @@ val EMOJI_CATALOG: List<EmojiCategory> = listOf(
     ),
     EmojiCategory(
         name = "Objects & Symbols",
+        titleRes = R.string.s_emoji_objects,
         emoji = listOf(
             "⌚", "📱", "💻", "⌨️", "🖥", "🖨", "🖱", "🕹", "🗜", "💽", "💾", "💿",
             "📀", "📼", "📷", "📸", "📹", "🎥", "📽", "🎞", "📞", "☎️", "📟", "📠",

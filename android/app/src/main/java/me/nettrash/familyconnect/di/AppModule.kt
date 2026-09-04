@@ -55,6 +55,7 @@ import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.LocalDataWiper
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.MessageDao
+import me.nettrash.familyconnect.data.db.PendingAttachmentDao
 import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.net.AndroidConnectivityObserver
 import me.nettrash.familyconnect.data.net.ApiClient
@@ -73,9 +74,11 @@ import me.nettrash.familyconnect.data.net.DefaultFamilyApi
 import me.nettrash.familyconnect.data.net.FamilyApi
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.OkHttpChatSocket
+import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.AvatarSource
 import me.nettrash.familyconnect.data.repo.ContentResolverAvatarSource
 import me.nettrash.familyconnect.data.repo.DefaultShareImporter
+import me.nettrash.familyconnect.data.repo.PosterCache
 import me.nettrash.familyconnect.data.repo.ShareImporter
 import me.nettrash.familyconnect.data.push.FirebasePushTokenProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
@@ -136,6 +139,13 @@ abstract class AppModule {
     @Binds
     abstract fun bindShareImporter(impl: DefaultShareImporter): ShareImporter
 
+    // The send path's one line into the attachment cache: keep the poster
+    // this device just made, and say whether the server got it (issue
+    // #54). An interface so a send test does not have to stand up a
+    // Context, a disk cache and an HTTP client to send a photo.
+    @Binds
+    abstract fun bindPosterCache(impl: AttachmentRepository): PosterCache
+
     @Binds
     abstract fun bindChatSocket(impl: OkHttpChatSocket): ChatSocket
 
@@ -176,6 +186,16 @@ abstract class AppModule {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
+            // The end-to-end ceiling the per-operation timeouts do not give:
+            // connect + write + read could each be slow without any of them
+            // firing, and a send could sit at "Sending…" for the better part
+            // of a minute and a half. iOS resolves a bubble in ~25 s; a
+            // client that has to wait three times longer for the same verdict
+            // is the divergence, not the network (docs/protocol.md, "Sending
+            // on an unreliable network"). Uploads override this — see
+            // ApiClient's `timeout` parameter — because a large file legitimately
+            // takes longer than any request-shaped ceiling.
+            .callTimeout(20, TimeUnit.SECONDS)
             .build()
 
         @Provides
@@ -215,6 +235,8 @@ abstract class AppModule {
                     AppDatabase.MIGRATION_15_16,
                     AppDatabase.MIGRATION_16_17,
                     AppDatabase.MIGRATION_17_18,
+                    AppDatabase.MIGRATION_18_19,
+                    AppDatabase.MIGRATION_19_20,
                 )
                 .build()
 
@@ -234,6 +256,10 @@ abstract class AppModule {
 
         @Provides
         fun provideMemberDao(db: AppDatabase): MemberDao = db.memberDao()
+
+        @Provides
+        fun providePendingAttachmentDao(db: AppDatabase): PendingAttachmentDao =
+            db.pendingAttachmentDao()
 
         @Provides
         @Singleton

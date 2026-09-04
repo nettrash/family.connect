@@ -47,6 +47,41 @@ enum MacFilePicker {
         panel.prompt = String(localized: "Attach")
         return panel.runModal() == .OK ? panel.urls : []
     }
+
+    /// Pictures only, for the one place on this app where the KIND is the
+    /// whole point rather than an inference: showing the assistant a
+    /// photograph (docs/protocol.md, "Pictures").
+    ///
+    /// The Mac's answer to the phone's photo picker, and it is a better
+    /// one than a general panel with a warning afterwards: a video, a
+    /// document and a sound never reach a model at any size, under any
+    /// setting, so a panel that offered them here would be offering
+    /// something that cannot happen. `allowedContentTypes` is the place to
+    /// say so — it greys out what will not be looked at, in the panel,
+    /// before anything is chosen.
+    ///
+    /// `.image` rather than the two MIME types that actually travel: every
+    /// photo this app uploads is re-encoded to JPEG on its way out
+    /// (MediaPrep is the only door), so a HEIC picked here arrives at the
+    /// server as a JPEG and is shown to the model like any other. Naming
+    /// JPEG and PNG in the panel would refuse the format an iPhone's
+    /// library is actually full of, for a limit this platform cannot hit.
+    ///
+    /// Capped at four in the panel itself — the number the model is shown —
+    /// so the limit is a thing the Mac refuses rather than a sentence
+    /// somebody reads afterwards. Multi-select stays on: choosing four at
+    /// once is the normal case, and the composer's own ten-per-message cap
+    /// still applies underneath.
+    static func pickPictures(limit: Int = AssistantPictureLimits.maxPerQuestion) -> [URL] {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image]
+        panel.prompt = String(localized: "Attach")
+        panel.message = String(localized: "These photos go to the model your server is set up to use.")
+        return panel.runModal() == .OK ? Array(panel.urls.prefix(limit)) : []
+    }
 }
 
 #endif

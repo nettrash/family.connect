@@ -5,6 +5,13 @@
 //  Manual regression: opening a long chat must land at the NEWEST
 //  message, not scrolled into history or blank estimated space.
 //
+//  Runs on both shapes of the chat screen (issue #43). On a phone the
+//  thread is PUSHED onto a NavigationStack; on an iPad it lives in a
+//  NavigationSplitView's detail column beside a permanent sidebar, where
+//  there is no back button to press and nothing to pop. `leaveThread`
+//  below is where that difference is absorbed — see the note on it; the
+//  phone's path through this test is unchanged, line for line.
+//
 //  Needs a running server seeded with the fixture this asserts against
 //  (user "junior"/"password123" in a family whose chat holds messages
 //  "Message number 1"…"Message number 1500", some with reactions), so it
@@ -63,7 +70,7 @@ final class ConversationScrollUITests: XCTestCase {
         openFamilyChat(in: app)
         let newest = ProcessInfo.processInfo.environment["FC_UITEST_NEWEST"] ?? "Message number 1500"
         assertNewestVisible(newest, in: app, phase: "fresh-login-open")
-        goBack(in: app)
+        leaveThread(in: app, server: server)
 
         // Phase 2 — family activity while this device sits on the chat
         // list: the other member posts a new message AND reacts to an old
@@ -76,7 +83,7 @@ final class ConversationScrollUITests: XCTestCase {
         sleep(2) // let the frames land
         openFamilyChat(in: app)
         assertNewestVisible("Fresh message A", in: app, phase: "reopen-after-activity")
-        goBack(in: app)
+        leaveThread(in: app, server: server)
 
         // Phase 3 — plain reopen with no new activity.
         openFamilyChat(in: app)
@@ -98,12 +105,12 @@ final class ConversationScrollUITests: XCTestCase {
         }
         sleep(2)
         add(screenshot(named: "scrolled-into-history", of: app))
-        goBack(in: app)
+        leaveThread(in: app, server: server)
         openFamilyChat(in: app)
         assertNewestVisible("Fresh message A", in: app, phase: "reopen-after-history-read")
-        goBack(in: app)
+        leaveThread(in: app, server: server)
         } else {
-            goBack(in: app)
+            leaveThread(in: app, server: server)
         }
 
         // Phase 4 — cold relaunch with the full local store (no reset:
@@ -158,10 +165,55 @@ final class ConversationScrollUITests: XCTestCase {
         }
     }
 
+    /// Leave the thread, so that the NEXT open is a fresh one.
+    ///
+    /// On a phone the thread is a pushed screen: the nav bar's back button
+    /// pops it and the chat list is what remains. That is what this test
+    /// has always done and it still does exactly that.
+    ///
+    /// On an iPad the thread is a NavigationSplitView's detail column
+    /// (issue #43), and there is no back button, because there is nothing
+    /// to pop: the list is permanently beside the thread. Deleting the
+    /// assertion would quietly delete the phases too — every one of them
+    /// depends on the NEXT open being a genuinely new ConversationView,
+    /// and re-tapping an already-selected sidebar row builds nothing
+    /// (`.id(chatID)` is unchanged, so SwiftUI reuses the view). So the
+    /// assertion is REPLACED by the two facts that mean the same thing
+    /// on this shape, and neither is weaker:
+    ///
+    /// 1. The split view's own invariant — the chat list is on screen
+    ///    WITH the thread, which on a stack is never true.
+    /// 2. The thread is genuinely closed and genuinely reopened, by
+    ///    relaunching with the session and cache intact. A launch lands on
+    ///    the chat list with NOTHING selected (ChatListView deliberately
+    ///    does not auto-select: ChatPresence would then mark the family
+    ///    chat read on every launch), which is precisely where the phone's
+    ///    back button leaves the app — so the phases that follow measure
+    ///    what they always measured, including the one that wants this
+    ///    device sitting on the chat list while another member posts.
     @MainActor
-    private func goBack(in app: XCUIApplication) {
-        app.navigationBars.buttons.firstMatch.tap()
+    private func leaveThread(in app: XCUIApplication, server: String) {
+        if isSplitView(in: app) {
+            XCTAssertTrue(
+                familyRow(in: app).exists,
+                "[split] the chat list must stay on screen beside the thread")
+            app.terminate()
+            app.launchArguments = ["-v1.serverURL", server]
+            app.launch()
+            XCTAssertTrue(
+                app.staticTexts["No conversation selected"].waitForExistence(timeout: 20),
+                "[split] a launch must land on the chat list with no chat selected")
+        } else {
+            app.navigationBars.buttons.firstMatch.tap()
+        }
         XCTAssertTrue(familyRow(in: app).waitForExistence(timeout: 10), "should be back on the chat list")
+    }
+
+    /// The chat list and the thread on screen at the same time — the one
+    /// thing that is true of the split view and of nothing else.
+    @MainActor
+    private func isSplitView(in app: XCUIApplication) -> Bool {
+        app.textFields["Message"].exists && familyRow(in: app).exists
     }
 
     @MainActor

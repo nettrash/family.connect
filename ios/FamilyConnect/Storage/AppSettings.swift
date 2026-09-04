@@ -40,12 +40,29 @@ nonisolated enum AppSettings {
         /// up from another's cursor.
         static let boardCursor = "v1.board.cursor"
         static let boardSeenNoteID = "v1.board.seenNoteId"
+        /// The badge's real mark: the highest `content_seq` this device has
+        /// SHOWN. Separate key rather than a reused one, because the two
+        /// numbers come from different spaces — a note id and a board seq —
+        /// and a device that upgrades has a meaningful value for the old
+        /// one and none for the new (BoardBadge.contentMarkSeed).
+        static let boardSeenContentSeq = "v1.board.seenContentSeq"
         /// The assistant, as `GET /families/mine` last reported it. Two
         /// jobs at once: naming its messages in the family chat, where its
         /// reserved account is deliberately absent from the roster, and
         /// telling the composer whether to offer `@ai` at all.
         static let assistantUserID = "v1.assistant.userId"
         static let assistantName = "v1.assistant.name"
+        /// What this SERVER's assistant can do beyond words, as
+        /// `GET /families/mine` last reported it (protocol.md, "Pictures").
+        /// Stored the plain way round — a missing key reads as "cannot" —
+        /// because that is both the honest answer for a server that
+        /// predates the feature and the one that offers nothing.
+        static let assistantVision = "v1.assistant.vision"
+        static let assistantImages = "v1.assistant.images"
+        /// The picture token as the server spells it. Held so the client
+        /// can be certain the server means the same five characters by it
+        /// before offering an affordance built on its own copy.
+        static let assistantDraw = "v1.assistant.draw"
         /// Pre-push installs stored a "registered once, token null"
         /// boolean under this key; superseded by the pair above and only
         /// referenced by wipe() so upgraded installs shed it.
@@ -212,6 +229,31 @@ nonisolated enum AppSettings {
         set { defaults.set(Int(newValue), forKey: Key.boardSeenNoteID) }
     }
 
+    /// Highest `content_seq` the user has actually BEEN SHOWN — what the
+    /// board badge counts (docs/protocol.md, "Board").
+    ///
+    /// `boardSeenNoteID` above is kept beside it, and still used, for notes
+    /// that carry no content seq: rows cached before the field existed, and
+    /// notes from a server that predates it. BoardBadge holds the rule; this
+    /// is only where the two numbers live.
+    static var boardSeenContentSeq: Int64 {
+        get { Int64(defaults.integer(forKey: Key.boardSeenContentSeq)) }
+        set { defaults.set(Int(newValue), forKey: Key.boardSeenContentSeq) }
+    }
+
+    /// The pair, read and written together — a badge that used one mark
+    /// from before an update and one from after would be neither rule.
+    static var boardMarks: BoardBadge.Marks {
+        get {
+            BoardBadge.Marks(
+                seenNoteID: boardSeenNoteID, seenContentSeq: boardSeenContentSeq)
+        }
+        set {
+            boardSeenNoteID = newValue.seenNoteID
+            boardSeenContentSeq = newValue.seenContentSeq
+        }
+    }
+
     /// The assistant's reserved account id, or nil when the server has no
     /// assistant configured.
     ///
@@ -246,11 +288,67 @@ nonisolated enum AppSettings {
         }
     }
 
+    /// Whether this server has a deployment that can LOOK at a picture.
+    ///
+    /// Half of the vision gate and only half: the family's own `ai_vision`
+    /// is the other, and a client offers to attach a picture in an `ai`
+    /// chat only when BOTH are true (protocol.md, "Pictures"). False here
+    /// means the surface is absent rather than disabled — a server without
+    /// the deployment configured must show no surface at all, not one that
+    /// lies about what would happen. Since #56 the same pair also decides
+    /// whether a photo on an `@ai` message, or on the message it replies
+    /// to, travels with the mention; that needs no surface of its own.
+    static var assistantVision: Bool {
+        get { defaults.bool(forKey: Key.assistantVision) }
+        set { defaults.set(newValue, forKey: Key.assistantVision) }
+    }
+
+    /// Whether this server can GENERATE one. The whole of the `/draw`
+    /// capability check: generation has no family switch, because what
+    /// leaves on such a request is the words after the token and nothing
+    /// else. Since #56 it also means the assistant may draw UNASKED, in
+    /// answer to an ordinary question — nothing here changes for that: the
+    /// reply is the picture message `/draw` already produces (protocol.md,
+    /// "Drawing without being told to").
+    static var assistantImages: Bool {
+        get { defaults.bool(forKey: Key.assistantImages) }
+        set { defaults.set(newValue, forKey: Key.assistantImages) }
+    }
+
+    /// The picture token the server named, or nil when it named none.
+    static var assistantDraw: String? {
+        get { defaults.string(forKey: Key.assistantDraw) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.assistantDraw)
+            } else {
+                defaults.removeObject(forKey: Key.assistantDraw)
+            }
+        }
+    }
+
+    /// May this client offer the `/draw` affordance?
+    ///
+    /// The server's answer AND a spelling check. `assistant.draw` exists so
+    /// a client can be certain the server means the same five characters
+    /// its own grammar does; a server that named a different token is one
+    /// this build cannot compose for, and offering a button that types the
+    /// wrong thing is exactly the "affordance that silently does nothing"
+    /// the capability flags exist to prevent. A server that named NO token
+    /// is a server that predates pictures, where `images` is false anyway.
+    static var offersPictureRequests: Bool {
+        AssistantSurfaces.offersPictureRequests(
+            serverCanDraw: assistantImages, serverToken: assistantDraw)
+    }
+
     static func wipe(keepServerURL: Bool) {
         if !keepServerURL { defaults.removeObject(forKey: Key.serverURL) }
         defaults.removeObject(forKey: Key.currentUserID)
         defaults.removeObject(forKey: Key.assistantUserID)
         defaults.removeObject(forKey: Key.assistantName)
+        defaults.removeObject(forKey: Key.assistantVision)
+        defaults.removeObject(forKey: Key.assistantImages)
+        defaults.removeObject(forKey: Key.assistantDraw)
         defaults.removeObject(forKey: Key.joinPending)
         defaults.removeObject(forKey: Key.pushToken)
         defaults.removeObject(forKey: Key.pushDeviceID)
@@ -258,6 +356,7 @@ nonisolated enum AppSettings {
         defaults.removeObject(forKey: Key.legacyDeviceRegistered)
         defaults.removeObject(forKey: Key.boardCursor)
         defaults.removeObject(forKey: Key.boardSeenNoteID)
+        defaults.removeObject(forKey: Key.boardSeenContentSeq)
         // Member ↔ contact links name user ids of THIS server's family.
         defaults.removeObject(forKey: ContactLinks.key)
     }

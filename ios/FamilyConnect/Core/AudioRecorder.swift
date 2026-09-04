@@ -33,7 +33,36 @@ final class AudioRecorder {
     private(set) var elapsed: TimeInterval = 0
     /// Set when recording could not start — almost always a refused
     /// microphone permission.
-    private(set) var failed = false
+    /// Why a recording did not start.
+    ///
+    /// Two causes, and they need DIFFERENT sentences: telling somebody to
+    /// grant a permission they have already granted sends them into Settings
+    /// to look at a switch that is already on. The same distinction
+    /// `LocationProvider.Failure` draws, for the same reason.
+    nonisolated enum Failure: Equatable, Sendable {
+        /// The person said no to the microphone, now or at some earlier
+        /// point. Only this one is worth pointing at Settings for.
+        case microphoneDenied
+        /// The session or the recorder itself refused — another app holding
+        /// the audio session, a device with no input, a disk that will not
+        /// take the file.
+        case couldNotStart
+    }
+
+    /// How permission is asked. The app passes nothing and gets the real
+    /// system prompt; a test supplies an answer, which is the only way to
+    /// exercise the denied path — `AVAudioApplication` and `AVCaptureDevice`
+    /// cannot be told to refuse. Same seam idea as `APIClient`'s injected
+    /// `URLSession`.
+    var permissionProvider: (() async -> Bool)?
+
+    /// Set when `start()` gives up, cleared when it is called again.
+    ///
+    /// NOTHING READ THIS UNTIL NOW, which was the bug: the flag was set
+    /// faithfully and both composers ignored it, so denying the microphone
+    /// made "Record Audio" do nothing at all — no bar, no alert, no
+    /// explanation, on either platform.
+    private(set) var failure: Failure?
 
     @ObservationIgnored private var recorder: AVAudioRecorder?
     @ObservationIgnored private var ticker: Task<Void, Never>?
@@ -43,14 +72,34 @@ final class AudioRecorder {
     /// listener, not the disk.
     static let maxDuration: TimeInterval = 5 * 60
 
+    /// What to tell the composer when a recording did not start.
+    ///
+    /// Lives here rather than in each view so the two cannot drift, and so
+    /// the rule that matters — a denial and a failure say DIFFERENT things —
+    /// can be tested. Sending somebody to Settings for a permission they
+    /// already granted is the mistake this is shaped to prevent.
+    static func message(for failure: Failure) -> String {
+        switch failure {
+        case .microphoneDenied:
+            #if os(macOS)
+            // A Mac has no Settings app, and the switch is three levels deep.
+            return String(localized: "Family needs permission to use your microphone. Turn it on in System Settings › Privacy & Security › Microphone.")
+            #else
+            return String(localized: "Family needs permission to use your microphone. Turn it on in Settings.")
+            #endif
+        case .couldNotStart:
+            return String(localized: "Couldn't start recording.")
+        }
+    }
+
     func start() async {
         guard !isRecording else { return }
-        failed = false
+        failure = nil
         recordedURL = nil
         elapsed = 0
 
-        guard await requestPermission() else {
-            failed = true
+        guard await (permissionProvider ?? requestPermission)() else {
+            failure = .microphoneDenied
             return
         }
 
@@ -82,7 +131,7 @@ final class AudioRecorder {
             isRecording = true
             startTicking()
         } catch {
-            failed = true
+            failure = .couldNotStart
         }
     }
 

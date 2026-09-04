@@ -101,6 +101,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.data.db.MemberEntity
 import me.nettrash.familyconnect.data.net.dto.BirthdayDto
@@ -111,6 +112,19 @@ import me.nettrash.familyconnect.ui.components.Avatar
 import me.nettrash.familyconnect.ui.components.DestructiveTextButton
 import me.nettrash.familyconnect.ui.components.EmptyState
 import me.nettrash.familyconnect.ui.components.ErrorCard
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Remove
+import me.nettrash.familyconnect.util.MemberCap
+import androidx.annotation.StringRes
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.background
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.outlined.Block
+import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material3.LocalContentColor
+import me.nettrash.familyconnect.ui.components.ReportSheet
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.foundation.layout.Box
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -119,6 +133,8 @@ fun FamilyAdminScreen(
     viewModel: FamilyAdminViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
+    val supportContact by viewModel.supportContact.collectAsStateWithLifecycle()
     val members by viewModel.members.collectAsStateWithLifecycle()
     val isOwner by viewModel.isOwner.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
@@ -137,6 +153,7 @@ fun FamilyAdminScreen(
     var resetTarget by remember { mutableStateOf<MemberEntity?>(null) }
     /// The member whose birthday the owner is editing — their own row included.
     var birthdayTarget by remember { mutableStateOf<MemberEntity?>(null) }
+    var reportTarget by remember { mutableStateOf<MemberEntity?>(null) }
     var pickingLanguage by remember { mutableStateOf(false) }
 
     // Rows hide-and-shrink the moment an approve/reject/remove is fired,
@@ -172,7 +189,8 @@ fun FamilyAdminScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .readableColumn(),
         ) {
             state.error?.let {
                 ErrorCard(message = it, modifier = Modifier.padding(16.dp))
@@ -331,6 +349,85 @@ fun FamilyAdminScreen(
                 )
                 SectionDivider()
 
+                // -- Reports -----------------------------------------------------------
+                // The owner is the moderator. Above the policy controls
+                // because a report is somebody waiting on an answer, while
+                // the settings below are not.
+                if (isOwner) {
+                    Text(
+                        text = stringResource(R.string.s_reports),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
+                    )
+                    // Drawn even when empty: an owner who has never
+                    // received a report otherwise has no surface anywhere
+                    // naming the inbox, and would not know it exists until
+                    // the first one arrives.
+                    if (state.reports.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.s_reports_empty),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        )
+                    }
+                    state.reports.forEach { report ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                text = stringResource(reportReasonLabel(report.reason)),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                text = stringResource(
+                                    R.string.s_reported_by,
+                                    report.reporter.displayName,
+                                    report.reported.displayName,
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            // Drawn ALWAYS when present, and never
+                            // truncated: it is frozen precisely because the
+                            // author may edit the body away and retention
+                            // will sweep the message, and an owner judging
+                            // a message has to see all of it.
+                            report.messageExcerpt?.takeIf { it.isNotEmpty() }?.let { excerpt ->
+                                SelectionContainer {
+                                    Text(
+                                        text = excerpt,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 4.dp)
+                                            .background(
+                                                MaterialTheme.colorScheme.surfaceContainerHighest,
+                                                RoundedCornerShape(6.dp),
+                                            )
+                                            .padding(8.dp),
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                            ) {
+                                TextButton(
+                                    enabled = !state.busy,
+                                    onClick = { viewModel.resolveReport(report.id) },
+                                ) {
+                                    Text(stringResource(R.string.s_mark_as_handled))
+                                }
+                            }
+                        }
+                    }
+                    SectionDivider()
+                }
+
                 // -- Join policy ------------------------------------------------------
                 Text(
                     text = stringResource(R.string.s_join_policy),
@@ -346,7 +443,7 @@ fun FamilyAdminScreen(
                     SegmentedButton(
                         selected = state.joinPolicy == "open",
                         onClick = { viewModel.setJoinPolicy("open") },
-                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
                         enabled = !state.busy,
                     ) {
                         Text(stringResource(R.string.s_open))
@@ -354,21 +451,118 @@ fun FamilyAdminScreen(
                     SegmentedButton(
                         selected = state.joinPolicy == "approval",
                         onClick = { viewModel.setJoinPolicy("approval") },
-                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
                         enabled = !state.busy,
                     ) {
                         Text(stringResource(R.string.s_approval))
                     }
+                    SegmentedButton(
+                        selected = state.joinPolicy == "closed",
+                        onClick = { viewModel.setJoinPolicy("closed") },
+                        shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
+                        enabled = !state.busy,
+                    ) {
+                        Text(stringResource(R.string.s_closed))
+                    }
                 }
                 Text(
+                    // "Closed" needs two things said that the other two do
+                    // not: the code stops working, and the requests already
+                    // waiting are untouched and can still be approved
+                    // (docs/protocol.md, approve). An owner closing the
+                    // family to stop new arrivals should not be left
+                    // wondering whether they just rejected the queue.
                     text = stringResource(
-                        if (state.joinPolicy == "open") R.string.s_join_open_caption else R.string.s_join_approval_caption,
+                        when (state.joinPolicy) {
+                            "approval" -> R.string.s_join_approval_caption
+                            "closed" -> R.string.s_join_closed_caption
+                            else -> R.string.s_join_open_caption
+                        },
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
                 SectionDivider()
+
+                // -- Member limit ------------------------------------------------------
+                // Hidden entirely when the server does not report a
+                // ceiling: there is nothing sensible to bound the stepper
+                // by, and inventing a number would be worse than omitting
+                // the control.
+                state.ceiling?.let { ceiling ->
+                    Text(
+                        text = stringResource(R.string.s_member_limit),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.s_limit_members),
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Switch(
+                            checked = state.maxMembers != null,
+                            enabled = !state.busy,
+                            onCheckedChange = { on ->
+                                // Turning it on freezes the family where it
+                                // stands, which is what reaching for this
+                                // almost always means in the moment.
+                                viewModel.setMemberCap(
+                                    if (on) MemberCap.seed(state.memberCount, ceiling) else null,
+                                )
+                            },
+                        )
+                    }
+                    state.maxMembers?.let { cap ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.s_most_members),
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(
+                                enabled = !state.busy && cap > 1,
+                                onClick = { viewModel.setMemberCap(MemberCap.clamp(cap - 1, ceiling)) },
+                            ) {
+                                Icon(Icons.Outlined.Remove, contentDescription = stringResource(R.string.s_decrease))
+                            }
+                            Text(text = "$cap", style = MaterialTheme.typography.titleMedium)
+                            IconButton(
+                                enabled = !state.busy && cap < ceiling,
+                                onClick = { viewModel.setMemberCap(MemberCap.clamp(cap + 1, ceiling)) },
+                            ) {
+                                Icon(Icons.Outlined.Add, contentDescription = stringResource(R.string.s_increase))
+                            }
+                        }
+                    }
+                    Text(
+                        text = when (val capState = MemberCap.state(state.maxMembers, state.memberCount, ceiling)) {
+                            is MemberCap.State.OpenToCeiling ->
+                                stringResource(R.string.s_member_limit_none, capState.ceiling)
+                            is MemberCap.State.Frozen ->
+                                stringResource(R.string.s_member_limit_frozen, capState.memberCount)
+                            is MemberCap.State.Room ->
+                                stringResource(R.string.s_member_limit_room, capState.memberCount, capState.cap)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                    SectionDivider()
+                }
 
                 // -- Family language ---------------------------------------------------
                 Text(
@@ -434,6 +628,76 @@ fun FamilyAdminScreen(
                     },
                 )
                 SectionDivider()
+
+                // -- Whether the assistant may LOOK at a photo -------------------------
+                // Only on a server that has a deployment which can see.
+                // Absent, not disabled: a greyed switch here would say
+                // "your server could do this, but something is stopping
+                // you", which is not what a missing deployment means
+                // (docs/protocol.md, "Pictures").
+                if (state.assistantVision) {
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.s_assistant_vision)) },
+                        supportingContent = {
+                            Text(stringResource(R.string.s_assistant_vision_explanation))
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = state.aiVision,
+                                onCheckedChange = viewModel::setAiVision,
+                                enabled = !state.busy,
+                            )
+                        },
+                        modifier = Modifier.clickable(enabled = !state.busy) {
+                            viewModel.setAiVision(!state.aiVision)
+                        },
+                    )
+                    SectionDivider()
+                }
+
+                // -- The THIRD switch: the chat's recent photos too ---------------------
+                // PRESENT even on a server that cannot see — disabled, with
+                // the reason — where the switch above is absent. Not an
+                // inconsistency: the protocol asks for exactly this, because
+                // one of the two reasons is something the owner can act on
+                // (turn the switch above on first; the server refuses this
+                // while it is off) and the other is something they deserve
+                // to be told rather than left to find missing
+                // (docs/protocol.md, "Recent photos from the family chat" —
+                // "What a client shows"). The sentence under it says what
+                // leaves and what it costs, then the reason it is withheld,
+                // or that it is inert while the history switch is off.
+                val historyPhotosSwitch = state.historyPhotosSwitch
+                val historyPhotosEnabled = !state.busy && historyPhotosSwitch.isEnabled
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.s_assistant_history_photos)) },
+                    supportingContent = {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(stringResource(R.string.s_assistant_history_photos_explanation))
+                            when (historyPhotosSwitch) {
+                                FamilyAdminViewModel.HistoryPhotosSwitch.OFFERED ->
+                                    if (!state.aiHistory) {
+                                        Text(stringResource(R.string.s_assistant_history_photos_needs_history))
+                                    }
+                                FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_NO_VISION_DEPLOYMENT ->
+                                    Text(stringResource(R.string.s_assistant_history_photos_no_deployment))
+                                FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_VISION_OFF ->
+                                    Text(stringResource(R.string.s_assistant_history_photos_needs_vision))
+                            }
+                        }
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = state.aiHistoryPhotos,
+                            onCheckedChange = viewModel::setAiHistoryPhotos,
+                            enabled = historyPhotosEnabled,
+                        )
+                    },
+                    modifier = Modifier.clickable(enabled = historyPhotosEnabled) {
+                        viewModel.setAiHistoryPhotos(!state.aiHistoryPhotos)
+                    },
+                )
+                SectionDivider()
             }
 
             // -- Members ------------------------------------------------------------
@@ -460,7 +724,7 @@ fun FamilyAdminScreen(
                                 // nothing here computes an age.
                                 Text(
                                     "@${member.username}" +
-                                        (if (member.role == "owner") " · owner" else "") +
+                                        (if (member.role == "owner") " · " + stringResource(R.string.s_owner_caption) else "") +
                                         (
                                             member.birthday
                                                 ?.let { " · " + TimeFormat.birthday(it.month, it.day) }
@@ -476,8 +740,78 @@ fun FamilyAdminScreen(
                                 )
                             },
                             trailingContent = {
+                                Row {
+                                    // OUTSIDE the isOwner gate below, and
+                                    // that is the point: the whole purpose
+                                    // of these two is a member with no
+                                    // other recourse, and the person they
+                                    // need them for may BE the owner. Any
+                                    // member may block any other, the owner
+                                    // included (docs/protocol.md,
+                                    // "Blocking a member").
+                                    //
+                                    // On the roster as well as on a
+                                    // message, because a member row is
+                                    // where somebody looks for what they
+                                    // can do about a PERSON — and it is
+                                    // the only way to report one without
+                                    // singling out a message of theirs.
+                                    if (member.userId != myUserId) {
+                                        // One Safety button opening a menu,
+                                        // matching the message menu and both
+                                        // Apple platforms. On a roster row it
+                                        // also keeps the destructive action
+                                        // off the row itself, where Birthday
+                                        // and Remove sit a few points away.
+                                        var safetyOpen by remember(member.userId) {
+                                            mutableStateOf(false)
+                                        }
+                                        val isBlocked = member.userId in blockedUserIds
+                                        Box {
+                                            IconButton(
+                                                onClick = { safetyOpen = true },
+                                                enabled = !state.busy,
+                                            ) {
+                                                Icon(
+                                                    Icons.Outlined.Shield,
+                                                    contentDescription = stringResource(
+                                                        R.string.s_safety_for, member.displayName,
+                                                    ),
+                                                )
+                                            }
+                                            DropdownMenu(
+                                                expanded = safetyOpen,
+                                                onDismissRequest = { safetyOpen = false },
+                                            ) {
+                                                DropdownMenuItem(
+                                                    text = { Text(stringResource(R.string.s_report_ellipsis)) },
+                                                    onClick = {
+                                                        safetyOpen = false
+                                                        reportTarget = member
+                                                    },
+                                                )
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            text = stringResource(
+                                                                if (isBlocked) R.string.s_unblock else R.string.s_block,
+                                                            ),
+                                                            color = if (isBlocked) {
+                                                                LocalContentColor.current
+                                                            } else {
+                                                                MaterialTheme.colorScheme.error
+                                                            },
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        safetyOpen = false
+                                                        viewModel.setBlocked(member.userId, !isBlocked)
+                                                    },
+                                                )
+                                            }
+                                        }
+                                    }
                                 if (isOwner) {
-                                    Row {
                                         // Every row, the owner's own
                                         // included: the roster endpoint
                                         // accepts the owner naming
@@ -526,7 +860,7 @@ fun FamilyAdminScreen(
                                                 )
                                             }
                                         }
-                                    }
+                                }
                                 }
                             },
                         )
@@ -559,6 +893,19 @@ fun FamilyAdminScreen(
             },
         )
     }
+    reportTarget?.let { member ->
+        ReportSheet(
+            displayName = member.displayName,
+            supportContact = supportContact,
+            // From the roster: the PERSON, with no message named.
+            isAboutMessage = false,
+            onDismiss = { reportTarget = null },
+            onSubmit = { reason ->
+                viewModel.reportMember(member.userId, reason) { reportTarget = null }
+            },
+        )
+    }
+
 
     confirmRemove?.let { member ->
         // Resolved here: the confirm button's onClick is not a composable scope.
@@ -812,6 +1159,19 @@ private fun LanguagePickerDialog(
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_close)) }
         },
     )
+}
+
+/**
+ * A wire reason to its label. An UNRECOGNISED value falls back to "other"
+ * rather than failing: a newer server must never make an owner's inbox
+ * unreadable (docs/protocol.md, "Reporting a member").
+ */
+@StringRes
+private fun reportReasonLabel(reason: String): Int = when (reason) {
+    "spam" -> R.string.s_report_reason_spam
+    "harassment" -> R.string.s_report_reason_harassment
+    "inappropriate" -> R.string.s_report_reason_inappropriate
+    else -> R.string.s_report_reason_other
 }
 
 @Composable

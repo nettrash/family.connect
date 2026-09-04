@@ -15,6 +15,8 @@
  *      Then, when the server's max_reaction_seq (step 2) beats the
  *      locally stored reaction cursor: after_seq pages until short —
  *      this is what repairs reactions missed while offline.
+ *   3f. The board's own catch-up, on the third cursor — a board is
+ *       nothing but changes to older rows, which after_id cannot see.
  *   4. Re-send locally pending outbound messages (client_msg_id dedups).
  *
  * Also refreshes the family roster so sender names resolve.
@@ -35,17 +37,28 @@ class SyncEngine @Inject constructor(
     private val chatRepository: ChatRepository,
     private val familyRepository: FamilyRepository,
     private val messageRepository: MessageRepository,
+    private val boardRepository: BoardRepository,
     private val chatDao: ChatDao,
     private val messageDao: MessageDao,
 ) {
 
     suspend fun resync() {
+        // 0. The outbox, BEFORE anything can fail.
+        //
+        // It used to be step 4, at the end of this function, behind the
+        // `return` below — so on the network most likely to have stranded
+        // a message, the one thing that recovers it never ran. It is not a
+        // step of the read pipeline and is ordered against nothing after it
+        // (docs/protocol.md, "Best-effort delivery"): re-sending is
+        // idempotent on client_msg_id, so doing it first is never wrong.
+        messageRepository.flushPending()
+
         // 1. Membership first — if we were removed or the session died,
         // the event handlers reroute and the rest is moot.
         val me = sessionRepository.refreshMe().okOrNull() ?: return
         if (!me.canChat) return
 
-        familyRepository.refreshMine()
+        val mine = familyRepository.refreshMine().okOrNull()
 
         // 2. Chat list + authoritative unread counts (and the server's
         // per-chat max_reaction_seq, driving step 3b below).
@@ -94,13 +107,24 @@ class SyncEngine @Inject constructor(
             }
         }
 
+        // 3d½. The board, on its own cursor — the third of the same shape,
+        // and for the third time the same reason: `after_id` can never see
+        // a change to an older row, and a board is nothing BUT changes to
+        // older rows. The family read above already told us the server's
+        // max, so a board nothing has happened on costs no request at all.
+        //
+        // It belongs HERE, and not only on the board screen where it used
+        // to live, because a cache filled by socket frames alone is a cache
+        // full of holes: a note this device never held would first appear
+        // the moment somebody DRAGGED it, and a badge counting whatever had
+        // materialised counted that drag as news (issue #53). The Apple
+        // clients have always caught the board up in their resync.
+        boardRepository.catchUpBoard(mine?.maxBoardSeq ?: 0L)
+
         // 3e. Repair any location stored without its coordinates. Same
         // reason as edits above: `after_id` can never see an older row, so
         // nothing else would ever fix one.
         messageRepository.repairLocationsMissingCoordinates()
-
-        // 4. Re-send anything still pending — safe, client_msg_id dedups.
-        messageRepository.flushPending()
     }
 
     companion object {

@@ -42,6 +42,8 @@ import me.nettrash.familyconnect.data.net.dto.PollOptionDto
 import me.nettrash.familyconnect.data.net.dto.PollsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyMineResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyResponse
+import me.nettrash.familyconnect.data.net.dto.ReportResponse
+import me.nettrash.familyconnect.data.net.dto.ReportsResponse
 import me.nettrash.familyconnect.data.net.dto.FamilyStatsDto
 import me.nettrash.familyconnect.data.net.dto.JoinRequestsResponse
 import me.nettrash.familyconnect.data.net.dto.JoinResponse
@@ -71,6 +73,7 @@ import me.nettrash.familyconnect.data.db.ChatDao
 import me.nettrash.familyconnect.data.db.MessageDao
 import me.nettrash.familyconnect.data.push.UnreadNotifications
 import me.nettrash.familyconnect.data.repo.ChatRepository
+import me.nettrash.familyconnect.data.repo.PosterCache
 import org.robolectric.RuntimeEnvironment
 import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
@@ -108,6 +111,23 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
 
     override suspend fun setFamilyStatus(status: FamilyStatus) {
         _state.value = _state.value.copy(familyStatus = status)
+    }
+
+    /** Every write, in order — so a test can prove the EMPTY set was sent. */
+    val blockedWrites = mutableListOf<Set<Long>>()
+
+    override suspend fun setMaxFamilyMembers(limit: Int?) {
+        _state.value = _state.value.copy(maxFamilyMembers = limit)
+    }
+
+    override suspend fun setSupportContact(contact: String?) {
+        _state.value = _state.value.copy(supportContact = contact)
+    }
+
+    override suspend fun setBlockedUserIds(ids: Collection<Long>) {
+        val next = ids.toSet()
+        blockedWrites += next
+        _state.value = _state.value.copy(blockedUserIds = next)
     }
 
     override suspend fun setProfile(
@@ -155,15 +175,42 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
         }
     }
 
+    override suspend fun setBoardSeenContentSeq(seq: Long) {
+        if (seq > _state.value.boardSeenContentSeq) {
+            _state.value = _state.value.copy(boardSeenContentSeq = seq)
+        }
+    }
+
     override suspend fun setMapPreviewsEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(mapPreviewsEnabled = enabled)
     }
 
-    override suspend fun setAssistant(userId: Long?, displayName: String?) {
+    override suspend fun setAssistant(
+        userId: Long?,
+        displayName: String?,
+        vision: Boolean,
+        images: Boolean,
+    ) {
         _state.value = _state.value.copy(
             assistantUserId = userId,
             assistantName = displayName,
+            // Cleared with the assistant, like the real one: an absent
+            // assistant has no capabilities to remember.
+            assistantVision = userId != null && vision,
+            assistantImages = userId != null && images,
         )
+    }
+
+    override suspend fun setFamilyAiVision(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiVision = enabled)
+    }
+
+    override suspend fun setFamilyAiHistory(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiHistory = enabled)
+    }
+
+    override suspend fun setFamilyAiHistoryPhotos(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiHistoryPhotos = enabled)
     }
 
     override suspend fun setCallsEnabled(enabled: Boolean) {
@@ -172,6 +219,14 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
 
     override suspend fun setVideoCallsEnabled(enabled: Boolean) {
         _state.value = _state.value.copy(videoCallsEnabled = enabled)
+    }
+
+    override suspend fun setFamilyRegistrationEnabled(enabled: Boolean) {
+        _state.value = _state.value.copy(familyRegistrationEnabled = enabled)
+    }
+
+    override suspend fun setFamilylessAccountTtlDays(days: Int) {
+        _state.value = _state.value.copy(familylessAccountTtlDays = days)
     }
 
     override suspend fun resetKeepingServerUrl() {
@@ -570,6 +625,9 @@ class FakeFamilyApi : FamilyApi {
     /** Every ai_history PATCH, in order. */
     val aiHistorySet = mutableListOf<Boolean>()
 
+    /** Every ai_vision PATCH, in order. */
+    val aiVisionSet = mutableListOf<Boolean>()
+
     override suspend fun setLanguage(tag: String?): ApiResult<FamilyResponse> {
         languagesSet += tag
         return createResult
@@ -577,6 +635,19 @@ class FakeFamilyApi : FamilyApi {
 
     override suspend fun setAiHistory(enabled: Boolean): ApiResult<FamilyResponse> {
         aiHistorySet += enabled
+        return createResult
+    }
+
+    override suspend fun setAiVision(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiVisionSet += enabled
+        return createResult
+    }
+
+    /** Every ai_history_photos PATCH, in order. */
+    val aiHistoryPhotosSet = mutableListOf<Boolean>()
+
+    override suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiHistoryPhotosSet += enabled
         return createResult
     }
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult
@@ -587,8 +658,61 @@ class FakeFamilyApi : FamilyApi {
     override suspend fun approve(requestId: Long): ApiResult<ApproveResponse> = approveResult
 
     override suspend fun reject(requestId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
-    override suspend fun leave(): ApiResult<Unit> = ApiResult.Ok(Unit)
+    /** Who `leave()` reports as the successor; null = nobody inherited. */
+    var leaveSuccessorId: Long? = null
+    var leaveResult: ApiResult<Long?>? = null
+
+    override suspend fun leave(): ApiResult<Long?> =
+        leaveResult ?: ApiResult.Ok(leaveSuccessorId)
+
     override suspend fun removeMember(userId: Long): ApiResult<Unit> = ApiResult.Ok(Unit)
+
+    /** Every cap this fake was told to set, in order; null = cleared. */
+    val memberCaps = mutableListOf<Int?>()
+    var setMemberCapResult: ApiResult<FamilyResponse>? = null
+
+    override suspend fun setMemberCap(cap: Int?): ApiResult<FamilyResponse> {
+        memberCaps += cap
+        return setMemberCapResult
+            ?: ApiResult.NetworkError(IllegalStateException("unscripted setMemberCap"))
+    }
+
+    /** Every block/unblock this fake saw: (userId, blocked). */
+    val blocks = mutableListOf<Pair<Long, Boolean>>()
+    var blockResult: ApiResult<Unit> = ApiResult.Ok(Unit)
+
+    override suspend fun blockMember(userId: Long): ApiResult<Unit> {
+        blocks += userId to true
+        return blockResult
+    }
+
+    override suspend fun unblockMember(userId: Long): ApiResult<Unit> {
+        blocks += userId to false
+        return blockResult
+    }
+
+    /** Every report raised through this fake. */
+    val reportsRaised = mutableListOf<Triple<Long, String, Long?>>()
+    var reportResult: ApiResult<ReportResponse>? = null
+    var reportsResult: ApiResult<ReportsResponse> = ApiResult.Ok(ReportsResponse(emptyList()))
+    val resolvedReports = mutableListOf<Long>()
+
+    override suspend fun report(
+        reportedUserId: Long,
+        reason: String,
+        messageId: Long?,
+    ): ApiResult<ReportResponse> {
+        reportsRaised += Triple(reportedUserId, reason, messageId)
+        return reportResult
+            ?: ApiResult.NetworkError(IllegalStateException("unscripted report"))
+    }
+
+    override suspend fun reports(): ApiResult<ReportsResponse> = reportsResult
+
+    override suspend fun resolveReport(reportId: Long): ApiResult<Unit> {
+        resolvedReports += reportId
+        return ApiResult.Ok(Unit)
+    }
 
     /** Every reset this fake saw: (userId, newPassword). */
     val passwordResets = mutableListOf<Pair<Long, String>>()
@@ -743,6 +867,12 @@ fun noteDto(
     x: Double = 0.2,
     y: Double = 0.3,
     boardSeq: Long,
+    /**
+     * Defaults to the board seq — what a CREATE carries. Pass an older one
+     * for a note that has since been dragged, and null for a server that
+     * predates the field.
+     */
+    contentSeq: Long? = boardSeq,
     deleted: Boolean? = null,
 ) = NoteDto(
     id = id,
@@ -755,6 +885,7 @@ fun noteDto(
     createdAt = if (deleted == true) null else "2026-08-22T12:00:00Z",
     updatedAt = if (deleted == true) null else "2026-08-22T12:00:00Z",
     boardSeq = boardSeq,
+    contentSeq = if (deleted == true) null else contentSeq,
     deleted = deleted,
 )
 
@@ -788,6 +919,14 @@ fun messageDto(
     editSeq: Long? = null,
     editedAt: String? = null,
     poll: PollDto? = null,
+    /**
+     * The attachments the message carries, in the sender's order. Sent as
+     * BOTH the plural array and the legacy singular, exactly as the
+     * server does — the two are never present without each other, and a
+     * fixture that sent only one of them would let a plural-only or
+     * singular-only read pass by accident.
+     */
+    attachments: List<AttachmentDto>? = null,
 ) = MessageDto(
     id = id,
     chatId = chatId,
@@ -801,6 +940,31 @@ fun messageDto(
     editSeq = editSeq,
     editedAt = editedAt,
     poll = poll,
+    attachment = attachments?.firstOrNull(),
+    attachments = attachments,
+)
+
+/**
+ * A `photo` attachment as the server reports one.
+ *
+ * `has_preview` defaults to FALSE because the case this fixture exists
+ * for is the assistant's own generated picture: the server generates no
+ * preview for it, "here as everywhere", so clients draw it from its full
+ * bytes (docs/protocol.md, "Pictures").
+ */
+fun photoAttachment(
+    id: Long,
+    mime: String = "image/png",
+    size: Long = 4096,
+    hasPreview: Boolean = false,
+) = AttachmentDto(
+    id = id,
+    kind = AttachmentDto.KIND_PHOTO,
+    mime = mime,
+    size = size,
+    width = 1024,
+    height = 1024,
+    hasPreview = hasPreview,
 )
 
 fun reactionState(
@@ -835,6 +999,28 @@ fun pollDto(
 
 fun pollState(messageId: Long, poll: PollDto) =
     MessagePollStateDto(messageId = messageId, poll = poll)
+
+/**
+ * The send path's one line into the attachment cache (issue #54), with
+ * neither a Context nor a disk behind it. Records what the sender kept
+ * and what it said about each poster's upload, in order.
+ */
+class FakePosterCache : PosterCache {
+
+    /** (attachment id, byte count) per poster the sender kept. */
+    val seeded = mutableListOf<Pair<Long, Int>>()
+
+    /** (attachment id, whether the server got it) per video sent. */
+    val noted = mutableListOf<Pair<Long, Boolean>>()
+
+    override suspend fun seedPoster(attachmentId: Long, jpeg: ByteArray) {
+        seeded += attachmentId to jpeg.size
+    }
+
+    override suspend fun notePosterUpload(attachmentId: Long, landed: Boolean) {
+        noted += attachmentId to landed
+    }
+}
 
 /**
  * Scriptable AttachmentApi. Records what was uploaded, in order, so the
@@ -907,13 +1093,37 @@ class FakeAttachmentApi : AttachmentApi {
         return previewHandler(attachmentId, jpeg)
     }
 
+    /**
+     * Every download this fake was asked for, as (attachmentId, preview).
+     *
+     * The preview half is the point: a video's poster and its bytes are
+     * two different requests, and what a test about posters needs to know
+     * is how many times the poster was asked for.
+     */
+    val downloads = mutableListOf<Pair<Long, Boolean>>()
+
+    /**
+     * What `download` answers, and — on success — what it writes.
+     *
+     * A 404 by default, which is what the server says for an attachment
+     * with no preview; it also means every test that predates this seam
+     * behaves exactly as it did. A handler that answers [ApiResult.Ok]
+     * must write the destination file itself, because the real client
+     * does (`ApiClient.rawDownloadToFile`) and the repository decodes
+     * whatever is there.
+     */
+    var downloadHandler: (Long, Boolean, File) -> ApiResult<Unit> = { _, _, _ ->
+        ApiResult.HttpError(404, "attachment_not_found", "no")
+    }
+
     override suspend fun download(
         attachmentId: Long,
         preview: Boolean,
         destination: File,
     ): ApiResult<Unit> {
         calls += "download"
-        return ApiResult.HttpError(404, "attachment_not_found", "no")
+        downloads += attachmentId to preview
+        return downloadHandler(attachmentId, preview, destination)
     }
 
     override suspend fun streamUrl(attachmentId: Long): Pair<String, Map<String, String>>? =
@@ -965,11 +1175,14 @@ fun testChatRepository(
     messageDao: MessageDao,
     socket: ChatSocket,
     scope: CoroutineScope,
+    settings: SettingsRepository = FakeSettingsRepository(),
 ): ChatRepository = ChatRepository(
+    RuntimeEnvironment.getApplication(),
     chatApi,
     chatDao,
     messageDao,
     socket,
     UnreadNotifications(RuntimeEnvironment.getApplication(), chatDao, scope),
+    settings,
     scope,
 )

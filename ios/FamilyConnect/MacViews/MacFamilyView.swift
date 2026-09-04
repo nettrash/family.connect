@@ -38,9 +38,21 @@ struct MacFamilyView: View {
 
     @State private var requests: [JoinRequestDTO] = []
     @State private var inviteCode: String?
+    @State private var confirmRotate = false
     @State private var busy = false
     @State private var errorText: String?
     @State private var resetting: MemberDTO?
+    /// The owner's moderation list, oldest first. Stays empty for a plain
+    /// member: `reload` returns early before it would ever be fetched.
+    @State private var reports: [ReportDTO] = []
+    @State private var resolvingReports: Set<Int64> = []
+    /// The member being reported from the roster, if any.
+    @State private var reportingMember: MemberEntity?
+    /// The stepper's own cap while the debounced write is in flight; nil
+    /// whenever the server's answer is the one to trust.
+    @State private var capDraft: Int?
+    /// The pending cap write, cancelled and replaced on every tap.
+    @State private var capCommit: Task<Void, Never>?
     /// The member whose birthday the owner is editing; nil while closed.
     @State private var editingBirthday: MemberDTO?
 
@@ -52,6 +64,9 @@ struct MacFamilyView: View {
                 if session.isOwner {
                     inviteSection
                     if !requests.isEmpty { requestsSection }
+                    reportsSection
+                    policySection
+                    capSection
                     if let family = session.family {
                         // The same two sections the phone shows, from the
                         // same file — a setting changed on one device has
@@ -80,7 +95,16 @@ struct MacFamilyView: View {
             .padding(12)
         }
         .frame(width: 520, height: 520)
+        // Esc closes the sheet too; Return was the only key bound.
+        .onExitCommand { dismiss() }
         .task { await reload() }
+        .sheet(item: $reportingMember) { member in
+            ReportSheet(
+                target: ReportTarget(
+                    senderID: member.userID, senderName: member.displayName, messageID: nil),
+                onSubmit: { reason in report(member, reason: reason) },
+                onCancel: { reportingMember = nil })
+        }
         .sheet(item: $resetting) { member in
             ResetPasswordView(member: member)
                 .frame(width: 420)
@@ -104,6 +128,7 @@ struct MacFamilyView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.family?.name ?? String(localized: "Family"))
                     .font(.title3.weight(.semibold))
+                    .lineLimit(2)
                 Text("\(members.count) members")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -126,12 +151,241 @@ struct MacFamilyView: View {
                     NSPasteboard.general.setString(inviteCode, forType: .string)
                 }
                 .disabled(inviteCode == nil)
-                Button("Rotate") { rotate() }
+                // Asks first, as iOS does: one click next to Copy
+                // invalidated the code every member had been given.
+                Button("Rotate") { confirmRotate = true }
                     .disabled(busy)
+                    .confirmationDialog(
+                        "Rotate the invite code?",
+                        isPresented: $confirmRotate,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Rotate Code", role: .destructive) { rotate() }
+                    } message: {
+                        Text("Rotating invalidates the current code immediately.")
+                    }
             }
             Text("Rotating invalidates the current code immediately.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Who may join, and how many. Net-new on the Mac: this window has
+    /// shown the invite code since it was written but never what the code
+    /// DOES, so an owner working from a desk could hand out a code and had
+    /// no way to say who it let in — or to shut the door.
+    private var policySection: some View {
+        Section("Join policy") {
+            Picker("New members", selection: policyBinding) {
+                Text("Join immediately").tag("open")
+                Text("Need approval").tag("approval")
+                Text("Nobody").tag("closed")
+            }
+            Text(policyFooter)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var policyBinding: Binding<String> {
+        Binding(
+            get: { session.family?.joinPolicy ?? "open" },
+            set: { policy in
+                guard policy != session.family?.joinPolicy else { return }
+                run {
+                    let updated = try await coordinator.api.setJoinPolicy(policy)
+                    await MainActor.run { session.applyFamily(merged(updated)) }
+                }
+            })
+    }
+
+    /// One line per policy — "Nobody" needs the two things the others do
+    /// not: the code stops working, and the requests already waiting are
+    /// untouched (docs/protocol.md,
+    /// `POST /families/join-requests/{id}/approve`).
+    private var policyFooter: LocalizedStringKey {
+        switch session.family?.joinPolicy {
+        case "approval": "With approval, join requests wait here until you approve them."
+        case "closed": "The invite code stops working — nobody new can join. Requests already waiting are unaffected, and you can still approve them."
+        default: "Anyone with the invite code joins straight away."
+        }
+    }
+
+    @ViewBuilder
+    private var capSection: some View {
+        if let ceiling = session.maxFamilyMembers {
+            Section("Member limit") {
+                Toggle("Limit members", isOn: capEnabledBinding(ceiling: ceiling))
+                if let cap = draftCap {
+                    Stepper(value: capBinding(ceiling: ceiling), in: 1...ceiling) {
+                        LabeledContent("Most members", value: cap.formatted())
+                    }
+                }
+                Text(capFooter(ceiling: ceiling))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var draftCap: Int? { capDraft ?? session.family?.maxMembers }
+
+    private func capEnabledBinding(ceiling: Int) -> Binding<Bool> {
+        Binding(
+            get: { draftCap != nil },
+            set: { on in
+                // Turning it on freezes the family where it stands. A cap
+                // at or below the current size is legal and acts as a
+                // freeze rather than being refused (docs/protocol.md,
+                // `PATCH /families/mine`).
+                let seed = MemberCap.seed(memberCount: members.count, ceiling: ceiling)
+                capDraft = on ? seed : nil
+                commitCap(on ? seed : nil)
+            })
+    }
+
+    private func capBinding(ceiling: Int) -> Binding<Int> {
+        Binding(
+            get: { draftCap ?? MemberCap.seed(memberCount: members.count, ceiling: ceiling) },
+            set: { value in
+                let clamped = MemberCap.clamp(value, ceiling: ceiling)
+                capDraft = clamped
+                commitCap(clamped)
+            })
+    }
+
+    /// One PATCH at the end of a stepper drag, not one per tap.
+    private func commitCap(_ cap: Int?) {
+        capCommit?.cancel()
+        capCommit = Task {
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            do {
+                let updated = try await coordinator.api.setMemberCap(cap)
+                session.applyFamily(merged(updated))
+                capDraft = nil
+            } catch {
+                capDraft = nil
+                errorText = String(localized: "Couldn't change the member limit. Try again.")
+            }
+        }
+    }
+
+    private func capFooter(ceiling: Int) -> LocalizedStringKey {
+        switch MemberCap.state(cap: draftCap, memberCount: members.count, ceiling: ceiling) {
+        case .openToCeiling(let ceiling):
+            "No limit of your own. This server allows up to \(ceiling) members in a family."
+        case .frozen(let count):
+            "\(count) members now. Nobody new can join until somebody leaves; no one is removed."
+        case .room(let count, let cap):
+            "\(count) of \(cap) seats used."
+        }
+    }
+
+    /// A PATCH answers without the invite code unless the caller is the
+    /// owner, so keep the one already held rather than blanking the field
+    /// this window draws.
+    private func merged(_ updated: FamilyDTO) -> FamilyDTO {
+        FamilyDTO(
+            id: updated.id,
+            name: updated.name,
+            joinPolicy: updated.joinPolicy,
+            createdAt: updated.createdAt,
+            inviteCode: updated.inviteCode ?? session.family?.inviteCode,
+            language: updated.language,
+            aiHistory: updated.aiHistory,
+            aiVision: updated.aiVision,
+            aiHistoryPhotos: updated.aiHistoryPhotos,
+            maxMembers: updated.maxMembers)
+    }
+
+    /// The owner's moderation inbox, inline rather than behind a sheet: a
+    /// report carries a whole frozen message body, and a Mac sheet cannot
+    /// be resized to read one.
+    ///
+    /// Never shows who blocked whom. Blocking and reporting are
+    /// independent, and a family owner is often a parent while the blocked
+    /// person is often in the same house — the exact case the silence
+    /// exists for (docs/protocol.md, "Reporting a member").
+    private var reportsSection: some View {
+        Section("Reports") {
+            // Drawn even when empty, and deliberately: an owner who has
+            // never received a report otherwise has no surface anywhere
+            // naming the inbox, and would not know the feature exists
+            // until the first one arrives.
+            if reports.isEmpty {
+                Text("Members can report a message or a person to you.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(reports) { report in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(ReportReason(rawValue: report.reason)?.label ?? ReportReason.other.label)
+                        .font(.headline)
+                    Text("\(report.reporter.displayName) reported \(report.reported.displayName)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    // Drawn ALWAYS when present, and never truncated: it is
+                    // frozen precisely because the author may edit the body
+                    // away and retention will sweep the message, and an
+                    // owner judging a message has to see all of it.
+                    if let excerpt = report.messageExcerpt, !excerpt.isEmpty {
+                        Text(excerpt)
+                            .font(.callout)
+                            .padding(6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                            .textSelection(.enabled)
+                    }
+                    HStack {
+                        Spacer()
+                        // Says nothing about what the owner DID: this
+                        // protocol has removing a member, resetting a
+                        // password and closing the family, not deleting
+                        // somebody else's message.
+                        Button("Mark as handled") { resolve(report) }
+                            .disabled(busy || resolvingReports.contains(report.id))
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func setBlocked(_ member: MemberEntity, blocked: Bool) {
+        Task {
+            let ok = blocked
+                ? await coordinator.block(userID: member.userID)
+                : await coordinator.unblock(userID: member.userID)
+            // Never optimistic: a block that failed silently would hide
+            // rows the reader does not know are hidden.
+            if !ok {
+                errorText = String(localized: "Couldn't change that right now. Try again.")
+            }
+        }
+    }
+
+    private func report(_ member: MemberEntity, reason: ReportReason) {
+        reportingMember = nil
+        Task {
+            // A PERSON, not a message: `messageID` is nil.
+            let ok = await coordinator.report(
+                reportedUserID: member.userID, reason: reason.rawValue, messageID: nil)
+            if !ok {
+                errorText = String(localized: "Couldn't send the report. Try again.")
+            }
+        }
+    }
+
+    private func resolve(_ report: ReportDTO) {
+        resolvingReports.insert(report.id)
+        run {
+            try await coordinator.api.resolveReport(id: report.id)
+            await MainActor.run {
+                reports.removeAll { $0.id == report.id }
+                resolvingReports.remove(report.id)
+            }
         }
     }
 
@@ -194,6 +448,33 @@ struct MacFamilyView: View {
                     }
                     if !member.isCurrentUser {
                         Button("Message") { openDirect(member) }
+                        // NOT owner tools, unlike everything below: the
+                        // whole point of these two is a member with no
+                        // other recourse, and the person they need them for
+                        // may BE the owner. Any member may block any other,
+                        // the owner included (docs/protocol.md, "Blocking a
+                        // member").
+                        //
+                        // On the roster as well as on a message, because a
+                        // member row is where somebody looks for what they
+                        // can do about a PERSON — and it is the only way to
+                        // report one without singling out a message.
+                        // A Menu rather than two buttons, matching the
+                        // message menu — and on a roster row it also keeps
+                        // the destructive action off the row itself, where
+                        // Message sits a few points away.
+                        Menu("Safety") {
+                            Button("Report…") { reportingMember = member }
+                            if coordinator.blockedUserIDs.contains(member.userID) {
+                                Button("Unblock") { setBlocked(member, blocked: false) }
+                            } else {
+                                Button("Block", role: .destructive) {
+                                    setBlocked(member, blocked: true)
+                                }
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
                     }
                     // Owner tools. The birthday editor is offered on
                     // EVERY row, the owner's own included, because the
@@ -235,6 +516,10 @@ struct MacFamilyView: View {
         }
         inviteCode = session.family?.inviteCode
         requests = (try? await coordinator.api.joinRequests()) ?? []
+        // Owner-only, like the requests above: a plain member never gets
+        // here (`reload` returns early for them), so the 403 is unreachable
+        // rather than swallowed.
+        reports = (try? await coordinator.api.reports()) ?? []
     }
 
     private func openDirect(_ member: MemberEntity) {
@@ -254,15 +539,30 @@ struct MacFamilyView: View {
         }
     }
 
+    /// Its own Task rather than `run`, which flattens every failure into
+    /// one sentence. Approval has a refusal worth naming: the cap is
+    /// re-checked here because the roster can fill between a request and
+    /// the decision, and the request stays PENDING when it does — a full
+    /// family is a temporary condition, not a decision (docs/protocol.md,
+    /// `POST /families/join-requests/{id}/approve`).
     private func decide(_ request: JoinRequestDTO, approve: Bool) {
-        run {
-            if approve {
-                _ = try await coordinator.api.approveJoinRequest(id: request.id)
-            } else {
-                try await coordinator.api.rejectJoinRequest(id: request.id)
+        busy = true
+        errorText = nil
+        Task {
+            defer { busy = false }
+            do {
+                if approve {
+                    _ = try await coordinator.api.approveJoinRequest(id: request.id)
+                } else {
+                    try await coordinator.api.rejectJoinRequest(id: request.id)
+                }
+                await coordinator.resync()
+                requests = (try? await coordinator.api.joinRequests()) ?? []
+            } catch APIError.conflict(let code, _) where code == "family_full" {
+                errorText = String(localized: "The family is full. Raise the member limit or wait for somebody to leave — the request is still waiting.", comment: "Error when approving a join request would exceed the family's member cap.")
+            } catch {
+                errorText = String(localized: "That didn't work. Try again.")
             }
-            await coordinator.resync()
-            requests = (try? await coordinator.api.joinRequests()) ?? []
         }
     }
 

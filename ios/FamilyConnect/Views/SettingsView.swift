@@ -30,7 +30,14 @@ final class SettingsModel {
     var confirmLeave = false
     var confirmLogout = false
     var showsStatistics = false
-    var ownerBlockedAlert = false
+    /// Who would inherit if the owner left right now — a PREDICTION, and
+    /// only ever read straight after a fresh `GET /families/mine`. Any
+    /// join or leave changes the answer and none of them raises a frame
+    /// for it (docs/protocol.md, `GET /families/mine`).
+    var nextOwnerUserID: Int64?
+    /// Who the family actually went to, once it has gone. Shown before
+    /// this screen closes.
+    var handedOverTo: String?
     var errorText: String?
 
     func load(api: APIClient) async {
@@ -40,6 +47,7 @@ final class SettingsModel {
             let mine = try await api.myFamily()
             family = mine.family
             members = mine.members
+            nextOwnerUserID = mine.nextOwnerUserID
         } catch {
             // Non-fatal: the cached session family still renders.
         }
@@ -76,6 +84,7 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
             }
             .sheet(isPresented: $changingPassword) {
@@ -100,7 +109,20 @@ struct SettingsView: View {
             ) {
                 Button("Leave Family", role: .destructive) { leave() }
             } message: {
-                Text("You'll lose access to the family chat and your direct chats. Your history returns if you rejoin.")
+                Text(leaveMessage)
+            }
+            // A leave dialog open when ownership changes is stale in both
+            // halves: who inherits, and what leaving costs. Take it down,
+            // re-read, and put it back rather than letting somebody
+            // confirm against an answer that has moved
+            // (docs/protocol.md, `POST /families/leave`).
+            .onChange(of: session.familyOwnerGeneration) {
+                guard model.confirmLeave else { return }
+                model.confirmLeave = false
+                Task {
+                    await model.load(api: coordinator.api)
+                    model.confirmLeave = true
+                }
             }
             .confirmationDialog(
                 "Log out?",
@@ -113,10 +135,22 @@ struct SettingsView: View {
             } message: {
                 Text("Messages stay on the family server; this device forgets its session.")
             }
-            .alert("You're the owner", isPresented: Bindable(model).ownerBlockedAlert) {
-                Button("OK", role: .cancel) {}
+            // Replaces a "you're the owner, you can't leave" alert that
+            // could no longer happen: `owner_cannot_leave` is retired and
+            // no endpoint raises it. An owner who leaves hands the family
+            // on and is never refused (docs/protocol.md,
+            // `POST /families/leave`).
+            .alert(
+                "Ownership passed on",
+                isPresented: Binding(
+                    get: { model.handedOverTo != nil },
+                    set: { if !$0 { model.handedOverTo = nil } })
+            ) {
+                Button("OK", role: .cancel) { dismiss() }
             } message: {
-                Text("An owner can only leave once everyone else has left (the family is then deleted). Remove the other members first, or keep the family going.")
+                if let name = model.handedOverTo {
+                    Text("\(name) is now the owner of the family.")
+                }
             }
         }
     }
@@ -130,16 +164,20 @@ struct SettingsView: View {
     private var profileSection: some View {
         Section("Profile") {
             if let user = session.currentUser {
-                HStack(spacing: 12) {
+                // The identity row the Mac's settings got in its
+                // beautification pass: a larger face and a title3 name,
+                // so the screen opens on WHO this is rather than on a row.
+                HStack(spacing: 14) {
                     InitialsAvatar(
                         title: user.displayName,
                         userID: user.id,
                         avatarVersion: user.avatarVersion,
-                        size: 56)
+                        size: 64)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(user.displayName)
+                            .font(.title3.weight(.semibold))
                         Text("@\(user.username)")
-                            .font(.caption)
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -147,9 +185,17 @@ struct SettingsView: View {
                         ProgressView()
                     }
                 }
+                .padding(.vertical, 4)
                 // The picker hands back an item, not bytes; the transfer
                 // and the downscale happen in setAvatar.
-                PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+                // No `photoLibrary:` argument on purpose. Passing `.shared()`
+                // hands the picker the app's own library object, which makes
+                // the binary reference PHPhotoLibrary and would eventually
+                // want NSPhotoLibraryUsageDescription — for nothing, since
+                // nothing here touches PHAsset or an itemIdentifier. Without
+                // it the picker runs out of process and returns only the
+                // items the person chose, which is all setAvatar needs.
+                PhotosPicker(selection: $pickedPhoto, matching: .images) {
                     Label(
                         user.avatarVersion > 0 ? "Change Photo" : "Add Photo",
                         systemImage: "person.crop.circle.badge.plus")
@@ -265,7 +311,8 @@ struct SettingsView: View {
     private var familySection: some View {
         Section {
             if let family = model.family ?? session.family {
-                LabeledContent("Family", value: family.name)
+                // "Name", under a section already headed "Family".
+                LabeledContent("Name", value: family.name)
                 // `value:` is a String, not a key — localized by hand.
                 LabeledContent(
                     "Join policy",
@@ -275,6 +322,16 @@ struct SettingsView: View {
                         Text(code)
                             .font(.body.monospaced())
                             .textSelection(.enabled)
+                    }
+                    // An explicit Copy beside the selection: on an iPad
+                    // with a pointer, selecting text in a list row is a
+                    // guess; a menu item is not.
+                    .contextMenu {
+                        Button {
+                            UIPasteboard.general.string = code
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
                     }
                     let server = AppSettings.serverURL?.absoluteString ?? ""
                     ShareLink(
@@ -295,7 +352,15 @@ struct SettingsView: View {
                 }
             }
             Button("Leave Family", role: .destructive) {
-                model.confirmLeave = true
+                // A fresh read FIRST. The successor is a prediction that
+                // any join or leave changes, and no frame announces it —
+                // so naming one from the cached copy is how a dialog comes
+                // to promise the family to somebody who already left
+                // (docs/protocol.md, `GET /families/mine`).
+                Task {
+                    await model.load(api: coordinator.api)
+                    model.confirmLeave = true
+                }
             }
         } header: {
             Text("Family")
@@ -319,6 +384,17 @@ struct SettingsView: View {
                 .onChange(of: mapPreviewsEnabled) { _, newValue in
                     AppSettings.mapPreviewsEnabled = newValue
                 }
+            // Guideline 5.1.1(i) requires the privacy policy to be
+            // reachable from INSIDE the app, not only from the store
+            // listing. A `Link` rather than an in-app browser: the policy
+            // is a public page and the system browser is where a reader
+            // can check the address bar for themselves.
+            Link(destination: URL(string: "https://nettrash.me/appstore/familyconnect/privacy.html")!) {
+                Label("Privacy Policy", systemImage: "hand.raised")
+            }
+            Link(destination: URL(string: "https://nettrash.me/appstore/familyconnect/support.html")!) {
+                Label("Support", systemImage: "questionmark.circle")
+            }
         } header: {
             Text("Privacy")
         } footer: {
@@ -330,11 +406,23 @@ struct SettingsView: View {
     @ViewBuilder
     private var serverSection: some View {
         Section {
-            Button("Statistics") { model.showsStatistics = true }
+            Button {
+                model.showsStatistics = true
+            } label: {
+                Label("Statistics", systemImage: "chart.bar")
+            }
         }
 
         Section("Server") {
-            LabeledContent("Address", value: AppSettings.serverURL?.absoluteString ?? "—")
+            let address = AppSettings.serverURL?.absoluteString ?? "—"
+            LabeledContent("Address", value: address)
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = address
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                }
         }
     }
 
@@ -368,14 +456,41 @@ struct SettingsView: View {
         model.errorText = nil
         Task {
             do {
-                try await session.leaveFamily()
-                dismiss()
-            } catch APIError.conflict(let code, _) where code == "owner_cannot_leave" {
-                model.ownerBlockedAlert = true
+                // The roster is captured HERE, before the call: leaving
+                // purges it, and the id the server answers with has to be
+                // resolved against the names this client still holds.
+                let roster = model.members
+                let name = try await session.leaveFamily { id in
+                    roster.first { $0.id == id }?.displayName
+                }
+                // Say who it went to, and close on the OK. Nothing to say
+                // when nobody inherited — an ordinary member leaving, or
+                // the last one, who took the family with them.
+                if let name {
+                    model.handedOverTo = name
+                } else {
+                    dismiss()
+                }
             } catch {
                 model.errorText = String(localized: "Couldn't leave right now. Try again.")
             }
         }
+    }
+
+    /// What leaving costs, which is a different sentence for each of the
+    /// three people who can read it.
+    private var leaveMessage: LocalizedStringKey {
+        let base: LocalizedStringKey = "You'll lose access to the family chat and your direct chats. Your history returns if you rejoin."
+        guard session.isOwner else { return base }
+        guard let successorID = model.nextOwnerUserID,
+              let successor = model.members.first(where: { $0.id == successorID })?.displayName
+        else {
+            // An owner with `next_owner_user_id` absent is the last member
+            // standing, and leaving takes the family with them. Nothing
+            // returns on a rejoin, because there is nothing to return to.
+            return "You're the only member left. Leaving deletes the family and everything in it."
+        }
+        return "\(successor) becomes the owner. You'll lose access to the family chat and your direct chats; your history returns if you rejoin."
     }
 }
 

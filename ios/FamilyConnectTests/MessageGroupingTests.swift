@@ -42,6 +42,69 @@ struct MessageGroupingTests {
             state: state)
     }
 
+    // MARK: - Hidden rows and run grouping
+
+    /// A hidden row draws no name, and the RUN GROUPING is unchanged: the
+    /// hidden bubble still counts as its sender's run, so the next visible
+    /// message from somebody else still gets its caption.
+    @Test("a hidden row draws no name and does not merge the runs around it")
+    func hiddenRowKeepsRunGrouping() {
+        let section = [
+            Self.snapshot(localID: "s:1", serverID: 1, senderID: 9, at: "2026-08-19T10:00:00Z"),
+            Self.snapshot(localID: "s:2", serverID: 2, senderID: 11, at: "2026-08-19T10:01:00Z"),
+            Self.snapshot(localID: "s:3", serverID: 3, senderID: 9, at: "2026-08-19T10:02:00Z"),
+        ]
+        let blocked: Set<Int64> = [11]
+        let shows = { (i: Int) in
+            MessagePresentation.showsSenderName(
+                at: i, in: section, isFamilyChat: true, currentUserID: 7,
+                blockedUserIDs: blocked)
+        }
+        #expect(shows(0), "first bubble of the section names its sender")
+        #expect(!shows(1), "a hidden row draws the placeholder and nothing else")
+        #expect(
+            shows(2),
+            "9 is named again: the hidden bubble still counted as 11's run, and treating it as absent would merge s:3 into s:1's run and drop the caption")
+    }
+
+    @Test("own messages are never hidden, even by a corrupt block list")
+    func ownMessagesAreNeverHidden() {
+        let mine = Self.snapshot(localID: "s:1", serverID: 1, senderID: 7, at: "2026-08-19T10:00:00Z")
+        #expect(
+            !MessagePresentation.isHiddenByBlock(mine, blockedUserIDs: [7], currentUserID: 7),
+            "blocking yourself is refused server-side; this is the belt and braces")
+    }
+
+    // MARK: - Reactions: the count never moves
+
+    /// The load-bearing asymmetry: a chip keeps its COUNT and the popover
+    /// drops the identity. A count that moved when you blocked somebody
+    /// would tell the blocked person they had been.
+    @Test("a blocked reactor keeps their count and loses their name")
+    func blockedReactorKeepsTheCount() {
+        let reactions = [
+            ReactionSnapshot(userID: 9, emoji: "❤️"),
+            ReactionSnapshot(userID: 11, emoji: "❤️"),
+            ReactionSnapshot(userID: 13, emoji: "❤️"),
+        ]
+        let chips = MessagePresentation.reactionChips(reactions, currentUserID: 7)
+        #expect(chips.count == 1)
+        #expect(chips[0].count == 3, "integers are not presence")
+
+        let names: [Int64: String] = [9: "Anna", 11: "Bob", 13: "Cara"]
+        let unfiltered = MessagePresentation.reactionDetails(
+            reactions, names: names, currentUserID: 7, blockedUserIDs: [])
+        #expect(unfiltered[0].names == ["Anna", "Bob", "Cara"])
+
+        let filtered = MessagePresentation.reactionDetails(
+            reactions, names: names, currentUserID: 7, blockedUserIDs: [11])
+        #expect(filtered[0].names == ["Anna", "Cara"], "the identity goes")
+        // And the chip is computed from the SAME list and is unchanged, so
+        // the popover deliberately names fewer people than the chip counts.
+        let chipsAgain = MessagePresentation.reactionChips(reactions, currentUserID: 7)
+        #expect(chipsAgain[0].count == 3, "the chip still reads 3")
+    }
+
     // MARK: - Day sections
 
     @Test("messages either side of midnight land in different sections")
@@ -91,7 +154,7 @@ struct MessageGroupingTests {
             Self.snapshot(localID: "s:5", serverID: 5, senderID: 11, at: "2026-08-19T08:04:00Z"),
         ]
         let shows = section.indices.map {
-            MessagePresentation.showsSenderName(at: $0, in: section, isFamilyChat: true, currentUserID: 7)
+            MessagePresentation.showsSenderName(at: $0, in: section, isFamilyChat: true, currentUserID: 7, blockedUserIDs: [])
         }
         #expect(shows == [true, false, true, false, true])
     }
@@ -103,7 +166,7 @@ struct MessageGroupingTests {
             Self.snapshot(localID: "s:2", serverID: 2, senderID: 7, at: "2026-08-19T08:01:00Z"),
         ]
         for index in section.indices {
-            #expect(!MessagePresentation.showsSenderName(at: index, in: section, isFamilyChat: false, currentUserID: 7))
+            #expect(!MessagePresentation.showsSenderName(at: index, in: section, isFamilyChat: false, currentUserID: 7, blockedUserIDs: []))
         }
     }
 
@@ -112,15 +175,28 @@ struct MessageGroupingTests {
     @Test("read = confirmed and covered by the others' marker")
     func readPredicate() {
         let confirmed = Self.snapshot(localID: "s:10", serverID: 10, senderID: 7, at: "2026-08-19T08:00:00Z")
-        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 10))
-        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 99))
-        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 9))
+        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 10, isFamilyChat: false))
+        #expect(MessagePresentation.isRead(confirmed, othersReadUpTo: 99, isFamilyChat: false))
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 9, isFamilyChat: false))
     }
 
     @Test("pending messages are never read (no serverID yet)")
     func pendingNeverRead() {
         let pending = Self.snapshot(localID: "c:x", serverID: nil, senderID: 7, at: "2026-08-19T08:00:00Z", state: .pending)
-        #expect(!MessagePresentation.isRead(pending, othersReadUpTo: .max))
+        #expect(!MessagePresentation.isRead(pending, othersReadUpTo: .max, isFamilyChat: false))
+    }
+
+    @Test("the family chat NEVER draws a seen tick, however far the marker ran")
+    func familyChatNeverRead() {
+        let confirmed = Self.snapshot(localID: "s:10", serverID: 10, senderID: 7, at: "2026-08-19T08:00:00Z")
+        // The direct-chat answers from `readPredicate`, asked again with the
+        // one argument changed: every one of them flips to false. A `read`
+        // frame is roster data in a family chat and no bubble draws it
+        // (docs/protocol.md, "Frames"), because `othersReadUpTo` is a max
+        // over N members and would quietly stop counting a blocked one.
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 10, isFamilyChat: true))
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: 99, isFamilyChat: true))
+        #expect(!MessagePresentation.isRead(confirmed, othersReadUpTo: .max, isFamilyChat: true))
     }
 
     // MARK: - Reaction chips
@@ -208,7 +284,7 @@ struct MessageGroupingTests {
             ReactionSnapshot(userID: 12, emoji: "❤️"),
         ]
         let names: [Int64: String] = [9: "Anna", 11: "Ben", 12: "Kim"]
-        let details = MessagePresentation.reactionDetails(reactions, names: names, currentUserID: 7)
+        let details = MessagePresentation.reactionDetails(reactions, names: names, currentUserID: 7, blockedUserIDs: [])
         #expect(details == [
             ReactionDetail(emoji: "❤️", names: ["Anna", "Kim"], leadUserID: 9),
             ReactionDetail(emoji: "👍", names: ["Ben"], leadUserID: 11),
@@ -224,7 +300,7 @@ struct MessageGroupingTests {
             ReactionSnapshot(userID: 4, emoji: "❤️"),
         ]
         let chips = MessagePresentation.reactionChips(reactions, currentUserID: 2)
-        let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 2)
+        let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 2, blockedUserIDs: [])
         #expect(details.map(\.emoji) == chips.map(\.emoji))
     }
 
@@ -236,7 +312,7 @@ struct MessageGroupingTests {
         ]
         reactions.insert(ReactionSnapshot(userID: 7, emoji: "❤️"), at: position)
         let details = MessagePresentation.reactionDetails(
-            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7)
+            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7, blockedUserIDs: [])
         // "You" leads the names, so my own id leads the row.
         #expect(details == [
             ReactionDetail(emoji: "❤️", names: ["You", "Anna", "Ben"], leadUserID: 7),
@@ -251,7 +327,7 @@ struct MessageGroupingTests {
             ReactionSnapshot(userID: 11, emoji: "😂"),
         ]
         let details = MessagePresentation.reactionDetails(
-            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7)
+            reactions, names: [9: "Anna", 11: "Ben"], currentUserID: 7, blockedUserIDs: [])
         #expect(details == [
             ReactionDetail(emoji: "👍", names: ["Anna"], leadUserID: 9),
             ReactionDetail(emoji: "😂", names: ["You", "Ben"], leadUserID: 7),
@@ -261,12 +337,12 @@ struct MessageGroupingTests {
     @Test("a reactor missing from the member list falls back to Someone")
     func reactionDetailsUnknownReactor() {
         let reactions = [ReactionSnapshot(userID: 99, emoji: "👍")]
-        let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 7)
+        let details = MessagePresentation.reactionDetails(reactions, names: [:], currentUserID: 7, blockedUserIDs: [])
         #expect(details == [ReactionDetail(emoji: "👍", names: ["Someone"], leadUserID: 99)])
     }
 
     @Test("no reactions yield no details")
     func reactionDetailsEmpty() {
-        #expect(MessagePresentation.reactionDetails([], names: [:], currentUserID: 7).isEmpty)
+        #expect(MessagePresentation.reactionDetails([], names: [:], currentUserID: 7, blockedUserIDs: []).isEmpty)
     }
 }

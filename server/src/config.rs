@@ -6,6 +6,15 @@
 //! startup and fails fast with a precise message rather than letting a bad
 //! value surface later as a confusing runtime error (e.g. an idle timeout
 //! shorter than the ping interval would silently kill every socket).
+//!
+//! Unknown keys are IGNORED everywhere except under `[ai]` and its two
+//! sub-tables, where they fail the load by name (see
+//! [`reject_unknown_ai_keys`]). The asymmetry is deliberate: a mistyped
+//! `[limits]` key costs a default, while a mistyped — or misplaced — key
+//! under `[ai.*]` changes what leaves this server for a third party, and
+//! `contextual = false` written under `[ai.vision]` instead of
+//! `[ai.images]` is an opt-out that silently never happened. That is the
+//! worst outcome a config file can have, and it is worth a refused start.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -40,6 +49,49 @@ pub struct Config {
 
     #[serde(default)]
     pub calls: CallsConfig,
+
+    #[serde(default)]
+    pub families: FamiliesConfig,
+}
+
+/// `[families]` — who may start a family here (docs/protocol.md, "Starting
+/// a family").
+///
+/// The product is one family on a server of its own, so a server run for
+/// one family is free to close its door to new ones. With `registration`
+/// false, `POST /families` answers `family_registration_disabled` and
+/// `GET /me` reports `family_registration_enabled: false`, on which the
+/// apps replace "Create a family" with directions to run one's own server.
+/// Joining the families already here, and registering an account to do
+/// so, are untouched.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FamiliesConfig {
+    /// `false` closes this server to NEW families. On by default: a fresh
+    /// server with nobody on it yet has to let its first family in.
+    #[serde(default = "default_family_registration")]
+    pub registration: bool,
+
+    /// How many days an account may go WITHOUT a family before the sweep
+    /// scrubs it, exactly as `POST /me/delete` would (docs/protocol.md,
+    /// "Accounts without a family"). Somebody who registers and never
+    /// joins would otherwise stay on the server for good. Measured from
+    /// registration, or from the moment they last left a family; an
+    /// account with a join request still pending is never touched, nor is
+    /// the assistant's. 7 by default.
+    ///
+    /// **0 turns the sweep off** — "off" is a state rather than a very
+    /// large number, the way `limits.retention_days` spells it.
+    #[serde(default = "default_familyless_account_ttl_days")]
+    pub familyless_account_ttl_days: i64,
+}
+
+impl Default for FamiliesConfig {
+    fn default() -> Self {
+        Self {
+            registration: default_family_registration(),
+            familyless_account_ttl_days: default_familyless_account_ttl_days(),
+        }
+    }
 }
 
 /// `[calls]` — peer-to-peer voice calls (docs/protocol.md, "Voice calls").
@@ -163,9 +215,16 @@ pub struct AiConfig {
     #[serde(default)]
     pub model: String,
 
-    /// `api-key` header. Never logged, never sent to a client.
+    /// The key itself. Never logged, never sent to a client. How it is
+    /// PRESENTED is [`AiConfig::auth`]'s business.
     #[serde(default)]
     pub api_key: String,
+
+    /// How the key is presented: `"api-key"` (the default, and what classic
+    /// Azure OpenAI takes) or `"bearer"`. Inherited by both sub-sections
+    /// unless they say otherwise.
+    #[serde(default)]
+    pub auth: AuthScheme,
 
     /// Azure's dated API version. Pinned rather than "latest": a silently
     /// changing contract is not something a family server should discover
@@ -191,6 +250,166 @@ pub struct AiConfig {
     /// What the chat is called in the list.
     #[serde(default = "default_ai_title")]
     pub title: String,
+
+    /// `[ai.vision]` — the deployment that can LOOK at a photograph
+    /// (protocol.md, "Pictures"). Absent means the assistant has no eyes:
+    /// a picture a member attaches is a `[photo]` marker and nothing more,
+    /// which is also the default.
+    #[serde(default)]
+    pub vision: AiDeployment,
+
+    /// `[ai.images]` — the deployment that MAKES one, reached by `/draw`.
+    /// Absent means the assistant has no hands and clients are told not to
+    /// offer the affordance.
+    #[serde(default)]
+    pub images: AiImagesConfig,
+}
+
+/// How the key is presented to the provider.
+///
+/// Azure OpenAI takes an `api-key` header. The Foundry model surface — Black
+/// Forest Labs FLUX lives there, under `/providers/blackforestlabs/…` — takes
+/// `Authorization: Bearer <key>` instead, and the SAME key opens both.
+///
+/// CONFIGURED, never inferred from the URL. A scheme that switches itself on
+/// a hostname is a 401 nobody can explain six months later: the config file
+/// would say one thing, the request another, and nothing in between would
+/// admit to choosing. Written out, "which header carried the key?" has an
+/// answer you can read off the file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthScheme {
+    /// `api-key: <key>`. THE DEFAULT, so every config written before this
+    /// field existed sends the byte-identical request it always did.
+    #[default]
+    #[serde(alias = "api_key", alias = "apikey")]
+    ApiKey,
+    /// `Authorization: Bearer <key>`.
+    Bearer,
+}
+
+/// A second deployment on the same provider: only what DIFFERS from `[ai]`.
+///
+/// Every field falls back to the `[ai]` section when it is empty, because in
+/// practice the three deployments a family server talks to are three
+/// deployments on ONE resource — the same host, the same key, the same dated
+/// api-version, and only the name changes. Making an operator paste the key
+/// three times is three chances to paste two of them right.
+///
+/// `deployment` (or an `endpoint` of its own) is what switches the
+/// capability ON. Neither set means the capability does not exist on this
+/// server, which is what `GET /families/mine` reports to clients as
+/// `assistant.vision` / `assistant.images`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AiDeployment {
+    /// Overrides `[ai] endpoint`. Set it when this model answers somewhere
+    /// else entirely — a Foundry target URI pasted whole, for instance.
+    #[serde(default)]
+    pub endpoint: String,
+    /// The DEPLOYMENT name, which is what routes the request. Setting this
+    /// (or `endpoint`) is what turns the capability on.
+    #[serde(default)]
+    pub deployment: String,
+    /// The model behind it, recorded with usage rather than sent.
+    #[serde(default)]
+    pub model: String,
+    /// Overrides `[ai] api_key`.
+    #[serde(default)]
+    pub api_key: String,
+    /// Overrides `[ai] auth` — `"api-key"` or `"bearer"`. Absent (the
+    /// default) inherits, like every other field here, because the usual
+    /// case is one resource whose two surfaces want two different headers
+    /// and only ONE of them has to say so.
+    #[serde(default)]
+    pub auth: Option<AuthScheme>,
+    /// Overrides `[ai] api_version`.
+    #[serde(default)]
+    pub api_version: String,
+}
+
+/// `[ai.images]` — a deployment plus the knobs an images endpoint has that a
+/// chat one does not.
+///
+/// They exist because the images surface is the one place this server cannot
+/// verify the contract from here: an operator points it at whatever their
+/// portal gave them, and a body that model rejects comes back as an opaque
+/// 400. So the fields that vary between image models are CONFIGURABLE and
+/// every one of them is omitted from the request when it is left empty,
+/// which is the shape that works everywhere — and it is that omission which
+/// lets one deployment ignore the very field another requires.
+///
+/// The picture size is the sharp example. The OpenAI images contract spells
+/// it `size: "1024x1024"`; FLUX on Azure Foundry wants `width` and `height`
+/// as separate integers and knows nothing of `size`. Both are here, both
+/// default the way the deployment that needs them expects, and a config sets
+/// whichever pair its model reads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AiImagesConfig {
+    #[serde(flatten)]
+    pub deployment: AiDeployment,
+
+    /// `size` in the request body — `"1024x1024"` and so on. Empty omits
+    /// the field, which lets the deployment choose its own default — and is
+    /// what a `width`/`height` deployment wants, since it would answer 400
+    /// to a `size` it does not implement.
+    #[serde(default = "default_ai_image_size")]
+    pub size: String,
+
+    /// `width` in the request body, as an INTEGER, for the deployments that
+    /// take the two dimensions apart rather than as one `"WxH"` string.
+    /// `0` — the default — omits it.
+    #[serde(default)]
+    pub width: u32,
+
+    /// `height`, under the same rule as [`AiImagesConfig::width`].
+    #[serde(default)]
+    pub height: u32,
+
+    /// `response_format`. `"b64_json"` asks for the bytes inline;
+    /// `"url"` asks for a link the server then fetches. EMPTY BY DEFAULT and
+    /// omitted from the request when empty, because some image deployments
+    /// answer 400 to a field they do not implement — and both answers are
+    /// parsed whichever way they arrive, so asking for neither is safe.
+    #[serde(default)]
+    pub response_format: String,
+
+    /// The most bytes one generated picture may be. A ceiling the SERVER
+    /// owns, like `max_tokens`: it bounds what a provider can write onto
+    /// the family's disk, and it bounds the download when a deployment
+    /// answers with a URL instead of bytes.
+    #[serde(default = "default_ai_image_max_bytes")]
+    pub max_bytes: usize,
+
+    /// Whether the TEXT model may ask for a picture itself, by calling the
+    /// `draw_picture` tool the server declares on every ordinary question
+    /// once this section is configured (protocol.md, "Drawing without being
+    /// told to"). `true` by default — naming an images deployment is what
+    /// turns it on. `false` is the operator's way out for a text deployment
+    /// that answers 400 to a `tools` key; `/draw` keeps working either way,
+    /// because it never goes through the text model at all.
+    #[serde(default = "default_ai_images_contextual")]
+    pub contextual: bool,
+}
+
+/// One resolved provider call: where to POST it, which key opens it, what to
+/// name in the body, and the cap the server owns.
+///
+/// Its own type because there are now three of them and they differ in every
+/// field. Building it is the only place the endpoint/deployment/key of a
+/// request are decided, so "which model saw this?" has exactly one answer to
+/// read (protocol.md, "The three deployments").
+#[derive(Debug, Clone)]
+pub struct ModelRoute {
+    pub url: String,
+    pub api_key: String,
+    /// Which header carries `api_key`. Resolved here for the same reason the
+    /// URL is: one place decides, and `ai.rs` only obeys.
+    pub auth: AuthScheme,
+    /// The `model` field of the request body — on Azure the DEPLOYMENT name,
+    /// which is what the v1 surface routes on and what the classic surface
+    /// ignores.
+    pub model: String,
+    pub max_tokens: u32,
 }
 
 /// Hand-written rather than derived, so `AiConfig::default()` agrees with
@@ -210,13 +429,53 @@ impl Default for AiConfig {
             deployment: String::new(),
             model: String::new(),
             api_key: String::new(),
+            auth: AuthScheme::default(),
             api_version: default_ai_api_version(),
             system_prompt: default_ai_system_prompt(),
             max_tokens: default_ai_max_tokens(),
             history_messages: default_ai_history_messages(),
             title: default_ai_title(),
+            vision: AiDeployment::default(),
+            images: AiImagesConfig::default(),
         }
     }
+}
+
+/// Hand-written for the same reason [`AiConfig`]'s is: a derived `Default`
+/// would give an empty `size` and a zero `max_bytes`, neither of which serde
+/// would ever produce for a half-written `[ai.images]` section.
+impl Default for AiImagesConfig {
+    fn default() -> Self {
+        Self {
+            deployment: AiDeployment::default(),
+            size: default_ai_image_size(),
+            // Zero, which is "say nothing about it": `size` above already
+            // carries the default shape, and a deployment that reads
+            // `width`/`height` is one an operator has to name anyway.
+            width: 0,
+            height: 0,
+            response_format: String::new(),
+            max_bytes: default_ai_image_max_bytes(),
+            contextual: default_ai_images_contextual(),
+        }
+    }
+}
+
+/// On. A server that can draw offers the model the tool; the switch exists
+/// for the deployment that cannot take one, not as a second thing to turn on.
+fn default_ai_images_contextual() -> bool {
+    true
+}
+
+fn default_ai_image_size() -> String {
+    "1024x1024".to_string()
+}
+
+/// 16 MiB. Far above any square PNG an image model returns and far below
+/// `limits.max_attachment_bytes`, so it is a guard against a runaway
+/// response rather than a limit a family will ever meet.
+fn default_ai_image_max_bytes() -> usize {
+    16 * 1024 * 1024
 }
 
 fn default_ai_api_version() -> String {
@@ -267,30 +526,11 @@ impl AiConfig {
     /// guessed. `api-version` is still appended when the pasted URL has no
     /// query of its own.
     pub fn completions_url(&self) -> String {
-        let base = self.endpoint.trim_end_matches('/');
-
-        // Already a completions URL: use it as given.
-        if base.contains("/chat/completions") {
-            if base.contains('?') || self.api_version.trim().is_empty() {
-                return base.to_string();
-            }
-            return format!("{base}?api-version={}", self.api_version);
-        }
-
-        // Azure's v1 (OpenAI-compatible) surface: the deployment does NOT
-        // go in the path — it goes in the body as `model` — and there is no
-        // `api-version` query. Splicing the classic
-        // `/openai/deployments/{name}/…` onto one of these produces a
-        // doubled `/openai` and a bare 404 that says only "Resource not
-        // found".
-        if base.ends_with("/openai/v1") {
-            return format!("{base}/chat/completions");
-        }
-
-        // Classic Azure OpenAI: deployment in the path, dated api-version.
-        format!(
-            "{base}/openai/deployments/{}/chat/completions?api-version={}",
-            self.deployment, self.api_version
+        azure_url(
+            &self.endpoint,
+            &self.deployment,
+            &self.api_version,
+            "chat/completions",
         )
     }
 
@@ -309,6 +549,203 @@ impl AiConfig {
             self.deployment.trim()
         }
     }
+
+    /// The TEXT deployment: `[ai]` itself, unchanged from before there were
+    /// three of them. A server that configures nothing else behaves exactly
+    /// as it always did, which is what makes pictures additive.
+    pub fn text_route(&self) -> ModelRoute {
+        ModelRoute {
+            url: self.completions_url(),
+            api_key: self.api_key.trim().to_string(),
+            auth: self.auth,
+            model: self.request_model().to_string(),
+            max_tokens: self.max_tokens,
+        }
+    }
+
+    /// The deployment that can look at a photograph, or `None` when the
+    /// operator configured none.
+    ///
+    /// `None` is not an error anywhere: it means a picture attached to a
+    /// question stays a `[photo]` marker, which is what the assistant is
+    /// then told (protocol.md, "Pictures").
+    pub fn vision_route(&self) -> Option<ModelRoute> {
+        if !self.is_usable() || !self.vision.is_configured() {
+            return None;
+        }
+        Some(ModelRoute {
+            url: azure_url(
+                self.vision.endpoint_or(&self.endpoint),
+                self.vision.deployment_or(&self.deployment),
+                self.vision.api_version_or(&self.api_version),
+                "chat/completions",
+            ),
+            api_key: self.vision.api_key_or(&self.api_key).trim().to_string(),
+            auth: self.vision.auth_or(self.auth),
+            model: self.vision.request_model_or(&self.deployment).to_string(),
+            // The same cap the text deployment obeys: a description of a
+            // photograph is still an answer in a family chat.
+            max_tokens: self.max_tokens,
+        })
+    }
+
+    /// The deployment that MAKES a picture, or `None`.
+    ///
+    /// `max_tokens` is meaningless to an images endpoint and is carried
+    /// anyway rather than being made an `Option`: one route type with a
+    /// field an image call ignores is simpler to read than two types, and
+    /// [`AiImagesConfig::max_bytes`] is the cap that actually binds here.
+    pub fn images_route(&self) -> Option<ModelRoute> {
+        let images = &self.images;
+        if !self.is_usable() || !images.deployment.is_configured() {
+            return None;
+        }
+        Some(ModelRoute {
+            url: azure_url(
+                images.deployment.endpoint_or(&self.endpoint),
+                images.deployment.deployment_or(&self.deployment),
+                images.deployment.api_version_or(&self.api_version),
+                "images/generations",
+            ),
+            api_key: images
+                .deployment
+                .api_key_or(&self.api_key)
+                .trim()
+                .to_string(),
+            auth: images.deployment.auth_or(self.auth),
+            model: images
+                .deployment
+                .request_model_or(&self.deployment)
+                .to_string(),
+            max_tokens: self.max_tokens,
+        })
+    }
+
+    /// The images deployment for a picture the TEXT model asks for by
+    /// calling `draw_picture`, or `None` when this server cannot draw or the
+    /// operator has turned that path off (`[ai.images] contextual`).
+    ///
+    /// `/draw` does not go through this: it asks [`AiConfig::images_route`]
+    /// directly, and keeps working when this answers `None`. What this
+    /// decides is whether a text request DECLARES the tool at all — and a
+    /// request that declares none is byte for byte the request it always was
+    /// (protocol.md, "Drawing without being told to").
+    pub fn contextual_images_route(&self) -> Option<ModelRoute> {
+        if !self.images.contextual {
+            return None;
+        }
+        self.images_route()
+    }
+
+    /// Whether this server can look at a picture at all — the answer sent to
+    /// clients as `assistant.vision`.
+    pub fn vision_usable(&self) -> bool {
+        self.vision_route().is_some()
+    }
+
+    /// Whether it can make one — sent as `assistant.images`.
+    pub fn images_usable(&self) -> bool {
+        self.images_route().is_some()
+    }
+}
+
+impl AiDeployment {
+    /// Configured at all: the operator named a deployment, or an endpoint of
+    /// its own. Either is enough — a pasted Foundry target URI needs no
+    /// deployment name, and a deployment on the same resource needs no
+    /// endpoint.
+    pub fn is_configured(&self) -> bool {
+        !self.deployment.trim().is_empty() || !self.endpoint.trim().is_empty()
+    }
+
+    fn endpoint_or<'a>(&'a self, parent: &'a str) -> &'a str {
+        pick(&self.endpoint, parent)
+    }
+
+    fn deployment_or<'a>(&'a self, parent: &'a str) -> &'a str {
+        pick(&self.deployment, parent)
+    }
+
+    fn api_key_or<'a>(&'a self, parent: &'a str) -> &'a str {
+        pick(&self.api_key, parent)
+    }
+
+    fn api_version_or<'a>(&'a self, parent: &'a str) -> &'a str {
+        pick(&self.api_version, parent)
+    }
+
+    /// The `[ai]` scheme unless this sub-section named one of its own —
+    /// `pick`, for a field that cannot be "empty".
+    fn auth_or(&self, parent: AuthScheme) -> AuthScheme {
+        self.auth.unwrap_or(parent)
+    }
+
+    /// What goes in the body's `model` field for this deployment, under the
+    /// rule [`AiConfig::request_model`] states: the DEPLOYMENT name routes,
+    /// and `model` is only a record of what answered.
+    fn request_model_or<'a>(&'a self, parent_deployment: &'a str) -> &'a str {
+        let deployment = self.deployment_or(parent_deployment).trim();
+        if deployment.is_empty() {
+            self.model.trim()
+        } else {
+            deployment
+        }
+    }
+}
+
+/// The sub-section's value when it has one, else the `[ai]` section's.
+fn pick<'a>(own: &'a str, parent: &'a str) -> &'a str {
+    if own.trim().is_empty() { parent } else { own }
+}
+
+/// Build a provider URL for one of Azure's several endpoint shapes.
+///
+/// Shared by chat completions and image generations because the shapes are
+/// the SAME three shapes and only the last path segment differs — and
+/// because getting one of them right and the other wrong is the failure this
+/// whole function exists to prevent: a bare `404 Resource not found` that
+/// cannot say which part was wrong.
+///
+/// - an endpoint that CARRIES ITS OWN QUERY is a finished target URI and is
+///   used exactly as pasted. Nothing can be spliced onto one anyway: a
+///   query starts at the first `?`, so appending a path after it produces
+///   `…?api-version=preview/openai/deployments/…`, which is not a URL any
+///   endpoint has ever answered. This is the shape Foundry's own portal
+///   shows for a FLUX deployment —
+///   `…/providers/blackforestlabs/v1/flux-2-pro?api-version=preview`;
+/// - an endpoint that already names the operation — this `path`, or a
+///   `/providers/` segment, where the MODEL is the path and there is no
+///   operation segment to add — is likewise used as given, with
+///   `api-version` appended only because Azure requires one and this URL
+///   carries no query to hold it;
+/// - an endpoint ending in `/openai/v1` is Azure's OpenAI-COMPATIBLE
+///   surface: the deployment goes in the BODY, not the path, and there is no
+///   `api-version` at all. Splicing `/openai/deployments/…` onto one of
+///   these gives a doubled `/openai` and that same bare 404 — which is
+///   exactly what happened in production once already;
+/// - anything else is classic Azure OpenAI: deployment in the path, dated
+///   api-version in the query.
+fn azure_url(endpoint: &str, deployment: &str, api_version: &str, path: &str) -> String {
+    let base = endpoint.trim().trim_end_matches('/');
+
+    // Complete as given. Checked FIRST so it covers every shape below: a
+    // pasted URI answers for itself, whatever its path looks like.
+    if base.contains('?') {
+        return base.to_string();
+    }
+
+    if base.contains(&format!("/{path}")) || base.contains("/providers/") {
+        if api_version.trim().is_empty() {
+            return base.to_string();
+        }
+        return format!("{base}?api-version={api_version}");
+    }
+
+    if base.ends_with("/openai/v1") {
+        return format!("{base}/{path}");
+    }
+
+    format!("{base}/openai/deployments/{deployment}/{path}?api-version={api_version}")
 }
 
 /// `[storage]` — where attachment bytes live.
@@ -341,6 +778,19 @@ pub struct ServerConfig {
     /// terminates TLS and proxies to this address.
     #[serde(default = "default_bind")]
     pub bind: String,
+
+    /// How a member reaches the operator — an email address, a URL, a
+    /// sentence. Served to clients on `GET /me` as `support_contact` and
+    /// shown on the report screen.
+    ///
+    /// It exists because the family owner is the moderator, and the owner
+    /// is sometimes the problem: a report naming them never reaches them
+    /// (protocol.md, "Reporting a member"), so there has to be somewhere
+    /// else to go. `None` when unset, and the key is then absent from
+    /// `GET /me` rather than empty — a client draws no escalation line at
+    /// all rather than an address nobody reads.
+    #[serde(default)]
+    pub support_contact: Option<String>,
 }
 
 /// `[database]` — PostgreSQL connection parameters.
@@ -447,6 +897,20 @@ pub struct LimitsConfig {
     #[serde(default = "default_max_board_notes")]
     pub max_board_notes: i64,
 
+    /// The CEILING on what a family owner may set as their own
+    /// `max_members`, and the cap that binds at the join door for a family
+    /// that has set none. It is an operator's runaway guard, in the sense
+    /// `max_board_notes` is — NOT the number the apps show, which is the
+    /// family's own `max_members` (protocol.md, "Families").
+    ///
+    /// Lowering it never invalidates a family that is already larger, and
+    /// stored caps are deliberately NOT re-validated against it at boot: a
+    /// family whose cap was legal when it was set must stay patchable, or
+    /// an operator editing one line of config locks owners out of their own
+    /// settings screen.
+    #[serde(default = "default_max_family_members")]
+    pub max_family_members: i64,
+
     /// Page size for GET /chats/{id}/messages when the client sends none.
     #[serde(default = "default_default_page_size")]
     pub default_page_size: i64,
@@ -464,6 +928,30 @@ pub struct LimitsConfig {
     /// limit stays small for every JSON route.
     #[serde(default = "default_max_avatar_bytes")]
     pub max_avatar_bytes: usize,
+
+    /// Free space on the attachments filesystem that uploads may not eat
+    /// into, in bytes. 0 disables the check.
+    ///
+    /// This is a floor for the DATABASE, not a budget for attachments.
+    /// PostgreSQL usually shares the filesystem and handles a full disk far
+    /// less gracefully than a refused upload does — so uploads stop while
+    /// there is still room, and the family is told `storage_full` (507)
+    /// rather than the server falling over.
+    #[serde(default = "default_min_free_disk_bytes")]
+    pub min_free_disk_bytes: u64,
+
+    /// How many password hashes may run at once.
+    ///
+    /// `Argon2::default()` allocates 19 MiB per hash, and a bare
+    /// `#[tokio::main]` gives the blocking pool 512 threads — so an
+    /// unbounded login flood can ask for ~9.7 GiB and take the process out.
+    /// Both unauthenticated auth endpoints reach this (login deliberately
+    /// hashes even for an unknown username, to close a timing oracle), so
+    /// the bound is what stops a stranger choosing how much memory the
+    /// server allocates. Waiting requests queue rather than being refused
+    /// — arrival RATE is nginx's `limit_req` to control, not this.
+    #[serde(default = "default_max_password_hashes_in_flight")]
+    pub max_password_hashes_in_flight: usize,
 
     /// Outbound frames buffered per WebSocket before the connection is
     /// declared too slow and dropped.
@@ -648,6 +1136,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             bind: default_bind(),
+            support_contact: None,
         }
     }
 }
@@ -682,6 +1171,7 @@ impl Default for LimitsConfig {
             max_poll_options: default_max_poll_options(),
             max_poll_option_chars: default_max_poll_option_chars(),
             max_board_notes: default_max_board_notes(),
+            max_family_members: default_max_family_members(),
             max_attachment_bytes: default_max_attachment_bytes(),
             max_attachments_per_message: default_max_attachments_per_message(),
             max_preview_bytes: default_max_preview_bytes(),
@@ -691,6 +1181,8 @@ impl Default for LimitsConfig {
             max_page_size: default_max_page_size(),
             max_body_bytes: default_max_body_bytes(),
             max_avatar_bytes: default_max_avatar_bytes(),
+            min_free_disk_bytes: default_min_free_disk_bytes(),
+            max_password_hashes_in_flight: default_max_password_hashes_in_flight(),
             ws_send_queue: default_ws_send_queue(),
             ws_ping_interval_secs: default_ws_ping_interval_secs(),
             ws_idle_timeout_secs: default_ws_idle_timeout_secs(),
@@ -709,6 +1201,112 @@ impl Default for PushConfig {
     }
 }
 
+/// The keys `[ai]` itself takes — the fields of [`AiConfig`], by their
+/// TOML names, plus the two sub-tables. Held beside the struct rather than
+/// derived from it because serde offers no way to list a struct's fields,
+/// and `deny_unknown_fields` cannot be used on [`AiImagesConfig`] (serde
+/// refuses it beside `flatten`). The tests hold each list to its struct:
+/// every key here must deserialize, and the example file — which
+/// documents every key — must pass this check uncommented.
+const AI_KEYS: &[&str] = &[
+    "enabled",
+    "endpoint",
+    "deployment",
+    "model",
+    "api_key",
+    "auth",
+    "api_version",
+    "system_prompt",
+    "max_tokens",
+    "history_messages",
+    "title",
+    "vision",
+    "images",
+];
+
+/// The fields of [`AiDeployment`] — what `[ai.vision]` takes, and what
+/// `[ai.images]` takes in addition to [`AI_IMAGES_OWN_KEYS`].
+const AI_DEPLOYMENT_KEYS: &[&str] = &[
+    "endpoint",
+    "deployment",
+    "model",
+    "api_key",
+    "auth",
+    "api_version",
+];
+
+/// The fields [`AiImagesConfig`] adds beside its flattened deployment.
+const AI_IMAGES_OWN_KEYS: &[&str] = &[
+    "size",
+    "width",
+    "height",
+    "response_format",
+    "max_bytes",
+    "contextual",
+];
+
+/// Refuse a key the `[ai]` tables do not know, by name and by table.
+///
+/// serde ignores unknown fields, which is right for most of this file — a
+/// key from a newer server costs nothing on an older one — and wrong for
+/// the three tables that decide what leaves this server for a provider.
+/// `contextual = false` under `[ai.vision]` sets nothing, and the tool the
+/// operator meant to withdraw is declared on every question anyway. A key
+/// that belongs to a sibling table is named as such, because that is the
+/// mistake the layout invites: the two sub-tables read alike.
+///
+/// Reads the raw document a second time, as a plain table, rather than
+/// threading the check through serde: the typed parse has already
+/// succeeded by the time this runs, so the document is well-formed and
+/// the second parse cannot fail differently.
+fn reject_unknown_ai_keys(raw: &str) -> Result<()> {
+    let document: toml::Table = toml::from_str(raw).context("parsing TOML config")?;
+    let Some(ai) = document.get("ai").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    let images_keys: Vec<&str> = AI_DEPLOYMENT_KEYS
+        .iter()
+        .chain(AI_IMAGES_OWN_KEYS)
+        .copied()
+        .collect();
+    let tables: [(&str, Option<&toml::Table>, &[&str]); 3] = [
+        ("[ai]", Some(ai), AI_KEYS),
+        (
+            "[ai.vision]",
+            ai.get("vision").and_then(toml::Value::as_table),
+            AI_DEPLOYMENT_KEYS,
+        ),
+        (
+            "[ai.images]",
+            ai.get("images").and_then(toml::Value::as_table),
+            &images_keys,
+        ),
+    ];
+    for (name, table, known) in &tables {
+        let Some(table) = table else { continue };
+        for key in table.keys() {
+            if known.contains(&key.as_str()) {
+                continue;
+            }
+            let belongs_to: Vec<&str> = tables
+                .iter()
+                .filter(|(other, _, keys)| other != name && keys.contains(&key.as_str()))
+                .map(|(other, _, _)| *other)
+                .collect();
+            let hint = if belongs_to.is_empty() {
+                format!("the keys it takes are {}", known.join(", "))
+            } else {
+                format!("it belongs under {}", belongs_to.join(" or "))
+            };
+            anyhow::bail!(
+                "unknown key `{key}` under {name} — {hint}. Refusing to start rather than \
+                 ignore it: a misplaced key here changes what leaves this server."
+            );
+        }
+    }
+    Ok(())
+}
+
 impl Config {
     /// Read, parse, and validate a config file.
     pub fn load(path: &Path) -> Result<Self> {
@@ -720,6 +1318,7 @@ impl Config {
     /// Parse and validate from a TOML string (shared by `load` and tests).
     pub fn from_toml_str(raw: &str) -> Result<Self> {
         let cfg: Config = toml::from_str(raw).context("parsing TOML config")?;
+        reject_unknown_ai_keys(raw)?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -743,6 +1342,18 @@ impl Config {
         }
         if self.auth.session_ttl_days < 1 {
             anyhow::bail!("auth.session_ttl_days must be at least 1");
+        }
+        // Bounded above as well: the sweep binds it as a PostgreSQL `int`
+        // for `make_interval`, and a "practically never" such as
+        // 999999999999 would wrap — to a NEGATIVE count, which sweeps
+        // everybody at once. 0 is how "never" is spelled.
+        if !(0..=MAX_FAMILYLESS_ACCOUNT_TTL_DAYS)
+            .contains(&self.families.familyless_account_ttl_days)
+        {
+            anyhow::bail!(
+                "families.familyless_account_ttl_days must be 0 (off) or a number of days up \
+                 to {MAX_FAMILYLESS_ACCOUNT_TTL_DAYS} — for \"never\", write 0"
+            );
         }
         if self.auth.session_touch_interval_mins < 1 {
             anyhow::bail!("auth.session_touch_interval_mins must be at least 1");
@@ -778,6 +1389,15 @@ impl Config {
                 "limits.max_attachments_per_message must be at most 100 — attachment \
                  positions are stored as SMALLINT and clients lay albums out for ten"
             );
+        }
+        // One is the fewest a family can have and still have an owner:
+        // `create_family` makes its creator member #1. A ceiling of 0 is
+        // not a locked-down server, it is a server where `POST /families`
+        // answers `family_full` to everybody — a code that endpoint does
+        // not document — and where every `PATCH` of a cap is refused with
+        // "between 1 and 0".
+        if self.limits.max_family_members < 1 {
+            anyhow::bail!("limits.max_family_members must be at least 1");
         }
         if self.limits.default_page_size < 1 {
             anyhow::bail!("limits.default_page_size must be at least 1");
@@ -942,6 +1562,10 @@ fn default_max_board_notes() -> i64 {
     500
 }
 
+fn default_max_family_members() -> i64 {
+    50
+}
+
 fn default_default_page_size() -> i64 {
     50
 }
@@ -956,6 +1580,20 @@ fn default_max_body_bytes() -> usize {
 
 /// 256 KiB — comfortably above the ~512px square JPEG both clients
 /// upload, and far below anything worth storing in a family database.
+/// 2 GiB. Room for PostgreSQL to keep working — WAL, autovacuum, a base
+/// backup — after uploads have stopped. An operator on a large volume can
+/// raise it; 0 turns the check off.
+fn default_min_free_disk_bytes() -> u64 {
+    2 * 1024 * 1024 * 1024
+}
+
+/// Eight concurrent argon2 hashes is ~152 MiB at 19 MiB each — a bound a
+/// small VPS survives, and still enough concurrency that a family of
+/// twenty all signing in at once notices nothing.
+fn default_max_password_hashes_in_flight() -> usize {
+    8
+}
+
 fn default_max_avatar_bytes() -> usize {
     262_144
 }
@@ -979,6 +1617,18 @@ fn default_include_message_body() -> bool {
 fn default_calls_enabled() -> bool {
     true
 }
+
+fn default_family_registration() -> bool {
+    true
+}
+
+fn default_familyless_account_ttl_days() -> i64 {
+    7
+}
+
+/// A century. Above this the sweep's `int` bind could wrap, and an
+/// operator who means "never" has `0` for it.
+pub const MAX_FAMILYLESS_ACCOUNT_TTL_DAYS: i64 = 36_500;
 
 fn default_video_calls_enabled() -> bool {
     true
@@ -1008,6 +1658,48 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn family_registration_is_on_unless_the_operator_says_otherwise() {
+        let defaults = Config::from_toml_str("").expect("an empty file is a valid config");
+        assert!(
+            defaults.families.registration,
+            "a fresh server must let its first family in"
+        );
+        let closed = Config::from_toml_str("[families]\nregistration = false\n").expect("parses");
+        assert!(!closed.families.registration);
+    }
+
+    #[test]
+    fn familyless_accounts_are_swept_after_a_week_unless_the_operator_says_otherwise() {
+        let defaults = Config::from_toml_str("").expect("an empty file is a valid config");
+        assert_eq!(defaults.families.familyless_account_ttl_days, 7);
+        let off =
+            Config::from_toml_str("[families]\nfamilyless_account_ttl_days = 0\n").expect("parses");
+        assert_eq!(off.families.familyless_account_ttl_days, 0);
+        off.validate().expect("0 is off, and off is valid");
+        let month = Config::from_toml_str("[families]\nfamilyless_account_ttl_days = 30\n")
+            .expect("parses");
+        assert_eq!(month.families.familyless_account_ttl_days, 30);
+        // `from_toml_str` validates, so a negative grace never becomes a config.
+        let err = Config::from_toml_str("[families]\nfamilyless_account_ttl_days = -1\n")
+            .expect_err("a negative grace is not a grace");
+        assert!(
+            err.to_string().contains("familyless_account_ttl_days"),
+            "{err}"
+        );
+        // Nor does one the sweep's `int` bind would wrap: 0 is "never".
+        let err = Config::from_toml_str("[families]\nfamilyless_account_ttl_days = 999999999999\n")
+            .expect_err("a grace beyond a century is a typo for 0");
+        assert!(err.to_string().contains("write 0"), "{err}");
+        let century = Config::from_toml_str("[families]\nfamilyless_account_ttl_days = 36500\n")
+            .expect("the ceiling itself is allowed");
+        assert_eq!(century.families.familyless_account_ttl_days, 36_500);
+        assert!(
+            err.to_string().contains("familyless_account_ttl_days"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn the_checked_in_example_config_parses_and_validates() {
@@ -1084,6 +1776,139 @@ mod tests {
         );
         assert!(!cfg.ai.system_prompt.trim().is_empty());
         assert_eq!(cfg.ai.max_tokens, Config::default().ai.max_tokens);
+
+        // THE OPT-OUT SAMPLE IS IN THE TABLE THAT READS IT. The example
+        // used to show `contextual = true` above the `[ai.images]` header,
+        // i.e. under `[ai.vision]`, where uncommenting it set nothing and
+        // the tool stayed declared. Flip the documented line and the
+        // switch must actually move — and the example, uncommented, must
+        // carry no key the `[ai]` tables do not know (that is what
+        // `from_toml_str` succeeding above now proves).
+        assert!(
+            out.contains("\ncontextual = true\n"),
+            "the example documents the opt-out, uncommented: {out}"
+        );
+        assert!(cfg.ai.images.contextual, "the documented default is on");
+        let opted_out =
+            Config::from_toml_str(&out.replace("contextual = true", "contextual = false"))
+                .expect("still valid");
+        assert!(
+            !opted_out.ai.images.contextual,
+            "uncommenting the documented line where it is documented must turn it off"
+        );
+        assert!(opted_out.ai.contextual_images_route().is_none());
+        assert!(opted_out.ai.images_usable(), "`/draw` is untouched by it");
+    }
+
+    /// THE SILENT OPT-OUT. `contextual = false` under `[ai.vision]` used to
+    /// parse, set nothing, and leave the tool declared on every question.
+    /// It is refused now, by name, by table, and with the table it belongs
+    /// to — the file's own words back, as `the_auth_scheme_is_spelled_out`
+    /// does for a misspelt header.
+    #[test]
+    fn a_key_under_the_wrong_ai_table_fails_the_load_by_name() {
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str(
+                r#"
+[ai]
+enabled = true
+endpoint = "https://example.openai.azure.com"
+deployment = "text"
+api_key = "k"
+
+[ai.vision]
+deployment = "sees"
+contextual = false
+
+[ai.images]
+deployment = "draws"
+"#,
+            )
+            .unwrap_err()
+        );
+        assert!(err.contains("`contextual`"), "{err}");
+        assert!(err.contains("[ai.vision]"), "{err}");
+        assert!(err.contains("belongs under [ai.images]"), "{err}");
+
+        // A typo with no home anywhere lists what the table does take.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai.images]\ndeployment = \"draws\"\nmax_byte = 1\n")
+                .unwrap_err()
+        );
+        assert!(err.contains("`max_byte`"), "{err}");
+        assert!(err.contains("[ai.images]"), "{err}");
+        assert!(err.contains("max_bytes"), "the keys it takes: {err}");
+
+        // And under `[ai]` itself.
+        let err = format!(
+            "{:#}",
+            Config::from_toml_str("[ai]\nenabled = true\nmodel_name = \"x\"\n").unwrap_err()
+        );
+        assert!(
+            err.contains("`model_name`") && err.contains("[ai]"),
+            "{err}"
+        );
+    }
+
+    /// The lists the check reads are held to the structs they mirror:
+    /// every key named there must be one the deserializer takes — a
+    /// renamed field with a stale list would refuse a valid file — and the
+    /// check must accept a file that uses all of them at once.
+    #[test]
+    fn every_known_ai_key_is_accepted_and_the_check_reads_all_three_tables() {
+        let mut raw = String::from("[ai]\n");
+        for key in AI_KEYS {
+            let value = match *key {
+                "vision" | "images" => continue,
+                "enabled" => "true".to_string(),
+                "auth" => "\"bearer\"".to_string(),
+                "max_tokens" | "history_messages" => "7".to_string(),
+                _ => format!("\"{key}\""),
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
+        raw.push_str("\n[ai.vision]\n");
+        for key in AI_DEPLOYMENT_KEYS {
+            let value = if *key == "auth" {
+                "\"api-key\"".to_string()
+            } else {
+                format!("\"{key}\"")
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
+        raw.push_str("\n[ai.images]\n");
+        for key in AI_DEPLOYMENT_KEYS.iter().chain(AI_IMAGES_OWN_KEYS) {
+            let value = match *key {
+                "auth" => "\"bearer\"".to_string(),
+                "width" | "height" | "max_bytes" => "1024".to_string(),
+                "contextual" => "false".to_string(),
+                _ => format!("\"{key}\""),
+            };
+            raw.push_str(&format!("{key} = {value}\n"));
+        }
+        let cfg = Config::from_toml_str(&raw).unwrap_or_else(|err| panic!("{err:#}\n{raw}"));
+        // And they were READ, not merely tolerated.
+        assert_eq!(cfg.ai.title, "title");
+        assert_eq!(cfg.ai.history_messages, 7);
+        assert_eq!(cfg.ai.vision.api_version, "api_version");
+        assert_eq!(cfg.ai.images.width, 1024);
+        assert!(!cfg.ai.images.contextual);
+        assert_eq!(cfg.ai.images.deployment.auth, Some(AuthScheme::Bearer));
+    }
+
+    /// Everywhere ELSE an unknown key still costs nothing — the contract a
+    /// config from a newer server relies on — and an `[ai]` table that is
+    /// absent has nothing to check.
+    #[test]
+    fn unknown_keys_outside_the_ai_tables_are_still_ignored() {
+        let cfg = Config::from_toml_str(
+            "[server]\nbind = \"127.0.0.1:9000\"\nfuture_key = 1\n\n[limits]\nsomething = 2\n",
+        )
+        .expect("ignored, as before");
+        assert_eq!(cfg.server.bind, "127.0.0.1:9000");
+        assert!(Config::from_toml_str("[push]\nnew = true\n").is_ok());
     }
 
     #[test]
@@ -1116,10 +1941,444 @@ mod tests {
         assert_eq!(cfg.server.bind, "0.0.0.0:9999");
     }
 
+    /// The whole `[ai]` shape as an operator would actually write it, read
+    /// off disk rather than built in Rust — because the two sub-sections use
+    /// `#[serde(flatten)]` and a flattened struct that TOML cannot fill is a
+    /// config file that silently loses its deployment name.
+    #[test]
+    fn the_three_deployments_load_from_one_ai_section() {
+        let mut f = NamedTempFile::new().expect("tempfile");
+        f.write_all(
+            br#"
+[ai]
+enabled = true
+endpoint = "https://nettrash.openai.azure.com"
+deployment = "nettrash-gpt-oss-120b"
+model = "gpt-oss-120b"
+api_key = "secret"
+api_version = "2024-10-21"
+
+[ai.vision]
+deployment = "nettrash-gpt-4o"
+model = "gpt-4o"
+
+[ai.images]
+deployment = "nettrash-FLUX.2-pro"
+model = "FLUX.2-pro"
+size = "1024x1024"
+"#,
+        )
+        .expect("write");
+        f.flush().expect("flush");
+        let cfg = Config::load(f.path()).expect("load");
+
+        assert!(cfg.ai.is_usable());
+        assert!(cfg.ai.vision_usable(), "a named vision deployment is on");
+        assert!(cfg.ai.images_usable(), "a named images deployment is on");
+        assert_eq!(cfg.ai.images.size, "1024x1024");
+        assert_eq!(
+            cfg.ai.images.response_format, "",
+            "omitted unless the operator asked for one: some deployments \
+             answer 400 to a field they do not implement"
+        );
+
+        // Each route goes to its OWN deployment, and inherits the host, the
+        // key and the api-version from [ai] — which is what makes the two
+        // sub-sections three lines rather than fifteen.
+        let text = cfg.ai.text_route();
+        let vision = cfg.ai.vision_route().expect("vision route");
+        let images = cfg.ai.images_route().expect("images route");
+        assert_eq!(
+            text.url,
+            "https://nettrash.openai.azure.com/openai/deployments/nettrash-gpt-oss-120b\
+             /chat/completions?api-version=2024-10-21"
+        );
+        assert_eq!(
+            vision.url,
+            "https://nettrash.openai.azure.com/openai/deployments/nettrash-gpt-4o\
+             /chat/completions?api-version=2024-10-21"
+        );
+        assert_eq!(
+            images.url,
+            "https://nettrash.openai.azure.com/openai/deployments/nettrash-FLUX.2-pro\
+             /images/generations?api-version=2024-10-21"
+        );
+        assert_eq!(
+            vision.api_key, "secret",
+            "the key is inherited, not retyped"
+        );
+        assert_eq!(images.api_key, "secret");
+        assert_eq!(vision.model, "nettrash-gpt-4o", "the DEPLOYMENT routes");
+        assert_eq!(images.model, "nettrash-FLUX.2-pro");
+    }
+
+    /// The default, and the one that matters most: a server that configured
+    /// only the text deployment has no eyes and no hands, and says so.
+    #[test]
+    fn pictures_are_off_until_a_deployment_is_named() {
+        let cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://example.openai.azure.com".to_string(),
+            deployment: "text".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        assert!(cfg.is_usable(), "the assistant itself is on");
+        assert!(!cfg.vision_usable());
+        assert!(!cfg.images_usable());
+        assert!(cfg.vision_route().is_none());
+        assert!(cfg.images_route().is_none());
+    }
+
+    /// And neither half can outlive the assistant: turning `[ai]` off turns
+    /// both of them off, whatever the sub-sections say.
+    #[test]
+    fn pictures_follow_the_master_switch() {
+        let mut cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://example.openai.azure.com".to_string(),
+            deployment: "text".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        cfg.vision.deployment = "sees".to_string();
+        cfg.images.deployment.deployment = "draws".to_string();
+        assert!(cfg.vision_usable() && cfg.images_usable());
+        cfg.enabled = false;
+        assert!(!cfg.vision_usable());
+        assert!(!cfg.images_usable());
+    }
+
+    /// Naming an images deployment is what lets the text model ask for a
+    /// picture; `contextual = false` is the way out for a text deployment
+    /// that refuses a `tools` key, and it leaves `/draw` untouched.
+    #[test]
+    fn the_draw_tool_follows_the_images_deployment_unless_turned_off() {
+        let mut cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://example.openai.azure.com".to_string(),
+            deployment: "text".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            cfg.contextual_images_route().is_none(),
+            "no images deployment, no tool"
+        );
+        cfg.images.deployment.deployment = "draws".to_string();
+        assert!(cfg.images.contextual, "on by default");
+        assert_eq!(
+            cfg.contextual_images_route().map(|route| route.url),
+            cfg.images_route().map(|route| route.url),
+            "the same deployment `/draw` reaches"
+        );
+        cfg.images.contextual = false;
+        assert!(cfg.contextual_images_route().is_none());
+        assert!(
+            cfg.images_route().is_some(),
+            "`/draw` still works: it never goes through the text model"
+        );
+
+        let parsed = Config::from_toml_str(
+            r#"
+[ai]
+enabled = true
+endpoint = "https://example.openai.azure.com"
+deployment = "text"
+api_key = "k"
+
+[ai.images]
+deployment = "draws"
+contextual = false
+"#,
+        )
+        .expect("parses");
+        assert!(!parsed.ai.images.contextual);
+        assert!(parsed.ai.contextual_images_route().is_none());
+        assert!(parsed.ai.images_usable());
+    }
+
+    /// A sub-section may live somewhere else entirely — an image model on a
+    /// Foundry resource, a chat model on an Azure OpenAI one — and a pasted
+    /// target URI is used verbatim there exactly as it is for `[ai]`.
+    #[test]
+    fn a_sub_section_may_override_the_endpoint_and_the_key() {
+        let mut cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://text.openai.azure.com".to_string(),
+            deployment: "text".to_string(),
+            api_key: "text-key".to_string(),
+            api_version: "2024-10-21".to_string(),
+            ..Default::default()
+        };
+        cfg.images.deployment.endpoint =
+            "https://pictures.services.ai.azure.com/openai/deployments/flux/images/generations\
+             ?api-version=2025-04-01-preview"
+                .to_string();
+        cfg.images.deployment.api_key = "picture-key".to_string();
+
+        let images = cfg
+            .images_route()
+            .expect("configured by its endpoint alone");
+        assert_eq!(
+            images.url,
+            "https://pictures.services.ai.azure.com/openai/deployments/flux/images/generations\
+             ?api-version=2025-04-01-preview",
+            "a pasted target URI is used as given, query and all"
+        );
+        assert_eq!(images.api_key, "picture-key");
+        // And the text route is untouched by any of it.
+        assert_eq!(cfg.text_route().api_key, "text-key");
+    }
+
+    /// The v1 (OpenAI-compatible) surface, for images as well as for chat:
+    /// no `/openai/deployments/…` in the path and no api-version query. The
+    /// same trap, one path segment along.
+    #[test]
+    fn the_v1_surface_shapes_the_images_url_too() {
+        let mut cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://nettrash.openai.azure.com/openai/v1".to_string(),
+            deployment: "nettrash-gpt-oss-120b".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        cfg.images.deployment.deployment = "nettrash-FLUX.2-pro".to_string();
+        let images = cfg.images_route().expect("images route");
+        assert_eq!(
+            images.url,
+            "https://nettrash.openai.azure.com/openai/v1/images/generations"
+        );
+        assert_eq!(
+            images.model, "nettrash-FLUX.2-pro",
+            "the deployment routes from the BODY on this surface"
+        );
+    }
+
+    /// **Black Forest Labs FLUX on Azure AI Foundry, as its own portal shows
+    /// it.** Read off disk rather than built in Rust, because everything
+    /// that had to change to reach this deployment is spelled in TOML: the
+    /// target URI with a query of its own, `auth`, and the two integers that
+    /// replace `size`.
+    ///
+    /// The URI is the whole point. It does NOT contain `images/generations`
+    /// — the model itself is the path — so before this it fell through to
+    /// the classic branch and had `/openai/deployments/…/images/generations?
+    /// api-version=…` spliced on AFTER its existing `?api-version=preview`.
+    /// A URL like that answers nothing you can act on.
+    #[test]
+    fn a_flux_target_uri_is_used_exactly_as_the_portal_shows_it() {
+        let mut f = NamedTempFile::new().expect("tempfile");
+        f.write_all(
+            br#"
+[ai]
+enabled = true
+endpoint = "https://nettrash-openai.openai.azure.com"
+deployment = "nettrash-gpt-oss-120b"
+api_key = "one-key-for-both"
+api_version = "2024-10-21"
+
+[ai.images]
+endpoint = "https://nettrash-openai.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro?api-version=preview"
+deployment = "nettrash-FLUX.2-pro"
+model = "FLUX.2-pro"
+auth = "bearer"
+size = ""
+width = 1024
+height = 1024
+"#,
+        )
+        .expect("write");
+        f.flush().expect("flush");
+        let cfg = Config::load(f.path()).expect("load");
+
+        let images = cfg.ai.images_route().expect("images route");
+        assert_eq!(
+            images.url,
+            "https://nettrash-openai.services.ai.azure.com\
+             /providers/blackforestlabs/v1/flux-2-pro?api-version=preview",
+            "a target URI with its own query is the whole URL, untouched"
+        );
+        assert_eq!(
+            images.auth,
+            AuthScheme::Bearer,
+            "FLUX answers 401 to an api-key header"
+        );
+        assert_eq!(
+            images.api_key, "one-key-for-both",
+            "one key opens both surfaces, so it is still inherited from [ai]"
+        );
+        assert_eq!(
+            images.model, "nettrash-FLUX.2-pro",
+            "the DEPLOYMENT is what goes in the body's `model`"
+        );
+        assert_eq!(cfg.ai.images.size, "", "and is therefore not sent at all");
+        assert_eq!(cfg.ai.images.width, 1024);
+        assert_eq!(cfg.ai.images.height, 1024);
+
+        // The text deployment on the same server is untouched by any of it:
+        // its own host, its own header.
+        let text = cfg.ai.text_route();
+        assert_eq!(
+            text.url,
+            "https://nettrash-openai.openai.azure.com/openai/deployments\
+             /nettrash-gpt-oss-120b/chat/completions?api-version=2024-10-21"
+        );
+        assert_eq!(text.auth, AuthScheme::ApiKey);
+    }
+
+    /// The widened rule may not cost the three shapes that came before it.
+    /// Two of them are a production incident apiece — a doubled `/openai`
+    /// giving a bare 404, and a spliced path onto a pasted URI — so they are
+    /// pinned here TOGETHER, in one test, where a fourth shape cannot be
+    /// added without reading them.
+    #[test]
+    fn widening_the_verbatim_rule_leaves_the_older_shapes_alone() {
+        // Classic Azure OpenAI: deployment in the path, dated api-version.
+        assert_eq!(
+            azure_url(
+                "https://r.openai.azure.com",
+                "dep",
+                "2024-10-21",
+                "images/generations"
+            ),
+            "https://r.openai.azure.com/openai/deployments/dep/images/generations\
+             ?api-version=2024-10-21"
+        );
+        // The OpenAI-compatible surface: no deployment in the path, no
+        // api-version, and above all no second `/openai`.
+        assert_eq!(
+            azure_url(
+                "https://r.openai.azure.com/openai/v1",
+                "dep",
+                "2024-10-21",
+                "chat/completions"
+            ),
+            "https://r.openai.azure.com/openai/v1/chat/completions"
+        );
+        // A pasted URI that names the operation but carries no query still
+        // gets the api-version Azure requires.
+        assert_eq!(
+            azure_url(
+                "https://r.services.ai.azure.com/models/chat/completions",
+                "dep",
+                "2024-10-21",
+                "chat/completions"
+            ),
+            "https://r.services.ai.azure.com/models/chat/completions?api-version=2024-10-21"
+        );
+        // And the new one: a query of its own ends the matter, whatever the
+        // path looks like.
+        assert_eq!(
+            azure_url(
+                "https://r.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro\
+                 ?api-version=preview",
+                "dep",
+                "2024-10-21",
+                "images/generations"
+            ),
+            "https://r.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro\
+             ?api-version=preview"
+        );
+        // The same URI with the query left off is still a model path rather
+        // than a resource root: the api-version is appended, not a whole
+        // `/openai/deployments/…` segment.
+        assert_eq!(
+            azure_url(
+                "https://r.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro",
+                "dep",
+                "preview",
+                "images/generations"
+            ),
+            "https://r.services.ai.azure.com/providers/blackforestlabs/v1/flux-2-pro\
+             ?api-version=preview"
+        );
+    }
+
+    /// The scheme is CONFIGURED, and it defaults to what every existing
+    /// config already gets. A silent switch on a hostname would be a 401
+    /// nobody could explain.
+    #[test]
+    fn the_auth_scheme_defaults_to_api_key_and_is_inherited() {
+        let mut cfg = AiConfig {
+            enabled: true,
+            endpoint: "https://r.openai.azure.com".to_string(),
+            deployment: "text".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        };
+        cfg.vision.deployment = "sees".to_string();
+        cfg.images.deployment.deployment = "draws".to_string();
+
+        // Untouched config: all three routes present the key the way they
+        // always did.
+        assert_eq!(cfg.text_route().auth, AuthScheme::ApiKey);
+        assert_eq!(cfg.vision_route().expect("vision").auth, AuthScheme::ApiKey);
+        assert_eq!(cfg.images_route().expect("images").auth, AuthScheme::ApiKey);
+
+        // One sub-section may differ without disturbing the others…
+        cfg.images.deployment.auth = Some(AuthScheme::Bearer);
+        assert_eq!(cfg.images_route().expect("images").auth, AuthScheme::Bearer);
+        assert_eq!(cfg.text_route().auth, AuthScheme::ApiKey);
+
+        // …and `[ai]` sets the house rule, which the sub-sections inherit
+        // unless, as above, they said otherwise.
+        cfg.auth = AuthScheme::Bearer;
+        assert_eq!(cfg.text_route().auth, AuthScheme::Bearer);
+        assert_eq!(cfg.vision_route().expect("vision").auth, AuthScheme::Bearer);
+        cfg.images.deployment.auth = Some(AuthScheme::ApiKey);
+        assert_eq!(cfg.images_route().expect("images").auth, AuthScheme::ApiKey);
+    }
+
+    /// How the two spellings arrive from TOML, and what an unknown one does:
+    /// fails the LOAD, with the file's own word in the message, rather than
+    /// quietly falling back to a header the deployment will refuse.
+    #[test]
+    fn the_auth_scheme_is_spelled_out_in_the_file() {
+        let parse = |raw: &str| Config::from_toml_str(raw).map(|cfg| cfg.ai.auth);
+        assert_eq!(
+            parse("[ai]\nauth = \"api-key\"\n").expect("api-key"),
+            AuthScheme::ApiKey
+        );
+        assert_eq!(
+            parse("[ai]\nauth = \"api_key\"\n").expect("the underscore spelling too"),
+            AuthScheme::ApiKey
+        );
+        assert_eq!(
+            parse("[ai]\nauth = \"bearer\"\n").expect("bearer"),
+            AuthScheme::Bearer
+        );
+        assert_eq!(
+            parse("[ai]\n").expect("an [ai] section that never mentions it"),
+            AuthScheme::ApiKey,
+            "the default is what every config written before this field gets"
+        );
+        let err = format!("{:#}", parse("[ai]\nauth = \"Bearer\"\n").unwrap_err());
+        assert!(
+            err.contains("Bearer"),
+            "the operator's own word back: {err}"
+        );
+    }
+
     #[test]
     fn load_reports_a_missing_file_with_its_path() {
         let err = Config::load(Path::new("/nonexistent/family-connect/cfg.toml")).unwrap_err();
         assert!(format!("{err:#}").contains("reading config file"));
+    }
+
+    #[test]
+    fn validate_rejects_a_family_ceiling_below_one() {
+        // A ceiling of 0 boots happily and then answers `family_full` to
+        // every attempt to CREATE a family — an error that endpoint does
+        // not document, on a server nobody can use.
+        let mut cfg = Config::default();
+        cfg.limits.max_family_members = 0;
+        assert!(
+            cfg.validate().is_err(),
+            "a ceiling of zero must be refused at boot"
+        );
+        cfg.limits.max_family_members = 1;
+        assert!(cfg.validate().is_ok(), "one is a legal, if lonely, ceiling");
     }
 
     #[test]

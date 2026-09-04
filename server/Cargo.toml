@@ -1,6 +1,6 @@
 [package]
 name = "family-connect"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 authors = ["nettrash <nettrash@nettrash.me>"]
 description = "Self-hosted family chat server: REST + WebSocket API over PostgreSQL (protocol v1)"
@@ -112,6 +112,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # request body chunk by chunk instead of buffering 100 MB in memory.
 bytes = "1"
 futures-util = "0.3"
+
+# statvfs(3), for the free-space floor that keeps uploads from filling the
+# disk PostgreSQL lives on. Already in the tree transitively (tokio, rand);
+# naming it here is what makes the one syscall callable. No wrapper crate:
+# `nix` and `rustix` are large surfaces to add for a single struct.
+libc = "0.2"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

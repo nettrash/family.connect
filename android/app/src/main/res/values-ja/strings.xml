@@ -22,6 +22,12 @@
     <string name="s_copy_invite_code">招待コードをコピー</string>
     <string name="s_create">作成</string>
     <string name="s_create_a_family">ファミリーを作成</string>
+    <string name="s_no_new_families_title">このサーバーは新しい家族を受け付けていません。</string>
+    <string name="s_no_new_families_body">Family Connect は、家族ごとに専用のサーバーで使うためのものです。自分の家族を始めるには、自分のサーバーを立ち上げてそこから全員を招待してください。</string>
+    <string name="s_run_your_own_server">自分のサーバーを立ち上げる方法</string>
+    <plurals name="s_familyless_grace">
+        <item quantity="other">%1$d日以内に家族に参加しなかったアカウントは、このサーバーから削除されます。</item>
+    </plurals>
     <string name="s_current_password">現在のパスワード</string>
     <string name="s_delete">削除</string>
     <string name="s_delete_this_note">このメモを削除しますか？</string>
@@ -61,7 +67,7 @@
     <string name="s_no_other_family_members_yet_share_the_invite_code_first">まだ他のメンバーがいません。先に招待コードを共有してください。</string>
     <string name="s_no_pending_requests">保留中のリクエストはありません</string>
     <string name="s_note">メモ</string>
-    <string name="s_open">開く</string>
+    <string name="s_open">公開</string>
     <string name="s_open_link">リンクを開く</string>
     <string name="s_password">パスワード</string>
     <string name="s_video">ビデオ</string>
@@ -70,6 +76,8 @@
     <string name="s_n_of_m">%1$d / %2$d</string>
     <string name="s_photo_or_video">写真またはビデオ</string>
     <string name="s_privacy">プライバシー</string>
+    <string name="s_privacy_policy">プライバシーポリシー</string>
+    <string name="s_support">サポート</string>
     <string name="s_react">リアクション</string>
     <string name="s_register">登録</string>
     <string name="s_remove">削除</string>
@@ -273,7 +281,6 @@
     <string name="s_flip_camera">カメラを切り替え</string>
     <string name="e_camera_permission">Family がカメラを使う許可が必要です。</string>
     <string name="s_video_calls_are_off_on_this_server">このサーバーではビデオ通話は無効です</string>
-    <string name="s_uploading_n_of_m">%1$d/%2$d をアップロード中…</string>
     <string name="e_attachment_limit">1つのメッセージに添付できるのは最大%1$d件です。</string>
     <string name="s_share_choose_chat">共有先を選ぶ</string>
     <string name="s_shared_with_family">Familyに共有</string>
@@ -334,4 +341,123 @@
     <plurals name="s_use_at_least_characters">
         <item quantity="other">%1$d 文字以上にしてください。</item>
     </plurals>
+    <string name="e_leave_failed">今は退出できませんでした。もう一度お試しください。</string>
+    <string name="s_leave_family_explanation_owner">%1$sさんがオーナーになります。家族チャットと個別チャットにアクセスできなくなります。再参加すれば履歴は戻ります。</string>
+    <string name="s_leave_family_explanation_last">残っているメンバーはあなただけです。退出すると家族とその中身がすべて削除されます。</string>
+    <string name="s_ownership_passed_on">オーナー権限を引き継ぎました</string>
+    <string name="s_ownership_passed_to">%1$sさんが家族のオーナーになりました。</string>
+    <string name="s_hidden_blocked_member">非表示 — ブロックしたメンバー</string>
+    <string name="s_replying_to_hidden">非表示のメッセージへの返信</string>
+    <string name="s_which_replied_to_hidden">非表示のメッセージに返信したもの</string>
+    <string name="s_report">報告</string>
+    <string name="s_report_ellipsis">報告…</string>
+    <string name="s_block">ブロック</string>
+    <string name="s_unblock">ブロックを解除</string>
+    <string name="s_report_member_title">%1$sさんを報告する理由は？</string>
+    <string name="s_report_reason_spam">スパム</string>
+    <string name="s_report_reason_harassment">嫌がらせ</string>
+    <string name="s_report_reason_inappropriate">不適切な内容</string>
+    <string name="s_report_reason_other">その他</string>
+    <string name="s_report_disclosure">家族のオーナーがこの報告、あなたの名前、メッセージ本文を確認します。</string>
+    <string name="e_block_failed">今は変更できませんでした。もう一度お試しください。</string>
+    <string name="e_report_failed">報告を送信できませんでした。もう一度お試しください。</string>
+    <string name="s_hidden_note_from_blocked">ブロックしたメンバーの非表示のメモ</string>
+    <string name="s_closed">締切</string>
+    <string name="s_join_closed_caption">招待コードが無効になり、新しく参加できる人はいなくなります。すでに届いている申請はそのままで、引き続き承認できます。</string>
+    <string name="s_member_limit">メンバー数の上限</string>
+    <string name="s_limit_members">メンバー数を制限</string>
+    <string name="s_most_members">最大人数</string>
+    <string name="s_member_limit_none">独自の上限はありません。このサーバーでは家族あたり最大%1$d人までです。</string>
+    <string name="s_member_limit_frozen">現在%1$d人です。誰かが抜けるまで新しい人は参加できません。誰も削除されません。</string>
+    <string name="s_member_limit_room">%2$d人中%1$d人が参加しています。</string>
+    <string name="s_decrease">減らす</string>
+    <string name="s_increase">増やす</string>
+    <string name="e_member_limit_failed">メンバー数の上限を変更できませんでした。もう一度お試しください。</string>
+    <string name="e_family_full_approve">家族の人数が上限に達しています。上限を上げるか、誰かが抜けるのをお待ちください。申請はそのまま残ります。</string>
+    <string name="e_family_full_join">その家族は現在満員です。空きを作ってもらってから、もう一度コードをお試しください。</string>
+    <string name="s_reports">報告</string>
+    <string name="s_reported_by">%1$sさんが%2$sさんを報告しました</string>
+    <string name="s_mark_as_handled">対応済みにする</string>
+    <string name="e_resolve_report_failed">対応済みにできませんでした。もう一度お試しください。</string>
+    <string name="s_if_the_problem_is_the_owner">問題がオーナー本人の場合</string>
+    <string name="s_operator_published_contact">このサーバーの運営者がこの連絡先を公開しています。</string>
+    <string name="s_report_disclosure_person">あなたがこのメンバーを報告したことが家族のオーナーに伝わります。</string>
+    <string name="s_reports_empty">メンバーはメッセージや人物をあなたに報告できます。</string>
+    <string name="s_safety">セーフティ</string>
+    <string name="s_safety_for">%1$sさんのセーフティ設定</string>
+    <!-- Pictures: showing the assistant one, and asking it for one (docs/protocol.md, "Pictures"). -->
+    <string name="s_show_the_assistant_a_picture">アシスタントに写真を見せる</string>
+    <string name="s_show_the_assistant_a_picture_note">この写真はサーバーを離れ、サーバーが利用しているモデルに送られます</string>
+    <string name="s_ask_for_a_picture">画像を作ってもらう</string>
+    <string name="s_assistant_sees_this_picture">この写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_sees_these_pictures">これらの写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_picture_extra_left_out">1つの質問と一緒に送られるのは最初の%1$d枚だけで、残りはここに留まります。</string>
+    <string name="s_assistant_picture_others_left_out">動画・ファイル・音声・位置情報が送られることはありません。</string>
+    <string name="s_assistant_picture_unreadable_left_out">大きすぎる写真や、モデルが読めない形式の写真は、見せられずに「ある」とだけ伝えられます。</string>
+    <string name="s_assistant_will_not_see_picture">この写真はアシスタントには見せられません。通常の添付として送られます。</string>
+    <string name="s_assistant_mention_sees_this_picture">このメッセージはアシスタントに話しかけているため、この写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。このチャットのほかの写真は送られません。</string>
+    <string name="s_assistant_mention_sees_these_pictures">このメッセージはアシスタントに話しかけているため、これらの写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。このチャットのほかの写真は送られません。</string>
+    <string name="s_assistant_mention_sees_quoted_picture">この返信はアシスタントに話しかけているため、返信先の写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。このチャットのほかの写真は送られません。</string>
+    <string name="s_assistant_mention_sees_quoted_pictures">この返信はアシスタントに話しかけているため、返信先の写真はすべてアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。このチャットのほかの写真は送られません。</string>
+    <string name="s_assistant_mention_sees_both">この返信はアシスタントに話しかけているため、ここの写真と返信先の写真はアシスタントに見せられます。サーバーを離れ、サーバーが利用しているモデルに送られます。このチャットのほかの写真は送られません。</string>
+    <string name="s_assistant_mention_extra_left_out">1つのメッセージで送られるのは最初の %1$d 枚だけです。このメッセージの写真が先で、次に返信先の写真です。残りはここに残ります。</string>
+    <string name="s_assistant_mention_sees_recent_only">このメッセージはアシスタントに話しかけているため、このチャットの最近の写真が最大 %1$d 枚一緒に送られます。誰が送ったものでも、アシスタントに示していない写真です。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_mention_sees_this_picture_and_recent">このメッセージはアシスタントに話しかけているため、この写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_mention_sees_these_pictures_and_recent">このメッセージはアシスタントに話しかけているため、これらの写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_mention_sees_quoted_picture_and_recent">この返信はアシスタントに話しかけているため、返信先の写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_mention_sees_quoted_pictures_and_recent">この返信はアシスタントに話しかけているため、返信先の写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_mention_sees_both_and_recent">この返信はアシスタントに話しかけているため、ここの写真と返信先の写真はアシスタントに見せられます。このチャットの最近の写真も最大 %1$d 枚送られることがあります。サーバーを離れ、サーバーが利用しているモデルに送られます。</string>
+    <string name="s_assistant_answer_failed">アシスタントはこの返事を完了できませんでした。もう一度聞いてください。</string>
+    <string name="s_assistant_vision">アシスタントが写真を見られるようにする</string>
+    <string name="s_assistant_vision_explanation">アシスタントとの自分だけのチャットで質問に写真を添えたとき、ファミリーチャットでアシスタントに話しかけるメッセージに写真を添えたとき、またはアシスタントに話しかけながら写真に返信したとき、その写真も質問と一緒にモデルへ送られます（1つの質問につき最大4枚）。アシスタントに示していない写真は、「アシスタントが最近の写真を見る」がオンでないかぎり、前のメッセージのものも含めて送られません。動画・ファイル・音声・位置情報も送られません。オンにするまではオフで、オフのあいだは写真は一切送られません。</string>
+    <string name="e_change_assistant_vision_failed">設定を変更できませんでした</string>
+    <string name="s_assistant_history_photos">アシスタントが最近の写真を見る</string>
+    <string name="s_assistant_history_photos_explanation">ファミリーチャットで誰かがアシスタントに話しかけると、そのチャットの最近の写真（最大4枚、誰が送ったものでも、アシスタントに示していないもの）も、メッセージ自体や返信先の写真に続いて、質問と一緒にモデルへ送られます。ほぼすべての話しかけで写真が送られるため、費用が増えます。「アシスタントが写真を見られるようにする」と「アシスタントが最近の履歴を見る」が必要です。オンにするまではオフです。</string>
+    <string name="s_assistant_history_photos_no_deployment">ここでは使えません。このサーバーのアシスタントは画像を見ることができません。</string>
+    <string name="s_assistant_history_photos_needs_vision">先に「アシスタントが写真を見られるようにする」をオンにしてください。それがオフのあいだ、サーバーはこれを受け付けません。</string>
+    <string name="s_assistant_history_photos_needs_history">「アシスタントが最近の履歴を見る」がオフのあいだ、これは何もしません。チャットの履歴が送られないので、そこからの写真も送られません。</string>
+    <string name="e_change_assistant_history_photos_failed">設定を変更できませんでした</string>
+    <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
+    <string name="s_pick_a_chat">リストからチャットを選んでください。</string>
+    <plurals name="p_members">
+        <item quantity="other">メンバー %1$d 人</item>
+    </plurals>
+    <!-- The thread's day pills, the roster's owner caption, the invite share sheet and the sign-up rules — all formerly hard-coded English. -->
+    <string name="s_today">今日</string>
+    <string name="s_yesterday">昨日</string>
+    <string name="s_owner_caption">オーナー</string>
+    <string name="s_share_invite_text">Family Connect で家族に参加しよう！ サーバー: %1$s — 招待コード: %2$s</string>
+    <string name="e_username_rules">3〜32文字: 英字、数字、_ または .</string>
+    <string name="e_display_name_rules">1〜64文字</string>
+    <!-- Chat-list previews for messages that are only attachments (the thread's own words are s_photo, s_video…). -->
+    <plurals name="p_photos">
+        <item quantity="other">写真 %1$d 枚</item>
+    </plurals>
+    <plurals name="p_videos">
+        <item quantity="other">動画 %1$d 本</item>
+    </plurals>
+    <plurals name="p_audio">
+        <item quantity="other">ボイスメモ %1$d 件</item>
+    </plurals>
+    <plurals name="p_files">
+        <item quantity="other">ファイル %1$d 個</item>
+    </plurals>
+    <plurals name="p_attachments">
+        <item quantity="other">添付ファイル %1$d 件</item>
+    </plurals>
+    <!-- Notification channels (Android Settings shows these) and the emoji picker's section headers — formerly hard-coded English. -->
+    <string name="s_channel_calls">通話</string>
+    <string name="s_channel_calls_desc">着信</string>
+    <string name="s_channel_ongoing">通話中</string>
+    <string name="s_channel_ongoing_desc">現在の通話</string>
+    <string name="s_channel_messages">メッセージ</string>
+    <string name="s_channel_messages_desc">家族からの新着メッセージと参加リクエスト</string>
+    <string name="s_emoji_smileys">スマイリー</string>
+    <string name="s_emoji_gestures">ジェスチャー</string>
+    <string name="s_emoji_hearts">ハート</string>
+    <string name="s_emoji_animals">動物と自然</string>
+    <string name="s_emoji_food">食べ物と飲み物</string>
+    <string name="s_emoji_activities">アクティビティ</string>
+    <string name="s_emoji_travel">旅行と場所</string>
+    <string name="s_emoji_objects">モノと記号</string>
 </resources>

@@ -101,6 +101,11 @@
 			path = FamilyConnectShareExtension;
 			sourceTree = "<group>";
 		};
+		FC00008F2EAB0010013FC000 /* FamilyConnectShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = FamilyConnectShared;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -143,6 +148,7 @@
 				FC0000282EAB0010013FC000 /* FamilyConnectTests */,
 				FC0000382EAB0010013FC000 /* FamilyConnectUITests */,
 				FC0000852EAB0010013FC000 /* FamilyConnectShareExtension */,
+				FC00008F2EAB0010013FC000 /* FamilyConnectShared */,
 				FC0000402EAB0010013FC000 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -177,6 +183,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				FC0000182EAB0010013FC000 /* FamilyConnect */,
+				FC00008F2EAB0010013FC000 /* FamilyConnectShared */,
 			);
 			name = FamilyConnect;
 			packageProductDependencies = (
@@ -246,6 +253,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				FC0000852EAB0010013FC000 /* FamilyConnectShareExtension */,
+				FC00008F2EAB0010013FC000 /* FamilyConnectShared */,
 			);
 			name = FamilyConnectShareExtension;
 			packageProductDependencies = (
@@ -534,25 +542,29 @@
 				CODE_SIGN_ENTITLEMENTS = FamilyConnect/FamilyConnect.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "FamilyConnect/FamilyConnect-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
+				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 nettrash. MIT licensed.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose.";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphone*]" = NO;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad[sdk=iphone*]" = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone[sdk=iphone*]" = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -587,25 +599,29 @@
 				CODE_SIGN_ENTITLEMENTS = FamilyConnect/FamilyConnect.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "FamilyConnect/FamilyConnect-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
+				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 nettrash. MIT licensed.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose.";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphone*]" = NO;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad[sdk=iphone*]" = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone[sdk=iphone*]" = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -636,7 +652,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -660,7 +676,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -683,7 +699,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -692,7 +708,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = me.nettrash.FamilyConnect.UITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -706,7 +722,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -715,7 +731,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = me.nettrash.FamilyConnect.UITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -796,25 +812,29 @@
 				CODE_SIGN_ENTITLEMENTS = FamilyConnect/FamilyConnect.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "FamilyConnect/FamilyConnect-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
+				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = FamilyConnect/Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "FamilyConnect/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Family;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Video calls show you to your family while you are in one, and taking a photo or video in a chat sends it there, and nowhere else. Family never opens the camera outside a call or a capture you start.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 nettrash. MIT licensed.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A voice call connects directly between your devices. On a shared Wi-Fi network that direct connection is a local one, and this permission is what allows it; without it calls between devices on the same network cannot connect.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Sharing your location sends where you are to your family, once, when you choose to. Family never follows you and never sends your location on its own.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice calls and voice messages use the microphone, and a video you shoot in a chat records sound with it. Family never listens outside a call, a recording or the camera.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Saving a photo or video from a chat puts it in your library. Family never reads your library — the picker hands over only what you choose.";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphone*]" = NO;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphone*]" = YES;
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad[sdk=iphone*]" = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone[sdk=iphone*]" = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -845,7 +865,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -868,7 +888,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -877,7 +897,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = me.nettrash.FamilyConnect.UITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -892,9 +912,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FamilyConnectShareExtension/FamilyConnectShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
+				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FamilyConnectShareExtension/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -926,9 +947,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FamilyConnectShareExtension/FamilyConnectShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
+				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FamilyConnectShareExtension/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -960,9 +982,10 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FamilyConnectShareExtension/FamilyConnectShareExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 101;
+				CURRENT_PROJECT_VERSION = 115;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = V4WM2SJ8Q9;
+				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FamilyConnectShareExtension/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -1050,7 +1073,7 @@
 			repositoryURL = "https://github.com/stasel/WebRTC.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 151.0.0;
+				minimumVersion = 152.0.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

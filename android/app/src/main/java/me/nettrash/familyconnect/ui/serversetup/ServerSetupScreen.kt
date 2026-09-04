@@ -54,11 +54,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import me.nettrash.familyconnect.ui.components.readableColumn
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.components.BusyButtonContent
 
@@ -80,6 +83,7 @@ fun ServerSetupScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
                 .imePadding()
+                .readableColumn()
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
@@ -120,7 +124,10 @@ fun ServerSetupScreen(
                 singleLine = true,
                 isError = state.error != null,
                 supportingText = state.error?.let { { Text(it) } },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                // Enter connects — the first field of the whole product
+                // did nothing on Enter.
+                keyboardActions = KeyboardActions(onGo = { viewModel.probeAndSave() }),
             )
 
             // Animated so typing/deleting "http" doesn't jump the layout.

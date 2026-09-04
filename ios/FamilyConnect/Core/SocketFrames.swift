@@ -360,6 +360,15 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
     /// receives it for ITSELF gains the owner-only screens immediately
     /// rather than at its next `GET /me`.
     case familyOwner(familyID: Int64, userID: Int64)
+    /// A block this caller set or cleared, delivered to EVERY CONNECTION OF
+    /// THIS USER AND TO NOBODY ELSE — nothing about a block ever reaches
+    /// the person blocked (protocol.md, "Blocking a member").
+    ///
+    /// `blocked` carries full current state rather than an event, so an
+    /// unblock is this same frame with `false` and a client applies it as a
+    /// state-set. No `familyID`: a block is a pair, not a membership, and
+    /// it outlives either of them leaving.
+    case memberBlocked(userID: Int64, blocked: Bool)
     case reaction(ReactionPayload)
     /// A poll's full current state after a vote, a retraction or a close.
     /// Dispatched exactly like `reaction`, under its own seq guard.
@@ -394,6 +403,7 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
         case user
         case member
         case familyID = "family_id"
+        case blocked
         case messageID = "message_id"
         case reactionSeq = "reaction_seq"
         case reactions
@@ -450,6 +460,10 @@ nonisolated enum ServerFrame: Decodable, Equatable, Sendable {
             self = .familyOwner(
                 familyID: try container.decode(Int64.self, forKey: .familyID),
                 userID: try container.decode(Int64.self, forKey: .userID))
+        case "member_blocked":
+            self = .memberBlocked(
+                userID: try container.decode(Int64.self, forKey: .userID),
+                blocked: try container.decode(Bool.self, forKey: .blocked))
         case "reaction":
             // Re-decode from the top so ReactionPayload owns its keys.
             self = .reaction(try ReactionPayload(from: decoder))

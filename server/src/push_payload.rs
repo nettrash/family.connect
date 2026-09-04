@@ -32,6 +32,12 @@ pub enum PushEvent {
     Joined {
         family_id: i64,
     },
+    /// A member reported another to the family owner (protocol.md,
+    /// "Reporting a member"). Never sent when the report names the owner
+    /// themselves — see `events::push_report_created`.
+    Report {
+        family_id: i64,
+    },
 }
 
 impl PushEvent {
@@ -42,6 +48,7 @@ impl PushEvent {
             PushEvent::BoardNote { .. } => "board_note",
             PushEvent::JoinRequest { .. } => "join_request",
             PushEvent::Joined { .. } => "joined",
+            PushEvent::Report { .. } => "report",
         }
     }
 
@@ -54,7 +61,9 @@ impl PushEvent {
             // All board notes collapse into one entry: several notes pinned
             // at once is one thing to look at, not five alerts.
             PushEvent::BoardNote { family_id, .. } => Some(format!("board-{family_id}")),
-            PushEvent::JoinRequest { .. } | PushEvent::Joined { .. } => None,
+            PushEvent::JoinRequest { .. } | PushEvent::Joined { .. } | PushEvent::Report { .. } => {
+                None
+            }
         }
     }
 }
@@ -225,6 +234,23 @@ pub fn board_note_notification(
 /// Compose the notification the family owner gets when a join request is
 /// created: title = the family name, body = `"<Display Name> asked to
 /// join"`.
+/// The owner's alert that somebody filed a report.
+///
+/// It carries NO reported text, regardless of `include_message_body`: the
+/// excerpt is the very content somebody asked to have looked at, and a lock
+/// screen is where it must not be readable. The body is the fixed English
+/// "New report", which the switch does not vary because there is nothing
+/// there to withhold (protocol.md, "Push notifications").
+pub fn report_notification(family_name: &str, family_id: i64, badge: i64) -> Notification {
+    Notification {
+        title: family_name.to_string(),
+        body: "New report".to_string(),
+        badge,
+        chat_unread: None,
+        event: PushEvent::Report { family_id },
+    }
+}
+
 pub fn join_request_notification(
     family_name: &str,
     requester_display_name: &str,
@@ -276,7 +302,9 @@ pub fn apns_payload(note: &Notification) -> Value {
             payload["family_id"] = json!(family_id);
             payload["note_id"] = json!(note_id);
         }
-        PushEvent::JoinRequest { family_id } | PushEvent::Joined { family_id } => {
+        PushEvent::JoinRequest { family_id }
+        | PushEvent::Joined { family_id }
+        | PushEvent::Report { family_id } => {
             payload["family_id"] = json!(family_id);
         }
     }
@@ -302,7 +330,9 @@ pub fn fcm_message(note: &Notification, push_token: &str) -> Value {
             data["family_id"] = json!(family_id.to_string());
             data["note_id"] = json!(note_id.to_string());
         }
-        PushEvent::JoinRequest { family_id } | PushEvent::Joined { family_id } => {
+        PushEvent::JoinRequest { family_id }
+        | PushEvent::Joined { family_id }
+        | PushEvent::Report { family_id } => {
             data["family_id"] = json!(family_id.to_string());
         }
     }
@@ -406,7 +436,17 @@ pub fn build_unread_badge_query() -> &'static str {
      LEFT JOIN chat_reads cr ON cr.chat_id = m.chat_id AND cr.user_id = m.user_id
      WHERE m.user_id = $1
        AND msg.id > COALESCE(cr.last_read_message_id, 0)
-       AND msg.sender_id <> $1"
+       AND msg.sender_id <> $1
+       AND NOT EXISTS (
+             SELECT 1 FROM chats c
+              WHERE c.id = m.chat_id AND c.kind = 'direct'
+                AND EXISTS (
+                      SELECT 1 FROM member_blocks mb
+                       WHERE mb.blocker_user_id = $1
+                         AND mb.blocked_user_id =
+                             CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END
+                )
+       )"
 }
 
 /// The one SQL statement behind BOTH numbers a MESSAGE push carries: the
@@ -421,6 +461,17 @@ pub fn build_unread_badge_query() -> &'static str {
 /// also the one `GET /chats` measures its `unread_count` with, word for
 /// word: newer than my read marker (0 when I have never reported one), and
 /// not sent by me.
+///
+/// Both queries carry one further exclusion, at the CHAT level rather than
+/// the message level: a direct chat the recipient has blocked into
+/// contributes nothing to any unread count and nothing to the badge, because
+/// it is gone from every path they can reach it by and a badge they could
+/// never clear would itself be a quantity that moved when they blocked
+/// somebody (protocol.md, "Blocking a member").
+///
+/// The FAMILY chat is deliberately untouched: a hidden row there still
+/// counts, because the count is the other half of the read marker and
+/// projecting one without the other desynchronises them.
 pub fn build_message_unread_query() -> &'static str {
     "SELECT count(*) AS badge,
             count(*) FILTER (WHERE msg.chat_id = $2) AS chat_unread
@@ -429,7 +480,17 @@ pub fn build_message_unread_query() -> &'static str {
      LEFT JOIN chat_reads cr ON cr.chat_id = m.chat_id AND cr.user_id = m.user_id
      WHERE m.user_id = $1
        AND msg.id > COALESCE(cr.last_read_message_id, 0)
-       AND msg.sender_id <> $1"
+       AND msg.sender_id <> $1
+       AND NOT EXISTS (
+             SELECT 1 FROM chats c
+              WHERE c.id = m.chat_id AND c.kind = 'direct'
+                AND EXISTS (
+                      SELECT 1 FROM member_blocks mb
+                       WHERE mb.blocker_user_id = $1
+                         AND mb.blocked_user_id =
+                             CASE WHEN c.user_a_id = $1 THEN c.user_b_id ELSE c.user_a_id END
+                )
+       )"
 }
 
 #[cfg(test)]
@@ -1043,10 +1104,22 @@ mod tests {
             query.contains("count(*) FILTER (WHERE msg.chat_id = $2)"),
             "the chat's count is a filter over the badge's rows, not a second query: {query}"
         );
+        // One TOP-LEVEL source, which is what "one round trip" means here.
+        // This used to count every "FROM" in the string; the hidden-DM
+        // exclusion added two correlated subqueries, which are still one
+        // statement, so the crude count started measuring the wrong thing.
+        // `FROM chat_members` is the source the badge is computed over and
+        // it appears exactly once — splitting this into two queries is
+        // still caught.
         assert_eq!(
-            query.matches("FROM").count(),
+            query.matches("FROM chat_members").count(),
             1,
             "both numbers come from one statement and one round trip: {query}"
+        );
+        assert_eq!(
+            query.matches("count(*)").count(),
+            2,
+            "exactly the badge and its filtered subset, never a second count: {query}"
         );
     }
 }

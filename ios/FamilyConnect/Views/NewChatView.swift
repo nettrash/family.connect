@@ -28,19 +28,30 @@ struct NewChatView: View {
            sort: [SortDescriptor(\MemberEntity.displayName)])
     private var members: [MemberEntity]
 
+    /// The picker, minus anyone this reader has blocked.
+    ///
+    /// Filtered AFTER the fetch because `blockedUserIDs` is not a SwiftData
+    /// column and cannot go in the `#Predicate`. protocol.md's steer:
+    /// leave a blocked member out of the picker rather than letting the tap
+    /// answer `blocked` — a refusal the user can trigger has no innocent
+    /// reading.
+    private var selectableMembers: [MemberEntity] {
+        members.filter { !coordinator.blockedUserIDs.contains($0.userID) }
+    }
+
     @State private var isWorking = false
     @State private var errorText: String?
 
     var body: some View {
         NavigationStack {
             Group {
-                if members.isEmpty {
+                if selectableMembers.isEmpty {
                     ContentUnavailableView(
                         "No one else yet",
                         systemImage: "person.2",
                         description: Text("Direct chats become available once another member joins the family."))
                 } else {
-                    List(members) { member in
+                    List(selectableMembers) { member in
                         Button {
                             open(member)
                         } label: {
@@ -73,6 +84,7 @@ struct NewChatView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                 }
             }
             .overlay {

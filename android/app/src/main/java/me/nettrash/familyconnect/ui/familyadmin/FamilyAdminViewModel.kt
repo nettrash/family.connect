@@ -35,6 +35,7 @@ import me.nettrash.familyconnect.data.repo.FamilyRepository
 import me.nettrash.familyconnect.data.repo.FamilyStatus
 import me.nettrash.familyconnect.data.settings.SettingsRepository
 import javax.inject.Inject
+import me.nettrash.familyconnect.data.net.dto.ReportDto
 
 @HiltViewModel
 class FamilyAdminViewModel @Inject constructor(
@@ -57,6 +58,16 @@ class FamilyAdminViewModel @Inject constructor(
 
     data class UiState(
         val requests: List<JoinRequestDto> = emptyList(),
+        /**
+         * The owner's moderation list, oldest first and open only.
+         *
+         * Never contains a report ABOUT the owner: the server omits those
+         * from `GET /families/reports` entirely, so there is nothing to
+         * filter here. And it never says who blocked whom — blocking and
+         * reporting are independent (docs/protocol.md, "Reporting a
+         * member").
+         */
+        val reports: List<ReportDto> = emptyList(),
         val inviteCode: String? = null,
         val joinPolicy: String = "open",
         /**
@@ -67,9 +78,95 @@ class FamilyAdminViewModel @Inject constructor(
         val language: String? = null,
         /** Whether a mention carries the chat's recent history. */
         val aiHistory: Boolean = true,
+        /**
+         * Whether a photograph a member points the assistant at may be
+         * shown to the model: in their OWN assistant chat, and — since
+         * #56 — on an `@ai` message in the family chat or on the message
+         * it replies to (docs/protocol.md, "Pictures" and "Showing the
+         * assistant a picture from the family chat"). The sentence under
+         * the switch names all three doors.
+         *
+         * FALSE by default, which is the opposite of [aiHistory] and the
+         * point rather than an oversight: `ai_history` widened what a
+         * model was already being told, while a photograph is a different
+         * kind of disclosure altogether.
+         */
+        val aiVision: Boolean = false,
+        /**
+         * The THIRD switch (`ai_history_photos`, docs/protocol.md, "Recent
+         * photos from the family chat"): whether an `@ai` mention may
+         * also be shown the chat's most recent photographs — pictures
+         * nobody pointed the assistant at. FALSE by default, one notch
+         * further than [aiVision]: not only a different kind of thing
+         * from a sentence, a different kind of ACT — nobody chose these
+         * pictures for this question. Only ever true while [aiVision] is;
+         * the server turns it off whenever that goes off, so a PATCH
+         * answer for either is the truth for both.
+         */
+        val aiHistoryPhotos: Boolean = false,
+        /**
+         * Whether this SERVER has a deployment that can look at a picture
+         * at all (`assistant.vision`).
+         *
+         * The switch above is HIDDEN when this is false — not disabled.
+         * A greyed-out control on a server that has no vision deployment
+         * would be a control that lies about what turning it on would do,
+         * and an owner would reasonably read it as "my server could, but
+         * something is stopping me".
+         */
+        val assistantVision: Boolean = false,
+        /** The owner's own cap, or null for none of their own. */
+        val maxMembers: Int? = null,
+        /** The operator's ceiling; null on a server too old to say. */
+        val ceiling: Int? = null,
+        /** Live members, for the caption and the seed. */
+        val memberCount: Int = 0,
         val busy: Boolean = false,
         val error: String? = null,
-    )
+    ) {
+        /**
+         * How the third switch is drawn: offered, or DISABLED with its
+         * reason. Unlike [aiVision]'s switch, which is hidden on a server
+         * that cannot see, this one is present in both withheld states,
+         * because the protocol asks for exactly that — one reason is
+         * something the owner can act on (turn pictures on first; the
+         * server refuses this while they are off) and the other is
+         * something they deserve to be told rather than left to find
+         * missing (docs/protocol.md, "Recent photos from the family chat"
+         * — "What a client shows").
+         */
+        val historyPhotosSwitch: HistoryPhotosSwitch
+            get() = HistoryPhotosSwitch.of(serverCanSee = assistantVision, familyAllowsPhotos = aiVision)
+    }
+
+    /**
+     * The third switch's state from the two locks under it. The vision
+     * deployment is asked first: an owner on a server that cannot see is
+     * told that, not "turn pictures on first" — which they could do, to
+     * no effect. `ai_history` is deliberately NOT an input: with it off
+     * the switch is inert rather than withheld (there is no transcript
+     * for it to widen) and the server accepts it all the same; the screen
+     * says so beside it instead.
+     */
+    enum class HistoryPhotosSwitch {
+        /** Both locks under it are open; the owner may turn it either way. */
+        OFFERED,
+        /** `assistant.vision` is false: the assistant here cannot look at pictures at all. */
+        WITHHELD_NO_VISION_DEPLOYMENT,
+        /** `ai_vision` is off: the server refuses this while that is. */
+        WITHHELD_VISION_OFF,
+        ;
+
+        val isEnabled: Boolean get() = this == OFFERED
+
+        companion object {
+            fun of(serverCanSee: Boolean, familyAllowsPhotos: Boolean): HistoryPhotosSwitch = when {
+                !serverCanSee -> WITHHELD_NO_VISION_DEPLOYMENT
+                !familyAllowsPhotos -> WITHHELD_VISION_OFF
+                else -> OFFERED
+            }
+        }
+    }
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
@@ -106,6 +203,12 @@ class FamilyAdminViewModel @Inject constructor(
                         joinPolicy = mine.family.joinPolicy,
                         language = mine.family.language,
                         aiHistory = mine.family.aiHistory,
+                        aiVision = mine.family.aiVision,
+                        aiHistoryPhotos = mine.family.aiHistoryPhotos,
+                        assistantVision = mine.assistant?.vision == true,
+                        maxMembers = mine.family.maxMembers,
+                        memberCount = mine.members.size,
+                        ceiling = settings.state.first().maxFamilyMembers,
                     )
                 }
             }
@@ -113,6 +216,9 @@ class FamilyAdminViewModel @Inject constructor(
             // member is a guaranteed 403, which would paint an error over
             // a screen that is otherwise perfectly useful to them.
             if (settings.state.first().familyStatus == FamilyStatus.OWNER) {
+                familyRepository.reports().okOrNull()?.let { response ->
+                    _state.update { it.copy(reports = response.reports) }
+                }
                 loadRequests()
             }
         }
@@ -145,6 +251,97 @@ class FamilyAdminViewModel @Inject constructor(
                 is ApiResult.NetworkError ->
                     _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
             }
+        }
+    }
+
+    /**
+     * Set or clear the family's member cap.
+     *
+     * `null` CLEARS it, which is NOT the same as setting it to the
+     * operator's ceiling — the request carries a real JSON null for that
+     * (docs/protocol.md, `PATCH /families/mine`).
+     */
+    fun setMemberCap(cap: Int?) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setMemberCap(cap)) {
+                is ApiResult.Ok ->
+                    _state.update { it.copy(busy = false, maxMembers = result.value.family.maxMembers) }
+                is ApiResult.HttpError ->
+                    _state.update { it.copy(busy = false, error = result.message ?: appContext.getString(R.string.e_member_limit_failed)) }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Take one report off the list.
+     *
+     * Says nothing about what the owner DID: this protocol has removing a
+     * member, resetting a password and closing the family; it does not
+     * have deleting somebody else's message. Idempotent server-side, so a
+     * double tap and a retry after a timeout are the same request twice
+     * and neither is an error.
+     */
+    fun resolveReport(reportId: Long) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.resolveReport(reportId)) {
+                is ApiResult.Ok ->
+                    _state.update { s -> s.copy(busy = false, reports = s.reports.filterNot { it.id == reportId }) }
+                is ApiResult.HttpError ->
+                    _state.update { it.copy(busy = false, error = result.message ?: appContext.getString(R.string.e_resolve_report_failed)) }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /** The operator's published contact, for the report sheet. */
+    val supportContact: StateFlow<String?> = settings.state.map { it.supportContact }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Everybody this reader has blocked, for the roster's Block/Unblock. */
+    val blockedUserIds: StateFlow<Set<Long>> = settings.state.map { it.blockedUserIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    /**
+     * Block or unblock one member from the roster.
+     *
+     * NOT owner-gated, unlike everything else on this screen: any member
+     * may block any other, the owner included (docs/protocol.md, "Blocking
+     * a member"). The request first, then the local write — never
+     * optimistic.
+     */
+    fun setBlocked(userId: Long, blocked: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val result = if (blocked) familyRepository.block(userId) else familyRepository.unblock(userId)
+            _state.update {
+                it.copy(
+                    busy = false,
+                    error = if (result is ApiResult.Ok) null else appContext.getString(R.string.e_block_failed),
+                )
+            }
+        }
+    }
+
+    /**
+     * Report a PERSON — `messageId` is null, which is what makes the roster
+     * the only way to report somebody without singling out one message.
+     */
+    fun reportMember(userId: Long, reason: String, onDone: () -> Unit) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val result = familyRepository.report(userId, reason, messageId = null)
+            _state.update {
+                it.copy(
+                    busy = false,
+                    error = if (result is ApiResult.Ok<*>) null else appContext.getString(R.string.e_report_failed),
+                )
+            }
+            if (result is ApiResult.Ok<*>) onDone()
         }
     }
 
@@ -198,6 +395,75 @@ class FamilyAdminViewModel @Inject constructor(
                         it.copy(
                             busy = false,
                             error = result.message ?: appContext.getString(R.string.e_change_assistant_history_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Owner-only: whether a photograph a member attaches in their own
+     * assistant chat may be shown to the model.
+     *
+     * One of THREE locks, and the only one an owner holds. The operator
+     * must also have configured a deployment that can see — without one
+     * this screen shows no switch at all — and the member must attach the
+     * picture to the question themselves, which is per-picture consent
+     * and is deliberately never a remembered setting anywhere in this app
+     * (docs/protocol.md, "Pictures").
+     */
+    fun setAiVision(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setAiVision(enabled)) {
+                is ApiResult.Ok ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            aiVision = result.value.family.aiVision,
+                            // Turning this OFF turns the third switch off
+                            // in the same write on the server, asked or
+                            // not — the answer carries both, and both are
+                            // drawn from it.
+                            aiHistoryPhotos = result.value.family.aiHistoryPhotos,
+                        )
+                    }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message ?: appContext.getString(R.string.e_change_assistant_vision_failed),
+                        )
+                    }
+                is ApiResult.NetworkError ->
+                    _state.update { it.copy(busy = false, error = appContext.getString(R.string.e_unreachable)) }
+            }
+        }
+    }
+
+    /**
+     * Owner-only: the third switch (docs/protocol.md, "Recent photos from
+     * the family chat"). The screen never calls this while the switch is
+     * withheld — the server would answer `validation` to `true` under a
+     * shut `ai_vision` — but a refusal that does arrive is shown, and the
+     * switch stays where the server says it is.
+     */
+    fun setAiHistoryPhotos(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            when (val result = familyRepository.setAiHistoryPhotos(enabled)) {
+                is ApiResult.Ok ->
+                    _state.update {
+                        it.copy(busy = false, aiHistoryPhotos = result.value.family.aiHistoryPhotos)
+                    }
+                is ApiResult.HttpError ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = result.message
+                                ?: appContext.getString(R.string.e_change_assistant_history_photos_failed),
                         )
                     }
                 is ApiResult.NetworkError ->
@@ -262,7 +528,22 @@ class FamilyAdminViewModel @Inject constructor(
             when (val result = block()) {
                 is ApiResult.Ok -> onSuccess()
                 is ApiResult.HttpError ->
-                    _state.update { it.copy(error = result.message ?: appContext.getString(R.string.e_action_failed)) }
+                    _state.update {
+                        it.copy(
+                            error = when (result.code) {
+                                // The cap is re-checked at approval,
+                                // because the roster can fill between a
+                                // request and the decision. The request
+                                // stays PENDING — a full family is a
+                                // temporary condition, not a decision — so
+                                // say that rather than something the owner
+                                // cannot act on (docs/protocol.md,
+                                // `POST /families/join-requests/{id}/approve`).
+                                "family_full" -> appContext.getString(R.string.e_family_full_approve)
+                                else -> result.message ?: appContext.getString(R.string.e_action_failed)
+                            },
+                        )
+                    }
                 is ApiResult.NetworkError ->
                     _state.update { it.copy(error = appContext.getString(R.string.e_unreachable)) }
             }

@@ -76,10 +76,39 @@ struct CallManagerTests {
         /// true = a renderer attached, false = detached (nil).
         var localRenderers: [Bool] = []
         var remoteRenderers: [Bool] = []
+        /// Whatever is attached right now — so a test can name it.
+        var attachedLocal: (any RTCVideoRenderer)?
+        var attachedRemote: (any RTCVideoRenderer)?
+        /// Detaches this client refused because the named renderer was not the attached one.
+        var refusedDetaches = 0
         func setCameraEnabled(_ enabled: Bool) { cameraEnabled.append(enabled) }
         func flipCamera() { flips += 1 }
-        func setLocalVideoRenderer(_ renderer: (any RTCVideoRenderer)?) { localRenderers.append(renderer != nil) }
-        func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?) { remoteRenderers.append(renderer != nil) }
+        func setLocalVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {
+            localRenderers.append(renderer != nil)
+            attachedLocal = renderer
+        }
+        func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {
+            remoteRenderers.append(renderer != nil)
+            attachedRemote = renderer
+        }
+        func detachLocalVideoRenderer(_ renderer: any RTCVideoRenderer) -> Bool {
+            guard let attachedLocal, attachedLocal === renderer else {
+                refusedDetaches += 1
+                return false
+            }
+            self.attachedLocal = nil
+            localRenderers.append(false)
+            return true
+        }
+        func detachRemoteVideoRenderer(_ renderer: any RTCVideoRenderer) -> Bool {
+            guard let attachedRemote, attachedRemote === renderer else {
+                refusedDetaches += 1
+                return false
+            }
+            self.attachedRemote = nil
+            remoteRenderers.append(false)
+            return true
+        }
 
         func emit(_ state: CallMediaConnectionState) {
             delegate?.mediaClient(self, connectionStateChanged: state)
@@ -168,12 +197,27 @@ struct CallManagerTests {
             events.append(hasVideo ? "incoming:\(peerName):video" : "incoming:\(peerName)")
         }
         func reportEnded(callID: UUID, reason: CallEndReason) { events.append("ended:\(reason.rawValue)") }
-        func requestAnswer(callID: UUID) {
+        /// When true the fake refuses every transaction, the way CallKit
+        /// does when another app owns the system call or the provider has
+        /// just been reset.
+        var refusesTransactions = false
+
+        func requestAnswer(callID: UUID, onRefused: @escaping () -> Void) {
             events.append("requestAnswer")
+            if refusesTransactions {
+                events.append("refused")
+                onRefused()
+                return
+            }
             manager?.systemDidAnswer()
         }
-        func requestEnd(callID: UUID) {
+        func requestEnd(callID: UUID, onRefused: @escaping () -> Void) {
             events.append("requestEnd")
+            if refusesTransactions {
+                events.append("refused")
+                onRefused()
+                return
+            }
             manager?.systemDidEnd()
         }
     }
@@ -188,6 +232,8 @@ struct CallManagerTests {
         var ensureConnectedCalls = 0
         var endedCalls = 0
         var phases: [CallManager.Phase] = []
+        /// Continuations parked by `waitForEnd()`, resumed by `onEnded`.
+        private var endWaiters: [CheckedContinuation<Void, Never>] = []
         /// The `video` handed to makeMediaClient, per creation.
         var mediaVideo: [Bool] = []
 
@@ -205,16 +251,31 @@ struct CallManagerTests {
             // grant override this with nil.
             manager.cameraGrantState = { camera }
             manager.resolvePeer = { _ in ("Anna", 3) }
-            // Long enough that no guard fires under a loaded parallel run;
-            // the two guard tests lower it themselves.
-            manager.ringTimeout = 5
+            // No guard may fire inside a test body; the two guard tests set
+            // their own. This used to be 5s, described as "long enough that
+            // no guard fires under a loaded parallel run" — CI falsified that
+            // sentence on its first run. On a 3-core hosted runner the
+            // accept tests took 15.0s and 17.6s of wall time, so the
+            // PRODUCT's ring guard fired mid-body, tore the call down under
+            // the assertions, and acceptIncoming then no-op'd on its
+            // `guard case .incoming` — the slower the machine, the likelier
+            // the fixture sabotaged its own test. Nothing depends on this
+            // default expiring: `.ended(.timeout)` is asserted only by
+            // outgoingGuard and incomingGuard, which both lower it to 0.05.
+            manager.ringTimeout = 600
             manager.guardSlack = 0
             manager.endedLinger = 0
             // Weak, not unowned: a guard clock can fire after a test has
             // let its harness go, and the manager's own Task keeps the
             // manager alive past the harness.
             manager.ensureConnected = { [weak self] in self?.ensureConnectedCalls += 1 }
-            manager.onEnded = { [weak self] in self?.endedCalls += 1 }
+            manager.onEnded = { [weak self] in
+                guard let self else { return }
+                self.endedCalls += 1
+                let waiting = self.endWaiters
+                self.endWaiters = []
+                for continuation in waiting { continuation.resume() }
+            }
             manager.onPhaseChange = { [weak self] in self?.phases.append($0) }
             if bridge {
                 let b = FakeBridge()
@@ -232,10 +293,39 @@ struct CallManagerTests {
 
         /// Wait for a clock-driven transition without betting on how loaded
         /// the machine is: poll, bounded, rather than sleep a fixed time.
+        ///
+        /// The bound is still a WALL clock, so it is only honest for
+        /// conditions that do not depend on a timer the main actor owes us.
+        /// For an END, use `waitForEnd()` instead — see the note there.
         func waitUntil(_ condition: @MainActor () -> Bool, timeout: TimeInterval = 5) async {
             let deadline = Date().addingTimeInterval(timeout)
             while !condition() && Date() < deadline {
                 try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+
+        /// Wait for the call to END, by the event rather than by a clock.
+        ///
+        /// `waitUntil` cannot do this job, and CI proved it: its deadline is
+        /// wall time, which keeps advancing while the main actor is held by
+        /// the ~680 other tests in this concurrently-run bundle, so the 5s
+        /// budget is spent on contention rather than on the 50ms guard. The
+        /// failure is then deterministic, not flaky — the poll's 20ms wake
+        /// is enqueued AHEAD of the guard's 50ms wake, so when the actor
+        /// frees the poll runs first, sees an expired deadline and gives up
+        /// one scheduling slot before the guard would have satisfied it.
+        /// (Measured: the guard fires ~1s after the bound expires.) Swapping
+        /// Date for ContinuousClock fixes nothing — a monotonic clock
+        /// advances through the stall too.
+        ///
+        /// Waiting on the event has no bound to blow, and is strictly
+        /// stronger: a guard that never fires now hangs into the test's
+        /// `.timeLimit` and FAILS, where the old poll quietly satisfied
+        /// itself by timing out.
+        func waitForEnd() async {
+            guard endedCalls == 0 else { return }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                endWaiters.append(continuation)
             }
         }
     }
@@ -495,13 +585,14 @@ struct CallManagerTests {
         }
     }
 
-    @Test("outgoing: the guard clock gives up on a server that never answers")
+    @Test("outgoing: the guard clock gives up on a server that never answers",
+          .timeLimit(.minutes(1)))
     func outgoingGuard() async throws {
         let h = Harness()
         h.manager.ringTimeout = 0.05
         h.manager.startCall(chatID: 42, peerUserID: 9)
         await h.drain()
-        await h.waitUntil { h.endedCalls == 1 }
+        await h.waitForEnd()
         #expect(h.manager.phase == .ended(.timeout) || h.manager.phase == .idle)
         #expect(h.endedCalls == 1)
         #expect(h.phases.contains(.ended(.timeout)))
@@ -662,12 +753,13 @@ struct CallManagerTests {
         #expect(h2.manager.phase == .idle)
     }
 
-    @Test("incoming: the ring guard gives up when the offer never comes")
+    @Test("incoming: the ring guard gives up when the offer never comes",
+          .timeLimit(.minutes(1)))
     func incomingGuard() async throws {
         let h = Harness()
         h.manager.ringTimeout = 0.05
         h.manager.handleIncomingPush(IncomingCallPush(callID: remoteID, chatID: 42, fromUserID: 9, callerName: "Anna"))
-        await h.waitUntil { h.endedCalls == 1 }
+        await h.waitForEnd()
         #expect(h.manager.phase == .ended(.timeout) || h.manager.phase == .idle)
         #expect(h.endedCalls == 1)
         #expect(h.phases.contains(.ended(.timeout)))
@@ -703,6 +795,58 @@ struct CallManagerTests {
         #expect(!bridge.events.contains("ended:hangup"))
         await h.drain()
         #expect(h.signaling.ends == ["\(remoteID):hangup"])
+    }
+
+    /// THE BUG. CallKit refuses a transaction — another app owns the system
+    /// call, the provider was just reset, a carrier call is up — and the
+    /// refusal used to be logged and dropped. With no system call UI to end
+    /// from either, the in-app Hang Up did nothing and the call stayed up
+    /// with the microphone live until the far side hung up or the app was
+    /// force-quit. The guard timer is cancelled once media connects, so
+    /// nothing else was coming to save it.
+    @Test("a refused end still ends the call, so Hang Up is never inert")
+    func refusedEndStillHangsUp() async throws {
+        let h = Harness(bridge: true)
+        let bridge = try #require(h.bridge)
+        h.manager.handle(frame: offer(id: remoteID))
+        h.manager.acceptIncoming()
+        await h.drain()
+        h.media.emit(.connected)
+        // If this fails the call was already over and the rest of the test
+        // would be measuring nothing.
+        #expect(h.signaling.ends.isEmpty,
+                "the call ended before the refusal could be tested; phase was \(String(describing: h.manager.phase))")
+
+        bridge.refusesTransactions = true
+        h.manager.hangUp()
+        await h.drain()
+
+        #expect(bridge.events.contains("refused"))
+        // Asserted on the WIRE, not the phase: `.ended` is shown briefly and
+        // then returns to `.idle`, so a phase check here passes or fails on
+        // timing. Telling the far side is the durable consequence, and the
+        // one that matters — without it they sit in a call alone while this
+        // side holds a live microphone.
+        #expect(h.signaling.ends == ["\(remoteID):hangup"],
+                "the system refused and nothing ended the call")
+    }
+
+    /// The ringing side had a working exit already (`declineIncoming` does
+    /// not go through the bridge), but ANSWERING did — so a refused answer
+    /// left a call ringing that could not be picked up.
+    @Test("a refused answer still answers the call")
+    func refusedAnswerStillAnswers() async throws {
+        let h = Harness(bridge: true)
+        let bridge = try #require(h.bridge)
+        h.manager.handle(frame: offer(id: remoteID))
+        bridge.refusesTransactions = true
+
+        h.manager.acceptIncoming()
+
+        #expect(bridge.events.contains("refused"))
+        #expect(h.manager.phase != .incoming,
+                "the system refused and the call stayed ringing with no way in")
+        await h.drain()
     }
 
     @Test("with a system bridge, an outgoing call is reported at each step and a remote end is reported back")
@@ -883,6 +1027,43 @@ struct CallManagerTests {
         #expect(h.manager.isRemoteVideoActive)
         h.media.emitRemoteVideo(false)
         #expect(!h.manager.isRemoteVideoActive)
+    }
+
+    @Test("video: a surface dismantled after its replacement attached leaves the live one drawing")
+    func staleVideoSurfaceDoesNotUnhookTheLiveOne() async throws {
+        let h = Harness()
+        h.manager.startCall(chatID: 42, peerUserID: 9, video: true)
+        await h.drain()
+
+        // Two view trees overlapping: the replacement is made before the
+        // dying one is dismantled, so the dismantle lands last.
+        let dying = FakeRenderer()
+        let replacement = FakeRenderer()
+        h.manager.setRemoteVideoRenderer(dying)
+        h.manager.setRemoteVideoRenderer(replacement)
+
+        h.manager.detachRemoteVideoRenderer(dying)
+
+        // The live surface is untouched. Before the identity check this
+        // cleared the renderer and the call was black for the rest of its
+        // life, with nothing left to re-attach it (issue #38).
+        #expect(h.media.attachedRemote === replacement)
+        #expect(h.media.refusedDetaches == 0)
+
+        // And the CURRENT surface still detaches when it is the one going.
+        h.manager.detachRemoteVideoRenderer(replacement)
+        #expect(h.media.attachedRemote == nil)
+
+        // Same rule for the local preview, which leaves and re-enters the
+        // tree on every camera toggle.
+        let dyingLocal = FakeRenderer()
+        let liveLocal = FakeRenderer()
+        h.manager.setLocalVideoRenderer(dyingLocal)
+        h.manager.setLocalVideoRenderer(liveLocal)
+        h.manager.detachLocalVideoRenderer(dyingLocal)
+        #expect(h.media.attachedLocal === liveLocal)
+        h.manager.detachLocalVideoRenderer(liveLocal)
+        #expect(h.media.attachedLocal == nil)
     }
 
     @Test("video: ending the call takes the remote picture down with the media, before the linger")

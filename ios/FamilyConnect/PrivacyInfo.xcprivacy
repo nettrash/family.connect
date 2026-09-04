@@ -1,13 +1,212 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	This file must agree, key for key, with the App Privacy answers filed in
+	App Store Connect. Both are described in ios/docs/appstore.md under
+	"App Privacy answers"; change them together or not at all.
+
+	Everything below is declared because the SHIPPING configuration
+	(Release-nettrash) compiles in FC_DEFAULT_SERVER_URL = https://fc.nettrash.me,
+	a server the developer operates. A family that switches to its own server
+	shares none of this with the developer — but the label describes the app as
+	shipped, not as it can be reconfigured.
+
+	Everything is Linked, because every row on that server hangs off a
+	persistent account (users.id). "Linked" is about the account, not about
+	whether an email address was required — none is.
+
+	Nothing is Tracking. There is no advertising identifier, no analytics, no
+	crash reporting and no attribution SDK anywhere in the build; the only
+	third-party binary is WebRTC, which carries call media.
+-->
 <plist version="1.0">
 <dict>
 	<key>NSPrivacyTracking</key>
 	<false/>
 	<key>NSPrivacyTrackingDomains</key>
 	<array/>
+
 	<key>NSPrivacyCollectedDataTypes</key>
-	<array/>
+	<array>
+		<!-- Message bodies. Stored as plaintext TEXT in PostgreSQL; this is
+		     not an end-to-end encrypted app and does not claim to be. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeEmailsOrTextMessages</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- Photos and videos sent as attachments. Note Apple's irregular
+		     casing: the "or" is lowercase. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypePhotosorVideos</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- Voice messages. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeAudioData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- Arbitrary file attachments, board notes, polls and their votes,
+		     reactions, and the excerpt frozen onto a report. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- A shared location. One-shot and user-initiated — there is no
+		     continuous or background location anywhere in the app — but the
+		     coordinate that reaches the server is an unrounded WGS-84 double,
+		     far past Apple's three-decimal-place threshold, so it is Precise. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypePreciseLocation</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- Username and account id. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeUserID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- APNs and PushKit VoIP tokens, held per device on the server.
+		     A deliberate choice rather than something the schema compels:
+		     Device ID is the conservative reading of a per-device identifier
+		     tied to an account. It is not an advertising identifier — the app
+		     has none. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeDeviceID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- The display name. Nothing verifies it and no real name is asked
+		     for, but it is free text and families put first names in it, so it
+		     is declared as Name rather than argued away. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeName</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- The optional birthday: a day and a month, never a year. Not
+		     Sensitive Info — that category is for racial, health, religious,
+		     political and biometric data, and ticking it would describe a data
+		     flow this app does not have. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherDataTypes</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- Read markers (chat_reads), which drive read receipts and unread
+		     counts, and the per-member figures the Statistics screen derives.
+		     A behavioural record of how someone uses the app, not content. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeProductInteraction</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!--
+			Deliberately NOT declared, each checked rather than assumed:
+
+			Contacts — the contact-link feature reads a card the person picks
+			and keeps its identifier, name, numbers and emails in this app's own
+			UserDefaults. None of it is ever transmitted, and the picker runs
+			out of process, so the app holds no Contacts permission at all.
+			(A linked number does reach the system call log via CallKit, which
+			is on-device and not collection by the developer.)
+
+			Email address, phone number, physical address — never asked for and
+			no column exists for them.
+
+			Browsing and search history, purchases, advertising data, crash and
+			performance data — none collected. Link previews and map tiles are
+			fetched by the device from the third party directly, are never
+			logged, and both can be switched off in Settings.
+
+			Sensitive info, health, fitness, financial — no such data exists.
+		-->
+	</array>
+
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
 		<dict>
@@ -15,9 +214,34 @@
 			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
-				<!-- CA92.1: reading/writing this app's own defaults
-				     (server URL, join-pending flag, device-registered flag). -->
-				<string>CA92.1</string>
+				<!-- 54BD.1: defaults reachable only by this app itself.
+				     NOT CA92.1, which is the App Group reason — the app reads
+				     and writes UserDefaults.standard (AppSettings, ContactLinks)
+				     and shares no defaults suite with the Share Extension, which
+				     uses the App Group container for files only. -->
+				<string>54BD.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<!-- One call site — FileManager.attributesOfItem(atPath:) in
+				     MediaPrep.fileSize(of:) — reached from every attachment and
+				     recording path. The category is required for that API even
+				     though only .size is read.
+
+				     DDA9.1: the file is in the app's own container or temporary
+				     directory (a recording just made, a compressed copy).
+				     C617.1: the file is one the person selected through a
+				     picker or the macOS open panel.
+				     Both apply, on different paths, so both are declared.
+				     3B52.1 is deliberately absent: it is the reason for a
+				     third-party SDK acting on the app's behalf, which is not
+				     this case. -->
+				<string>DDA9.1</string>
+				<string>C617.1</string>
 			</array>
 		</dict>
 	</array>

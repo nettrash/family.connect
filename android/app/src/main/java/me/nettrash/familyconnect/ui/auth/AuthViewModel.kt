@@ -146,7 +146,7 @@ class AuthViewModel @Inject constructor(
         var ok = true
         if (!USERNAME_REGEX.matches(s.username.trim())) {
             _state.update {
-                it.copy(usernameError = "3–32 characters: letters, digits, _ or .")
+                it.copy(usernameError = appContext.getString(R.string.e_username_rules))
             }
             ok = false
         }
@@ -157,7 +157,7 @@ class AuthViewModel @Inject constructor(
         if (s.mode == Mode.REGISTER) {
             val name = s.displayName.trim()
             if (name.isEmpty() || name.length > 64) {
-                _state.update { it.copy(displayNameError = "1–64 characters") }
+                _state.update { it.copy(displayNameError = appContext.getString(R.string.e_display_name_rules)) }
                 ok = false
             }
         }

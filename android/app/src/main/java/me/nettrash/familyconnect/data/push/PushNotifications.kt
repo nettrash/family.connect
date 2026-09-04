@@ -91,11 +91,11 @@ object PushNotifications {
     fun ensureChannel(context: Context) {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Messages",
+            context.getString(R.string.s_channel_messages),
             // Protocol sends priority HIGH; heads-up on the client side too.
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
-            description = "New family messages and join requests"
+            description = context.getString(R.string.s_channel_messages_desc)
         }
         context.getSystemService(NotificationManager::class.java)
             .createNotificationChannel(channel)

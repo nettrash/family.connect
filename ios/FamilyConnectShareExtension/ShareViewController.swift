@@ -21,10 +21,13 @@
 //  on disk with FileManager (an APFS clone where possible). A ~300 MB
 //  video would OOM-kill the appex under `Data(contentsOf:)`.
 //
-//  Constants are duplicated from the app on purpose (ShareImport.swift is
-//  the app's copy): sharing a source file with an appex means membership
-//  exceptions in the synchronized group, which is the lesson exchange-ios
-//  already paid for.
+//  The hand-off contract — scheme, host, App Group, inbox folder, the
+//  ten-item cap, the URL, the staging path and the filename cleaning —
+//  is NOT redeclared here. It lives in ShareHandoff.swift
+//  (ios/FamilyConnectShared), compiled into this appex and into the app,
+//  because a constant that disagrees across the process boundary makes a
+//  share vanish without either side reporting a thing (issue #34). The
+//  file is dependency-free, so nothing of the app's world comes with it.
 //
 
 import UniformTypeIdentifiers
@@ -38,15 +41,6 @@ typealias SharePlatformViewController = NSViewController
 #endif
 
 final class ShareViewController: SharePlatformViewController {
-
-    // Must match ShareImport in the main app.
-    private let appGroupIdentifier = "group.me.nettrash.FamilyConnect"
-    private let handoffScheme = "familyconnect"
-    private let handoffHost = "share"
-    private let inboxFolder = "ShareInbox"
-    /// The protocol's cap on one message's attachments — also the
-    /// activation rule's MaxCount, so more than ten never even offers us.
-    private let maxItems = 10
 
     #if os(macOS)
     // No nib: the view is made by hand on macOS, where loadView would
@@ -96,20 +90,49 @@ final class ShareViewController: SharePlatformViewController {
 
     private func handleShare() async {
         defer { finish() }
-        guard let inbox = inboxURL() else { return }
-        try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        // No container means the App Group entitlement is missing: there
+        // is nowhere the app could read from, so stage nothing at all
+        // rather than copying files into a folder only this appex sees.
+        guard let container = ShareHandoff.containerURL() else { return }
+        try? FileManager.default.createDirectory(
+            at: ShareHandoff.inboxURL(container: container), withIntermediateDirectories: true)
+
+        // Take out whatever an earlier hand-off abandoned, BEFORE staging
+        // this one (issue #35). Two reasons for this appex rather than
+        // only the app, and for here rather than after the hand-off:
+        //
+        // This process is the only one guaranteed to run when an orphan
+        // is CREATED. The app may never be opened between two shares —
+        // share, change your mind, share again next week — and every one
+        // of those leaves a staging directory nothing else will ever look
+        // at. Whereas after `openHostApp` is the moment the system has
+        // what it needs to tear this extension down, so a sweep there is
+        // a sweep that may not run. Before staging is also the ordering
+        // that cannot go wrong: the sweep can only see directories from
+        // earlier hand-offs, over and above the day-long floor that
+        // already spares anything this run is about to write.
+        //
+        // Affordable under the jetsam limit this class is written around:
+        // one directory listing plus a stat per entry — of a folder that
+        // is empty whenever the last share landed — and not one byte of
+        // any file is read.
+        _ = ShareHandoff.sweepOrphanedStaging(container: container)
 
         var ids: [String] = []
-        for provider in attachmentProviders().prefix(maxItems) {
+        for provider in attachmentProviders().prefix(ShareHandoff.maxAttachmentsPerMessage) {
             let id = UUID().uuidString
-            let directory = inbox.appendingPathComponent(id, isDirectory: true)
+            // Through the shared helper, never by hand: this is the path
+            // the app will rebuild from the id in the URL, and the two
+            // spellings have to be one spelling.
+            guard let directory = ShareHandoff.stagingDirectory(
+                container: container, id: id) else { continue }
             if await stage(provider, into: directory) {
                 ids.append(id)
             } else {
                 try? FileManager.default.removeItem(at: directory)
             }
         }
-        guard !ids.isEmpty, let url = handoffURL(ids: ids) else { return }
+        guard let url = ShareHandoff.handoffURL(ids: ids) else { return }
         openHostApp(url)
     }
 
@@ -141,7 +164,7 @@ final class ShareViewController: SharePlatformViewController {
                     continuation.resume(returning: false)
                     return
                 }
-                let name = Self.safeFileName(
+                let name = ShareHandoff.safeFileName(
                     Self.bestFileName(suggested: suggestedName, url: url))
                 do {
                     try FileManager.default.createDirectory(
@@ -169,38 +192,9 @@ final class ShareViewController: SharePlatformViewController {
         return suggested
     }
 
-    /// A name safe to create INSIDE the staging directory: no path
-    /// separators, nothing hidden, never empty — the same cleaning the
-    /// app applies to names off the wire.
-    private static func safeFileName(_ name: String) -> String {
-        let cleaned = name
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let visible = String(cleaned.drop(while: { $0 == "." }))
-        return visible.isEmpty ? "file" : String(visible.prefix(255))
-    }
-
     // MARK: - Hand-off
 
-    private func inboxURL() -> URL? {
-        FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)?
-            .appendingPathComponent(inboxFolder, isDirectory: true)
-    }
-
-    /// `familyconnect://share?ids=<uuid>,<uuid>` — ids only. A filename
-    /// does not survive a query string with its commas intact, so names
-    /// stay on the staged files, and UUIDs are what the app will accept
-    /// (anything else would become a path over there).
-    private func handoffURL(ids: [String]) -> URL? {
-        var components = URLComponents()
-        components.scheme = handoffScheme
-        components.host = handoffHost
-        components.queryItems = [URLQueryItem(name: "ids", value: ids.joined(separator: ","))]
-        return components.url
-    }
-
+    /// Open the app on the hand-off URL ShareHandoff just built.
     private func openHostApp(_ url: URL) {
         #if os(iOS)
         // An extension cannot call UIApplication.shared.open — walk the

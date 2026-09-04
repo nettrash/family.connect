@@ -797,6 +797,107 @@ class CallManagerTest {
         assertThat(manager.remoteVideoActive.value).isFalse()
     }
 
+    // -- The remote-surface handoff (issue #38 hardening) -----------------------------
+
+    @Test
+    fun aStaleRemoteSurfaceReleasedAfterItsReplacementLeavesTheLiveOneAttached() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = true)
+        runCurrent()
+        val client = media.created.single()
+
+        // Two compositions overlapping: an Activity recreated mid-call
+        // builds the new tree BEFORE it disposes the old one, so the
+        // dying surface's release lands after its replacement attached.
+        val dying = VideoSink {}
+        val live = mutableListOf<VideoFrame>()
+        val replacement = VideoSink(live::add)
+        manager.setRemoteVideoSink(dying)
+        manager.setRemoteVideoSink(replacement)
+        val attached = client.remoteSink
+
+        manager.detachRemoteVideoSink(dying)
+
+        // The live surface is untouched — the same wrapper is still
+        // registered, and frames still reach it. Before the identity
+        // check this cleared the sink and the call was black for the
+        // rest of its life, with nothing left to re-attach it.
+        assertThat(client.remoteSink).isSameInstanceAs(attached)
+        assertThat(client.refusedRemoteDetaches).isEqualTo(0)
+        client.remoteSink!!.onFrame(fakeVideoFrame())
+        runCurrent()
+        assertThat(live).hasSize(1)
+        assertThat(manager.remoteVideoActive.value).isTrue()
+    }
+
+    @Test
+    fun theCurrentRemoteSurfaceStillDetachesWhenItIsReleased() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = true)
+        runCurrent()
+        val client = media.created.single()
+
+        val sink = VideoSink {}
+        manager.setRemoteVideoSink(sink)
+        assertThat(client.remoteSink).isNotNull()
+
+        manager.detachRemoteVideoSink(sink)
+
+        assertThat(client.remoteSink).isNull()
+        assertThat(client.refusedRemoteDetaches).isEqualTo(0)
+    }
+
+    @Test
+    fun aStaleLocalPreviewReleasedAfterItsReplacementLeavesTheLiveOneAttached() = runTest(dispatcher) {
+        manager.startCall(CHAT, PEER, video = true)
+        runCurrent()
+        val client = media.created.single()
+
+        val dying = VideoSink {}
+        val replacement = VideoSink {}
+        manager.setLocalVideoSink(dying)
+        manager.setLocalVideoSink(replacement)
+
+        manager.detachLocalVideoSink(dying)
+
+        assertThat(client.localSink).isSameInstanceAs(replacement)
+
+        manager.detachLocalVideoSink(replacement)
+        assertThat(client.localSink).isNull()
+    }
+
+    /**
+     * The path nobody has tested: the phone is woken by FCM, so the call
+     * screen composes and registers its surface while the call is still
+     * ringing — media does not exist yet. openMedia must hand that surface
+     * over the moment it does, first-frame reporting and all.
+     */
+    @Test
+    fun aSurfaceRegisteredBeforeMediaExistsIsAppliedWhenMediaOpens() = runTest(dispatcher) {
+        manager.onIncomingPush(CALL, CHAT, PEER, callerName = null, video = true)
+        runCurrent()
+        assertThat(media.created).isEmpty()
+
+        val frames = mutableListOf<VideoFrame>()
+        val sink = VideoSink(frames::add)
+        manager.setRemoteVideoSink(sink)
+
+        offer(video = true)
+        manager.accept()
+        runCurrent()
+
+        val client = media.created.single()
+        assertThat(client.remoteSink).isNotNull()
+        client.remoteSink!!.onFrame(fakeVideoFrame())
+        runCurrent()
+        assertThat(frames).hasSize(1)
+        assertThat(manager.remoteVideoActive.value).isTrue()
+
+        // And the surface released after that call is over is not mistaken
+        // for the next call's — there is no client left to detach from.
+        manager.hangUp()
+        runCurrent()
+        manager.detachRemoteVideoSink(sink)
+    }
+
     @Test
     fun remoteVideoActivityClearsAtTheEnd() = runTest(dispatcher) {
         manager.startCall(CHAT, PEER, video = true)
@@ -950,6 +1051,24 @@ private class FakeMediaClient(
 
     override fun setRemoteVideoSink(sink: VideoSink?) {
         remoteSink = sink
+    }
+
+    /** Detaches this client REFUSED because the named sink was not the registered one. */
+    var refusedRemoteDetaches = 0
+
+    override fun detachLocalVideoSink(sink: VideoSink): Boolean {
+        if (localSink !== sink) return false
+        localSink = null
+        return true
+    }
+
+    override fun detachRemoteVideoSink(sink: VideoSink): Boolean {
+        if (remoteSink !== sink) {
+            refusedRemoteDetaches += 1
+            return false
+        }
+        remoteSink = null
+        return true
     }
 
     override fun close() {

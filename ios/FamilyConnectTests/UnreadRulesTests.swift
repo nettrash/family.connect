@@ -62,6 +62,7 @@ struct UnreadRulesTests {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
             for: ChatEntity.self, MessageEntity.self, MemberEntity.self,
+            PendingMediaItemEntity.self,
             configurations: configuration)
         let api = APIClient(
             serverURL: URL(string: "https://\(host)")!,
@@ -91,6 +92,78 @@ struct UnreadRulesTests {
     private func deliverTwoUnread(_ harness: Harness) {
         harness.coordinator.handle(frame: .message(dto(id: 10)))
         harness.coordinator.handle(frame: .message(dto(id: 11)))
+    }
+
+    // MARK: - Blocking must not touch the marker
+
+    @Test("the read marker runs THROUGH a blocked member's messages")
+    func markerAdvancesThroughHiddenRows() async throws {
+        let harness = try makeHarness(host: "unread-blocked.test", handler: { _ in .empty(204) })
+        defer { harness.tearDown() }
+        harness.coordinator.replaceBlocks(with: [9])
+
+        // A family chat, which the server delivers UNFILTERED on purpose
+        // (docs/protocol.md, "It follows that the server still DELIVERS").
+        // 11 is from the blocked member and draws as the placeholder; the
+        // two around it are ordinary rows.
+        // The blocked member sends LAST, which is the only arrangement
+        // that can catch this: with an ordinary message on top, the max
+        // reaches the right answer through it and a marker that skips
+        // hidden rows still looks correct.
+        harness.coordinator.handle(frame: .message(dto(id: 10, senderID: 8)))
+        harness.coordinator.handle(frame: .message(dto(id: 11, senderID: 9)))
+        harness.coordinator.handle(frame: .message(dto(id: 12, senderID: 9)))
+
+        // Three, not two: a hidden row still moves the count, because the
+        // count is the other half of the marker and projecting one without
+        // the other desynchronises them.
+        #expect(harness.chat(42)?.unreadCount == 3)
+
+        harness.coordinator.updatePresence(chatID: 42, isAtNewest: true, isFrontmost: true)
+        await harness.coordinator.pendingReadPost?.value
+
+        // 12, and the whole point is that it is not 10. A marker parked
+        // below the hidden rows would leap forward the moment a third
+        // member posted, and that leap is a repeatable oracle for the
+        // blocked person watching the other end — reason (c), rebuilt by
+        // the client one layer above the server.
+        #expect(harness.chat(42)?.myLastReadID == 12)
+        #expect(harness.chat(42)?.maxServerMessageID == 12)
+        #expect(harness.chat(42)?.unreadCount == 0)
+
+        // And it must be on the WIRE at 12, not merely local: the server's
+        // marker is what the blocked person's client can observe moving.
+        let posted = harness.readPosts()
+        #expect(posted.count == 1)
+        let json = try #require(posted.first?.bodyJSON())
+        #expect(json["last_read_message_id"] as? Int == 12)
+    }
+
+    @Test("blocking freezes the marker in the direct chat, and reports nothing")
+    func blockedDirectChatStopsReporting() async throws {
+        let harness = try makeHarness(host: "unread-direct-blocked.test", handler: { _ in .empty(204) })
+        defer { harness.tearDown() }
+        let direct = ChatEntity(chatID: 77, kind: "direct", pinRank: 0, peerUserID: 9, title: "Sam")
+        harness.context.insert(direct)
+        try harness.context.save()
+
+        harness.coordinator.handle(frame: .message(MessageDTO(
+            id: 20, chatID: 77, senderID: 9, clientMsgID: nil,
+            body: "hello", createdAt: Self.serverDate, attachment: nil)))
+        #expect(harness.chat(77)?.unreadCount == 1)
+
+        harness.coordinator.applyBlock(userID: 9, blocked: true)
+
+        // "Gone from every path they can reach it by" — so there is no
+        // chat left to read, and reading is not something the client may
+        // do on the blocker's behalf. A marker that answered every message
+        // within milliseconds, at four in the morning, is not a person
+        // reading (docs/protocol.md, "Direct chats").
+        #expect(harness.chat(77) == nil)
+
+        harness.coordinator.updatePresence(chatID: 77, isAtNewest: true, isFrontmost: true)
+        await harness.coordinator.pendingReadPost?.value
+        #expect(harness.readPosts().isEmpty, "a frozen marker means nothing on the wire")
     }
 
     // MARK: - Things that look like reading and are not

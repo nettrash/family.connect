@@ -35,6 +35,10 @@ struct RingbackPlayerTests {
         var made: [FakeSink] = []
         var data: [Data] = []
         var refuseNext = false
+        /// Resumed by the `makeSink` seam the moment the player makes a
+        /// sink, so a test can wait for the RETRY itself rather than for a
+        /// clock that a stalled main actor spends on its behalf.
+        var onMake: (() -> Void)?
     }
 
     @MainActor
@@ -48,12 +52,27 @@ struct RingbackPlayerTests {
                 sink.refuses = recorder.refuseNext
                 recorder.made.append(sink)
                 recorder.data.append(data)
+                let waiting = recorder.onMake
+                recorder.onMake = nil
+                waiting?()
                 return sink
             }
         }
         var made: [FakeSink] { recorder.made }
         var data: [Data] { recorder.data }
         func refuse(_ on: Bool) { recorder.refuseNext = on }
+
+        /// Waits for the next sink the player makes.
+        ///
+        /// The continuation is registered synchronously, before any other
+        /// main-actor job can run, so a sink made later cannot be missed;
+        /// and resuming only ENQUEUES this caller, so `playIfPossible` has
+        /// finished — and `isPlaying` is true — by the time it runs.
+        func nextSink() async {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                recorder.onMake = { continuation.resume() }
+            }
+        }
     }
 
     @Test("mac: a live session plays at once, stop silences, start is idempotent")
@@ -123,7 +142,8 @@ struct RingbackPlayerTests {
         #expect(h.made[1].plays == 1)
     }
 
-    @Test("a refused play is retried once after the grace period, without any activation")
+    @Test("a refused play is retried once after the grace period, without any activation",
+          .timeLimit(.minutes(1)))
     func refusalRetriedAfterGrace() async {
         let h = Harness(sessionLive: true, grace: .milliseconds(50))
         h.refuse(true)
@@ -131,10 +151,13 @@ struct RingbackPlayerTests {
         #expect(h.made.count == 1)
         #expect(!h.player.isPlaying)
         h.refuse(false)
-        let deadline = ContinuousClock.now + .seconds(3)
-        while !h.player.isPlaying, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(20))
-        }
+        // The retry is the EVENT to wait for. A wall-clock bound here is
+        // spent by whatever else holds the main actor — this bundle runs its
+        // ~680 tests concurrently and 27 of 59 files are @MainActor — and
+        // then gives up one scheduling slot before the retry lands. CI
+        // measured exactly that: 12.6s against a 3s budget, while the
+        // product's timer fired 1-2ms after the actor was freed.
+        await h.nextSink()
         #expect(h.made.count == 2)
         #expect(h.player.isPlaying)
         // And a stop cancels the check: no third player appears later.

@@ -223,6 +223,97 @@ class SessionRepositoryTest {
 
     // -- Auth flow ------------------------------------------------------------------------
 
+    /**
+     * `blocked_user_ids` is "the one read in this protocol where absence is
+     * not allowed to mean 'leave what you hold alone'" (docs/protocol.md,
+     * `GET /me`). A guard skipping the empty case is the bug that clause
+     * exists to prevent: the last unblock would never reach a second
+     * device, and the block would appear to be stuck on forever.
+     */
+    @Test
+    fun refreshMeReplacesTheBlockListEvenWhenItArrivesEmpty() = runTest(dispatcher) {
+        val repository = newRepository()
+        settings.setServerUrl("https://chat.example.com")
+        settings.setBlockedUserIds(setOf(11L, 14L))
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(
+                user = userDto(7, "anna"),
+                family = family,
+                role = "member",
+                blockedUserIds = emptyList(),
+            ),
+        )
+
+        repository.refreshMe()
+
+        assertThat(settings.current.blockedUserIds).isEmpty()
+        // And it was WRITTEN, not merely left alone by luck.
+        assertThat(settings.blockedWrites.last()).isEmpty()
+    }
+
+    /** The ordinary direction, so the test above is pinned to emptiness. */
+    @Test
+    fun refreshMeStoresTheBlockListItIsGiven() = runTest(dispatcher) {
+        val repository = newRepository()
+        settings.setServerUrl("https://chat.example.com")
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(
+                user = userDto(7, "anna"),
+                family = family,
+                role = "member",
+                blockedUserIds = listOf(11L, 14L),
+            ),
+        )
+
+        repository.refreshMe()
+
+        assertThat(settings.current.blockedUserIds).containsExactly(11L, 14L)
+    }
+
+    /**
+     * `family_registration_enabled` (docs/protocol.md, "Starting a
+     * family") is what the family gate reads to decide between a Create
+     * card and directions to run one's own server, so `/me` has to land
+     * it in settings in BOTH directions — a server that reopens must
+     * bring Create back on the next refresh, not the next reinstall.
+     */
+    @Test
+    fun refreshMeRecordsWhetherTheServerTakesNewFamilies() = runTest(dispatcher) {
+        val repository = newRepository()
+        settings.setServerUrl("https://chat.example.com")
+        assertThat(settings.current.familyRegistrationEnabled).isTrue()
+
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(user = userDto(7, "anna"), familyRegistrationEnabled = false),
+        )
+        repository.refreshMe()
+        assertThat(settings.current.familyRegistrationEnabled).isFalse()
+
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(user = userDto(7, "anna"), familyRegistrationEnabled = true),
+        )
+        repository.refreshMe()
+        assertThat(settings.current.familyRegistrationEnabled).isTrue()
+    }
+
+    /** The grace an account without a family gets rides `/me` the same way, 0 meaning never. */
+    @Test
+    fun refreshMeRecordsTheGraceAnAccountWithoutAFamilyGets() = runTest(dispatcher) {
+        val repository = newRepository()
+        settings.setServerUrl("https://chat.example.com")
+        assertThat(settings.current.familylessAccountTtlDays).isEqualTo(0)
+
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(user = userDto(7, "anna"), familylessAccountTtlDays = 7),
+        )
+        repository.refreshMe()
+        assertThat(settings.current.familylessAccountTtlDays).isEqualTo(7)
+
+        authApi.meResult = ApiResult.Ok(MeResponse(user = userDto(7, "anna")))
+        repository.refreshMe()
+        assertThat(settings.current.familylessAccountTtlDays).isEqualTo(0)
+    }
+
     @Test
     fun loginStoresTokenRefreshesMeAndRegistersDevice() = runTest(dispatcher) {
         val repository = newRepository()

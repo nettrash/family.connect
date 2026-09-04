@@ -150,6 +150,10 @@ struct ConversationView: View {
     /// is materialized — the ground-truth "the user is at the bottom"
     /// signal that the convergence loop and the re-pin hooks key on.
     @State private var isPinnedToBottom = false
+    /// The thread's own width, watched because on an iPad it CHANGES —
+    /// the split view's sidebar toggles and the device rotates. See the
+    /// geometry hook on the scroll view (PIN HOOK 4 of 4).
+    @State private var threadWidth: CGFloat = 0
     /// Focus of the input field. Focusing raises the keyboard; both that
     /// and a growing multi-line draft change the bottom INSET, which
     /// defaultScrollAnchor does not re-anchor for — the snaps below do.
@@ -163,6 +167,12 @@ struct ConversationView: View {
     /// it against the capsule's bottom edge. Scaled, because the capsule
     /// grows with Dynamic Type and a hard-coded 36 would drift apart from it.
     @ScaledMetric(relativeTo: .body) private var composerControl: CGFloat = 36
+    /// The glyphs inside those controls scale with them: fixed point
+    /// sizes left a 20pt paperclip in a 52pt control at the largest
+    /// accessibility sizes, and a 26pt arrow in a 36pt one at the
+    /// smallest.
+    @ScaledMetric(relativeTo: .body) private var attachGlyph: CGFloat = 20
+    @ScaledMetric(relativeTo: .body) private var sendGlyph: CGFloat = 26
 
     /// Live height of the input bar; changes exactly when the draft wraps
     /// to more (or fewer) lines.
@@ -171,12 +181,33 @@ struct ConversationView: View {
     /// the wire snapshot so send() can hand it straight to the coordinator
     /// and the pending bubble can draw its quote before the server answers.
     @State private var replyDraft: ReplyToDTO?
+    /// What the message being replied to carries, looked up once per
+    /// reply target rather than per keystroke — the family composer's
+    /// picture strip reads it (`mentionPictureNotice`), and a scan of the
+    /// chat's rows inside a body property would run on every character.
+    @State private var quotedAttachments: [AttachmentDTO] = []
     /// The message being rewritten, while the composer is in edit mode.
     /// Mutually exclusive with replyDraft: you are either answering a
     /// message or rewriting one.
     @State private var editTarget: (messageID: Int64, original: String)?
     /// Briefly tinted after a jump, so the eye lands on the right bubble.
     @State private var highlightedMessageID: String?
+    /// Rows peeked at, keyed by `message.localID`.
+    ///
+    /// A REVEAL IS A PEEK: per row, per device, never on the wire and never
+    /// stored. It lives here rather than in the bubble for two reasons —
+    /// `@State` inside a bubble is destroyed when the ~60-row window slides
+    /// the row out and back, which the protocol forbids ("a revealed row
+    /// stays revealed … including when newer messages arrive after it"),
+    /// and the jump gate needs to read it. `.id(chatID)` on the
+    /// navigationDestination tears this whole view down on a chat switch,
+    /// which is exactly "once on demand".
+    @State private var revealedMessageIDs: Set<String> = []
+    /// Quote levels peeked at, keyed by HOST + LEVEL — never by the quoted
+    /// message's id. The same blocked message quoted by three bubbles is
+    /// three independent peeks, and revealing a quote must not reveal the
+    /// row it points at.
+    @State private var revealedQuoteIDs: Set<String> = []
     /// True while a reply that was STARTED FROM HISTORY is being composed.
     ///
     /// Both pin rules below fire on the two things beginReply does — it
@@ -256,6 +287,11 @@ struct ConversationView: View {
     /// nil = no picker. Set/cleared inside withAnimation so the capsule
     /// springs in and out.
     @State private var reactionPickerID: String?
+    /// Which page the message menu is showing. Owned here, not by the
+    /// menu, so `MessageContextMenu.size` and the menu itself agree.
+    @State private var menuPage: MessageContextMenu.Page = .main
+    /// The member a report sheet is open for, if any.
+    @State private var reportTarget: ReportTarget?
     /// The bubble the "+" full emoji picker sheet is up for.
     @State private var fullPickerTarget: ReactionTarget?
     /// Text handed to the share sheet, nil while it is closed.
@@ -287,6 +323,12 @@ struct ConversationView: View {
     /// Whether there is somebody to ring from here.
     private var canCall: Bool {
         session.callsEnabled && chat?.kind == "direct" && chat?.peerUserID != nil
+            // The blocker calling somebody they blocked is refused with
+            // `blocked`, so the button does not offer it. Defence in depth
+            // behind the direct-chat prune: if the prune landed this is
+            // unreachable, and if it did not this stops the one visible
+            // refusal.
+            && !(chat?.peerUserID.map { coordinator.blockedUserIDs.contains($0) } ?? false)
     }
 
     private func startCall() {
@@ -339,6 +381,11 @@ struct ConversationView: View {
     /// window exists to prevent, and starting the window MUCH wider (which
     /// is what an anchored open does) makes it materially worse.
     private static let maxWindow = 300
+    /// The readable column the thread's content is capped to (#21/#44),
+    /// named because the floating jump-to-newest button has to line up
+    /// with the SAME column — see the overlay for why that is not a
+    /// cosmetic choice.
+    static let threadMaxWidth: CGFloat = 560
 
     private var visibleMessages: ArraySlice<MessageEntity> {
         messages.suffix(visibleCount)
@@ -439,6 +486,16 @@ struct ConversationView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
+                // A readable column on a big screen, the second half of
+                // #21. The CONTAINER is capped, never the bubble: the
+                // greedy-frame ordering question stays out of
+                // MessageBubbleView (which has shipped a full-width-slab
+                // regression twice) and ReplyBalloonLayout — shared with
+                // macOS, carrying no #if os(iOS) — is untouched. 560 sits
+                // above every iPhone PORTRAIT width, so the bubble subtree
+                // there sees exactly the proposal it ships with today.
+                .frame(maxWidth: Self.threadMaxWidth)
+                .frame(maxWidth: .infinity)
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
@@ -475,14 +532,35 @@ struct ConversationView: View {
             // every content change that happens to coincide with it inside
             // an animation transaction, which is how a thread starts
             // sliding for reasons nobody asked for.
-            .overlay(alignment: .bottomTrailing) {
-                ZStack {
-                    if showsJumpToNewest {
-                        JumpToNewestButton { pinToBottom(proxy, animated: true) }
-                            .transition(.scale.combined(with: .opacity))
+            .overlay(alignment: .bottom) {
+                // Aligned to the trailing edge of the THREAD COLUMN, not
+                // of the viewport.
+                //
+                // The thread's content is capped to a readable column
+                // (#21/#44) and centred, so on an iPad's detail column the
+                // viewport's trailing edge is 100pt-odd of empty margin
+                // away from the last bubble — a control pinned there is
+                // nowhere near the thing it acts on, which is the same
+                // "phone app stretched across a display" complaint issue
+                // #43 is about. On the phone NOTHING moves: every iPhone
+                // is narrower than the cap, so the column IS the viewport
+                // (measured, iPhone 17: the button's frame is
+                // 353.75,731.75 before and after, to the quarter-point).
+                //
+                // The button's own hit shape is a separate matter and a
+                // real bug; it is fixed where it lives, in
+                // JumpToNewestButton.
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    ZStack {
+                        if showsJumpToNewest {
+                            JumpToNewestButton { pinToBottom(proxy, animated: true) }
+                                .transition(.scale.combined(with: .opacity))
+                        }
                     }
+                    .animation(.spring(duration: 0.25), value: showsJumpToNewest)
                 }
-                .animation(.spring(duration: 0.25), value: showsJumpToNewest)
+                .frame(maxWidth: Self.threadMaxWidth)
             }
             .task {
                 // Un-park a draft an earlier identity of this chat's view
@@ -524,7 +602,7 @@ struct ConversationView: View {
                 // reader deep in history must not be yanked down) — and
                 // never while a history page is being prepended above.
                 //
-                // PIN HOOK 1 of 3. The `!hasSettled` clause is the one that
+                // PIN HOOK 1 of 4. The `!hasSettled` clause is the one that
                 // had to be gated: it exists so a message landing during
                 // the opening window keeps a normal open at the bottom
                 // (where `isPinnedToBottom` is still false because no
@@ -561,13 +639,30 @@ struct ConversationView: View {
                 guard isPinnedToBottom else { return }
                 pinToBottom(proxy, animated: false)
             }
+            .onChange(of: coordinator.blockedUserIDs) {
+                // A live `member_blocked` frame COLLAPSES every row of that
+                // sender in the window in one layout pass — the same
+                // problem as a link card landing, in reverse and at scale.
+                // The preserved pixel offset then throws a reader who was
+                // at the bottom into the middle of nowhere.
+                guard isPinnedToBottom else { return }
+                pinToBottom(proxy, animated: false)
+            }
+            .onChange(of: revealedMessageIDs) {
+                // And a reveal is the same thing the other way: a thin row
+                // becomes a full bubble with an album, a link card and two
+                // chip rows, which dwarfs every growth the three hooks
+                // above exist for.
+                guard isPinnedToBottom else { return }
+                pinToBottom(proxy, animated: false)
+            }
             .onChange(of: inputFocused) {
                 // The keyboard rising is an inset change, and the system's
                 // own avoidance is best-effort — deterministically pin the
                 // newest message above it (twice: as the animation starts
                 // and after it lands; standard messenger behavior).
                 //
-                // PIN HOOK 3 of 3, and deliberately NOT gated on the
+                // PIN HOOK 3 of 4, and deliberately NOT gated on the
                 // opening anchor. Nothing focuses this field on open, so it
                 // cannot fire during the opening window; when it does fire
                 // a person has just tapped into the composer, and a person
@@ -589,6 +684,51 @@ struct ConversationView: View {
                 guard inputFocused, !replyStartedFromHistory else { return }
                 pinToBottom(proxy, animated: false)
             }
+            // The thread can now be RESIZED HORIZONTALLY under a reader:
+            // on an iPad it lives in a split view's detail column (issue
+            // #43), so hiding or showing the sidebar and rotating the
+            // device both change its width. A ScrollView keeps a POINT
+            // OFFSET across that, not a message, and every row re-wraps at
+            // the new width — so a reader sitting at the newest message
+            // comes back somewhere above it.
+            //
+            // The Mac hit this first and fixed it the same way; its
+            // header spells out the reasoning (MacConversationView, "A Mac
+            // window DOES resize"). Only the BOTTOM is restorable without
+            // tracking per-row geometry, and it is the case that actually
+            // bites; away from the bottom the bounded window keeps any
+            // drift to genuine re-wrapping of a page of rows.
+            //
+            // The measure is the width CONTENT can use, not the view's
+            // own — and on this platform they are different things. The
+            // Mac watches `size.width` because there a sidebar toggle
+            // really does resize the detail view. On iPadOS 26 the sidebar
+            // floats OVER a detail column that stays the full width of the
+            // window (verified: the thread's ScrollView reports
+            // {0,0,1032,1376} with the sidebar both shown and hidden), and
+            // what moves is the safe area. Subtracting the horizontal
+            // insets is what makes this hook see the toggle at all; it
+            // also still sees a rotation and a Split View resize, which
+            // move the frame itself.
+            //
+            // PIN HOOK 4 of 4. Inert on the phone by construction: its
+            // width changes only on rotation, and the guard fires only
+            // for a reader who is ALREADY at the newest message, whose
+            // request is "be at the newest message".
+            .onGeometryChange(for: CGFloat.self) {
+                $0.size.width - $0.safeAreaInsets.leading - $0.safeAreaInsets.trailing
+            } action: { width in
+                // The first report is the opening layout, not a resize:
+                // record it and do nothing, or this would scroll a thread
+                // that is still deciding where to open.
+                guard threadWidth != 0, width != threadWidth else {
+                    threadWidth = width
+                    return
+                }
+                threadWidth = width
+                guard isPinnedToBottom else { return }
+                pinToBottom(proxy, animated: false)
+            }
         }
         .safeAreaInset(edge: .bottom) {
             inputBar
@@ -604,6 +744,22 @@ struct ConversationView: View {
         // Grouped into one modifier: the chain here is long enough that
         // the type checker gives up on it as separate steps.
         .modifier(attachmentSurfaces)
+        .sheet(item: $reportTarget) { target in
+            ReportSheet(
+                target: target,
+                onSubmit: { reason in
+                    reportTarget = nil
+                    Task {
+                        await coordinator.report(
+                            reportedUserID: target.senderID,
+                            // The RAW value: the untranslated wire string,
+                            // never the label somebody reads.
+                            reason: reason.rawValue,
+                            messageID: target.messageID)
+                    }
+                },
+                onCancel: { reportTarget = nil })
+        }
         .sheet(item: $shareText) { share in
             ShareSheet(text: share.text)
         }
@@ -636,10 +792,14 @@ struct ConversationView: View {
                 VStack(spacing: 0) {
                     Text(chat?.title ?? "")
                         .font(.headline)
+                        .lineLimit(1)
                     if let typingLine {
+                        // One line: three people typing at once wrapped
+                        // the caption and pushed the title off its bar.
                         Text(typingLine)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                             .transition(.opacity)
                     }
                 }
@@ -701,12 +861,21 @@ struct ConversationView: View {
             // then the reader has genuinely seen it.
             publishPresence()
         }
-        .onChange(of: scenePhase) {
+        .onChange(of: scenePhase) { previous, _ in
             // Backgrounding revokes the authority to read (the coordinator
             // does that centrally, because onDisappear does NOT fire here);
             // coming back re-establishes it from the same geometry, without
             // the act of returning reading anything by itself.
             publishPresence()
+            // Coming back from the BACKGROUND specifically — not from the
+            // inactive flicker a Control Centre pull or an alert causes —
+            // is the one moment iOS has certainly thrown away a permission
+            // alert that was up, and it does not put it back. Tell the
+            // provider, so a share parked on that prompt stops waiting for
+            // an answer that can no longer arrive. It re-reads the status
+            // first, so a permission granted in Settings while we were away
+            // still continues the share.
+            if previous == .background { locationProvider.promptWasAbandoned() }
         }
         .onChange(of: model.draft) { _, newValue in
             guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -776,27 +945,41 @@ struct ConversationView: View {
                             MessageBubbleView(
                                 message: message,
                                 isMine: message.senderID == currentUserID,
-                                isStreaming: message.serverID.map {
-                                    coordinator.streamingMessageIDs.contains($0)
+                                isStreaming: coordinator.isAwaitingAssistant(
+                                    message, isAssistantChat: isAssistantChat),
+                                assistantFailed: message.serverID.map {
+                                    coordinator.assistantAnswerFailed(messageID: $0)
                                 } ?? false,
                                 showsSenderName: MessagePresentation.showsSenderName(
                                     at: index,
                                     in: section.messages,
                                     isFamilyChat: isFamilyChat,
-                                    currentUserID: currentUserID),
+                                    currentUserID: currentUserID,
+                                    blockedUserIDs: coordinator.blockedUserIDs),
                                 senderName: displayName(for: message.senderID),
                                 senderID: message.senderID,
                                 senderAvatarVersion: avatarVersion(for: message.senderID),
+                                // The Mac's run rule (MacConversationView.rows):
+                                // a run is one sender's consecutive messages
+                                // within the day section.
+                                isRunStart: index == 0
+                                    || section.messages[index - 1].senderID != message.senderID,
+                                isRunEnd: index == section.messages.count - 1
+                                    || section.messages[index + 1].senderID != message.senderID,
                                 isRead: MessagePresentation.isRead(
                                     message,
-                                    othersReadUpTo: chat?.othersReadUpTo ?? 0),
+                                    othersReadUpTo: chat?.othersReadUpTo ?? 0,
+                                    isFamilyChat: isFamilyChat),
                                 reactionChips: MessagePresentation.reactionChips(
                                     message.reactions,
                                     currentUserID: currentUserID),
                                 reactionDetails: MessagePresentation.reactionDetails(
                                     message.reactions,
                                     names: memberNames,
-                                    currentUserID: currentUserID),
+                                    currentUserID: currentUserID,
+                                    // The CHIPS above are deliberately not
+                                    // given this: their count must not move.
+                                    blockedUserIDs: coordinator.blockedUserIDs),
                                 avatarVersions: avatarVersions,
                                 memberNames: memberNames,
                                 currentUserID: currentUserID,
@@ -834,11 +1017,45 @@ struct ConversationView: View {
                                     // no server id to react to, no failure
                                     // to retry.
                                     guard message.serverID != nil || message.state == .failed else { return }
+                                    // A hidden row opens nothing. One
+                                    // missing clause here is three leaks
+                                    // at once: the capsule floats over a
+                                    // placeholder, Copy puts the blocked
+                                    // body on the pasteboard, and Share
+                                    // hands the blocked attachment to the
+                                    // share sheet. Reveal is a TAP.
+                                    guard
+                                        !MessagePresentation.isHiddenByBlock(
+                                            message,
+                                            blockedUserIDs: coordinator.blockedUserIDs,
+                                            currentUserID: currentUserID)
+                                            || revealedMessageIDs.contains(message.localID)
+                                    else { return }
                                     withAnimation(.spring(duration: 0.3, bounce: 0.25)) {
                                         reactionPickerID = message.localID
                                     }
                                 },
-                                publishesAnchor: reactionPickerID == message.localID)
+                                publishesAnchor: reactionPickerID == message.localID,
+                                blockedUserIDs: coordinator.blockedUserIDs,
+                                isHiddenByBlock: MessagePresentation.isHiddenByBlock(
+                                    message,
+                                    blockedUserIDs: coordinator.blockedUserIDs,
+                                    currentUserID: currentUserID),
+                                isRevealed: revealedMessageIDs.contains(message.localID),
+                                // Never persisted, never sent, never
+                                // written to SwiftData: a peek is not a
+                                // fact anybody else may read.
+                                onReveal: { revealedMessageIDs.insert(message.localID) },
+                                isReplyQuoteRevealed: revealedQuoteIDs.contains(
+                                    "\(message.localID)#reply"),
+                                isParentQuoteRevealed: revealedQuoteIDs.contains(
+                                    "\(message.localID)#parent"),
+                                onRevealQuote: { level in
+                                    revealedQuoteIDs.insert(
+                                        level == .reply
+                                            ? "\(message.localID)#reply"
+                                            : "\(message.localID)#parent")
+                                })
                                 .id(message.localID)
                                 // A jumped-to bubble is briefly tinted, so
                                 // the eye lands on the right one in a wall
@@ -950,6 +1167,24 @@ struct ConversationView: View {
             await settleAtBottom(proxy: proxy)
             return
         }
+        // BEFORE the widen and before the highlight, and the order is
+        // load-bearing: the widen is the "page history in" half and the
+        // tint is the "flash" half, so a check placed after it fixes only
+        // one of the two. Without this, tapping a masked quote materialises
+        // up to 300 non-lazy rows and then tints a thin "Hidden"
+        // placeholder for 1.6 seconds — pointing the eye at exactly the
+        // thing the feature is hiding.
+        let target = messages[index]
+        // Bridged through the seam rather than hand-writing
+        // `blockedUserIDs.contains(target.senderID)`, which would drop the
+        // `senderID != currentUserID` guard `isHiddenByBlock` carries.
+        if MessagePresentation.isHiddenByBlock(
+            MessageSnapshot(target),
+            blockedUserIDs: coordinator.blockedUserIDs, currentUserID: currentUserID),
+            !revealedMessageIDs.contains(target.localID)
+        {
+            return
+        }
         let needed = UnreadAnchor.rowsToRender(distanceFromNewest: messages.count - 1 - index)
         guard needed <= Self.maxWindow else {
             openAnchor = .newest
@@ -1003,6 +1238,22 @@ struct ConversationView: View {
     /// its own or nobody holds one, or a thread sitting in a background
     /// window would overwrite what the scene the user IS looking at
     /// published — purely because a message landed in it.
+    /// **There is deliberately no block filter anywhere in this function,
+    /// and none in `markRead`.** The read marker advances THROUGH hidden
+    /// rows exactly as if they were visible.
+    ///
+    /// It is satisfied by construction — presence is three geometric and
+    /// lifecycle facts with no message identity in it, and `markRead`
+    /// targets the chat's newest server id, which is sender-agnostic — so
+    /// the absence of code here looks like an oversight and is not. The
+    /// failure mode is a well-meaning addition: filter hidden rows out of
+    /// the rendered list so the unread divider "looks right", or hold the
+    /// marker at an unrevealed row, and the client rebuilds the exact
+    /// oracle the server refuses one layer above it. A marker that freezes
+    /// at the id before a blocked message and then leaps forward the
+    /// moment a third member posts is a perfect, repeatable signal for the
+    /// blocked person watching the other end (protocol.md, "Blocking a
+    /// member").
     private func publishPresence() {
         let isFrontmost = scenePhase == .active
         guard isFrontmost || coordinator.presence == nil
@@ -1051,14 +1302,48 @@ struct ConversationView: View {
             if !staged.isEmpty {
                 stagedRow
             }
+            // Two strips, never both: the assistant's own chat says what a
+            // staged photo will meet; the family chat says the same for a
+            // photo an `@ai` draft is about to carry (#56).
+            if let notice = pictureNotice ?? mentionPictureNotice {
+                assistantPictureNotice(notice)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 // A Menu rather than two buttons: the composer is narrow,
                 // and "attach" is one intent with two sources.
                 Menu {
-                    Button {
-                        showPhotoPicker = true
-                    } label: {
-                        Label("Photo or Video", systemImage: "photo.on.rectangle")
+                    // In the assistant's own chat the picture doors are the
+                    // vision gate, and they are ABSENT rather than disabled
+                    // when it is shut: a server with no vision deployment,
+                    // or a family whose owner has not turned `ai_vision`
+                    // on, must show no surface at all rather than one that
+                    // lies about what would happen (protocol.md,
+                    // "Pictures"). Everywhere else they are unconditional,
+                    // exactly as they have always been.
+                    if !isAssistantChat || showsPictureAttach {
+                        Button {
+                            showPhotoPicker = true
+                        } label: {
+                            // In the assistant's chat this door NAMES what
+                            // it does. The switch lives on a settings
+                            // screen somebody read once; this is where the
+                            // photograph is actually chosen, and it is the
+                            // last place the consequence can be said before
+                            // it happens. A video never reaches the model
+                            // either — the server sends photographs and
+                            // nothing else — so the wording is honest about
+                            // that too. Same sentence the Mac's panel uses.
+                            //
+                            // Two literals rather than one ternary so
+                            // `check-strings.py` can see both keys: it
+                            // reads source text, and a key inside a
+                            // conditional expression is invisible to it.
+                            if isAssistantChat {
+                                Label("Show the Assistant a Photo…", systemImage: "photo")
+                            } else {
+                                Label("Photo or Video", systemImage: "photo.on.rectangle")
+                            }
+                        }
                     }
                     Button {
                         showFilePicker = true
@@ -1085,7 +1370,7 @@ struct ConversationView: View {
                     // Hidden rather than disabled where there is no camera
                     // (Simulator, camera-less device): presenting the picker
                     // there shows an empty black sheet.
-                    if CameraPicker.isAvailable {
+                    if CameraPicker.isAvailable, !isAssistantChat || showsPictureAttach {
                         Button {
                             showCamera = true
                         } label: {
@@ -1093,7 +1378,7 @@ struct ConversationView: View {
                         }
                     }
                     Button {
-                        Task { await recorder.start() }
+                        Task { await startRecording() }
                     } label: {
                         Label("Record Audio", systemImage: "mic")
                     }
@@ -1116,7 +1401,7 @@ struct ConversationView: View {
                     }
                 } label: {
                     Image(systemName: "paperclip")
-                        .font(.system(size: 20))
+                        .font(.system(size: attachGlyph))
                         .foregroundStyle(.tint)
                         .frame(width: composerControl, height: composerControl)
                         .contentShape(Rectangle())
@@ -1132,8 +1417,10 @@ struct ConversationView: View {
                     isPresented: $showPhotoPicker,
                     selection: $pickedMedia,
                     maxSelectionCount: StagedAttachment.maxPerMessage,
-                    matching: .any(of: [.images, .videos]),
-                    photoLibrary: .shared())
+                    // No `photoLibrary:` — see the note in SettingsView. The
+                    // out-of-process picker needs no PhotoKit reference and
+                    // no usage description, and nothing here reads a PHAsset.
+                    matching: isAssistantChat ? .images : .any(of: [.images, .videos]))
                 if showsAssistantMention {
                     Button {
                         insertAssistantMention()
@@ -1146,6 +1433,19 @@ struct ConversationView: View {
                     }
                     .disabled(editTarget != nil)
                     .accessibilityLabel("Ask the assistant")
+                }
+                if showsPictureRequest {
+                    Button {
+                        insertDrawToken()
+                    } label: {
+                        Image(systemName: "paintbrush")
+                            .font(.system(size: 19))
+                            .foregroundStyle(.tint)
+                            .frame(width: composerControl, height: composerControl)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(editTarget != nil)
+                    .accessibilityLabel("Ask for a picture")
                 }
                 TextField("Message", text: Bindable(model).draft, axis: .vertical)
                     .focused($inputFocused)
@@ -1166,28 +1466,49 @@ struct ConversationView: View {
                     .lineLimit(1...5)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
-                    .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .composerFieldBackground()
                 Button {
                     send()
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 26))
+                        .font(.system(size: sendGlyph))
                         .foregroundStyle(.tint)
                         .frame(width: composerControl, height: composerControl)
                         .contentShape(Rectangle())
                 }
                 .disabled(!canSend)
                 .accessibilityLabel("Send")
+                // ⌘↩ from a hardware keyboard. Return alone keeps inserting
+                // a line break, as it always has on a phone; the Mac's
+                // Return-sends habit is one modifier away on an iPad.
+                .keyboardShortcut(.return, modifiers: .command)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
+        // The same readable column the thread is held to (#21/#44),
+        // centred the same way: on an iPad's detail column the bar used to
+        // run the full width while the bubbles sat in a centred 560pt
+        // band, so the attach button was 200pt left of the messages it
+        // attaches to and the send button 100pt right of them. The bar's
+        // material still spans the column — only its controls are held.
+        // Every iPhone is narrower than the cap in PORTRAIT, so nothing
+        // moves there; in landscape a phone is wider than 560, and its
+        // composer now sits over its thread column exactly as the
+        // thread itself already did.
+        .frame(maxWidth: Self.threadMaxWidth)
+        .frame(maxWidth: .infinity)
         .background(.bar)
         .background { pasteShortcut }
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.height
         } action: { height in
             inputBarHeight = height
+        }
+        // On the input bar rather than the thread's own chain, which is
+        // already at the type-checker's limit; it is the bar that reads it.
+        .onChange(of: replyDraft?.messageID, initial: true) { _, messageID in
+            quotedAttachments = quotedAttachmentList(for: messageID)
         }
     }
 
@@ -1592,6 +1913,20 @@ struct ConversationView: View {
         if replyDraft == nil { replyDraft = handoff.replyTo }
     }
 
+    /// Start a voice note, and SAY SO IF IT DOES NOT START.
+    ///
+    /// The recorder has always recorded its failure; nothing read it, so a
+    /// denied microphone made this button do nothing at all. The two causes
+    /// get different sentences on purpose — pointing somebody at Settings
+    /// for a permission they already granted wastes their time, and the
+    /// location path next door already draws exactly this distinction.
+    private func startRecording() async {
+        await recorder.start()
+        if let failure = recorder.failure {
+            mediaState = .failed(AudioRecorder.message(for: failure))
+        }
+    }
+
     /// EVERY paste door on this screen, and the only one.
     ///
     /// The attach menu's Paste item and the hardware ⌘V both end up here,
@@ -1766,41 +2101,29 @@ struct ConversationView: View {
     /// staged files together — so nothing typed during the upload is
     /// swallowed into the caption and a primed reply cannot leak onto the
     /// next message. Everything goes back if the send never lands.
+    /// Hand a staged set to the outbox and get the composer back.
+    ///
+    /// Nothing is awaited and nothing can be lost here any more: the
+    /// coordinator writes the message row and the item rows — and moves the
+    /// files somewhere the system will not reclaim — before the first byte
+    /// goes out, so the send belongs to the store from this instant. A
+    /// failure is a red bubble with tap-to-retry, exactly like a text
+    /// message, rather than a set this view has to catch and hold.
     private func sendStaged(_ items: [StagedAttachment], caption: String) {
         let handoff = takeComposer()
         withAnimation(.spring(duration: 0.25)) { staged = [] }
-        mediaState = .uploading(nil)
-        Task {
-            let sent = await coordinator.sendMedia(
-                items.map(\.prepared),
-                caption: handoff.caption,
-                replyTo: handoff.replyTo,
-                in: chatID,
-                onItemStart: { index, total in
-                    // The existing strip carries the progress; one item
-                    // keeps the plain "Sending…" it has always shown.
-                    // Progress stays INSIDE `.uploading` so the composer
-                    // still counts as busy — `.working` would reopen the
-                    // attach menu and the paste door mid-send.
-                    guard total > 1 else { return }
-                    mediaState = .uploading(
-                        String(localized: "Uploading \(index) of \(total)…"))
-                })
-            if sent {
-                mediaState = .idle
-            } else {
-                mediaState = .failed(String(localized: "Couldn't send that — try again."))
-                restore(handoff)
-                // Put the attachments back too — ALL of them: `sendMedia`
-                // consumes the temp files only on whole-send success, so
-                // after a failure every file is still on disk and the
-                // retry offers exactly the set that was composed. Ids
-                // already uploaded but never claimed are the server's 24h
-                // sweep's problem, not ours.
-                withAnimation(.spring(duration: 0.25)) {
-                    staged = items + staged
-                }
-            }
+        if coordinator.sendMedia(
+            items.map(\.prepared),
+            caption: handoff.caption,
+            replyTo: handoff.replyTo,
+            in: chatID) == nil
+        {
+            // Only when not one item could be staged — a full disk, or a
+            // file that vanished between picking and sending.
+            restore(handoff)
+            mediaState = .failed(String(localized: "Couldn't send that — try again."))
+        } else {
+            mediaState = .idle
         }
     }
 
@@ -1955,10 +2278,31 @@ struct ConversationView: View {
                         let attachment = message.attachmentSnapshot
                         // A photo sent without a caption has nothing to copy.
                         let canCopy = !message.body.isEmpty
+                        // Somebody else's message, from a real member.
+                        // NEVER the assistant: its reserved account is
+                        // deliberately absent from the roster, so blocking
+                        // it would name a non-member and the server would
+                        // refuse — a VISIBLE refusal in a feature whose
+                        // whole design is that refusals look innocent.
+                        let isOther = message.senderID != currentUserID
+                        let isAssistantSender = isAssistantChat
+                            || message.senderID == AppSettings.assistantUserID
+                        let canReport = isOther && !isAssistantSender && message.serverID != nil
+                        let blockState: MessageContextMenu.BlockState? =
+                            (isOther && !isAssistantSender)
+                            ? (coordinator.blockedUserIDs.contains(message.senderID)
+                                ? .blocked : .notBlocked)
+                            : nil
+                        // The SAME two values feed the size call and the
+                        // initializer below. Out of step, the overlay
+                        // places one menu and draws another.
                         let menuSize = MessageContextMenu.size(
                             canReply: canReply,
                             canEdit: canEdit,
-                            canCopy: canCopy)
+                            canCopy: canCopy,
+                            canReport: canReport,
+                            blockState: blockState,
+                            page: menuPage)
                         floatingMenu(
                             size: menuSize,
                             over: rect,
@@ -1998,7 +2342,33 @@ struct ConversationView: View {
                                 },
                                 canReply: canReply,
                                 canEdit: canEdit,
-                                canCopy: canCopy)
+                                canCopy: canCopy,
+                                canReport: canReport,
+                                blockState: blockState,
+                                onReport: {
+                                    dismissReactionPicker()
+                                    reportTarget = ReportTarget(
+                                        senderID: message.senderID,
+                                        senderName: displayName(for: message.senderID)
+                                            ?? String(localized: "Someone"),
+                                        messageID: message.serverID)
+                                },
+                                // Through the coordinator's wrappers, never
+                                // `coordinator.api`: they own the
+                                // request-then-write ordering and the
+                                // direct-chat prune.
+                                onBlock: {
+                                    dismissReactionPicker()
+                                    let userID = message.senderID
+                                    Task { await coordinator.block(userID: userID) }
+                                },
+                                onUnblock: {
+                                    dismissReactionPicker()
+                                    let userID = message.senderID
+                                    Task { await coordinator.unblock(userID: userID) }
+                                },
+                                page: menuPage,
+                                onPage: { menuPage = $0 })
                         }
                     }
                 }
@@ -2106,6 +2476,10 @@ struct ConversationView: View {
         withAnimation(.spring(duration: 0.3, bounce: 0.25)) {
             reactionPickerID = nil
         }
+        // Every menu opens on its first page. Without this a reader who
+        // left it on Safety last time reopens into Safety on an unrelated
+        // message, one tap from Block.
+        menuPage = .main
     }
 
     // MARK: - Actions
@@ -2232,7 +2606,7 @@ struct ConversationView: View {
                     // Fired during the opening pass: the user never left
                     // the bottom — keep them there over the grown content.
                     //
-                    // PIN HOOK 2 of 3. Gated, because an anchored open
+                    // PIN HOOK 2 of 4. Gated, because an anchored open
                     // spends its whole opening window away from the bottom
                     // ON PURPOSE, and this branch is exactly the one that
                     // fires then: the top sentinel is much more likely to
@@ -2268,9 +2642,48 @@ struct ConversationView: View {
     /// kind of refusal it was — a denied permission and a fix that never
     /// arrived need different things from the reader.
     private func shareLocation() {
-        guard mediaState == .idle else { return }
-        mediaState = .preparing
+        // The gate every other attachment door uses, rather than
+        // `== .idle`: a dismissible `.failed` left over from the last try
+        // must not swallow the next tap. It did — only the strip's Dismiss
+        // button returns this to `.idle` — so a reader told to turn the
+        // permission on in Settings, who did exactly that and came back and
+        // tapped Location, got silence.
+        guard !composerIsBusy else { return }
         Task {
+            // Settle permission FIRST, outside everything that says the
+            // composer is busy. The prompt is a system alert somebody may
+            // take a minute over, or never answer at all, and `.preparing`
+            // closes the attach menu and the paste door for as long as it
+            // is set. Android has never had this problem: `ChatScreen.kt`
+            // asks for the permission and only calls the view model once it
+            // is held, so its composer stays live under the dialog. This is
+            // that shape — and it needs no timeout, because nothing here is
+            // waiting on a machine.
+            switch await locationProvider.requestPermission() {
+            case .allowed:
+                break
+            case .denied:
+                mediaState = .failed(String(
+                    localized:
+                        "Family needs permission to use your location. Turn it on in Settings."))
+                return
+            case .unanswered:
+                // The alert went away unanswered — backgrounding tears it
+                // down, and Location Services switched off system-wide may
+                // mean it never appeared. Nothing was taken from the
+                // composer and nothing is in flight, so there is nothing to
+                // report and nothing to restore: Location is still in the
+                // menu, still enabled, and tapping it asks again. A line of
+                // copy here would be nagging somebody for an answer they
+                // deliberately withheld — and any copy that said "try
+                // again" would have to be a lie the guard above refused.
+                return
+            }
+            // That wait was a real suspension. Whatever the composer was
+            // doing when the alert went up may have finished or started in
+            // the meantime, so the door is checked again on the way in.
+            guard !composerIsBusy else { return }
+            mediaState = .preparing
             do {
                 let fix = try await locationProvider.currentFix()
                 mediaState = .uploading(nil)
@@ -2278,21 +2691,24 @@ struct ConversationView: View {
                 // was typed travels with the pin, and comes back if the
                 // send never happened.
                 let composer = takeComposer()
-                let sent = await coordinator.sendLocation(
+                if coordinator.sendLocation(
                     latitude: fix.latitude,
                     longitude: fix.longitude,
                     accuracyM: fix.accuracyM,
                     label: nil,
                     caption: composer.caption,
                     replyTo: composer.replyTo,
-                    in: chatID)
-                if sent {
-                    mediaState = .idle
-                } else {
+                    in: chatID) == nil
+                {
                     restore(composer)
                     mediaState = .failed(String(localized: "Could not share your location."))
+                } else {
+                    mediaState = .idle
                 }
             } catch LocationProvider.Failure.denied {
+                // Not the prompt any more — that was settled above. This is
+                // the switch being thrown in Settings, or an "Allow Once"
+                // lapsing, while the hunt was running.
                 mediaState = .failed(String(
                     localized:
                         "Family needs permission to use your location. Turn it on in Settings."))
@@ -2315,6 +2731,156 @@ struct ConversationView: View {
     /// characters than a button that types them.
     private var showsAssistantMention: Bool {
         chat?.kind == "family" && AppSettings.assistantUserID != nil
+    }
+
+    /// Both locks, and only in the assistant's own chat.
+    ///
+    /// The operator configured a deployment that can SEE
+    /// (`assistant.vision`), and this family's owner turned `ai_vision` on.
+    /// Neither is consent for a particular photograph — that is the third
+    /// thing, and it is the member attaching it to this one question, which
+    /// is deliberately not a setting anywhere (protocol.md, "Pictures").
+    ///
+    /// `@ai` in the FAMILY chat is not here, and that is a statement about
+    /// this DOOR rather than about what travels: since #56 a photo on an
+    /// `@ai` message, or on the message it replies to, goes to the model
+    /// under the same two locks, through the ordinary photo picker and the
+    /// reply affordance the family composer has always had (protocol.md,
+    /// "Showing the assistant a picture from the family chat"). What still
+    /// never goes is a photo the member did not point the assistant at —
+    /// somebody else's picture elsewhere in the window stays `[photo]`.
+    private var showsPictureAttach: Bool {
+        AssistantSurfaces.offersPictureAttach(
+            isAssistantChat: isAssistantChat,
+            serverCanSee: AppSettings.assistantVision,
+            familyAllows: session.family?.aiVision == true)
+    }
+
+    /// The `/draw` affordance: this server can generate a picture, and we
+    /// are somewhere it would be answered.
+    ///
+    /// No family switch, deliberately — what leaves on such a request is
+    /// the words after the token and nothing else, which is a SMALLER
+    /// disclosure than an ordinary text question.
+    private var showsPictureRequest: Bool {
+        isAssistantChat && AppSettings.offersPictureRequests
+    }
+
+    /// What the composer has to say out loud before a photograph goes.
+    ///
+    /// The switch lives on a settings screen somebody read once; the
+    /// photograph is chosen here, later, possibly by somebody else. So the
+    /// sentence is said HERE, at the moment it matters, and it names the
+    /// two things a reader can act on: that the picture leaves for whatever
+    /// model this server talks to, and anything of theirs that will NOT go.
+    private var pictureNotice: String? {
+        guard isAssistantChat else { return nil }
+        // EVERY staged photograph, before any bound is applied — the
+        // sentence is about what the member is looking at, so what they are
+        // looking at is what it counts.
+        let photos = staged.filter { $0.prepared.kind == AttachmentDTO.Kind.photo }
+        guard !photos.isEmpty else { return nil }
+        guard showsPictureAttach else {
+            // Not an error and not refused — the server takes it, stores
+            // it, and tells the assistant a photo was attached that it was
+            // not shown. Saying so is the whole of the honesty here.
+            return String(localized: "The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it.")
+        }
+        // The server's own rules, applied to what will actually be ON THE
+        // WIRE: JPEG or PNG, and 5 MiB at most, judged on the PREVIEW where
+        // there is one because that is the copy the server prefers
+        // (protocol.md, "Pictures"). Without this the notice below promised
+        // that a photograph the server will leave out "goes to the model".
+        let carried = AssistantPictureLimits.carried(
+            photos,
+            kind: { $0.prepared.kind },
+            mime: { $0.assistantWireMIME },
+            bytes: { $0.assistantWireBytes })
+        if carried.count < photos.count {
+            // Ahead of the cap below, on the rare send that trips both: a
+            // member who staged five photos half expects a limit, and
+            // nobody expects a photograph to be left out for its bytes.
+            return String(localized: "A photo here is too large, or in a format the model can't read, so it will be told it's here but won't be shown it.")
+        }
+        if photos.count > AssistantPictureLimits.maxPerQuestion {
+            // Named rather than silently dropped, the same way the server
+            // names them to the model.
+            return String(localized: "The first \(AssistantPictureLimits.maxPerQuestion) photos go to the model your server is set up to use. The rest are named to it, not shown.")
+        }
+        return String(localized: "This goes to the model your server is set up to use, with your question. Nothing else from this chat does.")
+    }
+
+    /// The FAMILY composer's own sentence, for the case that did not exist
+    /// before #56: an `@ai` draft with a photo staged on it, or replying to
+    /// a message that carries one, is about to send that photo to the model
+    /// under the same two locks a private question needs. The doctrine is
+    /// the one above — say it here, now, where the photo is — and the rule
+    /// is `MentionPictureNotice`, shared with the Mac and pinned by tests:
+    /// absent with either lock shut, absent without a mention, absent for
+    /// `@ai /draw`, and counting the four exactly as the server does.
+    ///
+    /// With the owner's third switch on (`ai_history_photos`, and
+    /// `ai_history` with it) the same rule also says that the chat's most
+    /// recent photos may go — "up to N", N being what the draft and the
+    /// quote left of the four — and it then shows for an `@ai` draft with
+    /// no photo of its own at all, since that is the mention on which every
+    /// one of the four may be somebody else's picture (protocol.md, "Recent
+    /// photos from the family chat").
+    private var mentionPictureNotice: String? {
+        guard isFamilyChat else { return nil }
+        return MentionPictureNotice.of(
+            draft: model.draft,
+            staged: staged.map(\.assistantPictureCandidate),
+            quoted: quotedAttachments.map(AssistantPictureCandidate.init(attachment:)),
+            serverCanSee: AppSettings.assistantVision,
+            familyAllows: session.family?.aiVision == true,
+            familyHistory: session.family?.aiHistory == true,
+            familyHistoryPhotos: session.family?.aiHistoryPhotos == true,
+            serverCanDraw: AppSettings.offersPictureRequests
+        )?.sentence
+    }
+
+    /// The attachments of the message a reply is primed on — from this
+    /// chat's own rows, because `ReplyToDTO` carries an excerpt and nothing
+    /// else. [] when nothing is primed, or the row is not held here.
+    private func quotedAttachmentList(for serverID: Int64?) -> [AttachmentDTO] {
+        guard let serverID else { return [] }
+        return messages.first { $0.serverID == serverID }?.attachmentList ?? []
+    }
+
+    /// The notice itself. Not red and not an error: it is what is about to
+    /// happen, said plainly.
+    private func assistantPictureNotice(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "eye")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Put `/draw ` at the FRONT of the draft and give the field back.
+    ///
+    /// At the front rather than appended, which is the one place this
+    /// differs from the mention button: the token is only a request when it
+    /// is the first thing in the body, so appending it would type something
+    /// the server will not act on (protocol.md, "Pictures").
+    private func insertDrawToken() {
+        let token = AssistantMention.drawToken
+        guard !AssistantMention.asksForPicture(model.draft) else {
+            inputFocused = true
+            return
+        }
+        let rest = model.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        model.draft = rest.isEmpty ? "\(token) " : "\(token) \(rest)"
+        inputFocused = true
     }
 
     /// Put `@ai ` in the draft and give the field back to the keyboard.
@@ -2459,6 +3025,21 @@ private struct AttachmentSurfaces: ViewModifier {
             .fullScreenCover(item: $viewingAlbum) { album in
                 AttachmentViewer(album: album, onShare: onShareAttachment)
             }
+    }
+}
+
+private extension View {
+    /// The message field's backdrop. On iOS 26 the system's own text
+    /// fields in bars are glass, and a flat grey capsule beside glass
+    /// toolbar buttons read as last year's control; earlier systems keep
+    /// the fill they have always had.
+    @ViewBuilder
+    func composerFieldBackground() -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else {
+            self.background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
     }
 }
 

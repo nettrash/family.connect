@@ -15,6 +15,7 @@
 
 package me.nettrash.familyconnect.data.repo
 
+import org.robolectric.RuntimeEnvironment
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -38,7 +39,9 @@ import me.nettrash.familyconnect.data.net.ws.ClientFrame
 import me.nettrash.familyconnect.data.settings.SettingsState
 import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeChatApi
+import me.nettrash.familyconnect.testutil.messageDto
 import me.nettrash.familyconnect.testutil.FakeChatSocket
+import me.nettrash.familyconnect.testutil.FakePosterCache
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
 import me.nettrash.familyconnect.testutil.testChatRepository
 import me.nettrash.familyconnect.testutil.createTestDb
@@ -67,6 +70,7 @@ class AttachmentSendTest {
     private lateinit var chatDao: ChatDao
     private lateinit var chatApi: FakeChatApi
     private val attachmentApi = FakeAttachmentApi()
+    private val posterCache = FakePosterCache()
     private lateinit var socket: FakeChatSocket
     private lateinit var settings: FakeSettingsRepository
 
@@ -94,6 +98,7 @@ class AttachmentSendTest {
 
     private fun TestScope.newRepository(): MessageRepository {
         val repository = MessageRepository(
+            appContext = RuntimeEnvironment.getApplication(),
             chatApi = chatApi,
             attachmentApi = attachmentApi,
             messageDao = messageDao,
@@ -101,8 +106,11 @@ class AttachmentSendTest {
             socket = socket,
             settings = settings,
             chatRepository = testChatRepository(chatApi, chatDao, messageDao, socket, repoScope),
+            posterCache = posterCache,
             scope = repoScope,
             clock = Clock { NOW },
+            pendingAttachmentDao = db.pendingAttachmentDao(),
+            staging = MediaStaging(RuntimeEnvironment.getApplication()),
         )
         runCurrent()
         return repository
@@ -129,7 +137,7 @@ class AttachmentSendTest {
 
     /** A prepared photo on disk, as MediaPrep would leave one. */
     private fun prepared(previewJpeg: ByteArray? = ByteArray(64) { 0x7 }): MediaPrep.Prepared {
-        val file = File.createTempFile("fc-upload", ".jpg")
+        val file = File.createTempFile("fc-upload", ".jpg", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() })
         file.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte()))
         return MediaPrep.Prepared(
             file = file,
@@ -167,7 +175,7 @@ class AttachmentSendTest {
         ackWith(hasPreview = true)
         val media = prepared()
 
-        assertThat(repository.sendMedia(listOf(media), caption = "", chatId = CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(media), caption = "", chatId = CHAT)).isNotNull()
         advanceUntilIdle()
 
         // A message pointing at an upload that never landed would be
@@ -195,7 +203,7 @@ class AttachmentSendTest {
         val repository = newRepository()
         ackWith(hasPreview = true)
 
-        assertThat(repository.sendMedia(listOf(prepared()), "at the lake", CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(prepared()), "at the lake", CHAT)).isNotNull()
         advanceUntilIdle()
 
         val row = messageDao.findByClientMsgId(chatApi.postedMessages.single().second)
@@ -204,7 +212,7 @@ class AttachmentSendTest {
     }
 
     @Test
-    fun `a refused upload sends no message at all`() = runTest(dispatcher) {
+    fun `a refused upload leaves a bubble that can be retried`() = runTest(dispatcher) {
         insertChat()
         val repository = newRepository()
         attachmentApi.uploadHandler = { _, _, _ ->
@@ -212,14 +220,24 @@ class AttachmentSendTest {
         }
         val media = prepared()
 
-        assertThat(repository.sendMedia(listOf(media), caption = "", chatId = CHAT)).isFalse()
+        // The inversion this whole design is: the bubble exists BEFORE the
+        // bytes do, so a refused upload leaves a message the sender can see
+        // and retry rather than nothing at all.
+        val clientMsgId = repository.sendMedia(listOf(media), caption = "", chatId = CHAT)
+        assertThat(clientMsgId).isNotNull()
         advanceUntilIdle()
 
+        // No message was posted: one claiming a refused attachment would be
+        // a blank, undeletable bubble.
         assertThat(chatApi.postedMessages).isEmpty()
         assertThat(attachmentApi.calls).containsExactly("upload")
-        // The prepared file SURVIVES a refused upload — nothing landed,
-        // so the composer can re-stage it for a retry (iOS parity).
-        assertThat(media.file.exists()).isTrue()
+        val row = messageDao.findByClientMsgId(clientMsgId!!)!!
+        assertThat(row.serverId).isNull()
+        // The bytes moved into staging, so the retry has something to send.
+        val items = db.pendingAttachmentDao().itemsFor(clientMsgId)
+        assertThat(items).hasSize(1)
+        assertThat(items.single().attachmentId).isNull()
+        assertThat(File(items.single().localPath!!).exists()).isTrue()
     }
 
     /** The preview is best-effort: a bubble without one fetches the full photo. */
@@ -234,7 +252,7 @@ class AttachmentSendTest {
         // and has_preview is false because the preview never landed.
         ackWith(hasPreview = false)
 
-        assertThat(repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)).isNotNull()
         advanceUntilIdle()
 
         val row = messageDao.findByClientMsgId(chatApi.postedMessages.single().second)
@@ -249,10 +267,207 @@ class AttachmentSendTest {
         val repository = newRepository()
         ackWith(hasPreview = false)
 
-        assertThat(repository.sendMedia(listOf(prepared(previewJpeg = null)), "", CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(prepared(previewJpeg = null)), "", CHAT)).isNotNull()
         advanceUntilIdle()
 
         assertThat(attachmentApi.calls).containsExactly("upload")
+    }
+
+    /**
+     * ISSUE #54. The poster upload is best-effort, and it used to be
+     * best-effort ONCE: a refused `uploadPreview` left `has_preview` false
+     * on the server with the pixels only on this device and nothing that
+     * would ever offer them again. The send still succeeds — that part
+     * never changed — but the frame is now KEPT and the debt recorded, so
+     * the next time the network is there the poster goes up.
+     */
+    @Test
+    fun `a video whose poster upload failed keeps the frame and records the debt`() =
+        runTest(dispatcher) {
+            insertChat()
+            val repository = newRepository()
+            ackWith(hasPreview = false)
+            attachmentApi.uploadHandler = { _, _, _ ->
+                ApiResult.Ok(AttachmentResponse(FakeAttachmentApi.attachment(id = 34, kind = "video")))
+            }
+            attachmentApi.previewHandler = { _, _ -> ApiResult.HttpError(500, "internal", "no") }
+
+            assertThat(repository.sendMedia(listOf(preparedVideo()), "", CHAT)).isNotNull()
+            advanceUntilIdle()
+
+            // The placeholder seed is the sender's own bubble drawing
+            // before the bytes are up; the real id follows when they land.
+            assertThat(posterCache.seeded.map { it.second }).containsExactly(64, 64)
+            assertThat(posterCache.seeded.last().first).isEqualTo(34L)
+            assertThat(posterCache.noted).containsExactly(34L to false)
+        }
+
+    /** The same send when the poster lands: kept all the same (the sender
+     *  draws its own bubble from it), and nothing is owed. */
+    @Test
+    fun `a video whose poster landed owes nothing`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        ackWith(hasPreview = true)
+        attachmentApi.uploadHandler = { _, _, _ ->
+            ApiResult.Ok(AttachmentResponse(FakeAttachmentApi.attachment(id = 34, kind = "video")))
+        }
+
+        assertThat(repository.sendMedia(listOf(preparedVideo()), "", CHAT)).isNotNull()
+        advanceUntilIdle()
+
+        assertThat(posterCache.seeded.map { it.second }).containsExactly(64, 64)
+        assertThat(posterCache.seeded.last().first).isEqualTo(34L)
+        assertThat(posterCache.noted).containsExactly(34L to true)
+    }
+
+    /**
+     * A photo needs none of it. Its preview failing costs bandwidth, not
+     * the picture — the bubble falls back to the full bytes — so nothing
+     * is kept and nothing is owed.
+     */
+    @Test
+    fun `a photo whose preview upload failed owes nothing`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        ackWith(hasPreview = false)
+        attachmentApi.previewHandler = { _, _ -> ApiResult.HttpError(500, "internal", "no") }
+
+        assertThat(repository.sendMedia(listOf(prepared()), "", CHAT)).isNotNull()
+        advanceUntilIdle()
+
+        // A photo's own preview IS seeded now — that is what the pending
+        // bubble draws — but under the placeholder id, and a photo still
+        // owes no poster debt.
+        assertThat(posterCache.seeded.map { it.first }.all { it < 0 }).isTrue()
+        assertThat(posterCache.noted).isEmpty()
+    }
+
+    // -- The send is durable before the first byte ---------------------------
+
+    /**
+     * The whole point, in one test: the row and its staged bytes exist
+     * before anything has been uploaded. Surviving a process death, a
+     * cache eviction and a dead network all follow from that.
+     */
+    @Test
+    fun `the bubble and its bytes exist before the first upload`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        attachmentApi.uploadHandler = { _, _, _ -> ApiResult.NetworkError(RuntimeException("down")) }
+        val media = prepared()
+
+        val clientMsgId = repository.sendMedia(listOf(media), caption = "at the lake", chatId = CHAT)!!
+
+        // Before advancing anything: the row is already there.
+        val row = messageDao.findByClientMsgId(clientMsgId)!!
+        assertThat(row.body).isEqualTo("at the lake")
+        assertThat(row.status).isEqualTo(MessageStatus.SENDING)
+        // And it draws, under a provisional negative id, so the sender sees
+        // the photo rather than an empty bubble for the length of the upload.
+        assertThat(row.attachmentList).hasSize(1)
+        assertThat(row.attachmentList.single().id).isLessThan(0L)
+        val item = db.pendingAttachmentDao().itemsFor(clientMsgId).single()
+        assertThat(File(item.localPath!!).exists()).isTrue()
+        advanceUntilIdle()
+    }
+
+    /**
+     * THE ONE THAT DESTROYS DATA. A row whose uploads have not finished
+     * carries placeholder ids; posting it would either be refused or, with
+     * a caption, post a perfectly good text-only message and leave the
+     * sender looking at a delivered bubble with no photos in it.
+     */
+    @Test
+    fun `a row still owing uploads is never posted`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        attachmentApi.uploadHandler = { _, _, _ -> ApiResult.NetworkError(RuntimeException("down")) }
+
+        val clientMsgId = repository.sendMedia(listOf(prepared()), caption = "look", chatId = CHAT)!!
+        advanceUntilIdle()
+        // Every route into the dispatch, tried directly.
+        repository.flushPending()
+        repository.retry(clientMsgId)
+        advanceUntilIdle()
+
+        assertThat(chatApi.postedMessages).isEmpty()
+    }
+
+    /**
+     * A delivered send owns nothing: holding 100 MB for a message the
+     * family has already read is the leak this design has to avoid.
+     */
+    @Test
+    fun `a delivered set drops its rows and its bytes`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        chatApi.postMessageHandler = { chatId, id, body ->
+            ApiResult.Ok(
+                MessageResponse(
+                    messageDto(id = 901, chatId = chatId, senderId = ME, clientMsgId = id, body = body),
+                ),
+            )
+        }
+
+        val clientMsgId = repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)!!
+        val staged = db.pendingAttachmentDao().itemsFor(clientMsgId).single().localPath!!
+        assertThat(File(staged).exists()).isTrue()
+
+        advanceUntilIdle()
+
+        assertThat(messageDao.findByClientMsgId(clientMsgId)!!.status).isEqualTo(MessageStatus.SENT)
+        assertThat(db.pendingAttachmentDao().itemsFor(clientMsgId)).isEmpty()
+        assertThat(File(staged).exists()).isFalse()
+    }
+
+    /**
+     * `attachment_expired` is the server saying "those bytes are gone, send
+     * them again" — the one 404 that is not a refusal, and only answerable
+     * because the bytes are staged durably.
+     */
+    @Test
+    fun `an expired upload is uploaded again rather than failed`() = runTest(dispatcher) {
+        insertChat()
+        val repository = newRepository()
+        var posts = 0
+        chatApi.postMessageHandler = { chatId, id, body ->
+            posts++
+            if (posts == 1) {
+                ApiResult.HttpError(404, "attachment_expired", "gone")
+            } else {
+                ApiResult.Ok(
+                    MessageResponse(
+                        messageDto(id = 900, chatId = chatId, senderId = ME, clientMsgId = id, body = body),
+                    ),
+                )
+            }
+        }
+
+        val clientMsgId = repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)!!
+        advanceUntilIdle()
+
+        // The dead id was dropped and the bytes went up a second time.
+        assertThat(attachmentApi.calls.count { it == "upload" }).isAtLeast(2)
+        assertThat(messageDao.findByClientMsgId(clientMsgId)?.status)
+            .isNotEqualTo(MessageStatus.FAILED)
+    }
+
+    /** A prepared video on disk, as MediaPrep would leave one. */
+    private fun preparedVideo(
+        previewJpeg: ByteArray? = ByteArray(64) { 0x7 },
+    ): MediaPrep.Prepared {
+        val file = File.createTempFile("fc-upload", ".mp4", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() })
+        file.writeBytes(byteArrayOf(0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70))
+        return MediaPrep.Prepared(
+            file = file,
+            mime = "video/mp4",
+            kind = "video",
+            width = 1080,
+            height = 1920,
+            durationMs = 8400,
+            previewJpeg = previewJpeg,
+        )
     }
 
     /** The socket path carries the attachment id too, not just REST. */
@@ -263,7 +478,7 @@ class AttachmentSendTest {
         socket.setOpen(true)
         runCurrent()
 
-        assertThat(repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)).isNotNull()
         runCurrent()
 
         val frame = socket.sent.filterIsInstance<ClientFrame.Send>().single()
@@ -329,7 +544,7 @@ class AttachmentSendTest {
 
     /** A prepared file on disk, as MediaPrep.prepareFile would leave one. */
     private fun preparedFile(name: String = "receipts.pdf"): MediaPrep.Prepared {
-        val file = File.createTempFile("fc-upload", ".pdf")
+        val file = File.createTempFile("fc-upload", ".pdf", File(RuntimeEnvironment.getApplication().cacheDir, "uploads").apply { mkdirs() })
         file.writeBytes("%PDF-1.7 and then some".toByteArray())
         return MediaPrep.Prepared(
             file = file,
@@ -366,7 +581,7 @@ class AttachmentSendTest {
             )
         }
 
-        assertThat(repository.sendMedia(listOf(preparedFile()), caption = "", chatId = CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(preparedFile()), caption = "", chatId = CHAT)).isNotNull()
         advanceUntilIdle()
 
         // No preview call at all: a document has nothing to draw.
@@ -447,7 +662,7 @@ class AttachmentSendTest {
         val repository = newRepository()
         ackWith(hasPreview = true)
 
-        assertThat(repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)).isTrue()
+        assertThat(repository.sendMedia(listOf(prepared()), caption = "", chatId = CHAT)).isNotNull()
         advanceUntilIdle()
 
         assertThat(chatDao.getById(CHAT)!!.lastMessageBody).isEqualTo("Photo")
@@ -499,7 +714,7 @@ class AttachmentSendTest {
             }
             val media = listOf(prepared(), prepared(), prepared())
 
-            assertThat(repository.sendMedia(media, caption = "", chatId = CHAT)).isTrue()
+            assertThat(repository.sendMedia(media, caption = "", chatId = CHAT)).isNotNull()
             advanceUntilIdle()
 
             // Bytes then preview, per item, in the sender's order — then
@@ -521,7 +736,7 @@ class AttachmentSendTest {
         }
 
     @Test
-    fun `a mid-way refused upload sends no message at all for the album`() =
+    fun `a mid-way refused upload keeps the ids it already has`() =
         runTest(dispatcher) {
             insertChat()
             val repository = newRepository()
@@ -538,20 +753,27 @@ class AttachmentSendTest {
             }
             val media = listOf(prepared(), prepared(), prepared())
 
-            assertThat(repository.sendMedia(media, caption = "", chatId = CHAT)).isFalse()
+            val clientMsgId = repository.sendMedia(media, caption = "", chatId = CHAT)
+            assertThat(clientMsgId).isNotNull()
             advanceUntilIdle()
 
-            // Nothing was written and nothing was claimed: the first
-            // upload's bytes are the server's 24-hour sweep's business.
+            // No message was posted: the set is incomplete, and a message
+            // claiming half of it would be the wrong message.
             assertThat(chatApi.postedMessages).isEmpty()
             // The third item was never attempted — the failure stops the walk.
             assertThat(attachmentApi.calls.count { it == "upload" }).isEqualTo(2)
-            // The first item's bytes are on the server, so its file was
-            // consumed; the failed item and the never-attempted tail KEEP
-            // theirs — that is what the composer re-stages for retry.
-            assertThat(media[0].file.exists()).isFalse()
-            assertThat(media[1].file.exists()).isTrue()
-            assertThat(media[2].file.exists()).isTrue()
+
+            // THE RESUME, in one assertion: item one's id is REMEMBERED, so
+            // the retry pushes only what is still owed. Re-uploading
+            // everything is what made a large set unsendable on a link that
+            // kept dropping.
+            val items = db.pendingAttachmentDao().itemsFor(clientMsgId!!)
+            assertThat(items).hasSize(3)
+            assertThat(items[0].attachmentId).isNotNull()
+            assertThat(items[1].attachmentId).isNull()
+            assertThat(items[2].attachmentId).isNull()
+            // And every byte is still on disk, in staging rather than the cache.
+            items.forEach { assertThat(File(it.localPath!!).exists()).isTrue() }
         }
 
     /** The read rule on the arrival path: prefer `attachments`, ignore the legacy copy. */

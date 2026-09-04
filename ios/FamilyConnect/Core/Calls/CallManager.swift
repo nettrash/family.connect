@@ -64,8 +64,20 @@ protocol CallSystemBridge: AnyObject {
     /// offer's flag, so the system UI rings with a camera when it should.
     func reportIncoming(callID: UUID, peerUserID: Int64?, peerName: String, hasVideo: Bool)
     func reportEnded(callID: UUID, reason: CallEndReason)
-    func requestAnswer(callID: UUID)
-    func requestEnd(callID: UUID)
+    /// Ask the system to answer. `onRefused` runs when the system will not
+    /// perform the action — see `requestEnd` for why it must exist.
+    func requestAnswer(callID: UUID, onRefused: @escaping () -> Void)
+    /// Ask the system to end the call.
+    ///
+    /// `onRefused` IS THE POINT OF THIS SIGNATURE. A `CXTransaction` can be
+    /// refused — another app owns the system call, the provider was just
+    /// reset, a carrier call is up — and when the original request to START
+    /// the call was the one refused, no system call UI exists at all. The
+    /// in-app Hang Up then routes here, the system declines, and without a
+    /// fallback nothing moves: the call stays up with the microphone live
+    /// until the far side hangs up or the app is force-quit, because the
+    /// guard timer is cancelled once media connects.
+    func requestEnd(callID: UUID, onRefused: @escaping () -> Void)
 }
 
 /// Why a call is over. The first six are the wire's reasons; the rest are
@@ -347,7 +359,14 @@ final class CallManager {
 
     private func routeAccept() {
         if let systemBridge, let callUUID {
-            systemBridge.requestAnswer(callID: callUUID)
+            systemBridge.requestAnswer(callID: callUUID) { [weak self] in
+                // Same reasoning as `hangUp`: a refused answer must not
+                // leave a ringing call that cannot be picked up. Accepting
+                // in-app keeps the app's own state machine moving.
+                guard let self, case .incoming = self.phase else { return }
+                AppLog.push.error("System refused to answer the call; answering in-app")
+                self.performAccept()
+            }
         } else {
             performAccept()
         }
@@ -363,7 +382,16 @@ final class CallManager {
     func hangUp() {
         guard !isIdle else { return }
         if let systemBridge, let callUUID {
-            systemBridge.requestEnd(callID: callUUID)
+            systemBridge.requestEnd(callID: callUUID) { [weak self] in
+                // The system refused. End the call ourselves rather than
+                // leaving the person holding a live microphone and a button
+                // that does nothing. `reportToSystem: false` because there
+                // is nothing to report to — a refused end means the system
+                // does not have this call.
+                guard let self, !self.isIdle else { return }
+                AppLog.push.error("System refused to end the call; ending it in-app")
+                self.performHangUp(reportToSystem: false)
+            }
         } else {
             performHangUp(reportToSystem: false)
         }
@@ -447,9 +475,39 @@ final class CallManager {
         media?.setLocalVideoRenderer(renderer)
     }
 
+    /// The local surface went away. A no-op unless it is still the one
+    /// registered — see `detachRemoteVideoRenderer`.
+    func detachLocalVideoRenderer(_ renderer: any RTCVideoRenderer) {
+        guard let localVideoRenderer, localVideoRenderer === renderer else { return }
+        self.localVideoRenderer = nil
+        _ = media?.detachLocalVideoRenderer(renderer)
+    }
+
     func setRemoteVideoRenderer(_ renderer: (any RTCVideoRenderer)?) {
         remoteVideoRenderer = renderer
         media?.setRemoteVideoRenderer(renderer)
+        AppLog.call.info(
+            "\(AppLog.CallVideo.tag, privacy: .public) remote renderer=\(AppLog.CallVideo.id(renderer), privacy: .public) media=\(self.media != nil ? "live" : "not-open-yet", privacy: .public) path=ui-attach"
+        )
+    }
+
+    /// The call screen dismantled its remote surface. Detaches ONLY if it
+    /// is still the registered one: two view trees can overlap, and a
+    /// blind `setRemoteVideoRenderer(nil)` from the dying one would
+    /// unhook the LIVE surface — the call then has no picture for the
+    /// rest of its life, with nothing to re-attach it (issue #38).
+    func detachRemoteVideoRenderer(_ renderer: any RTCVideoRenderer) {
+        guard let remoteVideoRenderer, remoteVideoRenderer === renderer else {
+            AppLog.call.error(
+                "\(AppLog.CallVideo.tag, privacy: .public) remote renderer detach IGNORED renderer=\(AppLog.CallVideo.id(renderer), privacy: .public) (a stale surface dismantled after its replacement attached; the live one keeps drawing)"
+            )
+            return
+        }
+        self.remoteVideoRenderer = nil
+        _ = media?.detachRemoteVideoRenderer(renderer)
+        AppLog.call.info(
+            "\(AppLog.CallVideo.tag, privacy: .public) remote renderer detached renderer=\(AppLog.CallVideo.id(renderer), privacy: .public)"
+        )
     }
 
     /// After `media` is created on a video call: the camera state the
@@ -460,6 +518,9 @@ final class CallManager {
         media.setCameraEnabled(isCameraOn)
         if let localVideoRenderer { media.setLocalVideoRenderer(localVideoRenderer) }
         if let remoteVideoRenderer { media.setRemoteVideoRenderer(remoteVideoRenderer) }
+        AppLog.call.info(
+            "\(AppLog.CallVideo.tag, privacy: .public) media open camera=\(self.isCameraOn, privacy: .public) path=applyVideoState-reapply remote=\(AppLog.CallVideo.id(self.remoteVideoRenderer), privacy: .public)"
+        )
     }
 
     // MARK: - System callbacks (CallKit actions)

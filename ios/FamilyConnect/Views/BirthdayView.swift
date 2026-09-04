@@ -111,6 +111,7 @@ struct MyBirthdayView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                         .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -206,7 +207,10 @@ struct MemberBirthdayView: View {
                 Section {
                     BirthdayFields(month: $month, day: $day)
                 } header: {
+                    // iOS upper-cases section headers; a person's name is
+                    // not to be shouted ("BIRTHDAY FOR АННА ПЕТРОВА").
                     Text("Birthday for \(member.displayName)")
+                        .textCase(nil)
                 } footer: {
                     Text("A day and a month, with no year. Everyone in the family sees it.")
                 }
@@ -229,6 +233,7 @@ struct MemberBirthdayView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
                         .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {

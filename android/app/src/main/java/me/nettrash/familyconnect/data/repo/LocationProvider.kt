@@ -36,7 +36,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 @Singleton
 class LocationProvider @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
 ) {
     /** A place, as the wire wants it. */
     data class Fix(

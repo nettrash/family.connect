@@ -58,5 +58,25 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # Resource limits — one fd per socket; families are small but many.
 LimitNOFILE=65536
 
+# --- Memory ---------------------------------------------------------------
+#
+# argon2id is 19 MiB per hash and the server bounds how many run at once
+# (limits.max_password_hashes_in_flight, 8 by default = ~152 MiB). These are
+# the belt to that braces: if a bound is ever raised carelessly, or a leak
+# appears somewhere else entirely, the cgroup reclaims and then kills THIS
+# service rather than letting the kernel's OOM killer pick a victim — which
+# on a box this size is usually PostgreSQL, taking the family's data down
+# with an availability problem.
+#
+# Raise both on a larger box. MemoryHigh throttles and reclaims; MemoryMax
+# is the hard wall, and Restart=on-failure brings the service back.
+MemoryHigh=512M
+MemoryMax=768M
+
+# A runaway spawn cannot exhaust the host's pid space. The server's own
+# thread count is bounded (tokio worker threads + a 512-thread blocking
+# pool ceiling), so this only ever binds on something that has gone wrong.
+TasksMax=1024
+
 [Install]
 WantedBy=multi-user.target

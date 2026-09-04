@@ -191,7 +191,9 @@ private struct BootingView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.appBackground)
+        // No background of its own: `setupColumn` paints the page, and a
+        // window-coloured fill here drew a 460pt white stripe down a grey
+        // iPad screen.
     }
 }
 

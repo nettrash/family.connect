@@ -88,6 +88,21 @@ class TelecomCalls @Inject constructor(
     @param:AppScope private val scope: CoroutineScope,
 ) : CallRouteOwner {
 
+    init {
+        // The system dialer's call log outlives the block: it keeps
+        // offering to ring somebody through Family, and the app would then
+        // place a call the server refuses. Watched rather than hooked to
+        // one action, so a block made on ANOTHER device is honoured here
+        // too — the same reason ChatRepository watches this set to prune
+        // the direct chat (docs/protocol.md, "Calls").
+        scope.launch {
+            settings.state
+                .map { it.blockedUserIds }
+                .distinctUntilChanged()
+                .collect { blocked -> blocked.forEach(callBacks::forget) }
+        }
+    }
+
     private val manager: CallsManager by lazy { CallsManager(context) }
 
     /** registerAppWithTelecom succeeded: calls are Telecom's from here on. */
