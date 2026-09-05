@@ -53,7 +53,13 @@
 	<!-- Voice calls are peer to peer: WebRTC binds a UDP socket and the
 	     other side's ICE checks arrive on it, which the sandbox counts as
 	     serving. Without this a call gathers host candidates and hears
-	     nothing on them. -->
+	     nothing on them.
+
+	     App Review's automated check flags this key (2026-09-04: "does not
+	     appear to have matching functionality") because nothing about this
+	     app looks like a server — no listening TCP port, no embedded HTTP
+	     server, no Bonjour. It is answered with an explanation, never by
+	     deleting the key; ios/docs/appstore.md carries the reply. -->
 	<key>com.apple.security.network.server</key>
 	<true/>
 	<key>com.apple.security.files.user-selected.read-write</key>
