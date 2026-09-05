@@ -656,7 +656,7 @@ chat,messenger,private,self-hosted,server,calls,video,voice,photos,relatives,gra
 
 *("family" and "connect" are left out for the same reason as on iOS — the app name carries them, and if the record is named "Family" rather than "Family Connect", "connect" belongs here in place of "desktop". The iOS list's "group" is dropped: on a Mac the search that matters is for a desktop messenger, and there are no group calls to index. "mac" is deliberately absent — every app in this store is a Mac app, so the word buys nothing. "kids" stays out on both platforms: a keyword implying a child audience invites a Guideline 1.3 and age-rating question this app cannot answer.)*
 
-## macOS — Notes for App Review (paste verbatim — 3936/4000 chars)
+## macOS — Notes for App Review (paste verbatim — 3993/4000 chars)
 
 DEMO SERVER: [DEMO_SERVER_URL] — compiled into this build, so there is nothing to configure.
 
@@ -665,7 +665,7 @@ DEMO ACCOUNTS.
 - Second account: [DEMO_USER_2] / [DEMO_PASS_2], same family — sign it in on a second Mac for typing indicators, read receipts and a call.
 - Invite code [INVITE_CODE]. Support: [SUPPORT_EMAIL].
 
-WHAT IT IS. The macOS build of Family Connect: a native Mac app (macOS 14 or later, not Catalyst), the same app and bundle id as the iOS version. It is a client for a small open-source (MIT, Rust) chat server: no vendor cloud, and each installation talks to exactly one server. On the Mac the app is named Family; the record is Family Connect. Two modes: (1) the default server above, which we operate and keep online throughout the review — launch and the sign-in screen appears; (2) "Change server…" on that screen points the app at a family's self-hosted server. Review needs only mode 1. Mac navigation is in the window toolbar: Board, Family, Settings. There is no Settings menu item and Command-, does nothing. The composer attaches through the standard file panel; macOS has no in-chat camera capture and no photo picker.
+WHAT IT IS. The macOS build of Family Connect (named Family on the Mac): a native Mac app (macOS 14+, not Catalyst), the same app and bundle id as the iOS version. It is a client for a small open-source (MIT, Rust) chat server; each installation talks to exactly one server and there is no vendor cloud. This build is pre-pointed at the demo server above, which we keep online throughout the review; "Change server…" on the sign-in screen is for families who self-host. Mac navigation is in the window toolbar: Board, Family, Settings — there is no Settings menu item and Command-, does nothing.
 
 CONTACT IS CONTAINED (guideline 1.2). There is no public feed, no discovery, no user directory and no user search. Registration is open (username, display name, password; no email, no phone), but an account in no family can start nothing: opening a one-to-one chat, reporting and blocking are refused server-side unless both people are in the same family, and a call exists only inside such a chat. The only ways into a family are creating your own or presenting an 8-character invite code, and a new family defaults to "Need approval", so the owner admits each member, and may rotate the code, cap membership, close joining, or remove anyone.
 
@@ -675,7 +675,9 @@ DELETE ACCOUNT (5.1.1(v)). Settings in the window toolbar → last section, besi
 
 NOT END-TO-END ENCRYPTED, and the app does not claim to be. Message text, photos, files and locations are stored readable on the chosen server; on the default server the developer is that operator. Call media (WebRTC, DTLS-SRTP) goes directly between the two devices wherever the network allows; where it cannot, the call connects only if a relay is configured on our server, which forwards the encrypted stream without being able to read it.
 
-PLEASE LEAVE THE APP OPEN. On macOS it notifies and rings only while it is running: banners come from its own live connection, and an incoming call arrives as a Notification Center alert with Answer and Decline. A quit Mac is not woken, for a message or for a call. That is deliberate design, not a defect: nothing in this system wakes a Mac to ring. Please test calls with both apps open. On one Wi-Fi network macOS asks for Local Network permission as the call connects; please allow it, or a same-network call cannot connect.
+com.apple.security.network.server. Calls are peer to peer: the WebRTC connection binds UDP sockets, and the far side’s ICE checks and media arrive on them — inbound traffic, which the sandbox counts as serving, so network.client alone leaves calls unconnected. Nothing else uses it: no listening TCP port, no embedded server, no Bonjour.
+
+PLEASE LEAVE THE APP OPEN. On macOS it notifies and rings only while it is running: banners come from its own live connection, and an incoming call arrives as a Notification Center alert with Answer and Decline. A quit Mac is never woken, for a message or for a call — deliberate design, not a defect. Please test calls with both apps open. On one Wi-Fi network macOS asks for Local Network permission as the call connects; please allow it, or a same-network call cannot connect.
 
 ## macOS — Reviewer walkthrough (supporting detail — not pasted into App Store Connect)
 
@@ -964,3 +966,49 @@ Each item below is tagged **[code]** (a change in this repository) or **[nettras
 - [ ] **[nettrash]** Confirm in App Store Connect which fields are **record-level** and which are **per-platform**, rather than assuming. macOS is a platform on the *same* app record, sharing the bundle id `me.nettrash.FamilyConnect` — never a second record and never a second bundle id. Description, keywords, screenshots, what's new and the submission itself are per-platform and must be written for the Mac; App Privacy and the age rating are record-level and were already filed from the iOS side, so an answer given there binds this one. Verify that split in the console before filling anything in, because a record-level field re-answered "for macOS" silently rewrites the iOS answer too.
 - [ ] **[nettrash]** Cut the Mac archive from the **FamilyConnect-nettrash** scheme (Release-nettrash), for the same reason as iOS: only that configuration compiles in `FC_DEFAULT_SERVER_URL = https://fc.nettrash.me`. A plain FamilyConnect/Release archive opens on the server screen instead, which falsifies "the build is already pointed at our server" in the first paragraph of the Beta App Description and the whole GETTING IN group.
 - [ ] **[code]** Before the Mac description is written, re-read the exclusion list: no CallKit, no PushKit, no Siri, no contact linking, no in-chat camera capture, no photo-library picker, no *setting* a profile picture, no Leave Family, no Settings scene, no message search. None of it exists on macOS, and none of the iOS listing copy is written to be true of this platform — the Mac description is a fresh text, not an edit of the iOS one.
+- [ ] **[nettrash]** Answer the `com.apple.security.network.server` query in Resolution Center with the reply written out below, and paste the entitlement paragraph — already in the macOS Notes for App Review above — into App Review Information. The automated message asks for both, and the review does not proceed until it is answered. Do not resubmit with the entitlement removed instead: calls stop connecting and nothing reports why.
+
+### The `com.apple.security.network.server` query (2026-09-04)
+
+The Mac submission came back with an automated message, not a human rejection: the binary declares
+`com.apple.security.network.server` and "does not appear to have matching functionality", so the
+review cannot proceed until the entitlement is either removed or explained. It names no other
+entitlement, and nothing else in the submission was faulted.
+
+**Do not remove it.** It is load-bearing for calls, and the failure it would cause is the silent
+kind this file keeps warning about. Call media is peer to peer: `WebRTCClient` gathers ICE
+candidates by binding UDP sockets, and the far side's STUN connectivity checks — then the RTP
+media itself — arrive on those sockets as traffic the app did not initiate. App Sandbox counts
+that as *serving*, so `network.client` alone is not enough; without the server grant a call
+gathers host candidates, hears nothing on them and never connects, with no error anywhere. That
+is the same shape as the audio-input and camera grants documented in
+`FamilyConnect-macOS.entitlements`: the app is not refused, it just quietly does not work.
+
+The automated check has nothing to find on its own, because nothing about this app *looks* like a
+server — and that is worth stating in the reply rather than resented. It opens no listening TCP
+port, embeds no HTTP or FTP server, advertises no Bonjour service, and the only inbound traffic it
+ever accepts is the media of a call the person placed or answered, on sockets that live for the
+length of that call. `NWListener`, `NetService` and a socket `bind()` of our own appear nowhere in
+the app or the extension — the WebRTC framework is the whole of it.
+
+Two things are owed, and both are **[nettrash]**: the reply below, pasted into Resolution Center,
+and the `com.apple.security.network.server` paragraph that is now in "macOS — Notes for App
+Review" above — Apple asks for both, and the notes field is what the *next* submission is read
+against. Fitting that paragraph took the block from 3936 to 3993 characters; the room came out of
+WHAT IT IS, which lost the "two modes" framing and the file-panel sentence, both of which survive
+in the walkthrough below. The iOS notes are untouched: iOS has no sandbox entitlements file and
+this cannot arise there.
+
+#### Reply to App Review (paste verbatim)
+
+The com.apple.security.network.server entitlement is required. Here is what uses it.
+
+Family Connect includes one-to-one voice and video calling between two members of the same family. The call media is peer-to-peer WebRTC (audio and video over DTLS-SRTP) and travels directly between the two devices. Our server carries only a few kilobytes of JSON signalling to set the call up; it never carries, stores or is able to read the media itself.
+
+A WebRTC peer connection gathers ICE candidates by binding UDP sockets. The remote peer's STUN connectivity checks, and then the RTP media, arrive on those sockets as inbound traffic that our app did not initiate, which App Sandbox treats as serving. com.apple.security.network.client is therefore not sufficient on its own: without com.apple.security.network.server the app gathers its candidates, receives nothing on them, and every call fails to connect.
+
+The entitlement is used for nothing else. The app opens no listening TCP port, embeds no HTTP or FTP server, and advertises no Bonjour service. The only inbound traffic it ever accepts is the media of a call the user placed or answered, on sockets that exist for the duration of that call.
+
+To see the functionality: sign in with the two demo accounts given in App Review Information on two Macs, open the one-to-one chat between them, and use the Call or Video Call button in that conversation's toolbar. Both Macs must have the app running, as macOS is never woken for an incoming call by design. If the two Macs are on the same Wi-Fi network, macOS will ask for Local Network permission as the call connects; please allow it, or the direct connection between two devices on one network cannot be made.
+
+This explanation has also been added to the App Review Information section in App Store Connect.

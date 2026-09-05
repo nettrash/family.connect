@@ -2,13 +2,15 @@
  * AppDatabase.kt
  * Family Connect (Android)
  *
- * Room database, version 18.
+ * Room database, version 21.
  *
  * MIGRATION POLICY: fallbackToDestructiveMigration is FORBIDDEN on this
  * database. It holds the family's message history — the only local copy
  * on this device between resyncs — and silently dropping it on a schema
  * bump is data loss the user notices. Every future version bump ships a
- * real Migration.
+ * real Migration, and adds it to ALL_MIGRATIONS below — a Migration that
+ * exists but is never handed to Room is not a migration, it is a crash on
+ * every upgraded install.
  *
  * iOS counterpart: ios/FamilyConnect/Data/Db/AppDatabase.swift
  * (the SwiftData ModelContainer).
@@ -395,6 +397,49 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE messages ADD COLUMN attachmentName TEXT")
             }
+        }
+
+        /**
+         * Every migration this database has, in order. Room is given
+         * exactly this (AppModule.provideDatabase spreads it).
+         *
+         * It lives here, beside the migrations it enumerates, because the
+         * one release it lived only in the Hilt module is the release that
+         * broke: v21's MIGRATION_20_21 was written, reviewed and never
+         * registered, so Room could find no path past 19 and refused to
+         * open the database at all — "A migration from 19 to 21 was
+         * required but not found", which on a device is a crash loop on
+         * launch, not a fallback. MigrationCoverageTest now holds this
+         * chain unbroken from 1 to the @Database version.
+         *
+         * `by lazy` rather than a plain `val`: these properties are
+         * declared out of order above, and a companion `val` initialises
+         * in declaration order — an eager array would capture `null` for
+         * every migration declared after it, silently.
+         */
+        val ALL_MIGRATIONS: Array<Migration> by lazy {
+            arrayOf(
+                MIGRATION_1_2,
+                MIGRATION_2_3,
+                MIGRATION_3_4,
+                MIGRATION_4_5,
+                MIGRATION_5_6,
+                MIGRATION_6_7,
+                MIGRATION_7_8,
+                MIGRATION_8_9,
+                MIGRATION_9_10,
+                MIGRATION_10_11,
+                MIGRATION_11_12,
+                MIGRATION_12_13,
+                MIGRATION_13_14,
+                MIGRATION_14_15,
+                MIGRATION_15_16,
+                MIGRATION_16_17,
+                MIGRATION_17_18,
+                MIGRATION_18_19,
+                MIGRATION_19_20,
+                MIGRATION_20_21,
+            )
         }
     }
 }
