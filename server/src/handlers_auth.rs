@@ -385,9 +385,10 @@ pub struct FamilylessGuard {
 pub enum Scrubbed {
     /// The account is gone: the tombstone is written and everyone is told.
     Done,
-    /// Nothing was written. Either the row was already a tombstone, or the
-    /// sweep's guard found the account no longer a candidate — it joined a
-    /// family, or asked to, since the scan named it.
+    /// Nothing was written. The row was already a tombstone; or the sweep's
+    /// guard found the account no longer a candidate — it joined a family,
+    /// or asked to, since the scan named it; or it is an account the server
+    /// reserves for itself and no caller may remove.
     Spared,
 }
 
@@ -405,16 +406,37 @@ pub async fn scrub_account(
     user_id: i64,
     guard: Option<FamilylessGuard>,
 ) -> Result<Scrubbed, ApiError> {
-    let family_id: Option<i64> = match sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT family_id FROM users WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.pool)
-    .await?
-    {
-        Some(family_id) => family_id,
-        None => return Ok(Scrubbed::Spared),
+    // The username comes back with the family: the reserved account must
+    // never be scrubbed, and reading the name here costs nothing where
+    // asking for it separately would be a second round-trip on every
+    // deletion.
+    let Some(row) =
+        sqlx::query("SELECT username, family_id FROM users WHERE id = $1 AND deleted_at IS NULL")
+            .bind(user_id)
+            .fetch_optional(&state.pool)
+            .await?
+    else {
+        return Ok(Scrubbed::Spared);
     };
+    let username: String = row.get("username");
+    let family_id: Option<i64> = row.get("family_id");
+
+    // The assistant is not an account anybody may delete (migration 0015).
+    // The familyless sweep already excludes it by name in its own scan, and
+    // no other caller can reach it — `POST /me/delete` needs a login the
+    // unusable `'!'` hash can never satisfy. So this refusal is for the
+    // caller that does not exist yet: it lives in the ONE routine every
+    // removal path shares, where a new sweep written next year inherits it
+    // without having to know the rule. Logged at error because the account
+    // is spared either way and the caller is the bug.
+    if is_reserved_username(&username) {
+        tracing::error!(
+            user_id,
+            username = %username,
+            "refused to scrub a reserved account"
+        );
+        return Ok(Scrubbed::Spared);
+    }
 
     // 2. Everything that has to be known BEFORE the write, because the
     //    write is what makes it unknowable.
@@ -1020,10 +1042,7 @@ fn validate_username(username: &str) -> Result<(), ApiError> {
     // unique index would refuse this anyway, but as `username_taken` — and
     // a member being told a name is "taken" when nobody has it is a worse
     // answer than being told it is reserved.
-    if RESERVED_USERNAMES
-        .iter()
-        .any(|reserved| username.eq_ignore_ascii_case(reserved))
-    {
+    if is_reserved_username(username) {
         return Err(ApiError::validation("that username is reserved"));
     }
     Ok(())
@@ -1031,6 +1050,16 @@ fn validate_username(username: &str) -> Result<(), ApiError> {
 
 /// Names the server itself uses and nobody may register.
 const RESERVED_USERNAMES: [&str; 1] = ["assistant"];
+
+/// Whether a name is one of those, case-insensitively — the casing the
+/// unique index (`users_username_lower_uq`) and every assistant lookup
+/// already use. A rule that recognised only one casing would not be the
+/// rule the database enforces.
+fn is_reserved_username(username: &str) -> bool {
+    RESERVED_USERNAMES
+        .iter()
+        .any(|reserved| username.eq_ignore_ascii_case(reserved))
+}
 
 /// Display name: trimmed, 1–64 chars. Returns the trimmed value, which is
 /// what gets stored.

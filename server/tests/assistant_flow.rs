@@ -16,6 +16,7 @@ use axum::response::Json;
 use axum::routing::post;
 use common::{TestServer, assert_error, spawn_server, spawn_server_with_config};
 use family_connect::config::Config;
+use family_connect::handlers_auth::{Scrubbed, scrub_account};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
@@ -4233,5 +4234,96 @@ async fn an_option_with_a_newline_in_it_cannot_forge_a_line_to_the_model() {
         turn.lines().nth(2),
         Some("[End of quoted message]"),
         "the poll is one line and the quote block closes on the third: {turn}"
+    );
+}
+
+/// The reserved account is refused by the ONE routine every removal shares,
+/// and not only by the familyless sweep's own scan.
+///
+/// The guard is `None` here — the shape a REQUESTED deletion uses, and the
+/// shape any cleanup written later would use too. Such a caller never
+/// consults the sweep's candidate scan, so the exclusion that lives in that
+/// scan cannot protect it; only the refusal inside `scrub_account` can. That
+/// is the whole point of this test, and it is why it calls the routine
+/// directly instead of going through the sweep that already passes.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn the_shared_scrub_refuses_the_assistant_however_it_is_called() {
+    let ts = spawn_server().await;
+    let assistant = assistant_id(&ts).await;
+
+    let outcome = scrub_account(&ts.state, assistant, None)
+        .await
+        .expect("the scrub runs rather than erroring");
+    assert_eq!(
+        outcome,
+        Scrubbed::Spared,
+        "the assistant is not an account any caller may remove"
+    );
+
+    // Alive, and still findable BY NAME — which is how every lookup of the
+    // assistant works, so the scrub's rename would have been as fatal as
+    // its tombstone.
+    assert_eq!(
+        family_connect::handlers_ai::assistant_user_id(&ts.state)
+            .await
+            .expect("the query runs"),
+        Some(assistant),
+        "the row is untouched: same id, still named `assistant`"
+    );
+}
+
+/// And the database refuses it as well (migration 0036), whatever writes
+/// the statement — a future sweep, or a hand-run ops line at 2am.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn the_database_refuses_to_remove_or_rename_the_assistant() {
+    let ts = spawn_server().await;
+    let assistant = assistant_id(&ts).await;
+
+    // The three ways the row stops being a live account named `assistant`.
+    // The middle one is what `scrub_account` writes, and the quietest: no
+    // lookup of the assistant would ever find it again.
+    for (what, sql) in [
+        (
+            "tombstoning it",
+            "UPDATE users SET deleted_at = now() WHERE id = $1",
+        ),
+        (
+            "renaming it",
+            "UPDATE users SET username = 'deleted-' || id WHERE id = $1",
+        ),
+        ("deleting the row", "DELETE FROM users WHERE id = $1"),
+    ] {
+        let err = sqlx::query(sql)
+            .bind(assistant)
+            .execute(&ts.state.pool)
+            .await
+            .expect_err(&format!("{what} must be refused by the database"));
+        let code = err
+            .as_database_error()
+            .and_then(|db| db.code())
+            .map(|code| code.to_string());
+        assert_eq!(
+            code.as_deref(),
+            Some("23001"),
+            "{what} must raise restrict_violation, not fail some other way: {err}"
+        );
+    }
+
+    // What the assistant LOOKS like is still ordinary data: the trigger
+    // guards whether the account exists, not how it is presented.
+    sqlx::query("UPDATE users SET display_name = 'Helper', avatar_version = 3 WHERE id = $1")
+        .bind(assistant)
+        .execute(&ts.state.pool)
+        .await
+        .expect("a display name and an avatar are not the account's existence");
+
+    assert_eq!(
+        family_connect::handlers_ai::assistant_user_id(&ts.state)
+            .await
+            .expect("the query runs"),
+        Some(assistant),
+        "still there, still named `assistant`"
     );
 }
