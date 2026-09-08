@@ -198,6 +198,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "expired_attachments",
         sql: include_str!("../migrations/0035_expired_attachments.sql"),
     },
+    Migration {
+        version: 36,
+        name: "assistant_is_not_removable",
+        sql: include_str!("../migrations/0036_assistant_is_not_removable.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

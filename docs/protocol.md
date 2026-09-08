@@ -576,7 +576,9 @@ registration and starts AGAIN whenever the account leaves or is removed from a f
 (`users.familyless_since`), so a member removed today has the full grace to be let back in,
 however old their account is. Two accounts are never touched: one with a join request still
 `pending` — it is waiting on the owner, not on the server — and the assistant's, which has no
-family by design. The sweep runs on the same hourly clock as retention, so "7 days" means seven
+family by design and which no deletion in this server may take (see "The assistant"). That
+exclusion deliberately does not live in this sweep alone: a cleanup written later against the same
+table would not inherit a rule that only one query knows. The sweep runs on the same hourly clock as retention, so "7 days" means seven
 days and not "some night this week", and it re-reads the row under a lock before scrubbing, so an
 account that joins a family in the last hour of its grace is spared. The one request that can
 still be in flight when the scrub lands — a join, or a join request, already past authentication —
@@ -739,6 +741,13 @@ in the `members` roster (`GET /families/mine` selects by family, and the assista
 username is refused at registration so nobody can impersonate it. It cannot be messaged directly:
 `POST /chats/direct` naming it answers `not_same_family`, because it is in no family. The only two
 ways to reach it are its own `ai` chat and a mention in the family chat.
+
+**The reserved account is permanent.** Being an ordinary `users` row is what keeps every foreign
+key working, and it is also what puts the row within reach of anything that removes users — so
+nothing may. The shared scrub every deletion goes through refuses it whatever asked, and beneath
+that the database refuses to tombstone, rename or delete the row at all. A rename is guarded
+alongside the deletions on purpose: the assistant is looked up BY NAME, so renaming its row would
+retire the assistant as surely as dropping it, and far more quietly.
 
 In an `ai` chat clients need no special id: it has exactly two participants, so a message in one
 that is not yours is the assistant's. Draw it with the chat's own name and icon rather than looking
