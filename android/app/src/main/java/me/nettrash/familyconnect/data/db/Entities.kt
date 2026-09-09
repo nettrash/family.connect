@@ -417,6 +417,45 @@ data class NoteEntity(
      * upgraded schema validates against a fresh one.
      */
     @ColumnInfo(defaultValue = "medium") val size: String = "medium",
+    /**
+     * One of the protocol's four hands — plain, serif, mono, casual — an
+     * INTENT this client draws with a system face of its own. Text for the
+     * same reason as [color] and [size]: an unknown one still renders, as
+     * plain. A real default rather than nullable, because absent-on-the-wire
+     * IS "plain" — the face every note was written in before the field
+     * existed — and the @ColumnInfo default byte-matches MIGRATION_23_24.
+     */
+    @ColumnInfo(defaultValue = "plain") val font: String = "plain",
+    /**
+     * `text` or `photo` (docs/protocol.md, "Board"), text for the same
+     * reason as [color]: an unknown kind from a newer server draws as a
+     * text note rather than being dropped — the note still has a slot on a
+     * shared wall, and a hole in the family's layout is worse than a
+     * sticker that says only what it says.
+     */
+    @ColumnInfo(defaultValue = "text") val kind: String = "text",
+    /**
+     * The pinned picture, on a photo note: the wire's Attachment stored
+     * verbatim (AttachmentsCodec, a one-element list — the same codec a
+     * message's attachments use, so there is one shape to read). The PIXELS
+     * come from AttachmentRepository by the id inside it, exactly as a
+     * message's do; nothing about the file is duplicated here.
+     */
+    val attachmentJson: String? = null,
+    /**
+     * An event's when and where (docs/protocol.md, "Board"), epoch millis
+     * like every other instant in this store. Null on every other kind,
+     * and on every note written before events existed.
+     */
+    val startsAt: Long? = null,
+    val endsAt: Long? = null,
+    val place: String? = null,
+    /**
+     * Who is coming, as the wire's `rsvps` stored verbatim (RsvpCodec).
+     * Null on every other kind; "[]" on an event nobody has answered — the
+     * difference is the point.
+     */
+    val rsvpsJson: String? = null,
     /** Fractions of the board, 0..1 from the top-left. */
     val x: Double,
     val y: Double,

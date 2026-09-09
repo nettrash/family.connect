@@ -944,3 +944,836 @@ async fn the_board_note_frame_carries_the_content_seq() {
     assert!(frame["note"]["board_seq"].as_i64().expect("seq") > created_seq);
     assert_eq!(frame["note"]["content_seq"].as_i64(), Some(created_seq));
 }
+
+/// A note created without a font is `plain` — the face every note had
+/// before the field existed — and a chosen font survives every path a
+/// client reads notes through, exactly as a size does.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_note_without_a_font_is_plain_and_a_chosen_font_is_kept_everywhere() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let mut member_ws = connect_ws(&server, &member).await;
+
+    let plain = add_note(&server, &owner, "Milk").await;
+    assert_eq!(plain["note"]["font"], "plain", "got {plain}");
+    let plain_frame = next_frame_of_type(&mut member_ws, "board_note").await;
+    assert_eq!(plain_frame["note"]["font"], "plain", "got {plain_frame}");
+    let plain_id = plain["note"]["id"].as_i64().expect("id");
+
+    let response = server
+        .post(
+            &owner,
+            "/families/mine/board/notes",
+            json!({"text": "Happy birthday!", "color": "pink", "font": "casual",
+                   "x": 0.5, "y": 0.5}),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    let casual: Value = response.json().await.expect("JSON");
+    assert_eq!(casual["note"]["font"], "casual", "got {casual}");
+    let casual_id = casual["note"]["id"].as_i64().expect("id");
+    let casual_frame = next_frame_of_type(&mut member_ws, "board_note").await;
+    assert_eq!(casual_frame["note"]["id"].as_i64(), Some(casual_id));
+    assert_eq!(casual_frame["note"]["font"], "casual", "got {casual_frame}");
+
+    let font_of = |notes: &Value, id: i64| -> Value {
+        notes
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|n| n["id"].as_i64() == Some(id))
+            .unwrap_or_else(|| panic!("note {id} missing from {notes}"))["font"]
+            .clone()
+    };
+
+    let board: Value = server
+        .get(&member, "/families/mine/board")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(font_of(&board["notes"], plain_id), "plain");
+    assert_eq!(font_of(&board["notes"], casual_id), "casual");
+
+    let changes: Value = server
+        .get(&member, "/families/mine/board/changes?after_seq=0")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(font_of(&changes["notes"], plain_id), "plain");
+    assert_eq!(font_of(&changes["notes"], casual_id), "casual");
+}
+
+/// The font belongs to the author with text, colour and size — and a change
+/// of face is not a change of what the note SAYS, so it takes a new
+/// `board_seq` and leaves `content_seq` exactly where it was. A badge that
+/// went off because somebody chose a nicer hand would be a lie about there
+/// being something to read (protocol.md, "Board").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn only_the_author_may_change_the_font_and_it_raises_no_badge() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let created = add_note(&server, &owner, "Milk").await;
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    let created_seq = created["note"]["board_seq"].as_i64().expect("seq");
+    let content_seq = created["note"]["content_seq"].as_i64().expect("content seq");
+
+    assert_error(
+        server
+            .patch(
+                &member,
+                &format!("/families/mine/board/notes/{note_id}"),
+                json!({"font": "serif"}),
+            )
+            .await,
+        403,
+        "not_note_author",
+    )
+    .await;
+
+    let restyled = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"font": "serif"}),
+        )
+        .await;
+    assert_eq!(restyled.status(), 200);
+    let restyled: Value = restyled.json().await.expect("JSON");
+    assert_eq!(restyled["note"]["font"], "serif");
+    // Everything else is left as it was.
+    assert_eq!(restyled["note"]["text"], "Milk");
+    assert_eq!(restyled["note"]["size"], "medium");
+    assert_eq!(restyled["note"]["color"], "yellow");
+    assert!(
+        restyled["note"]["board_seq"].as_i64().expect("seq") > created_seq,
+        "a change of font is a mutation and takes a new board_seq"
+    );
+    assert_eq!(
+        restyled["note"]["content_seq"].as_i64(),
+        Some(content_seq),
+        "the face is not what the note says: no badge"
+    );
+
+    // And re-sending the font it already has is a no-op, like every other
+    // field: no new seq, and nothing fanned out.
+    let again = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"font": "serif"}),
+        )
+        .await;
+    assert_eq!(again.status(), 200);
+    let again: Value = again.json().await.expect("JSON");
+    assert_eq!(
+        again["note"]["board_seq"].as_i64(),
+        restyled["note"]["board_seq"].as_i64(),
+        "a no-op takes no sequence value"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn bad_fonts_are_refused() {
+    let server = spawn_server().await;
+    let (owner, _) = family_of_two(&server).await;
+
+    assert_error(
+        server
+            .post(
+                &owner,
+                "/families/mine/board/notes",
+                json!({"text": "Milk", "color": "yellow", "font": "comic-sans",
+                       "x": 0.1, "y": 0.1}),
+            )
+            .await,
+        400,
+        "invalid_note_font",
+    )
+    .await;
+
+    let created = add_note(&server, &owner, "Milk").await;
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    assert_error(
+        server
+            .patch(
+                &owner,
+                &format!("/families/mine/board/notes/{note_id}"),
+                json!({"font": "Helvetica"}),
+            )
+            .await,
+        400,
+        "invalid_note_font",
+    )
+    .await;
+}
+
+// --- Photo notes (protocol.md, "Board") -------------------------------------
+
+fn jpeg_bytes(len: usize) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
+    bytes.resize(len.max(4), 0x00);
+    bytes
+}
+
+/// ISO base media: "ftyp" at offset 4, which is what the server sniffs an
+/// m4a by.
+fn mp4_bytes(len: usize) -> Vec<u8> {
+    let mut bytes = vec![0x00, 0x00, 0x00, 0x18];
+    bytes.extend_from_slice(b"ftypmp42");
+    bytes.resize(len.max(12), 0x00);
+    bytes
+}
+
+/// Upload one picture and answer with its id.
+async fn upload_photo(server: &TestServer, token: &str) -> i64 {
+    let response = server
+        .put_bytes_method(
+            "POST",
+            token,
+            "/attachments?kind=photo&width=1600&height=1200",
+            "image/jpeg",
+            jpeg_bytes(4096),
+        )
+        .await;
+    assert_eq!(response.status(), 201, "uploading a picture");
+    let body: Value = response.json().await.expect("JSON");
+    body["attachment"]["id"].as_i64().expect("attachment id")
+}
+
+async fn pin_photo(
+    server: &TestServer,
+    token: &str,
+    attachment_id: i64,
+    caption: &str,
+) -> reqwest::Response {
+    server
+        .post(
+            token,
+            "/families/mine/board/notes",
+            json!({"text": caption, "color": "yellow", "kind": "photo",
+                   "attachment_id": attachment_id, "x": 0.3, "y": 0.4}),
+        )
+        .await
+}
+
+/// A picture pinned to the wall is a NOTE: it takes a slot, it rides the
+/// same feed and the same seq, anyone may move it, and every member can
+/// FETCH IT — which is the half no chat membership could ever grant.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_photo_note_is_pinned_read_and_fetched_by_the_whole_family() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let mut member_ws = connect_ws(&server, &member).await;
+
+    let attachment_id = upload_photo(&server, &owner).await;
+    let response = pin_photo(&server, &owner, attachment_id, "The lake").await;
+    assert_eq!(response.status(), 201, "{:?}", response.text().await);
+    let pinned: Value = response.json().await.expect("JSON");
+    let note = &pinned["note"];
+    let note_id = note["id"].as_i64().expect("id");
+    assert_eq!(note["kind"], "photo");
+    assert_eq!(note["text"], "The lake", "the caption is the note's text");
+    assert_eq!(note["attachment"]["id"].as_i64(), Some(attachment_id));
+    assert_eq!(note["attachment"]["kind"], "photo");
+
+    // The live frame carries the picture too, or the wall draws a blank.
+    let frame = next_frame_of_type(&mut member_ws, "board_note").await;
+    assert_eq!(frame["note"]["kind"], "photo", "got {frame}");
+    assert_eq!(
+        frame["note"]["attachment"]["id"].as_i64(),
+        Some(attachment_id),
+        "got {frame}"
+    );
+
+    // And so do both reads.
+    for path in ["/families/mine/board", "/families/mine/board/changes?after_seq=0"] {
+        let body: Value = server.get(&member, path).await.json().await.expect("JSON");
+        let found = body["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .find(|n| n["id"].as_i64() == Some(note_id))
+            .unwrap_or_else(|| panic!("the note is missing from {path}"));
+        assert_eq!(found["attachment"]["id"].as_i64(), Some(attachment_id), "{path}");
+    }
+
+    // THE BYTES. A board note belongs to no chat, so chat membership can
+    // never grant this — the family does.
+    let bytes = server
+        .get(&member, &format!("/attachments/{attachment_id}"))
+        .await;
+    assert_eq!(bytes.status(), 200, "every member can fetch a pinned picture");
+
+    // A stranger cannot.
+    let (stranger, _) = server.register("stranger", "Sam").await;
+    server.create_family(&stranger, "The Joneses").await;
+    assert_eq!(
+        server
+            .get(&stranger, &format!("/attachments/{attachment_id}"))
+            .await
+            .status(),
+        404,
+        "another family's wall is not readable"
+    );
+}
+
+/// A picture may be pinned without a caption, and moving it must not lose
+/// it: the frame IS the note, so a move fanned out without the attachment
+/// would blank the picture on every other device.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_caption_less_photo_survives_a_move_by_anyone() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+
+    let attachment_id = upload_photo(&server, &owner).await;
+    let pinned: Value = pin_photo(&server, &owner, attachment_id, "")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let note_id = pinned["note"]["id"].as_i64().expect("id");
+    assert_eq!(pinned["note"]["text"], "", "a picture needs no caption");
+
+    // Position is everyone's, even on somebody else's picture.
+    let moved = server
+        .patch(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"x": 0.9, "y": 0.1}),
+        )
+        .await;
+    assert_eq!(moved.status(), 200);
+    let moved: Value = moved.json().await.expect("JSON");
+    assert_eq!(
+        moved["note"]["attachment"]["id"].as_i64(),
+        Some(attachment_id),
+        "a move must not lose the picture: {moved}"
+    );
+    assert_eq!(moved["note"]["kind"], "photo");
+
+    // The author may empty a caption that exists — a text note may not.
+    let captioned = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"text": "  "}),
+        )
+        .await;
+    assert_eq!(captioned.status(), 200);
+    let text_note = add_note(&server, &owner, "Milk").await;
+    let text_id = text_note["note"]["id"].as_i64().expect("id");
+    assert_error(
+        server
+            .patch(
+                &owner,
+                &format!("/families/mine/board/notes/{text_id}"),
+                json!({"text": "   "}),
+            )
+            .await,
+        400,
+        "validation",
+    )
+    .await;
+}
+
+/// The kind and the picture arrive together or not at all, a wall pins
+/// PICTURES, and one picture is pinned by one thing.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_ways_of_pinning_a_picture_wrong() {
+    let server = spawn_server().await;
+    let (owner, _) = family_of_two(&server).await;
+
+    // A kind with no picture, and a picture with no kind.
+    assert_error(
+        server
+            .post(
+                &owner,
+                "/families/mine/board/notes",
+                json!({"text": "hi", "color": "yellow", "kind": "photo", "x": 0.1, "y": 0.1}),
+            )
+            .await,
+        400,
+        "validation",
+    )
+    .await;
+    let attachment_id = upload_photo(&server, &owner).await;
+    assert_error(
+        server
+            .post(
+                &owner,
+                "/families/mine/board/notes",
+                json!({"text": "hi", "color": "yellow", "attachment_id": attachment_id,
+                       "x": 0.1, "y": 0.1}),
+            )
+            .await,
+        400,
+        "validation",
+    )
+    .await;
+    // An unknown kind.
+    assert_error(
+        server
+            .post(
+                &owner,
+                "/families/mine/board/notes",
+                json!({"text": "hi", "color": "yellow", "kind": "video", "x": 0.1, "y": 0.1}),
+            )
+            .await,
+        400,
+        "invalid_note_kind",
+    )
+    .await;
+
+    // A wall pins pictures: a voice message is a thing to play.
+    let audio_response = server
+        .put_bytes_method(
+            "POST",
+            &owner,
+            "/attachments?kind=audio&duration_ms=1200",
+            "audio/mp4",
+            mp4_bytes(2048),
+        )
+        .await;
+    assert_eq!(audio_response.status(), 201, "uploading a voice message");
+    let audio: Value = audio_response.json().await.expect("JSON");
+    let audio_id = audio["attachment"]["id"].as_i64().expect("id");
+    assert_error(
+        pin_photo(&server, &owner, audio_id, "listen").await,
+        400,
+        "invalid_attachment",
+    )
+    .await;
+
+    // One picture, one note.
+    assert_eq!(pin_photo(&server, &owner, attachment_id, "once").await.status(), 201);
+    assert_error(
+        pin_photo(&server, &owner, attachment_id, "twice").await,
+        409,
+        "attachment_already_used",
+    )
+    .await;
+
+    // And somebody else's upload is not yours to pin.
+    let (member, _) = server.register("cousin", "Cousin").await;
+    let theirs = upload_photo(&server, &owner).await;
+    assert_error(pin_photo(&server, &member, theirs, "mine now").await, 409, "not_in_family").await;
+}
+
+/// Deleting a photo note takes its picture with it: the tombstone carries
+/// no content, so nothing left could ever show it.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn deleting_a_photo_note_removes_its_picture() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+
+    let attachment_id = upload_photo(&server, &owner).await;
+    let pinned: Value = pin_photo(&server, &owner, attachment_id, "The lake")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let note_id = pinned["note"]["id"].as_i64().expect("id");
+    assert_eq!(
+        server.get(&member, &format!("/attachments/{attachment_id}")).await.status(),
+        200
+    );
+
+    let deleted = server
+        .delete(&owner, &format!("/families/mine/board/notes/{note_id}"))
+        .await;
+    assert_eq!(deleted.status(), 204);
+
+    assert_eq!(
+        server.get(&member, &format!("/attachments/{attachment_id}")).await.status(),
+        404,
+        "the picture goes with the note"
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments WHERE id = $1")
+        .bind(attachment_id)
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("counting the attachment row");
+    assert_eq!(rows, 0, "the row goes too, not just the access");
+}
+
+/// The sweeper's predicate is the trap: a pinned picture has no
+/// `message_id` and is NOT unclaimed. Sweeping on the message alone would
+/// eat every photo note's picture hours after it was pinned.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_unclaimed_sweep_leaves_a_pinned_picture_alone() {
+    let server = spawn_server().await;
+    let (owner, _) = family_of_two(&server).await;
+
+    let pinned_id = upload_photo(&server, &owner).await;
+    assert_eq!(pin_photo(&server, &owner, pinned_id, "The lake").await.status(), 201);
+    let loose_id = upload_photo(&server, &owner).await;
+
+    // Age both uploads past the grace period.
+    sqlx::query("UPDATE attachments SET created_at = now() - interval '30 days'")
+        .execute(&server.state.pool)
+        .await
+        .expect("ageing the uploads");
+
+    let swept = family_connect::handlers_attachment::sweep_unclaimed(&server.state)
+        .await
+        .expect("the sweep runs");
+    assert_eq!(swept, 1, "the loose upload goes and the pinned one stays");
+
+    let pinned_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments WHERE id = $1")
+        .bind(pinned_id)
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("counting");
+    assert_eq!(pinned_rows, 1, "a pinned picture is not unclaimed");
+    let loose_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments WHERE id = $1")
+        .bind(loose_id)
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("counting");
+    assert_eq!(loose_rows, 0);
+}
+
+// --- Events (protocol.md, "Board") ------------------------------------------
+
+async fn pin_event(
+    server: &TestServer,
+    token: &str,
+    title: &str,
+    extra: Value,
+) -> reqwest::Response {
+    let mut body = json!({
+        "text": title, "color": "blue", "kind": "event",
+        "starts_at": "2026-12-24T17:00:00Z", "x": 0.3, "y": 0.4,
+    });
+    if let Some(extra) = extra.as_object() {
+        for (key, value) in extra {
+            body[key] = value.clone();
+        }
+    }
+    server.post(token, "/families/mine/board/notes", body).await
+}
+
+/// An event is a NOTE with a when, a where and a list of who is coming —
+/// and it is born with `rsvps: []`, because "nobody has answered yet" is an
+/// answer and a missing field is not.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_event_carries_its_times_its_place_and_an_empty_guest_list() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let mut member_ws = connect_ws(&server, &member).await;
+
+    let response = pin_event(
+        &server,
+        &owner,
+        "Christmas dinner",
+        json!({"ends_at": "2026-12-24T21:00:00Z", "place": "  Gran's house  "}),
+    )
+    .await;
+    assert_eq!(response.status(), 201, "{:?}", response.text().await);
+    let created: Value = response.json().await.expect("JSON");
+    let note = &created["note"];
+    let note_id = note["id"].as_i64().expect("id");
+    assert_eq!(note["kind"], "event");
+    assert_eq!(note["text"], "Christmas dinner", "the title is the note's text");
+    assert_eq!(note["place"], "Gran's house", "trimmed, like every other text");
+    assert!(note["starts_at"].as_str().is_some_and(|s| s.starts_with("2026-12-24T17:00")));
+    assert_eq!(
+        note["rsvps"].as_array().map(Vec::len),
+        Some(0),
+        "born with nobody answering, and that is [] not absent: {note}"
+    );
+
+    // The live frame and both reads carry it all.
+    let frame = next_frame_of_type(&mut member_ws, "board_note").await;
+    assert_eq!(frame["note"]["kind"], "event", "got {frame}");
+    assert_eq!(frame["note"]["place"], "Gran's house");
+    for path in ["/families/mine/board", "/families/mine/board/changes?after_seq=0"] {
+        let body: Value = server.get(&member, path).await.json().await.expect("JSON");
+        let found = body["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .find(|n| n["id"].as_i64() == Some(note_id))
+            .unwrap_or_else(|| panic!("the event is missing from {path}"));
+        assert_eq!(found["rsvps"].as_array().map(Vec::len), Some(0), "{path}");
+        assert!(found["ends_at"].as_str().is_some(), "{path}");
+    }
+
+    // A text note carries none of it.
+    let plain = add_note(&server, &owner, "Milk").await;
+    assert!(plain["note"]["starts_at"].is_null(), "{plain}");
+    assert!(plain["note"]["rsvps"].is_null(), "only an event has a guest list");
+}
+
+/// ANSWERING IS NOT AUTHORSHIP: any member may say they are coming, one
+/// answer each, replaced rather than added to, and retractable. It takes a
+/// `board_seq` so the other devices hear about it, and leaves `content_seq`
+/// alone because the event says exactly what it said before.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn anyone_may_answer_an_event_once_and_change_their_mind() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let created: Value = pin_event(&server, &owner, "Christmas dinner", json!({}))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    let created_seq = created["note"]["board_seq"].as_i64().expect("seq");
+    let content_seq = created["note"]["content_seq"].as_i64().expect("content seq");
+    let member_id = server.user_id(&member).await;
+
+    // Somebody who did NOT write it answers.
+    let answered = server
+        .put(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}/rsvp"),
+            json!({"answer": "going"}),
+        )
+        .await;
+    assert_eq!(answered.status(), 200, "{:?}", answered.text().await);
+    let answered: Value = answered.json().await.expect("JSON");
+    assert_eq!(
+        answered["note"]["rsvps"],
+        json!([{"user_id": member_id, "answer": "going"}])
+    );
+    let answered_seq = answered["note"]["board_seq"].as_i64().expect("seq");
+    assert!(answered_seq > created_seq, "an answer reaches the other devices");
+    assert_eq!(
+        answered["note"]["content_seq"].as_i64(),
+        Some(content_seq),
+        "an answer is not something new to READ: no badge"
+    );
+
+    // The same answer again is a no-op.
+    let again: Value = server
+        .put(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}/rsvp"),
+            json!({"answer": "going"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(again["note"]["board_seq"].as_i64(), Some(answered_seq));
+
+    // Changing your mind REPLACES rather than adds.
+    let changed: Value = server
+        .put(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}/rsvp"),
+            json!({"answer": "maybe"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        changed["note"]["rsvps"],
+        json!([{"user_id": member_id, "answer": "maybe"}])
+    );
+
+    // And retracting leaves nobody — idempotently.
+    let retracted: Value = server
+        .delete(&member, &format!("/families/mine/board/notes/{note_id}/rsvp"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(retracted["note"]["rsvps"].as_array().map(Vec::len), Some(0));
+    let retracted_seq = retracted["note"]["board_seq"].as_i64().expect("seq");
+    let nothing: Value = server
+        .delete(&member, &format!("/families/mine/board/notes/{note_id}/rsvp"))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        nothing["note"]["board_seq"].as_i64(),
+        Some(retracted_seq),
+        "retracting nothing burns no seq"
+    );
+}
+
+/// The author owns WHEN and WHERE, as they own the title — and the three
+/// are refused on any other kind, at creation and at edit.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn only_the_author_may_move_an_event_in_time() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let created: Value = pin_event(
+        &server,
+        &owner,
+        "Christmas dinner",
+        json!({"ends_at": "2026-12-24T21:00:00Z", "place": "Gran's house"}),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    let note_id = created["note"]["id"].as_i64().expect("id");
+
+    assert_error(
+        server
+            .patch(
+                &member,
+                &format!("/families/mine/board/notes/{note_id}"),
+                json!({"starts_at": "2026-12-25T17:00:00Z"}),
+            )
+            .await,
+        403,
+        "not_note_author",
+    )
+    .await;
+
+    // The author may. An empty place CLEARS it; a null ends_at clears that.
+    let edited = server
+        .patch(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"starts_at": "2026-12-25T18:00:00Z", "place": "", "ends_at": null}),
+        )
+        .await;
+    assert_eq!(edited.status(), 200, "{:?}", edited.text().await);
+    let edited: Value = edited.json().await.expect("JSON");
+    assert!(edited["note"]["starts_at"].as_str().is_some_and(|s| s.starts_with("2026-12-25T18:00")));
+    assert!(edited["note"]["place"].is_null(), "an emptied place is no place");
+    assert!(edited["note"]["ends_at"].is_null(), "a null clears it");
+
+    // An end before the start, checked against the STORED start.
+    assert_error(
+        server
+            .patch(
+                &owner,
+                &format!("/families/mine/board/notes/{note_id}"),
+                json!({"ends_at": "2026-12-25T17:00:00Z"}),
+            )
+            .await,
+        400,
+        "validation",
+    )
+    .await;
+
+    // None of the three belongs on a text note.
+    let plain = add_note(&server, &owner, "Milk").await;
+    let plain_id = plain["note"]["id"].as_i64().expect("id");
+    assert_error(
+        server
+            .patch(
+                &owner,
+                &format!("/families/mine/board/notes/{plain_id}"),
+                json!({"place": "nowhere"}),
+            )
+            .await,
+        400,
+        "validation",
+    )
+    .await;
+    assert_error(
+        server
+            .put(
+                &owner,
+                &format!("/families/mine/board/notes/{plain_id}/rsvp"),
+                json!({"answer": "going"}),
+            )
+            .await,
+        400,
+        "invalid_rsvp",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_ways_of_pinning_an_event_wrong() {
+    let server = spawn_server().await;
+    let (owner, _) = family_of_two(&server).await;
+
+    // No starts_at.
+    assert_error(
+        server
+            .post(
+                &owner,
+                "/families/mine/board/notes",
+                json!({"text": "Dinner", "color": "blue", "kind": "event", "x": 0.1, "y": 0.1}),
+            )
+            .await,
+        400,
+        "validation",
+    )
+    .await;
+    // Unparseable, and an end before the start.
+    assert_error(
+        pin_event(&server, &owner, "Dinner", json!({"starts_at": "christmas eve"})).await,
+        400,
+        "validation",
+    )
+    .await;
+    assert_error(
+        pin_event(&server, &owner, "Dinner", json!({"ends_at": "2026-12-24T16:00:00Z"})).await,
+        400,
+        "validation",
+    )
+    .await;
+    // A place longer than a line on a card.
+    assert_error(
+        pin_event(&server, &owner, "Dinner", json!({"place": "x".repeat(201)})).await,
+        400,
+        "validation",
+    )
+    .await;
+    // An event still needs a title: only a PICTURE may say nothing.
+    assert_error(
+        pin_event(&server, &owner, "   ", json!({})).await,
+        400,
+        "validation",
+    )
+    .await;
+    // And the three are refused on a text note at creation too.
+    assert_error(
+        server
+            .post(
+                &owner,
+                "/families/mine/board/notes",
+                json!({"text": "Milk", "color": "yellow", "place": "Gran's",
+                       "x": 0.1, "y": 0.1}),
+            )
+            .await,
+        400,
+        "validation",
+    )
+    .await;
+    // A bad answer on a real event.
+    let created: Value = pin_event(&server, &owner, "Dinner", json!({}))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    assert_error(
+        server
+            .put(
+                &owner,
+                &format!("/families/mine/board/notes/{note_id}/rsvp"),
+                json!({"answer": "perhaps"}),
+            )
+            .await,
+        400,
+        "invalid_rsvp",
+    )
+    .await;
+}

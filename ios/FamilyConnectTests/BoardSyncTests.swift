@@ -73,17 +73,30 @@ struct BoardSyncTests {
         y: Double = 0.3,
         boardSeq: Int64,
         /// nil is what a server from before content seqs sends — no field.
-        contentSeq: Int64? = nil
+        contentSeq: Int64? = nil,
+        /// nil is what a server from before fonts sends — no field.
+        font: String? = nil,
+        /// nil is what a server from before kinds sends — no field.
+        kind: String? = nil,
+        attachment: AttachmentDTO? = nil,
+        startsAt: Date? = nil,
+        endsAt: Date? = nil,
+        place: String? = nil,
+        rsvps: [RsvpDTO]? = nil
     ) -> NoteDTO {
         NoteDTO(
-            id: id, authorID: 7, text: text, color: color, size: size, x: x, y: y,
+            id: id, authorID: 7, text: text, color: color, size: size, font: font,
+            kind: kind, attachment: attachment,
+            startsAt: startsAt, endsAt: endsAt, place: place, rsvps: rsvps, x: x, y: y,
             createdAt: Self.stamp, updatedAt: Self.stamp, boardSeq: boardSeq,
             contentSeq: contentSeq, deleted: nil)
     }
 
     private func tombstone(id: Int64, boardSeq: Int64) -> NoteDTO {
         NoteDTO(
-            id: id, authorID: nil, text: nil, color: nil, size: nil, x: nil, y: nil,
+            id: id, authorID: nil, text: nil, color: nil, size: nil, font: nil,
+            kind: nil, attachment: nil, startsAt: nil, endsAt: nil, place: nil, rsvps: nil,
+            x: nil, y: nil,
             createdAt: nil, updatedAt: nil, boardSeq: boardSeq, contentSeq: nil,
             deleted: true)
     }
@@ -175,7 +188,9 @@ struct BoardSyncTests {
 
         harness.coordinator.applyNote(
             NoteDTO(
-                id: 1, authorID: nil, text: nil, color: nil, size: nil, x: nil, y: nil,
+                id: 1, authorID: nil, text: nil, color: nil, size: nil, font: nil,
+                kind: nil, attachment: nil, startsAt: nil, endsAt: nil, place: nil, rsvps: nil,
+                x: nil, y: nil,
                 createdAt: nil, updatedAt: nil, boardSeq: 3, contentSeq: nil,
                 deleted: nil))
 
@@ -203,6 +218,82 @@ struct BoardSyncTests {
 
         #expect(harness.notes().count == 1)
         #expect(harness.note(1)?.size == "medium")
+    }
+
+    /// A picture pinned to the wall is a NOTE: it lands in the same store
+    /// with its kind and the id of its picture, and a note from a server
+    /// that predates kinds is a text note — which is also what an unknown
+    /// kind DRAWS as (docs/protocol.md, "Board").
+    @Test("a photo note keeps its kind and its picture")
+    func photoNote() throws {
+        let harness = try makeHarness(host: "board-photo.test")
+        defer { harness.tearDown() }
+
+        let picture = AttachmentDTO(
+            id: 61, kind: "photo", mime: "image/jpeg", size: 4096, width: 1600, height: 1200,
+            durationMS: nil, hasPreview: true, name: nil,
+            latitude: nil, longitude: nil, accuracyM: nil)
+        harness.coordinator.applyNote(
+            note(id: 1, text: "", boardSeq: 10, kind: "photo", attachment: picture))
+        harness.coordinator.applyNote(note(id: 2, boardSeq: 11))
+
+        let photo = harness.note(1)
+        #expect(photo?.kind == "photo")
+        #expect(photo?.attachmentID == 61)
+        #expect(photo?.attachmentWidth == 1600)
+        #expect(photo?.text == "", "a picture needs no caption")
+        // A note from before kinds, and a note that is simply text.
+        #expect(harness.note(2)?.kind == "text")
+        #expect(harness.note(2)?.attachmentID == nil)
+    }
+
+    /// An event is a NOTE with a when, a where and a guest list — and the
+    /// guest list is `[]` on an event nobody has answered and NIL on every
+    /// other kind, which is the difference a client draws on
+    /// (docs/protocol.md, "Board").
+    @Test("an event keeps its times, its place and its answers")
+    func eventNote() throws {
+        let harness = try makeHarness(host: "board-event.test")
+        defer { harness.tearDown() }
+
+        let starts = Date(timeIntervalSince1970: 1_798_736_400)
+        harness.coordinator.applyNote(
+            note(
+                id: 1, text: "Christmas dinner", boardSeq: 10, kind: "event",
+                startsAt: starts, endsAt: starts.addingTimeInterval(4 * 3600),
+                place: "Gran's house",
+                rsvps: [RsvpDTO(userID: 9, answer: "going"), RsvpDTO(userID: 11, answer: "maybe")]))
+        harness.coordinator.applyNote(note(id: 2, boardSeq: 11))
+
+        let event = try #require(harness.note(1))
+        #expect(event.kind == "event")
+        #expect(event.startsAt == starts)
+        #expect(event.place == "Gran's house")
+        #expect(event.rsvpList.count == 2)
+        #expect(event.myAnswer(9) == "going")
+        #expect(event.myAnswer(7) == nil, "this reader has not answered")
+        #expect(event.answerCount("going") == 1)
+        #expect(event.answerCount("maybe") == 1)
+        // A text note carries none of it.
+        #expect(harness.note(2)?.startsAt == nil)
+        #expect(harness.note(2)?.rsvpsJSON == nil)
+    }
+
+    /// The same rule one field over: an older server has no font field, and
+    /// the note is plain — the face every note was written in before the
+    /// field existed (docs/protocol.md, "Board"). Stored as the NAME rather
+    /// than an empty string: NoteFont draws an empty one plain anyway, so a
+    /// blank would be invisible here and wrong in the store.
+    @Test("a note without a font is plain")
+    func missingFontIsPlain() throws {
+        let harness = try makeHarness(host: "board-nofont.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.applyNote(note(id: 1, boardSeq: 10))
+        harness.coordinator.applyNote(note(id: 2, boardSeq: 11, font: "casual"))
+
+        #expect(harness.note(1)?.font == "plain")
+        #expect(harness.note(2)?.font == "casual")
     }
 
     @Test("a newer seq changes the size in place")

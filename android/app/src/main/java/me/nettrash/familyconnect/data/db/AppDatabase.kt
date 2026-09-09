@@ -43,7 +43,7 @@ fun interface LocalDataWiper {
         NoteEntity::class,
         PendingAttachmentEntity::class,
     ],
-    version = 23,
+    version = 26,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -399,6 +399,49 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * 24: the hand a note is written in (docs/protocol.md, "Board").
+         *
+         * DEFAULT 'plain' byte-matches NoteEntity's @ColumnInfo, and it is
+         * the truth about the past: every note already on a wall WAS drawn
+         * in the plain face, so nothing pinned changes.
+         */
+        val MIGRATION_23_24: Migration = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN font TEXT NOT NULL DEFAULT 'plain'")
+            }
+        }
+
+        /**
+         * 25: a note can be a picture (docs/protocol.md, "Board").
+         *
+         * DEFAULT 'text' byte-matches NoteEntity's @ColumnInfo and is the
+         * truth about the past: every note ever pinned was a text note.
+         * `attachmentJson` is nullable because most notes have no picture.
+         */
+        val MIGRATION_24_25: Migration = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'")
+                db.execSQL("ALTER TABLE notes ADD COLUMN attachmentJson TEXT")
+            }
+        }
+
+        /**
+         * 26: a note can be an event (docs/protocol.md, "Board") — when,
+         * where, and who is coming.
+         *
+         * All four nullable: they are meaningless on every other kind, and
+         * every note already pinned has none.
+         */
+        val MIGRATION_25_26: Migration = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN startsAt INTEGER")
+                db.execSQL("ALTER TABLE notes ADD COLUMN endsAt INTEGER")
+                db.execSQL("ALTER TABLE notes ADD COLUMN place TEXT")
+                db.execSQL("ALTER TABLE notes ADD COLUMN rsvpsJson TEXT")
+            }
+        }
+
         val MIGRATION_9_10: Migration = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE messages ADD COLUMN replyParentMessageId INTEGER")
@@ -473,6 +516,9 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_20_21,
                 MIGRATION_21_22,
                 MIGRATION_22_23,
+                MIGRATION_23_24,
+                MIGRATION_24_25,
+                MIGRATION_25_26,
             )
         }
     }

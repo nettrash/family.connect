@@ -255,13 +255,27 @@ IceServer {"urls": ["turn:turn.example.com:3478?transport=udp"],
            "username": "1756300000:7", "credential": "…"}
           — "username"/"credential" on a TURN server only, and only when the operator
             configured credentials; a STUN server is "urls" alone — see "Voice calls"
-Note      {"id": 12, "author_id": 7, "text": "Milk", "color": "yellow", "size": "medium",
-           "x": 0.42, "y": 0.13, "created_at": "…", "updated_at": "…", "board_seq": 88,
-           "content_seq": 84}
+Note      {"id": 12, "author_id": 7, "kind": "text", "text": "Milk", "color": "yellow",
+           "size": "medium", "font": "plain", "x": 0.42, "y": 0.13, "created_at": "…",
+           "updated_at": "…", "board_seq": 88, "content_seq": 84}
+          — plus "attachment": {Attachment} on a "photo" note, whose "text" is its caption
+            and may be empty
+          — plus "starts_at", optional "ends_at", optional "place", optional "attachment"
+            (the backdrop) and "rsvps": [{user_id, answer}] on an "event" note, whose
+            "text" is its title — see "Board"
           — plus "deleted": true INSTEAD of the content fields on a tombstone; see "Board"
           — "content_seq" is the board_seq of the last change to what the note SAYS; a
-            move, a resize and a recolour leave it alone. It is what a badge counts, and
-            it is absent on a tombstone and from a server that predates it — see "Board"
+            move, a resize, a recolour and a change of font leave it alone. It is what a
+            badge counts, and it is absent on a tombstone and from a server that predates
+            it — see "Board"
+          — "font" is an INTENT, one of plain/serif/mono/casual, which each client draws
+            with a system face of its own. Always present on a live note; a reader that
+            finds it missing (an older server) draws the note plain, which is what every
+            note was before the field existed — see "Board"
+          — "kind" is "text", "photo" or "event". Always present on a live note; a reader that
+            finds it missing (an older server) reads "text", which is what every note
+            was. A client that does not know a kind draws the note as a text one — see
+            "Board"
 ```
 
 **A body is plain text on the wire, and always has been.** No markup is parsed, transformed or
@@ -698,6 +712,104 @@ speaks is the writer's call, and a size anyone could change is a size anyone cou
 nothing. Resizing takes a `board_seq` like any other mutation and does not notify, like a move —
 and, like a move, it leaves `content_seq` alone and raises no badge: a note that got bigger is not
 a note with something new in it.
+
+**A note has a KIND.** `kind` is `text`, `photo` or `event`; anything else is `invalid_note_kind`, and a
+note created without one is `text` — what every note on every wall was before the field existed. A
+`photo` note is a picture pinned to the wall, and it is a NOTE in every other respect: it takes a
+slot and a position anyone may move, it counts against the same ceiling, it rides the same change
+feed and the same `board_seq`, a block hides it the same way, and only its author may change or
+remove it. There is no second board and no second cursor, because a photo on the family's wall is
+not a different wall — and the same is true of an event.
+
+A photo note carries `attachment: {Attachment}` — a picture this caller uploaded and no message or
+note has claimed, named as `attachment_id` when the note is created. It must be a `photo`: a wall
+pins pictures, and a video or a voice message on a corkboard is a thing to play rather than a thing
+to look at (`invalid_attachment` otherwise). One picture per note; a set belongs in a message.
+The attachment is READABLE BY EVERY MEMBER of the family whose board holds it, which is a second
+way in beside chat membership — a board note belongs to no chat, and without it the family would
+see a wall of pictures none of them could fetch. A block never narrows that: the frame is not
+suppressed, only the push, exactly as in the family chat, and the hidden note reveals on one tap
+like any other.
+
+`text` on a photo note is its CAPTION and may be empty, the same relaxation a message carrying an
+attachment gets; on a `text` note it is required as before. The server always sends `text` on a
+live note, so a client that has never heard of `kind` draws a photo note as an ordinary sticker
+with its caption — and a caption-less one as a blank sticker in the right place. That is
+deliberate: the slot is the family's shared layout, and a hole in it would be worse than a blank
+while somebody's phone waits for an update.
+
+**An EVENT is the third kind**: something the family is doing, pinned where the family looks. Its
+`text` is the TITLE and is required, as a text note's is. It carries `starts_at` (RFC3339,
+required), an optional `ends_at` that may not be earlier, an optional `place` of at most 200
+characters, an optional picture behind it — claimed exactly as a photo note's is, and drawn as a
+backdrop rather than as the content — and `rsvps`, who is planning to come.
+
+`rsvps` is a list of `{user_id, answer}` with `answer` one of `going`, `maybe`, `no`. It is present
+on every event, `[]` when nobody has answered. ANYONE in the family may answer, and answering is
+not authorship: it is the same shared act as moving a note, for the same reason — an event is the
+family's, and a plan only one person may record is not a plan. One answer per member, replaced
+rather than added to, and retractable. The author's own answer is not assumed: somebody may pin an
+event they are not sure they can make.
+
+An answer takes a `board_seq` like every other change, so it reaches the other devices through the
+one feed. It does NOT notify and it leaves `content_seq` alone: the event says exactly what it said
+before, and a badge claiming there is something to READ would be a lie — the same rule a move, a
+resize, a recolour and a change of font follow. Clients draw who is coming on the card itself,
+which is where that news belongs.
+
+There is no calendar on this wire and no `.ics`. A client that can put an event in the system
+calendar builds it locally out of the title, the times and the place; the server neither generates
+one nor knows whether anybody kept it. That is deliberate — a calendar entry is a copy, and a copy
+the server maintained would be a second source of truth for something the family already has.
+
+Deleting a photo note takes its picture with it. The note tombstones as any note does, and the
+attachment row and its bytes go — there is nothing left that could show them, and a picture no
+note points at is exactly what the unclaimed sweep exists to remove.
+
+**A note has a FONT**, because handwriting on a wall is part of what it says. `font` is one of
+`plain`, `serif`, `mono`, `casual`; anything else is `invalid_note_font`, and a note created
+without one is `plain` — the face every note had before the field existed, so nothing already on a
+wall changed when it arrived. It belongs to the AUTHOR, with text, colour and size.
+
+It is an INTENT, not a typeface. The wire never carries a family name, a weight or a point size:
+`plain` is the client's own interface face, `serif` the one with the strokes, `mono` the one whose
+letters all take the same width, and `casual` the most informal face the platform has to hand. Each
+client resolves those to real faces of its own, exactly as it resolves `large` to real points and
+`blue` to a real pastel — and for the same reason, since a family name on the wire would name a
+font one platform has and another does not, and would leave a note unreadable on the phone it was
+not written on. The four are the intents every platform can honour with a system face; nothing
+here is downloaded and nothing is bundled.
+
+`casual` is the one that looks most different between platforms, and deliberately so: it is
+whatever that system offers as its friendly face rather than a promise that two devices draw the
+same curves. A family choosing it is asking for "not the plain one", which is a thing every
+platform can keep.
+
+A font change is like a colour change and unlike an edit: it takes a `board_seq`, it does not
+notify, and it leaves `content_seq` where it was. Changing the face a note is written in does not
+change what the note says, so it raises no badge.
+
+**The text FITS the note.** A sticker shows all of what it says: a client scales the type down
+until the whole text is inside the note rather than cutting it off at a fixed number of lines. A
+note is a thing read at a glance from across a room, and a note that ends in an ellipsis is a note
+whose point may be the part nobody can see — the reader cannot even tell whether what is missing
+matters. Scaling has a FLOOR, because type small enough to be unreadable communicates no better
+than a cut: below it the text is truncated as before, and that is the one case a reader has to open
+the note for. The floor and the step from it up to the size's own type are each client's to choose,
+like every other dimension here.
+
+This is what the 280-character cap is for. It is not a storage limit — it is the number that lets
+the smallest sticker hold the longest note at a size a person can still read, so "the text fits"
+is a promise the wall can actually keep rather than an aspiration that fails on the one note that
+matters. A client refuses a longer text where the author is typing it, so the refusal arrives as a
+full field rather than as a rejected save.
+
+The size a note is drawn at stays the AUTHOR'S STEP and is never chosen for them by the length of
+what they wrote. A note that grew itself would move its neighbours around the wall on every edit,
+and the wall's layout is the family's shared work. What the author gets instead is the consequence
+made visible while they write: an editor shows the sticker as it will appear, at its real size and
+with its type already fitted, so picking `large` is a choice with a result in front of them rather
+than a name.
 
 Every board mutation — create, edit, move, delete — takes the next value of a third server-wide
 sequence and stamps it on the note as `board_seq`, with the family exposing its maximum as
@@ -3109,9 +3221,11 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 |---|---|
 | `GET /families/mine/board` | → `200 {notes: [Note], max_board_seq: 88}`. The whole board as it now stands, tombstones excluded, newest `board_seq` first. `max_board_seq` is `0` for a board nothing has ever been written to. Error: `not_in_family`. |
 | `GET /families/mine/board/changes` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {notes: [Note]}` ordered by `board_seq` ascending, INCLUDING tombstones — the board catch-up, looped until a short page. Errors: `not_in_family`, `invalid_pagination`. |
-| `POST /families/mine/board/notes` | `{text, color, x, y, size?}` → `201 {note: Note}`. Caller becomes the author. `size` defaults to `medium` when absent. Errors: `validation` (text empty or > 280), `invalid_note_color`, `invalid_note_size`, `board_full` (409, over the note ceiling), `not_in_family`. |
-| `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, x?, y?}` → `200 {note: Note}`. Any member may send `x`/`y`; only the author may send `text`, `color` or `size` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `validation`, `not_in_family`. |
-| `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |
+| `POST /families/mine/board/notes` | `{text, color, x, y, size?, font?, kind?, attachment_id?, starts_at?, ends_at?, place?}` → `201 {note: Note}`. Caller becomes the author. `size` defaults to `medium`, `font` to `plain` and `kind` to `text` when absent. `attachment_id` claims one photo this caller uploaded: REQUIRED by `kind: "photo"` (whose `text` may then be empty), optional on `kind: "event"` (the backdrop), refused on a text note. `starts_at` is required by — and only accepted on — an event, with `ends_at` and `place` optional there and nowhere else. Errors: `validation` (text empty on a text note or > 280; an `attachment_id` without the kind, or the kind without one), `invalid_note_kind`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `invalid_attachment` (not a photo), `attachment_not_found`, `attachment_already_used`, `attachment_expired`, `board_full` (409, over the note ceiling), `not_in_family`. An event also answers `validation` for a missing or unparseable `starts_at`, an `ends_at` before it, a `place` over 200 characters, or any of the three on a note that is not an event. |
+| `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, font?, x?, y?, starts_at?, ends_at?, place?}` → `200 {note: Note}`. A note's KIND and its picture are fixed at creation: neither is patchable, and a photo note's caption may be set to empty here. An event's `starts_at`, `ends_at` and `place` are the AUTHOR'S, like its title — `place` may be sent empty to clear it, `ends_at` null to clear it — and are refused on any other kind. Any member may send `x`/`y`; only the author may send `text`, `color`, `size` or `font` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `validation`, `not_in_family`. |
+| `PUT /families/mine/board/notes/{id}/rsvp` | `{answer}` → `200 {note: Note}`. Records the caller as `going`, `maybe` or `no` on an event — an idempotent state-set, not a toggle, and ANY member may send it. Re-sending the answer already held is a no-op: no new seq, no fan-out. Errors: `invalid_rsvp` (400 — not one of the three, or the note is not an event), `note_not_found` (404), `not_in_family`. |
+| `DELETE /families/mine/board/notes/{id}/rsvp` | → `200 {note: Note}`. Retracts the caller's answer; idempotent (retracting nothing returns the event unchanged and burns no seq). Errors: `invalid_rsvp` (the note is not an event), `note_not_found`, `not_in_family`. |
+| `DELETE /families/mine/board/notes/{id}` | → `204`. Author only. Idempotent: deleting an already-deleted note is still `204` and takes no new seq. A photo note's picture goes with it. Errors: `note_not_found`, `not_note_author`, `not_in_family`. |
 
 ### Chats & messages
 

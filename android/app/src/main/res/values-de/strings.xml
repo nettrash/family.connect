@@ -494,4 +494,30 @@
     </plurals>
     <string name="s_mentions_you">Erwähnt dich</string>
     <string name="s_mention_member">%1$s erwähnen</string>
+    <string name="s_note_characters_left">Noch %1$d Zeichen</string>
+    <string name="s_your_note">Deine Notiz</string>
+    <string name="s_note_preview">Vorschau</string>
+    <string name="s_font">Schrift</string>
+    <string name="s_font_plain">Schlicht</string>
+    <string name="s_font_serif">Serif</string>
+    <string name="s_font_mono">Mono</string>
+    <string name="s_font_casual">Locker</string>
+    <string name="s_pin_photo">Foto anheften</string>
+    <string name="s_pin_photo_failed">Das Foto konnte nicht angeheftet werden.</string>
+    <string name="s_rsvp_going">Komme</string>
+    <string name="s_rsvp_maybe">Vielleicht</string>
+    <string name="s_rsvp_no">Kann nicht</string>
+    <string name="s_rsvp_going_count">%1$d kommen</string>
+    <string name="s_rsvp_maybe_count">%1$d vielleicht</string>
+    <string name="s_rsvp_going_maybe_count">%1$d kommen, %2$d vielleicht</string>
+    <string name="s_add_event">Termin hinzufügen</string>
+    <string name="s_event_when">Wann</string>
+    <string name="s_event_where">Wo</string>
+    <string name="s_event_place">Ort</string>
+    <string name="s_event_has_end">Hat ein Ende</string>
+    <string name="s_event_starts">Beginnt</string>
+    <string name="s_event_ends">Endet</string>
+    <string name="s_rsvp_question">Kommst du?</string>
+    <string name="s_rsvp_none">Keine Antwort</string>
+    <string name="s_event">Termin</string>
 </resources>

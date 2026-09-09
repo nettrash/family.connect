@@ -21,6 +21,10 @@ import kotlinx.coroutines.test.runTest
 import me.nettrash.familyconnect.data.db.AppDatabase
 import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.db.NoteEntity
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import me.nettrash.familyconnect.data.net.dto.RsvpDto
+import me.nettrash.familyconnect.data.net.dto.RsvpCodec
+import me.nettrash.familyconnect.testutil.FakeAttachmentApi
 import me.nettrash.familyconnect.testutil.FakeBoardApi
 import me.nettrash.familyconnect.testutil.FakeChatSocket
 import me.nettrash.familyconnect.testutil.FakeSettingsRepository
@@ -247,6 +251,102 @@ class BoardRepositoryTest {
         assertThat(noteDao.findById(1)!!.size).isEqualTo("medium")
     }
 
+    /**
+     * A picture pinned to the wall is a NOTE: it lands in the same table
+     * with its kind and its attachment kept verbatim, and a note from a
+     * server that predates kinds is a text note — which is also what an
+     * unknown kind draws as (docs/protocol.md, "Board").
+     */
+    @Test
+    fun `a photo note keeps its kind and its picture`() = runTest(dispatcher) {
+        val repository = repository()
+        val picture = FakeAttachmentApi.attachment(id = 61)
+
+        repository.applyNote(noteDto(id = 1, kind = "photo", attachment = picture, boardSeq = 10))
+        repository.applyNote(noteDto(id = 2, boardSeq = 11))
+        runCurrent()
+
+        val photo = noteDao.findById(1)!!
+        assertThat(photo.kind).isEqualTo("photo")
+        assertThat(AttachmentsCodec.decode(photo.attachmentJson)?.single()?.id).isEqualTo(61)
+        val text = noteDao.findById(2)!!
+        assertThat(text.kind).isEqualTo("text")
+        assertThat(text.attachmentJson).isNull()
+    }
+
+    /**
+     * An event is a NOTE with a when, a where and a guest list — and the
+     * guest list is "[]" on an event nobody has answered and NULL on every
+     * other kind, which is the difference the card draws on
+     * (docs/protocol.md, "Board").
+     */
+    @Test
+    fun `an event keeps its times, its place and its answers`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(
+            noteDto(
+                id = 1, text = "Christmas dinner", kind = "event",
+                startsAt = "2026-12-24T17:00:00Z", endsAt = "2026-12-24T21:00:00Z",
+                place = "Gran's house",
+                rsvps = listOf(RsvpDto(9, "going"), RsvpDto(11, "maybe")),
+                boardSeq = 10,
+            ),
+        )
+        repository.applyNote(noteDto(id = 2, boardSeq = 11))
+        runCurrent()
+
+        val event = noteDao.findById(1)!!
+        assertThat(event.kind).isEqualTo("event")
+        assertThat(event.startsAt).isEqualTo(
+            java.time.Instant.parse("2026-12-24T17:00:00Z").toEpochMilli(),
+        )
+        assertThat(event.endsAt).isNotNull()
+        assertThat(event.place).isEqualTo("Gran's house")
+        assertThat(RsvpCodec.decode(event.rsvpsJson)).hasSize(2)
+
+        // A text note carries none of it.
+        val text = noteDao.findById(2)!!
+        assertThat(text.startsAt).isNull()
+        assertThat(text.rsvpsJson).isNull()
+    }
+
+    /** Answering is the SHARED act: it goes out, and the answer comes back. */
+    @Test
+    fun `answering an event records it and applies the note that comes back`() =
+        runTest(dispatcher) {
+            val repository = repository()
+
+            assertThat(repository.answerNote(1, "going")).isTrue()
+            runCurrent()
+            assertThat(boardApi.answers).containsExactly(1L to "going")
+            assertThat(RsvpCodec.decode(noteDao.findById(1)!!.rsvpsJson)).hasSize(1)
+
+            assertThat(repository.answerNote(1, null)).isTrue()
+            runCurrent()
+            assertThat(boardApi.answers.last()).isEqualTo(1L to null)
+            assertThat(RsvpCodec.decode(noteDao.findById(1)!!.rsvpsJson)).isEmpty()
+        }
+
+    /**
+     * The same rule one field over: a server from before fonts sends none,
+     * and every note it has was written in the face every note was written
+     * in — plain (docs/protocol.md, "Board"). Stored as the NAME, never as
+     * an empty string: `NoteFonts.resolve` would draw an empty one plain
+     * anyway, so a blank would be invisible here and wrong in the store.
+     */
+    @Test
+    fun `a note without a font is stored as plain`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(noteDto(id = 1, font = null, boardSeq = 10))
+        repository.applyNote(noteDto(id = 2, font = "casual", boardSeq = 11))
+        runCurrent()
+
+        assertThat(noteDao.findById(1)!!.font).isEqualTo("plain")
+        assertThat(noteDao.findById(2)!!.font).isEqualTo("casual")
+    }
+
     @Test
     fun `a newer seq changes the size in place`() = runTest(dispatcher) {
         val repository = repository()
@@ -284,10 +384,13 @@ class BoardRepositoryTest {
     fun `creating a note sends its size`() = runTest(dispatcher) {
         val repository = repository()
 
-        repository.addNote(text = "Milk", color = "yellow", size = "small", x = 0.1, y = 0.2)
+        repository.addNote(
+            text = "Milk", color = "yellow", size = "small", font = "serif", x = 0.1, y = 0.2,
+        )
         runCurrent()
 
         assertThat(boardApi.created.single().size).isEqualTo("small")
+        assertThat(boardApi.created.single().font).isEqualTo("serif")
         assertThat(noteDao.observeNotes().first().single().size).isEqualTo("small")
     }
 

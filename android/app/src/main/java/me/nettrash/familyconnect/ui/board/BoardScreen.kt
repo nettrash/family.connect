@@ -25,11 +25,17 @@
 
 package me.nettrash.familyconnect.ui.board
 
+import androidx.annotation.StringRes
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -37,6 +43,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -48,11 +55,19 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.automirrored.outlined.StickyNote2
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Switch
+import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DatePicker
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material.icons.filled.AddAPhoto
+import androidx.compose.material.icons.filled.Event
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
@@ -73,6 +88,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
@@ -93,8 +109,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.nettrash.familyconnect.R
 import me.nettrash.familyconnect.ui.components.isWideWindow
 import me.nettrash.familyconnect.data.db.NoteEntity
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import me.nettrash.familyconnect.data.net.dto.AttachmentDto
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import me.nettrash.familyconnect.data.net.dto.RsvpCodec
+import me.nettrash.familyconnect.ui.components.rememberAttachmentImage
 import me.nettrash.familyconnect.ui.components.EmptyState
 import kotlin.math.roundToInt
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import me.nettrash.familyconnect.ui.chat.BlockedMessageRule
 
@@ -131,6 +157,418 @@ object NoteColors {
  * construction. (Phone idiom: iOS BoardView uses the same names with the
  * same shape; the Mac is wider, as everything is there.)
  */
+/**
+ * The cap on a note's text, from the protocol: "text is trimmed, non-empty
+ * and at most 280 characters".
+ *
+ * Enforced where the author is TYPING. Before this the field was uncapped,
+ * the save came back `validation`, and the view model discarded it — a note
+ * over the cap simply never appeared, with nothing on screen to say why.
+ *
+ * iOS counterpart: NoteText in Views/NotePreview.swift.
+ */
+object NoteText {
+    const val MAX_LENGTH = 280
+
+    /**
+     * The first 280 characters, counted the way the SERVER counts them.
+     *
+     * Rust's `chars().count()` is Unicode scalars; Kotlin's `String.length`
+     * is UTF-16 units, which is two for every emoji and every character
+     * outside the basic plane. Counting code points here means a note that
+     * looks under the cap is never refused, and a family that writes in
+     * emoji does not lose half its allowance.
+     */
+    fun capped(text: String): String {
+        val points = text.codePointCount(0, text.length)
+        if (points <= MAX_LENGTH) return text
+        return text.substring(0, text.offsetByCodePoints(0, MAX_LENGTH))
+    }
+
+    /** How many more characters may be typed. Never negative. */
+    fun remaining(text: String): Int =
+        (MAX_LENGTH - text.codePointCount(0, text.length)).coerceAtLeast(0)
+
+    /** Shown only once it starts to matter, so an ordinary note is written in peace. */
+    fun shouldShowCounter(text: String): Boolean = remaining(text) <= 40
+}
+
+/**
+ * The sticker as it will look, drawn inside the editor.
+ *
+ * The board's text FITS its note (docs/protocol.md, "Board"), which makes
+ * the size step a choice with a visible result. The protocol asks for that
+ * to be in front of the author while they write, rather than discovered on
+ * the wall afterwards — and it is the answer to "the text should have an
+ * impact on the note size" that does not take the size away from the author
+ * or move everybody else's notes around.
+ *
+ * Drawn through the same NoteSizes the wall draws through, so the two
+ * cannot drift. iOS counterpart: NotePreview in Views/NotePreview.swift.
+ */
+/**
+ * The picture on a photo note.
+ *
+ * Through the same AttachmentRepository a message's photo comes from: the
+ * bytes are cached once per device, and a board that fetched its own copies
+ * would double the storage for the same pixels. The PREVIEW is what a
+ * sticker wants — a 220.dp tile has no use for 1600 pixels, and the preview
+ * is what arrives first on a slow connection.
+ */
+/**
+ * The block an event note draws above its title: when, where, and how many
+ * are coming — the count, not the names, because a sticker has room for the
+ * news and the card that opens has room for the people.
+ */
+/**
+ * Compose a new event: a title, when it starts, optionally when it ends,
+ * and optionally where (docs/protocol.md, "Board").
+ *
+ * The pickers are Material 3's own — this app bundles no date library and
+ * had no date picker anywhere before now. The wire wants RFC3339, so what
+ * comes out of them is turned into an instant here rather than anywhere a
+ * time zone could be lost.
+ *
+ * iOS counterpart: the event sections of NoteEditor in Views/BoardView.swift.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun EventDialog(
+    onDismiss: () -> Unit,
+    onSave: (title: String, startsAt: String, endsAt: String?, place: String?) -> Unit,
+) {
+    var title by remember { mutableStateOf("") }
+    var place by remember { mutableStateOf("") }
+    // The next round hour: a family event is PLANNED, not stamped at the
+    // instant somebody tapped a button.
+    val opening = remember {
+        ZonedDateTime.now().plusHours(1).withMinute(0).withSecond(0).withNano(0)
+    }
+    var startsAt by remember { mutableStateOf(opening) }
+    var hasEnd by remember { mutableStateOf(false) }
+    var endsAt by remember { mutableStateOf(opening.plusHours(1)) }
+    var picking by remember { mutableStateOf<String?>(null) }
+
+    if (picking != null) {
+        val editingEnd = picking == "end"
+        val current = if (editingEnd) endsAt else startsAt
+        val dateState = rememberDatePickerState(
+            initialSelectedDateMillis = current.toInstant().toEpochMilli(),
+        )
+        DatePickerDialog(
+            onDismissRequest = { picking = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    dateState.selectedDateMillis?.let { millis ->
+                        val picked = Instant.ofEpochMilli(millis).atZone(ZoneId.of("UTC"))
+                        val moved = current
+                            .withYear(picked.year)
+                            .withMonth(picked.monthValue)
+                            .withDayOfMonth(picked.dayOfMonth)
+                        if (editingEnd) endsAt = moved else startsAt = moved
+                        // An end before the start is what the server
+                        // refuses; keep them in order here so nobody meets
+                        // that refusal.
+                        if (!editingEnd && endsAt.isBefore(moved)) endsAt = moved.plusHours(1)
+                    }
+                    picking = null
+                }) { Text(stringResource(R.string.s_save)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { picking = null }) {
+                    Text(stringResource(R.string.s_cancel))
+                }
+            },
+        ) {
+            DatePicker(state = dateState)
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.s_add_event)) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = NoteText.capped(it) },
+                    label = { Text(stringResource(R.string.s_event)) },
+                    singleLine = true,
+                )
+                Spacer(Modifier.size(16.dp))
+                Text(
+                    text = stringResource(R.string.s_event_when),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = { picking = "start" }) {
+                    Text(
+                        stringResource(R.string.s_event_starts) + ": " +
+                            EventFormat.whenLine(startsAt.toInstant().toEpochMilli(), null),
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = hasEnd, onCheckedChange = { hasEnd = it })
+                    Spacer(Modifier.size(8.dp))
+                    Text(stringResource(R.string.s_event_has_end))
+                }
+                if (hasEnd) {
+                    TextButton(onClick = { picking = "end" }) {
+                        Text(
+                            stringResource(R.string.s_event_ends) + ": " +
+                                EventFormat.whenLine(endsAt.toInstant().toEpochMilli(), null),
+                        )
+                    }
+                }
+                Spacer(Modifier.size(8.dp))
+                OutlinedTextField(
+                    value = place,
+                    onValueChange = { if (it.length <= 200) place = it },
+                    label = { Text(stringResource(R.string.s_event_place)) },
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSave(
+                        title.trim(),
+                        startsAt.toInstant().toString(),
+                        if (hasEnd) endsAt.toInstant().toString() else null,
+                        place.trim().ifEmpty { null },
+                    )
+                },
+                enabled = title.isNotBlank(),
+            ) { Text(stringResource(R.string.s_save)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.s_cancel)) }
+        },
+    )
+}
+
+@Composable
+internal fun NoteEventBlock(note: NoteEntity, modifier: Modifier = Modifier) {
+    val startsAt = note.startsAt ?: return
+    val rsvps = RsvpCodec.decode(note.rsvpsJson)
+    val going = rsvps.count { it.answer == RsvpAnswers.GOING }
+    val maybe = rsvps.count { it.answer == RsvpAnswers.MAYBE }
+    val past = EventFormat.isPast(startsAt, note.endsAt, System.currentTimeMillis())
+    Column(modifier = modifier) {
+        Text(
+            text = EventFormat.whenLine(startsAt, note.endsAt),
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.Black.copy(alpha = if (past) 0.4f else 0.75f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (!note.place.isNullOrEmpty()) {
+            Text(
+                text = note.place,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.Black.copy(alpha = 0.55f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (going > 0 || maybe > 0) {
+            Text(
+                text = when {
+                    maybe == 0 -> stringResource(R.string.s_rsvp_going_count, going)
+                    going == 0 -> stringResource(R.string.s_rsvp_maybe_count, maybe)
+                    else -> stringResource(R.string.s_rsvp_going_maybe_count, going, maybe)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.Black.copy(alpha = 0.55f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun NotePicture(attachment: AttachmentDto, modifier: Modifier = Modifier) {
+    val bitmap = rememberAttachmentImage(attachment, preview = true)
+    Box(
+        modifier = modifier.clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = 0.06f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                // The picture is the note; the sticker's own semantics
+                // already say what it is, so a second description here
+                // would have TalkBack read everything twice.
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+        }
+    }
+}
+
+@Composable
+internal fun NotePreview(
+    text: String,
+    color: String,
+    size: String,
+    font: String,
+    modifier: Modifier = Modifier,
+) {
+    val previewLabel = stringResource(R.string.s_note_preview)
+    Box(
+        modifier = modifier
+            .size(NoteSizes.side(size))
+            .clip(RoundedCornerShape(10.dp))
+            .background(NoteColors.compose(color))
+            .padding(10.dp)
+            // One element, and never a second reading of the text the field
+            // above already holds: what this adds is the LOOK.
+            .semantics(mergeDescendants = true) { contentDescription = previewLabel },
+    ) {
+        Text(
+            text = text,
+            style = NoteSizes.textStyle(size, MaterialTheme.typography)
+                .copy(fontFamily = NoteFonts.family(font)),
+            color = Color.Black.copy(alpha = 0.85f),
+            autoSize = NoteSizes.autoSize(size, MaterialTheme.typography),
+            maxLines = NoteSizes.FITTED_MAX_LINES,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
+}
+
+/**
+ * The four hands a note can be written in.
+ *
+ * A font is an INTENT, not a typeface (docs/protocol.md, "Board"): the wire
+ * carries a name, and each client resolves it to a system face of its own,
+ * exactly as `size` is a step and `color` a name. Android has no bundled
+ * fonts and no downloadable ones — the theme says so in as many words
+ * (ui/theme/Type.kt: "no custom font families, no downloadable fonts") —
+ * and none are added here: all four are generic families the platform
+ * already draws.
+ *
+ * `casual` is Cursive, the friendliest face this platform has to hand;
+ * Apple draws the same intent with its rounded design. The two do not match
+ * stroke for stroke, and are not meant to: a family choosing it is asking
+ * for "not the plain one", which is a thing every platform can keep.
+ *
+ * iOS counterpart: NoteFont in Views/NoteFont.swift.
+ */
+/**
+ * What a note IS: words on a sticker, or a picture pinned to the wall
+ * (docs/protocol.md, "Board").
+ *
+ * A photo note is a note in every other respect — it takes a slot anyone
+ * may move, counts against the same ceiling, rides the same feed and the
+ * same seq, and a block hides it the same way. There is no second board,
+ * because a photo on the family's wall is not a different wall.
+ *
+ * A kind this client has never heard of DRAWS AS TEXT rather than being
+ * dropped: the note still has a slot on a shared wall, and a hole in the
+ * family's layout is worse than a sticker that says only what it says —
+ * which is what both predicates below give it, by asking for the kind they
+ * know rather than excluding the one they do not.
+ *
+ * iOS counterpart: NoteKind in Views/NoteKind.swift.
+ */
+object NoteKinds {
+    const val TEXT = "text"
+    const val PHOTO = "photo"
+    const val EVENT = "event"
+
+    fun isPhoto(kind: String): Boolean = kind == PHOTO
+
+    fun isEvent(kind: String): Boolean = kind == EVENT
+}
+
+/**
+ * The three answers to an event, in the order a picker offers them
+ * (docs/protocol.md, "Board").
+ *
+ * iOS counterpart: RsvpAnswer in Views/NoteEventCard.swift.
+ */
+object RsvpAnswers {
+    const val GOING = "going"
+    const val MAYBE = "maybe"
+    const val NO = "no"
+
+    val all = listOf(GOING, MAYBE, NO)
+
+    @StringRes
+    fun label(answer: String): Int = when (answer) {
+        MAYBE -> R.string.s_rsvp_maybe
+        NO -> R.string.s_rsvp_no
+        else -> R.string.s_rsvp_going
+    }
+}
+
+/**
+ * When and where, formatted for the sticker.
+ *
+ * In the READER's locale and time zone, deliberately: the wire carries an
+ * instant, and a family spread across two countries each sees the moment in
+ * their own — which is the whole reason the protocol stores a timestamp
+ * rather than a local time. iOS counterpart: EventFormat.
+ */
+object EventFormat {
+    fun whenLine(startsAt: Long, endsAt: Long?): String {
+        val zone = ZoneId.systemDefault()
+        val starts = Instant.ofEpochMilli(startsAt).atZone(zone)
+        val day = starts.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM))
+        val from = starts.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
+        if (endsAt == null) return "$day, $from"
+        val ends = Instant.ofEpochMilli(endsAt).atZone(zone)
+        val to = if (ends.toLocalDate() == starts.toLocalDate()) {
+            ends.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
+        } else {
+            ends.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)) + " " +
+                ends.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
+        }
+        return "$day, $from – $to"
+    }
+
+    /**
+     * Has it already happened? A past event is drawn quieter rather than
+     * removed: the wall is the family's, and clearing it is their call.
+     */
+    fun isPast(startsAt: Long, endsAt: Long?, now: Long): Boolean = (endsAt ?: startsAt) < now
+}
+
+object NoteFonts {
+    const val PLAIN = "plain"
+    const val SERIF = "serif"
+    const val MONO = "mono"
+    const val CASUAL = "casual"
+
+    /** In the order the picker shows them, plainest first. */
+    val hands = listOf(PLAIN, SERIF, MONO, CASUAL)
+
+    /** Collapses an unknown name to plain, so everything below has four cases. */
+    fun resolve(name: String): String = if (name in hands) name else PLAIN
+
+    fun family(name: String): FontFamily = when (resolve(name)) {
+        SERIF -> FontFamily.Serif
+        MONO -> FontFamily.Monospace
+        CASUAL -> FontFamily.Cursive
+        else -> FontFamily.Default
+    }
+
+    @StringRes
+    fun label(name: String): Int = when (resolve(name)) {
+        SERIF -> R.string.s_font_serif
+        MONO -> R.string.s_font_mono
+        CASUAL -> R.string.s_font_casual
+        else -> R.string.s_font_plain
+    }
+}
+
 object NoteSizes {
     const val SMALL = "small"
     const val MEDIUM = "medium"
@@ -149,11 +587,40 @@ object NoteSizes {
         else -> 132.dp
     }
 
-    /** Lines of the text that show before it ellipsises. */
-    fun maxLines(name: String): Int = when (resolve(name)) {
-        SMALL -> 3
-        LARGE -> 10
-        else -> 5
+    /**
+     * The lines the fitted text may take.
+     *
+     * Deliberately generous rather than a per-size count: fitting works by
+     * making the type smaller, and a cap of five lines would stop it long
+     * before the sticker was full. A backstop for a single unbroken word,
+     * not a layout rule. iOS: NoteSize.fittedLineLimit.
+     */
+    const val FITTED_MAX_LINES = 20
+
+    /**
+     * How far the type may shrink before the text is cut instead.
+     *
+     * A FLOOR, because type small enough to be unreadable communicates no
+     * better than an ellipsis. Expressed as a fraction of the size's own
+     * type so the three steps shrink by the same proportion and track the
+     * system font scale, rather than to one absolute sp that a large
+     * accessibility setting would push ABOVE the ceiling — a floor above
+     * the ceiling never fits anything. iOS: NoteSize.minimumTextScale.
+     */
+    const val MIN_TEXT_SCALE = 0.6f
+
+    /**
+     * The fitting range for one step: down from the size's own type to the
+     * floor. `StepBased` treats text as fitting only when it is not
+     * ellipsised, so the ellipsis in the sticker means "even the floor was
+     * too big", which is exactly the protocol's rule.
+     */
+    fun autoSize(name: String, typography: Typography): TextAutoSize {
+        val ceiling = textStyle(name, typography).fontSize
+        return TextAutoSize.StepBased(
+            minFontSize = ceiling * MIN_TEXT_SCALE,
+            maxFontSize = ceiling,
+        )
     }
 
     /** Takes the theme's typography rather than reading it, so it stays plain Kotlin. */
@@ -182,6 +649,12 @@ data class NoteDraft(
      * [color] is. A new note starts medium.
      */
     val size: String,
+    /** The hand AS STORED, kept raw for the same reason as [size]. */
+    val font: String,
+    /** What this note IS — a photo and an event draw differently. */
+    val kind: String = NoteKinds.TEXT,
+    /** What this reader answered, on an event. Null when they have not. */
+    val myAnswer: String? = null,
     val x: Double,
     val y: Double,
     val authorId: Long,
@@ -200,6 +673,28 @@ fun BoardScreen(
     var editing by remember { mutableStateOf<NoteDraft?>(null) }
 
     LaunchedEffect(Unit) { viewModel.refresh() }
+    val pinning by viewModel.pinning.collectAsStateWithLifecycle()
+    var composingEvent by remember { mutableStateOf(false) }
+    val pinFailed by viewModel.pinFailed.collectAsStateWithLifecycle()
+    // The system photo picker: no permission, no READ_MEDIA_IMAGES, the
+    // same one the composer uses. A wall pins PICTURES, so images only
+    // (docs/protocol.md, "Board").
+    val pickPhoto = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) viewModel.pinPhoto(uri, notes.size % NoteColors.palette.size)
+    }
+    if (pinFailed) {
+        AlertDialog(
+            onDismissRequest = viewModel::clearPinFailure,
+            confirmButton = {
+                TextButton(onClick = viewModel::clearPinFailure) {
+                    Text(stringResource(R.string.s_dismiss))
+                }
+            },
+            text = { Text(stringResource(R.string.s_pin_photo_failed)) },
+        )
+    }
     // The wall is in front of somebody, so everything on it has been shown
     // — including whatever lands WHILE they are looking, which is why this
     // keys on the notes and not on Unit. Marking only at the tap that opens
@@ -219,6 +714,33 @@ fun BoardScreen(
             )
         },
         floatingActionButton = {
+            Column(horizontalAlignment = Alignment.End) {
+            SmallFloatingActionButton(onClick = { composingEvent = true }) {
+                Icon(
+                    Icons.Filled.Event,
+                    contentDescription = stringResource(R.string.s_add_event),
+                )
+            }
+            Spacer(Modifier.size(12.dp))
+            SmallFloatingActionButton(
+                onClick = {
+                    pickPhoto.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                    )
+                },
+            ) {
+                if (pinning) {
+                    // The upload can take a moment on a phone connection,
+                    // and a button that looked idle would be tapped again.
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        Icons.Filled.AddAPhoto,
+                        contentDescription = stringResource(R.string.s_pin_photo),
+                    )
+                }
+            }
+            Spacer(Modifier.size(12.dp))
             FloatingActionButton(onClick = {
                 // New notes land near the top-left, offset a little each
                 // time so a burst of them does not stack into one
@@ -229,12 +751,14 @@ fun BoardScreen(
                     text = "",
                     color = NoteColors.palette[slot],
                     size = NoteSizes.MEDIUM,
+                    font = NoteFonts.PLAIN,
                     x = 0.12 + slot * 0.03,
                     y = 0.10 + slot * 0.06,
                     authorId = myUserId ?: -1L,
                 )
             }) {
                 Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.s_add_note))
+            }
             }
         },
     ) { padding ->
@@ -277,6 +801,10 @@ fun BoardScreen(
                             text = note.text,
                             color = note.color,
                             size = note.size,
+                            font = note.font,
+                            kind = note.kind,
+                            myAnswer = RsvpCodec.decode(note.rsvpsJson)
+                                .firstOrNull { it.userId == myUserId }?.answer,
                             x = note.x,
                             y = note.y,
                             authorId = note.authorId,
@@ -285,6 +813,25 @@ fun BoardScreen(
                 )
             }
         }
+    }
+
+    if (composingEvent) {
+        val slot = notes.size % NoteColors.palette.size
+        EventDialog(
+            onDismiss = { composingEvent = false },
+            onSave = { title, startsAt, endsAt, place ->
+                composingEvent = false
+                viewModel.addEvent(
+                    title = title,
+                    color = "blue",
+                    startsAt = startsAt,
+                    endsAt = endsAt,
+                    place = place,
+                    x = 0.12 + slot * 0.03,
+                    y = 0.10 + slot * 0.06,
+                )
+            },
+        )
     }
 
     editing?.let { draft ->
@@ -296,14 +843,16 @@ fun BoardScreen(
                 else -> memberNames[draft.authorId] ?: stringResource(R.string.s_someone)
             },
             onDismiss = { editing = null },
-            onSave = { text, color, size ->
+            onSave = { text, color, size, font ->
                 editing = null
                 if (draft.noteId == null) {
-                    viewModel.addNote(text, color, size, draft.x, draft.y)
+                    viewModel.addNote(text, color, size, font, draft.x, draft.y)
                 } else {
-                    viewModel.editNote(draft.noteId, text, color, size)
+                    viewModel.editNote(draft.noteId, text, color, size, font)
                 }
             },
+            onAnswer = { answer -> draft.noteId?.let { viewModel.answerEvent(it, answer) } },
+            myAnswer = draft.myAnswer,
             onDelete = draft.noteId?.let { id ->
                 {
                     editing = null
@@ -453,12 +1002,44 @@ private fun StickyNote(
             .padding(10.dp),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+            // A pinned picture fills the sticker, with the caption under it
+            // — and NOTHING while the note is hidden by a block: the
+            // picture is content, exactly as the text is (protocol.md,
+            // "Board").
+            if (!isHidden && NoteKinds.isPhoto(note.kind)) {
+                AttachmentsCodec.decode(note.attachmentJson)?.firstOrNull()?.let { picture ->
+                    NotePicture(
+                        attachment = picture,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(84.dp),
+                    )
+                    Spacer(Modifier.size(6.dp))
+                }
+            }
+            // An event says WHEN before it says what: the date is the
+            // reason it is on the wall (docs/protocol.md, "Board").
+            if (!isHidden && NoteKinds.isEvent(note.kind) && note.startsAt != null) {
+                NoteEventBlock(note = note)
+                Spacer(Modifier.size(4.dp))
+            }
             Text(
                 text = if (isHidden) hiddenLabel else note.text,
-                style = NoteSizes.textStyle(note.size, MaterialTheme.typography),
+                style = NoteSizes.textStyle(note.size, MaterialTheme.typography)
+                    // The hand the author chose (docs/protocol.md, "Board").
+                    // A hidden note keeps it, like its colour and its slot:
+                    // nothing about the SHAPE of a note is the blocked
+                    // member's content.
+                    .copy(fontFamily = NoteFonts.family(note.font)),
                 color = Color.Black.copy(alpha = if (isHidden) 0.45f else 0.85f),
                 fontStyle = if (isHidden) FontStyle.Italic else null,
-                maxLines = NoteSizes.maxLines(note.size),
+                // The text FITS the sticker (docs/protocol.md, "Board"):
+                // the type scales down from the size's own until the whole
+                // note is inside it. `maxLines` is now a backstop for one
+                // unbroken word, and the ellipsis only appears past the
+                // floor, which is the one case a reader opens the note for.
+                autoSize = NoteSizes.autoSize(note.size, MaterialTheme.typography),
+                maxLines = NoteSizes.FITTED_MAX_LINES,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
@@ -526,7 +1107,13 @@ internal fun NoteDialog(
     canEdit: Boolean,
     authorName: String,
     onDismiss: () -> Unit,
-    onSave: (String, String, String) -> Unit,
+    onSave: (String, String, String, String) -> Unit,
+    /**
+     * Say whether this reader is coming — ANY member may, so it is not part
+     * of the save, which is the author's (docs/protocol.md, "Board").
+     */
+    onAnswer: (String?) -> Unit = {},
+    myAnswer: String? = null,
     onDelete: (() -> Unit)?,
 ) {
     var text by remember(draft.noteId) { mutableStateOf(draft.text) }
@@ -537,6 +1124,7 @@ internal fun NoteDialog(
     // otherwise an older client quietly downgrades what a newer server
     // accepted, just by opening the note to fix a typo.
     var size by remember(draft.noteId) { mutableStateOf(draft.size) }
+    var font by remember(draft.noteId) { mutableStateOf(draft.font) }
     var confirmDelete by remember { mutableStateOf(false) }
 
     if (confirmDelete && onDelete != null) {
@@ -566,13 +1154,61 @@ internal fun NoteDialog(
         },
         text = {
             Column {
+                // Answering sits ABOVE the author's fields and outside the
+                // canEdit gate: it is the one thing everybody may do here.
+                if (NoteKinds.isEvent(draft.kind) && draft.noteId != null) {
+                    Text(
+                        text = stringResource(R.string.s_rsvp_question),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.size(4.dp))
+                    var answered by remember(draft.noteId) { mutableStateOf(myAnswer) }
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        val options = RsvpAnswers.all + listOf<String?>(null)
+                        options.forEachIndexed { index, option ->
+                            SegmentedButton(
+                                selected = answered == option,
+                                onClick = {
+                                    answered = option
+                                    onAnswer(option)
+                                },
+                                shape = SegmentedButtonDefaults.itemShape(index, options.size),
+                            ) {
+                                Text(
+                                    stringResource(
+                                        option?.let(RsvpAnswers::label) ?: R.string.s_rsvp_none,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.size(16.dp))
+                }
                 if (canEdit) {
                     OutlinedTextField(
                         value = text,
-                        onValueChange = { text = it },
+                        // The cap lives where the typing is: a note the
+                        // server would refuse never becomes a save that
+                        // fails, which on this screen used to fail SILENTLY
+                        // (docs/protocol.md, "Board").
+                        onValueChange = { text = NoteText.capped(it) },
                         label = { Text(stringResource(R.string.s_note)) },
                         minLines = 3,
                         maxLines = 8,
+                        supportingText = if (NoteText.shouldShowCounter(text)) {
+                            {
+                                Text(
+                                    stringResource(
+                                        R.string.s_note_characters_left,
+                                        NoteText.remaining(text),
+                                    ),
+                                )
+                            }
+                        } else {
+                            null
+                        },
+                        isError = NoteText.remaining(text) == 0,
                     )
                     Spacer(Modifier.size(16.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -635,6 +1271,49 @@ internal fun NoteDialog(
                             }
                         }
                     }
+                    Spacer(Modifier.size(16.dp))
+                    // The hand, with text, colour and size: all four are
+                    // the author's (docs/protocol.md, "Board").
+                    Text(
+                        text = stringResource(R.string.s_font),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.size(4.dp))
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        NoteFonts.hands.forEachIndexed { index, name ->
+                            SegmentedButton(
+                                selected = NoteFonts.resolve(font) == name,
+                                onClick = { font = name },
+                                shape = SegmentedButtonDefaults.itemShape(
+                                    index = index,
+                                    count = NoteFonts.hands.size,
+                                ),
+                            ) {
+                                // Drawn IN the hand it names, so the choice
+                                // shows what it does.
+                                Text(
+                                    text = stringResource(NoteFonts.label(name)),
+                                    fontFamily = NoteFonts.family(name),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.size(16.dp))
+                    // The consequence, in front of the author: the same
+                    // sticker the wall will draw, with the type already
+                    // fitted (docs/protocol.md, "Board").
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        NotePreview(
+                            text = text.ifEmpty { stringResource(R.string.s_your_note) },
+                            color = color,
+                            size = size,
+                            font = font,
+                        )
+                    }
                 } else {
                     Text(draft.text)
                     Spacer(Modifier.size(8.dp))
@@ -649,7 +1328,7 @@ internal fun NoteDialog(
         confirmButton = {
             if (canEdit) {
                 TextButton(
-                    onClick = { onSave(text, color, size) },
+                    onClick = { onSave(text, color, size, font) },
                     enabled = text.isNotBlank(),
                 ) {
                     Text(stringResource(R.string.s_save))

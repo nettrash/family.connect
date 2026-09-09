@@ -543,4 +543,34 @@
     <!-- Member mentions (docs/protocol.md, "Mentioning a member"). -->
     <string name="s_mentions_you">Mentions you</string>
     <string name="s_mention_member">Mention %1$s</string>
+    <!-- The board note editor (docs/protocol.md, "Board"). -->
+    <string name="s_note_characters_left">%1$d characters left</string>
+    <string name="s_your_note">Your note</string>
+    <string name="s_note_preview">Preview</string>
+    <!-- The hand a board note is written in (docs/protocol.md, "Board"). -->
+    <string name="s_font">Font</string>
+    <string name="s_font_plain">Plain</string>
+    <string name="s_font_serif">Serif</string>
+    <string name="s_font_mono">Mono</string>
+    <string name="s_font_casual">Casual</string>
+    <!-- Photo notes (docs/protocol.md, "Board"). -->
+    <string name="s_pin_photo">Pin a photo</string>
+    <string name="s_pin_photo_failed">Couldn\'t pin that photo.</string>
+    <!-- Board events (docs/protocol.md, "Board"). -->
+    <string name="s_rsvp_going">Going</string>
+    <string name="s_rsvp_maybe">Maybe</string>
+    <string name="s_rsvp_no">Can\'t</string>
+    <string name="s_rsvp_going_count">%1$d going</string>
+    <string name="s_rsvp_maybe_count">%1$d maybe</string>
+    <string name="s_rsvp_going_maybe_count">%1$d going, %2$d maybe</string>
+    <string name="s_add_event">Add an event</string>
+    <string name="s_event_when">When</string>
+    <string name="s_event_where">Where</string>
+    <string name="s_event_place">Place</string>
+    <string name="s_event_has_end">Has an end</string>
+    <string name="s_event_starts">Starts</string>
+    <string name="s_event_ends">Ends</string>
+    <string name="s_rsvp_question">Are you coming?</string>
+    <string name="s_rsvp_none">No answer</string>
+    <string name="s_event">Event</string>
 </resources>

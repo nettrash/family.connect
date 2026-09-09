@@ -61,6 +61,7 @@ import me.nettrash.familyconnect.data.net.dto.BoardChangesResponse
 import me.nettrash.familyconnect.data.net.dto.BoardResponse
 import me.nettrash.familyconnect.data.net.dto.CreateNoteRequest
 import me.nettrash.familyconnect.data.net.dto.NoteDto
+import me.nettrash.familyconnect.data.net.dto.RsvpDto
 import me.nettrash.familyconnect.data.net.dto.NoteResponse
 import me.nettrash.familyconnect.data.net.dto.PatchNoteRequest
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
@@ -877,11 +878,37 @@ class FakeBoardApi : BoardApi {
         text: String,
         color: String,
         size: String,
+        font: String,
         x: Double,
         y: Double,
+        attachmentId: Long?,
+        startsAt: String?,
+        endsAt: String?,
+        place: String?,
     ): ApiResult<NoteResponse> {
-        created += CreateNoteRequest(text, color, size, x, y)
-        val note = noteDto(id = nextSeq, text = text, color = color, size = size, x = x, y = y, boardSeq = nextSeq)
+        val kind = when {
+            startsAt != null -> "event"
+            attachmentId != null -> "photo"
+            else -> null
+        }
+        created += CreateNoteRequest(
+            text, color, size, x, y, font,
+            kind = kind,
+            attachmentId = attachmentId,
+            startsAt = startsAt,
+            endsAt = endsAt,
+            place = place,
+        )
+        val note = noteDto(
+            id = nextSeq, text = text, color = color, size = size, font = font,
+            x = x, y = y, boardSeq = nextSeq,
+            kind = kind,
+            attachment = attachmentId?.let { FakeAttachmentApi.attachment(id = it) },
+            startsAt = startsAt,
+            endsAt = endsAt,
+            place = place,
+            rsvps = if (kind == "event") emptyList() else null,
+        )
         nextSeq++
         return createResult?.invoke(note) ?: ApiResult.Ok(NoteResponse(note))
     }
@@ -891,10 +918,11 @@ class FakeBoardApi : BoardApi {
         text: String?,
         color: String?,
         size: String?,
+        font: String?,
         x: Double?,
         y: Double?,
     ): ApiResult<NoteResponse> {
-        patched += id to PatchNoteRequest(text, color, size, x, y)
+        patched += id to PatchNoteRequest(text, color, size, x, y, font)
         val note = noteDto(
             id = id,
             text = text ?: "note $id",
@@ -905,6 +933,23 @@ class FakeBoardApi : BoardApi {
             boardSeq = nextSeq++,
         )
         return ApiResult.Ok(NoteResponse(note))
+    }
+
+    /** Every answer this fake was asked to record, in order (null = retract). */
+    val answers = mutableListOf<Pair<Long, String?>>()
+
+    override suspend fun answerNote(id: Long, answer: String?): ApiResult<NoteResponse> {
+        answers += id to answer
+        nextSeq++
+        return ApiResult.Ok(
+            NoteResponse(
+                noteDto(
+                    id = id, boardSeq = nextSeq, kind = "event",
+                    startsAt = "2026-12-24T17:00:00Z",
+                    rsvps = answer?.let { listOf(RsvpDto(userId = 7, answer = it)) } ?: emptyList(),
+                ),
+            ),
+        )
     }
 
     override suspend fun deleteNote(id: Long): ApiResult<Unit> {
@@ -932,6 +977,13 @@ fun noteDto(
      */
     contentSeq: Long? = boardSeq,
     deleted: Boolean? = null,
+    font: String? = null,
+    kind: String? = null,
+    attachment: AttachmentDto? = null,
+    startsAt: String? = null,
+    endsAt: String? = null,
+    place: String? = null,
+    rsvps: List<RsvpDto>? = null,
 ) = NoteDto(
     id = id,
     authorId = if (deleted == true) null else authorId,
@@ -944,6 +996,13 @@ fun noteDto(
     updatedAt = if (deleted == true) null else "2026-08-22T12:00:00Z",
     boardSeq = boardSeq,
     contentSeq = if (deleted == true) null else contentSeq,
+    font = if (deleted == true) null else font,
+    kind = if (deleted == true) null else kind,
+    attachment = if (deleted == true) null else attachment,
+    startsAt = if (deleted == true) null else startsAt,
+    endsAt = if (deleted == true) null else endsAt,
+    place = if (deleted == true) null else place,
+    rsvps = if (deleted == true) null else rsvps,
     deleted = deleted,
 )
 

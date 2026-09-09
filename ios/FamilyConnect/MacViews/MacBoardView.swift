@@ -32,6 +32,7 @@
 #if os(macOS)
 
 import SwiftData
+import PhotosUI
 import SwiftUI
 
 struct MacBoardView: View {
@@ -51,6 +52,12 @@ struct MacBoardView: View {
     @State private var draftText = ""
     @State private var draftColor = NoteColor.palette.first ?? "yellow"
     @State private var draftSize = NoteSize.medium
+    @State private var draftFont = NoteFont.plain
+    /// Pinning a picture: the picker, and the upload it turns into.
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var showPhotoPicker = false
+    @State private var pinning = false
+    @State private var pinFailure: String?
 
     var body: some View {
         GeometryReader { geometry in
@@ -75,6 +82,9 @@ struct MacBoardView: View {
                         onEdit: { editing = note },
                         onDelete: {
                             Task { _ = await coordinator.deleteNote(id: note.noteID) }
+                        },
+                        onAnswer: { answer in
+                            Task { await coordinator.answerEvent(id: note.noteID, answer: answer) }
                         })
                 }
                 if notes.isEmpty {
@@ -94,12 +104,43 @@ struct MacBoardView: View {
                     draftText = ""
                     draftColor = NoteColor.palette.randomElement() ?? "yellow"
                     draftSize = .medium
+                    draftFont = .plain
                     composing = true
                 } label: {
                     Label("Add Note", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
                 .help("Add a note")
+            }
+            ToolbarItem {
+                Button {
+                    pickedPhoto = nil
+                    showPhotoPicker = true
+                } label: {
+                    Label("Pin a Photo", systemImage: "photo.badge.plus")
+                }
+                .disabled(pinning)
+                .help("Pin a photo")
+            }
+        }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $pickedPhoto, matching: .images)
+        .onChange(of: pickedPhoto) { _, item in
+            guard let item else { return }
+            pinPicture(item)
+        }
+        .alert(
+            "Couldn't pin that photo.",
+            isPresented: Binding(
+                get: { pinFailure != nil },
+                set: { if !$0 { pinFailure = nil } })
+        ) {
+            Button("OK", role: .cancel) { pinFailure = nil }
+        } message: {
+            Text(pinFailure ?? "")
+        }
+        .overlay {
+            if pinning {
+                ProgressView().controlSize(.large)
             }
         }
         .task { await coordinator.loadBoard() }
@@ -113,7 +154,10 @@ struct MacBoardView: View {
         .onChange(of: boardMark, initial: true) { _, _ in markSeenIfFrontmost() }
         .onChange(of: windowActivation, initial: true) { _, _ in markSeenIfFrontmost() }
         .sheet(isPresented: $composing) {
-            MacNoteEditor(text: $draftText, color: $draftColor, size: $draftSize, title: "New Note") {
+            MacNoteEditor(
+                text: $draftText, color: $draftColor, size: $draftSize, font: $draftFont,
+                title: "New Note"
+            ) {
                 Task {
                     // Dropped near the middle with a little scatter, so a
                     // run of new notes does not stack into one pile.
@@ -121,6 +165,7 @@ struct MacBoardView: View {
                         text: draftText,
                         color: draftColor,
                         size: draftSize.name,
+                        font: draftFont.name,
                         x: Double.random(in: 0.25...0.65),
                         y: Double.random(in: 0.25...0.65))
                 }
@@ -166,6 +211,9 @@ private struct MacNoteView: View {
     let onResize: (NoteSize) -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    /// Say whether you are coming — ANY member may, so it sits outside
+    /// every author gate (docs/protocol.md, "Board"). nil retracts.
+    var onAnswer: (String?) -> Void = { _ in }
 
     @State private var drag: CGSize = .zero
     @State private var committing = false
@@ -203,14 +251,24 @@ private struct MacNoteView: View {
             size: size, board: board)
 
         VStack(alignment: .leading, spacing: 4) {
+            // A pinned picture fills the card, with the caption under it —
+            // and nothing while hidden by a block: the picture is content,
+            // exactly as the text is (protocol.md, "Board").
+            if !isHidden, NoteKind(name: note.kind) == .photo, let attachmentID = note.attachmentID {
+                NotePicture(attachmentID: attachmentID)
+            }
             (isHidden ? Text("Hidden — blocked member") : Text(note.text))
-                .font(noteSize.font)
+                // The hand the author chose (docs/protocol.md, "Board").
+                .font(NoteFont(name: note.font).font(for: noteSize))
                 // Forced ink, matching BoardView: the pastels are fixed
                 // light colors in both appearances, so .primary’s dark-mode
                 // white was unreadable on them.
                 .foregroundStyle(.black.opacity(isHidden ? 0.45 : 0.85))
                 .italic(isHidden)
-                .lineLimit(noteSize.lineLimit)
+                // The text FITS the sticker (docs/protocol.md, "Board") —
+                // the same rule and the same floor as the phone.
+                .lineLimit(noteSize.fittedLineLimit)
+                .minimumScaleFactor(noteSize.minimumTextScale)
             Spacer(minLength: 0)
             // No author line at all while hidden — not an empty one, which
             // would still say a note came from somebody.
@@ -299,6 +357,19 @@ private struct MacNoteView: View {
                 // Anyone may MOVE a note; only its author may change it.
                 Text("Written by someone else")
             }
+            // ANSWERING IS NOT AUTHORSHIP: outside the isMine branch on
+            // purpose, and offered on a hidden note no more than its text
+            // is (protocol.md, "Board").
+            if !isHidden, NoteKind(name: note.kind) == .event {
+                Divider()
+                Menu("Are you coming?") {
+                    ForEach(RsvpAnswer.allCases) { choice in
+                        Button(choice.title) { onAnswer(choice.name) }
+                    }
+                    Divider()
+                    Button("No answer") { onAnswer(nil) }
+                }
+            }
         }
     }
 }
@@ -326,6 +397,7 @@ private struct MacNoteEditor: View {
     @Binding var text: String
     @Binding var color: String
     @Binding var size: NoteSize
+    @Binding var font: NoteFont
     /// A key, not a String: `Text(title)` then goes through the catalog
     /// ("New Note" / "Edit Note") instead of shipping English verbatim.
     let title: LocalizedStringKey
@@ -339,6 +411,17 @@ private struct MacNoteEditor: View {
             TextEditor(text: $text)
                 .frame(width: 320, height: 120)
                 .border(.separator)
+                // The cap where the typing is, as on the phone
+                // (docs/protocol.md, "Board").
+                .onChange(of: text) { _, new in
+                    let capped = NoteText.capped(new)
+                    if capped != new { text = capped }
+                }
+            if NoteText.shouldShowCounter(text) {
+                Text("\(NoteText.remaining(text)) characters left")
+                    .font(.caption)
+                    .foregroundStyle(NoteText.remaining(text) == 0 ? .red : .secondary)
+            }
             HStack(spacing: 6) {
                 ForEach(NoteColor.palette, id: \.self) { name in
                     Circle()
@@ -355,6 +438,28 @@ private struct MacNoteEditor: View {
                 }
             }
             .pickerStyle(.segmented)
+            // The hand, with text, colour and size: all four are the
+            // author's (docs/protocol.md, "Board").
+            Picker("Font", selection: $font) {
+                ForEach(NoteFont.allCases) { face in
+                    Text(face.title)
+                        .font(Font.system(.body, design: face.design))
+                        .tag(face)
+                }
+            }
+            .pickerStyle(.segmented)
+            // The sticker as the wall will draw it, type already fitted.
+            HStack {
+                Spacer(minLength: 0)
+                NotePreview(
+                    text: text.isEmpty ? String(localized: "Your note") : text,
+                    color: color,
+                    size: size,
+                    font: font)
+                Spacer(minLength: 0)
+            }
+            .animation(.easeOut(duration: 0.15), value: size)
+            .animation(.easeOut(duration: 0.15), value: font)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -371,6 +476,53 @@ private struct MacNoteEditor: View {
     }
 }
 
+extension MacBoardView {
+    /// Prepare, upload, pin — the phone's flow, and for the same reason:
+    /// the server claims the upload inside the transaction that writes the
+    /// note, so the picture must exist first (docs/protocol.md, "Board").
+    fileprivate func pinPicture(_ item: PhotosPickerItem) {
+        pinning = true
+        Task {
+            defer {
+                pinning = false
+                pickedPhoto = nil
+            }
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else {
+                    pinFailure = String(localized: "Couldn't read that photo.")
+                    return
+                }
+                let prepared = try await MediaPrep.preparePhoto(from: data, limit: MediaPrep.sizeLimit)
+                defer { try? FileManager.default.removeItem(at: prepared.fileURL) }
+                let uploaded = try await coordinator.api.uploadAttachment(
+                    fileURL: prepared.fileURL,
+                    mime: prepared.mime,
+                    kind: prepared.kind,
+                    width: prepared.width,
+                    height: prepared.height,
+                    durationMS: nil)
+                if let previewJPEG = prepared.previewJPEG {
+                    try? await coordinator.api.uploadPreview(
+                        attachmentID: uploaded.id, jpeg: previewJPEG)
+                }
+                let pinned = await coordinator.addNote(
+                    text: "",
+                    color: NoteColor.palette.randomElement() ?? "yellow",
+                    size: NoteSize.medium.name,
+                    font: NoteFont.plain.name,
+                    x: 0.35 + Double.random(in: -0.05...0.05),
+                    y: 0.30 + Double.random(in: -0.05...0.05),
+                    attachmentID: uploaded.id)
+                if !pinned {
+                    pinFailure = String(localized: "Couldn't pin that photo.")
+                }
+            } catch {
+                pinFailure = String(localized: "Couldn't read that photo.")
+            }
+        }
+    }
+}
+
 /// Rewrite one that already exists — author only, which the caller gates.
 private struct MacNoteEditorForExisting: View {
     let note: NoteEntity
@@ -380,21 +532,27 @@ private struct MacNoteEditorForExisting: View {
     @State private var text: String = ""
     @State private var color: String = "yellow"
     @State private var size: NoteSize = .medium
+    @State private var font: NoteFont = .plain
 
     var body: some View {
-        MacNoteEditor(text: $text, color: $color, size: $size, title: "Edit Note") {
+        MacNoteEditor(
+            text: $text, color: $color, size: $size, font: $font, title: "Edit Note"
+        ) {
             Task {
-                // Size only when the author changed it, so a name this
-                // Mac does not know survives a text edit (NoteSize).
+                // Size and font only when the author changed them, so a
+                // name this Mac does not know survives a text edit
+                // (NoteSize, NoteFont).
                 await coordinator.updateNote(
                     id: note.noteID, text: text, color: color,
-                    size: size.patchName(replacing: note.size))
+                    size: size.patchName(replacing: note.size),
+                    font: font.patchName(replacing: note.font))
             }
         }
         .onAppear {
             text = note.text
             color = note.color
             size = NoteSize(name: note.size)
+            font = NoteFont(name: note.font)
         }
     }
 }

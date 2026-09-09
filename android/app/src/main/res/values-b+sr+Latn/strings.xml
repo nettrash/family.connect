@@ -499,4 +499,30 @@
     </plurals>
     <string name="s_mentions_you">Pominje te</string>
     <string name="s_mention_member">Pomeni %1$s</string>
+    <string name="s_note_characters_left">Još %1$d karaktera</string>
+    <string name="s_your_note">Tvoja beleška</string>
+    <string name="s_note_preview">Pregled</string>
+    <string name="s_font">Font</string>
+    <string name="s_font_plain">Običan</string>
+    <string name="s_font_serif">Serifni</string>
+    <string name="s_font_mono">Monoprostorni</string>
+    <string name="s_font_casual">Opušten</string>
+    <string name="s_pin_photo">Zakači fotografiju</string>
+    <string name="s_pin_photo_failed">Nije uspelo kačenje te fotografije.</string>
+    <string name="s_rsvp_going">Dolazim</string>
+    <string name="s_rsvp_maybe">Možda</string>
+    <string name="s_rsvp_no">Ne mogu</string>
+    <string name="s_rsvp_going_count">Dolazi: %1$d</string>
+    <string name="s_rsvp_maybe_count">Možda: %1$d</string>
+    <string name="s_rsvp_going_maybe_count">Dolazi: %1$d, možda: %2$d</string>
+    <string name="s_add_event">Dodaj događaj</string>
+    <string name="s_event_when">Kada</string>
+    <string name="s_event_where">Gde</string>
+    <string name="s_event_place">Mesto</string>
+    <string name="s_event_has_end">Ima kraj</string>
+    <string name="s_event_starts">Počinje</string>
+    <string name="s_event_ends">Završava</string>
+    <string name="s_rsvp_question">Dolaziš li?</string>
+    <string name="s_rsvp_none">Bez odgovora</string>
+    <string name="s_event">Događaj</string>
 </resources>

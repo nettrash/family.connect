@@ -40,6 +40,7 @@ class NoteDialogTest {
         text = "hi",
         color = "yellow",
         size = "medium",
+        font = "plain",
         x = 0.1,
         y = 0.1,
         authorId = 1L,
@@ -47,14 +48,14 @@ class NoteDialogTest {
 
     @Test
     fun tappingASwatchSelectsItAndSaveReportsThatColor() {
-        var saved: Triple<String, String, String>? = null
+        var saved: List<String>? = null
         compose.setContent {
             NoteDialog(
                 draft = draft(),
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},
-                onSave = { text, color, size -> saved = Triple(text, color, size) },
+                onSave = { text, color, size, font -> saved = listOf(text, color, size, font) },
                 onDelete = null,
             )
         }
@@ -66,19 +67,19 @@ class NoteDialogTest {
         compose.onNodeWithContentDescription("Green").assertIsSelected()
 
         compose.onNodeWithText("Save").performClick()
-        assertThat(saved).isEqualTo(Triple("hi", "green", "medium"))
+        assertThat(saved).isEqualTo(listOf("hi", "green", "medium", "plain"))
     }
 
     @Test
     fun tappingASizeSelectsItAndSaveReportsThatSize() {
-        var saved: Triple<String, String, String>? = null
+        var saved: List<String>? = null
         compose.setContent {
             NoteDialog(
                 draft = draft(),
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},
-                onSave = { text, color, size -> saved = Triple(text, color, size) },
+                onSave = { text, color, size, font -> saved = listOf(text, color, size, font) },
                 onDelete = null,
             )
         }
@@ -90,7 +91,7 @@ class NoteDialogTest {
         compose.onNodeWithText("Large").assertIsSelected()
 
         compose.onNodeWithText("Save").performClick()
-        assertThat(saved).isEqualTo(Triple("hi", "yellow", "large"))
+        assertThat(saved).isEqualTo(listOf("hi", "yellow", "large", "plain"))
     }
 
     /**
@@ -100,14 +101,14 @@ class NoteDialogTest {
      */
     @Test
     fun anUnknownSizeOpensWithMediumSelectedAndRoundTripsUntouched() {
-        var saved: Triple<String, String, String>? = null
+        var saved: List<String>? = null
         compose.setContent {
             NoteDialog(
                 draft = draft().copy(size = "enormous"),
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},
-                onSave = { text, color, size -> saved = Triple(text, color, size) },
+                onSave = { text, color, size, font -> saved = listOf(text, color, size, font) },
                 onDelete = null,
             )
         }
@@ -115,20 +116,20 @@ class NoteDialogTest {
         compose.onNodeWithText("Medium").assertIsSelected()
 
         compose.onNodeWithText("Save").performClick()
-        assertThat(saved).isEqualTo(Triple("hi", "yellow", "enormous"))
+        assertThat(saved).isEqualTo(listOf("hi", "yellow", "enormous", "plain"))
     }
 
     /** Once the author picks a step, that step wins over the unknown name. */
     @Test
     fun pickingAStepReplacesAnUnknownSize() {
-        var saved: Triple<String, String, String>? = null
+        var saved: List<String>? = null
         compose.setContent {
             NoteDialog(
                 draft = draft().copy(size = "enormous"),
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},
-                onSave = { text, color, size -> saved = Triple(text, color, size) },
+                onSave = { text, color, size, font -> saved = listOf(text, color, size, font) },
                 onDelete = null,
             )
         }
@@ -137,6 +138,6 @@ class NoteDialogTest {
         compose.onNodeWithText("Small").assertIsSelected()
 
         compose.onNodeWithText("Save").performClick()
-        assertThat(saved).isEqualTo(Triple("hi", "yellow", "small"))
+        assertThat(saved).isEqualTo(listOf("hi", "yellow", "small", "plain"))
     }
 }

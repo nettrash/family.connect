@@ -823,6 +823,9 @@ impl Attachment {
         ("audio/ogg", "audio"),
     ];
 
+    /// The kinds a client and the board name by hand. `photo` is the one a
+    /// board note may pin (docs/protocol.md, "Board").
+    pub const KIND_PHOTO: &'static str = "photo";
     pub const KIND_FILE: &'static str = "file";
     pub const KIND_AUDIO: &'static str = "audio";
     pub const KIND_LOCATION: &'static str = "location";
@@ -913,6 +916,41 @@ pub struct Note {
     /// `medium`, which is what every note was before the field existed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
+    /// `plain` / `serif` / `mono` / `casual` — an intent, not a typeface,
+    /// drawn with a system face at each client's own idiom. Always present
+    /// on a live note; a reader that finds it missing (an older server)
+    /// draws the note plain, which is what every note was before the field
+    /// existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    /// `text` or `photo`. Always present on a live note; a reader that
+    /// finds it missing (an older server) reads `text`, which is what every
+    /// note was before the field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The picture: the content of a `photo` note, the backdrop of an
+    /// `event`, and absent on a text note.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<Attachment>,
+    /// When it starts — an `event` note and nowhere else.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "crate::models::opt_rfc3339"
+    )]
+    pub starts_at: Option<OffsetDateTime>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "crate::models::opt_rfc3339"
+    )]
+    pub ends_at: Option<OffsetDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
+    /// Who is planning to come. Present on every event, `[]` when nobody
+    /// has answered; absent on every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rsvps: Option<Vec<Rsvp>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub x: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -961,6 +999,37 @@ impl Note {
     /// arrived.
     pub const DEFAULT_SIZE: &str = "medium";
 
+    /// The hands a note may be written in — an INTENT each client resolves
+    /// to a system face of its own (docs/protocol.md, "Board"): the
+    /// interface face, the one with the strokes, the one whose letters all
+    /// take the same width, and the most informal face the platform has.
+    ///
+    /// Names rather than families for the reason colours are names rather
+    /// than hex values, only more so: a family name on the wire would name
+    /// a font one platform has and another does not, and a note would come
+    /// out unreadable on the phone it was not written on.
+    pub const FONTS: [&'static str; 4] = ["plain", "serif", "mono", "casual"];
+
+    /// The face a note takes when none is sent — and the face every note
+    /// had before fonts existed, so nothing on a wall changed when the
+    /// field arrived.
+    pub const DEFAULT_FONT: &str = "plain";
+
+    /// What a note IS (docs/protocol.md, "Board"): words on a sticker, or a
+    /// picture pinned to the wall. A photo note is a note in every other
+    /// respect — same slot, same ceiling, same feed, same block rule.
+    pub const KINDS: [&'static str; 3] = ["text", "photo", "event"];
+
+    /// The kind a note takes when none is sent — and what every note on
+    /// every wall was before kinds existed.
+    pub const DEFAULT_KIND: &str = "text";
+
+    pub const KIND_PHOTO: &str = "photo";
+    pub const KIND_EVENT: &str = "event";
+
+    /// Longest a place may be. A line on a card, not an address book.
+    pub const MAX_PLACE_CHARS: usize = 200;
+
     /// Longest note text. A sticker, not a message.
     pub const MAX_TEXT_CHARS: usize = 280;
 
@@ -982,6 +1051,13 @@ impl Note {
                 text: None,
                 color: None,
                 size: None,
+                font: None,
+                kind: None,
+                attachment: None,
+                starts_at: None,
+                ends_at: None,
+                place: None,
+                rsvps: None,
                 x: None,
                 y: None,
                 created_at: None,
@@ -997,6 +1073,19 @@ impl Note {
             text: Some(row.get("text")),
             color: Some(row.get("color")),
             size: Some(row.get("size")),
+            font: Some(row.get("font")),
+            kind: Some(row.get("kind")),
+            // Hydrated by the caller when the join carried one: a row read
+            // without the attachment columns has no picture to report, and
+            // `from_row` is used on both.
+            attachment: None,
+            starts_at: row.get("starts_at"),
+            ends_at: row.get("ends_at"),
+            place: row.get("place"),
+            // Hydrated by the caller too, for the same reason — and `[]`
+            // rather than absent on an event, which the caller decides
+            // because only it knows the kind is meaningful here.
+            rsvps: None,
             x: Some(row.get("x")),
             y: Some(row.get("y")),
             created_at: Some(row.get("created_at")),
@@ -1004,6 +1093,28 @@ impl Note {
             board_seq: row.get("board_seq"),
             content_seq: Some(row.get("content_seq")),
             deleted: false,
+        }
+    }
+}
+
+/// One member's answer to an event on the board (docs/protocol.md,
+/// "Board"): `going`, `maybe` or `no`, one per member, replaced rather
+/// than added to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Rsvp {
+    pub user_id: i64,
+    pub answer: String,
+}
+
+impl Rsvp {
+    /// The three answers. Names rather than a number, for the reason every
+    /// other vocabulary here is: a client draws them at its own idiom.
+    pub const ANSWERS: [&'static str; 3] = ["going", "maybe", "no"];
+
+    pub fn from_row(row: &PgRow) -> Self {
+        Self {
+            user_id: row.get("user_id"),
+            answer: row.get("answer"),
         }
     }
 }

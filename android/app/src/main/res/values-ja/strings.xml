@@ -482,4 +482,30 @@
     </plurals>
     <string name="s_mentions_you">あなたへのメンション</string>
     <string name="s_mention_member">%1$sをメンション</string>
+    <string name="s_note_characters_left">残り%1$d文字</string>
+    <string name="s_your_note">あなたのメモ</string>
+    <string name="s_note_preview">プレビュー</string>
+    <string name="s_font">フォント</string>
+    <string name="s_font_plain">標準</string>
+    <string name="s_font_serif">明朝</string>
+    <string name="s_font_mono">等幅</string>
+    <string name="s_font_casual">カジュアル</string>
+    <string name="s_pin_photo">写真を貼る</string>
+    <string name="s_pin_photo_failed">その写真を貼れませんでした。</string>
+    <string name="s_rsvp_going">参加</string>
+    <string name="s_rsvp_maybe">たぶん</string>
+    <string name="s_rsvp_no">行けない</string>
+    <string name="s_rsvp_going_count">%1$d人参加</string>
+    <string name="s_rsvp_maybe_count">%1$d人たぶん</string>
+    <string name="s_rsvp_going_maybe_count">%1$d人参加、%2$d人たぶん</string>
+    <string name="s_add_event">予定を追加</string>
+    <string name="s_event_when">いつ</string>
+    <string name="s_event_where">どこ</string>
+    <string name="s_event_place">場所</string>
+    <string name="s_event_has_end">終わりがある</string>
+    <string name="s_event_starts">開始</string>
+    <string name="s_event_ends">終了</string>
+    <string name="s_rsvp_question">参加する？</string>
+    <string name="s_rsvp_none">未回答</string>
+    <string name="s_event">予定</string>
 </resources>
