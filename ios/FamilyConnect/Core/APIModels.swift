@@ -1303,6 +1303,25 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
     let text: String?
     let color: String?
     let size: String?
+    /// One of plain/serif/mono/casual — an INTENT each client draws with a
+    /// system face of its own. Nil on a tombstone, and nil from a server
+    /// that predates the field, which reads as `plain` (docs/protocol.md,
+    /// "Board").
+    let font: String?
+    /// `text` or `photo`. Nil on a tombstone, and nil from a server that
+    /// predates the field, which reads as `text` (docs/protocol.md,
+    /// "Board").
+    let kind: String?
+    /// The picture: the content of a `photo` note, the backdrop of an
+    /// `event`, and absent on a text one.
+    let attachment: AttachmentDTO?
+    /// An `event` and nowhere else (docs/protocol.md, "Board").
+    let startsAt: Date?
+    let endsAt: Date?
+    let place: String?
+    /// Who is planning to come. `[]` on an event nobody has answered,
+    /// nil on every other kind — the difference is the point.
+    let rsvps: [RsvpDTO]?
     let x: Double?
     let y: Double?
     let createdAt: Date?
@@ -1322,6 +1341,13 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
         case text
         case color
         case size
+        case font
+        case kind
+        case attachment
+        case startsAt = "starts_at"
+        case endsAt = "ends_at"
+        case place
+        case rsvps
         case x
         case y
         case createdAt = "created_at"
@@ -1332,6 +1358,18 @@ nonisolated struct NoteDTO: Codable, Equatable, Sendable {
     }
 
     var isTombstone: Bool { deleted == true }
+}
+
+/// One member's answer to an event: `going`, `maybe` or `no`, one per
+/// member (docs/protocol.md, "Board").
+nonisolated struct RsvpDTO: Codable, Equatable, Hashable, Sendable {
+    let userID: Int64
+    let answer: String
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case answer
+    }
 }
 
 nonisolated struct BoardResponse: Codable, Equatable, Sendable {

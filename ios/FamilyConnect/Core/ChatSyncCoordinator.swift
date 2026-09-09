@@ -927,6 +927,12 @@ final class ChatSyncCoordinator {
         // A server from before sizes never sends one; "medium" is the size
         // every note had then, so the wall does not change under it.
         let size = dto.size ?? NoteSize.medium.name
+        // And from before fonts sends none; "plain" is the face every note
+        // was written in then, for the same reason.
+        let font = dto.font ?? NoteFont.plain.name
+        // A server from before kinds sends none, and every note it has is a
+        // text note — which is also what an unknown kind DRAWS as.
+        let kind = dto.kind ?? NoteKind.text.name
         // A server from before content seqs sends none either, and 0 is how
         // this store spells "nobody said" — the badge then judges the note
         // by its id, exactly as it always did (BoardBadge).
@@ -936,6 +942,15 @@ final class ChatSyncCoordinator {
             existing.text = text
             existing.color = color
             existing.size = size
+            existing.font = font
+            existing.kind = kind
+            existing.attachmentID = dto.attachment?.id
+            existing.attachmentWidth = dto.attachment?.width
+            existing.attachmentHeight = dto.attachment?.height
+            existing.startsAt = dto.startsAt
+            existing.endsAt = dto.endsAt
+            existing.place = dto.place
+            existing.rsvpsJSON = dto.rsvps.flatMap(RsvpCodec.encode)
             existing.x = x
             existing.y = y
             existing.updatedAt = dto.updatedAt ?? existing.updatedAt
@@ -948,6 +963,15 @@ final class ChatSyncCoordinator {
                 text: text,
                 color: color,
                 size: size,
+                font: font,
+                kind: kind,
+                attachmentID: dto.attachment?.id,
+                attachmentWidth: dto.attachment?.width,
+                attachmentHeight: dto.attachment?.height,
+                startsAt: dto.startsAt,
+                endsAt: dto.endsAt,
+                place: dto.place,
+                rsvpsJSON: dto.rsvps.flatMap(RsvpCodec.encode),
                 x: x,
                 y: y,
                 createdAt: dto.createdAt ?? Date(),
@@ -1006,8 +1030,33 @@ final class ChatSyncCoordinator {
         }
     }
 
-    func addNote(text: String, color: String, size: String, x: Double, y: Double) async -> Bool {
-        guard let dto = try? await api.createNote(text: text, color: color, size: size, x: x, y: y)
+    func addNote(
+        text: String,
+        color: String,
+        size: String,
+        font: String,
+        x: Double,
+        y: Double,
+        /// The picture, on a photo note: uploaded and unclaimed. The kind
+        /// rides with it — the two arrive together or not at all
+        /// (docs/protocol.md, "Board").
+        attachmentID: Int64? = nil,
+        /// An event's own three. `startsAt` is what makes this an event.
+        startsAt: Date? = nil,
+        endsAt: Date? = nil,
+        place: String? = nil
+    ) async -> Bool {
+        let kind: String? = if startsAt != nil {
+            NoteKind.event.name
+        } else if attachmentID != nil {
+            NoteKind.photo.name
+        } else {
+            nil
+        }
+        guard let dto = try? await api.createNote(
+            text: text, color: color, size: size, font: font, x: x, y: y,
+            kind: kind, attachmentID: attachmentID,
+            startsAt: startsAt, endsAt: endsAt, place: place)
         else {
             return false
         }
@@ -1018,23 +1067,42 @@ final class ChatSyncCoordinator {
     }
 
     /// Move (anyone) or rewrite (the author) — which fields are sent is
-    /// what the server checks permission against. Text, colour and size
-    /// are the author's; a MOVE must therefore send x/y and nothing else,
-    /// or a non-author's drag comes back `not_note_author`.
+    /// what the server checks permission against. Text, colour, size and
+    /// font are the author's; a MOVE must therefore send x/y and nothing
+    /// else, or a non-author's drag comes back `not_note_author`.
     @discardableResult
     func updateNote(
         id: Int64,
         text: String? = nil,
         color: String? = nil,
         size: String? = nil,
+        font: String? = nil,
         x: Double? = nil,
-        y: Double? = nil
+        y: Double? = nil,
+        /// An event's own three. `endsAt` is a DOUBLE option: absent leaves
+        /// it alone, `.some(nil)` clears it (docs/protocol.md, "Board").
+        startsAt: Date? = nil,
+        endsAt: Date?? = nil,
+        place: String? = nil
     ) async -> Bool {
         guard let dto = try? await api.patchNote(
-            id: id, text: text, color: color, size: size, x: x, y: y)
+            id: id, text: text, color: color, size: size, font: font, x: x, y: y,
+            startsAt: startsAt, endsAt: endsAt, place: place)
         else {
             return false
         }
+        applyNote(dto)
+        boardCursor = max(boardCursor, dto.boardSeq)
+        saveContext()
+        return true
+    }
+
+    /// Say whether you are coming — `going`, `maybe`, `no`, or nil to
+    /// retract. ANY member may, which is why this is not `updateNote`
+    /// (docs/protocol.md, "Board").
+    @discardableResult
+    func answerEvent(id: Int64, answer: String?) async -> Bool {
+        guard let dto = try? await api.answerNote(id: id, answer: answer) else { return false }
         applyNote(dto)
         boardCursor = max(boardCursor, dto.boardSeq)
         saveContext()

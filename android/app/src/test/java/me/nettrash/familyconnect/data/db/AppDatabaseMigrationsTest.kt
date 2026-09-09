@@ -25,12 +25,12 @@ class AppDatabaseMigrationsTest {
     }
 
     @Test
-    fun `the mentions migration is the last one and reaches the current schema`() {
+    fun `the board-events migration is the last one and reaches the current schema`() {
         val last = AppDatabase.ALL_MIGRATIONS.last()
-        assertThat(last).isSameInstanceAs(AppDatabase.MIGRATION_22_23)
-        assertThat(last.endVersion).isEqualTo(23)
-        // And the threads one is still registered right before it.
+        assertThat(last).isSameInstanceAs(AppDatabase.MIGRATION_25_26)
+        assertThat(last.endVersion).isEqualTo(26)
+        // And the photo one is still registered right before it.
         assertThat(AppDatabase.ALL_MIGRATIONS[AppDatabase.ALL_MIGRATIONS.size - 2])
-            .isSameInstanceAs(AppDatabase.MIGRATION_21_22)
+            .isSameInstanceAs(AppDatabase.MIGRATION_24_25)
     }
 }

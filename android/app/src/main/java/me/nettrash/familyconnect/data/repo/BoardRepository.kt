@@ -28,7 +28,9 @@ import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.BoardApi
+import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
 import me.nettrash.familyconnect.data.net.dto.NoteDto
+import me.nettrash.familyconnect.data.net.dto.RsvpCodec
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.settings.SettingsRepository
@@ -111,6 +113,18 @@ class BoardRepository @Inject constructor(
                 // kept as-is and the screen draws it as medium, the same
                 // forgiveness color gets.
                 size = note.size ?: "medium",
+                // Absent from an older server means "plain", the face every
+                // note was written in before the field existed.
+                font = note.font ?: "plain",
+                // A server from before kinds sends none, and every note it
+                // has is a text note — which is also what an unknown kind
+                // DRAWS as (docs/protocol.md, "Board").
+                kind = note.kind ?: "text",
+                attachmentJson = note.attachment?.let { AttachmentsCodec.encode(listOf(it)) },
+                startsAt = note.startsAt?.let(TimeFormat::parseTimestamp),
+                endsAt = note.endsAt?.let(TimeFormat::parseTimestamp),
+                place = note.place,
+                rsvpsJson = note.rsvps?.let(RsvpCodec::encode),
                 x = x,
                 y = y,
                 createdAt = note.createdAt?.let(TimeFormat::parseTimestamp) ?: existing?.createdAt ?: now,
@@ -174,8 +188,22 @@ class BoardRepository @Inject constructor(
         }
     }
 
-    suspend fun addNote(text: String, color: String, size: String, x: Double, y: Double): Boolean =
-        when (val result = boardApi.createNote(text, color, size, x, y)) {
+    suspend fun addNote(
+        text: String,
+        color: String,
+        size: String,
+        font: String,
+        x: Double,
+        y: Double,
+        attachmentId: Long? = null,
+        startsAt: String? = null,
+        endsAt: String? = null,
+        place: String? = null,
+    ): Boolean =
+        when (
+            val result =
+                boardApi.createNote(text, color, size, font, x, y, attachmentId, startsAt, endsAt, place)
+        ) {
             is ApiResult.Ok -> {
                 applyNote(result.value.note)
                 settings.setBoardCursor(maxOf(boardCursor(), result.value.note.boardSeq))
@@ -191,14 +219,28 @@ class BoardRepository @Inject constructor(
      * text and color, because how loudly a note speaks is the writer's
      * call (docs/protocol.md, "Board").
      */
+    /**
+     * Say whether this member is coming — null retracts. ANY member may,
+     * which is why it is not `updateNote` (docs/protocol.md, "Board").
+     */
+    suspend fun answerNote(id: Long, answer: String?): Boolean =
+        when (val result = boardApi.answerNote(id, answer)) {
+            is ApiResult.Ok -> {
+                applyNote(result.value.note)
+                true
+            }
+            else -> false
+        }
+
     suspend fun updateNote(
         id: Long,
         text: String? = null,
         color: String? = null,
         size: String? = null,
+        font: String? = null,
         x: Double? = null,
         y: Double? = null,
-    ): Boolean = when (val result = boardApi.patchNote(id, text, color, size, x, y)) {
+    ): Boolean = when (val result = boardApi.patchNote(id, text, color, size, font, x, y)) {
         is ApiResult.Ok -> {
             applyNote(result.value.note)
             settings.setBoardCursor(maxOf(boardCursor(), result.value.note.boardSeq))

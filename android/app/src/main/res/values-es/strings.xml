@@ -500,4 +500,30 @@
     </plurals>
     <string name="s_mentions_you">Te menciona</string>
     <string name="s_mention_member">Mencionar a %1$s</string>
+    <string name="s_note_characters_left">Quedan %1$d caracteres</string>
+    <string name="s_your_note">Tu nota</string>
+    <string name="s_note_preview">Vista previa</string>
+    <string name="s_font">Fuente</string>
+    <string name="s_font_plain">Simple</string>
+    <string name="s_font_serif">Serif</string>
+    <string name="s_font_mono">Mono</string>
+    <string name="s_font_casual">Informal</string>
+    <string name="s_pin_photo">Fijar una foto</string>
+    <string name="s_pin_photo_failed">No se pudo fijar esa foto.</string>
+    <string name="s_rsvp_going">Voy</string>
+    <string name="s_rsvp_maybe">Quizás</string>
+    <string name="s_rsvp_no">No puedo</string>
+    <string name="s_rsvp_going_count">%1$d van</string>
+    <string name="s_rsvp_maybe_count">%1$d quizás</string>
+    <string name="s_rsvp_going_maybe_count">%1$d van, %2$d quizás</string>
+    <string name="s_add_event">Añadir un evento</string>
+    <string name="s_event_when">Cuándo</string>
+    <string name="s_event_where">Dónde</string>
+    <string name="s_event_place">Lugar</string>
+    <string name="s_event_has_end">Tiene final</string>
+    <string name="s_event_starts">Empieza</string>
+    <string name="s_event_ends">Termina</string>
+    <string name="s_rsvp_question">¿Vienes?</string>
+    <string name="s_rsvp_none">Sin respuesta</string>
+    <string name="s_event">Evento</string>
 </resources>

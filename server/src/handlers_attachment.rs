@@ -531,13 +531,25 @@ async fn serve(
     preview: bool,
 ) -> Result<Response, ApiError> {
     let row = sqlx::query(
+        // Two ways in, because there are two ways to claim: a message's
+        // attachment is readable by the members of ITS CHAT, and a board
+        // note's by every member of the family whose wall holds it — a
+        // note belongs to no chat, and without the second the family would
+        // see a wall of pictures none of them could fetch (protocol.md,
+        // "Board"). A block narrows neither: the note arrives and hides
+        // client-side, revealing on one tap, exactly as a message does.
         "SELECT a.storage_key, a.mime, a.has_preview, a.kind, a.name
          FROM attachments a
          LEFT JOIN messages m ON m.id = a.message_id
+         LEFT JOIN notes n ON n.id = a.note_id
          WHERE a.id = $1
            AND (a.uploader_id = $2
                 OR EXISTS (SELECT 1 FROM chat_members cm
-                           WHERE cm.chat_id = m.chat_id AND cm.user_id = $2))",
+                           WHERE cm.chat_id = m.chat_id AND cm.user_id = $2)
+                OR EXISTS (SELECT 1 FROM users u
+                           WHERE u.id = $2
+                             AND u.family_id IS NOT NULL
+                             AND u.family_id = n.family_id))",
     )
     .bind(id)
     .bind(auth.user_id)
@@ -814,6 +826,11 @@ const EXPIRY_MARKER_DAYS: i32 = 30;
 /// A send the user abandoned — picked a video, changed their mind — leaves
 /// a row and 100 MB with no message pointing at it. Nothing else in the
 /// system would ever remove them.
+///
+/// TWO claims, not one: a picture pinned to the family board has no
+/// `message_id` and is not unclaimed (0042). Sweeping on the message alone
+/// would eat every photo note's picture `attachment_grace_hours` after it
+/// was pinned — a delay fuse, and the note would go on pointing at nothing.
 pub async fn sweep_unclaimed(state: &AppState) -> Result<u64, ApiError> {
     let hours = state.cfg.limits.attachment_grace_hours;
     // The row goes and a MARKER stays (0035): a client whose outbox was
@@ -825,6 +842,7 @@ pub async fn sweep_unclaimed(state: &AppState) -> Result<u64, ApiError> {
         "WITH gone AS (
              DELETE FROM attachments
               WHERE message_id IS NULL
+                AND note_id IS NULL
                 AND created_at < now() - make_interval(hours => $1)
              RETURNING id, uploader_id, storage_key
          ), marked AS (

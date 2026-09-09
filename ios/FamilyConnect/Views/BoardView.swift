@@ -33,9 +33,18 @@
 #if os(iOS)
 
 import SwiftData
+import PhotosUI
 import SwiftUI
 
 /// A note being written or rewritten. `noteID` nil = a new one.
+/// What an event's author changed, handed back with the rest of the note.
+/// Empty on every other kind, which is what the save path checks.
+struct EventEdit {
+    var startsAt: Date?
+    var endsAt: Date?
+    var place: String
+}
+
 private struct NoteDraft: Identifiable {
     var id: Int64 { noteID ?? -1 }
     var noteID: Int64?
@@ -47,6 +56,18 @@ private struct NoteDraft: Identifiable {
     /// a name this client does not know shows as medium but is not saved
     /// as medium (NoteSize.patchName).
     var storedSize: String?
+    var font: NoteFont
+    /// The same arrangement one field over (NoteFont.patchName).
+    var storedFont: String?
+    /// An event's own three, and the kind that makes them meaningful.
+    var kind: NoteKind = .text
+    var startsAt: Date?
+    var endsAt: Date?
+    var place: String = ""
+    /// What this reader has answered, and everybody's answers, for the
+    /// card in the editor.
+    var myAnswer: String?
+    var rsvps: [RsvpDTO] = []
     var x: Double
     var y: Double
     var authorID: Int64
@@ -57,6 +78,12 @@ struct BoardView: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \NoteEntity.boardSeq) private var notes: [NoteEntity]
     @Query private var members: [MemberEntity]
+    /// Pinning a picture: the picker, and the upload it turns into.
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var showPhotoPicker = false
+    @State private var pinning = false
+    @State private var pinFailure: String?
+
 
     @State private var editing: NoteDraft?
     @State private var loadFailed = false
@@ -91,21 +118,42 @@ struct BoardView: View {
                                 Task { await coordinator.updateNote(id: note.noteID, x: fraction.x, y: fraction.y) }
                             },
                             onTap: {
-                                editing = NoteDraft(
-                                    noteID: note.noteID,
-                                    text: note.text,
-                                    color: note.color,
-                                    size: NoteSize(name: note.size),
-                                    storedSize: note.size,
-                                    x: note.x,
-                                    y: note.y,
-                                    authorID: note.authorID)
+                                editing = draft(for: note)
                             })
                     }
                 }
             }
             .navigationTitle("Board")
             .navigationBarTitleDisplayMode(.inline)
+            .photosPicker(
+                isPresented: $showPhotoPicker,
+                selection: $pickedPhoto,
+                // A wall pins PICTURES: a video on a corkboard is a thing
+                // to play (docs/protocol.md, "Board"). No `photoLibrary:`,
+                // for the reason SettingsView gives — the out-of-process
+                // picker needs no PhotoKit reference and no usage string.
+                matching: .images)
+            .onChange(of: pickedPhoto) { _, item in
+                guard let item else { return }
+                pinPicture(item, slot: Double(notes.count % 6))
+            }
+            .alert(
+                "Couldn't pin that photo.",
+                isPresented: Binding(
+                    get: { pinFailure != nil },
+                    set: { if !$0 { pinFailure = nil } })
+            ) {
+                Button("OK", role: .cancel) { pinFailure = nil }
+            } message: {
+                Text(pinFailure ?? "")
+            }
+            .overlay {
+                if pinning {
+                    // The upload can take a moment on a phone connection,
+                    // and a wall that looked inert would be tapped again.
+                    ProgressView().controlSize(.large)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -113,19 +161,25 @@ struct BoardView: View {
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        // New notes land near the top-left, offset a little
-                        // each time so a burst of them does not stack into
-                        // one illegible pile.
-                        let slot = Double(notes.count % 6)
-                        editing = NoteDraft(
-                            noteID: nil,
-                            text: "",
-                            color: NoteColor.palette.randomElement() ?? "yellow",
-                            size: .medium,
-                            storedSize: nil,
-                            x: 0.12 + slot * 0.03,
-                            y: 0.10 + slot * 0.06,
-                            authorID: currentUserID)
+                        editing = newEventDraft()
+                    } label: {
+                        Image(systemName: "calendar.badge.plus")
+                    }
+                    .accessibilityLabel("Add an event")
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        pickedPhoto = nil
+                        showPhotoPicker = true
+                    } label: {
+                        Image(systemName: "photo.badge.plus")
+                    }
+                    .disabled(pinning)
+                    .accessibilityLabel("Pin a photo")
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        editing = newTextDraft()
                     } label: {
                         Label("Add Note", systemImage: "plus")
                     }
@@ -136,8 +190,13 @@ struct BoardView: View {
                     draft: draft,
                     canEdit: draft.noteID == nil || draft.authorID == currentUserID,
                     authorName: displayName(for: draft.authorID),
-                    onSave: { text, color, size in
-                        save(draft: draft, text: text, color: color, size: size)
+                    onSave: { text, color, size, font, event in
+                        save(
+                            draft: draft, text: text, color: color, size: size, font: font,
+                            event: event)
+                    },
+                    onAnswer: { noteID, answer in
+                        Task { await coordinator.answerEvent(id: noteID, answer: answer) }
                     },
                     onDelete: draft.noteID.map { id in { delete(id: id) } })
             }
@@ -152,23 +211,161 @@ struct BoardView: View {
             ?? String(localized: "Someone")
     }
 
-    private func save(draft: NoteDraft, text: String, color: String, size: NoteSize) {
+    private func save(
+        draft: NoteDraft,
+        text: String,
+        color: String,
+        size: NoteSize,
+        font: NoteFont,
+        event: EventEdit
+    ) {
         editing = nil
+        let isEvent = draft.kind == .event
         Task {
             if let id = draft.noteID {
                 await coordinator.updateNote(
                     id: id, text: text, color: color,
-                    size: size.patchName(replacing: draft.storedSize))
+                    size: size.patchName(replacing: draft.storedSize),
+                    font: font.patchName(replacing: draft.storedFont),
+                    // Only an event's, and only when they moved: the server
+                    // refuses all three on any other kind.
+                    startsAt: isEvent ? event.startsAt : nil,
+                    endsAt: isEvent ? .some(event.endsAt) : nil,
+                    place: isEvent ? event.place : nil)
             } else {
                 _ = await coordinator.addNote(
-                    text: text, color: color, size: size.name, x: draft.x, y: draft.y)
+                    text: text, color: color, size: size.name, font: font.name,
+                    x: draft.x, y: draft.y,
+                    startsAt: isEvent ? event.startsAt : nil,
+                    endsAt: isEvent ? event.endsAt : nil,
+                    place: isEvent && !event.place.isEmpty ? event.place : nil)
             }
         }
+    }
+
+    /// The editor's view of one existing note.
+    ///
+    /// Its own function for the reason the two blank drafts are: a
+    /// fourteen-argument literal nested inside a closure inside a `ForEach`
+    /// inside a `GeometryReader` is more than the type-checker will do in
+    /// reasonable time, and it says so rather than being slow.
+    private func draft(for note: NoteEntity) -> NoteDraft {
+        NoteDraft(
+            noteID: note.noteID,
+            text: note.text,
+            color: note.color,
+            size: NoteSize(name: note.size),
+            storedSize: note.size,
+            font: NoteFont(name: note.font),
+            storedFont: note.font,
+            kind: NoteKind(name: note.kind),
+            startsAt: note.startsAt,
+            endsAt: note.endsAt,
+            place: note.place ?? "",
+            myAnswer: note.myAnswer(currentUserID),
+            rsvps: note.rsvpList,
+            x: note.x,
+            y: note.y,
+            authorID: note.authorID)
+    }
+
+    /// A blank sticker, dropped near the top-left and offset a little each
+    /// time so a burst of them does not stack into one illegible pile.
+    ///
+    /// Its own function for the same reason `newEventDraft` is.
+    private func newTextDraft() -> NoteDraft {
+        let slot = Double(notes.count % 6)
+        return NoteDraft(
+            noteID: nil,
+            text: "",
+            color: NoteColor.palette.randomElement() ?? "yellow",
+            size: .medium,
+            storedSize: nil,
+            font: .plain,
+            storedFont: nil,
+            x: 0.12 + slot * 0.03,
+            y: 0.10 + slot * 0.06,
+            authorID: currentUserID)
+    }
+
+    /// A blank event, dropped where a new note lands.
+    ///
+    /// Its own function rather than an inline literal: fourteen defaulted
+    /// arguments inside a `Button` closure inside a `ToolbarItem` is more
+    /// than the type-checker will do in reasonable time, and it says so.
+    private func newEventDraft() -> NoteDraft {
+        let slot = Double(notes.count % 6)
+        return NoteDraft(
+            noteID: nil,
+            text: "",
+            color: "blue",
+            size: .medium,
+            storedSize: nil,
+            font: .plain,
+            storedFont: nil,
+            kind: .event,
+            // The next round hour: a family event is planned, not stamped
+            // at the instant somebody tapped a button.
+            startsAt: Date().nextRoundHour,
+            x: 0.12 + slot * 0.03,
+            y: 0.10 + slot * 0.06,
+            authorID: currentUserID)
     }
 
     private func delete(id: Int64) {
         editing = nil
         Task { _ = await coordinator.deleteNote(id: id) }
+    }
+
+    /// Prepare, upload, pin — in that order, because the note may not exist
+    /// until the picture does: the server claims the upload inside the same
+    /// transaction that writes the note, and a note pointing at nothing is
+    /// the one state this must never produce (docs/protocol.md, "Board").
+    ///
+    /// The picture is downscaled first, by the same MediaPrep a message
+    /// uses: a wall tile is 220 points, and shipping 12 megapixels to draw
+    /// it would cost the family's data for pixels nobody sees.
+    private func pinPicture(_ item: PhotosPickerItem, slot: Double) {
+        pinning = true
+        Task {
+            defer {
+                pinning = false
+                pickedPhoto = nil
+            }
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else {
+                    pinFailure = String(localized: "Couldn't read that photo.")
+                    return
+                }
+                let prepared = try await MediaPrep.preparePhoto(from: data, limit: MediaPrep.sizeLimit)
+                defer { try? FileManager.default.removeItem(at: prepared.fileURL) }
+                let uploaded = try await coordinator.api.uploadAttachment(
+                    fileURL: prepared.fileURL,
+                    mime: prepared.mime,
+                    kind: prepared.kind,
+                    width: prepared.width,
+                    height: prepared.height,
+                    durationMS: nil)
+                // The preview the sticker draws, sent as its own upload —
+                // the same second leg a photo message has.
+                if let previewJPEG = prepared.previewJPEG {
+                    try? await coordinator.api.uploadPreview(attachmentID: uploaded.id, jpeg: previewJPEG)
+                }
+                let pinned = await coordinator.addNote(
+                    text: "",
+                    color: NoteColor.palette.randomElement() ?? "yellow",
+                    size: NoteSize.medium.name,
+                    font: NoteFont.plain.name,
+                    x: 0.12 + slot * 0.03,
+                    y: 0.10 + slot * 0.06,
+                    attachmentID: uploaded.id)
+                if !pinned {
+                    pinFailure = String(localized: "Couldn't pin that photo.")
+                }
+            } catch {
+                pinFailure = String(localized: "Couldn't read that photo.")
+            }
+        }
     }
 }
 
@@ -224,11 +421,38 @@ private struct StickyNote: View {
             side: side, board: boardSize)
 
         VStack(alignment: .leading, spacing: 6) {
+            // A pinned picture fills the sticker, with the caption under it
+            // — and NOTHING while the note is hidden by a block: the
+            // picture is content, exactly as the text is (protocol.md,
+            // "Board").
+            if !isHidden, NoteKind(name: note.kind) == .photo, let attachmentID = note.attachmentID {
+                NotePicture(attachmentID: attachmentID)
+            }
+            // An event says WHEN before it says what: the date is the
+            // reason it is on the wall (protocol.md, "Board").
+            if !isHidden, NoteKind(name: note.kind) == .event, let starts = note.startsAt {
+                NoteEventBlock(
+                    starts: starts,
+                    ends: note.endsAt,
+                    place: note.place,
+                    going: note.answerCount(RsvpAnswer.going.name),
+                    maybe: note.answerCount(RsvpAnswer.maybe.name))
+            }
             (isHidden ? Text("Hidden — blocked member") : Text(note.text))
-                .font(size.font)
+                // The hand the author chose (docs/protocol.md, "Board").
+                // A hidden note keeps it, like its colour and its tilt:
+                // nothing about the shape of a note is the blocked
+                // member's content.
+                .font(NoteFont(name: note.font).font(for: size))
                 .foregroundStyle(.black.opacity(isHidden ? 0.45 : 0.85))
                 .italic(isHidden)
-                .lineLimit(size.lineLimit)
+                // The text FITS the sticker (docs/protocol.md, "Board"):
+                // the type scales down from the size's own until the whole
+                // note is inside it, and only past the floor is anything
+                // cut. `lineLimit` is a backstop for one unbroken word, not
+                // the layout rule it used to be.
+                .lineLimit(size.fittedLineLimit)
+                .minimumScaleFactor(size.minimumTextScale)
             Spacer(minLength: 0)
             // No author line at all while hidden — not an empty one, which
             // would still say a note came from somebody.
@@ -299,30 +523,72 @@ private struct NoteEditor: View {
     let draft: NoteDraft
     let canEdit: Bool
     let authorName: String
-    let onSave: (String, String, NoteSize) -> Void
+    let onSave: (String, String, NoteSize, NoteFont, EventEdit) -> Void
+    /// Answering is its own act — any member may, so it does not go
+    /// through `onSave`, which is the author's.
+    var onAnswer: (Int64, String?) -> Void = { _, _ in }
     let onDelete: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
     @State private var color: String
     @State private var size: NoteSize
+    @State private var font: NoteFont
+    /// An event's own three, edited here by its author.
+    @State private var startsAt: Date
+    @State private var hasEnd: Bool
+    @State private var endsAt: Date
+    @State private var place: String
     @State private var confirmDelete = false
 
     init(
         draft: NoteDraft,
         canEdit: Bool,
         authorName: String,
-        onSave: @escaping (String, String, NoteSize) -> Void,
+        onSave: @escaping (String, String, NoteSize, NoteFont, EventEdit) -> Void,
+        onAnswer: @escaping (Int64, String?) -> Void = { _, _ in },
         onDelete: (() -> Void)?
     ) {
         self.draft = draft
         self.canEdit = canEdit
         self.authorName = authorName
         self.onSave = onSave
+        self.onAnswer = onAnswer
         self.onDelete = onDelete
         _text = State(initialValue: draft.text)
         _color = State(initialValue: draft.color)
         _size = State(initialValue: draft.size)
+        _font = State(initialValue: draft.font)
+        _startsAt = State(initialValue: draft.startsAt ?? Date())
+        _hasEnd = State(initialValue: draft.endsAt != nil)
+        // An hour after the start is the shape most family things take, and
+        // it is only a starting point for the picker.
+        _endsAt = State(
+            initialValue: draft.endsAt ?? (draft.startsAt ?? Date()).addingTimeInterval(3600))
+        _place = State(initialValue: draft.place)
+    }
+
+    private var isEvent: Bool { draft.kind == .event }
+
+    /// This reader's answer, kept locally so the picker moves at once —
+    /// the note itself comes back through the board feed.
+    @State private var answeredOverride: String??
+
+    private var answered: String? {
+        if case let .some(value) = answeredOverride { return value }
+        return draft.myAnswer
+    }
+
+    private func answer(_ choice: RsvpAnswer?, on noteID: Int64) {
+        answeredOverride = .some(choice?.name)
+        onAnswer(noteID, choice?.name)
+    }
+
+    private var guestLine: String {
+        let going = draft.rsvps.count { $0.answer == RsvpAnswer.going.name }
+        let maybe = draft.rsvps.count { $0.answer == RsvpAnswer.maybe.name }
+        let no = draft.rsvps.count { $0.answer == RsvpAnswer.no.name }
+        return String(localized: "\(going) going · \(maybe) maybe · \(no) can't")
     }
 
     var body: some View {
@@ -332,11 +598,69 @@ private struct NoteEditor: View {
                     if canEdit {
                         TextField("Note", text: $text, axis: .vertical)
                             .lineLimit(3...8)
+                            // The cap lives where the typing is: a note the
+                            // server would refuse never becomes a failed
+                            // save (docs/protocol.md, "Board").
+                            .onChange(of: text) { _, new in
+                                let capped = NoteText.capped(new)
+                                if capped != new { text = capped }
+                            }
+                        if NoteText.shouldShowCounter(text) {
+                            Text("\(NoteText.remaining(text)) characters left")
+                                .font(.caption)
+                                .foregroundStyle(NoteText.remaining(text) == 0 ? .red : .secondary)
+                        }
                     } else {
                         Text(draft.text)
                         Text("Written by \(authorName)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                }
+                // WHEN and WHERE, above the look: they are why the note is
+                // on the wall (protocol.md, "Board").
+                if isEvent, canEdit {
+                    Section("When") {
+                        DatePicker("Starts", selection: $startsAt)
+                        Toggle("Has an end", isOn: $hasEnd.animation())
+                        if hasEnd {
+                            DatePicker("Ends", selection: $endsAt, in: startsAt...)
+                        }
+                    }
+                    Section("Where") {
+                        TextField("Place", text: $place)
+                            .onChange(of: place) { _, new in
+                                if new.count > 200 { place = String(new.prefix(200)) }
+                            }
+                    }
+                } else if isEvent, let starts = draft.startsAt {
+                    // Somebody else's event: read it, and say whether you
+                    // are coming — ANSWERING IS NOT AUTHORSHIP.
+                    Section("When") {
+                        Text(EventFormat.when(starts: starts, ends: draft.endsAt))
+                        if !draft.place.isEmpty {
+                            Text(draft.place).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if isEvent, let noteID = draft.noteID {
+                    Section("Are you coming?") {
+                        Picker("Are you coming?", selection: Binding(
+                            get: { RsvpAnswer(name: answered) },
+                            set: { answer($0, on: noteID) })
+                        ) {
+                            Text("No answer").tag(RsvpAnswer?.none)
+                            ForEach(RsvpAnswer.allCases) { choice in
+                                Text(choice.title).tag(RsvpAnswer?.some(choice))
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        if !draft.rsvps.isEmpty {
+                            Text(guestLine)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 if canEdit {
@@ -382,6 +706,34 @@ private struct NoteEditor: View {
                         .pickerStyle(.segmented)
                         .labelsHidden()
                     }
+                    // The hand, with text, colour and size: all four are
+                    // the author's (docs/protocol.md, "Board").
+                    Section("Font") {
+                        Picker("Font", selection: $font) {
+                            ForEach(NoteFont.allCases) { face in
+                                Text(face.title)
+                                    .font(Font.system(.body, design: face.design))
+                                    .tag(face)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        // The consequence, in front of the author: the same
+                        // sticker the wall will draw, with the type already
+                        // fitted (docs/protocol.md, "Board").
+                        HStack {
+                            Spacer(minLength: 0)
+                            NotePreview(
+                                text: text.isEmpty ? String(localized: "Your note") : text,
+                                color: color,
+                                size: size,
+                                font: font)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 4)
+                        .animation(.spring(duration: 0.2), value: size)
+                        .animation(.spring(duration: 0.2), value: font)
+                    }
                 }
                 if let onDelete, canEdit {
                     Section {
@@ -405,7 +757,14 @@ private struct NoteEditor: View {
                 }
                 if canEdit {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") { onSave(text, color, size) }
+                        Button("Save") {
+                            onSave(
+                                text, color, size, font,
+                                EventEdit(
+                                    startsAt: isEvent ? startsAt : nil,
+                                    endsAt: isEvent && hasEnd ? endsAt : nil,
+                                    place: isEvent ? place : ""))
+                        }
                             .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }

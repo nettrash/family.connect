@@ -123,7 +123,15 @@ async fn deliver_board_note_inner(
     .await?;
     let family_name: String = row.get("family_name");
     let author_name: String = row.get("author_name");
-    let text = note.text.clone().unwrap_or_default();
+    // A photo note's caption may be empty, and an alert with a blank body
+    // tells the family nothing. The picture is then the news, exactly as a
+    // caption-less photo message pushes its attachment summary
+    // (protocol.md, "Board", "Push notifications").
+    let text = match note.text.as_deref() {
+        Some(text) if !text.is_empty() => text.to_string(),
+        _ if note.attachment.is_some() => "Photo".to_string(),
+        _ => String::new(),
+    };
 
     let mut by_user: BTreeMap<i64, Vec<DevicePush>> = BTreeMap::new();
     for device in devices {

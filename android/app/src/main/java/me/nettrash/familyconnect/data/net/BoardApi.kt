@@ -18,6 +18,8 @@ import me.nettrash.familyconnect.data.net.dto.NoteResponse
 import me.nettrash.familyconnect.data.net.dto.PatchNoteRequest
 import javax.inject.Inject
 import javax.inject.Singleton
+import me.nettrash.familyconnect.data.net.dto.RsvpRequest
+import me.nettrash.familyconnect.ui.board.NoteKinds
 
 interface BoardApi {
     /** The whole board, tombstones excluded. */
@@ -30,20 +32,34 @@ interface BoardApi {
         text: String,
         color: String,
         size: String,
+        font: String,
         x: Double,
         y: Double,
+        /** The picture, on a photo note: the kind rides with it. */
+        attachmentId: Long? = null,
+        /** An event's own three. `startsAt` is what makes this an event. */
+        startsAt: String? = null,
+        endsAt: String? = null,
+        place: String? = null,
     ): ApiResult<NoteResponse>
 
     /**
+     * Say whether the caller is coming — `going`, `maybe`, `no`, or null to
+     * retract. ANY member may (docs/protocol.md, "Board").
+     */
+    suspend fun answerNote(id: Long, answer: String?): ApiResult<NoteResponse>
+
+    /**
      * Null fields are omitted, which is what decides the permission
-     * applied: `size` rides with text and color as an author's field, so
-     * a move must leave it null.
+     * applied: `size` and `font` ride with text and color as author's
+     * fields, so a move must leave them null.
      */
     suspend fun patchNote(
         id: Long,
         text: String?,
         color: String?,
         size: String?,
+        font: String?,
         x: Double?,
         y: Double?,
     ): ApiResult<NoteResponse>
@@ -69,20 +85,50 @@ class DefaultBoardApi @Inject constructor(
         text: String,
         color: String,
         size: String,
+        font: String,
         x: Double,
         y: Double,
+        attachmentId: Long?,
+        startsAt: String?,
+        endsAt: String?,
+        place: String?,
     ): ApiResult<NoteResponse> =
-        client.post("/families/mine/board/notes", CreateNoteRequest(text, color, size, x, y))
+        client.post(
+            "/families/mine/board/notes",
+            CreateNoteRequest(
+                text, color, size, x, y, font,
+                kind = when {
+                    startsAt != null -> NoteKinds.EVENT
+                    attachmentId != null -> NoteKinds.PHOTO
+                    else -> null
+                },
+                attachmentId = attachmentId,
+                startsAt = startsAt,
+                endsAt = endsAt,
+                place = place,
+            ),
+        )
+
+    override suspend fun answerNote(id: Long, answer: String?): ApiResult<NoteResponse> =
+        if (answer == null) {
+            client.delete("/families/mine/board/notes/$id/rsvp")
+        } else {
+            client.put("/families/mine/board/notes/$id/rsvp", RsvpRequest(answer))
+        }
 
     override suspend fun patchNote(
         id: Long,
         text: String?,
         color: String?,
         size: String?,
+        font: String?,
         x: Double?,
         y: Double?,
     ): ApiResult<NoteResponse> =
-        client.patch("/families/mine/board/notes/$id", PatchNoteRequest(text, color, size, x, y))
+        client.patch(
+            "/families/mine/board/notes/$id",
+            PatchNoteRequest(text, color, size, x, y, font),
+        )
 
     override suspend fun deleteNote(id: Long): ApiResult<Unit> =
         client.delete("/families/mine/board/notes/$id")

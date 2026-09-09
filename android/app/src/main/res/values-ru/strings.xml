@@ -518,4 +518,30 @@
     </plurals>
     <string name="s_mentions_you">Упоминает тебя</string>
     <string name="s_mention_member">Упомянуть %1$s</string>
+    <string name="s_note_characters_left">Осталось %1$d символов</string>
+    <string name="s_your_note">Твоя заметка</string>
+    <string name="s_note_preview">Предпросмотр</string>
+    <string name="s_font">Шрифт</string>
+    <string name="s_font_plain">Обычный</string>
+    <string name="s_font_serif">С засечками</string>
+    <string name="s_font_mono">Моноширинный</string>
+    <string name="s_font_casual">Неформальный</string>
+    <string name="s_pin_photo">Прикрепить фото</string>
+    <string name="s_pin_photo_failed">Не удалось прикрепить это фото.</string>
+    <string name="s_rsvp_going">Иду</string>
+    <string name="s_rsvp_maybe">Может быть</string>
+    <string name="s_rsvp_no">Не смогу</string>
+    <string name="s_rsvp_going_count">Идут: %1$d</string>
+    <string name="s_rsvp_maybe_count">Может быть: %1$d</string>
+    <string name="s_rsvp_going_maybe_count">Идут: %1$d, может быть: %2$d</string>
+    <string name="s_add_event">Добавить событие</string>
+    <string name="s_event_when">Когда</string>
+    <string name="s_event_where">Где</string>
+    <string name="s_event_place">Место</string>
+    <string name="s_event_has_end">Есть окончание</string>
+    <string name="s_event_starts">Начало</string>
+    <string name="s_event_ends">Окончание</string>
+    <string name="s_rsvp_question">Ты придёшь?</string>
+    <string name="s_rsvp_none">Нет ответа</string>
+    <string name="s_event">Событие</string>
 </resources>

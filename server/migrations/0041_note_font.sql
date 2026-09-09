@@ -1,0 +1,23 @@
+-- 0041_note_font — a note learns the hand it is written in (docs/protocol.md,
+-- "Board").
+--
+-- `font` is an INTENT, not a typeface: one of `plain`, `serif`, `mono`,
+-- `casual`, which each client draws with a system face of its own — the same
+-- shape as `color` and `size`, and for the same reason. A family name on the
+-- wire would name a font one platform has and another does not, and would
+-- leave a note unreadable on the phone it was not written on.
+--
+-- TEXT rather than an enum type, again like `color` and `size`: the
+-- vocabulary lives in the server (`Note::FONTS`) and is enforced at the write
+-- path, so it grows with a code change rather than a migration.
+--
+-- NOT NULL DEFAULT 'plain', because every note written before this column
+-- existed WAS written in the plain face — it is what every wall already
+-- looked like, so the default is the truth about the past and nothing
+-- already pinned changes. Like size, the AUTHOR owns it; that rule lives in
+-- the handler, since a CHECK cannot know who is asking.
+--
+-- A font change leaves `content_seq` alone (that is handler logic too): the
+-- face a note is written in is not what the note says, so it raises no badge.
+
+ALTER TABLE notes ADD COLUMN font TEXT NOT NULL DEFAULT 'plain';

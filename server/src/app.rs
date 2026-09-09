@@ -203,6 +203,13 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/families/mine/board/notes/{note_id}",
             patch(handlers_board::patch_note).delete(handlers_board::delete_note),
         )
+        // Answering an event is the SHARED act, like moving a note: any
+        // member may, and it has its own route because it is not an edit
+        // (docs/protocol.md, "Board").
+        .route(
+            "/api/v1/families/mine/board/notes/{note_id}/rsvp",
+            put(handlers_board::put_rsvp).delete(handlers_board::delete_rsvp),
+        )
         // Devices
         .route("/api/v1/devices", post(handlers_device::register_device))
         .route(

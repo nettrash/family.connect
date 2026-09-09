@@ -695,6 +695,29 @@ object PollCodec {
  * replaced whole, never patched, and a house-config change can never
  * silently re-shape stored rows.
  */
+/**
+ * One member's answer to an event: `going`, `maybe` or `no`, one per member
+ * (docs/protocol.md, "Board").
+ */
+@Serializable
+data class RsvpDto(
+    @SerialName("user_id") val userId: Long,
+    val answer: String,
+)
+
+/** The board's own codec: the wire's `rsvps` stored verbatim. */
+object RsvpCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(rsvps: List<RsvpDto>): String = json.encodeToString(rsvps)
+
+    fun decode(raw: String?): List<RsvpDto> =
+        raw?.let { runCatching { json.decodeFromString<List<RsvpDto>>(it) }.getOrNull() }.orEmpty()
+}
+
+@Serializable
+data class RsvpRequest(val answer: String)
+
 object AttachmentsCodec {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -924,6 +947,28 @@ data class NoteDto(
      */
     @SerialName("content_seq") val contentSeq: Long? = null,
     val deleted: Boolean? = null,
+    /**
+     * One of plain/serif/mono/casual — an INTENT each client draws with a
+     * system face of its own. Null on a tombstone, and null from a server
+     * that predates the field, which reads as "plain".
+     */
+    val font: String? = null,
+    /**
+     * `text` or `photo`. Null on a tombstone, and null from a server that
+     * predates the field, which reads as "text".
+     */
+    val kind: String? = null,
+    /** The picture, on a `photo` note and nowhere else. */
+    val attachment: AttachmentDto? = null,
+    /** An `event` and nowhere else (docs/protocol.md, "Board"). */
+    @SerialName("starts_at") val startsAt: String? = null,
+    @SerialName("ends_at") val endsAt: String? = null,
+    val place: String? = null,
+    /**
+     * Who is planning to come. `[]` on an event nobody has answered, null
+     * on every other kind.
+     */
+    val rsvps: List<RsvpDto>? = null,
 ) {
     val isTombstone: Boolean get() = deleted == true
 }
@@ -947,6 +992,15 @@ data class CreateNoteRequest(
     val size: String,
     val x: Double,
     val y: Double,
+    /** Absent means `plain`, as absent size means `medium`. */
+    val font: String? = null,
+    /** Omitted on a text note, both of them: the two arrive together or not at all. */
+    val kind: String? = null,
+    @SerialName("attachment_id") val attachmentId: Long? = null,
+    /** An event's own three, omitted everywhere else. */
+    @SerialName("starts_at") val startsAt: String? = null,
+    @SerialName("ends_at") val endsAt: String? = null,
+    val place: String? = null,
 )
 
 /**
@@ -962,6 +1016,9 @@ data class PatchNoteRequest(
     val size: String? = null,
     val x: Double? = null,
     val y: Double? = null,
+    val font: String? = null,
+    @SerialName("starts_at") val startsAt: String? = null,
+    val place: String? = null,
 )
 
 @Serializable

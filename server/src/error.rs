@@ -70,6 +70,9 @@ pub mod codes {
     pub const NOT_NOTE_AUTHOR: &str = "not_note_author";
     pub const INVALID_NOTE_COLOR: &str = "invalid_note_color";
     pub const INVALID_NOTE_SIZE: &str = "invalid_note_size";
+    pub const INVALID_NOTE_FONT: &str = "invalid_note_font";
+    pub const INVALID_NOTE_KIND: &str = "invalid_note_kind";
+    pub const INVALID_RSVP: &str = "invalid_rsvp";
     pub const INVALID_LANGUAGE: &str = "invalid_language";
     pub const BOARD_FULL: &str = "board_full";
     pub const INVALID_EMOJI: &str = "invalid_emoji";

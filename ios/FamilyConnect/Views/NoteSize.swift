@@ -16,6 +16,11 @@
 //  "medium" is exactly what every note was before sizes existed, on both
 //  platforms, so a wall with no sizes on it looks the same as it did.
 //
+//  A size no longer decides how many LINES show. The text fits the sticker
+//  (docs/protocol.md, "Board"): the type scales down from the size's own
+//  until the whole note is inside, and the per-size line counts that used
+//  to cut it off are gone.
+//
 //  Android counterpart: NoteSizes in ui/board/BoardScreen.kt.
 //
 
@@ -60,13 +65,45 @@ nonisolated enum NoteSize: String, CaseIterable, Identifiable, Sendable {
 
     /// Type size climbs with the sticker: a large note is meant to be read
     /// from across the room, not to hold more of the same small print.
-    var font: Font {
+    ///
+    /// This is the CEILING, not the size the text is always drawn at: a
+    /// sticker shows all of what it says, so the type scales down from here
+    /// until the whole text fits (docs/protocol.md, "Board").
+    var font: Font { Font.system(textStyle) }
+
+    /// The same step as a TEXT STYLE, which is what a hand can be applied
+    /// to: `Font.system(_:design:)` takes one of these, and only a semantic
+    /// style keeps the note tracking Dynamic Type (see NoteFont).
+    var textStyle: Font.TextStyle {
         switch self {
         case .small: .footnote
         case .medium: .callout
         case .large: .body
         }
     }
+
+    /// How far the type may shrink before the text is cut instead.
+    ///
+    /// A FLOOR, because type small enough to be unreadable communicates no
+    /// better than an ellipsis — below it the text truncates as it always
+    /// did, and that is the one case a reader opens the note for. Expressed
+    /// as a fraction of the size's own type so it tracks Dynamic Type: the
+    /// three sizes shrink by the same proportion rather than to the same
+    /// absolute point size, which on a large accessibility setting would be
+    /// a floor above the ceiling.
+    ///
+    /// 0.6 is the smallest that keeps the 280-character cap readable at
+    /// every step: a full note fits `small` at roughly footnote × 0.6, and
+    /// anything less buys room for text nobody could read anyway.
+    var minimumTextScale: CGFloat { 0.6 }
+
+    /// The lines the fitted text may take.
+    ///
+    /// Deliberately generous rather than the old per-size count: fitting
+    /// works by making the type smaller, and a cap of five lines would stop
+    /// it long before the sticker was full. The number is a backstop for a
+    /// single unbroken word, not a layout rule.
+    var fittedLineLimit: Int { 20 }
 
     #if os(iOS)
     /// The phone's sticker is square; medium is the 132pt it always was.
@@ -79,14 +116,6 @@ nonisolated enum NoteSize: String, CaseIterable, Identifiable, Sendable {
     }
 
     var frame: CGSize { CGSize(width: side, height: side) }
-
-    var lineLimit: Int {
-        switch self {
-        case .small: 3
-        case .medium: 5
-        case .large: 10
-        }
-    }
     #elseif os(macOS)
     /// The Mac's sticker is a landscape card; medium is the 150×110 it
     /// always was.
@@ -95,14 +124,6 @@ nonisolated enum NoteSize: String, CaseIterable, Identifiable, Sendable {
         case .small: CGSize(width: 120, height: 88)
         case .medium: CGSize(width: 150, height: 110)
         case .large: CGSize(width: 280, height: 200)
-        }
-    }
-
-    var lineLimit: Int {
-        switch self {
-        case .small: 3
-        case .medium: 4
-        case .large: 9
         }
     }
     #endif

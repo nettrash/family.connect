@@ -482,4 +482,30 @@
     </plurals>
     <string name="s_mentions_you">提到了你</string>
     <string name="s_mention_member">提及%1$s</string>
+    <string name="s_note_characters_left">还剩%1$d个字符</string>
+    <string name="s_your_note">你的便签</string>
+    <string name="s_note_preview">预览</string>
+    <string name="s_font">字体</string>
+    <string name="s_font_plain">朴素</string>
+    <string name="s_font_serif">衬线</string>
+    <string name="s_font_mono">等宽</string>
+    <string name="s_font_casual">随性</string>
+    <string name="s_pin_photo">钉一张照片</string>
+    <string name="s_pin_photo_failed">无法钉这张照片。</string>
+    <string name="s_rsvp_going">参加</string>
+    <string name="s_rsvp_maybe">也许</string>
+    <string name="s_rsvp_no">去不了</string>
+    <string name="s_rsvp_going_count">%1$d人参加</string>
+    <string name="s_rsvp_maybe_count">%1$d人也许</string>
+    <string name="s_rsvp_going_maybe_count">%1$d人参加、%2$d人也许</string>
+    <string name="s_add_event">添加活动</string>
+    <string name="s_event_when">时间</string>
+    <string name="s_event_where">地点</string>
+    <string name="s_event_place">地点</string>
+    <string name="s_event_has_end">有结束时间</string>
+    <string name="s_event_starts">开始</string>
+    <string name="s_event_ends">结束</string>
+    <string name="s_rsvp_question">你来吗？</string>
+    <string name="s_rsvp_none">未回答</string>
+    <string name="s_event">活动</string>
 </resources>

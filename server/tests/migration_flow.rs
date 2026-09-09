@@ -440,3 +440,53 @@ async fn the_0031_backfill_dates_every_existing_note_by_its_board_seq() {
     .expect("the column exists");
     assert_eq!(has_default, None);
 }
+
+/// 0041's default is the truth about the past: every note already on a wall
+/// WAS written in the plain face, so the column's default is what those
+/// rows must read as — and a row written straight into the table, the way a
+/// pre-0041 server wrote them, must come back `plain` rather than empty.
+///
+/// The board's own tests cover a note CREATED without a font. This is the
+/// half no request path can reach: the rows that existed before the column
+/// did.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_0041_default_reads_every_older_note_as_plain() {
+    let ts = spawn_server().await;
+    let (owner, owner_id) = ts.register("owner", "Olive").await;
+    let (family_id, _) = ts.create_family(&owner, "The Smiths").await;
+
+    // Inserted WITHOUT a font, exactly as a server that predates the column
+    // would have written it.
+    let seq: i64 = sqlx::query_scalar("SELECT nextval('family_board_seq')")
+        .fetch_one(&ts.state.pool)
+        .await
+        .expect("a board seq");
+    sqlx::query(
+        "INSERT INTO notes (family_id, author_id, text, color, size, x, y, board_seq, content_seq)
+         VALUES ($1, $2, 'Older than fonts', 'yellow', 'medium', 0.2, 0.3, $3, $3)",
+    )
+    .bind(family_id)
+    .bind(owner_id)
+    .bind(seq)
+    .execute(&ts.state.pool)
+    .await
+    .expect("inserting a pre-0041 note");
+
+    let board: serde_json::Value = ts
+        .get(&owner, "/families/mine/board")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let note = board["notes"]
+        .as_array()
+        .expect("notes")
+        .iter()
+        .find(|n| n["text"] == "Older than fonts")
+        .expect("the older note is on the board");
+    assert_eq!(
+        note["font"], "plain",
+        "a note written before the column reads as the face it was written in: {note}"
+    );
+}

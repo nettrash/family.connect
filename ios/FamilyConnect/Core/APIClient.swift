@@ -824,13 +824,34 @@ actor APIClient {
         let text: String
         let color: String
         let size: String
+        let font: String
         let x: Double
         let y: Double
+        /// Omitted on a text note, both of them: the server refuses a kind
+        /// without a picture and a picture without the kind.
+        let kind: String?
+        let attachmentID: Int64?
+        /// An event's own three, omitted everywhere else — the server
+        /// refuses them on any other kind.
+        let startsAt: Date?
+        let endsAt: Date?
+        let place: String?
+
+        enum CodingKeys: String, CodingKey {
+            case text, color, size, font, x, y, kind, place
+            case attachmentID = "attachment_id"
+            case startsAt = "starts_at"
+            case endsAt = "ends_at"
+        }
+    }
+
+    private struct RsvpRequest: Encodable {
+        let answer: String
     }
 
     /// Every field optional: a MOVE sends only x/y (any member may), an
-    /// edit sends text, color and/or size (author only). Which fields are
-    /// present is what decides the permission the server applies — so a
+    /// edit sends text, color, size and/or font (author only). Which fields
+    /// are present is what decides the permission the server applies — so a
     /// nil here must be ABSENT on the wire, not null. The synthesised
     /// encoder does that (`encodeIfPresent` per optional); a hand-written
     /// one that encoded nulls would turn every move into an author-only
@@ -839,8 +860,37 @@ actor APIClient {
         let text: String?
         let color: String?
         let size: String?
+        let font: String?
         let x: Double?
         let y: Double?
+        let startsAt: Date?
+        /// A DOUBLE option: absent leaves the end alone, `.some(nil)`
+        /// clears it. `encodeIfPresent` would drop both, so it is encoded
+        /// by hand below.
+        let endsAt: Date??
+        let place: String?
+
+        enum CodingKeys: String, CodingKey {
+            case text, color, size, font, x, y, place
+            case startsAt = "starts_at"
+            case endsAt = "ends_at"
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(text, forKey: .text)
+            try container.encodeIfPresent(color, forKey: .color)
+            try container.encodeIfPresent(size, forKey: .size)
+            try container.encodeIfPresent(font, forKey: .font)
+            try container.encodeIfPresent(x, forKey: .x)
+            try container.encodeIfPresent(y, forKey: .y)
+            try container.encodeIfPresent(place, forKey: .place)
+            try container.encodeIfPresent(startsAt, forKey: .startsAt)
+            if let endsAt {
+                // Present, and possibly null — which is what CLEARS it.
+                try container.encode(endsAt, forKey: .endsAt)
+            }
+        }
     }
 
     func board() async throws -> BoardResponse {
@@ -864,11 +914,37 @@ actor APIClient {
     }
 
     func createNote(
-        text: String, color: String, size: String, x: Double, y: Double
+        text: String,
+        color: String,
+        size: String,
+        font: String,
+        x: Double,
+        y: Double,
+        kind: String? = nil,
+        attachmentID: Int64? = nil,
+        startsAt: Date? = nil,
+        endsAt: Date? = nil,
+        place: String? = nil
     ) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
             "POST", "/families/mine/board/notes",
-            body: CreateNoteRequest(text: text, color: color, size: size, x: x, y: y))
+            body: CreateNoteRequest(
+                text: text, color: color, size: size, font: font, x: x, y: y,
+                kind: kind, attachmentID: attachmentID,
+                startsAt: startsAt, endsAt: endsAt, place: place))
+        return response.note
+    }
+
+    /// `nil` retracts. Any member may send either.
+    func answerNote(id: Int64, answer: String?) async throws -> NoteDTO {
+        let response: NoteResponse
+        if let answer {
+            response = try await request(
+                "PUT", "/families/mine/board/notes/\(id)/rsvp",
+                body: RsvpRequest(answer: answer))
+        } else {
+            response = try await request("DELETE", "/families/mine/board/notes/\(id)/rsvp")
+        }
         return response.note
     }
 
@@ -877,12 +953,18 @@ actor APIClient {
         text: String? = nil,
         color: String? = nil,
         size: String? = nil,
+        font: String? = nil,
         x: Double? = nil,
-        y: Double? = nil
+        y: Double? = nil,
+        startsAt: Date? = nil,
+        endsAt: Date?? = nil,
+        place: String? = nil
     ) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
             "PATCH", "/families/mine/board/notes/\(id)",
-            body: PatchNoteRequest(text: text, color: color, size: size, x: x, y: y))
+            body: PatchNoteRequest(
+                text: text, color: color, size: size, font: font, x: x, y: y,
+                startsAt: startsAt, endsAt: endsAt, place: place))
         return response.note
     }
 
