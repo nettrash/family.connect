@@ -43,7 +43,7 @@ fun interface LocalDataWiper {
         NoteEntity::class,
         PendingAttachmentEntity::class,
     ],
-    version = 21,
+    version = 23,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -367,6 +367,38 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * 22: threads (docs/protocol.md, "Threads") — the root of a reply's
+         * chain and how many replies a root has. Nullable and defaulted, so
+         * every existing row reads as "no chain / nobody answered", which is
+         * the truth until the next server copy of it says otherwise. The
+         * index name is the one Room derives for `Index(value =
+         * ["threadRootId"])`, or the schema check on open fails.
+         */
+        val MIGRATION_21_22: Migration = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN threadRootId INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN replyCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN detached INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_messages_threadRootId ON messages (threadRootId)",
+                )
+            }
+        }
+
+        /**
+         * 23: member mentions (docs/protocol.md, "Mentioning a member") —
+         * the list a message names, and the "@" mark on a chat row. Both
+         * defaulted, so every existing row reads as "names nobody / not
+         * marked", which is the truth until the next server copy.
+         */
+        val MIGRATION_22_23: Migration = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN mentionsJson TEXT")
+                db.execSQL("ALTER TABLE chats ADD COLUMN mentionedUnread INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         val MIGRATION_9_10: Migration = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE messages ADD COLUMN replyParentMessageId INTEGER")
@@ -439,6 +471,8 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_18_19,
                 MIGRATION_19_20,
                 MIGRATION_20_21,
+                MIGRATION_21_22,
+                MIGRATION_22_23,
             )
         }
     }

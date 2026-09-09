@@ -417,6 +417,17 @@
     <string name="s_assistant_history_photos_needs_vision">请先打开“允许助手查看照片”——它关闭时，服务器会拒绝这项设置。</string>
     <string name="s_assistant_history_photos_needs_history">“助手可以查看最近的历史记录”关闭时，这项设置不起作用：聊天历史不会发送，其中的照片自然也不会。</string>
     <string name="e_change_assistant_history_photos_failed">无法更改该设置</string>
+    <string name="s_assistant_greeting">早安消息</string>
+    <string name="s_assistant_greeting_explanation">助手每天都会在家庭聊天中发一条简短的早安消息，并提到家人已填写的生日对应的星座。它从不发送任何人的姓名或出生日期，只发送星座；它不会对日期作出任何断言；它也从不发出通知——下次你打开聊天时它就在那里。除非你打开，否则处于关闭状态。</string>
+    <string name="s_assistant_greeting_no_server">此处不可用：这个服务器不发送每日问候。</string>
+    <string name="e_change_assistant_greeting_failed">无法更改该设置</string>
+    <string name="s_assistant_faces">助手可看到成员的面孔</string>
+    <string name="s_assistant_faces_explanation">当有人在家庭聊天中提到助手时，该聊天近期记录中提到的成员的头像（最多 4 张）也会随问题一起发送给模型，以便它分清谁是谁。这些是成员为自己选择的图片，而不是任何人附加的照片；从不发送已离开成员或本家庭之外任何人的头像。此后大多数提及都会发送图片，费用更高。需要“允许助手查看照片”和“助手可以查看最近的历史记录”；除非你打开，否则处于关闭状态，关闭时绝不会发送任何面孔。</string>
+    <string name="s_assistant_faces_needs_history">在“助手可以查看最近的历史记录”关闭时，此项不起作用：不发送姓名，也就不发送面孔。</string>
+    <string name="e_change_assistant_faces_failed">无法更改该设置</string>
+    <string name="s_open_polls">进行中的投票</string>
+    <string name="s_open_polls_none">进行中的投票会留在这里，直到被关闭。目前一个也没有。</string>
+    <string name="e_try_again">请稍后再试。</string>
     <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
     <string name="s_pick_a_chat">从列表中选择一个对话。</string>
     <plurals name="p_members">
@@ -460,4 +471,15 @@
     <string name="s_emoji_activities">活动</string>
     <string name="s_emoji_travel">旅行与地点</string>
     <string name="s_emoji_objects">物品与符号</string>
+    <string name="s_thread">话题</string>
+    <string name="s_view_thread">查看话题</string>
+    <string name="s_reply_in_thread">在话题中回复</string>
+    <string name="e_load_thread_failed">无法加载话题。</string>
+    <string name="s_thread_partial">无法加载完整话题。</string>
+    <string name="s_open_thread">打开话题</string>
+    <plurals name="s_n_replies">
+        <item quantity="other">%1$d 条回复</item>
+    </plurals>
+    <string name="s_mentions_you">提到了你</string>
+    <string name="s_mention_member">提及%1$s</string>
 </resources>

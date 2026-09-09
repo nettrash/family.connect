@@ -105,15 +105,14 @@ struct MacFamilyView: View {
                 onSubmit: { reason in report(member, reason: reason) },
                 onCancel: { reportingMember = nil })
         }
+        // Sized by the view itself — see MacSettingsView's note.
         .sheet(item: $resetting) { member in
             ResetPasswordView(member: member)
-                .frame(width: 420)
         }
         .sheet(item: $editingBirthday) { member in
             // The roster draws SwiftData, and applyMemberBirthday writes
             // there, so there is nothing further for this screen to patch.
             MemberBirthdayView(member: member) { _ in }
-                .frame(width: 420)
         }
     }
 
@@ -297,6 +296,8 @@ struct MacFamilyView: View {
             aiHistory: updated.aiHistory,
             aiVision: updated.aiVision,
             aiHistoryPhotos: updated.aiHistoryPhotos,
+            aiGreeting: updated.aiGreeting,
+            aiFaces: updated.aiFaces,
             maxMembers: updated.maxMembers)
     }
 

@@ -144,6 +144,11 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers_chat::get_reactions),
         )
         .route("/api/v1/chats/{id}/edits", get(handlers_chat::get_edits))
+        // A chain of replies, read on its own (protocol.md, "Threads").
+        .route(
+            "/api/v1/chats/{id}/messages/{message_id}/thread",
+            get(handlers_chat::get_thread),
+        )
         // Polls. A vote is set and retracted like a reaction; closing is the
         // author's, and one-way (protocol.md, "Polls").
         .route(
@@ -155,6 +160,16 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers_poll::close_poll_handler),
         )
         .route("/api/v1/chats/{id}/polls", get(handlers_poll::get_polls))
+        // The open ones, as whole messages — a surface's read, not a cursor
+        // (protocol.md, "Finding the open ones"). It answers with MESSAGES,
+        // so it lives in handlers_chat with the rest of the message columns.
+        // Declared AFTER the line above: axum matches the literal segment
+        // before it would take `open` as an `{id}`, but keeping them in this
+        // order means the more specific path is also the more specific line.
+        .route(
+            "/api/v1/chats/{id}/polls/open",
+            get(handlers_chat::get_open_polls),
+        )
         // Attachments
         .route(
             "/api/v1/attachments",

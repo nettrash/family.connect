@@ -64,6 +64,10 @@ struct MacConversationView: View {
     @Query private var members: [MemberEntity]
 
     @State private var draft = ""
+    /// The open-polls surface, reached from this conversation's toolbar.
+    @State private var showsOpenPolls = false
+    /// The chain open on its own sheet (docs/protocol.md, "Threads").
+    @State private var threadTarget: ThreadTarget?
     @State private var isSending = false
     /// The one line this composer uses to say what it is doing or what
     /// went wrong.
@@ -279,6 +283,76 @@ struct MacConversationView: View {
     /// over N members and means nobody. See `MessagePresentation.isRead`.
     private var isFamilyChat: Bool { chat?.kind == "family" }
 
+
+    // MARK: - Member mentions (docs/protocol.md, "Mentioning a member")
+
+    /// Everybody a mention may name: the current roster, by the name the
+    /// app calls them.
+    private var mentionRoster: [MentionDTO] {
+        members.filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+    }
+
+    /// What the strip offers for the prefix being typed: never the reader
+    /// themself, never the blocked, and never the assistant — which is not
+    /// in the roster and has its own button.
+    private func mentionCandidates(matching query: String) -> [MentionDTO] {
+        MemberMentions.candidates(
+            in: mentionRoster, matching: query,
+            excluding: coordinator.blockedUserIDs.union([coordinator.currentUserID]))
+    }
+
+    /// The members the text names, resolved at send — family chat only,
+    /// nil when it names nobody so the wire stays as it was.
+    private func resolvedMentions(in body: String) -> [MentionDTO]? {
+        guard isFamilyChat else { return nil }
+        let found = MemberMentions.resolve(body: body, roster: mentionRoster)
+        return found.isEmpty ? nil : found
+    }
+
+    /// A tap on a name opens the one-to-one chat with that member — the
+    /// reader's own name, a member who has left and a deleted account are
+    /// highlighted and not tappable.
+    private func openMember(_ userID: Int64) {
+        guard userID != coordinator.currentUserID,
+              let member = members.first(where: { $0.userID == userID }),
+              !member.hasLeft, !member.accountDeleted
+        else { return }
+        Task {
+            if let chatID = try? await coordinator.openDirectChat(with: userID) {
+                session.pendingPushRoute = .chat(chatID)
+            }
+        }
+    }
+
+    /// The chain this message belongs to, on its own sheet: the root it
+    /// names when it is a reply, itself when it is the root.
+    private func openThread(of message: MessageSnapshot) {
+        guard let serverID = message.serverID else { return }
+        threadTarget = ThreadTarget(chatID: chatID, rootID: message.threadRootID ?? serverID)
+    }
+
+    /// Extracted from the `.sheet` closure for the reason `ConversationView`
+    /// records: these bodies are large, and a conditional builder inline in
+    /// one costs more type-checking than a named property.
+    @ViewBuilder
+    private var openPollsSheet: some View {
+        if let chatID = chat?.chatID {
+            OpenPollsView(chatID: chatID)
+        }
+    }
+
+    /// How many open polls in this chat this reader still has to answer.
+    /// Computed from what this window already holds rather than by asking the
+    /// server: the badge has to be right the moment the conversation opens.
+    private var openPollsToAnswer: Int {
+        // Hidden-by-block polls count toward nothing — see ConversationView.
+        let me = AppSettings.currentUserID ?? -1
+        let blocked = coordinator.blockedUserIDs
+        let visible = messages.filter { $0.senderID == me || !blocked.contains($0.senderID) }
+        return OpenPollsBadge.count(polls: visible.compactMap(\.poll), currentUserID: me)
+    }
+
     /// Whether there is somebody to ring from here (docs/protocol.md,
     /// "Voice calls"): a direct chat, on a server that has calls on.
     private var canCall: Bool {
@@ -432,6 +506,50 @@ struct MacConversationView: View {
                     }
                 }
             }
+            // The way back to a decision the family has scrolled past
+            // (docs/protocol.md, "Finding the open ones"). Family chat only,
+            // because polls exist nowhere else — which is also why this slot
+            // was empty here: `canCall` is false in the family chat, so it
+            // carried no item at all.
+            //
+            // The badge counts open polls THIS READER has not voted in
+            // (OpenPollsBadge, shared with the phone and mirrored on
+            // Android), not all open polls: a count that stays lit after you
+            // have answered everything, until somebody else closes them,
+            // stops meaning anything within a day.
+            if isFamilyChat {
+                ToolbarItem {
+                    Button {
+                        showsOpenPolls = true
+                    } label: {
+                        // Drawn by hand for the reason ConversationView
+                        // gives: `.badge` on a toolbar item is macOS 26+, and
+                        // this app deploys to 14.
+                        Label("Open polls", systemImage: "chart.bar.doc.horizontal")
+                            .overlay(alignment: .topTrailing) {
+                                if openPollsToAnswer > 0 {
+                                    Text("\(openPollsToAnswer)")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(.tint, in: Capsule())
+                                        .offset(x: 9, y: -8)
+                                }
+                            }
+                    }
+                    // ONE literal: a ternary of two string literals is inferred
+                    // as `String`, which `.help` takes verbatim and never
+                    // localizes — the count is on the capsule and, for
+                    // VoiceOver, in the value below.
+                    .help("Open polls")
+                    .accessibilityValue(openPollsToAnswer > 0 ? Text("\(openPollsToAnswer) to answer") : Text(""))
+                }
+            }
+        }
+        .sheet(isPresented: $showsOpenPolls) { openPollsSheet }
+        .sheet(item: $threadTarget) { target in
+            ThreadView(chatID: target.chatID, rootID: target.rootID)
         }
         // Presence is ONE value and a Mac can have several conversation
         // windows, so ownership has to be explicit: the frontmost window
@@ -667,6 +785,10 @@ struct MacConversationView: View {
                                     isFamilyChat: isFamilyChat),
                                 onReply: { beginReply(row.message) },
                                 onEdit: { beginEdit(row.message) },
+                                replyCount: row.message.replyCount,
+                                canViewThread: row.message.serverID != nil
+                                    && (row.message.threadRootID != nil || row.message.replyCount > 0),
+                                onOpenThread: { openThread(of: row.message) },
                                 onReport: {
                                     reportTarget = ReportTarget(
                                         senderID: row.message.senderID,
@@ -690,6 +812,7 @@ struct MacConversationView: View {
                                             : "\(row.message.localID)#parent")
                                 },
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
+                                onTapMention: { openMember($0) },
                                 onOpenAttachment: { attachment in
                                     if attachment.isFile {
                                         openFile(attachment)
@@ -1283,6 +1406,16 @@ struct MacConversationView: View {
             if !staged.isEmpty {
                 StagedAttachmentRow(items: staged) { discardStaged($0) }
             }
+            // The roster, while a member is being named (protocol.md,
+            // "Mentioning a member") — the phone's strip.
+            if isFamilyChat, let query = MemberMentions.query(in: draft) {
+                let candidates = mentionCandidates(matching: query)
+                if !candidates.isEmpty {
+                    MentionSuggestions(candidates: candidates) { name in
+                        draft = MemberMentions.accept(draft: draft, name: name)
+                    }
+                }
+            }
             // Two strips, never both — the phone's arrangement: the
             // assistant's own chat, and (#56) the family chat for a photo
             // an `@ai` draft is about to carry.
@@ -1536,6 +1669,7 @@ struct MacConversationView: View {
                     label: nil,
                     caption: caption,
                     replyTo: quote,
+                    mentions: resolvedMentions(in: caption),
                     in: chatID)
                 if queued == nil {
                     // Through the guarded restore, like every other send
@@ -1795,7 +1929,7 @@ struct MacConversationView: View {
         // Declared before the row exists, because that is the only moment
         // this is knowable without guessing (see `owesSendPin`).
         owesSendPin = true
-        coordinator.send(body: body, in: chatID, replyTo: quote)
+        coordinator.send(body: body, in: chatID, replyTo: quote, mentions: resolvedMentions(in: body))
     }
 
     /// The poll door, and a send door like any other.
@@ -1816,7 +1950,8 @@ struct MacConversationView: View {
     private func sendPoll(question: String, options: [String]) {
         let quote = replyDraft
         guard coordinator.sendPoll(
-            question: question, options: options, in: chatID, replyTo: quote) != nil
+            question: question, options: options, in: chatID, replyTo: quote,
+            mentions: resolvedMentions(in: question)) != nil
         else { return }
         replyDraft = nil
         owesSendPin = true
@@ -2168,6 +2303,7 @@ struct MacConversationView: View {
             items.map(\.prepared),
             caption: caption,
             replyTo: quote,
+            mentions: resolvedMentions(in: caption),
             in: chatID) == nil
         {
             // Only when not one item could be staged.
@@ -2248,7 +2384,7 @@ private struct MacComposerBanner: View {
 
 /// "Today / Yesterday / Mon, Aug 17" between day sections — the same
 /// labels the phone uses.
-private struct MacDayPill: View {
+struct MacDayPill: View {
     let day: Date
 
     var body: some View {

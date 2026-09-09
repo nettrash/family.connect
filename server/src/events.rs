@@ -253,6 +253,21 @@ async fn fan_out_new_message(
     Ok(members)
 }
 
+/// Is this message the assistant's own? The reserved account (migration
+/// 0015) is the one user with that name and no family; asked only on a
+/// reply that quotes somebody else, which is where the second block gate
+/// lives (protocol.md, "Push notifications").
+async fn sender_is_assistant(state: &AppState, sender_id: i64) -> Result<bool, ApiError> {
+    let is_assistant = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM users
+         WHERE id = $1 AND lower(username) = 'assistant' AND family_id IS NULL)",
+    )
+    .bind(sender_id)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(is_assistant)
+}
+
 /// Compose and send the notification for a message to the devices of
 /// `candidates` that are worth waking. Split out of `deliver_new_message`
 /// so a message whose alert has to wait for its body can reuse it unchanged.
@@ -286,16 +301,22 @@ async fn push_message_to(
     // answer is a real message whose sender is the ASSISTANT, quoting the
     // mention. Without the second test that answer lights up the blocker's
     // phone for a thread they cannot read. `ReplyTo` already carries
-    // `sender_id`, so this costs no query on the common path.
+    // `sender_id`, so the second gate costs one lookup and only on a reply
+    // that quotes somebody else.
     //
-    // It stops at those two. Suppressing every reply that quotes a blocked
-    // member would silence pushes written by people the blocker has NOT
-    // blocked, and hand the blocked member a way to do it on purpose.
+    // It stops at those two, and the second one is THE ASSISTANT'S ALONE.
+    // Suppressing every reply that quotes a blocked member would silence
+    // pushes written by people the blocker has NOT blocked, and hand the
+    // blocked member a way to do it on purpose: post something
+    // reply-worthy, wait for a third member to quote it, and the blocker's
+    // phone stays dark for a message they were meant to see — the mention
+    // that names them included (protocol.md, "Push notifications").
     let candidates = {
         let mut blocked_recipients =
             crate::blocks::blockers_of(&state.pool, message.sender_id, &candidates).await?;
         if let Some(reply_to) = message.reply_to.as_ref()
             && reply_to.sender_id != message.sender_id
+            && sender_is_assistant(state, message.sender_id).await?
         {
             blocked_recipients.extend(
                 crate::blocks::blockers_of(&state.pool, reply_to.sender_id, &candidates).await?,
@@ -352,15 +373,34 @@ async fn push_message_to(
     let mut batch = Vec::with_capacity(by_user.len());
     for (user_id, user_devices) in by_user {
         let (badge, chat_unread) = unread_counts(&state.pool, user_id, message.chat_id).await?;
-        let note = push_payload::message_notification(
-            state.cfg.push.include_message_body,
-            &chat_kind,
-            &family_name,
-            &sender_name,
-            message,
-            badge,
-            chat_unread,
-        );
+        // A member the message NAMES gets the same push under a different
+        // title, and never a second one: the block gate above has already
+        // removed anyone the sender may not wake (protocol.md,
+        // "Mentioning a member").
+        let named = message
+            .mentions
+            .as_ref()
+            .is_some_and(|list| list.iter().any(|mention| mention.user_id == user_id));
+        let note = if named {
+            push_payload::mention_notification(
+                state.cfg.push.include_message_body,
+                &family_name,
+                &sender_name,
+                message,
+                badge,
+                chat_unread,
+            )
+        } else {
+            push_payload::message_notification(
+                state.cfg.push.include_message_body,
+                &chat_kind,
+                &family_name,
+                &sender_name,
+                message,
+                badge,
+                chat_unread,
+            )
+        };
         batch.push((user_devices, note));
     }
     spawn_notify(state, batch);
@@ -745,9 +785,6 @@ fn spawn_notify_call(state: &AppState, devices: Vec<DevicePush>, call: CallPush)
     });
 }
 
-/// Relay a read marker to the *other* members of the chat (all connections
-/// of the reader are excluded — protocol.md relays read/typing to other
-/// members only; the reader's own devices resync over REST).
 /// Drop, from `recipients`, anybody who has blocked `actor`.
 ///
 /// **INWARD ONLY, and the direction is the whole point.** This removes
@@ -775,23 +812,51 @@ async fn without_blockers_of(
         .collect())
 }
 
+/// Relay a read marker to the chat — and to the reader's OWN other devices.
+///
+/// The reader is NOT excluded from the recipient list, and that is the whole
+/// of the cross-device unread fix. The marker has always been per-USER —
+/// `chat_reads` is keyed `(chat_id, user_id)` with no device column, and
+/// `apply_read_marker` is one monotonic upsert — so a second device was
+/// always entitled to this fact; it simply had no way to learn it but
+/// re-fetching `GET /chats`. A member who read on their laptop therefore
+/// watched the badge on their phone sit there until something else made it
+/// resync, and a badge that is wrong for ten minutes is a badge nobody
+/// believes.
+///
+/// `origin_conn` is the connection that reported the read, skipped exactly as
+/// `deliver_new_message` skips a sender's own socket: that device already
+/// knows. The REST path has no connection to skip and passes `None`, so a
+/// read reported over HTTP reaches every one of that user's connections —
+/// which is correct, and is why the parameter exists rather than a blanket
+/// "never echo".
+///
+/// `deliver_reaction` and `deliver_poll` already fan to the actor's other
+/// devices for the same reason and say so in their own comments; this was the
+/// odd one out.
 pub async fn deliver_read(
     state: &AppState,
     chat_id: i64,
     reader_id: i64,
     last_read_message_id: i64,
+    origin_conn: Option<u64>,
 ) -> Result<(), ApiError> {
-    let recipients = others(chat_member_ids(&state.pool, chat_id).await?, reader_id);
+    let members = chat_member_ids(&state.pool, chat_id).await?;
     // A read frame FROM somebody is not relayed TO anybody who blocked
     // them. The blocker's own reads still reach everybody, this member
-    // included — see `without_blockers_of`.
-    let recipients = without_blockers_of(state, reader_id, recipients).await?;
+    // included — see `without_blockers_of`. The reader is exempt from this
+    // filter by construction: nobody blocks themselves, so their own
+    // devices survive it.
+    let recipients = without_blockers_of(state, reader_id, members).await?;
     let frame = ServerFrame::Read {
         chat_id,
         user_id: reader_id,
         last_read_message_id,
     };
-    state.registry.send_to_users(&recipients, &frame).await;
+    state
+        .registry
+        .fan_out(&recipients, &frame, origin_conn)
+        .await;
     Ok(())
 }
 

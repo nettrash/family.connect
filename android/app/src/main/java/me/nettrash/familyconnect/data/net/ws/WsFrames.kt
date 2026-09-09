@@ -33,6 +33,7 @@ import kotlinx.serialization.json.JsonClassDiscriminator
 import me.nettrash.familyconnect.data.net.dto.IceCandidateDto
 import me.nettrash.familyconnect.data.net.dto.MemberDto
 import me.nettrash.familyconnect.data.net.dto.MessageDto
+import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NewPollDto
 import me.nettrash.familyconnect.data.net.dto.NoteDto
 import me.nettrash.familyconnect.data.net.dto.PollDto
@@ -76,6 +77,11 @@ sealed interface ClientFrame {
          * with [attachmentIds], which the server enforces.
          */
         val poll: NewPollDto? = null,
+        /**
+         * Optional: the members this message names, family chat only
+         * (protocol.md, "Mentioning a member"). Omitted the same way.
+         */
+        val mentions: List<MentionDto>? = null,
     ) : ClientFrame
 
     @Serializable

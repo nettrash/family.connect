@@ -182,6 +182,20 @@ data class SettingsState(
      */
     val familyAiHistoryPhotos: Boolean = false,
     /**
+     * Whether the assistant may greet this family unprompted once a day
+     * (docs/protocol.md, "The daily greeting"). False for every family that
+     * predates it, and bound to none of the three switches above.
+     */
+    val familyAiGreeting: Boolean = false,
+    /**
+     * Whether the SERVER posts daily greetings at all (`GET /me` →
+     * greetings_enabled). Account-scoped like the assistant's own
+     * capabilities: a different server may post none. False disables the
+     * family's switch and says why, rather than leaving an owner to wonder
+     * why their mornings are quiet — that half is their operator's.
+     */
+    val greetingsEnabled: Boolean = false,
+    /**
      * Whether the server signals voice calls (`GET /me` → calls_enabled).
      * Account-scoped like the assistant: a different server may have them
      * off. False hides the call button rather than letting somebody
@@ -283,6 +297,16 @@ interface SettingsRepository {
      */
     suspend fun setFamilyAiHistoryPhotos(enabled: Boolean)
 
+    /**
+     * Record the family's fourth switch — the daily greeting. Bound to none
+     * of the others, so unlike the third it can never be turned off by a
+     * write this device did not make.
+     */
+    suspend fun setFamilyAiGreeting(enabled: Boolean)
+
+    /** Record what `GET /me` said about daily greetings on this server. */
+    suspend fun setGreetingsEnabled(enabled: Boolean)
+
     /** Record what `GET /me` said about voice calls on this server. */
     suspend fun setCallsEnabled(enabled: Boolean)
 
@@ -369,6 +393,10 @@ class DataStoreSettingsRepository @Inject constructor(
         // Plain, like FAMILY_AI_VISION and for its reason: a missing key
         // and an explicit `false` say the same thing.
         val FAMILY_AI_HISTORY_PHOTOS = booleanPreferencesKey("family_ai_history_photos")
+        // Both plain, for FAMILY_AI_VISION's reason: a missing key and an
+        // explicit `false` say the same thing — no greeting.
+        val FAMILY_AI_GREETING = booleanPreferencesKey("family_ai_greeting")
+        val GREETINGS_ENABLED = booleanPreferencesKey("greetings_enabled")
         val CALLS_ENABLED = booleanPreferencesKey("calls_enabled")
         val VIDEO_CALLS_ENABLED = booleanPreferencesKey("video_calls_enabled")
         val FAMILY_REGISTRATION_ENABLED = booleanPreferencesKey("family_registration_enabled")
@@ -408,6 +436,8 @@ class DataStoreSettingsRepository @Inject constructor(
             familyAiVision = prefs[Keys.FAMILY_AI_VISION] == true,
             familyAiHistory = prefs[Keys.FAMILY_AI_HISTORY] ?: true,
             familyAiHistoryPhotos = prefs[Keys.FAMILY_AI_HISTORY_PHOTOS] == true,
+            familyAiGreeting = prefs[Keys.FAMILY_AI_GREETING] == true,
+            greetingsEnabled = prefs[Keys.GREETINGS_ENABLED] == true,
             callsEnabled = prefs[Keys.CALLS_ENABLED] == true,
             videoCallsEnabled = prefs[Keys.VIDEO_CALLS_ENABLED] == true,
             familyRegistrationEnabled = prefs[Keys.FAMILY_REGISTRATION_ENABLED] != false,
@@ -525,6 +555,14 @@ class DataStoreSettingsRepository @Inject constructor(
     override suspend fun setFamilyAiHistoryPhotos(enabled: Boolean) {
         // Unconditional, false included. See the interface.
         dataStore.edit { it[Keys.FAMILY_AI_HISTORY_PHOTOS] = enabled }
+    }
+
+    override suspend fun setFamilyAiGreeting(enabled: Boolean) {
+        dataStore.edit { it[Keys.FAMILY_AI_GREETING] = enabled }
+    }
+
+    override suspend fun setGreetingsEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.GREETINGS_ENABLED] = enabled }
     }
 
     override suspend fun setCallsEnabled(enabled: Boolean) {

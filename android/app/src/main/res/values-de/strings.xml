@@ -422,6 +422,17 @@
     <string name="s_assistant_history_photos_needs_vision">Schalte zuerst „Assistent darf Fotos ansehen“ ein — solange das aus ist, lehnt der Server dies ab.</string>
     <string name="s_assistant_history_photos_needs_history">Solange „Assistent sieht den letzten Verlauf“ aus ist, bewirkt das nichts: Der Verlauf des Chats wird nicht gesendet, also auch kein Foto daraus.</string>
     <string name="e_change_assistant_history_photos_failed">Einstellung konnte nicht geändert werden</string>
+    <string name="s_assistant_greeting">Guten-Morgen-Nachricht</string>
+    <string name="s_assistant_greeting_explanation">Der Assistent schreibt jeden Tag eine kurze Guten-Morgen-Nachricht in den Familienchat und nennt darin die Sternzeichen der Geburtstage, die eure Familie eingetragen hat. Er sendet niemals einen Namen oder ein Geburtsdatum, nur die Zeichen; er behauptet nichts über das Datum; und er löst nie eine Benachrichtigung aus — die Nachricht ist einfach da, wenn ihr den Chat das nächste Mal öffnet. Aus, bis du sie einschaltest.</string>
+    <string name="s_assistant_greeting_no_server">Hier nicht verfügbar: Dieser Server verschickt keine täglichen Grüße.</string>
+    <string name="e_change_assistant_greeting_failed">Einstellung konnte nicht geändert werden</string>
+    <string name="s_assistant_faces">Assistent sieht Gesichter der Mitglieder</string>
+    <string name="s_assistant_faces_explanation">Wenn jemand den Assistenten im Familienchat erwähnt, werden auch die Profilbilder der Mitglieder, die im jüngsten Verlauf dieses Chats genannt werden — bis zu 4 — mit der Frage an das Modell gesendet, damit es erkennt, wer wer ist. Es sind die Bilder, die die Mitglieder für sich selbst gewählt haben, keine angehängten Fotos; nie ein Mitglied, das gegangen ist, und nie jemand außerhalb dieser Familie. Die meisten Erwähnungen senden dann Bilder, was mehr kostet. Braucht „Assistent darf Fotos ansehen“ und „Assistent sieht den letzten Verlauf“; aus, bis du es einschaltest — und solange es aus ist, wird nie ein Gesicht gesendet.</string>
+    <string name="s_assistant_faces_needs_history">Solange „Assistent sieht den letzten Verlauf“ aus ist, bewirkt das nichts: Es werden keine Namen gesendet, also auch keine Gesichter.</string>
+    <string name="e_change_assistant_faces_failed">Einstellung konnte nicht geändert werden</string>
+    <string name="s_open_polls">Offene Umfragen</string>
+    <string name="s_open_polls_none">Offene Umfragen bleiben hier, bis sie geschlossen werden. Im Moment gibt es keine.</string>
+    <string name="e_try_again">Versuch es gleich noch einmal.</string>
     <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
     <string name="s_pick_a_chat">Wähle einen Chat aus der Liste.</string>
     <plurals name="p_members">
@@ -471,4 +482,16 @@
     <string name="s_emoji_activities">Aktivitäten</string>
     <string name="s_emoji_travel">Reisen &amp; Orte</string>
     <string name="s_emoji_objects">Objekte &amp; Symbole</string>
+    <string name="s_thread">Thread</string>
+    <string name="s_view_thread">Thread anzeigen</string>
+    <string name="s_reply_in_thread">Im Thread antworten</string>
+    <string name="e_load_thread_failed">Der Thread konnte nicht geladen werden.</string>
+    <string name="s_thread_partial">Der Thread konnte nicht vollständig geladen werden.</string>
+    <string name="s_open_thread">Öffnet den Thread</string>
+    <plurals name="s_n_replies">
+        <item quantity="one">%1$d Antwort</item>
+        <item quantity="other">%1$d Antworten</item>
+    </plurals>
+    <string name="s_mentions_you">Erwähnt dich</string>
+    <string name="s_mention_member">%1$s erwähnen</string>
 </resources>

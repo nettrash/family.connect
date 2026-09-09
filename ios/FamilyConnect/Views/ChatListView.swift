@@ -813,6 +813,17 @@ struct ChatRowView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                // The "@" mark: an unread message here names this reader
+                // (protocol.md, "Mentioning a member").
+                if chat.hasUnreadMention {
+                    Text(verbatim: "@")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.tint, in: Capsule())
+                        .accessibilityLabel(Text("Mentions you"))
+                }
                 if chat.unreadCount > 0 {
                     Text("\(chat.unreadCount)")
                         .font(.caption2.bold())

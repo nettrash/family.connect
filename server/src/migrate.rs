@@ -203,6 +203,26 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "assistant_is_not_removable",
         sql: include_str!("../migrations/0036_assistant_is_not_removable.sql"),
     },
+    Migration {
+        version: 37,
+        name: "ai_greeting",
+        sql: include_str!("../migrations/0037_ai_greeting.sql"),
+    },
+    Migration {
+        version: 38,
+        name: "ai_faces",
+        sql: include_str!("../migrations/0038_ai_faces.sql"),
+    },
+    Migration {
+        version: 39,
+        name: "threads",
+        sql: include_str!("../migrations/0039_threads.sql"),
+    },
+    Migration {
+        version: 40,
+        name: "message_mentions",
+        sql: include_str!("../migrations/0040_message_mentions.sql"),
+    },
 ];
 
 /// Arbitrary but stable key identifying "family-connect migrations" among

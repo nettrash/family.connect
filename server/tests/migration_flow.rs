@@ -225,6 +225,148 @@ async fn the_0033_check_keeps_recent_photos_off_while_pictures_are() {
     );
 }
 
+/// 0038's rule, at the level it is enforced — the twin of the 0033 test
+/// above, for the fifth switch (protocol.md, "Profile pictures of members").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_0038_check_keeps_faces_off_while_pictures_are() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (family_id, _) = ts.create_family(&owner, "The Smiths").await;
+
+    let constraint_of = |result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>| match result {
+        Err(sqlx::Error::Database(error)) => error.constraint().map(str::to_string),
+        Ok(_) => None,
+        Err(other) => panic!("not a constraint refusal: {other}"),
+    };
+
+    let refused = sqlx::query("UPDATE families SET ai_faces = true WHERE id = $1")
+        .bind(family_id)
+        .execute(&ts.state.pool)
+        .await;
+    assert_eq!(
+        constraint_of(refused).as_deref(),
+        Some("families_ai_faces_needs_vision")
+    );
+
+    sqlx::query("UPDATE families SET ai_vision = true, ai_faces = true WHERE id = $1")
+        .bind(family_id)
+        .execute(&ts.state.pool)
+        .await
+        .expect("both on together is the state the rule allows");
+
+    let refused = sqlx::query("UPDATE families SET ai_vision = false WHERE id = $1")
+        .bind(family_id)
+        .execute(&ts.state.pool)
+        .await;
+    assert_eq!(
+        constraint_of(refused).as_deref(),
+        Some("families_ai_faces_needs_vision"),
+        "a face left reachable underneath the switch that was turned off would spring back"
+    );
+}
+
+/// 0039's backfill, run as its own text against a table put back in its
+/// pre-0039 shape: every reply that existed before threads did gets the
+/// root of its chain, however deep — walked over the surviving links, which
+/// is the most they can say (protocol.md, "Threads").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_0039_backfill_roots_every_existing_reply() {
+    let ts = spawn_server().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    // Borrowed once, so the closures below copy a reference and stay
+    // callable more than once under `async move`.
+    let (ts, owner) = (&ts, &owner);
+    let post = |body: &'static str, reply_to: Option<i64>| async move {
+        let mut request = serde_json::json!({
+            "client_msg_id": uuid::Uuid::new_v4().to_string(),
+            "body": body,
+        });
+        if let Some(reply_to) = reply_to {
+            request["reply_to_message_id"] = serde_json::json!(reply_to);
+        }
+        let response = ts
+            .post(owner, &format!("/chats/{chat_id}/messages"), request)
+            .await;
+        assert_eq!(response.status(), 201);
+        let value: serde_json::Value = response.json().await.expect("JSON");
+        value["message"]["id"].as_i64().expect("id")
+    };
+    let root = post("Dinner at 7?", None).await;
+    let first = post("Works for me", Some(root)).await;
+    let second = post("Pizza then?", Some(first)).await;
+    let third = post("Always", Some(second)).await;
+    let other_root = post("Film tonight?", None).await;
+    let other_reply = post("Which one?", Some(other_root)).await;
+    let other_nested = post("The long one", Some(other_reply)).await;
+    let lonely = post("Anyone seen the cat?", None).await;
+    // Two chains that straddled the retention cutoff before the upgrade —
+    // the case the send-time rule and the backfill answer differently, and
+    // the protocol says so. `first` is swept, so `second` lost its quote
+    // (0012 set the link NULL); `other_root` is swept, so `other_reply`
+    // lost its.
+    let cut = |message_id: i64| async move {
+        sqlx::query("DELETE FROM messages WHERE id = $1")
+            .bind(message_id)
+            .execute(&ts.state.pool)
+            .await
+            .expect("a pre-upgrade sweep");
+    };
+    cut(first).await;
+    cut(other_root).await;
+
+    // Back to the shape the table had before 0039 — the column goes and
+    // its partial index with it — then run the real text.
+    sqlx::raw_sql("ALTER TABLE messages DROP COLUMN thread_root_id")
+        .execute(&ts.state.pool)
+        .await
+        .expect("dropping the column back off");
+    sqlx::raw_sql(migration_sql(39))
+        .execute(&ts.state.pool)
+        .await
+        .expect("re-running migration 39");
+
+    let root_of = |message_id: i64| async move {
+        sqlx::query_scalar::<_, Option<i64>>("SELECT thread_root_id FROM messages WHERE id = $1")
+            .bind(message_id)
+            .fetch_one(&ts.state.pool)
+            .await
+            .expect("the row")
+    };
+    // What the surviving links can say (protocol.md, "Retention"): a reply
+    // whose parent or root had already been swept heads a chain of its own,
+    // with whatever still quoted it under it — NOT what send-time would
+    // have said, and the protocol admits exactly that.
+    assert_eq!(
+        root_of(second).await,
+        None,
+        "its parent was swept: it heads its own chain"
+    );
+    assert_eq!(
+        root_of(third).await,
+        Some(second),
+        "and its child follows it, not the old root"
+    );
+    assert_eq!(
+        root_of(other_reply).await,
+        None,
+        "its root was swept: it heads its own chain"
+    );
+    assert_eq!(root_of(other_nested).await, Some(other_reply));
+    assert_eq!(root_of(root).await, None, "a root names no root");
+    assert_eq!(root_of(lonely).await, None);
+    let index: Option<String> = sqlx::query_scalar(
+        "SELECT indexname FROM pg_indexes WHERE indexname = 'messages_thread_root_idx'",
+    )
+    .fetch_optional(&ts.state.pool)
+    .await
+    .expect("querying indexes");
+    assert_eq!(index.as_deref(), Some("messages_thread_root_idx"));
+}
+
 /// 0031's backfill, run as its own text against a table put back in its
 /// pre-0031 shape.
 ///

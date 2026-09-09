@@ -372,6 +372,27 @@ class FamilyRepository @Inject constructor(
     }
 
     /**
+     * Owner-only: the fourth switch (docs/protocol.md, "The daily
+     * greeting"). Mirrored like the three above so the owner's own device
+     * agrees with the server at once — no frame will tell it what it just
+     * did itself.
+     */
+    suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> {
+        val result = familyApi.setAiGreeting(enabled)
+        if (result is ApiResult.Ok) {
+            settings.setFamilyAiGreeting(result.value.family.aiGreeting)
+        }
+        return result
+    }
+
+    /**
+     * Owner-only: the fifth switch (docs/protocol.md, "Profile pictures of
+     * members"). Nothing is mirrored into settings: no composer strip reads
+     * it — the protocol asks for the switch and its sentence, nothing more.
+     */
+    suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> = familyApi.setAiFaces(enabled)
+
+    /**
      * My own birthday, mirrored onto my roster row.
      *
      * The mirror is the point: the roster is what every screen renders

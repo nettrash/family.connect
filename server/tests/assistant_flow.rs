@@ -328,6 +328,90 @@ async fn mentioning_the_assistant_in_the_family_chat_answers_the_whole_family() 
     );
 }
 
+/// The assistant's answer does NOT wake a member who blocked the asker.
+///
+/// This is the one case the second push gate exists for (protocol.md,
+/// "Push notifications"): a blocked member writes `@ai`, and the answer is
+/// a real message whose sender is the ASSISTANT, quoting the question.
+/// Without the gate that answer lights up the blocker's phone for a thread
+/// they cannot read. It is the assistant's alone — a REPLY from a member
+/// quoting a blocked member still wakes the blocker, which push_flow.rs
+/// pins from the other side.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_assistants_answer_to_a_blocked_member_does_not_wake_the_blocker() {
+    let (_mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let (member, member_id) = ts.register("junior", "Junior").await;
+    let (gran, _) = ts.register("gran", "Gran").await;
+    ts.join(&member, &code, "joined").await;
+    ts.join(&gran, &code, "joined").await;
+
+    // Olive blocks Junior. Both bystanders carry a phone, so "not woken"
+    // is a real absence rather than an empty device list.
+    let blocked = ts
+        .put(
+            &owner,
+            &format!("/families/members/{member_id}/block"),
+            json!({}),
+        )
+        .await;
+    assert!(blocked.status().is_success(), "{}", blocked.status());
+    for (token, push_token) in [(&owner, "olive-device"), (&gran, "gran-device")] {
+        let response = ts
+            .post(
+                token,
+                "/devices",
+                json!({"platform": "ios", "push_token": push_token}),
+            )
+            .await;
+        assert_eq!(response.status(), 201, "registering a device");
+    }
+
+    let chat = ts.family_chat_id(&owner).await;
+    let asked = say(&ts, &member, chat, "@ai what is for dinner?").await;
+    let asked_id = asked["id"].as_i64().expect("the question has an id");
+    // The answer lands, quoting Junior.
+    wait_for_assistant_message(&ts, &gran, chat, asked_id).await;
+
+    // Gran is woken by the answer; Olive, who blocked the asker, is not.
+    // Junior's own question wakes neither (Olive blocked him, Gran is the
+    // one candidate) — so the answer's push is the one to wait for.
+    let woken = |ts: &TestServer| -> Vec<String> {
+        ts.push
+            .calls()
+            .iter()
+            .flat_map(|call| call.devices.iter().map(|device| device.push_token.clone()))
+            .collect()
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if woken(&ts).iter().any(|token| token == "gran-device") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the assistant's answer never woke Gran; pushed: {:?}",
+            woken(&ts)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // The absence is what this test is about, and one notify call per user
+    // means Olive's would land beside Gran's rather than with it: give it a
+    // full second to show up, so a green run means it never came.
+    for _ in 0..20 {
+        let tokens = woken(&ts);
+        assert!(
+            !tokens.iter().any(|token| token == "olive-device"),
+            "the blocker was woken by the assistant's answer to the member they blocked: {tokens:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// A family that has NAMED a language must still get an answer.
 ///
 /// `mention_reply` resolves the family's language before it creates the
@@ -4326,4 +4410,795 @@ async fn the_database_refuses_to_remove_or_rename_the_assistant() {
         Some(assistant),
         "still there, still named `assistant`"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Profile pictures of members (protocol.md, "Profile pictures of members")
+//
+// The fifth switch. What is pinned: that OFF changes nothing — a chat full of
+// faces sends none and the request is the one it always was; that ON sends
+// the faces of the members named in the transcript, AFTER every photograph,
+// under their own budget, named to the model image by image; that a member
+// who has left sends no face and is named as missing; that with no transcript
+// there are no faces; and that the private thread is untouched.
+
+/// A PNG with one distinguishing byte, so a face can be told from another
+/// face in the request — the pairing of pixels to name is the thing the
+/// protocol calls the worst thing to invent, and a test with identical bytes
+/// at every position cannot see it go wrong.
+fn marked_png(marker: u8) -> Vec<u8> {
+    let mut bytes = png_bytes();
+    bytes[12] = marker;
+    bytes
+}
+const OLIVE_FACE: u8 = 0xF1;
+const JUNIOR_FACE: u8 = 0xF2;
+
+/// The data URL a face travels as, for asserting pixels by position.
+fn face_part(marker: u8) -> String {
+    format!(
+        "data:image/png;base64,{}",
+        base64_standard(&marked_png(marker))
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Threads (protocol.md, "Threads"): the assistant's answer is a reply, written
+// by a path of its own, and it is in the mention's chain like any other.
+
+/// The mention roots a chain and the answer is its first reply; a mention
+/// that is itself a reply puts the answer in THAT chain, at the top.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_assistants_answer_is_in_the_mentions_chain() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_faces(&ts, false).await;
+
+    let mention = say(&ts, &member, family_chat, "@ai who said morning first?").await;
+    let mention_id = mention["id"].as_i64().expect("id");
+    mock.wait_for(TEXT_DEPLOYMENT).await;
+    let answer = wait_for_assistant_message(&ts, &member, family_chat, mention_id).await;
+    assert_eq!(answer["reply_to"]["message_id"], mention_id, "{answer}");
+    assert_eq!(
+        answer["thread_root_id"], mention_id,
+        "the mention roots it: {answer}"
+    );
+    let listed = messages_in(&ts, &owner, family_chat).await;
+    let root = listed
+        .iter()
+        .find(|m| m["id"] == mention_id)
+        .expect("the mention on the page");
+    assert_eq!(root["reply_count"], 1, "{root}");
+
+    // A mention that answers something: the chain is that something's.
+    let earlier = say(&ts, &owner, family_chat, "Dinner at 7?").await;
+    let earlier_id = earlier["id"].as_i64().expect("id");
+    let nested = ts
+        .post(
+            &member,
+            &format!("/chats/{family_chat}/messages"),
+            json!({
+                "client_msg_id": uuid::Uuid::new_v4().to_string(),
+                "body": "@ai is that late?",
+                "reply_to_message_id": earlier_id,
+            }),
+        )
+        .await;
+    assert_eq!(nested.status(), 201);
+    let nested: Value = nested.json().await.expect("JSON");
+    let nested_id = nested["message"]["id"].as_i64().expect("id");
+    assert_eq!(nested["message"]["thread_root_id"], earlier_id);
+    for _ in 0..100 {
+        if mock.to_deployment(TEXT_DEPLOYMENT).len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let second_answer = wait_for_assistant_message(&ts, &member, family_chat, nested_id).await;
+    assert_eq!(
+        second_answer["reply_to"]["message_id"], nested_id,
+        "{second_answer}"
+    );
+    assert_eq!(
+        second_answer["thread_root_id"], earlier_id,
+        "rooted at the top, not at the mention: {second_answer}"
+    );
+}
+
+/// A family whose owner has turned pictures, history and faces on, with two
+/// members who each uploaded a profile picture and each said something, so
+/// the transcript names them both. Returns `(owner, member, family_chat)`.
+async fn family_with_faces(ts: &TestServer, faces: bool) -> (String, String, i64) {
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    let response = ts
+        .patch(
+            &owner,
+            "/families/mine",
+            json!({"ai_vision": true, "ai_faces": faces}),
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        200,
+        "{}",
+        response.text().await.unwrap_or_default()
+    );
+    for (token, marker) in [(&owner, OLIVE_FACE), (&member, JUNIOR_FACE)] {
+        let put = ts
+            .put_bytes(token, "/me/avatar", "image/png", marked_png(marker))
+            .await;
+        assert_eq!(put.status(), 200, "uploading a profile picture");
+    }
+    let family_chat = ts.family_chat_id(&owner).await;
+    say(ts, &owner, family_chat, "morning all").await;
+    say(ts, &member, family_chat, "morning!").await;
+    (owner, member, family_chat)
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_faces_off_a_mention_over_a_chat_full_of_faces_sends_none() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (_owner, member, family_chat) = family_with_faces(&ts, false).await;
+
+    let mention = say(&ts, &member, family_chat, "@ai who said morning first?").await;
+    let mention_id = mention["id"].as_i64().expect("id");
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert!(
+        mock.to_deployment(VISION_DEPLOYMENT).is_empty(),
+        "no pixels, no vision deployment"
+    );
+    // The WHOLE body, against the request this family sent before the
+    // switch existed — not two substrings. A stray note, a reordered note,
+    // a changed model name: any of them fails this.
+    let expected = expected_history_mention(
+        &ts,
+        family_chat,
+        mention_id,
+        TEXT_DEPLOYMENT,
+        "@ai who said morning first?",
+        true,
+    )
+    .await;
+    assert_eq!(call.body, expected, "{}", call.raw);
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_faces_on_the_transcripts_members_travel_after_the_photos_and_are_named() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (_owner, member, family_chat) = family_with_faces(&ts, true).await;
+    // A photograph the member points the assistant at: it must come FIRST,
+    // and no face may displace it.
+    let photo = upload_marked_photo(&ts, &member, 0xB1).await;
+    say_with(&ts, &member, family_chat, "@ai who is this?", vec![photo]).await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (_, images) = user_turn_parts(&call);
+    assert_eq!(images.len(), 3, "one photo, then two faces: {}", call.raw);
+    assert!(images[0].starts_with("data:image/jpeg"), "the photo first");
+    // The PIXELS at each position are that member's — Junior spoke last, so
+    // Junior's face is image 2 and Olive's image 3 — and the note says so in
+    // one pinned sentence, not two substrings that any order would satisfy.
+    assert_eq!(
+        images[1],
+        face_part(JUNIOR_FACE),
+        "image 2 must be Junior's bytes"
+    );
+    assert_eq!(
+        images[2],
+        face_part(OLIVE_FACE),
+        "image 3 must be Olive's bytes"
+    );
+    let prompt = system_prompt_of(&call);
+    assert!(
+        prompt.contains(
+            "The last 2 images attached to this request are the PROFILE PICTURES of members of \
+             this family — not photographs anybody sent, but the pictures those members chose \
+             for themselves: image 2 is Junior's, image 3 is Olive's."
+        ),
+        "{prompt}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_member_who_left_sends_no_face_and_is_named_as_missing() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_faces(&ts, true).await;
+    // A third member with no picture at all, who also spoke.
+    let (_, code) = {
+        let mine: Value = ts
+            .get(&owner, "/families/mine")
+            .await
+            .json()
+            .await
+            .expect("JSON");
+        (
+            0,
+            mine["family"]["invite_code"]
+                .as_str()
+                .expect("code")
+                .to_string(),
+        )
+    };
+    let (gran, _) = ts.register("gran", "Gran").await;
+    ts.join(&gran, &code, "joined").await;
+    say(&ts, &gran, family_chat, "hello dears").await;
+    // Junior leaves: their lines stay in the transcript, their face may not go.
+    let left = ts.post(&member, "/families/leave", json!({})).await;
+    assert!(left.status().is_success(), "{}", left.status());
+
+    say(&ts, &owner, family_chat, "@ai who was here?").await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (_, images) = user_turn_parts(&call);
+    assert_eq!(
+        images.len(),
+        1,
+        "only Olive's face is still this family's: {}",
+        call.raw
+    );
+    assert_eq!(images[0], face_part(OLIVE_FACE));
+    // The NOT-shown list as one sentence — `call.raw` contains every name in
+    // the transcript anyway, so only the sentence proves the note. Gran spoke
+    // after Junior, so most-recently-active-first puts Gran first.
+    let prompt = system_prompt_of(&call);
+    assert!(prompt.contains("image 1 is Olive's"), "{prompt}");
+    assert!(
+        prompt.contains(
+            "You have NOT been shown the faces of Gran, Junior — no profile picture could be \
+             included for any of them."
+        ),
+        "{prompt}"
+    );
+}
+
+/// The clause the leaver test does not reach: `u.family_id = <the chat's
+/// family>`. A member who left and then STARTED ANOTHER FAMILY has a
+/// non-NULL family_id that is simply a different one — and one server hosts
+/// several families, so this is the clause that keeps a face from crossing
+/// between them.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_member_now_in_another_family_sends_no_face_here() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_faces(&ts, true).await;
+    let left = ts.post(&member, "/families/leave", json!({})).await;
+    assert!(left.status().is_success(), "{}", left.status());
+    // Junior's family_id is no longer NULL — it is somebody else's family.
+    ts.create_family(&member, "The Joneses").await;
+
+    say(&ts, &owner, family_chat, "@ai who was here?").await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (_, images) = user_turn_parts(&call);
+    assert_eq!(images.len(), 1, "{}", call.raw);
+    assert_eq!(images[0], face_part(OLIVE_FACE));
+    assert!(
+        !call.raw.contains(&face_part(JUNIOR_FACE)),
+        "Junior's face crossed families"
+    );
+    let prompt = system_prompt_of(&call);
+    assert!(
+        prompt.contains("You have NOT been shown the face of Junior"),
+        "{prompt}"
+    );
+}
+
+/// The headline product decision: faces are NOT counted against the four
+/// photographs. Four photos on the mention and two faces in the transcript
+/// send SIX images — a regression that shared the budget would send four
+/// and no face at all.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_face_budget_is_separate_from_the_photo_budget() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (_owner, member, family_chat) = family_with_faces(&ts, true).await;
+    let mut photos = Vec::new();
+    for marker in [0xC1, 0xC2, 0xC3, 0xC4] {
+        photos.push(upload_marked_photo(&ts, &member, marker).await);
+    }
+    say_with(&ts, &member, family_chat, "@ai which is best?", photos).await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (_, images) = user_turn_parts(&call);
+    assert_eq!(images.len(), 6, "four photos AND two faces: {}", call.raw);
+    for image in &images[..4] {
+        assert!(
+            image.starts_with("data:image/jpeg"),
+            "the photographs first"
+        );
+    }
+    assert_eq!(images[4], face_part(JUNIOR_FACE));
+    assert_eq!(images[5], face_part(OLIVE_FACE));
+    let prompt = system_prompt_of(&call);
+    assert!(
+        prompt.contains("image 5 is Junior's, image 6 is Olive's"),
+        "{prompt}"
+    );
+}
+
+/// The ceiling, and the naming beyond it: five members with pictures, the
+/// four most recently active travel, in that order, and the fifth is named
+/// among those not shown.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_fifth_face_is_dropped_and_named() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let on = ts
+        .patch(
+            &owner,
+            "/families/mine",
+            json!({"ai_vision": true, "ai_faces": true}),
+        )
+        .await;
+    assert_eq!(on.status(), 200);
+    let family_chat = ts.family_chat_id(&owner).await;
+    // Five members, each with a distinct face, speaking in a known order:
+    // Olive first (the oldest line), then Ann, Ben, Cat, Dan.
+    let put = ts
+        .put_bytes(&owner, "/me/avatar", "image/png", marked_png(0xE0))
+        .await;
+    assert_eq!(put.status(), 200);
+    say(&ts, &owner, family_chat, "hello").await;
+    let mut tokens = Vec::new();
+    for (index, (username, name)) in [
+        ("ann", "Ann"),
+        ("ben", "Ben"),
+        ("cat", "Cat"),
+        ("dan", "Dan"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (token, _) = ts.register(username, name).await;
+        ts.join(&token, &code, "joined").await;
+        let put = ts
+            .put_bytes(
+                &token,
+                "/me/avatar",
+                "image/png",
+                marked_png(0xE1 + index as u8),
+            )
+            .await;
+        assert_eq!(put.status(), 200);
+        say(&ts, &token, family_chat, &format!("hi from {name}")).await;
+        tokens.push(token);
+    }
+
+    say(&ts, &tokens[3], family_chat, "@ai who is everyone?").await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (_, images) = user_turn_parts(&call);
+    assert_eq!(images.len(), 4, "the ceiling: {}", call.raw);
+    // Most recently active first: Dan, Cat, Ben, Ann. Olive spoke first of
+    // all and is the one beyond the ceiling.
+    assert_eq!(images[0], face_part(0xE4), "Dan");
+    assert_eq!(images[1], face_part(0xE3), "Cat");
+    assert_eq!(images[2], face_part(0xE2), "Ben");
+    assert_eq!(images[3], face_part(0xE1), "Ann");
+    let prompt = system_prompt_of(&call);
+    assert!(
+        prompt.contains("image 1 is Dan's, image 2 is Cat's, image 3 is Ben's, image 4 is Ann's"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("You have NOT been shown the face of Olive"),
+        "the fifth is named: {prompt}"
+    );
+}
+
+/// The mentioning member's own face goes only if they, too, have a line in
+/// the transcript: the question itself is not part of it, and a name the
+/// model was not given gets no face — and is not listed as missing either.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_asker_with_no_line_in_the_transcript_sends_no_face() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _member, family_chat) = family_with_faces(&ts, true).await;
+    let mine: Value = ts
+        .get(&owner, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let code = mine["family"]["invite_code"]
+        .as_str()
+        .expect("code")
+        .to_string();
+    let (newcomer, _) = ts.register("newcomer", "Nadia").await;
+    ts.join(&newcomer, &code, "joined").await;
+    let put = ts
+        .put_bytes(&newcomer, "/me/avatar", "image/png", marked_png(0xD1))
+        .await;
+    assert_eq!(put.status(), 200);
+
+    // Nadia's FIRST message is the mention.
+    say(&ts, &newcomer, family_chat, "@ai who is here?").await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (_, images) = user_turn_parts(&call);
+    assert_eq!(images.len(), 2, "Junior and Olive only: {}", call.raw);
+    assert!(
+        !call.raw.contains(&face_part(0xD1)),
+        "the asker's face travelled without a line"
+    );
+    let prompt = system_prompt_of(&call);
+    assert!(
+        !prompt.contains("Nadia"),
+        "a name the model was never given is not listed either: {prompt}"
+    );
+}
+
+/// A scrubbed account: its lines survive under the "Deleted account"
+/// placeholder, its picture is gone, and it is neither sent nor NAMED —
+/// the model was never given a real name to attach a face to.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_scrubbed_account_is_neither_sent_nor_named() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_faces(&ts, true).await;
+    let deleted = ts
+        .post(&member, "/me/delete", json!({"password": "password123"}))
+        .await;
+    assert!(deleted.status().is_success(), "{}", deleted.status());
+
+    say(&ts, &owner, family_chat, "@ai who was here?").await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (_, images) = user_turn_parts(&call);
+    assert_eq!(images.len(), 1, "{}", call.raw);
+    assert_eq!(images[0], face_part(OLIVE_FACE));
+    let prompt = system_prompt_of(&call);
+    // The premise: the line survives, under the placeholder.
+    assert!(prompt.contains("Deleted account: morning!"), "{prompt}");
+    // The rule: no face, and no sentence about the face of nobody.
+    assert!(
+        !prompt.contains("NOT been shown"),
+        "a tombstone is not named as missing: {prompt}"
+    );
+    assert!(!prompt.contains("Deleted account's"), "{prompt}");
+}
+
+/// On a server with no `[ai.vision]` the switch is accepted and inert: the
+/// request is the text request it always was, to the byte.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_no_vision_deployment_faces_are_inert_and_the_request_unchanged() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_text_only(addr).await;
+    let (_owner, member, family_chat) = family_with_faces(&ts, true).await;
+
+    let mention = say(&ts, &member, family_chat, "@ai who said morning first?").await;
+    let mention_id = mention["id"].as_i64().expect("id");
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    let expected = expected_history_mention(
+        &ts,
+        family_chat,
+        mention_id,
+        TEXT_DEPLOYMENT,
+        "@ai who said morning first?",
+        false,
+    )
+    .await;
+    assert_eq!(call.body, expected, "{}", call.raw);
+}
+
+/// The PATCH rule for the fifth switch, exactly the third's: not the
+/// member's to change; `true` while `ai_vision` is off — or would be off
+/// after the same request — is `validation` with nothing written; on while
+/// vision is on is fine; vision off ALONE takes it down in the same write;
+/// and it does not come back when vision does.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn faces_can_only_be_on_while_pictures_are() {
+    let ts = server_with_assistant().await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+
+    let mine: Value = ts
+        .get(&member, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(mine["family"]["ai_faces"], false, "{mine}");
+    let me: Value = ts.get(&member, "/me").await.json().await.expect("JSON");
+    assert_eq!(me["family"]["ai_faces"], false, "{me}");
+
+    assert_error(
+        ts.patch(
+            &member,
+            "/families/mine",
+            json!({"ai_vision": true, "ai_faces": true}),
+        )
+        .await,
+        403,
+        "not_family_owner",
+    )
+    .await;
+    assert_error(
+        ts.patch(&owner, "/families/mine", json!({"ai_faces": true}))
+            .await,
+        400,
+        "validation",
+    )
+    .await;
+    // Nothing else in the same request is written either.
+    assert_error(
+        ts.patch(
+            &owner,
+            "/families/mine",
+            json!({"language": "ru", "ai_faces": true}),
+        )
+        .await,
+        400,
+        "validation",
+    )
+    .await;
+    let unchanged: Value = ts
+        .get(&owner, "/families/mine")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert!(unchanged["family"].get("language").is_none(), "{unchanged}");
+    assert_error(
+        ts.patch(
+            &owner,
+            "/families/mine",
+            json!({"ai_vision": false, "ai_faces": true}),
+        )
+        .await,
+        400,
+        "validation",
+    )
+    .await;
+
+    let on: Value = ts
+        .patch(
+            &owner,
+            "/families/mine",
+            json!({"ai_vision": true, "ai_faces": true}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(on["family"]["ai_faces"], true, "{on}");
+    let cascaded: Value = ts
+        .patch(&owner, "/families/mine", json!({"ai_vision": false}))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        cascaded["family"]["ai_faces"], false,
+        "vision off takes the faces down: {cascaded}"
+    );
+    let back: Value = ts
+        .patch(&owner, "/families/mine", json!({"ai_vision": true}))
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        back["family"]["ai_faces"], false,
+        "chosen again or not at all: {back}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_history_off_there_are_no_names_and_so_no_faces() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, member, family_chat) = family_with_faces(&ts, true).await;
+    let off = ts
+        .patch(&owner, "/families/mine", json!({"ai_history": false}))
+        .await;
+    assert_eq!(off.status(), 200);
+
+    say(&ts, &member, family_chat, "@ai hello").await;
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert!(mock.to_deployment(VISION_DEPLOYMENT).is_empty());
+    // The whole body: with no transcript there are no names, so this is
+    // the bare mention the third switch's own history-off test pins, to
+    // the byte.
+    let expected = json!({
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "system", "content": format!(
+                "{DEFAULT_SYSTEM_PROMPT}\n\n{}\n\n{MIRROR_LANGUAGE}",
+                family_connect::handlers_ai::MENTION_INSTRUCTION
+            )},
+            {"role": "user", "content": "@ai hello"},
+        ],
+        "model": TEXT_DEPLOYMENT,
+        "stream": true,
+        "stream_options": {"include_usage": true},
+        "tools": [family_connect::ai::draw_picture_tool()],
+    });
+    assert_eq!(call.body, expected, "{}", call.raw);
+}
+
+/// Faces on, and nobody named has a picture: the family that turned the
+/// switch on before anybody uploaded an avatar. No face travels, so there
+/// is no note either — not even the NOT-shown list — and the text request
+/// is the request it always was, byte for byte (protocol.md, "The route is
+/// the one pictures already decide").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_faces_on_but_nobody_pictured_the_text_request_is_unchanged() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&member, &code, "joined").await;
+    let on = ts
+        .patch(
+            &owner,
+            "/families/mine",
+            json!({"ai_vision": true, "ai_faces": true}),
+        )
+        .await;
+    assert_eq!(on.status(), 200);
+    let family_chat = ts.family_chat_id(&owner).await;
+    say(&ts, &owner, family_chat, "morning all").await;
+    say(&ts, &member, family_chat, "morning!").await;
+
+    let mention = say(&ts, &member, family_chat, "@ai who said morning first?").await;
+    let mention_id = mention["id"].as_i64().expect("id");
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert!(
+        mock.to_deployment(VISION_DEPLOYMENT).is_empty(),
+        "no face, no vision deployment"
+    );
+    let expected = expected_history_mention(
+        &ts,
+        family_chat,
+        mention_id,
+        TEXT_DEPLOYMENT,
+        "@ai who said morning first?",
+        true,
+    )
+    .await;
+    assert_eq!(call.body, expected, "{}", call.raw);
+}
+
+/// "Never the assistant's own row": once it has answered, its reply is a
+/// line in the window like any other, under a name the model was told —
+/// and it must get no face and must not be listed as faceless either.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_assistants_own_line_gets_no_face_and_is_not_named() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (_owner, member, family_chat) = family_with_faces(&ts, true).await;
+    // One answered mention, so the assistant has a line of its own in the
+    // window the next mention is read against.
+    let first = say(&ts, &member, family_chat, "@ai who said morning first?").await;
+    let first_id = first["id"].as_i64().expect("id");
+    mock.wait_for(VISION_DEPLOYMENT).await;
+    for _ in 0..50 {
+        let answered = messages_in(&ts, &member, family_chat)
+            .await
+            .into_iter()
+            .find(|message| message["id"].as_i64().is_some_and(|id| id > first_id))
+            .and_then(|message| message["body"].as_str().map(|body| !body.is_empty()))
+            .unwrap_or(false);
+        if answered {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    say(&ts, &member, family_chat, "@ai and then?").await;
+
+    let second = loop {
+        let calls = mock.to_deployment(VISION_DEPLOYMENT);
+        if calls.len() >= 2 {
+            break calls.into_iter().nth(1).expect("the second call");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let prompt = system_prompt_of(&second);
+    assert!(
+        prompt.contains("] Assistant: "),
+        "the assistant's own line is in the window: {prompt}"
+    );
+    let (_, images) = user_turn_parts(&second);
+    assert_eq!(
+        images.len(),
+        2,
+        "Junior's and Olive's, nothing for the assistant: {}",
+        second.raw
+    );
+    assert!(
+        !prompt.contains("NOT been shown"),
+        "the assistant is not listed as faceless: {prompt}"
+    );
+}
+
+/// A HEIC the member pointed at cannot go, and two faces do: the note about
+/// photographs must not say "NO picture here" above two attached pictures.
+/// It says no PHOTOGRAPH, points at the faces, and the faces' note follows.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn with_faces_attached_the_photos_note_says_no_photograph_not_no_picture() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (_owner, member, family_chat) = family_with_faces(&ts, true).await;
+    let heic = upload_raw_photo(&ts, &member, "image/heic", heic_bytes()).await;
+    say_with(&ts, &member, family_chat, "@ai what is this?", vec![heic]).await;
+
+    let call = mock.wait_for(VISION_DEPLOYMENT).await;
+    let (_, images) = user_turn_parts(&call);
+    assert_eq!(images.len(), 2, "the two faces, and no HEIC: {}", call.raw);
+    assert_eq!(images[0], face_part(JUNIOR_FACE));
+    assert_eq!(images[1], face_part(OLIVE_FACE));
+    let prompt = system_prompt_of(&call);
+    assert!(!prompt.contains("NO picture here"), "{prompt}");
+    assert!(
+        prompt.contains(
+            "The member pointed you at ONE photograph, but it could not be included, so you can \
+             see NO photograph here — the only images attached to this request are members' \
+             profile pictures, described below."
+        ),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("image 1 is Junior's, image 2 is Olive's"),
+        "{prompt}"
+    );
+    // In that order: the photographs' note first, the faces' after it.
+    let photos_at = prompt.find("NO photograph here").expect("the photos' note");
+    let faces_at = prompt.find("PROFILE PICTURES").expect("the faces' note");
+    assert!(photos_at < faces_at, "{prompt}");
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_private_thread_never_carries_a_face() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (_owner, member, _family_chat) = family_with_faces(&ts, true).await;
+    let ai_chat = chats(&ts, &member)
+        .await
+        .into_iter()
+        .find(|chat| chat["kind"] == "ai")
+        .and_then(|chat| chat["id"].as_i64())
+        .expect("the member's own assistant chat");
+
+    say(&ts, &member, ai_chat, "who am I?").await;
+
+    let call = mock.wait_for(TEXT_DEPLOYMENT).await;
+    assert_eq!(inline_images(&call), 0, "{}", call.raw);
+    assert!(!call.raw.contains("PROFILE PICTURE"), "{}", call.raw);
 }

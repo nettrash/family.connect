@@ -36,6 +36,7 @@ import me.nettrash.familyconnect.data.net.dto.ChatResponse
 import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.DeviceResponse
 import me.nettrash.familyconnect.data.net.dto.MessagePollStateDto
+import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NewPollDto
 import me.nettrash.familyconnect.data.net.dto.PollDto
 import me.nettrash.familyconnect.data.net.dto.PollOptionDto
@@ -211,6 +212,14 @@ class FakeSettingsRepository(initial: SettingsState = SettingsState()) : Setting
 
     override suspend fun setFamilyAiHistoryPhotos(enabled: Boolean) {
         _state.value = _state.value.copy(familyAiHistoryPhotos = enabled)
+    }
+
+    override suspend fun setFamilyAiGreeting(enabled: Boolean) {
+        _state.value = _state.value.copy(familyAiGreeting = enabled)
+    }
+
+    override suspend fun setGreetingsEnabled(enabled: Boolean) {
+        _state.value = _state.value.copy(greetingsEnabled = enabled)
     }
 
     override suspend fun setCallsEnabled(enabled: Boolean) {
@@ -476,6 +485,9 @@ class FakeChatApi : ChatApi {
     /** Every poll a REST send carried, in order (null for an ordinary message). */
     val postedPolls = mutableListOf<NewPollDto?>()
 
+    /** Every mention list a REST send carried, in order (null = names nobody). */
+    val postedMentions = mutableListOf<List<MentionDto>?>()
+
     override suspend fun postMessage(
         chatId: Long,
         clientMsgId: String,
@@ -483,11 +495,13 @@ class FakeChatApi : ChatApi {
         replyToMessageId: Long?,
         attachmentIds: List<Long>?,
         poll: NewPollDto?,
+        mentions: List<MentionDto>?,
     ): ApiResult<MessageResponse> {
         postedMessages += Triple(chatId, clientMsgId, body)
         postedReplyTargets += replyToMessageId
         postedAttachmentIds += attachmentIds
         postedPolls += poll
+        postedMentions += mentions
         return postMessageHandler(chatId, clientMsgId, body)
     }
 
@@ -592,6 +606,34 @@ class FakeChatApi : ChatApi {
         pollsCalls += 1
         return pollsHandler(chatId, afterSeq, limit)
     }
+
+    /** What `GET /chats/{id}/polls/open` answers; the open-polls screen's read. */
+    var openPollsResult: ApiResult<MessagesResponse> = ApiResult.Ok(MessagesResponse(emptyList()))
+
+    /** Every open-polls read, in order, so a test can assert it re-reads. */
+    val openPollsCalls = mutableListOf<Long>()
+
+    override suspend fun getOpenPolls(chatId: Long, limit: Int): ApiResult<MessagesResponse> {
+        openPollsCalls += chatId
+        return openPollsResult
+    }
+
+    /** What `GET /chats/{id}/messages/{mid}/thread` answers, per (messageId, afterId, limit). */
+    var threadHandler: (messageId: Long, afterId: Long?, limit: Int) -> ApiResult<MessagesResponse> =
+        { _, _, _ -> ApiResult.Ok(MessagesResponse(emptyList())) }
+
+    /** Every thread read, in order: (messageId, afterId). */
+    val threadCalls = mutableListOf<Pair<Long, Long?>>()
+
+    override suspend fun getThread(
+        chatId: Long,
+        messageId: Long,
+        afterId: Long?,
+        limit: Int,
+    ): ApiResult<MessagesResponse> {
+        threadCalls += messageId to afterId
+        return threadHandler(messageId, afterId, limit)
+    }
 }
 
 class FakeFamilyApi : FamilyApi {
@@ -648,6 +690,22 @@ class FakeFamilyApi : FamilyApi {
 
     override suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> {
         aiHistoryPhotosSet += enabled
+        return createResult
+    }
+
+    /** Every ai_greeting PATCH, in order. */
+    val aiGreetingSet = mutableListOf<Boolean>()
+
+    override suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiGreetingSet += enabled
+        return createResult
+    }
+
+    /** Every ai_faces PATCH, in order. */
+    val aiFacesSet = mutableListOf<Boolean>()
+
+    override suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> {
+        aiFacesSet += enabled
         return createResult
     }
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> = joinRequestsResult

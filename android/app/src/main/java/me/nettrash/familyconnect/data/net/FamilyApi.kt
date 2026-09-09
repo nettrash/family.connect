@@ -83,6 +83,27 @@ interface FamilyApi {
      * off — there is no transcript for it to widen.
      */
     suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: whether the assistant posts one unprompted good-morning
+     * message a day into the family chat (docs/protocol.md, "The daily
+     * greeting"). Family-wide, OFF by default, and — unlike
+     * [setAiHistoryPhotos] — bound to none of the other switches, so it can
+     * never be refused for the state of one of them.
+     *
+     * What it cannot promise is that a greeting arrives: that also needs the
+     * operator's half, `MeResponse.greetingsEnabled`.
+     */
+    suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse>
+
+    /**
+     * Owner-only: the fifth switch — whether a mention may be shown the
+     * profile pictures of the members named in its transcript
+     * (docs/protocol.md, "Profile pictures of members"). Family-wide, OFF by
+     * default, and only openable while `ai_vision` is on, exactly as
+     * [setAiHistoryPhotos] is.
+     */
+    suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse>
     suspend fun joinRequests(): ApiResult<JoinRequestsResponse>
     suspend fun approve(requestId: Long): ApiResult<ApproveResponse>
     suspend fun reject(requestId: Long): ApiResult<Unit>
@@ -187,6 +208,12 @@ class DefaultFamilyApi @Inject constructor(
 
     override suspend fun setAiHistoryPhotos(enabled: Boolean): ApiResult<FamilyResponse> =
         client.patch("/families/mine", PatchFamilyRequest.aiHistoryPhotos(enabled))
+
+    override suspend fun setAiGreeting(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiGreeting(enabled))
+
+    override suspend fun setAiFaces(enabled: Boolean): ApiResult<FamilyResponse> =
+        client.patch("/families/mine", PatchFamilyRequest.aiFaces(enabled))
 
     override suspend fun joinRequests(): ApiResult<JoinRequestsResponse> =
         client.get("/families/join-requests")

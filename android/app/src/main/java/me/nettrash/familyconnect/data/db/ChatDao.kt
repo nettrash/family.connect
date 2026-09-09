@@ -100,8 +100,13 @@ interface ChatDao {
     @Query("UPDATE chats SET unreadCount = unreadCount + 1 WHERE id = :chatId")
     suspend fun bumpUnread(chatId: Long)
 
-    @Query("UPDATE chats SET unreadCount = 0 WHERE id = :chatId")
+    /** Reading clears the count and, with it, the "@" mark — a filter over the same rows. */
+    @Query("UPDATE chats SET unreadCount = 0, mentionedUnread = 0 WHERE id = :chatId")
     suspend fun clearUnread(chatId: Long)
+
+    /** A live message naming this reader (docs/protocol.md, "Mentioning a member"). */
+    @Query("UPDATE chats SET mentionedUnread = 1 WHERE id = :chatId")
+    suspend fun markMentioned(chatId: Long)
 
     /**
      * Set a chat's count outright, for the one caller that has RECOUNTED
@@ -109,7 +114,11 @@ interface ChatDao {
      * person's devices leaves an arbitrary number behind, not zero
      * (ChatRepository.applyMyReadMarker).
      */
-    @Query("UPDATE chats SET unreadCount = :count WHERE id = :chatId")
+    @Query(
+        "UPDATE chats SET unreadCount = :count, " +
+            "mentionedUnread = CASE WHEN :count = 0 THEN 0 ELSE mentionedUnread END " +
+            "WHERE id = :chatId",
+    )
     suspend fun setUnreadCount(chatId: Long, count: Int)
 
     /**

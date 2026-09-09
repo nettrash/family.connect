@@ -427,6 +427,17 @@
     <string name="s_assistant_history_photos_needs_vision">Activa primero «El asistente puede mirar fotos»: el servidor rechaza esto mientras eso esté desactivado.</string>
     <string name="s_assistant_history_photos_needs_history">Mientras «El asistente ve el historial reciente» esté desactivado, esto no hace nada: el historial del chat no se envía, así que tampoco ninguna foto de él.</string>
     <string name="e_change_assistant_history_photos_failed">No se pudo cambiar ese ajuste</string>
+    <string name="s_assistant_greeting">Mensaje de buenos días</string>
+    <string name="s_assistant_greeting_explanation">El asistente publica cada día un breve mensaje de buenos días en el chat familiar, mencionando los signos del zodiaco de los cumpleaños que vuestra familia haya puesto. Nunca envía el nombre ni la fecha de nacimiento de nadie, solo los signos; no afirma nada sobre la fecha; y nunca hace sonar una notificación: simplemente está ahí la próxima vez que abráis el chat. Desactivado hasta que lo actives.</string>
+    <string name="s_assistant_greeting_no_server">No disponible aquí: este servidor no envía saludos diarios.</string>
+    <string name="e_change_assistant_greeting_failed">No se pudo cambiar ese ajuste</string>
+    <string name="s_assistant_faces">El asistente ve las caras de los miembros</string>
+    <string name="s_assistant_faces_explanation">Cuando alguien menciona al asistente en el chat familiar, las fotos de perfil de los miembros nombrados en el historial reciente de ese chat — hasta 4 — también se envían al modelo con la pregunta, para que sepa quién es quién. Son las fotos que los miembros eligieron para sí mismos, no fotos que alguien adjuntó; nunca un miembro que se haya ido, y nunca nadie de fuera de esta familia. La mayoría de las menciones envían entonces imágenes, lo que cuesta más. Necesita «El asistente puede mirar fotos» y «El asistente ve el historial reciente»; desactivado hasta que lo actives, y con esto desactivado nunca se envía ninguna cara.</string>
+    <string name="s_assistant_faces_needs_history">Mientras «El asistente ve el historial reciente» esté desactivado, esto no hace nada: no se envían nombres, así que tampoco caras.</string>
+    <string name="e_change_assistant_faces_failed">No se pudo cambiar ese ajuste</string>
+    <string name="s_open_polls">Encuestas abiertas</string>
+    <string name="s_open_polls_none">Las encuestas abiertas se quedan aquí hasta que se cierran. Ahora mismo no hay ninguna.</string>
+    <string name="e_try_again">Inténtalo de nuevo en un momento.</string>
     <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
     <string name="s_pick_a_chat">Elige un chat de la lista.</string>
     <plurals name="p_members">
@@ -476,4 +487,17 @@
     <string name="s_emoji_activities">Actividades</string>
     <string name="s_emoji_travel">Viajes y lugares</string>
     <string name="s_emoji_objects">Objetos y símbolos</string>
+    <string name="s_thread">Hilo</string>
+    <string name="s_view_thread">Ver hilo</string>
+    <string name="s_reply_in_thread">Responder en el hilo</string>
+    <string name="e_load_thread_failed">No se pudo cargar el hilo.</string>
+    <string name="s_thread_partial">No se pudo cargar el hilo completo.</string>
+    <string name="s_open_thread">Abre el hilo</string>
+    <plurals name="s_n_replies">
+        <item quantity="one">%1$d respuesta</item>
+        <item quantity="many">%1$d respuestas</item>
+        <item quantity="other">%1$d respuestas</item>
+    </plurals>
+    <string name="s_mentions_you">Te menciona</string>
+    <string name="s_mention_member">Mencionar a %1$s</string>
 </resources>

@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 use family_connect::config::Config;
 use family_connect::state::AppState;
 use family_connect::{
-    app, calls, db, handlers_attachment, handlers_auth, handlers_chat, migrate, push,
+    app, calls, db, greetings, handlers_attachment, handlers_auth, handlers_chat, migrate, push,
 };
 
 #[derive(Parser, Debug)]
@@ -132,6 +132,14 @@ async fn main() -> Result<()> {
     // nobody is connected to any more (docs/protocol.md, "Voice calls").
     // A 1 s tick, cancelled on shutdown.
     calls::spawn_sweeper(state.clone());
+
+    // The daily greeting (docs/protocol.md, "The daily greeting"). Its own
+    // ticker rather than a fourth job in the hourly loop above: that loop is
+    // three deletes on one clock, and this is a WRITE on a wall-clock time an
+    // operator chose to the minute. Returns immediately, having spawned
+    // nothing, on a server with greetings off — which is every server that
+    // has not been told otherwise.
+    greetings::spawn_sweeper(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&state.cfg.server.bind)
         .await

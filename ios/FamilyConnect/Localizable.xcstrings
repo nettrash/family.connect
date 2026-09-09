@@ -1910,6 +1910,237 @@
         }
       }
     },
+    "%lld replies" : {
+      "comment" : "Under a message somebody answered; %lld is how many replies its thread holds. Tapping opens the thread.",
+      "localizations" : {
+        "de" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Antwort"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Antworten"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld reply"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld replies"
+                }
+              }
+            }
+          }
+        },
+        "es" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld respuesta"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld respuestas"
+                }
+              }
+            }
+          }
+        },
+        "fr" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld réponse"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld réponses"
+                }
+              }
+            }
+          }
+        },
+        "ja" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld件の返信"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld ответа"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld ответов"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld ответ"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld ответа"
+                }
+              }
+            }
+          }
+        },
+        "sr" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld одговора"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld одговор"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld одговора"
+                }
+              }
+            }
+          }
+        },
+        "sr-Latn" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld odgovora"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld odgovor"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld odgovora"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld 条回复"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld to answer" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld zu beantworten"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld por responder"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld à répondre"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未回答 %lld 件"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld без ответа"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld без одговора"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld bez odgovora"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个待回答"
+          }
+        }
+      }
+    },
     "%lld unread" : {
       "comment" : "VoiceOver label of the chat list's unread badge; the number is the chat's unread count.",
       "localizations" : {
@@ -7784,6 +8015,58 @@
         }
       }
     },
+    "Couldn't load the polls" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Umfragen konnten nicht geladen werden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudieron cargar las encuestas"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de charger les sondages"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "投票を読み込めませんでした"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось загрузить опросы"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Није успело учитавање анкета"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nije uspelo učitavanje anketa"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载投票"
+          }
+        }
+      }
+    },
     "Couldn't load the reports. Pull to refresh." : {
       "comment" : "Error when the owner's report list failed to load",
       "localizations" : {
@@ -7833,6 +8116,124 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法加载举报，请下拉刷新。"
+          }
+        }
+      }
+    },
+    "Couldn't load the thread" : {
+      "comment" : "Empty-state title on the thread sheet when the read failed and nothing is cached.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Thread konnte nicht geladen werden"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't load the thread"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo cargar el hilo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de charger le fil"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スレッドを読み込めませんでした"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось загрузить ветку"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нит није могла да се учита"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nit nije mogla da se učita"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载话题"
+          }
+        }
+      }
+    },
+    "Couldn't load the whole thread." : {
+      "comment" : "Footnote under a thread drawn from the cache when the server read failed: some replies may be missing.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Thread konnte nicht vollständig geladen werden."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't load the whole thread."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo cargar el hilo completo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de charger tout le fil."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スレッド全体を読み込めませんでした。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось загрузить всю ветку."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Цела нит није могла да се учита."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cela nit nije mogla da se učita."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载完整话题。"
           }
         }
       }
@@ -9377,6 +9778,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "当前密码"
+          }
+        }
+      }
+    },
+    "Daily greeting" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Täglicher Gruß"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saludo diario"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Salutation quotidienne"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "毎日のあいさつ"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ежедневное приветствие"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Дневни поздрав"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dnevni pozdrav"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每日问候"
           }
         }
       }
@@ -11621,6 +12074,58 @@
         }
       }
     },
+    "Good morning message" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guten-Morgen-Nachricht"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mensaje de buenos días"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message du matin"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "おはようのメッセージ"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Утреннее сообщение"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Јутарња порука"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jutarnja poruka"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "早安消息"
+          }
+        }
+      }
+    },
     "Hang Up" : {
       "localizations" : {
         "de" : {
@@ -13857,6 +14362,58 @@
         }
       }
     },
+    "Member faces" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gesichter der Mitglieder"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Caras de los miembros"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Visages des membres"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メンバーの顔"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Лица участников"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Лица чланова"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lica članova"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "成员的面孔"
+          }
+        }
+      }
+    },
     "Member limit" : {
       "comment" : "Section header for the family member cap",
       "localizations" : {
@@ -14067,6 +14624,124 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "成员、邀请和私聊"
+          }
+        }
+      }
+    },
+    "Mention %@" : {
+      "comment" : "Accessibility label of a name in the strip above the composer; %@ is the member's name. Tapping it puts @Name into the message.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ erwähnen"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mention %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mencionar a %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mentionner %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@をメンション"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Упомянуть %@"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Помени %@"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pomeni %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提及%@"
+          }
+        }
+      }
+    },
+    "Mentions you" : {
+      "comment" : "Accessibility label of the \"@\" mark on a chat row: an unread message there names this reader.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erwähnt dich"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mentions you"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Te menciona"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Te mentionne"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "あなたへのメンション"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Упоминает тебя"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Помиње те"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pominje te"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提到了你"
           }
         }
       }
@@ -15024,6 +15699,58 @@
         }
       }
     },
+    "New Password" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Neues Passwort"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nueva contraseña"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nouveau mot de passe"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新しいパスワード"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новый пароль"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нова лозинка"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nova lozinka"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新密码"
+          }
+        }
+      }
+    },
     "New password for %@" : {
       "comment" : "A heading for the form section that asks the user to enter a new password for a member.",
       "isCommentAutoGenerated" : true,
@@ -15767,6 +16494,58 @@
         }
       }
     },
+    "Not available here: this server doesn't post daily greetings." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hier nicht verfügbar: Dieser Server verschickt keine täglichen Grüße."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No disponible aquí: este servidor no envía saludos diarios."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indisponible ici : ce serveur ne publie pas de salutations quotidiennes."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ここでは使えません。このサーバーは毎日のあいさつを送りません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Здесь недоступно: этот сервер не отправляет ежедневные приветствия."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Овде није доступно: овај сервер не шаље дневне поздраве."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovde nije dostupno: ovaj server ne šalje dnevne pozdrave."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此处不可用：这个服务器不发送每日问候。"
+          }
+        }
+      }
+    },
     "Not set" : {
       "localizations" : {
         "de" : {
@@ -15929,6 +16708,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "来自 %@ 的便签：%@"
+          }
+        }
+      }
+    },
+    "Nothing to decide" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nichts zu entscheiden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nada que decidir"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rien à décider"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "決めることはありません"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Решать нечего"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нема шта да се одлучи"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nema šta da se odluči"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有待决定的事"
           }
         }
       }
@@ -16459,6 +17290,110 @@
         }
       }
     },
+    "Open polls" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Offene Umfragen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Encuestas abiertas"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sondages en cours"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "進行中の投票"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открытые опросы"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отворене анкете"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otvorene ankete"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "进行中的投票"
+          }
+        }
+      }
+    },
+    "Open polls stay here until they're closed. There are none right now." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Offene Umfragen bleiben hier, bis sie geschlossen werden. Im Moment gibt es keine."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Las encuestas abiertas se quedan aquí hasta que se cierran. Ahora mismo no hay ninguna."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les sondages en cours restent ici jusqu’à leur clôture. Il n’y en a aucun pour l’instant."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "進行中の投票は、閉じられるまでここに残ります。今はひとつもありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открытые опросы остаются здесь, пока их не закроют. Сейчас их нет."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отворене анкете остају овде док се не затворе. Тренутно их нема."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otvorene ankete ostaju ovde dok se ne zatvore. Trenutno ih nema."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "进行中的投票会留在这里，直到被关闭。目前一个也没有。"
+          }
+        }
+      }
+    },
     "Opens the link" : {
       "comment" : "A hint for a link preview card.",
       "isCommentAutoGenerated" : true,
@@ -16509,6 +17444,65 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开链接"
+          }
+        }
+      }
+    },
+    "Opens the thread" : {
+      "comment" : "Accessibility hint on the \"N replies\" affordance under a message.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Öffnet den Thread"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opens the thread"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abre el hilo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvre le fil"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スレッドを開きます"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает ветку"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отвара нит"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otvara nit"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开话题"
           }
         }
       }
@@ -18945,6 +19939,65 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "回复"
+          }
+        }
+      }
+    },
+    "Reply in thread" : {
+      "comment" : "Placeholder of the composer at the bottom of a thread; what is sent answers the thread's first message.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Im Thread antworten"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reply in thread"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Responder en el hilo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Répondre dans le fil"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スレッドに返信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ответить в ветке"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Одговори у нити"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odgovori u niti"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在话题中回复"
           }
         }
       }
@@ -25170,6 +26223,65 @@
         }
       }
     },
+    "Thread" : {
+      "comment" : "Title of the sheet that shows one chain of replies.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thread"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thread"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hilo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fil"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スレッド"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ветка"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нит"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nit"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "话题"
+          }
+        }
+      }
+    },
     "Today" : {
       "comment" : "A label for a day in the past.",
       "isCommentAutoGenerated" : true,
@@ -25380,6 +26492,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "再试一次"
+          }
+        }
+      }
+    },
+    "Try again in a moment." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Versuch es gleich noch einmal."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inténtalo de nuevo en un momento."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Réessayez dans un instant."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "少ししてからもう一度お試しください。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Попробуй ещё раз через минуту."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Покушај поново за тренутак."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokušaj ponovo za trenutak."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请稍后再试。"
           }
         }
       }
@@ -26698,6 +27862,65 @@
         }
       }
     },
+    "View thread" : {
+      "comment" : "Menu row on a reply or on an answered message: opens the thread it belongs to.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thread anzeigen"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View thread"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ver hilo"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voir le fil"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スレッドを表示"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать ветку"
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Прикажи нит"
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prikaži nit"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看话题"
+          }
+        }
+      }
+    },
     "Voice call" : {
       "localizations" : {
         "de" : {
@@ -27172,6 +28395,58 @@
         }
       }
     },
+    "While Sees recent history is off this does nothing: no names are sent, so no faces are either." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Solange „Sieht den letzten Verlauf“ aus ist, bewirkt das nichts: Es werden keine Namen gesendet, also auch keine Gesichter."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mientras «Ve el historial reciente» esté desactivado, esto no hace nada: no se envían nombres, así que tampoco caras."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tant que « Voit l’historique récent » est désactivé, ceci ne fait rien : aucun nom n’est envoyé, donc aucun visage non plus."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "「最近の履歴を見る」がオフの間、これは何もしません。名前が送られないので、顔も送られません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пока «Видит недавнюю историю» выключено, это ничего не делает: имена не отправляются, а значит и лица тоже."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Док је „Види недавну историју“ искључено, ово ништа не ради: имена се не шаљу, па ни лица."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dok je „Vidi nedavnu istoriju“ isključeno, ovo ništa ne radi: imena se ne šalju, pa ni lica."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“查看最近的历史记录”关闭时，此项不起作用：不发送姓名，也就不发送面孔。"
+          }
+        }
+      }
+    },
     "While Sees recent history is off this does nothing: the chat's history isn't sent, so no photo from it is either." : {
       "localizations" : {
         "de" : {
@@ -27594,6 +28869,58 @@
         }
       }
     },
+    "With this on, the assistant posts one short good-morning message into the family chat each day, mentioning the star signs of the birthdays your family has set. It never sends anyone's name or birth date, only the signs; it makes no claims about the date; and it never sounds a notification — it is simply there when you next open the chat." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn das an ist, schreibt der Assistent jeden Tag eine kurze Guten-Morgen-Nachricht in den Familienchat und nennt darin die Sternzeichen der Geburtstage, die eure Familie eingetragen hat. Er sendet niemals einen Namen oder ein Geburtsdatum, nur die Zeichen; er behauptet nichts über das Datum; und er löst nie eine Benachrichtigung aus — die Nachricht ist einfach da, wenn ihr den Chat das nächste Mal öffnet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Con esto activado, el asistente publica cada día un breve mensaje de buenos días en el chat familiar, mencionando los signos del zodiaco de los cumpleaños que vuestra familia haya puesto. Nunca envía el nombre ni la fecha de nacimiento de nadie, solo los signos; no afirma nada sobre la fecha; y nunca hace sonar una notificación: simplemente está ahí la próxima vez que abráis el chat."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avec ceci activé, l’assistant publie chaque jour un court message du matin dans la discussion familiale, en mentionnant les signes astrologiques des anniversaires que votre famille a renseignés. Il n’envoie jamais le nom ni la date de naissance de quiconque, seulement les signes ; il n’avance rien sur la date ; et il ne déclenche jamais de notification — le message est simplement là à votre prochaine ouverture de la discussion."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これをオンにすると、アシスタントが毎日、家族のチャットに短いおはようのメッセージを投稿し、家族が登録した誕生日の星座に触れます。名前や生年月日を送ることは決してなく、星座だけです。日付について何かを主張することもありません。通知が鳴ることもなく、次にチャットを開いたときにそこにあるだけです。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда это включено, ассистент каждый день пишет в семейный чат короткое утреннее сообщение и упоминает знаки зодиака по тем дням рождения, которые указала твоя семья. Он никогда не отправляет ничьё имя или дату рождения — только знаки; он ничего не утверждает о самой дате; и он никогда не присылает уведомление — сообщение просто ждёт тебя, когда ты в следующий раз откроешь чат."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Када је ово укључено, асистент сваког дана пише кратку јутарњу поруку у породични чет и помиње хороскопске знакове рођендана које је твоја породица унела. Никада не шаље ничије име ни датум рођења, само знакове; не тврди ништа о датуму; и никада не оглашава обавештење — порука је једноставно ту када следећи пут отвориш чет."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kada je ovo uključeno, asistent svakog dana piše kratku jutarnju poruku u porodični čet i pominje horoskopske znakove rođendana koje je tvoja porodica unela. Nikada ne šalje ničije ime ni datum rođenja, samo znakove; ne tvrdi ništa o datumu; i nikada ne oglašava obaveštenje — poruka je jednostavno tu kada sledeći put otvoriš čet."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开后，助手每天都会在家庭聊天中发一条简短的早安消息，并提到家人已填写的生日对应的星座。它从不发送任何人的姓名或出生日期，只发送星座；它不会对日期作出任何断言；它也从不发出通知——下次你打开聊天时它就在那里。"
+          }
+        }
+      }
+    },
     "With this on, whenever anyone mentions %@ in the family chat, the most recent photos in that chat — up to %lld, from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on." : {
       "localizations" : {
         "de" : {
@@ -27642,6 +28969,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开后，每当有人在家庭聊天里提到 %@，这个聊天里最近的照片——最多 %lld 张，来自任何人，没有指给助手看的——也会在消息本身或它所回复的消息上的照片之后，发送给你的服务器所用的模型。此后几乎每次提到它都会发送图片，费用更高。默认关闭，除非你打开它。"
+          }
+        }
+      }
+    },
+    "With this on, whenever anyone mentions %@ in the family chat, the profile pictures of the members named in that chat's recent history — up to %lld — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn das an ist, gehen bei jeder Erwähnung von %@ im Familienchat auch die Profilbilder der Mitglieder, die im jüngsten Verlauf dieses Chats genannt werden — bis zu %lld — an das Modell, das dein Server verwendet, damit es erkennt, wer wer ist. Es sind die Bilder, die die Mitglieder für sich selbst gewählt haben, keine angehängten Fotos; nie ein Mitglied, das gegangen ist, und nie jemand außerhalb dieser Familie. Die meisten Erwähnungen senden dann Bilder, was mehr kostet. Es ist aus, bis du es einschaltest; solange es aus ist, wird nie ein Gesicht gesendet."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Con esto activado, cada vez que alguien mencione a %@ en el chat familiar, las fotos de perfil de los miembros nombrados en el historial reciente de ese chat — hasta %lld — también van al modelo que usa tu servidor, para que sepa quién es quién. Son las fotos que los miembros eligieron para sí mismos, no fotos que alguien adjuntó; nunca un miembro que se haya ido, y nunca nadie de fuera de esta familia. La mayoría de las menciones envían entonces imágenes, lo que cuesta más. Está desactivado hasta que lo actives; con esto desactivado, nunca se envía ninguna cara."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avec ceci activé, chaque fois que quelqu’un mentionne %@ dans la discussion familiale, les photos de profil des membres cités dans l’historique récent de cette discussion — jusqu’à %lld — sont aussi envoyées au modèle que ton serveur utilise, pour qu’il sache qui est qui. Ce sont les images que les membres ont choisies pour eux-mêmes, pas des photos jointes ; jamais un membre parti, et jamais quelqu’un d’extérieur à cette famille. La plupart des mentions envoient alors des images, ce qui coûte plus. C’est désactivé tant que tu ne l’actives pas ; tant que c’est désactivé, aucun visage n’est jamais envoyé."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "これをオンにすると、家族のチャットで誰かが %@ に言及するたびに、そのチャットの最近の履歴に名前が出ているメンバーのプロフィール写真（最大 %lld 枚）も、サーバーが使うモデルに送られ、誰が誰かを見分けられるようにします。送られるのはメンバー自身が選んだ画像で、誰かが添付した写真ではありません。退会したメンバーやこの家族以外の人の画像は決して送られません。ほとんどの言及で画像が送られるため、費用が増えます。オンにするまでは無効で、オフの間は顔が送られることはありません。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Когда это включено, при каждом упоминании %@ в семейном чате модели, которую использует твой сервер, уходят и фото профиля участников, названных в недавней истории этого чата — до %lld, — чтобы ассистент понимал, кто есть кто. Это картинки, которые участники выбрали для себя сами, а не прикреплённые фото; никогда не уходит фото того, кто вышел из семьи, и никого извне. Почти каждое упоминание тогда отправляет картинки, а это стоит дороже. Выключено, пока ты не включишь; пока выключено — ни одно лицо не отправляется."
+          }
+        },
+        "sr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Када је ово укључено, при сваком помињању %@ у породичном чету моделу који твој сервер користи иду и слике профила чланова који се помињу у недавној историји тог чета — до %lld — да би знао ко је ко. То су слике које су чланови сами изабрали, а не приложене фотографије; никада члан који је отишао и никада нико ван ове породице. Већина помињања тада шаље слике, што кошта више. Искључено док га не укључиш; док је искључено, ниједно лице се не шаље."
+          }
+        },
+        "sr-Latn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kada je ovo uključeno, pri svakom pominjanju %@ u porodičnom četu modelu koji tvoj server koristi idu i slike profila članova koji se pominju u nedavnoj istoriji tog četa — do %lld — da bi znao ko je ko. To su slike koje su članovi sami izabrali, a ne priložene fotografije; nikada član koji je otišao i nikada niko van ove porodice. Većina pominjanja tada šalje slike, što košta više. Isključeno dok ga ne uključiš; dok je isključeno, nijedno lice se ne šalje."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开后，每当有人在家庭聊天中提到 %@，该聊天近期记录中提到的成员的头像（最多 %lld 张）也会发送给你的服务器所使用的模型，以便它分清谁是谁。这些是成员为自己选择的图片，而不是任何人附加的照片；从不发送已离开成员或本家庭之外任何人的头像。此后大多数提及都会发送图片，费用更高。除非你打开，否则处于关闭状态；关闭时绝不会发送任何面孔。"
           }
         }
       }

@@ -1548,3 +1548,215 @@ async fn an_offline_android_member_is_rung_over_fcm_data_only() {
         "a call push is data only — no notification block — so the app rings"
     );
 }
+
+/// A mention is the message's own push under a different title for the
+/// member named, and the ordinary title for everybody else — never a
+/// second push (protocol.md, "Mentioning a member").
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_mention_changes_the_title_for_the_member_named_and_nobody_else() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (junior, junior_id) = ts.register("junior", "Junior").await;
+    let (gran, _) = ts.register("gran", "Gran").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&junior, &code, "joined").await;
+    ts.join(&gran, &code, "joined").await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    register_device(&ts, &junior, "ios", "ios-token-junior").await;
+    register_device(&ts, &gran, "ios", "ios-token-gran").await;
+
+    let response = ts
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "@Junior dinner at 7?",
+                "mentions": [{"user_id": junior_id, "name": "Junior"}],
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    let message: Value = response.json().await.expect("JSON");
+    let message_id = message["message"]["id"].as_i64().expect("id");
+
+    let requests = mock
+        .wait_for(2, |path| path.starts_with("/3/device/"))
+        .await;
+    let to = |token: &str| {
+        requests
+            .iter()
+            .find(|request| request.path == format!("/3/device/{token}"))
+            .unwrap_or_else(|| panic!("no push to {token}"))
+            .body
+            .clone()
+    };
+    // The member named: the whole body, byte for byte, with the one
+    // different title.
+    assert_eq!(
+        to("ios-token-junior"),
+        json!({
+            "aps": {
+                "alert": {"title": "The Smiths — Olive mentioned you", "body": "@Junior dinner at 7?"},
+                "sound": "default",
+                "badge": 1,
+                "thread-id": format!("chat-{chat_id}"),
+            },
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "kind": "message",
+        })
+    );
+    // Everybody else: the ordinary title.
+    assert_eq!(
+        to("ios-token-gran")["aps"]["alert"]["title"],
+        "The Smiths — Olive"
+    );
+    assert_eq!(
+        requests.len(),
+        2,
+        "one push each, never a second for the mention"
+    );
+}
+
+/// The second block gate is THE ASSISTANT'S ALONE.
+///
+/// A block is about one member's own words (protocol.md, "Push
+/// notifications"): dropping every reply that quotes a blocked member
+/// would silence pushes written by people the blocker has NOT blocked, and
+/// hand the blocked member a way to do it on purpose — post something
+/// reply-worthy, wait for a third member to quote it, and the blocker's
+/// phone stays dark. With #61a it costs more than an alert: the reply that
+/// quotes them may be the one that NAMES the blocker.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_third_members_reply_quoting_a_blocked_member_still_wakes_the_blocker() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, owner_id) = ts.register("owner", "Olive").await;
+    let (junior, junior_id) = ts.register("junior", "Junior").await;
+    let (gran, _) = ts.register("gran", "Gran").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&junior, &code, "joined").await;
+    ts.join(&gran, &code, "joined").await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    register_device(&ts, &owner, "ios", "ios-token-olive").await;
+
+    // Olive blocks Junior.
+    let blocked = ts
+        .put(&owner, &format!("/families/members/{junior_id}/block"), json!({}))
+        .await;
+    assert!(blocked.status().is_success(), "{}", blocked.status());
+
+    // Junior posts; Olive is not woken for it — the FIRST gate, unchanged.
+    let juniors = ts
+        .post(
+            &junior,
+            &format!("/chats/{chat_id}/messages"),
+            json!({"client_msg_id": Uuid::new_v4().to_string(), "body": "Pizza?"}),
+        )
+        .await;
+    assert_eq!(juniors.status(), 201);
+    let juniors: Value = juniors.json().await.expect("JSON");
+    let quoted_id = juniors["message"]["id"].as_i64().expect("id");
+
+    // Gran — whom Olive has not blocked — quotes Junior AND names Olive.
+    let grans = ts
+        .post(
+            &gran,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "@Olive are you in?",
+                "reply_to_message_id": quoted_id,
+                "mentions": [{"user_id": owner_id, "name": "Olive"}],
+            }),
+        )
+        .await;
+    assert_eq!(grans.status(), 201, "{:?}", grans.text().await);
+
+    // Olive's phone rings, with the title the mention earns.
+    let requests = mock
+        .wait_for(1, |path| path == "/3/device/ios-token-olive")
+        .await;
+    assert_eq!(
+        requests[0].body["aps"]["alert"]["title"],
+        "The Smiths — Gran mentioned you",
+        "a reply quoting a blocked member is still Gran's own words"
+    );
+}
+
+/// The block gate runs first, unchanged: a member is not woken by the
+/// mention of somebody they have blocked.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_member_is_not_woken_by_a_mention_from_somebody_they_blocked() {
+    let (mock, mock_addr) = spawn_mock_push().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_file = write_test_apns_key(dir.path());
+    let ts = spawn_server_with_push(apns_config(mock_addr, key_file)).await;
+
+    let (owner, owner_id) = ts.register("owner", "Olive").await;
+    let (junior, junior_id) = ts.register("junior", "Junior").await;
+    let (gran, _) = ts.register("gran", "Gran").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    ts.join(&junior, &code, "joined").await;
+    ts.join(&gran, &code, "joined").await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    register_device(&ts, &junior, "ios", "ios-token-junior").await;
+    register_device(&ts, &gran, "ios", "ios-token-gran").await;
+    let blocked = ts
+        .put(
+            &junior,
+            &format!("/families/members/{owner_id}/block"),
+            json!({}),
+        )
+        .await;
+    assert!(blocked.status().is_success());
+
+    let response = ts
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/messages"),
+            json!({
+                "client_msg_id": Uuid::new_v4().to_string(),
+                "body": "@Junior dinner at 7?",
+                "mentions": [{"user_id": junior_id, "name": "Junior"}],
+            }),
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        201,
+        "accepted whole: a refusal would tell the sender"
+    );
+
+    let requests = mock
+        .wait_for(1, |path| path.starts_with("/3/device/"))
+        .await;
+    assert_eq!(requests[0].path, "/3/device/ios-token-gran");
+    assert_eq!(
+        requests[0].body["aps"]["alert"]["title"],
+        "The Smiths — Olive"
+    );
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        mock.requests()
+            .iter()
+            .filter(|request| request.path.starts_with("/3/device/"))
+            .count(),
+        1,
+        "the blocker's phone stays dark"
+    );
+}

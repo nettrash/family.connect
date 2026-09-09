@@ -420,6 +420,17 @@
     <string name="s_assistant_history_photos_needs_vision">Прво укључите „Асистент сме да гледа фотографије“ — док је то искључено, сервер ово одбија.</string>
     <string name="s_assistant_history_photos_needs_history">Док је „Асистент види недавну историју“ искључено, ово не ради ништа: историја чета се не шаље, па ни једна фотографија из ње.</string>
     <string name="e_change_assistant_history_photos_failed">Није успела промена подешавања</string>
+    <string name="s_assistant_greeting">Јутарња порука</string>
+    <string name="s_assistant_greeting_explanation">Асистент сваког дана пише кратку јутарњу поруку у породични чет и помиње хороскопске знакове рођендана које је твоја породица унела. Никада не шаље ничије име ни датум рођења, само знакове; не тврди ништа о датуму; и никада не оглашава обавештење — порука је једноставно ту када следећи пут отвориш чет. Искључено док га не укључиш.</string>
+    <string name="s_assistant_greeting_no_server">Овде није доступно: овај сервер не шаље дневне поздраве.</string>
+    <string name="e_change_assistant_greeting_failed">Није успела промена подешавања</string>
+    <string name="s_assistant_faces">Асистент види лица чланова</string>
+    <string name="s_assistant_faces_explanation">Када неко помене асистента у породичном чету, уз питање моделу иду и слике профила чланова који се помињу у недавној историји тог чета — до 4 — да би знао ко је ко. То су слике које су чланови сами изабрали, а не приложене фотографије; никада члан који је отишао и никада нико ван ове породице. Већина помињања тада шаље слике, што кошта више. Захтева „Асистент сме да гледа фотографије“ и „Асистент види недавну историју“; искључено док га не укључите, а док је искључено ниједно лице се не шаље.</string>
+    <string name="s_assistant_faces_needs_history">Док је „Асистент види недавну историју“ искључено, ово ништа не ради: имена се не шаљу, па ни лица.</string>
+    <string name="e_change_assistant_faces_failed">Није успела промена подешавања</string>
+    <string name="s_open_polls">Отворене анкете</string>
+    <string name="s_open_polls_none">Отворене анкете остају овде док се не затворе. Тренутно их нема.</string>
+    <string name="e_try_again">Покушај поново за тренутак.</string>
     <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
     <string name="s_pick_a_chat">Изаберите разговор са списка.</string>
     <plurals name="p_members">
@@ -475,4 +486,17 @@
     <string name="s_emoji_activities">Активности</string>
     <string name="s_emoji_travel">Путовања и места</string>
     <string name="s_emoji_objects">Предмети и симболи</string>
+    <string name="s_thread">Нит</string>
+    <string name="s_view_thread">Прикажи нит</string>
+    <string name="s_reply_in_thread">Одговори у нити</string>
+    <string name="e_load_thread_failed">Нит није могла да се учита.</string>
+    <string name="s_thread_partial">Цела нит није могла да се учита.</string>
+    <string name="s_open_thread">Отвара нит</string>
+    <plurals name="s_n_replies">
+        <item quantity="one">%1$d одговор</item>
+        <item quantity="few">%1$d одговора</item>
+        <item quantity="other">%1$d одговора</item>
+    </plurals>
+    <string name="s_mentions_you">Помиње те</string>
+    <string name="s_mention_member">Помени %1$s</string>
 </resources>

@@ -43,6 +43,52 @@ registration = true
 # account"). Checked hourly. 0 turns it off.
 familyless_account_ttl_days = 7
 
+[greetings]
+# The assistant's one unprompted message a day (protocol.md, "The daily
+# greeting"): a short, warm note about the day, plus a light line for the star
+# signs present in the family.
+#
+# TWO KEYS TURN THIS ON, and both must. This section is the operator's half;
+# the family's owner turns on "ai_greeting" in their own settings, and it is
+# FALSE for every family until they do. One server can host several families,
+# so neither of you decides for the other. The [ai] section must also be
+# usable — the greeting is written by the same deployment every other
+# assistant answer goes to, and you are the one paying for it.
+#
+# What the model is told is at most twelve words: the distinct star signs
+# among the family's birthdays, computed here from the day and month they
+# already store. No names, no birth dates, no roster, and nothing that
+# identifies anybody. It is instructed to state no fact about the date —
+# no anniversaries, no "on this day", no news — because it has no way to look
+# anything up and the family will believe it.
+enabled = false
+# The hour, UTC, at which the day's greeting is posted (0-23), and the minute
+# past it (0-59).
+#
+# UTC IS THE ONLY CLOCK THE SERVER HAS. No timezone is stored for a family and
+# none travels on the wire, so this cannot be converted to anybody's local
+# morning — you know where your family lives and the server does not. It is
+# also why the greeting NEVER pushes: 06:00 UTC is the middle of the night
+# across much of the world, and a message nobody asked for that wakes a phone
+# would have no off switch, since the assistant cannot be blocked or muted.
+# The family reads it when they next open the chat.
+#
+# A greeting CATCHES UP: a server that was down at the configured time posts
+# that day's greeting when it comes back, and can never post twice, because
+# the message carries an id derived from the date.
+hour_utc = 6
+minute = 0
+# The language to write in for a family that has NOT chosen one of their own —
+# an IETF tag, the same set the family's own language setting takes ("ru",
+# "de", "sr-Latn", …).
+#
+# Unset by default, and unset means such a family gets NO GREETING rather than
+# an English one. An unset family language is not English anywhere else in this
+# protocol, and a greeting that quietly picked one would be the exception. Name
+# it if you know what your families read; leave it, and only families that
+# answered the question themselves are greeted.
+# language = "ru"
+
 [database]
 # PostgreSQL connection parameters. The server opens a pool of at most
 # max_connections connections and fails startup if the database is not

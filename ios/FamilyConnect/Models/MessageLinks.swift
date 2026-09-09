@@ -46,14 +46,24 @@ nonisolated enum MessageLinks {
     /// All three in ONE attributed string, and one `Text` at the call site
     /// — see MessageMarkdown for why that is a constraint rather than a
     /// convenience.
-    static func attributedBody(_ text: String, isMine: Bool) -> AttributedString {
-        let key = ((isMine ? "m|" : "t|") + text) as NSString
+    static func attributedBody(
+        _ text: String, isMine: Bool, mentions: [MentionDTO] = []
+    ) -> AttributedString {
+        let key = cacheKey(text, isMine: isMine, mentions: mentions)
         if let boxed = cache.object(forKey: key) {
             return boxed.value
         }
-        let built = build(text, isMine: isMine)
+        let built = build(text, isMine: isMine, mentions: mentions)
         cache.setObject(Box(built), forKey: key)
         return built
+    }
+
+    /// The memo key: the side, the members named — their marks depend on
+    /// the list, so a body that gains one is a different string — and the
+    /// text.
+    private static func cacheKey(_ text: String, isMine: Bool, mentions: [MentionDTO]) -> NSString {
+        let named = mentions.map { "\($0.userID):\($0.name)" }.joined(separator: "\u{1}")
+        return ((isMine ? "m|" : "t|") + named + "|" + text) as NSString
     }
 
     /// A message body, ready to draw, as the blocks it lays out in — the
@@ -63,8 +73,10 @@ nonisolated enum MessageLinks {
     /// string `attributedBody` returns, and it is the memoized one: the
     /// no-table path must stay the single `Text` everything else in the
     /// bubble is built around, not a stack of one.
-    static func blocks(_ text: String, isMine: Bool) -> [MessageMarkdown.Block] {
-        let key = ((isMine ? "m|" : "t|") + text) as NSString
+    static func blocks(
+        _ text: String, isMine: Bool, mentions: [MentionDTO] = []
+    ) -> [MessageMarkdown.Block] {
+        let key = cacheKey(text, isMine: isMine, mentions: mentions)
         if let boxed = blockCache.object(forKey: key) {
             return boxed.value
         }
@@ -74,7 +86,7 @@ nonisolated enum MessageLinks {
             // Through `attributedBody` rather than round the side of it, so
             // the one string a bubble draws is the one string everything
             // else in the app already asks for.
-            built = [.text(attributedBody(text, isMine: isMine))]
+            built = [.text(attributedBody(text, isMine: isMine, mentions: mentions))]
         } else {
             built = parsed.enumerated().map { index, block in
                 switch block {
@@ -85,7 +97,7 @@ nonisolated enum MessageLinks {
                     // start one.
                     return .text(
                         decorated(
-                            rendered, isMine: isMine,
+                            rendered, isMine: isMine, mentions: mentions,
                             drawSource: index == 0 ? text : nil))
                 case .table:
                     return block
@@ -189,7 +201,9 @@ nonisolated enum MessageLinks {
         return cache
     }()
 
-    private static func build(_ text: String, isMine: Bool) -> AttributedString {
+    private static func build(
+        _ text: String, isMine: Bool, mentions: [MentionDTO] = []
+    ) -> AttributedString {
         // MARKDOWN FIRST, and the order is load-bearing.
         //
         // The detector works in offsets, and markdown DELETES characters —
@@ -198,7 +212,7 @@ nonisolated enum MessageLinks {
         // markup token pointing at the wrong glyphs. Rendering first and
         // detecting over what is actually drawn makes the offsets correct
         // by construction, which is the same rule Android's hit test needs.
-        decorated(MessageMarkdown.render(text), isMine: isMine, drawSource: text)
+        decorated(MessageMarkdown.render(text), isMine: isMine, mentions: mentions, drawSource: text)
     }
 
     /// The three passes over ONE laid-out string: markdown's own
@@ -210,6 +224,9 @@ nonisolated enum MessageLinks {
     private static func decorated(
         _ source: AttributedString,
         isMine: Bool,
+        /// The members this message names (docs/protocol.md, "Mentioning a
+        /// member") — see `highlightMemberMentions`.
+        mentions: [MentionDTO] = [],
         /// The RAW body this block was rendered from, when this block may
         /// begin a picture request — see `highlightMentions`.
         drawSource: String? = nil
@@ -260,7 +277,35 @@ nonisolated enum MessageLinks {
             }
         }
         highlightMentions(in: &attributed, isMine: isMine, drawSource: drawSource)
+        highlightMemberMentions(in: &attributed, isMine: isMine, mentions: mentions)
         return attributed
+    }
+
+    /// Mark every `@Name` the message NAMES — found in the text as drawn by
+    /// the grammar the server checked the body against — and make it
+    /// tappable through a private-scheme `.link`, so the bubble's own link
+    /// arbitration reaches the member rather than a browser (protocol.md,
+    /// "Mentioning a member"). Never over a link the markup or the detector
+    /// already declared: the author's destination stands.
+    private static func highlightMemberMentions(
+        in attributed: inout AttributedString, isMine: Bool, mentions: [MentionDTO]
+    ) {
+        guard !mentions.isEmpty else { return }
+        let rendered = String(attributed.characters)
+        // One owner per token, longest name first — `@Anna Lee` is Anna
+        // Lee's even when the message names Anna too.
+        for (range, mention) in MemberMentions.tokens(in: rendered, mentions: mentions) {
+            guard let url = MemberMentions.url(for: mention.userID) else { continue }
+            let nsRange = NSRange(range, in: rendered)
+            guard let target = attributedRange(nsRange, in: attributed, of: rendered),
+                  attributed[target].runs.allSatisfy({ $0.link == nil })
+            else { continue }
+            attributed[target].inlinePresentationIntent = .stronglyEmphasized
+            attributed[target].link = url
+            if !isMine {
+                attributed[target].foregroundColor = .accentColor
+            }
+        }
     }
 
     /// Mark `@ai` so it reads as addressed to somebody, and `/draw` so it

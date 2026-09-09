@@ -37,6 +37,8 @@ import android.text.util.Linkify
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import me.nettrash.familyconnect.data.net.dto.MentionDto
+import me.nettrash.familyconnect.util.MemberMention
 
 /** One tappable range in a message body. */
 data class LinkSpan(
@@ -135,6 +137,18 @@ object MessageLinks {
      * and the detector's duplicate is dropped — leaving exactly one answer
      * for every glyph, which is also what the hit test assumes.
      */
+    /**
+     * The members a message names, as spans over the RENDERED text — the
+     * `@Name` tokens found by the grammar the server checked the body
+     * against, each carrying the private member scheme as its url so the
+     * one hit test reaches the member rather than a browser
+     * (docs/protocol.md, "Mentioning a member").
+     */
+    fun memberMentionSpans(text: String, mentions: List<MentionDto>): List<LinkSpan> =
+        MemberMention.tokens(text, mentions).map { (range, mention) ->
+            LinkSpan(range.first, range.last + 1, MemberMention.url(mention.userId))
+        }
+
     fun mergeSpans(markdown: List<LinkSpan>, detected: List<LinkSpan>): List<LinkSpan> {
         if (markdown.isEmpty()) return detected
         val kept = detected.filterNot { span ->
