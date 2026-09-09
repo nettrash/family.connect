@@ -729,7 +729,7 @@ async fn a_block_reaches_only_the_blockers_own_devices() {
 #[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
 async fn read_and_typing_are_suppressed_inward_only() {
     let ts = spawn_server().await;
-    let (blocker, _) = ts.register("owner", "Olive").await;
+    let (blocker, blocker_id) = ts.register("owner", "Olive").await;
     let (blocked, blocked_id) = ts.register("junior", "Junior").await;
     // A THIRD member, whose socket is what distinguishes "drop the people
     // who blocked this sender" from "drop everybody". In a two-person
@@ -784,6 +784,17 @@ async fn read_and_typing_are_suppressed_inward_only() {
         .expect("send typing");
     assert_no_frame_of_type(&mut blocker_ws, "read", Duration::from_millis(400)).await;
     assert_no_frame_of_type(&mut blocker_ws, "typing", Duration::from_millis(400)).await;
+    // The blocked member's OWN socket hears their own read — a read fans to
+    // the reader's other devices since #61 — and it is drained here with its
+    // author pinned, so the OUTWARD assertion below cannot be satisfied by
+    // this echo instead of by the blocker's frame. A block is on the
+    // recipient, never on the reader: being blocked by somebody does not
+    // stop your own devices agreeing with each other.
+    let own = next_frame_of_type(&mut blocked_ws, "read").await;
+    assert_eq!(
+        own["user_id"], blocked_id,
+        "a blocked member still hears their own read"
+    );
     // ...but the BYSTANDER, who blocked nobody, receives both. This is what
     // separates a filter that drops the blockers from one that drops the
     // whole recipient list.
@@ -806,6 +817,10 @@ async fn read_and_typing_are_suppressed_inward_only() {
     let read = next_frame_of_type(&mut blocked_ws, "read").await;
     assert_eq!(read["chat_id"], chat_id);
     assert_eq!(read["last_read_message_id"], seeded_id);
+    assert_eq!(
+        read["user_id"], blocker_id,
+        "the BLOCKER's read must reach the person they blocked — not an echo of their own"
+    );
 
     blocker_ws
         .send(Message::Text(
@@ -916,4 +931,205 @@ async fn an_owners_leave_tells_the_family_who_owns_it_now() {
     // The other member is told the owner left too.
     let left_frame = next_frame_of_type(&mut other_ws, "member_left").await;
     assert_eq!(left_frame["user_id"], owner_id);
+}
+
+// ---------------------------------------------------------------------------
+// A read reaches the reader's OWN other devices
+// (protocol.md, WebSocket "Semantics").
+//
+// The read marker has always been per-USER — one `chat_reads` row per
+// (chat, user), monotonic — so a second device was always entitled to this
+// fact and simply had no way to learn it but re-fetching `GET /chats`. What
+// these two pin is the delivery, and the one asymmetry in it: the WS path
+// skips the connection that reported the read, and the REST path skips
+// nothing because it has no connection to skip.
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_read_over_the_socket_reaches_my_other_devices_but_not_the_one_that_sent_it() {
+    let ts = spawn_server().await;
+    let (owner, owner_id, member, _member_id, _) = family_of_two(&ts).await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    let response = ts
+        .post_message(&member, chat_id, &Uuid::new_v4().to_string(), "read me")
+        .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("message response is JSON");
+    let message_id = body["message"]["id"].as_i64().expect("message id");
+
+    // The owner's phone (which reports the read) and their laptop.
+    let mut phone = connect_ws(&ts, &owner).await;
+    let mut laptop = connect_ws(&ts, &owner).await;
+    // And the other member, who has always received this frame.
+    let mut theirs = connect_ws(&ts, &member).await;
+
+    send_frame(
+        &mut phone,
+        json!({"type": "read", "chat_id": chat_id, "last_read_message_id": message_id}),
+    )
+    .await;
+
+    // The laptop learns of it — this is the whole feature. Without it the
+    // badge on this person's other device sits there until something else
+    // makes it resync.
+    let frame = next_frame_of_type(&mut laptop, "read").await;
+    assert_eq!(frame["chat_id"], chat_id);
+    assert_eq!(frame["user_id"], json!(owner_id));
+    assert_eq!(frame["last_read_message_id"], json!(message_id));
+
+    // The other member still gets it, unchanged.
+    let frame = next_frame_of_type(&mut theirs, "read").await;
+    assert_eq!(frame["user_id"], json!(owner_id));
+
+    // The connection that REPORTED it does not: it already knows, exactly as
+    // a sender's own socket is skipped for a new message.
+    assert_no_frame_of_type(&mut phone, "read", Duration::from_millis(400)).await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_read_over_rest_reaches_every_one_of_my_connections() {
+    let ts = spawn_server().await;
+    let (owner, owner_id, member, _member_id, _) = family_of_two(&ts).await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    let response = ts
+        .post_message(&member, chat_id, &Uuid::new_v4().to_string(), "read me")
+        .await;
+    assert_eq!(response.status(), 201);
+    let body: Value = response.json().await.expect("message response is JSON");
+    let message_id = body["message"]["id"].as_i64().expect("message id");
+
+    let mut first = connect_ws(&ts, &owner).await;
+    let mut second = connect_ws(&ts, &owner).await;
+
+    // POST, not a frame: an HTTP request has no connection to skip, so BOTH
+    // sockets hear it. The device that POSTed learns the effective value from
+    // the 204 it is already waiting on.
+    let response = ts
+        .post(
+            &owner,
+            &format!("/chats/{chat_id}/read"),
+            json!({"last_read_message_id": message_id}),
+        )
+        .await;
+    assert_eq!(response.status(), 204);
+
+    for ws in [&mut first, &mut second] {
+        let frame = next_frame_of_type(ws, "read").await;
+        assert_eq!(frame["chat_id"], chat_id);
+        assert_eq!(frame["user_id"], json!(owner_id));
+        assert_eq!(frame["last_read_message_id"], json!(message_id));
+    }
+}
+
+/// A `read` frame naming a DIRECT chat the sender has blocked into is dropped
+/// in silence — no relay, no `error` frame, and (since the whole frame is
+/// dropped before fan-out) nothing to the sender's own other devices either
+/// (protocol.md, WebSocket "Semantics"). The code used to answer such a frame
+/// with an `error`, which the document forbids: a blocker's two devices could
+/// then disagree about whether to keep sending.
+#[tokio::test]
+#[ignore = "needs a reachable PostgreSQL server; run with --ignored"]
+async fn a_read_frame_into_a_blocked_direct_chat_is_dropped_in_silence() {
+    let ts = spawn_server().await;
+    let (blocker, _) = ts.register("owner", "Olive").await;
+    let (blocked, blocked_id) = ts.register("junior", "Junior").await;
+    let (_, invite_code) = ts.create_family(&blocker, "The Smiths").await;
+    ts.set_open_policy(&blocker).await;
+    ts.join(&blocked, &invite_code, "joined").await;
+
+    let opened: Value = ts
+        .post(&blocker, "/chats/direct", json!({"user_id": blocked_id}))
+        .await
+        .json()
+        .await
+        .expect("chat");
+    let direct_id = opened["chat"]["id"].as_i64().expect("direct chat id");
+    // Something to read, sent before the block so it exists in the chat.
+    let seeded: Value = ts
+        .post(
+            &blocked,
+            &format!("/chats/{direct_id}/messages"),
+            json!({"client_msg_id": Uuid::new_v4().to_string(), "body": "hello"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("message");
+    let seeded_id = seeded["message"]["id"].as_i64().expect("id");
+
+    let response = ts
+        .put(
+            &blocker,
+            &format!("/families/members/{blocked_id}/block"),
+            json!({}),
+        )
+        .await;
+    assert!(response.status().is_success(), "{}", response.status());
+
+    let mut phone = connect_ws(&ts, &blocker).await;
+    let mut laptop = connect_ws(&ts, &blocker).await;
+    let mut peer = connect_ws(&ts, &blocked).await;
+
+    send_frame(
+        &mut phone,
+        json!({"type": "read", "chat_id": direct_id, "last_read_message_id": seeded_id}),
+    )
+    .await;
+
+    // Silence on every socket: no error to the sender, no relay to the peer,
+    // and nothing to the sender's own other device — the frame never reached
+    // fan-out at all.
+    assert_no_frame_of_type(&mut phone, "error", Duration::from_millis(400)).await;
+    assert_no_frame_of_type(&mut laptop, "read", Duration::from_millis(400)).await;
+    assert_no_frame_of_type(&mut peer, "read", Duration::from_millis(400)).await;
+}
+
+/// The members a message names ride the `send` frame, and come back on the
+/// `ack` and on every other member's `message` frame (protocol.md,
+/// "Mentioning a member").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_send_frame_carries_mentions_and_so_do_the_ack_and_the_message() {
+    let ts = spawn_server().await;
+    let (owner, owner_id, member, _member_id, _code) = family_of_two(&ts).await;
+    let chat_id = ts.family_chat_id(&owner).await;
+    let mut owner_ws = connect_ws(&ts, &owner).await;
+    let mut member_ws = connect_ws(&ts, &member).await;
+
+    let client_msg_id = uuid::Uuid::new_v4().to_string();
+    send_frame(
+        &mut member_ws,
+        json!({
+            "type": "send", "chat_id": chat_id, "client_msg_id": client_msg_id,
+            "body": "@Olive are you in?",
+            "mentions": [{"user_id": owner_id, "name": "Olive"}],
+        }),
+    )
+    .await;
+    let ack = next_frame_of_type(&mut member_ws, "ack").await;
+    assert_eq!(
+        ack["message"]["mentions"],
+        json!([{"user_id": owner_id, "name": "Olive"}]),
+        "{ack}"
+    );
+    let delivered = next_frame_of_type(&mut owner_ws, "message").await;
+    assert_eq!(
+        delivered["message"]["mentions"],
+        json!([{"user_id": owner_id, "name": "Olive"}]),
+        "{delivered}"
+    );
+
+    // A refusal over the socket is the same `validation`, on the frame.
+    send_frame(
+        &mut member_ws,
+        json!({
+            "type": "send", "chat_id": chat_id, "client_msg_id": uuid::Uuid::new_v4().to_string(),
+            "body": "no name here",
+            "mentions": [{"user_id": owner_id, "name": "Olive"}],
+        }),
+    )
+    .await;
+    let error = next_frame_of_type(&mut member_ws, "error").await;
+    assert_eq!(error["code"], "validation", "{error}");
 }

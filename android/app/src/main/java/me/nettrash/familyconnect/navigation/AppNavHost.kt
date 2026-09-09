@@ -51,6 +51,8 @@ import me.nettrash.familyconnect.data.repo.SessionEvent
 import me.nettrash.familyconnect.ui.stats.StatisticsScreen
 import me.nettrash.familyconnect.ui.auth.AuthScreen
 import me.nettrash.familyconnect.ui.board.BoardScreen
+import me.nettrash.familyconnect.ui.polls.OpenPollsScreen
+import me.nettrash.familyconnect.ui.thread.ThreadScreen
 import me.nettrash.familyconnect.ui.chat.ChatScreen
 import me.nettrash.familyconnect.ui.chatlist.ChatListDetailPane
 import me.nettrash.familyconnect.ui.chatlist.ChatListScreen
@@ -76,10 +78,19 @@ object Routes {
     const val SETTINGS = "settings"
     const val FAMILY_ADMIN = "family_admin"
     const val BOARD = "board"
+    /** The family chat's open polls (docs/protocol.md, "Finding the open ones"). */
+    const val OPEN_POLLS = "open_polls/{chatId}"
     const val STATISTICS = "statistics"
     const val CALL = "call"
 
     fun chat(chatId: Long) = "chat/$chatId"
+
+    fun openPolls(chatId: Long) = "open_polls/$chatId"
+
+    /** A chain of replies, on a screen of its own (docs/protocol.md, "Threads"). */
+    const val THREAD = "thread/{chatId}/{rootId}"
+
+    fun thread(chatId: Long, rootId: Long) = "thread/$chatId/$rootId"
 }
 
 // Shared-axis X (M3): forward pushes slide in from the right, pops slide
@@ -384,11 +395,39 @@ fun AppNavHost(
         ) {
             ChatScreen(
                 onBack = { navController.popBackStack() },
+                onOpenPolls = { chatId -> navController.navigate(Routes.openPolls(chatId)) },
+                onOpenThread = { chatId, rootId -> navController.navigate(Routes.thread(chatId, rootId)) },
+                onOpenChat = { chatId -> navController.navigate(Routes.chat(chatId)) },
             )
         }
 
         composable(Routes.BOARD) {
             BoardScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(
+            Routes.OPEN_POLLS,
+            arguments = listOf(navArgument("chatId") { type = NavType.LongType }),
+        ) { entry ->
+            OpenPollsScreen(
+                chatId = entry.arguments?.getLong("chatId") ?: 0L,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(
+            Routes.THREAD,
+            arguments = listOf(
+                navArgument("chatId") { type = NavType.LongType },
+                navArgument("rootId") { type = NavType.LongType },
+            ),
+        ) { entry ->
+            ThreadScreen(
+                chatId = entry.arguments?.getLong("chatId") ?: 0L,
+                rootId = entry.arguments?.getLong("rootId") ?: 0L,
+                onBack = { navController.popBackStack() },
+                onOpenChat = { chatId -> navController.navigate(Routes.chat(chatId)) },
+            )
         }
 
         composable(Routes.STATISTICS) {

@@ -417,6 +417,17 @@
     <string name="s_assistant_history_photos_needs_vision">先に「アシスタントが写真を見られるようにする」をオンにしてください。それがオフのあいだ、サーバーはこれを受け付けません。</string>
     <string name="s_assistant_history_photos_needs_history">「アシスタントが最近の履歴を見る」がオフのあいだ、これは何もしません。チャットの履歴が送られないので、そこからの写真も送られません。</string>
     <string name="e_change_assistant_history_photos_failed">設定を変更できませんでした</string>
+    <string name="s_assistant_greeting">おはようのメッセージ</string>
+    <string name="s_assistant_greeting_explanation">アシスタントが毎日、家族のチャットに短いおはようのメッセージを投稿し、家族が登録した誕生日の星座に触れます。名前や生年月日を送ることは決してなく、星座だけです。日付について何かを主張することもありません。通知が鳴ることもなく、次にチャットを開いたときにそこにあるだけです。オンにするまでは無効です。</string>
+    <string name="s_assistant_greeting_no_server">ここでは使えません。このサーバーは毎日のあいさつを送りません。</string>
+    <string name="e_change_assistant_greeting_failed">設定を変更できませんでした</string>
+    <string name="s_assistant_faces">アシスタントがメンバーの顔を見る</string>
+    <string name="s_assistant_faces_explanation">家族のチャットで誰かがアシスタントに言及すると、そのチャットの最近の履歴に名前が出ているメンバーのプロフィール写真（最大4枚）も質問と一緒にモデルに送られ、誰が誰かを見分けられるようにします。送られるのはメンバー自身が選んだ画像で、誰かが添付した写真ではありません。退会したメンバーやこの家族以外の人の画像は決して送られません。ほとんどの言及で画像が送られるため、費用が増えます。「アシスタントが写真を見られるようにする」と「アシスタントが最近の履歴を見る」が必要です。オンにするまでは無効で、オフの間は顔が送られることはありません。</string>
+    <string name="s_assistant_faces_needs_history">「アシスタントが最近の履歴を見る」がオフの間、これは何もしません。名前が送られないので、顔も送られません。</string>
+    <string name="e_change_assistant_faces_failed">設定を変更できませんでした</string>
+    <string name="s_open_polls">進行中の投票</string>
+    <string name="s_open_polls_none">進行中の投票は、閉じられるまでここに残ります。今はひとつもありません。</string>
+    <string name="e_try_again">少ししてからもう一度お試しください。</string>
     <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
     <string name="s_pick_a_chat">リストからチャットを選んでください。</string>
     <plurals name="p_members">
@@ -460,4 +471,15 @@
     <string name="s_emoji_activities">アクティビティ</string>
     <string name="s_emoji_travel">旅行と場所</string>
     <string name="s_emoji_objects">モノと記号</string>
+    <string name="s_thread">スレッド</string>
+    <string name="s_view_thread">スレッドを表示</string>
+    <string name="s_reply_in_thread">スレッドに返信</string>
+    <string name="e_load_thread_failed">スレッドを読み込めませんでした。</string>
+    <string name="s_thread_partial">スレッド全体を読み込めませんでした。</string>
+    <string name="s_open_thread">スレッドを開きます</string>
+    <plurals name="s_n_replies">
+        <item quantity="other">%1$d件の返信</item>
+    </plurals>
+    <string name="s_mentions_you">あなたへのメンション</string>
+    <string name="s_mention_member">%1$sをメンション</string>
 </resources>

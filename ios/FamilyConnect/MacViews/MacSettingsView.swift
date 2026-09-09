@@ -262,20 +262,19 @@ struct MacSettingsView: View {
         // on the scene is what lets them drag it there at all.
         .frame(minWidth: 460, idealWidth: 460, minHeight: 420, idealHeight: 530)
         .background(Color.appGroupedBackground)
+        // These sheets size THEMSELVES (macSheetFrame, PlatformStyle.swift).
+        // A frame here would clamp the one inside and put the overflow back.
         .sheet(isPresented: $changingPassword) {
             ChangePasswordView()
-                .frame(width: 420)
         }
         .sheet(isPresented: $editingBirthday) {
             MyBirthdayView()
-                .frame(width: 420)
         }
         .sheet(isPresented: $showingStatistics) {
             StatisticsView()
         }
         .sheet(isPresented: $deletingAccount) {
             DeleteAccountView()
-                .frame(width: 460)
         }
         .confirmationDialog(
             "Leave the family?",

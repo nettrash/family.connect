@@ -121,6 +121,12 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import me.nettrash.familyconnect.util.MemberMention
+import me.nettrash.familyconnect.data.net.dto.MentionsCodec
+import me.nettrash.familyconnect.data.net.dto.MentionDto
+import androidx.compose.material3.AssistChip
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
@@ -152,6 +158,8 @@ import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -336,9 +344,16 @@ private data class ReportTarget(
 @Composable
 fun ChatScreen(
     onBack: () -> Unit,
+    /** The family chat's open polls (docs/protocol.md, "Finding the open ones"). */
+    onOpenPolls: (Long) -> Unit = {},
+    /** A chain of replies on its own screen — (chatId, rootId) (docs/protocol.md, "Threads"). */
+    onOpenThread: (Long, Long) -> Unit = { _, _ -> },
+    /** Open another chat — the one-to-one a tapped mention leads to (docs/protocol.md, "Mentioning a member"). */
+    onOpenChat: (Long) -> Unit = {},
     viewModel: ChatViewModel = hiltViewModel(),
 ) {
     val items by viewModel.items.collectAsStateWithLifecycle()
+    val mentionCandidates by viewModel.mentionCandidates.collectAsStateWithLifecycle()
     val chat by viewModel.chat.collectAsStateWithLifecycle()
     val typingUser by viewModel.typingUser.collectAsStateWithLifecycle()
     val myUserId by viewModel.myUserId.collectAsStateWithLifecycle()
@@ -346,6 +361,7 @@ fun ChatScreen(
     val memberAvatars by viewModel.memberAvatars.collectAsStateWithLifecycle()
     val callsEnabled by viewModel.callsEnabled.collectAsStateWithLifecycle()
     val videoCallsEnabled by viewModel.videoCallsEnabled.collectAsStateWithLifecycle()
+    val openPollsToAnswer by viewModel.openPollsToAnswer.collectAsStateWithLifecycle()
     // Which rows the assistant is still writing into. In-memory only, so a
     // row that was mid-stream when the app was killed is not stuck looking
     // live after a relaunch.
@@ -1057,6 +1073,34 @@ fun ChatScreen(
                             Icon(Icons.Filled.Call, contentDescription = stringResource(R.string.s_voice_call))
                         }
                     }
+                    // The way back to a decision the family has scrolled past
+                    // (docs/protocol.md, "Finding the open ones"). Family chat
+                    // only, because polls exist nowhere else — which is also
+                    // why this slot was empty there: the whole block above is
+                    // gated on a DIRECT chat, so the family chat carried no
+                    // action at all.
+                    //
+                    // The badge counts open polls THIS READER has not voted in
+                    // (util/OpenPollsBadge.kt, mirrored on iOS), not all open
+                    // polls: a count that stays lit after you have answered
+                    // everything, until somebody else closes them, stops
+                    // meaning anything within a day.
+                    if (chat?.kind == "family") {
+                        BadgedBox(
+                            badge = {
+                                if (openPollsToAnswer > 0) {
+                                    Badge { Text(openPollsToAnswer.toString()) }
+                                }
+                            },
+                        ) {
+                            IconButton(onClick = { chat?.id?.let(onOpenPolls) }) {
+                                Icon(
+                                    Icons.Filled.Poll,
+                                    contentDescription = stringResource(R.string.s_open_polls),
+                                )
+                            }
+                        }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = barColor),
             )
@@ -1181,6 +1225,8 @@ fun ChatScreen(
                                     onTapQuote = {
                                         pendingJump = JumpRequest(serverId = it, anchor = false)
                                     },
+                                    onOpenThread = { rootId -> chat?.id?.let { onOpenThread(it, rootId) } },
+                                    onTapMention = { userId -> viewModel.openDirectChat(userId, onOpenChat) },
                                     onOpenAttachment = { attachment ->
                                         if (attachment.isFile) {
                                             openFile(attachment)
@@ -1318,6 +1364,8 @@ fun ChatScreen(
                     }
                 } ?: "",
                 onCancelReply = viewModel::cancelReply,
+                mentionCandidates = mentionCandidates,
+                onPickMention = viewModel::acceptMention,
                 focusRequester = focusRequester,
                 isEditing = editTarget != null,
                 onCancelEdit = viewModel::cancelEdit,
@@ -1405,6 +1453,15 @@ fun ChatScreen(
                     focusRequester.requestFocus()
                 }
             },
+            onViewThread = {
+                val entity = target.item.entity
+                pickerTarget = null
+                entity.serverId?.let { serverId ->
+                    chat?.id?.let { onOpenThread(it, entity.threadRootId ?: serverId) }
+                }
+            },
+            canViewThread = target.item.entity.serverId != null &&
+                (target.item.entity.threadRootId != null || target.item.entity.replyCount > 0),
             onClosePoll = {
                 val entity = target.item.entity
                 pickerTarget = null
@@ -1571,6 +1628,9 @@ private fun ReactionPickerPopup(
     onPick: (String) -> Unit,
     onMore: () -> Unit,
     onReply: () -> Unit,
+    /** Open the chain this message belongs to (docs/protocol.md, "Threads"). */
+    onViewThread: () -> Unit = {},
+    canViewThread: Boolean = false,
     onEdit: () -> Unit,
     onClosePoll: () -> Unit,
     onCopy: () -> Unit,
@@ -1720,6 +1780,7 @@ private fun ReactionPickerPopup(
                 } else {
                 MessageContextMenu(
                     onReply = { exitThen(onReply) },
+                    onViewThread = { exitThen(onViewThread) },
                     onEdit = { exitThen(onEdit) },
                     onClosePoll = { exitThen(onClosePoll) },
                     onCopy = { exitThen(onCopy) },
@@ -1728,6 +1789,7 @@ private fun ReactionPickerPopup(
                     modifier = Modifier.onSizeChanged { menuSize = it },
                     canSave = target.item.entity.attachment?.isFile == false,
                     canReply = target.item.entity.serverId != null,
+                    canViewThread = canViewThread,
                     canEdit = target.item.entity.serverId != null &&
                         target.item.entity.senderId == myUserId,
                     // Closing is the AUTHOR's, and one-way — the family
@@ -1856,6 +1918,7 @@ private fun EditBanner(onCancel: () -> Unit) {
 private fun MessageContextMenu(
     onReply: () -> Unit,
     onEdit: () -> Unit,
+    onViewThread: () -> Unit = {},
     onClosePoll: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
@@ -1866,6 +1929,8 @@ private fun MessageContextMenu(
      * on a message that has not been acked yet.
      */
     canReply: Boolean = true,
+    /** In a chain — a reply, or a root somebody answered (docs/protocol.md, "Threads"). */
+    canViewThread: Boolean = false,
     /** Only the author may edit, and only once the message has an id. */
     canEdit: Boolean = false,
     /** Only the author may close their poll, and only while it is open. */
@@ -1896,6 +1961,13 @@ private fun MessageContextMenu(
                     label = stringResource(R.string.s_reply),
                     icon = Icons.AutoMirrored.Outlined.Reply,
                     onClick = onReply,
+                )
+            }
+            if (canViewThread) {
+                MessageContextMenuItem(
+                    label = stringResource(R.string.s_view_thread),
+                    icon = Icons.Outlined.Forum,
+                    onClick = onViewThread,
                 )
             }
             if (canEdit) {
@@ -2169,7 +2241,7 @@ private fun emojiPressScale(interactionSource: MutableInteractionSource): State<
 }
 
 @Composable
-private fun DateSeparatorPill(day: TimeFormat.DayLabel) {
+internal fun DateSeparatorPill(day: TimeFormat.DayLabel) {
     val label = when (day) {
         TimeFormat.DayLabel.Today -> stringResource(R.string.s_today)
         TimeFormat.DayLabel.Yesterday -> stringResource(R.string.s_yesterday)
@@ -2233,7 +2305,7 @@ private fun NewMessagesDividerRow(count: Int) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(
+internal fun MessageBubble(
     item: ChatListItem.MessageItem,
     chat: ChatEntity?,
     isMine: Boolean,
@@ -2270,6 +2342,10 @@ private fun MessageBubble(
     onOpenAttachment: (AttachmentDto) -> Unit,
     /** Tapping a call record calls back; null where calling is not possible. */
     onCallBack: (() -> Unit)? = null,
+    /** Open the chain this message roots (docs/protocol.md, "Threads"). */
+    onOpenThread: (Long) -> Unit = {},
+    /** A tap on a member the message names (docs/protocol.md, "Mentioning a member"). */
+    onTapMention: (Long) -> Unit = {},
 ) {
     val entity = item.entity
     // 18dp corners, tightened to 4dp where a bubble meets a same-sender
@@ -2346,7 +2422,7 @@ private fun MessageBubble(
     // that the message is nothing but glyphs, so a markup pass could only
     // take something away, and there is nothing in one to detect. Same rule
     // as iOS and macOS.
-    val bodyBlocks = remember(entity.body, emojiFontSize) {
+    val bodyBlocks = remember(entity.body, entity.mentionsJson, emojiFontSize) {
         if (emojiFontSize != null) {
             listOf(BodyBlock(MessageMarkdown.Block.Text(MessageMarkdown.plain(entity.body))))
         } else {
@@ -2366,9 +2442,18 @@ private fun MessageBubble(
                     // leaves exactly one answer: the destination the author wrote.
                     is MessageMarkdown.Block.Text -> BodyBlock(
                         block = block,
+                        // The members named ride the same list and the
+                        // same hit test as links, under the same overlap
+                        // rule — a link over a name is still the link.
                         links = MessageLinks.mergeSpans(
-                            block.rendered.links,
-                            MessageLinks.linkSpans(block.rendered.text),
+                            MessageLinks.mergeSpans(
+                                block.rendered.links,
+                                MessageLinks.linkSpans(block.rendered.text),
+                            ),
+                            MessageLinks.memberMentionSpans(
+                                block.rendered.text,
+                                MentionsCodec.decode(entity.mentionsJson),
+                            ),
                         ),
                     )
                     // A table's cells carry no links by construction
@@ -2406,7 +2491,10 @@ private fun MessageBubble(
                                 CustomAccessibilityAction(
                                     MessageLinks.accessibilityLabel(text, span),
                                 ) {
-                                    runCatching { uriHandler.openUri(span.url) }.isSuccess
+                                    MemberMention.userIdFrom(span.url)?.let { userId ->
+                                        onTapMention(userId)
+                                        true
+                                    } ?: runCatching { uriHandler.openUri(span.url) }.isSuccess
                                 }
                             }
                         }
@@ -2536,6 +2624,8 @@ private fun MessageBubble(
                     onTextLongPress = { onLongPress(item, bubbleBounds) },
                     onTapQuote = onTapQuote,
                     onOpenAttachment = onOpenAttachment,
+                    onOpenThread = onOpenThread,
+                    onTapMention = onTapMention,
                 )
             }
         }
@@ -3062,10 +3152,16 @@ private fun CallRecordRow(
  *
  * iOS counterpart: the shared poll bubble in
  * ios/FamilyConnect/Views/ConversationView.swift.
+ *
+ * `internal` rather than private since 2026-09-09: the open-polls screen
+ * (`ui/polls/OpenPollsScreen.kt`) draws the same poll, because voting from
+ * there has to be the same act as voting here — same bars, same faces, same
+ * "N of M voted", same refusal on a closed poll. A second, simpler poll
+ * control would be a second place for those rules to drift.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PollBlock(
+internal fun PollBlock(
     poll: PollView,
     memberAvatars: Map<Long, Long>,
     /** Acked and still open — a closed poll shows its result and refuses taps. */
@@ -3472,6 +3568,10 @@ private fun BubbleContent(
     onTapQuote: (Long) -> Unit,
     /** Tapping a photo or video opens it full screen. */
     onOpenAttachment: (AttachmentDto) -> Unit,
+    /** Open the chain this message roots (docs/protocol.md, "Threads"). */
+    onOpenThread: (Long) -> Unit = {},
+    /** A tap on a member the message names (docs/protocol.md, "Mentioning a member"). */
+    onTapMention: (Long) -> Unit = {},
 ) {
     // Everything that is CONTENT shares one left edge, whichever side the
     // balloon is on — the quote, the attachment, the body and the link
@@ -3715,6 +3815,7 @@ private fun BubbleContent(
                         endAligned = bodyAlignsEnd,
                         onDoubleTap = onDoubleTap,
                         onLongPress = onTextLongPress,
+                        onTapMention = onTapMention,
                     )
                     // Width-greedy on purpose: the table takes the balloon's
                     // whole width, `measureBlock` reports it, and the text
@@ -3842,6 +3943,82 @@ private fun BubbleContent(
                 }
             }
         }
+        // The chain's affordance, with the message and not as a bubble of
+        // its own; never on a hidden row, which draws the placeholder and
+        // the timestamp and nothing else (docs/protocol.md, "Threads").
+        if (entity.replyCount > 0 && !isHidden) {
+            ThreadChip(
+                count = entity.replyCount,
+                onClick = { entity.serverId?.let(onOpenThread) },
+                modifier = Modifier.align(if (isMine) Alignment.End else Alignment.Start),
+            )
+        }
+    }
+}
+
+/**
+ * "N replies ›" under a root somebody answered — a tap opens the chain on
+ * its own screen (docs/protocol.md, "Threads"). iOS: MessageBubbleView
+ * .threadChip.
+ */
+@Composable
+private fun ThreadChip(count: Long, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val label = pluralStringResource(R.plurals.s_n_replies, count.toInt(), count.toInt())
+    val hint = stringResource(R.string.s_open_thread)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+            .semantics(mergeDescendants = true) { contentDescription = "$label. $hint" },
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Forum,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(14.dp),
+        )
+    }
+}
+
+/**
+ * The roster offered while a member types `@` (docs/protocol.md, "Mentioning
+ * a member"): a row of names above the composer, narrowed as the name is
+ * typed; picking one rewrites the trailing `@prefix` into `@Name `. iOS:
+ * MentionSuggestions.
+ */
+@Composable
+internal fun MentionSuggestionsRow(
+    candidates: List<MentionDto>,
+    onPick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LazyRow(
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        items(candidates, key = { it.userId }) { member ->
+            val label = stringResource(R.string.s_mention_member, member.name)
+            AssistChip(
+                onClick = { onPick(member.name) },
+                label = { Text("@" + member.name, maxLines = 1) },
+                modifier = Modifier.semantics { contentDescription = label },
+            )
+        }
     }
 }
 
@@ -3911,12 +4088,21 @@ private fun ColumnScope.TextBlock(
     endAligned: Boolean = false,
     onDoubleTap: () -> Unit,
     onLongPress: () -> Unit,
+    /** A tap on a member the message names (docs/protocol.md, "Mentioning a member"). */
+    onTapMention: (Long) -> Unit = {},
 ) {
     val body = remember(rendered, links, linkColor, mentionColor, showCursor, drawSource) {
+        // Members named ride the link list for the hit test, but draw as
+        // the assistant's mention does — bold, tinted, no underline.
+        val (memberSpans, linkSpans) = links.partition { MemberMention.userIdFrom(it.url) != null }
         val linked = MessageLinks.styled(
-            rendered.annotated,
-            links,
-            SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline),
+            MessageLinks.styled(
+                rendered.annotated,
+                linkSpans,
+                SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline),
+            ),
+            memberSpans,
+            SpanStyle(color = mentionColor, fontWeight = FontWeight.Bold),
         )
         val styled = MessageLinks.withMentions(
             linked,
@@ -3953,6 +4139,11 @@ private fun ColumnScope.TextBlock(
                     // past a short line does not count as its last link).
                     val span = linkSpanAt(layout, links, position)
                         ?: return@detectTapGestures
+                    // A member's name, not a page.
+                    MemberMention.userIdFrom(span.url)?.let { userId ->
+                        onTapMention(userId)
+                        return@detectTapGestures
+                    }
                     // openUri throws when no app handles the scheme
                     // (tel: on some tablets) — a dead tap beats a crash.
                     runCatching { uriHandler.openUri(span.url) }
@@ -4656,6 +4847,9 @@ private fun InputBar(
     replyDraft: ReplyToDto?,
     replyAuthorName: String,
     onCancelReply: () -> Unit,
+    /** The roster offered while a member is being named (docs/protocol.md, "Mentioning a member"). */
+    mentionCandidates: List<MentionDto> = emptyList(),
+    onPickMention: (String) -> Unit = {},
     focusRequester: FocusRequester,
     isEditing: Boolean,
     onCancelEdit: () -> Unit,
@@ -4742,6 +4936,9 @@ private fun InputBar(
             // attach button and Send sit over the bubbles they act on
             // rather than at the window's far edges (iOS does the same).
             Column(modifier = Modifier.readableColumn()) {
+            if (mentionCandidates.isNotEmpty()) {
+                MentionSuggestionsRow(candidates = mentionCandidates, onPick = onPickMention)
+            }
             if (replyDraft != null) {
                 ReplyBanner(
                     authorName = replyAuthorName,
@@ -5151,7 +5348,7 @@ private fun openWithSystem(context: Context, file: File, mime: String): Boolean 
  * Returns false when nothing on the device can take it, so the caller can
  * say so rather than leaving the tap looking broken.
  */
-private fun shareWithSystem(
+internal fun shareWithSystem(
     context: Context,
     file: File,
     mime: String,

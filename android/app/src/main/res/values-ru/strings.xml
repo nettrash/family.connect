@@ -432,6 +432,17 @@
     <string name="s_assistant_history_photos_needs_vision">Сначала включите «Ассистент может смотреть фото» — пока оно выключено, сервер это отклоняет.</string>
     <string name="s_assistant_history_photos_needs_history">Пока «Ассистент видит недавнюю историю» выключено, это ничего не делает: история чата не отправляется, а значит, и ни одно фото из неё.</string>
     <string name="e_change_assistant_history_photos_failed">Не удалось изменить настройку</string>
+    <string name="s_assistant_greeting">Утреннее сообщение</string>
+    <string name="s_assistant_greeting_explanation">Ассистент каждый день пишет в семейный чат короткое утреннее сообщение и упоминает знаки зодиака по тем дням рождения, которые указала ваша семья. Он никогда не отправляет ничьё имя или дату рождения — только знаки; он ничего не утверждает о самой дате; и он никогда не присылает уведомление — сообщение просто ждёт вас, когда вы в следующий раз откроете чат. Выключено, пока вы не включите.</string>
+    <string name="s_assistant_greeting_no_server">Здесь недоступно: этот сервер не отправляет ежедневные приветствия.</string>
+    <string name="e_change_assistant_greeting_failed">Не удалось изменить настройку</string>
+    <string name="s_assistant_faces">Ассистент видит лица участников</string>
+    <string name="s_assistant_faces_explanation">Когда кто-то упоминает ассистента в семейном чате, вместе с вопросом модели уходят и фото профиля участников, названных в недавней истории этого чата — до 4, — чтобы ассистент понимал, кто есть кто. Это картинки, которые участники выбрали для себя сами, а не прикреплённые фото; никогда не уходит фото того, кто вышел из семьи, и никого извне. Тогда почти каждое упоминание отправляет картинки, а это стоит дороже. Нужны «Ассистент может смотреть фото» и «Ассистент видит недавнюю историю»; выключено, пока вы не включите, а пока выключено — ни одно лицо не отправляется.</string>
+    <string name="s_assistant_faces_needs_history">Пока «Ассистент видит недавнюю историю» выключено, это ничего не делает: имена не отправляются, а значит и лица тоже.</string>
+    <string name="e_change_assistant_faces_failed">Не удалось изменить настройку</string>
+    <string name="s_open_polls">Открытые опросы</string>
+    <string name="s_open_polls_none">Открытые опросы остаются здесь, пока их не закроют. Сейчас их нет.</string>
+    <string name="e_try_again">Попробуй ещё раз через минуту.</string>
     <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
     <string name="s_pick_a_chat">Выберите чат из списка.</string>
     <plurals name="p_members">
@@ -493,4 +504,18 @@
     <string name="s_emoji_activities">Занятия</string>
     <string name="s_emoji_travel">Путешествия и места</string>
     <string name="s_emoji_objects">Предметы и символы</string>
+    <string name="s_thread">Ветка</string>
+    <string name="s_view_thread">Показать ветку</string>
+    <string name="s_reply_in_thread">Ответить в ветке</string>
+    <string name="e_load_thread_failed">Не удалось загрузить ветку.</string>
+    <string name="s_thread_partial">Не удалось загрузить всю ветку.</string>
+    <string name="s_open_thread">Открывает ветку</string>
+    <plurals name="s_n_replies">
+        <item quantity="one">%1$d ответ</item>
+        <item quantity="few">%1$d ответа</item>
+        <item quantity="many">%1$d ответов</item>
+        <item quantity="other">%1$d ответа</item>
+    </plurals>
+    <string name="s_mentions_you">Упоминает тебя</string>
+    <string name="s_mention_member">Упомянуть %1$s</string>
 </resources>

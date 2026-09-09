@@ -23,12 +23,22 @@ import SwiftUI
 
 /// Shared shape: two matching entries, a length rule, one call, one error.
 private struct PasswordFields: View {
-    let newPasswordLabel: String
     @Binding var newPassword: String
     @Binding var confirmation: String
 
     var body: some View {
-        SecureField(newPasswordLabel, text: $newPassword)
+        // The label is a literal HERE, not a parameter, and that is the whole
+        // point. It used to arrive as a `String` from both call sites, which
+        // binds SecureField's StringProtocol overload and performs no
+        // catalogue lookup at all — so "New Password" was missing from
+        // Localizable.xcstrings entirely and shipped English in all nine
+        // languages, while "Confirm New Password" one line below (a literal
+        // from the start) carried all eight translations. Both callers passed
+        // the same word, so the parameter only ever hid it. The same trap is
+        // recorded at DeleteAccountView.swift (Label) and AuthView.swift
+        // (Text); check-strings.py could not catch this one until SecureField
+        // joined its CALLS list.
+        SecureField("New Password", text: $newPassword)
             .textContentType(.newPassword)
         SecureField("Confirm New Password", text: $confirmation)
             .textContentType(.newPassword)
@@ -73,7 +83,6 @@ struct ChangePasswordView: View {
                 }
                 Section {
                     PasswordFields(
-                        newPasswordLabel: "New Password",
                         newPassword: $newPassword,
                         confirmation: $confirmation)
                 }
@@ -85,6 +94,7 @@ struct ChangePasswordView: View {
                     }
                 }
             }
+            .macSheetForm()
             .navigationTitle("Change Password")
             .inlineNavigationTitle()
             .toolbar {
@@ -107,6 +117,7 @@ struct ChangePasswordView: View {
                 Text("Your other devices have been signed out.")
             }
         }
+        .macSheetFrame(MacSheetSize.changePassword)
         .interactiveDismissDisabled(isSaving)
     }
 
@@ -152,7 +163,6 @@ struct ResetPasswordView: View {
             Form {
                 Section {
                     PasswordFields(
-                        newPasswordLabel: "New Password",
                         newPassword: $newPassword,
                         confirmation: $confirmation)
                 } header: {
@@ -174,6 +184,7 @@ struct ResetPasswordView: View {
                     }
                 }
             }
+            .macSheetForm()
             .navigationTitle("Reset Password")
             .inlineNavigationTitle()
             .toolbar {
@@ -196,6 +207,7 @@ struct ResetPasswordView: View {
                 Text("\(member.displayName) has been signed out everywhere.")
             }
         }
+        .macSheetFrame(MacSheetSize.resetPassword)
         .interactiveDismissDisabled(isSaving)
     }
 

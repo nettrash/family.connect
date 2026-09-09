@@ -77,6 +77,12 @@ final class ChatEntity {
     /// this device does not hold; never by a poll embedded on a fetched
     /// Message, which proves nothing about other polls' lower values.
     var maxPollSeq: Int64 = 0
+    /// An unread message here names this reader — the "@" mark on the row
+    /// (docs/protocol.md, "Mentioning a member"). Maintained by the same
+    /// four writers `unreadCount` has: a live frame sets it, reading clears
+    /// it, the reader's own read from another device clears it at zero,
+    /// and `GET /chats` overwrites it.
+    var hasUnreadMention: Bool = false
 
     init(
         chatID: Int64,

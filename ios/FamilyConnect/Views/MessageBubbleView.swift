@@ -95,6 +95,14 @@ struct MessageBubbleView: View {
     var currentUserID: Int64 = 0
     /// Tapping a quote asks to jump to the quoted message.
     var onTapQuote: (Int64) -> Void = { _ in }
+    /// A tap on a member the message names (docs/protocol.md, "Mentioning
+    /// a member").
+    var onTapMention: (Int64) -> Void = { _ in }
+    /// How many replies this message roots — the "N replies" affordance
+    /// under the bubble, and nothing when 0 (docs/protocol.md, "Threads").
+    var replyCount: Int64 = 0
+    /// Open the chain this message belongs to.
+    var onOpenThread: () -> Void = {}
     /// Tapping a photo or video asks to open it full-screen.
     var onOpenAttachment: (AttachmentDTO) -> Void = { _ in }
     /// Tapping a poll option: cast this vote, or clear it when it is the
@@ -203,7 +211,7 @@ struct MessageBubbleView: View {
     /// something away.
     private var bodyBlocks: [MessageMarkdown.Block] {
         if isEmojiOnly { return [.text(AttributedString(message.body))] }
-        return MessageLinks.blocks(message.body, isMine: isMine)
+        return MessageLinks.blocks(message.body, isMine: isMine, mentions: message.mentions)
     }
 
     /// True when some other block in the balloon — a link card, a photo, a
@@ -410,6 +418,13 @@ struct MessageBubbleView: View {
                 }
                 .padding(.horizontal, 4)
                 }
+
+                // The chain's affordance, with the message and not as a
+                // bubble of its own; never on a hidden row, which draws the
+                // placeholder and the timestamp and nothing else.
+                if replyCount > 0, !(isHiddenByBlock && !isRevealed) {
+                    threadChip
+                }
             }
 
             if !isMine { Spacer(minLength: 48) }
@@ -429,6 +444,25 @@ struct MessageBubbleView: View {
         } action: { visible in
             if visible { hasBeenVisible = true }
         }
+    }
+
+    /// "N replies ›" under a root somebody answered — a tap opens the
+    /// chain on its own surface (docs/protocol.md, "Threads").
+    private var threadChip: some View {
+        Button(action: onOpenThread) {
+            HStack(spacing: 4) {
+                Image(systemName: "arrowshape.turn.up.left.2")
+                Text("\(replyCount) replies")
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.tint)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 4)
+        .accessibilityLabel(Text("\(replyCount) replies"))
+        .accessibilityHint(Text("Opens the thread"))
     }
 
     /// The aggregated reaction chips, inside the balloon and wrapping to
@@ -1041,6 +1075,12 @@ struct MessageBubbleView: View {
     /// (falling back to opening when the bubble cannot take a reaction
     /// yet, so a pending bubble's links never go dead).
     private func handleLinkTap(_ url: URL) {
+        // A member's name, not a page: no double-tap deferral, the tap
+        // is the whole gesture.
+        if let userID = MemberMentions.userID(from: url) {
+            onTapMention(userID)
+            return
+        }
         if pendingLinkOpen != nil {
             pendingLinkOpen?.cancel()
             pendingLinkOpen = nil

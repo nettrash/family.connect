@@ -21,6 +21,7 @@ import me.nettrash.familyconnect.data.net.dto.CreateDirectChatRequest
 import me.nettrash.familyconnect.data.net.dto.MessagePollStateDto
 import me.nettrash.familyconnect.data.net.dto.MessageReactionStateDto
 import me.nettrash.familyconnect.data.net.dto.EditMessageRequest
+import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NewPollDto
 import me.nettrash.familyconnect.data.net.dto.PollsCatchUpResponse
 import me.nettrash.familyconnect.data.net.dto.MessageResponse
@@ -53,6 +54,8 @@ interface ChatApi {
         attachmentIds: List<Long>? = null,
         /** The options that make this message a poll; the body is the question. */
         poll: NewPollDto? = null,
+        /** The members this message names (docs/protocol.md, "Mentioning a member"). */
+        mentions: List<MentionDto>? = null,
     ): ApiResult<MessageResponse>
     suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit>
 
@@ -87,6 +90,34 @@ interface ChatApi {
 
     /** Poll catch-up page: strictly after [afterSeq], ascending. */
     suspend fun getPolls(chatId: Long, afterSeq: Long, limit: Int = 50): ApiResult<PollsCatchUpResponse>
+
+    /**
+     * The chat's OPEN polls, as whole messages, oldest first
+     * (docs/protocol.md, "Finding the open ones").
+     *
+     * A plain read and NOT a cursor: no `after_seq`, no chat cursor moved, no
+     * part of catch-up — [getPolls] above remains the feed of what CHANGED
+     * and remains what the sync loop runs. This answers a different question,
+     * "what is still open right now", and the surface that shows them asks it
+     * when it opens.
+     *
+     * Messages rather than polls because the question IS the message body: a
+     * list of bare polls would draw vote buttons with nothing above them.
+     */
+    suspend fun getOpenPolls(chatId: Long, limit: Int = 50): ApiResult<MessagesResponse>
+
+    /**
+     * `GET /chats/{id}/messages/{mid}/thread` — the chain a message belongs
+     * to, resolved to its root by the server: the root first, then every
+     * reply oldest-first; [afterId] pages it like every oldest-first read
+     * (docs/protocol.md, "Threads").
+     */
+    suspend fun getThread(
+        chatId: Long,
+        messageId: Long,
+        afterId: Long? = null,
+        limit: Int = 50,
+    ): ApiResult<MessagesResponse>
 
     /**
      * `GET /calls/ice` — the STUN/TURN servers to hand a peer connection,
@@ -133,12 +164,13 @@ class DefaultChatApi @Inject constructor(
         replyToMessageId: Long?,
         attachmentIds: List<Long>?,
         poll: NewPollDto?,
+        mentions: List<MentionDto>?,
     ): ApiResult<MessageResponse> =
         // 201 on first delivery, 200 when the same client_msg_id retries —
         // both are 2xx, both decode to the same message. Never a duplicate.
         client.post(
             "/chats/$chatId/messages",
-            SendMessageRequest(clientMsgId, body, replyToMessageId, attachmentIds, poll),
+            SendMessageRequest(clientMsgId, body, replyToMessageId, attachmentIds, poll, mentions),
         )
 
     override suspend fun postRead(chatId: Long, lastReadMessageId: Long): ApiResult<Unit> =
@@ -205,6 +237,20 @@ class DefaultChatApi @Inject constructor(
         limit: Int,
     ): ApiResult<PollsCatchUpResponse> =
         client.get("/chats/$chatId/polls?after_seq=$afterSeq&limit=$limit")
+
+    override suspend fun getOpenPolls(chatId: Long, limit: Int): ApiResult<MessagesResponse> =
+        client.get("/chats/$chatId/polls/open?limit=$limit")
+
+    override suspend fun getThread(
+        chatId: Long,
+        messageId: Long,
+        afterId: Long?,
+        limit: Int,
+    ): ApiResult<MessagesResponse> =
+        client.get(
+            "/chats/$chatId/messages/$messageId/thread?limit=$limit" +
+                (afterId?.let { "&after_id=$it" } ?: ""),
+        )
 
     override suspend fun iceServers(): ApiResult<IceServersResponse> =
         client.get("/calls/ice")

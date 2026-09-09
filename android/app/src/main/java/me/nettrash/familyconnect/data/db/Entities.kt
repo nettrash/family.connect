@@ -86,6 +86,13 @@ data class ChatEntity(
      * jumped ahead of them would skip changes this device never saw.
      */
     @ColumnInfo(defaultValue = "0") val maxPollSeq: Long = 0,
+    /**
+     * An unread message here names this reader — the "@" mark on the row
+     * (docs/protocol.md, "Mentioning a member"). Maintained by the same
+     * writers the count has: a live frame sets it, reading clears it, a
+     * recount at zero clears it, and `GET /chats` overwrites it.
+     */
+    @ColumnInfo(defaultValue = "0") val mentionedUnread: Boolean = false,
 )
 
 /**
@@ -164,6 +171,8 @@ data class PendingAttachmentEntity(
         Index(value = ["serverId"], unique = true),
         Index(value = ["chatId", "serverId"]),
         Index(value = ["chatId", "status"]),
+        // The chain's access path (docs/protocol.md, "Threads").
+        Index(value = ["threadRootId"]),
     ],
 )
 data class MessageEntity(
@@ -219,6 +228,39 @@ data class MessageEntity(
     val replyParentMessageId: Long? = null,
     val replyParentSenderId: Long? = null,
     val replyParentExcerpt: String? = null,
+    /**
+     * The TOP of this reply's chain, as the server decided it at send time —
+     * or, on an optimistic row, as this device derived it from the quoted
+     * message it holds (docs/protocol.md, "Threads"). Null on a message
+     * that is not a reply, and once retention has swept the root.
+     */
+    val threadRootId: Long? = null,
+    /**
+     * How many messages name this one as their root. 0 is "nobody has
+     * answered" — the wire's ABSENT, stored as a number so the chip rule is
+     * one comparison. Raised by one per reply that arrives LIVE, and
+     * overwritten by every server copy of this message.
+     */
+    @ColumnInfo(defaultValue = "0") val replyCount: Long = 0,
+    /**
+     * Fetched by the thread read rather than by a history or catch-up page,
+     * so it may sit OUTSIDE the contiguous window this device holds. The
+     * paging cursors are derived from the store's oldest and newest server
+     * ids, and a detached row must not move them — a root older than the
+     * window would make the next history page skip everything between, and
+     * a reply newer than it would make the next catch-up skip the same. It
+     * clears the moment a page delivers the same message (docs/protocol.md,
+     * "Threads": the read is no part of catch-up).
+     */
+    @ColumnInfo(defaultValue = "0") val detached: Boolean = false,
+    /**
+     * The members this message names, as the wire's `mentions` array stored
+     * verbatim (MentionsCodec); null when it names nobody. Written on the
+     * optimistic row from what the composer resolved, so a retry re-sends
+     * the list, and overwritten by every server copy (docs/protocol.md,
+     * "Mentioning a member").
+     */
+    val mentionsJson: String? = null,
     /**
      * Set once the body has been edited. [editSeq] is the apply guard: a
      * stored body is overwritten only by a body at least as new, or a

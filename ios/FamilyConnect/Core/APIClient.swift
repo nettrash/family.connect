@@ -276,6 +276,16 @@ actor APIClient {
         /// `ai_vision` goes off — both are the server's to enforce, and
         /// this client learns them from the answer.
         var aiHistoryPhotos: Bool?
+        /// The fourth boolean, and the one bound to nothing: whether the
+        /// assistant greets the family unprompted once a day (protocol.md,
+        /// "The daily greeting"). Absent leaves it alone, like the three
+        /// above; unlike `ai_history_photos` there is no state of the others
+        /// that can refuse it or clear it.
+        var aiGreeting: Bool?
+        /// The fifth boolean, of the third's exact shape (protocol.md,
+        /// "Profile pictures of members"): the server refuses `true` while
+        /// `ai_vision` is off, and turns it off whenever `ai_vision` goes off.
+        var aiFaces: Bool?
         /// The same double Optional the language uses, and for the same
         /// reason: the outer is "was this field touched", the inner is the
         /// value, and a real JSON `null` CLEARS the cap. These are the two
@@ -289,6 +299,8 @@ actor APIClient {
             case aiHistory = "ai_history"
             case aiVision = "ai_vision"
             case aiHistoryPhotos = "ai_history_photos"
+            case aiGreeting = "ai_greeting"
+            case aiFaces = "ai_faces"
             case maxMembers = "max_members"
         }
 
@@ -308,6 +320,8 @@ actor APIClient {
             try container.encodeIfPresent(aiHistory, forKey: .aiHistory)
             try container.encodeIfPresent(aiVision, forKey: .aiVision)
             try container.encodeIfPresent(aiHistoryPhotos, forKey: .aiHistoryPhotos)
+            try container.encodeIfPresent(aiGreeting, forKey: .aiGreeting)
+            try container.encodeIfPresent(aiFaces, forKey: .aiFaces)
             if let maxMembers {
                 if let cap = maxMembers {
                     try container.encode(cap, forKey: .maxMembers)
@@ -431,6 +445,32 @@ actor APIClient {
     func setAIHistoryPhotos(_ enabled: Bool) async throws -> FamilyDTO {
         let response: FamilyResponse = try await request(
             "PATCH", "/families/mine", body: FamilyPatchRequest(aiHistoryPhotos: enabled))
+        return response.family
+    }
+
+    /// Turn the assistant's daily greeting on or off for this family
+    /// (protocol.md, "The daily greeting").
+    ///
+    /// Sends this one key and nothing else, and — unlike `setAIHistoryPhotos`
+    /// — cannot be refused for the state of another switch: this one is bound
+    /// to none of them. What it CANNOT promise is that a greeting will
+    /// arrive; that also needs the operator's half, which the caller reads
+    /// from `MeResponse.greetingsEnabled`.
+    func setAIGreeting(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiGreeting: enabled))
+        return response.family
+    }
+
+    /// Turn the fifth switch on or off — whether a mention may be shown the
+    /// profile pictures of the members named in its transcript (protocol.md,
+    /// "Profile pictures of members"). Sends this one key and nothing else;
+    /// the server answers `validation` (400) to `true` while `ai_vision` is
+    /// off, which is why the switch that calls this is disabled in that
+    /// state rather than left to find out.
+    func setAIFaces(_ enabled: Bool) async throws -> FamilyDTO {
+        let response: FamilyResponse = try await request(
+            "PATCH", "/families/mine", body: FamilyPatchRequest(aiFaces: enabled))
         return response.family
     }
 
@@ -589,12 +629,15 @@ actor APIClient {
         /// What makes the message a poll; the body is then the QUESTION.
         /// Mutually exclusive with `attachmentIDs` server-side.
         let poll: NewPollRequest?
+        /// The members this message names — absent when nil, like the rest.
+        let mentions: [MentionDTO]?
         enum CodingKeys: String, CodingKey {
             case clientMsgID = "client_msg_id"
             case body
             case replyToMessageID = "reply_to_message_id"
             case attachmentIDs = "attachment_ids"
             case poll
+            case mentions
         }
     }
 
@@ -617,7 +660,8 @@ actor APIClient {
         body: String,
         replyToMessageID: Int64? = nil,
         attachmentIDs: [Int64]? = nil,
-        pollOptions: [String]? = nil
+        pollOptions: [String]? = nil,
+        mentions: [MentionDTO]? = nil
     ) async throws -> MessageDTO {
         let response: MessageResponse = try await request(
             "POST", "/chats/\(chatID)/messages",
@@ -626,7 +670,8 @@ actor APIClient {
                 body: body,
                 replyToMessageID: replyToMessageID,
                 attachmentIDs: attachmentIDs,
-                poll: pollOptions.map { NewPollRequest(options: $0) }))
+                poll: pollOptions.map { NewPollRequest(options: $0) },
+                mentions: mentions))
         return response.message
     }
 
@@ -934,6 +979,35 @@ actor APIClient {
     /// no-op. A non-author gets 403 `not_message_author`.
     func closePoll(chatID: Int64, messageID: Int64) async throws -> PollStateDTO {
         try await request("POST", "/chats/\(chatID)/messages/\(messageID)/poll/close")
+    }
+
+    /// The chat's OPEN polls, as whole messages, oldest first
+    /// (protocol.md, "Finding the open ones").
+    ///
+    /// A plain read and NOT a cursor: it takes no `after_seq`, it moves no
+    /// chat cursor, and it is no part of catch-up — `polls(chatID:afterSeq:)`
+    /// below remains the feed of what changed and remains what the sync loop
+    /// runs. This answers a different question, "what is still open right
+    /// now", and the surface that shows them asks it when it opens.
+    ///
+    /// Messages rather than polls because the question IS the message body: a
+    /// list of bare polls would draw vote buttons with nothing above them.
+    func openPolls(chatID: Int64, limit: Int = 50) async throws -> [MessageDTO] {
+        let query = [URLQueryItem(name: "limit", value: String(limit))]
+        let response: MessagesResponse = try await request(
+            "GET", "/chats/\(chatID)/polls/open", query: query)
+        return response.messages
+    }
+
+    /// The chain `messageID` belongs to, resolved to its root by the
+    /// server: the root first, then every reply oldest-first; `afterID`
+    /// pages it like every oldest-first read (docs/protocol.md, "Threads").
+    func thread(chatID: Int64, messageID: Int64, afterID: Int64? = nil, limit: Int = 50) async throws -> [MessageDTO] {
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let afterID { query.append(URLQueryItem(name: "after_id", value: String(afterID))) }
+        let response: MessagesResponse = try await request(
+            "GET", "/chats/\(chatID)/messages/\(messageID)/thread", query: query)
+        return response.messages
     }
 
     /// Poll catch-up pages, ascending by poll_seq; the caller loops

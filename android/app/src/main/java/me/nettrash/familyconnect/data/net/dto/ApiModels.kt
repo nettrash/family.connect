@@ -15,6 +15,7 @@
 package me.nettrash.familyconnect.data.net.dto
 
 import kotlinx.serialization.SerialName
+import me.nettrash.familyconnect.util.PollVoteState
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -166,6 +167,40 @@ data class FamilyDto(
      */
     @SerialName("ai_history_photos") val aiHistoryPhotos: Boolean = false,
     /**
+     * Whether the assistant may post one unprompted good-morning message a
+     * day into this family's chat (docs/protocol.md, "The daily greeting").
+     *
+     * ALWAYS present on the wire, and FALSE by default — for every family
+     * that predates it and for a server that predates the field, which
+     * posts no greeting at all.
+     *
+     * INDEPENDENT of the three switches above, uniquely among them. They
+     * answer widening forms of one question — how much of what this family
+     * said and photographed may be shown to a model — which is why
+     * [aiHistoryPhotos] is bound to [aiVision]. This one answers a different
+     * question: whether the assistant SPEAKS when nobody asked. Nothing it
+     * sends is the family's own words or pictures, so no setting of the
+     * others gates it and none of them clears it.
+     *
+     * It is the family's half of a two-key arrangement; the operator's half
+     * is `MeResponse.greetingsEnabled`.
+     */
+    @SerialName("ai_greeting") val aiGreeting: Boolean = false,
+    /**
+     * Whether an `@ai` mention in the family chat may ALSO be shown the
+     * profile pictures of the members whose lines are in the transcript it
+     * sends (docs/protocol.md, "Profile pictures of members"). A FIFTH
+     * switch, beside [aiHistoryPhotos] rather than inside it: that switch's
+     * sentence names "the most recent photos in the family chat", and a
+     * profile picture is not in the chat.
+     *
+     * ALWAYS present on the wire, FALSE by default — for every family that
+     * predates it and for a server that predates the field, which sends no
+     * face at all. Only true while [aiVision] is: the server refuses the
+     * other state and turns this off whenever [aiVision] goes off.
+     */
+    @SerialName("ai_faces") val aiFaces: Boolean = false,
+    /**
      * The most members this family admits, or null for NO cap of the
      * owner's own — in which case the operator's ceiling
      * (`MeResponse.maxFamilyMembers`) is what binds at the join door.
@@ -257,15 +292,24 @@ data class PollOptionDto(
 @Serializable
 data class PollDto(
     @SerialName("poll_seq") val pollSeq: Long,
-    val closed: Boolean,
+    override val closed: Boolean,
     val options: List<PollOptionDto>,
-) {
+) : PollVoteState {
     /** The option this user currently holds, or null when they have not voted. */
     fun optionHeldBy(userId: Long): PollOptionDto? =
         options.firstOrNull { option -> option.votes.any { it == userId } }
 
     /** Everybody who has voted, each counted once (a vote is one option). */
     val voters: Set<Long> get() = options.flatMapTo(LinkedHashSet()) { it.votes }
+
+    /**
+     * The same set as [voters], under the name the shared badge rule asks
+     * for (`util/OpenPollsBadge.kt`). Declaring the interface here rather
+     * than mapping into it at each call site is what stops the rule and the
+     * data drifting apart — the iOS side does the same with a protocol
+     * conformance.
+     */
+    override val voterIds: List<Long> get() = voters.toList()
 
     /** Votes cast in total — the denominator of every option's share. */
     val totalVotes: Int get() = options.sumOf { it.votes.size }
@@ -327,6 +371,32 @@ data class QuotedParentDto(
     val excerpt: String,
 )
 
+/**
+ * A member a message names: the id, and the display name AS TYPED after
+ * the `@`, so a bubble can find the token to highlight without knowing
+ * what the member is called today (docs/protocol.md, "Mentioning a
+ * member"). One shape in and out.
+ */
+@Serializable
+data class MentionDto(
+    @SerialName("user_id") val userId: Long,
+    val name: String,
+)
+
+/**
+ * Local persistence codec: the messages table stores the mention list
+ * verbatim in its WIRE shape (`mentionsJson` — null = names nobody).
+ */
+object MentionsCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(mentions: List<MentionDto>): String = json.encodeToString(mentions)
+
+    fun decode(raw: String?): List<MentionDto> =
+        raw?.let { runCatching { json.decodeFromString<List<MentionDto>>(it) }.getOrNull() }
+            .orEmpty()
+}
+
 @Serializable
 data class MessageDto(
     val id: Long,
@@ -341,6 +411,18 @@ data class MessageDto(
     @SerialName("reaction_seq") val reactionSeq: Long? = null,
     // Present when (and only when) this message is a reply.
     @SerialName("reply_to") val replyTo: ReplyToDto? = null,
+    /**
+     * The TOP of this reply's chain, decided by the server at send time and
+     * never changed (docs/protocol.md, "Threads"). Absent on a message that
+     * is not a reply, and once retention has swept the root.
+     */
+    @SerialName("thread_root_id") val threadRootId: Long? = null,
+    /**
+     * How many messages name this one as their root, recomputed by the
+     * server on every read. Present only on a root somebody answered —
+     * absent, never 0, everywhere else.
+     */
+    @SerialName("reply_count") val replyCount: Long? = null,
     // Both present when (and only when) the body has been edited. The seq
     // is the apply guard — see MessageRepository.applyBody.
     @SerialName("edited_at") val editedAt: String? = null,
@@ -376,6 +458,12 @@ data class MessageDto(
      * the call it was on.
      */
     val call: CallDto? = null,
+    /**
+     * The members this message names — decided at send time, in the
+     * sender's order, never changed by an edit (docs/protocol.md,
+     * "Mentioning a member"). Absent, never [], otherwise.
+     */
+    @SerialName("mentions") val mentions: List<MentionDto>? = null,
 ) {
     /**
      * The read rule, in one place: prefer `attachments`, fall back to the
@@ -660,6 +748,8 @@ data class PatchFamilyRequest(
     @SerialName("ai_history") val aiHistory: Boolean? = null,
     @SerialName("ai_vision") val aiVision: Boolean? = null,
     @SerialName("ai_history_photos") val aiHistoryPhotos: Boolean? = null,
+    @SerialName("ai_greeting") val aiGreeting: Boolean? = null,
+    @SerialName("ai_faces") val aiFaces: Boolean? = null,
     @SerialName("max_members") val maxMembers: JsonElement? = null,
 ) {
     companion object {
@@ -699,6 +789,25 @@ data class PatchFamilyRequest(
          * (docs/protocol.md, "Recent photos from the family chat").
          */
         fun aiHistoryPhotos(enabled: Boolean) = PatchFamilyRequest(aiHistoryPhotos = enabled)
+
+        /**
+         * The fourth switch, and the one bound to nothing: whether the
+         * assistant greets the family unprompted once a day
+         * (docs/protocol.md, "The daily greeting"). Unlike
+         * [aiHistoryPhotos] no state of the others can refuse it or clear
+         * it, so there is nothing here for the answer to teach this client
+         * beyond the value it just set.
+         */
+        fun aiGreeting(enabled: Boolean) = PatchFamilyRequest(aiGreeting = enabled)
+
+        /**
+         * The fifth switch, of the third's exact shape: `true` is refused
+         * while `ai_vision` is off (`validation`, 400) and turned off
+         * whenever `ai_vision` goes off — both the server's to enforce, and
+         * this client learns them from the answer (docs/protocol.md,
+         * "Profile pictures of members").
+         */
+        fun aiFaces(enabled: Boolean) = PatchFamilyRequest(aiFaces = enabled)
     }
 }
 
@@ -733,6 +842,8 @@ data class SendMessageRequest(
      * message — encodeDefaults=false again.
      */
     val poll: NewPollDto? = null,
+    /** The members this message names — omitted when null, like the rest. */
+    val mentions: List<MentionDto>? = null,
 )
 
 /**
@@ -946,6 +1057,19 @@ data class MeResponse(
      * (docs/protocol.md, `GET /me`).
      */
     @SerialName("support_contact") val supportContact: String? = null,
+    /**
+     * Whether this server posts the assistant's daily greeting at all —
+     * `[greetings]` on AND a usable assistant, since the greeting is written
+     * by that deployment (docs/protocol.md, "The daily greeting").
+     *
+     * ALWAYS present on a current server; FALSE for one that predates it,
+     * which is also the right answer there. It exists for the reason
+     * [callsEnabled] does: `ai_greeting` is only the family's half, so
+     * without this an owner who turned their half on and saw nothing all
+     * week could not tell a server that never posts from a switch that did
+     * not save.
+     */
+    @SerialName("greetings_enabled") val greetingsEnabled: Boolean = false,
 )
 
 @Serializable
@@ -1170,6 +1294,12 @@ data class ChatListItemDto(
     // can never see a change to an older row, and a vote is nothing but
     // a change to an older row.
     @SerialName("max_poll_seq") val maxPollSeq: Long? = null,
+    /**
+     * `true` when (and only when) an unread message in the chat names the
+     * caller — a filter over the rows [unreadCount] counts. Absent
+     * otherwise, never `false` (docs/protocol.md, "Mentioning a member").
+     */
+    val mentioned: Boolean? = null,
 )
 
 @Serializable

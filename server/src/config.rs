@@ -52,6 +52,9 @@ pub struct Config {
 
     #[serde(default)]
     pub families: FamiliesConfig,
+
+    #[serde(default)]
+    pub greetings: GreetingsConfig,
 }
 
 /// `[families]` — who may start a family here (docs/protocol.md, "Starting
@@ -92,6 +95,88 @@ impl Default for FamiliesConfig {
             familyless_account_ttl_days: default_familyless_account_ttl_days(),
         }
     }
+}
+
+/// `[greetings]` — the assistant's one unprompted message a day
+/// (docs/protocol.md, "The daily greeting").
+///
+/// This is the OPERATOR's half of a two-key switch. Nothing is posted for a
+/// family until its owner has also turned `ai_greeting` on, and nothing is
+/// posted at all unless `[ai]` is usable — the greeting is written by the
+/// same deployment every other assistant answer goes to, and it is the
+/// operator who pays for it.
+///
+/// Off by default. A server that upgrades into this version starts posting
+/// nothing, which is the only defensible default for a feature whose whole
+/// nature is speaking without being asked.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GreetingsConfig {
+    /// Whether this server posts daily greetings at all.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// The hour, UTC, at which the day's greeting is posted, 0-23.
+    ///
+    /// **UTC and only UTC**, because that is the only clock this server has:
+    /// no timezone is stored for a family and none travels on the wire
+    /// (docs/protocol.md, "The assistant"), so there is nothing to convert
+    /// to and nothing honest to convert from. An operator who knows where
+    /// their family lives sets the hour that suits them; the server cannot
+    /// work it out and does not pretend to.
+    ///
+    /// The default is 06:00 UTC, which is the issue's own suggestion. It is
+    /// also why the greeting never pushes: 06:00 UTC is the middle of the
+    /// night across a great deal of the world, and the server has no way to
+    /// know whether this family is one of those.
+    #[serde(default = "default_greeting_hour_utc")]
+    pub hour_utc: u8,
+
+    /// The minute past that hour, 0-59. 0 by default.
+    ///
+    /// It exists so that an operator running several services on one box can
+    /// keep them off the same minute, not because a family cares.
+    #[serde(default)]
+    pub minute: u8,
+
+    /// The language to write in for a family that has NOT set one of its own
+    /// — an IETF tag, the same set `families.language` takes.
+    ///
+    /// Unset by default, and unset means **that family gets no greeting**
+    /// rather than an English one. A greeting has no asking device, so the
+    /// usual fallback chain has nothing to fall back to; this document
+    /// already argues at length that an unset family language is not English
+    /// (docs/protocol.md, "The family's language"), and a greeting that
+    /// silently chose one would contradict it. An operator who knows what
+    /// their families read names it here; one who does not, leaves it, and
+    /// only families that answered the question themselves are greeted.
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+impl Default for GreetingsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hour_utc: default_greeting_hour_utc(),
+            minute: 0,
+            language: None,
+        }
+    }
+}
+
+impl GreetingsConfig {
+    /// Configured well enough to post. As with [`AiConfig::is_usable`], a
+    /// half-filled section behaves like "off" rather than failing daily at
+    /// runtime — though here the only way to be half-filled is an hour or a
+    /// minute out of range, which [`Config::validate`] refuses at startup.
+    pub fn is_usable(&self) -> bool {
+        self.enabled && self.hour_utc < 24 && self.minute < 60
+    }
+}
+
+/// 06:00 UTC — the hour the issue asked for.
+fn default_greeting_hour_utc() -> u8 {
+    6
 }
 
 /// `[calls]` — peer-to-peer voice calls (docs/protocol.md, "Voice calls").
@@ -1342,6 +1427,23 @@ impl Config {
         }
         if self.auth.session_ttl_days < 1 {
             anyhow::bail!("auth.session_ttl_days must be at least 1");
+        }
+        // Refused at startup rather than clamped at 06:00 daily: an operator
+        // who typed 25 meant something, and a server that silently posted at
+        // a different hour than the one in their file would be lying to them
+        // once a day for ever.
+        if self.greetings.hour_utc > 23 {
+            anyhow::bail!(
+                "greetings.hour_utc must be 0-23 (it is UTC, and it is the only clock the \
+                 server has — no timezone is stored for a family), got {}",
+                self.greetings.hour_utc
+            );
+        }
+        if self.greetings.minute > 59 {
+            anyhow::bail!(
+                "greetings.minute must be 0-59, got {}",
+                self.greetings.minute
+            );
         }
         // Bounded above as well: the sweep binds it as a PostgreSQL `int`
         // for `make_interval`, and a "practically never" such as

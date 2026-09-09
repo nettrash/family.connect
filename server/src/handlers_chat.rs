@@ -25,7 +25,7 @@ use crate::events;
 use crate::handlers_call::attach_calls;
 use crate::handlers_poll::attach_polls;
 use crate::models::{
-    Attachment, Chat, ChatListEntry, Message, Poll, QuotedParent, Reaction, ReplyTo,
+    Attachment, Chat, ChatListEntry, Mention, Message, Poll, QuotedParent, Reaction, ReplyTo,
 };
 use crate::state::AppState;
 
@@ -64,7 +64,18 @@ pub struct PostMessageRequest {
     /// and may NOT be empty, and a poll excludes an attachment.
     #[serde(default)]
     pub poll: Option<NewPoll>,
+    /// Optional: the members this message names — family chat only
+    /// (protocol.md, "Mentioning a member").
+    #[serde(default)]
+    pub mentions: Option<Vec<Mention>>,
 }
+
+/// At most this many members on one message (protocol.md, "Mentioning a
+/// member"): a family is small, and a list longer than this is a bug.
+pub const MAX_MENTIONS_PER_MESSAGE: usize = 20;
+/// A mention's `name` is a display name as typed, and a display name is at
+/// most this long (see `handlers_auth::validate_display_name`).
+const MAX_MENTION_NAME_CHARS: usize = 64;
 
 /// The poll half of a `POST /chats/{id}/messages` body, and of a `send`
 /// frame: `{"options": ["Pizza", "Pasta"]}`.
@@ -190,7 +201,10 @@ const MESSAGE_COLS: &str = "m.id, m.chat_id, m.sender_id, m.client_msg_id, m.bod
                             m.reaction_seq, m.edit_seq, m.edited_at, m.reply_to_message_id, \
                             p.sender_id AS reply_sender_id, p.body AS reply_body, \
                             p.reply_to_message_id AS reply_parent_message_id, \
-                            g.sender_id AS reply_parent_sender_id, g.body AS reply_parent_body";
+                            g.sender_id AS reply_parent_sender_id, g.body AS reply_parent_body, \
+                            m.thread_root_id, \
+                            (SELECT count(*) FROM messages r WHERE r.thread_root_id = m.id) \
+                                AS reply_count";
 const MESSAGE_FROM: &str = "FROM messages m LEFT JOIN messages p \
                             ON p.id = m.reply_to_message_id AND p.chat_id = m.chat_id \
                             LEFT JOIN messages g \
@@ -333,6 +347,96 @@ pub async fn attach_attachments(
     Ok(())
 }
 
+/// Hydrate `mentions` for a page of messages — one query keyed by
+/// message id, exactly as `attach_attachments` does — so a message names
+/// the same members on every read: a page, the edits catch-up, a thread, a
+/// dedup re-ack (protocol.md, "Mentioning a member"). Absent, never an
+/// empty array, on a message that names nobody.
+pub async fn attach_mentions(
+    pool: &sqlx::PgPool,
+    messages: &mut [Message],
+) -> Result<(), ApiError> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
+    let rows = sqlx::query(
+        "SELECT message_id, user_id, name
+         FROM message_mentions
+         WHERE message_id = ANY($1)
+         ORDER BY message_id, position",
+    )
+    .bind(&message_ids)
+    .fetch_all(pool)
+    .await?;
+    let mut by_message: HashMap<i64, Vec<Mention>> = HashMap::new();
+    for row in &rows {
+        by_message
+            .entry(row.get("message_id"))
+            .or_default()
+            .push(Mention {
+                user_id: row.get("user_id"),
+                name: row.get("name"),
+            });
+    }
+    for message in messages.iter_mut() {
+        if let Some(list) = by_message.remove(&message.id) {
+            message.mentions = Some(list);
+        }
+    }
+    Ok(())
+}
+
+/// The rules a mention list must pass (protocol.md, "Mentioning a
+/// member"), every refusal `validation`. Membership is ONE query over the
+/// whole list against the chat's family: the assistant (in no family), a
+/// member who left and a scrubbed account all fail the same predicate.
+async fn validate_mentions(
+    state: &AppState,
+    chat_id: i64,
+    chat_kind: &str,
+    body: &str,
+    mentions: &[Mention],
+) -> Result<(), ApiError> {
+    let refuse = |reason: &str| ApiError::bad_request(codes::VALIDATION, reason);
+    if chat_kind != "family" {
+        return Err(refuse("mentions are only accepted in the family chat"));
+    }
+    if mentions.len() > MAX_MENTIONS_PER_MESSAGE {
+        return Err(refuse("a message names at most 20 members"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for mention in mentions {
+        if !seen.insert(mention.user_id) {
+            return Err(refuse("the same member is named twice"));
+        }
+        let name = mention.name.as_str();
+        if name.is_empty() || name.chars().count() > MAX_MENTION_NAME_CHARS {
+            return Err(refuse("a mention's name is empty or too long"));
+        }
+        if !crate::mentions::names_member(body, name) {
+            return Err(refuse("the body does not say @ followed by that name"));
+        }
+    }
+    let ids: Vec<i64> = mentions.iter().map(|mention| mention.user_id).collect();
+    let members: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM users u
+         WHERE u.id = ANY($1)
+           AND u.family_id IS NOT NULL
+           AND u.family_id = (SELECT family_id FROM chats WHERE id = $2)",
+    )
+    .bind(&ids)
+    .bind(chat_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if members as usize != ids.len() {
+        return Err(refuse(
+            "a mention names somebody who is not a member of this family",
+        ));
+    }
+    Ok(())
+}
+
 /// Trim and bounds-check a message body. Shared by send and edit on
 /// purpose: the protocol gives them the same rules, and two copies would
 /// eventually disagree about which one is authoritative.
@@ -424,6 +528,9 @@ pub async fn create_message(
     // endpoint — a poll IS a message, and a second write path is exactly
     // what would let the two drift apart.
     poll: Option<&NewPoll>,
+    // The members this message names, in the sender's order; empty means
+    // none (protocol.md, "Mentioning a member").
+    mentions: &[Mention],
     // Which language to answer an assistant question in, from the sending
     // device (docs/protocol.md, "The assistant"). None outside an assistant
     // chat, and harmless there too.
@@ -456,6 +563,24 @@ pub async fn create_message(
                 "a message carries a poll or an attachment, not both",
             ));
         }
+    }
+
+    // Who the message names, checked before the insert and refused as
+    // `validation` (protocol.md, "Mentioning a member"): the family chat
+    // only; the array's own rules; each name really in the body, whole and
+    // at a boundary; and every id a member of THIS family now — which
+    // excludes the assistant (in no family), a member who has left and a
+    // deleted account with one predicate. Nothing about blocks, on
+    // purpose: a refusal keyed on who blocked the sender would tell them.
+    //
+    // Against the TRIMMED body, which is the body that will be stored and
+    // read back (`validate_body` below trims, and an empty caption is
+    // stored empty). Checked against the raw one, a name whose last
+    // character is the body's own trailing space would pass here and be
+    // persisted beside a body that no longer contains it — a push and an
+    // "@" mark for a token no reader can find.
+    if !mentions.is_empty() {
+        validate_mentions(state, chat_id, &chat_kind, body.trim(), mentions).await?;
     }
 
     // The set rules, checked before any id is looked up: the ceiling and
@@ -561,11 +686,19 @@ pub async fn create_message(
     // undeletable bubble that is also the chat's newest message.
     let mut tx = state.pool.begin().await?;
 
+    // The chain's root, decided here and never again: the quoted message's
+    // own root when it is a reply, the quoted message itself when it is
+    // not — one subquery in the same statement, so the row and its root
+    // are written together (protocol.md, "Threads"). NULL, through the
+    // subquery, when there is no quote.
     let inserted = sqlx::query(
-        "INSERT INTO messages (chat_id, sender_id, client_msg_id, body, reply_to_message_id)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO messages (chat_id, sender_id, client_msg_id, body, reply_to_message_id,
+                               thread_root_id)
+         VALUES ($1, $2, $3, $4, $5,
+                 (SELECT COALESCE(q.thread_root_id, q.id) FROM messages q
+                   WHERE q.id = $5 AND q.chat_id = $1))
          ON CONFLICT (chat_id, sender_id, client_msg_id) DO NOTHING
-         RETURNING id, chat_id, sender_id, client_msg_id, body, created_at",
+         RETURNING id, chat_id, sender_id, client_msg_id, body, created_at, thread_root_id",
     )
     .bind(chat_id)
     .bind(sender_id)
@@ -641,6 +774,24 @@ pub async fn create_message(
             // first element, for clients that predate plurality.
             message.attachment = claimed.first().cloned();
             message.attachments = Some(claimed);
+        }
+        if !mentions.is_empty() {
+            // Same transaction: the list and the message land together or
+            // not at all, and the push that names people reads the list
+            // off the message this function returns.
+            for (position, mention) in mentions.iter().enumerate() {
+                sqlx::query(
+                    "INSERT INTO message_mentions (message_id, user_id, name, position)
+                     VALUES ($1, $2, $3, $4)",
+                )
+                .bind(message.id)
+                .bind(mention.user_id)
+                .bind(&mention.name)
+                .bind(position as i32)
+                .execute(&mut *tx)
+                .await?;
+            }
+            message.mentions = Some(mentions.to_vec());
         }
         if let Some(options) = &poll_options {
             // Same transaction, same reason: a poll written after an
@@ -730,6 +881,7 @@ pub async fn create_message(
     attach_attachments(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_mentions(&state.pool, std::slice::from_mut(&mut message)).await?;
     Ok((message, false))
 }
 
@@ -844,6 +996,7 @@ pub async fn fetch_message(
     attach_attachments(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_mentions(&state.pool, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
 
@@ -872,6 +1025,7 @@ pub async fn fetch_message_by_client_id(
     attach_attachments(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_polls(&state.pool, std::slice::from_mut(&mut message)).await?;
     attach_calls(&state.pool, std::slice::from_mut(&mut message)).await?;
+    attach_mentions(&state.pool, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
 
@@ -1160,6 +1314,24 @@ pub async fn list_chats(
                 lm.created_at AS last_created_at,
                 lm.call_outcome, lm.call_duration_secs, lm.call_video,
                 uc.unread AS unread_count,
+                -- Does an unread message here NAME the caller — a filter
+                -- over exactly the rows `uc` counts (same threshold, same
+                -- sender exclusion), minus what a member the caller has
+                -- blocked wrote, which is a hidden row (protocol.md,
+                -- \"Mentioning a member\").
+                EXISTS (
+                    SELECT 1 FROM message_mentions mn
+                    JOIN messages mm ON mm.id = mn.message_id
+                    WHERE mm.chat_id = c.id
+                      AND mn.user_id = $1
+                      AND mm.id > COALESCE(cr.last_read_message_id, 0)
+                      AND mm.sender_id <> $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM member_blocks bb
+                           WHERE bb.blocker_user_id = $1
+                             AND bb.blocked_user_id = mm.sender_id
+                      )
+                ) AS mentioned,
                 -- The caller's own marker, off the SAME chat_reads row the
                 -- unread count is measured against: it costs no extra join
                 -- and no extra query, and 0 (never read anything here) is
@@ -1293,6 +1465,12 @@ pub async fn list_chats(
                     // Previews carry neither reactions nor the quote: the chat
                     // list draws one line of text, not a bubble.
                     reply_to: None,
+                    // Nor the chain: a preview is one line of text, and
+                    // "N replies" is drawn on the bubble it belongs to.
+                    thread_root_id: None,
+                    reply_count: None,
+                    // Nor who it names: the mark is on the row, not the preview.
+                    mentions: None,
                     // Nor the edit stamps — the preview is the current text,
                     // and whether it was edited is a bubble's business.
                     edited_at: None,
@@ -1331,6 +1509,7 @@ pub async fn list_chats(
                 max_reaction_seq: (last_reaction_seq > 0).then_some(last_reaction_seq),
                 max_edit_seq: (last_edit_seq > 0).then_some(last_edit_seq),
                 max_poll_seq: (last_poll_seq > 0).then_some(last_poll_seq),
+                mentioned: row.get::<bool, _>("mentioned").then_some(true),
             }
         })
         .collect();
@@ -1486,6 +1665,7 @@ pub async fn get_messages(
     attach_attachments(&state.pool, &mut messages).await?;
     attach_polls(&state.pool, &mut messages).await?;
     attach_calls(&state.pool, &mut messages).await?;
+    attach_mentions(&state.pool, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }
@@ -1517,6 +1697,7 @@ pub async fn post_message(
         req.reply_to_message_id,
         &attachment_ids,
         req.poll.as_ref(),
+        req.mentions.as_deref().unwrap_or(&[]),
         language.as_deref(),
     )
     .await?;
@@ -1548,9 +1729,17 @@ pub async fn mark_read(
         apply_read_marker(&state, chat_id, auth.user_id, req.last_read_message_id).await?;
     // Relay the effective (post-GREATEST) marker so receivers never observe
     // a regression even when the client reported a stale value.
+    //
+    // `None` for the origin connection, because an HTTP request has none to
+    // skip — so a read reported this way reaches EVERY connection of this
+    // user, the reporting device's own included. That is correct rather than
+    // wasteful: the device that POSTed learns the effective value from the
+    // 204 it is already waiting on, and any other socket it happens to hold
+    // is exactly the thing this frame exists to update
+    // (protocol.md, WebSocket "Semantics").
     events::log_fanout_error(
         "read",
-        events::deliver_read(&state, chat_id, auth.user_id, effective).await,
+        events::deliver_read(&state, chat_id, auth.user_id, effective, None).await,
     );
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -1661,6 +1850,140 @@ pub async fn get_edits(
     attach_attachments(&state.pool, &mut messages).await?;
     attach_polls(&state.pool, &mut messages).await?;
     attach_calls(&state.pool, &mut messages).await?;
+    attach_mentions(&state.pool, &mut messages).await?;
+
+    Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
+}
+
+/// `GET /chats/{id}/polls/open` — the chat's open polls, as whole messages
+/// (docs/protocol.md, "Finding the open ones").
+///
+/// It lives here rather than in `handlers_poll` because what it returns is
+/// MESSAGES: `MESSAGE_COLS`, `MESSAGE_FROM`, `attach_reactions` and
+/// `attach_calls` are all private to this module, and the whole point of the
+/// endpoint is that it needs no new object. A poll's question IS the message
+/// body, so a list of bare `Poll`s would draw vote buttons with nothing above
+/// them.
+///
+/// Three things it deliberately is not:
+///
+/// - **not a cursor.** No `after_seq`, no chat cursor moved, no part of
+///   catch-up. `handlers_poll::get_polls` remains the feed of what CHANGED;
+///   this answers what is still OPEN, which a client may ask whenever it
+///   opens the surface that shows them.
+/// - **not ordered by `poll_seq`.** That is the sequence of the last change,
+///   so ordering by it would reshuffle the list under a reader every time
+///   anybody voted — the one thing a list of things still to decide must not
+///   do. Message id ascending is creation order, and it is stable.
+/// - **not filtered per caller.** "Which of these have I not voted in" is
+///   derived on the client from the `votes` lists that already ride on every
+///   poll, exactly as "did I vote" is, and for the same reason.
+pub async fn get_open_polls(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(chat_id): Path<i64>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Response, ApiError> {
+    ensure_chat_access(&state, chat_id, auth.user_id).await?;
+
+    let requested_limit = parse_pagination_param(&params, "limit")?;
+    let limit = clamp_limit(
+        requested_limit,
+        state.cfg.limits.default_page_size,
+        state.cfg.limits.max_page_size,
+    );
+
+    // The join is what filters: a message with no poll row is not a poll, and
+    // `closed_at IS NULL` is the open ones — the same predicate the account
+    // deletion path already uses to retract votes from live polls.
+    //
+    // Aliased `pl` and not `p`: MESSAGE_FROM already binds `p` to the reply
+    // parent and `g` to its grandparent, and reusing either is a duplicate
+    // alias, which PostgreSQL answers with an error the handler returns as a
+    // 500. The tests below caught exactly that.
+    let rows = sqlx::query(&format!(
+        "SELECT {MESSAGE_COLS} {MESSAGE_FROM}
+         JOIN polls pl ON pl.message_id = m.id
+         WHERE m.chat_id = $1 AND pl.closed_at IS NULL
+         ORDER BY m.id ASC LIMIT $2"
+    ))
+    .bind(chat_id)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
+    attach_reactions(&state, &mut messages).await?;
+    attach_attachments(&state.pool, &mut messages).await?;
+    attach_polls(&state.pool, &mut messages).await?;
+    attach_calls(&state.pool, &mut messages).await?;
+    attach_mentions(&state.pool, &mut messages).await?;
+
+    Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
+}
+
+/// `GET /chats/{id}/messages/{message_id}/thread` — the chain a message
+/// belongs to, as whole messages (docs/protocol.md, "Threads").
+///
+/// Resolved to the ROOT whatever id was named: "View thread" on a reply in
+/// the middle of a chain must open the same thread as the affordance on
+/// the root does, and a client that has only the reply cached cannot know
+/// the root without asking. Scoped to THIS chat, so a real id elsewhere is
+/// `message_not_found` — the same non-enumeration rule `reply_to_message_id`
+/// follows.
+///
+/// One query serves both the first page and every `after_id` page: the
+/// root is the oldest message in its chain (a reply is always newer than
+/// what it quotes), so `m.id > after_id` leaves it off exactly when the
+/// protocol says it should. Ascending by id is creation order, and stable.
+pub async fn get_thread(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((chat_id, message_id)): Path<(i64, i64)>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Response, ApiError> {
+    ensure_chat_access(&state, chat_id, auth.user_id).await?;
+
+    let after_id = parse_pagination_param(&params, "after_id")?.unwrap_or(0);
+    let requested_limit = parse_pagination_param(&params, "limit")?;
+    let limit = clamp_limit(
+        requested_limit,
+        state.cfg.limits.default_page_size,
+        state.cfg.limits.max_page_size,
+    );
+
+    let root_id: Option<i64> = sqlx::query_scalar(
+        "SELECT COALESCE(thread_root_id, id) FROM messages WHERE id = $1 AND chat_id = $2",
+    )
+    .bind(message_id)
+    .bind(chat_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(root_id) = root_id else {
+        return Err(ApiError::not_found(
+            codes::MESSAGE_NOT_FOUND,
+            "no such message in this chat",
+        ));
+    };
+
+    let rows = sqlx::query(&format!(
+        "SELECT {MESSAGE_COLS} {MESSAGE_FROM}
+         WHERE m.chat_id = $1 AND (m.id = $2 OR m.thread_root_id = $2) AND m.id > $3
+         ORDER BY m.id ASC LIMIT $4"
+    ))
+    .bind(chat_id)
+    .bind(root_id)
+    .bind(after_id)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut messages: Vec<Message> = rows.iter().map(Message::from_row).collect();
+    attach_reactions(&state, &mut messages).await?;
+    attach_attachments(&state.pool, &mut messages).await?;
+    attach_polls(&state.pool, &mut messages).await?;
+    attach_calls(&state.pool, &mut messages).await?;
+    attach_mentions(&state.pool, &mut messages).await?;
 
     Ok((StatusCode::OK, Json(json!({"messages": messages}))).into_response())
 }

@@ -427,6 +427,17 @@
     <string name="s_assistant_history_photos_needs_vision">Activez d’abord « L’assistant peut regarder les photos » — le serveur refuse ceci tant que c’est désactivé.</string>
     <string name="s_assistant_history_photos_needs_history">Tant que « L’assistant voit l’historique récent » est désactivé, ceci ne fait rien : l’historique de la conversation n’est pas envoyé, donc aucune photo qui en vient non plus.</string>
     <string name="e_change_assistant_history_photos_failed">Impossible de modifier ce réglage</string>
+    <string name="s_assistant_greeting">Message du matin</string>
+    <string name="s_assistant_greeting_explanation">L\'assistant publie chaque jour un court message du matin dans la discussion familiale, en mentionnant les signes astrologiques des anniversaires que votre famille a renseignés. Il n\'envoie jamais le nom ni la date de naissance de quiconque, seulement les signes ; il n\'avance rien sur la date ; et il ne déclenche jamais de notification — le message est simplement là à votre prochaine ouverture de la discussion. Désactivé tant que vous ne l\'activez pas.</string>
+    <string name="s_assistant_greeting_no_server">Indisponible ici : ce serveur ne publie pas de salutations quotidiennes.</string>
+    <string name="e_change_assistant_greeting_failed">Impossible de modifier ce réglage</string>
+    <string name="s_assistant_faces">L’assistant voit les visages des membres</string>
+    <string name="s_assistant_faces_explanation">Quand quelqu’un mentionne l’assistant dans la discussion familiale, les photos de profil des membres cités dans l’historique récent de cette discussion — jusqu’à 4 — sont aussi envoyées au modèle avec la question, pour qu’il sache qui est qui. Ce sont les images que les membres ont choisies pour eux-mêmes, pas des photos jointes ; jamais un membre parti, et jamais quelqu’un d’extérieur à cette famille. La plupart des mentions envoient alors des images, ce qui coûte plus. Nécessite « L’assistant peut regarder les photos » et « L’assistant voit l’historique récent » ; désactivé tant que vous ne l’activez pas, et tant que c’est désactivé aucun visage n’est jamais envoyé.</string>
+    <string name="s_assistant_faces_needs_history">Tant que « L’assistant voit l’historique récent » est désactivé, ceci ne fait rien : aucun nom n’est envoyé, donc aucun visage non plus.</string>
+    <string name="e_change_assistant_faces_failed">Impossible de modifier ce réglage</string>
+    <string name="s_open_polls">Sondages en cours</string>
+    <string name="s_open_polls_none">Les sondages en cours restent ici jusqu\'à leur clôture. Il n\'y en a aucun pour l\'instant.</string>
+    <string name="e_try_again">Réessayez dans un instant.</string>
     <!-- The tablet's empty thread pane: the family's name over an invitation to pick a chat. -->
     <string name="s_pick_a_chat">Choisissez une conversation dans la liste.</string>
     <plurals name="p_members">
@@ -476,4 +487,17 @@
     <string name="s_emoji_activities">Activités</string>
     <string name="s_emoji_travel">Voyages et lieux</string>
     <string name="s_emoji_objects">Objets et symboles</string>
+    <string name="s_thread">Fil</string>
+    <string name="s_view_thread">Voir le fil</string>
+    <string name="s_reply_in_thread">Répondre dans le fil</string>
+    <string name="e_load_thread_failed">Impossible de charger le fil.</string>
+    <string name="s_thread_partial">Impossible de charger tout le fil.</string>
+    <string name="s_open_thread">Ouvre le fil</string>
+    <plurals name="s_n_replies">
+        <item quantity="one">%1$d réponse</item>
+        <item quantity="many">%1$d réponses</item>
+        <item quantity="other">%1$d réponses</item>
+    </plurals>
+    <string name="s_mentions_you">Te mentionne</string>
+    <string name="s_mention_member">Mentionner %1$s</string>
 </resources>

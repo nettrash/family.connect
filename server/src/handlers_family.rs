@@ -75,6 +75,18 @@ pub struct PatchFamilyRequest {
     /// (protocol.md, "Recent photos from the family chat").
     #[serde(default)]
     pub ai_history_photos: Option<bool>,
+    /// The fourth switch, and the one with no rule between it and any
+    /// neighbour: whether the assistant may greet the family once a day
+    /// unprompted (protocol.md, "The daily greeting"). It is about whether
+    /// the assistant speaks, not about what it may be shown, so it is set
+    /// and cleared entirely on its own.
+    #[serde(default)]
+    pub ai_greeting: Option<bool>,
+    /// The fifth switch, of the third's exact shape: `true` is refused
+    /// while `ai_vision` is off, and turning `ai_vision` off turns this off
+    /// in the same write (protocol.md, "Profile pictures of members").
+    #[serde(default)]
+    pub ai_faces: Option<bool>,
 }
 
 /// Deserialize a present key into `Some(...)`, so that `#[serde(default)]`
@@ -135,6 +147,8 @@ struct FamilyRecord {
     ai_history: bool,
     ai_vision: bool,
     ai_history_photos: bool,
+    ai_greeting: bool,
+    ai_faces: bool,
     owner_user_id: i64,
     created_at: OffsetDateTime,
 }
@@ -151,6 +165,8 @@ impl FamilyRecord {
             ai_history: row.get("ai_history"),
             ai_vision: row.get("ai_vision"),
             ai_history_photos: row.get("ai_history_photos"),
+            ai_greeting: row.get("ai_greeting"),
+            ai_faces: row.get("ai_faces"),
             owner_user_id: row.get("owner_user_id"),
             created_at: row.get("created_at"),
         }
@@ -186,12 +202,24 @@ impl FamilyRecord {
             // anybody pointing the assistant at them. Every member gets to
             // know that before they send one; only the owner can change it.
             ai_history_photos: self.ai_history_photos,
+            // Not owner-gated either. This one is not about a member's own
+            // words or pictures at all, so the reasoning that governs the
+            // three above does not reach it — but the same principle does:
+            // every member gets to know why a message from the assistant
+            // appears in their chat each morning, even though only the owner
+            // could have asked for it.
+            ai_greeting: self.ai_greeting,
+            // Not owner-gated, and for the strongest reason on this list: it
+            // decides whether a member's own FACE may leave the server.
+            // Every member gets to know that; only the owner can change it.
+            ai_faces: self.ai_faces,
         }
     }
 }
 
 const SELECT_FAMILY: &str = "SELECT id, name, invite_code, join_policy, language, max_members,
-                             ai_history, ai_vision, ai_history_photos, owner_user_id, created_at
+                             ai_history, ai_vision, ai_history_photos, ai_greeting, ai_faces,
+                             owner_user_id, created_at
                              FROM families";
 
 async fn fetch_family(state: &AppState, family_id: i64) -> Result<FamilyRecord, ApiError> {
@@ -453,7 +481,8 @@ pub async fn create_family(
             "INSERT INTO families (name, invite_code, owner_user_id)
              VALUES ($1, $2, $3)
              RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
-                       ai_vision, ai_history_photos, owner_user_id, created_at",
+                       ai_vision, ai_history_photos, ai_greeting, ai_faces, owner_user_id,
+                       created_at",
         )
         .bind(&name)
         .bind(&invite_code)
@@ -916,6 +945,13 @@ pub async fn patch_family(
             "ai_history_photos can only be turned on while ai_vision is on",
         ));
     }
+    // The fifth switch, under the same rule as the third and for the same
+    // reason (protocol.md, "Profile pictures of members").
+    if req.ai_faces == Some(true) && !vision_after {
+        return Err(ApiError::validation(
+            "ai_faces can only be turned on while ai_vision is on",
+        ));
+    }
     // COALESCE for the policy and for the switches, because an unsent field
     // binds NULL and the column should keep what it had — which is exactly
     // what COALESCE says. The language cannot use it — NULL is a VALUE
@@ -927,6 +963,11 @@ pub async fn patch_family(
     // the rule at once: `ai_vision` going off takes it down in the same
     // write, whether or not the request mentioned it, and nothing this
     // handler can be sent leaves it on over a shut `ai_vision`.
+    //
+    // `ai_greeting` is a plain COALESCE with no second term, and the
+    // difference is the point: it is bound to none of the other three, so
+    // "what was asked, or else what it was" is the whole rule. Nothing here
+    // may clear it as a side effect (protocol.md, "The daily greeting").
     let row = sqlx::query(
         "UPDATE families
          SET join_policy = COALESCE($2, join_policy),
@@ -934,10 +975,13 @@ pub async fn patch_family(
              ai_history = COALESCE($5, ai_history),
              ai_vision = COALESCE($8, ai_vision),
              ai_history_photos = COALESCE($9, ai_history_photos) AND COALESCE($8, ai_vision),
+             ai_greeting = COALESCE($10, ai_greeting),
+             ai_faces = COALESCE($11, ai_faces) AND COALESCE($8, ai_vision),
              max_members = CASE WHEN $6 THEN $7 ELSE max_members END
          WHERE id = $1
          RETURNING id, name, invite_code, join_policy, language, max_members, ai_history,
-                   ai_vision, ai_history_photos, owner_user_id, created_at",
+                   ai_vision, ai_history_photos, ai_greeting, ai_faces, owner_user_id,
+                   created_at",
     )
     .bind(family.id)
     .bind(join_policy)
@@ -948,6 +992,8 @@ pub async fn patch_family(
     .bind(max_members.flatten())
     .bind(req.ai_vision)
     .bind(req.ai_history_photos)
+    .bind(req.ai_greeting)
+    .bind(req.ai_faces)
     .fetch_one(&state.pool)
     .await?;
     let family = FamilyRecord::from_row(&row);

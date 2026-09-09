@@ -499,6 +499,19 @@ fn mention_poll_note(
 /// by an original that no client downscaled — at which point not sending it,
 /// and saying so, is better than a request that takes a minute and fails.
 const VISION_MAX_IMAGES: usize = 4;
+
+/// The most profile pictures a mention may carry, under the fifth switch
+/// (protocol.md, "Profile pictures of members").
+///
+/// A SEPARATE budget from [`VISION_MAX_IMAGES`], and the protocol section
+/// argues the carve-out: the four-photo ceiling was reasoned about
+/// photographs — what leaves should be the least that answers the question —
+/// and a face is a different currency from a photograph. Sharing the four
+/// would put a member's face in competition with a picture the member
+/// deliberately pointed the assistant at, and on a family of six the faces
+/// would almost never travel, which is a switch that does nothing. Hard-capped
+/// so that a large family's mention is bounded whatever the transcript holds.
+const FACES_MAX_IMAGES: usize = 4;
 /// Per image, after [`vision_images`] has already preferred the preview.
 const VISION_MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
@@ -659,29 +672,42 @@ fn mention_vision_note(
     omitted_on_mention: usize,
     omitted_on_quote: usize,
     history: Option<HistoryPictures>,
+    faces_follow: bool,
 ) -> String {
     let from_history = history.unwrap_or_default();
     let shown = on_mention + on_quote + from_history.shown;
     if shown == 0 {
         let pointed = omitted_on_mention + omitted_on_quote;
+        // "NO picture" is #56's word — and a lie when the fifth switch has
+        // attached members' profile pictures behind this note. Then, and
+        // only then, the sentence says what it can actually mean: no
+        // PHOTOGRAPH, and the images that are attached are described next
+        // (protocol.md, "Profile pictures of members"). Without faces the
+        // sentence is #56's to the byte.
+        let nothing = if faces_follow {
+            "so you can see NO photograph here — the only images attached to this request are \
+             members' profile pictures, described below"
+        } else {
+            "so you can see NO picture here"
+        };
         let mut note = match (pointed, from_history.not_shown) {
             // #56's sentence, byte for byte: the switch is off, or the
             // transcript holds no photograph — the same note either way.
             (pointed, 0) => {
                 if pointed == 1 {
-                    "The member pointed you at ONE photograph, but it could not be included, so \
-                     you can see NO picture here."
-                        .to_string()
+                    format!(
+                        "The member pointed you at ONE photograph, but it could not be included, \
+                         {nothing}."
+                    )
                 } else {
                     format!(
                         "The member pointed you at {pointed} photographs, but none of them could \
-                         be included, so you can see NO picture here."
+                         be included, {nothing}."
                     )
                 }
             }
             (0, in_transcript) => format!(
-                "There {} in the transcript above, but {} could not be included, so you can see \
-                 NO picture here.",
+                "There {} in the transcript above, but {} could not be included, {nothing}.",
                 if in_transcript == 1 {
                     "is ONE photograph".to_string()
                 } else {
@@ -695,7 +721,7 @@ fn mention_vision_note(
             ),
             (pointed, in_transcript) => format!(
                 "The member pointed you at {}, and there {} more in the transcript above, but \
-                 none of them could be included, so you can see NO picture here.",
+                 none of them could be included, {nothing}.",
                 photographs(pointed),
                 if in_transcript == 1 {
                     "is ONE".to_string()
@@ -853,6 +879,10 @@ struct HistoryMessage {
     /// the quoted message is recognised in the window so its photos are not
     /// counted twice (protocol.md, "Recent photos from the family chat").
     id: i64,
+    /// Who sent it — what the fifth switch looks a profile picture up by. A
+    /// face travels only for a name the model has been told, and this is how
+    /// the names on the transcript's lines become ids to fetch faces for.
+    sender_id: i64,
     at: OffsetDateTime,
     /// The name the family SEES against this message, because an answer
     /// about what Anna said has to know which lines are Anna's. For a
@@ -1391,6 +1421,7 @@ async fn load_history(
         .iter()
         .map(|row| HistoryMessage {
             id: row.get("id"),
+            sender_id: row.get("sender_id"),
             at: row.get("created_at"),
             sender: if row.get::<i64, _>("sender_id") == assistant_id {
                 state.cfg.ai.title.clone()
@@ -1592,26 +1623,28 @@ async fn mention_reply(
     // it depends on, so that a `true` stored in the column is inert — not
     // refused, inert — whenever any of that is missing.
     let settings = sqlx::query(
-        "SELECT f.language, f.ai_history, f.ai_vision, f.ai_history_photos
+        "SELECT f.language, f.ai_history, f.ai_vision, f.ai_history_photos, f.ai_faces
          FROM chats c JOIN families f ON f.id = c.family_id
          WHERE c.id = $1",
     )
     .bind(chat_id)
     .fetch_optional(&state.pool)
     .await?;
-    let (family_language, with_history, with_vision, with_history_photos) = match &settings {
-        Some(row) => (
-            row.get::<Option<String>, _>("language"),
-            row.get::<bool, _>("ai_history"),
-            row.get::<bool, _>("ai_vision"),
-            row.get::<bool, _>("ai_history_photos"),
-        ),
-        // No row means the chat went away between the send and this task.
-        // The prompt below finds nothing either and this returns — but the
-        // narrow behaviour is what it falls back to on the way there,
-        // because the wider one must never be reached by a missing row.
-        None => (None, false, false, false),
-    };
+    let (family_language, with_history, with_vision, with_history_photos, with_faces) =
+        match &settings {
+            Some(row) => (
+                row.get::<Option<String>, _>("language"),
+                row.get::<bool, _>("ai_history"),
+                row.get::<bool, _>("ai_vision"),
+                row.get::<bool, _>("ai_history_photos"),
+                row.get::<bool, _>("ai_faces"),
+            ),
+            // No row means the chat went away between the send and this task.
+            // The prompt below finds nothing either and this returns — but the
+            // narrow behaviour is what it falls back to on the way there,
+            // because the wider one must never be reached by a missing row.
+            None => (None, false, false, false, false),
+        };
     // Both locks, resolved to one answer: the deployment that can see, or
     // nothing. Either shut and the mention is the text request it always
     // was.
@@ -1622,14 +1655,21 @@ async fn mention_reply(
     // about), and `ai_history` — with no transcript there is nothing for it
     // to widen, and a photograph outside the transcript never travels.
     let history_photos = with_history_photos && with_history && vision.is_some();
+    // The fifth switch needs the same three: a face travels only for a name
+    // in the transcript, so with `ai_history` off there is nothing to attach
+    // one to (protocol.md, "Profile pictures of members").
+    let faces = with_faces && with_history && vision.is_some();
 
     let Some(prompt) = mention_prompt(
         state,
         chat_id,
         message_id,
         with_history,
-        vision,
-        history_photos,
+        MentionPictures {
+            vision,
+            history_photos,
+            faces,
+        },
         assistant_id,
     )
     .await?
@@ -1955,6 +1995,202 @@ async fn vision_images(state: &AppState, message_id: i64, budget: usize) -> Resu
     Ok(looked)
 }
 
+/// What a mention may carry as PIXELS, resolved once in `mention_reply`
+/// against every lock each depends on, and handed to `mention_prompt` as one
+/// value: the deployment that can see (or nothing), and the two switches that
+/// widen what it is shown — the transcript's newest photographs, and the
+/// faces of the members it names. Three related answers rather than three
+/// arguments, because they are one decision and because a function with
+/// eight parameters is one nobody reads correctly.
+struct MentionPictures {
+    vision: Option<ModelRoute>,
+    history_photos: bool,
+    faces: bool,
+}
+
+/// The profile pictures a mention may carry, and whose they are.
+#[derive(Default)]
+struct LookedAtFaces {
+    /// `(display name, picture)`, in the order they are attached.
+    faces: Vec<(String, InlineImage)>,
+    /// Members named in the transcript whose face did NOT travel — no profile
+    /// picture, no longer in this family, or beyond the budget. Named to the
+    /// model so it does not guess at them.
+    without: Vec<String>,
+}
+
+/// Read the profile pictures of the members whose lines are in `kept`, under
+/// the fifth switch's rules (protocol.md, "Profile pictures of members"):
+///
+/// - **only members with a line in the transcript.** A face travels only for
+///   a name the model has already been told; nobody else's is fetched, and
+///   in particular not the whole roster's;
+/// - **only members of THIS chat's family, now.** The predicate is the one
+///   `GET /users/{id}/avatar` enforces — `u.family_id IS NOT NULL AND
+///   u.family_id = <the chat's family>` — restated here because reading
+///   `user_avatars` directly inherits none of that handler's protections, and
+///   one server hosts several families. A member who left, or whose account
+///   was scrubbed, still has lines in the transcript and sends NO face: their
+///   row's `family_id` is NULL;
+/// - **never the assistant's own row**, which has no picture and is in no
+///   family — excluded by the predicate, and by name here so nobody has to
+///   reason about it;
+/// - **most recently active first**, by the newest surviving line, so the
+///   people actually in the conversation are the ones whose faces go when
+///   the budget binds;
+/// - at most `budget`. A profile picture is JPEG or PNG by the schema's own
+///   CHECK and bounded by `PUT /me/avatar`, so the size and type gates the
+///   photos pass through are satisfied by construction here.
+async fn face_images(
+    state: &AppState,
+    chat_id: i64,
+    kept: &[&HistoryMessage],
+    assistant_id: i64,
+    budget: usize,
+) -> Result<LookedAtFaces> {
+    // Distinct senders, ordered by their newest line. `kept` may be in either
+    // order, so the newest id per sender is what decides.
+    let mut newest: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    for message in kept {
+        if message.sender_id == assistant_id {
+            continue;
+        }
+        let entry = newest.entry(message.sender_id).or_insert(message.id);
+        if message.id > *entry {
+            *entry = message.id;
+        }
+        names
+            .entry(message.sender_id)
+            .or_insert_with(|| message.sender.clone());
+    }
+    let mut candidates: Vec<i64> = newest.keys().copied().collect();
+    candidates.sort_by(|a, b| newest[b].cmp(&newest[a]).then(a.cmp(b)));
+    if candidates.is_empty() {
+        return Ok(LookedAtFaces::default());
+    }
+
+    // ONE query over every candidate, with the two facts that decide each:
+    // whether the row is a scrubbed account, and whether it is in THIS
+    // chat's family now. The picture rides along when there is one.
+    let rows = sqlx::query(
+        "SELECT u.id,
+                u.username LIKE 'deleted-%' AS tombstone,
+                (u.family_id IS NOT NULL
+                   AND u.family_id = (SELECT family_id FROM chats WHERE id = $2)) AS here,
+                a.content_type, a.bytes
+         FROM users u
+         LEFT JOIN user_avatars a ON a.user_id = u.id
+         WHERE u.id = ANY($1)",
+    )
+    .bind(&candidates)
+    .bind(chat_id)
+    .fetch_all(&state.pool)
+    .await?;
+    struct Found {
+        tombstone: bool,
+        here: bool,
+        picture: Option<InlineImage>,
+    }
+    let mut found: std::collections::HashMap<i64, Found> = rows
+        .iter()
+        .map(|row| {
+            let mime: Option<String> = row.get("content_type");
+            let bytes: Option<Vec<u8>> = row.get("bytes");
+            (
+                row.get::<i64, _>("id"),
+                Found {
+                    tombstone: row.get("tombstone"),
+                    here: row.get("here"),
+                    picture: mime
+                        .zip(bytes)
+                        .map(|(mime, bytes)| InlineImage { mime, bytes }),
+                },
+            )
+        })
+        .collect();
+
+    let mut looked = LookedAtFaces::default();
+    for id in candidates {
+        let name = names.remove(&id).unwrap_or_default();
+        match found.remove(&id) {
+            // A scrubbed account is neither sent nor NAMED: the scrub
+            // replaced its name with a placeholder, so the model was never
+            // given a real name to attach a face to, and "you have not been
+            // shown the face of Deleted account" would be a sentence about
+            // nobody (protocol.md, "Profile pictures of members").
+            Some(Found {
+                tombstone: true, ..
+            }) => {}
+            Some(Found {
+                here: true,
+                picture: Some(image),
+                ..
+            }) if looked.faces.len() < budget => {
+                looked.faces.push((name, image));
+            }
+            // No picture, no longer in this family, or beyond the ceiling —
+            // named, so the model does not guess.
+            _ => looked.without.push(name),
+        }
+    }
+    Ok(looked)
+}
+
+/// What the model is told about the faces — which image is whose, that they
+/// are profile pictures and not photographs anybody sent, and whose face it
+/// was NOT given. In the register of [`mention_vision_note`]: a model that is
+/// not told what is missing invents it.
+fn faces_prompt_note(looked: &LookedAtFaces, first_position: usize) -> String {
+    let mut note = String::new();
+    if !looked.faces.is_empty() {
+        let listed: Vec<String> = looked
+            .faces
+            .iter()
+            .enumerate()
+            .map(|(offset, (name, _))| format!("image {} is {name}'s", first_position + offset))
+            .collect();
+        note.push_str(&format!(
+            "The last {} image{} attached to this request {} PROFILE PICTURE{} of members of this \
+             family — not photographs anybody sent, but the pictures those members chose for \
+             themselves: {}. Use them only to recognise who is who; do not describe anybody's \
+             appearance unless asked.",
+            looked.faces.len(),
+            if looked.faces.len() == 1 { "" } else { "s" },
+            if looked.faces.len() == 1 {
+                "is the"
+            } else {
+                "are the"
+            },
+            if looked.faces.len() == 1 { "" } else { "S" },
+            listed.join(", ")
+        ));
+    }
+    if !looked.without.is_empty() {
+        if !note.is_empty() {
+            note.push(' ');
+        }
+        note.push_str(&format!(
+            "You have NOT been shown the face{} of {} — no profile picture could be included for \
+             {}. Do not guess at what {} look{} like.",
+            if looked.without.len() == 1 { "" } else { "s" },
+            looked.without.join(", "),
+            if looked.without.len() == 1 {
+                "them"
+            } else {
+                "any of them"
+            },
+            if looked.without.len() == 1 {
+                "that member"
+            } else {
+                "they"
+            },
+            if looked.without.len() == 1 { "s" } else { "" },
+        ));
+    }
+    note
+}
+
 /// A mention in the family chat: **one message**, the message it quotes
 /// when the member deliberately replied to one, and — when the family has
 /// left `ai_history` on — a transcript of what was recently said here.
@@ -2019,10 +2255,14 @@ async fn mention_prompt(
     chat_id: i64,
     message_id: i64,
     with_history: bool,
-    vision: Option<ModelRoute>,
-    history_photos: bool,
+    pictures: MentionPictures,
     assistant_id: i64,
 ) -> Result<Option<Prompt>> {
+    let MentionPictures {
+        vision,
+        history_photos,
+        faces,
+    } = pictures;
     let row = sqlx::query(
         "SELECT m.body,
                 p.id AS quoted_id,
@@ -2111,6 +2351,19 @@ async fn mention_prompt(
     };
     let kept = window(OffsetDateTime::now_utc(), &recent);
 
+    // The fifth switch's faces, looked up before the photographs' note is
+    // written because that note has to know whether any face follows it:
+    // "you can see NO picture here" is a lie above four profile pictures.
+    // Pixels, note and route come later, after every photograph.
+    let looked_faces = if faces {
+        Some(face_images(state, chat_id, &kept, assistant_id, FACES_MAX_IMAGES).await?)
+    } else {
+        None
+    };
+    let faces_travel = looked_faces
+        .as_ref()
+        .is_some_and(|looked| !looked.faces.is_empty());
+
     // The photographs on those same two messages — and, under the third
     // switch alone, the transcript's newest — when both locks are open. The
     // mentioning message's first, the quoted message's after it, the
@@ -2123,6 +2376,8 @@ async fn mention_prompt(
     let mut vision_note = None;
     let mut route = state.cfg.ai.text_route();
     let mut numbered = Numbered::new();
+    // The route the faces need, kept before the photo block takes `vision`.
+    let faces_route = vision.clone();
     if let Some(vision) = vision {
         let on_mention = vision_images(state, message_id, VISION_MAX_IMAGES).await?;
         let on_quote = match quoted_id {
@@ -2190,6 +2445,7 @@ async fn mention_prompt(
                 on_mention.omitted,
                 on_quote.omitted,
                 history_pictures,
+                faces_travel,
             ));
         }
         if !on_mention.images.is_empty()
@@ -2215,6 +2471,29 @@ async fn mention_prompt(
             images.extend(from_history.images);
             route = vision;
         }
+    }
+
+    // The fifth switch: the profile pictures of the members whose lines are
+    // in the transcript, AFTER every photograph and under their own budget —
+    // a face never displaces a picture somebody pointed the assistant at
+    // (protocol.md, "Profile pictures of members"). Told which image is
+    // whose, and who has no face here, in the note beside the photos' one.
+    let mut faces_note = None;
+    if let Some(looked) = looked_faces
+        && let Some(vision_route) = faces_route
+        && !looked.faces.is_empty()
+    {
+        // Numbered from where the photographs stopped: the note says
+        // "image 3 is Anna's" in the request's own positions. The note —
+        // the NOT-shown list inside it — exists only when a face travels:
+        // with none attached there is nothing to pair a name to, and the
+        // request is the one it always was, byte for byte (protocol.md,
+        // "The route is the one pictures already decide").
+        faces_note = Some(faces_prompt_note(&looked, images.len() + 1));
+        images.extend(looked.faces.into_iter().map(|(_, image)| image));
+        // Faces alone are still pictures: the request goes to the
+        // deployment that can see, exactly as a photograph sends it there.
+        route = vision_route;
     }
 
     // A poll's question IS the message body, so the mention renders as the
@@ -2286,6 +2565,7 @@ async fn mention_prompt(
         None => vec![instruction],
     };
     notes.extend(vision_note);
+    notes.extend(faces_note);
 
     let audience = events::chat_member_ids(&state.pool, chat_id)
         .await
@@ -2565,10 +2845,12 @@ async fn answer(
     // bubble appears immediately and every device has the same id to stream
     // into.
     let inserted: Message = sqlx::query(
-        "INSERT INTO messages (chat_id, sender_id, client_msg_id, body, reply_to_message_id)
-         VALUES ($1, $2, $3, '', $4)
+        "INSERT INTO messages (chat_id, sender_id, client_msg_id, body, reply_to_message_id,
+                               thread_root_id)
+         VALUES ($1, $2, $3, '', $4,
+                 (SELECT COALESCE(q.thread_root_id, q.id) FROM messages q WHERE q.id = $4))
          RETURNING id, chat_id, sender_id, client_msg_id, body, created_at,
-                   reaction_seq, edit_seq, edited_at, reply_to_message_id",
+                   reaction_seq, edit_seq, edited_at, reply_to_message_id, thread_root_id",
     )
     .bind(chat_id)
     .bind(assistant_id)
@@ -2844,6 +3126,7 @@ mod tests {
             omitted_on_mention,
             omitted_on_quote,
             None,
+            false,
         )
     }
 
@@ -2899,6 +3182,7 @@ mod tests {
     fn said(at: OffsetDateTime, sender: &str, body: &str) -> HistoryMessage {
         HistoryMessage {
             id: 0,
+            sender_id: 0,
             at,
             sender: sender.to_string(),
             body: body.to_string(),
@@ -2915,6 +3199,7 @@ mod tests {
     ) -> HistoryMessage {
         HistoryMessage {
             id: 0,
+            sender_id: 0,
             at,
             sender: sender.to_string(),
             body: body.to_string(),
@@ -2938,6 +3223,7 @@ mod tests {
     ) -> HistoryMessage {
         HistoryMessage {
             id: 0,
+            sender_id: 0,
             at,
             sender: sender.to_string(),
             body: question.to_string(),
@@ -3158,6 +3444,7 @@ mod tests {
         let at = datetime!(2026-07-28 19:03 UTC);
         let album = |body: &str| HistoryMessage {
             id: 0,
+            sender_id: 0,
             at,
             sender: "Bob".to_string(),
             body: body.to_string(),
@@ -3184,6 +3471,7 @@ mod tests {
             NOW,
             &[HistoryMessage {
                 id: 0,
+                sender_id: 0,
                 at,
                 sender: "Bob".to_string(),
                 body: String::new(),
@@ -3632,6 +3920,7 @@ mod tests {
             NOW,
             &[HistoryMessage {
                 id: 0,
+                sender_id: 0,
                 at: datetime!(2026-08-30 12:14 UTC),
                 sender: "Anna".to_string(),
                 body: "@ai which should we pick for Sunday?".to_string(),
@@ -4430,6 +4719,7 @@ mod tests {
     ) -> HistoryMessage {
         HistoryMessage {
             id,
+            sender_id: 0,
             at,
             sender: sender.to_string(),
             body: body.to_string(),
@@ -4457,6 +4747,7 @@ mod tests {
                 omitted_on_mention,
                 omitted_on_quote,
                 None,
+                false,
             );
             assert!(!note.contains("[photo 1]"), "{note}");
             assert!(!note.contains("transcript above"), "{note}");
@@ -4465,7 +4756,7 @@ mod tests {
         }
         // And the whole string of the load-bearing case, once more.
         assert_eq!(
-            mention_vision_note(0, 0, 1, 0, None),
+            mention_vision_note(0, 0, 1, 0, None, false),
             mention_note(0, 0, 1, 0),
             "the helper every #56 pin uses is the switch off, and nothing else"
         );
@@ -4478,7 +4769,7 @@ mod tests {
     /// than a bare marker.
     #[test]
     fn a_switched_on_family_with_no_transcript_photos_is_told_only_about_numbers() {
-        let note = mention_vision_note(1, 0, 0, 0, Some(HistoryPictures::default()));
+        let note = mention_vision_note(1, 0, 0, 0, Some(HistoryPictures::default()), false);
         assert!(
             note.starts_with(
                 "You can see ONE photograph attached to the message that mentioned you. A member \
@@ -4521,6 +4812,7 @@ mod tests {
                 shown: 2,
                 not_shown: 3,
             }),
+            false,
         );
         assert!(
             note.starts_with(
@@ -4567,6 +4859,7 @@ mod tests {
                 shown: 1,
                 not_shown: 0,
             }),
+            false,
         );
         assert!(
             alone.starts_with(
@@ -4596,7 +4889,8 @@ mod tests {
                 Some(HistoryPictures {
                     shown: 0,
                     not_shown: 1,
-                })
+                }),
+                false
             ),
             "There is ONE photograph in the transcript above, but it could not be included, so \
              you can see NO picture here. Every [photo] marker in front of you, in the \
@@ -4617,6 +4911,7 @@ mod tests {
                 shown: 0,
                 not_shown: 2,
             }),
+            false,
         );
         assert!(
             both.starts_with(
@@ -4638,8 +4933,67 @@ mod tests {
         // The switch on over a transcript with NO photograph, and a lone
         // unreadable one on the mention, is #56's zero case to the byte.
         assert_eq!(
-            mention_vision_note(0, 0, 1, 0, Some(HistoryPictures::default())),
+            mention_vision_note(0, 0, 1, 0, Some(HistoryPictures::default()), false),
             mention_note(0, 0, 1, 0)
+        );
+    }
+
+    /// With faces attached behind it, "NO picture" would be a lie: the
+    /// sentence says no PHOTOGRAPH and points at the images that are there.
+    /// Without them, #56's sentence to the byte — the pin above.
+    #[test]
+    fn the_no_picture_sentence_yields_to_the_faces_behind_it() {
+        let alone = mention_vision_note(0, 0, 1, 0, None, false);
+        let with_faces = mention_vision_note(0, 0, 1, 0, None, true);
+        assert!(alone.contains("so you can see NO picture here."), "{alone}");
+        assert!(!with_faces.contains("NO picture"), "{with_faces}");
+        assert!(
+            with_faces.contains(
+                "so you can see NO photograph here — the only images attached to this request \
+                 are members' profile pictures, described below."
+            ),
+            "{with_faces}"
+        );
+        // The rest of the note is untouched.
+        assert_eq!(
+            alone.split_once("NO picture here.").map(|(_, tail)| tail),
+            with_faces
+                .split_once("described below.")
+                .map(|(_, tail)| tail)
+        );
+        // Every branch of the "nothing could go" note yields the same way.
+        for note in [
+            mention_vision_note(0, 0, 2, 0, None, true),
+            mention_vision_note(
+                0,
+                0,
+                0,
+                0,
+                Some(HistoryPictures {
+                    shown: 0,
+                    not_shown: 1,
+                }),
+                true,
+            ),
+            mention_vision_note(
+                0,
+                0,
+                1,
+                0,
+                Some(HistoryPictures {
+                    shown: 0,
+                    not_shown: 2,
+                }),
+                true,
+            ),
+        ] {
+            assert!(!note.contains("NO picture"), "{note}");
+            assert!(note.contains("NO photograph here"), "{note}");
+        }
+        // And a note with something to see never needs it.
+        assert_eq!(
+            mention_vision_note(1, 0, 0, 0, None, true),
+            mention_vision_note(1, 0, 0, 0, None, false)
         );
     }
 
@@ -4657,6 +5011,7 @@ mod tests {
             album_with(20, at, "Bob", "", &[201]),
             HistoryMessage {
                 id: 10,
+                sender_id: 0,
                 at,
                 sender: "Cy".to_string(),
                 body: "receipt".to_string(),
@@ -4720,6 +5075,7 @@ mod tests {
         let filler = HISTORY_MAX_CHARS - newest_cost - stamp_and_name - 1;
         let older = HistoryMessage {
             id: 2,
+            sender_id: 0,
             at,
             sender: "A".to_string(),
             body: "x".repeat(filler),

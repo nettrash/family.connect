@@ -203,6 +203,32 @@ pub fn message_notification(
     }
 }
 
+/// The message push for a member the message NAMES: the same push, a
+/// different title — `"<Family> — <Sender> mentioned you"` — and never a
+/// second one (protocol.md, "Mentioning a member"). Family chat only, which
+/// is the only chat a mention is accepted in, so the direct-chat title rule
+/// has no mention form.
+pub fn mention_notification(
+    include_message_body: bool,
+    family_name: &str,
+    sender_name: &str,
+    message: &Message,
+    badge: i64,
+    chat_unread: i64,
+) -> Notification {
+    let mut note = message_notification(
+        include_message_body,
+        "family",
+        family_name,
+        sender_name,
+        message,
+        badge,
+        chat_unread,
+    );
+    note.title = format!("{family_name} — {sender_name} mentioned you");
+    note
+}
+
 /// Compose the notification for a new board note.
 ///
 /// Title `"<Family> — <Author>"`, body the note's text — governed by the
@@ -510,6 +536,8 @@ mod tests {
             created_at: datetime!(2026-08-19 17:03:12 UTC),
             reactions: None,
             reply_to: None,
+            thread_root_id: None,
+            reply_count: None,
             edited_at: None,
             edit_seq: None,
             attachment: None,
@@ -517,6 +545,7 @@ mod tests {
             reaction_seq: None,
             poll: None,
             call: None,
+            mentions: None,
         }
     }
 
@@ -610,6 +639,27 @@ mod tests {
             message["message"]["data"].get("video").is_none(),
             "a voice call's data stays byte-identical: no video key at all"
         );
+    }
+
+    /// A mention is the message's own push with a different title and
+    /// nothing else different: same body, same badge, same event, same
+    /// `kind` — so routing and grouping never change.
+    #[test]
+    fn a_mention_changes_the_title_and_nothing_else() {
+        let message = protocol_message();
+        let plain = message_notification(true, "family", "The Smiths", "Anna", &message, 3, 1);
+        let named = mention_notification(true, "The Smiths", "Anna", &message, 3, 1);
+        assert_eq!(named.title, "The Smiths — Anna mentioned you");
+        assert_eq!(named.body, plain.body);
+        assert_eq!(named.badge, plain.badge);
+        assert_eq!(named.chat_unread, plain.chat_unread);
+        assert_eq!(named.event, plain.event);
+        assert_eq!(named.event.kind(), "message");
+        // Under the privacy switch the body is withheld exactly as it is
+        // for everybody else — the title says who, never what.
+        let hidden = mention_notification(false, "The Smiths", "Anna", &message, 3, 1);
+        assert_eq!(hidden.body, "New message");
+        assert_eq!(hidden.title, "The Smiths — Anna mentioned you");
     }
 
     #[test]

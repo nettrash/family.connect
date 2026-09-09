@@ -63,6 +63,10 @@ pub enum ClientFrame {
         /// body is then the QUESTION, and a poll excludes an attachment.
         #[serde(default)]
         poll: Option<NewPoll>,
+        /// Optional: the members this message names, family chat only
+        /// (protocol.md, "Mentioning a member").
+        #[serde(default)]
+        mentions: Option<Vec<crate::models::Mention>>,
     },
     Read {
         chat_id: i64,
@@ -561,6 +565,7 @@ async fn handle_client_text(
                 attachment_id,
                 attachment_ids,
                 poll,
+                mentions,
             } = frame
             else {
                 unreachable!("type tag was \"send\"");
@@ -582,6 +587,7 @@ async fn handle_client_text(
                 reply_to_message_id,
                 &attachment_ids,
                 poll.as_ref(),
+                mentions.as_deref().unwrap_or(&[]),
                 language,
             )
             .await
@@ -622,6 +628,22 @@ async fn handle_client_text(
             else {
                 unreachable!("type tag was \"read\"");
             };
+            // Access is checked HERE, and the answer to a chat the sender may
+            // not read is SILENCE — the same answer the typing arm gives, for
+            // the same reasons (protocol.md, WebSocket "Semantics": a read
+            // frame naming a direct chat the sender has blocked into is
+            // "dropped in silence — no relay and no `error` frame"). An
+            // `error` frame here would let a blocker's two devices disagree
+            // about whether to keep sending, and would make the read frame an
+            // oracle for which chat ids exist. `apply_read_marker` runs the
+            // same check inside its own path; the answer below is for the
+            // failures that are NOT access — a database error — which a
+            // client is owed.
+            if let Err(err) = handlers_chat::ensure_chat_access(state, chat_id, auth.user_id).await
+            {
+                debug!(error = ?err, chat_id, "read frame for a chat the sender may not read");
+                return None;
+            }
             match handlers_chat::apply_read_marker(
                 state,
                 chat_id,
@@ -632,7 +654,19 @@ async fn handle_client_text(
             {
                 Ok(effective) => {
                     if let Err(err) =
-                        events::deliver_read(state, chat_id, auth.user_id, effective).await
+                        // `Some(conn_id)`: this connection reported the read
+                        // and already knows. Every OTHER connection of this
+                        // user gets the frame — the marker is per-user, and
+                        // that is what clears a badge on their other phone
+                        // (protocol.md, WebSocket "Semantics").
+                        events::deliver_read(
+                            state,
+                            chat_id,
+                            auth.user_id,
+                            effective,
+                            Some(conn_id),
+                        )
+                        .await
                     {
                         warn!(error = ?err, chat_id, "read fan-out failed");
                     }
@@ -783,12 +817,15 @@ mod tests {
             reactions: None,
             reaction_seq: None,
             reply_to: None,
+            thread_root_id: None,
+            reply_count: None,
             edited_at: None,
             edit_seq: None,
             attachment: None,
             attachments: None,
             poll: None,
             call: None,
+            mentions: None,
         }
     }
 
@@ -830,6 +867,7 @@ mod tests {
                 attachment_id: None,
                 attachment_ids: None,
                 poll: None,
+                mentions: None,
             }
         );
     }
@@ -852,6 +890,7 @@ mod tests {
                 attachment_id: None,
                 attachment_ids: None,
                 poll: None,
+                mentions: None,
             }
         );
     }
@@ -876,6 +915,7 @@ mod tests {
                 poll: Some(NewPoll {
                     options: vec!["Pizza".to_string(), "Pasta".to_string()],
                 }),
+                mentions: None,
             }
         );
     }
@@ -899,6 +939,7 @@ mod tests {
                 attachment_id: None,
                 attachment_ids: Some(vec![34, 35, 36]),
                 poll: None,
+                mentions: None,
             }
         );
     }
@@ -980,6 +1021,97 @@ mod tests {
         assert!(
             plain["message"].get("reply_to").is_none(),
             "a message that is not a reply must omit reply_to entirely"
+        );
+    }
+
+    /// protocol.md's fifth `send` example: the members a message names ride
+    /// the ordinary send frame, and come back on the message.
+    #[test]
+    fn client_send_frame_carries_mentions() {
+        let json = r#"{"type": "send", "chat_id": 42, "client_msg_id": "e7a1d9c3-0000-4000-8000-000000000001", "body": "@Anna are you in?", "mentions": [{"user_id": 9, "name": "Anna"}]}"#;
+        let frame: ClientFrame = serde_json::from_str(json).expect("parses");
+        assert_eq!(
+            frame,
+            ClientFrame::Send {
+                chat_id: 42,
+                client_msg_id: Uuid::parse_str("e7a1d9c3-0000-4000-8000-000000000001").unwrap(),
+                body: "@Anna are you in?".to_string(),
+                reply_to_message_id: None,
+                attachment_id: None,
+                attachment_ids: None,
+                poll: None,
+                mentions: Some(vec![crate::models::Mention {
+                    user_id: 9,
+                    name: "Anna".to_string(),
+                }]),
+            }
+        );
+    }
+
+    /// `mentions` rides the message frame, absent — not null, not `[]` —
+    /// on a message that names nobody.
+    #[test]
+    fn message_frame_carries_mentions() {
+        let mut named = sample_message();
+        named.mentions = Some(vec![crate::models::Mention {
+            user_id: 9,
+            name: "Anna".to_string(),
+        }]);
+        assert_serializes_to(
+            &ServerFrame::Message { message: named },
+            r#"{"type": "message", "message": {"id": 1338, "chat_id": 42, "sender_id": 7,
+                 "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
+                 "body": "Dinner at 7?", "created_at": "2026-08-19T17:03:12Z",
+                 "mentions": [{"user_id": 9, "name": "Anna"}]}}"#,
+        );
+        let plain = serde_json::to_value(ServerFrame::Message {
+            message: sample_message(),
+        })
+        .expect("serializes");
+        assert!(plain["message"].get("mentions").is_none(), "{plain}");
+    }
+
+    /// The chain rides the ordinary message frame too: `thread_root_id` on
+    /// a reply, `reply_count` on a root somebody answered, and neither key
+    /// — absent, not null, not 0 — on a message that is neither
+    /// (docs/protocol.md, "Threads").
+    #[test]
+    fn message_frame_carries_the_chain() {
+        let mut reply = sample_message();
+        reply.reply_to = Some(crate::models::ReplyTo {
+            message_id: 41,
+            sender_id: 9,
+            excerpt: "See you at six".to_string(),
+            parent: None,
+        });
+        reply.thread_root_id = Some(38);
+        assert_serializes_to(
+            &ServerFrame::Message { message: reply },
+            r#"{"type": "message", "message": {"id": 1338, "chat_id": 42, "sender_id": 7,
+                 "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
+                 "body": "Dinner at 7?", "created_at": "2026-08-19T17:03:12Z",
+                 "reply_to": {"message_id": 41, "sender_id": 9, "excerpt": "See you at six"},
+                 "thread_root_id": 38}}"#,
+        );
+
+        let mut root = sample_message();
+        root.reply_count = Some(3);
+        assert_serializes_to(
+            &ServerFrame::Message { message: root },
+            r#"{"type": "message", "message": {"id": 1338, "chat_id": 42, "sender_id": 7,
+                 "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
+                 "body": "Dinner at 7?", "created_at": "2026-08-19T17:03:12Z",
+                 "reply_count": 3}}"#,
+        );
+
+        let plain = serde_json::to_value(ServerFrame::Message {
+            message: sample_message(),
+        })
+        .expect("serializes");
+        assert!(
+            plain["message"].get("thread_root_id").is_none()
+                && plain["message"].get("reply_count").is_none(),
+            "both keys must be absent on a message that is neither: {plain}"
         );
     }
 

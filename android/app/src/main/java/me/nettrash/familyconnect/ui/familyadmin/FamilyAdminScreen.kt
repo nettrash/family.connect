@@ -698,6 +698,71 @@ fun FamilyAdminScreen(
                     },
                 )
                 SectionDivider()
+
+                // The FIFTH switch, and the fourth about what leaves: the
+                // profile pictures of the members named in the transcript
+                // (docs/protocol.md, "Profile pictures of members"). Under
+                // the SAME two locks and the same withheld-with-the-reason
+                // rule as "Recent photos" above, so the two cannot disagree.
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.s_assistant_faces)) },
+                    supportingContent = {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(stringResource(R.string.s_assistant_faces_explanation))
+                            when (historyPhotosSwitch) {
+                                FamilyAdminViewModel.HistoryPhotosSwitch.OFFERED ->
+                                    if (!state.aiHistory) {
+                                        Text(stringResource(R.string.s_assistant_faces_needs_history))
+                                    }
+                                FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_NO_VISION_DEPLOYMENT ->
+                                    Text(stringResource(R.string.s_assistant_history_photos_no_deployment))
+                                FamilyAdminViewModel.HistoryPhotosSwitch.WITHHELD_VISION_OFF ->
+                                    Text(stringResource(R.string.s_assistant_history_photos_needs_vision))
+                            }
+                        }
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = state.aiFaces,
+                            onCheckedChange = viewModel::setAiFaces,
+                            enabled = historyPhotosEnabled,
+                        )
+                    },
+                    modifier = Modifier.clickable(enabled = historyPhotosEnabled) {
+                        viewModel.setAiFaces(!state.aiFaces)
+                    },
+                )
+                SectionDivider()
+
+                // The FOURTH switch, and the only one here that is not about
+                // what leaves the server: whether the assistant SPEAKS when
+                // nobody asked (docs/protocol.md, "The daily greeting").
+                // Nothing above gates it, so it needs no `when` — only the
+                // operator's half, which disables it with the reason rather
+                // than hiding it, for the reason recorded on the state field.
+                val greetingEnabled = !state.busy && state.greetingsEnabled
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.s_assistant_greeting)) },
+                    supportingContent = {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(stringResource(R.string.s_assistant_greeting_explanation))
+                            if (!state.greetingsEnabled) {
+                                Text(stringResource(R.string.s_assistant_greeting_no_server))
+                            }
+                        }
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = state.aiGreeting,
+                            onCheckedChange = viewModel::setAiGreeting,
+                            enabled = greetingEnabled,
+                        )
+                    },
+                    modifier = Modifier.clickable(enabled = greetingEnabled) {
+                        viewModel.setAiGreeting(!state.aiGreeting)
+                    },
+                )
+                SectionDivider()
             }
 
             // -- Members ------------------------------------------------------------

@@ -356,6 +356,15 @@ private struct MacChatRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
+                    if chat.hasUnreadMention {
+                        Text(verbatim: "@")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor, in: Capsule())
+                            .accessibilityLabel(Text("Mentions you"))
+                    }
                     if chat.unreadCount > 0 {
                         Text("\(chat.unreadCount)")
                             .font(.caption2.weight(.semibold).monospacedDigit())

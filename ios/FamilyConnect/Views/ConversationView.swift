@@ -101,6 +101,10 @@ struct ConversationView: View {
     @Query private var chats: [ChatEntity]
     @Query private var members: [MemberEntity]
     @State private var model = ConversationModel()
+    /// The open-polls surface, reached from this chat's toolbar.
+    @State private var showsOpenPolls = false
+    /// The chain open on its own sheet (docs/protocol.md, "Threads").
+    @State private var threadTarget: ThreadTarget?
     /// False until the opening layout settled where this open was meant to
     /// land (the convergence loop in `.task`, or the anchored scroll that
     /// replaces it); a history-load scroll-restore before that would yank a
@@ -346,6 +350,86 @@ struct ConversationView: View {
     /// the chat rather than looked up (docs/protocol.md, "The assistant").
     private var isAssistantChat: Bool { chat?.kind == "ai" }
     private var currentUserID: Int64 { AppSettings.currentUserID ?? -1 }
+
+    /// Extracted rather than written inline in the `.sheet` closure: `body`
+    /// here is already close to the type-checker's budget, and adding a
+    /// conditional builder inside it tipped it over ("unable to type-check
+    /// this expression in reasonable time"). One named property costs
+    /// nothing and keeps that expression the size it was.
+    @ViewBuilder
+    private var openPollsSheet: some View {
+        if let chatID = chat?.chatID {
+            OpenPollsView(chatID: chatID)
+        }
+    }
+
+
+    // MARK: - Member mentions (docs/protocol.md, "Mentioning a member")
+
+    /// Everybody a mention may name: the current roster, by the name the
+    /// app calls them.
+    private var mentionRoster: [MentionDTO] {
+        members.filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+    }
+
+    /// What the strip offers for the prefix being typed: never the reader
+    /// themself, never the blocked, and never the assistant — which is not
+    /// in the roster and has its own button.
+    private func mentionCandidates(matching query: String) -> [MentionDTO] {
+        MemberMentions.candidates(
+            in: mentionRoster, matching: query,
+            excluding: coordinator.blockedUserIDs.union([currentUserID]))
+    }
+
+    /// The members the text names, resolved at send — family chat only,
+    /// nil when it names nobody so the wire stays as it was.
+    private func resolvedMentions(in body: String) -> [MentionDTO]? {
+        guard isFamilyChat else { return nil }
+        let found = MemberMentions.resolve(body: body, roster: mentionRoster)
+        return found.isEmpty ? nil : found
+    }
+
+    /// A tap on a name opens the one-to-one chat with that member — the
+    /// reader's own name, a member who has left and a deleted account are
+    /// highlighted and not tappable.
+    private func openMember(_ userID: Int64) {
+        guard userID != currentUserID,
+              let member = members.first(where: { $0.userID == userID }),
+              !member.hasLeft, !member.accountDeleted
+        else { return }
+        Task {
+            if let chatID = try? await coordinator.openDirectChat(with: userID) {
+                session.pendingPushRoute = .chat(chatID)
+            }
+        }
+    }
+
+    /// The chain this message belongs to, on its own sheet: the root it
+    /// names when it is a reply, itself when it is the root.
+    private func openThread(serverID: Int64?, threadRootID: Int64?) {
+        guard let serverID else { return }
+        threadTarget = ThreadTarget(chatID: chatID, rootID: threadRootID ?? serverID)
+    }
+
+    /// How many open polls in this chat this reader still has to answer —
+    /// the badge on the toolbar entry point (OpenPollsBadge, shared with the
+    /// Mac and mirrored on Android).
+    ///
+    /// Computed from what this device already holds rather than from the
+    /// endpoint: the badge must be right the moment the chat opens, and a
+    /// request per open would be a request per open. The polls it has are
+    /// the polls the chat has synced, which is what the reader is looking at.
+    private var openPollsToAnswer: Int {
+        // A poll by somebody this reader has blocked is a hidden row on the
+        // surface and counts toward nothing: a badge is a claim that there
+        // is something for them to answer, and a question they chose not to
+        // see is not one (protocol.md, "Finding the open ones").
+        let me = currentUserID
+        let blocked = coordinator.blockedUserIDs
+        let visible = messages.filter { $0.senderID == me || !blocked.contains($0.senderID) }
+        return OpenPollsBadge.count(polls: visible.compactMap(\.poll), currentUserID: me)
+    }
 
     /// How many of the locally cached messages are RENDERED. The thread
     /// deliberately renders a bounded window (grown by the top sentinel —
@@ -834,6 +918,50 @@ struct ConversationView: View {
                     .disabled(!calls.isIdle)
                 }
             }
+            // The way back to a decision the family has scrolled past
+            // (docs/protocol.md, "Finding the open ones"). Family chat only,
+            // because polls exist nowhere else — which is also why this slot
+            // was empty here: `canCall` is false in the family chat, so it
+            // had no trailing item at all.
+            //
+            // The badge counts open polls THIS READER has not voted in,
+            // derived from the votes already on every poll (OpenPollsBadge).
+            // Not "all open polls": that stays lit after you have answered
+            // everything, until somebody else closes them, and a badge that
+            // cannot be cleared by doing the thing it asks for stops meaning
+            // anything within a day.
+            if chat?.kind == "family" {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showsOpenPolls = true
+                    } label: {
+                        // The count is drawn BY HAND. `.badge` on a toolbar
+                        // item renders only on iOS 26 / macOS 26, and this
+                        // app deploys to iOS 17 — on every earlier OS it is
+                        // silently nothing, and the whole OpenPollsBadge
+                        // apparatus would have computed a number nobody saw.
+                        // The capsule is the chat list's own unread badge.
+                        Image(systemName: "chart.bar.doc.horizontal")
+                            .overlay(alignment: .topTrailing) {
+                                if openPollsToAnswer > 0 {
+                                    Text("\(openPollsToAnswer)")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(.tint, in: Capsule())
+                                        .offset(x: 9, y: -8)
+                                }
+                            }
+                    }
+                    .accessibilityLabel("Open polls")
+                    .accessibilityValue(openPollsToAnswer > 0 ? Text("\(openPollsToAnswer) to answer") : Text(""))
+                }
+            }
+        }
+        .sheet(isPresented: $showsOpenPolls) { openPollsSheet }
+        .sheet(item: $threadTarget) { target in
+            ThreadView(chatID: target.chatID, rootID: target.rootID)
         }
         .onAppear {
             // Claims the chat, and claims NOTHING about having seen it:
@@ -984,6 +1112,11 @@ struct ConversationView: View {
                                 memberNames: memberNames,
                                 currentUserID: currentUserID,
                                 onTapQuote: { jumpToMessage($0, proxy: proxy) },
+                                onTapMention: { openMember($0) },
+                                replyCount: message.replyCount,
+                                onOpenThread: {
+                                    openThread(serverID: message.serverID, threadRootID: message.threadRootID)
+                                },
                                 onOpenAttachment: { attachment in
                                     if attachment.isFile {
                                         openFile(attachment)
@@ -1307,6 +1440,17 @@ struct ConversationView: View {
             // photo an `@ai` draft is about to carry (#56).
             if let notice = pictureNotice ?? mentionPictureNotice {
                 assistantPictureNotice(notice)
+            }
+            // The roster, while a member is being named (protocol.md,
+            // "Mentioning a member") — family chat only, and only while
+            // the draft ends in an `@` token.
+            if isFamilyChat, let query = MemberMentions.query(in: model.draft) {
+                let candidates = mentionCandidates(matching: query)
+                if !candidates.isEmpty {
+                    MentionSuggestions(candidates: candidates) { name in
+                        model.draft = MemberMentions.accept(draft: model.draft, name: name)
+                    }
+                }
             }
             HStack(alignment: .bottom, spacing: 8) {
                 // A Menu rather than two buttons: the composer is narrow,
@@ -2116,6 +2260,7 @@ struct ConversationView: View {
             items.map(\.prepared),
             caption: handoff.caption,
             replyTo: handoff.replyTo,
+            mentions: resolvedMentions(in: handoff.caption),
             in: chatID) == nil
         {
             // Only when not one item could be staged — a full disk, or a
@@ -2274,6 +2419,9 @@ struct ConversationView: View {
                         // it — and under the capsule when that had to
                         // flip down too, so the two never overlap.
                         let canReply = message.serverID != nil
+                        // In a chain: a reply, or a root somebody answered.
+                        let canViewThread = message.serverID != nil
+                            && (message.threadRootID != nil || message.replyCount > 0)
                         let canEdit = message.serverID != nil && message.senderID == currentUserID
                         let attachment = message.attachmentSnapshot
                         // A photo sent without a caption has nothing to copy.
@@ -2298,6 +2446,7 @@ struct ConversationView: View {
                         // places one menu and draws another.
                         let menuSize = MessageContextMenu.size(
                             canReply: canReply,
+                            canViewThread: canViewThread,
                             canEdit: canEdit,
                             canCopy: canCopy,
                             canReport: canReport,
@@ -2340,7 +2489,12 @@ struct ConversationView: View {
                                         shareText = ShareText(text: message.body)
                                     }
                                 },
+                                onViewThread: {
+                                    dismissReactionPicker()
+                                    openThread(serverID: message.serverID, threadRootID: message.threadRootID)
+                                },
                                 canReply: canReply,
+                                canViewThread: canViewThread,
                                 canEdit: canEdit,
                                 canCopy: canCopy,
                                 canReport: canReport,
@@ -2500,7 +2654,8 @@ struct ConversationView: View {
             sendStaged(staged, caption: body)
             return
         }
-        coordinator.send(body: body, in: chatID, replyTo: replyDraft)
+        coordinator.send(
+            body: body, in: chatID, replyTo: replyDraft, mentions: resolvedMentions(in: body))
         withAnimation(.spring(duration: 0.25)) {
             replyDraft = nil
         }
@@ -2530,7 +2685,9 @@ struct ConversationView: View {
     /// the composer is still going somewhere else.
     private func sendPoll(question: String, options: [String]) {
         let quote = replyDraft
-        coordinator.sendPoll(question: question, options: options, in: chatID, replyTo: quote)
+        coordinator.sendPoll(
+            question: question, options: options, in: chatID, replyTo: quote,
+            mentions: resolvedMentions(in: question))
         withAnimation(.spring(duration: 0.25)) {
             replyDraft = nil
         }
@@ -2698,6 +2855,7 @@ struct ConversationView: View {
                     label: nil,
                     caption: composer.caption,
                     replyTo: composer.replyTo,
+                    mentions: resolvedMentions(in: composer.caption),
                     in: chatID) == nil
                 {
                     restore(composer)
@@ -2956,7 +3114,7 @@ struct ConversationView: View {
 }
 
 /// The "Today / Yesterday / Mon, Aug 17" capsule between day sections.
-private struct DayPill: View {
+struct DayPill: View {
     let day: Date
 
     var body: some View {

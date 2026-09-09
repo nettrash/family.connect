@@ -277,6 +277,30 @@ class SessionRepositoryTest {
      * it in settings in BOTH directions — a server that reopens must
      * bring Create back on the next refresh, not the next reinstall.
      */
+    /**
+     * The operator's half of the daily greeting. One line carries it from
+     * the wire to the flag the family's switch is drawn against; dropping
+     * that line disables the switch on every device with every other test
+     * green, which is why it has one of its own.
+     */
+    @Test
+    fun refreshMeRecordsWhetherTheServerPostsGreetings() = runTest(dispatcher) {
+        val repository = newRepository()
+        settings.setServerUrl("https://chat.example.com")
+        assertThat(settings.current.greetingsEnabled).isFalse()
+
+        authApi.meResult = ApiResult.Ok(
+            MeResponse(user = userDto(7, "anna"), greetingsEnabled = true),
+        )
+        repository.refreshMe()
+        assertThat(settings.current.greetingsEnabled).isTrue()
+
+        // And off again: a server that stopped is a server that stopped.
+        authApi.meResult = ApiResult.Ok(MeResponse(user = userDto(7, "anna")))
+        repository.refreshMe()
+        assertThat(settings.current.greetingsEnabled).isFalse()
+    }
+
     @Test
     fun refreshMeRecordsWhetherTheServerTakesNewFamilies() = runTest(dispatcher) {
         val repository = newRepository()

@@ -18,6 +18,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod events;
+pub mod greetings;
 pub mod handlers_ai;
 pub mod handlers_attachment;
 pub mod handlers_auth;

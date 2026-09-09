@@ -74,6 +74,42 @@ pub fn first_mention(body: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Does this body name a MEMBER — contain `@` followed by exactly `name`,
+/// at a boundary on both sides (docs/protocol.md, "Mentioning a member")?
+///
+/// The assistant's rule, applied to an arbitrary name: the byte before the
+/// `@` and the byte after the name must not be an ASCII letter, digit or
+/// `_`, so `@Ann` is not found inside `@Anna` and `x@Anna` is an address
+/// rather than a mention. The name is matched exactly and case-sensitively:
+/// it is the text the sender's client put there, and the server checks
+/// only that it is really there. A non-ASCII name is fine — the scan is
+/// over bytes, and `name.len()` past a `@` that begins a match is a char
+/// boundary because `name` is whole UTF-8.
+pub fn names_member(body: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let bytes = body.as_bytes();
+    let mut index = 0usize;
+    while let Some(offset) = body[index..].find('@') {
+        let start = index + offset;
+        let end = start + 1 + name.len();
+        if end <= bytes.len()
+            && &bytes[start + 1..end] == name.as_bytes()
+            && is_boundary(if start == 0 {
+                None
+            } else {
+                Some(bytes[start - 1])
+            })
+            && is_boundary(bytes.get(end).copied())
+        {
+            return true;
+        }
+        index = start + 1;
+    }
+    false
+}
+
 /// The picture token, so nothing spells it twice.
 pub const DRAW: &str = "/draw";
 
@@ -156,6 +192,39 @@ fn is_boundary(probe: Option<u8>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_member_is_named_only_by_the_whole_name_at_a_boundary() {
+        assert!(super::names_member("@Anna are you in?", "Anna"));
+        assert!(super::names_member("hey @Anna, dinner?", "Anna"));
+        assert!(super::names_member("(@Anna)", "Anna"));
+        assert!(super::names_member("@Uncle Bob is here", "Uncle Bob"));
+        assert!(super::names_member("@Анна привет", "Анна"));
+        assert!(super::names_member("@Анна", "Анна"));
+        // Not the whole name, or not at a boundary.
+        assert!(!super::names_member("@Annabel", "Anna"));
+        assert!(!super::names_member("@Ann", "Anna"));
+        assert!(
+            !super::names_member("@anna", "Anna"),
+            "case is the sender's"
+        );
+        assert!(!super::names_member("mail@Anna", "Anna"));
+        assert!(!super::names_member("Anna", "Anna"), "no @");
+        assert!(!super::names_member("@Anna", ""));
+        // The second @ is the one: the first is a longer word.
+        assert!(super::names_member("@Annabel and @Anna", "Anna"));
+        // The boundary class is ASCII alphanumerics and `_`, and NOTHING
+        // else. Both clients mirror this table, and a Unicode-aware "is
+        // this a letter" on either of them would end the token differently
+        // from the server on exactly these vectors.
+        assert!(super::names_member("@AnnaЖ", "Anna"));
+        assert!(super::names_member("@Anna文", "Anna"));
+        assert!(super::names_member("@Anna\u{0301} are you in?", "Anna"), "a combining mark");
+        assert!(super::names_member("@Anna\u{FE0F}", "Anna"), "a variation selector");
+        assert!(!super::names_member("@Annab", "Anna"));
+        assert!(!super::names_member("@Anna9", "Anna"));
+        assert!(!super::names_member("@Anna_", "Anna"));
+    }
+
     use super::*;
 
     /// The shared vectors. `ios/FamilyConnectTests/AssistantMentionTests.swift`

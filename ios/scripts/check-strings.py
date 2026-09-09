@@ -22,6 +22,7 @@ worth a type checker.
 """
 
 import itertools
+import bisect
 import json
 import os
 import re
@@ -39,11 +40,21 @@ NEVER_TRANSLATED = {
 }
 
 # Positions Swift treats as a LocalizedStringKey.
+#
+# SecureField earns its place the hard way: PasswordFields passed its label
+# down as a `String`, which binds SecureField's StringProtocol overload and
+# performs NO catalogue lookup, so "New Password" shipped English in all nine
+# languages while this gate exited 0. A position missing from this list is a
+# translation this script cannot see.
 CALLS = [
     "Text", "Button", "Label", "Toggle", "Picker", "Section", "Stepper",
-    "LabeledContent", "TextField", "ContentUnavailableView",
+    "LabeledContent", "TextField", "SecureField", "ContentUnavailableView",
 ]
-MODIFIERS = ["navigationTitle", "accessibilityLabel", "alert", "confirmationDialog"]
+# `help` is a tooltip on the Mac and localizes like any other
+# LocalizedStringKey position — and was missing here, which is how a
+# ternary-of-literals tooltip (a plain `String`, never localized) went
+# unnoticed.
+MODIFIERS = ["navigationTitle", "accessibilityLabel", "alert", "confirmationDialog", "help"]
 PATTERNS = (
     [re.compile(rf'\b{name}\(\s*"((?:[^"\\]|\\.)*)"') for name in CALLS]
     + [re.compile(rf'\.{name}\(\s*"((?:[^"\\]|\\.)*)"') for name in MODIFIERS]
@@ -82,23 +93,44 @@ def main():
             if not name.endswith(".swift"):
                 continue
             path = os.path.join(root, name)
-            for number, line in enumerate(open(path).read().splitlines(), 1):
-                # Doc comments quote code, and `verbatim:` opts out.
-                if line.lstrip().startswith(("//", "*", "/*")) or "verbatim:" in line:
-                    continue
-                for pattern in PATTERNS:
-                    for literal in pattern.findall(line):
-                        if not literal.strip():
-                            continue
-                        keys = candidate_keys(literal)
-                        key = next((k for k in keys if k in catalogue), None)
-                        if key is None:
-                            missing.append((path, number, literal))
-                        elif key not in NEVER_TRANSLATED and any(
-                            language not in catalogue[key].get("localizations", {})
-                            for language in LANGUAGES
-                        ):
-                            untranslated.append((path, number, key))
+            source = open(path).read()
+            # Scanned WHOLE-FILE, not line by line. Swift wraps a long call
+            # after its opening paren all the time —
+            #
+            #     ContentUnavailableView(
+            #         "Nothing to decide",
+            #
+            # — and a per-line scan cannot see that literal at all, because
+            # the `\s*` between the paren and the quote has a newline in it.
+            # Two real strings shipped uncatalogued through exactly that gap
+            # before it was closed; it is the same class of blind spot as
+            # SecureField's, and it hid more.
+            starts = [m.start() for m in re.finditer(r"\n", source)]
+
+            def line_of(offset):
+                return bisect.bisect_right(starts, offset - 1) + 1
+
+            for pattern in PATTERNS:
+                for match in pattern.finditer(source):
+                    literal = match.group(1)
+                    if not literal.strip():
+                        continue
+                    number = line_of(match.start())
+                    line = source.splitlines()[number - 1] if number <= len(source.splitlines()) else ""
+                    # Doc comments quote code, and `verbatim:` opts out. Read
+                    # off the line the CALL starts on, which is where both
+                    # markers live.
+                    if line.lstrip().startswith(("//", "*", "/*")) or "verbatim:" in line:
+                        continue
+                    keys = candidate_keys(literal)
+                    key = next((k for k in keys if k in catalogue), None)
+                    if key is None:
+                        missing.append((path, number, literal))
+                    elif key not in NEVER_TRANSLATED and any(
+                        language not in catalogue[key].get("localizations", {})
+                        for language in LANGUAGES
+                    ):
+                        untranslated.append((path, number, key))
 
     for title, rows in (("not in the catalogue", missing),
                         ("in the catalogue, not translated", untranslated)):

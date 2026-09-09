@@ -261,6 +261,40 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
     /// it off in the same write whenever `aiVision` goes off, so a PATCH
     /// answer is the only place this client learns either.
     let aiHistoryPhotos: Bool
+    /// Whether the assistant may post one unprompted good-morning message a
+    /// day into this family's chat (protocol.md, "The daily greeting").
+    ///
+    /// ALWAYS present on the wire, and **false** by default — for every
+    /// family that predates it and for a server that predates the field,
+    /// where no greeting can be posted at all.
+    ///
+    /// INDEPENDENT of the three switches above, uniquely among them. They
+    /// answer widening forms of one question — how much of what this family
+    /// said and photographed may be shown to a model — which is why
+    /// `aiHistoryPhotos` is bound to `aiVision`. This one answers a different
+    /// question: whether the assistant SPEAKS when nobody asked. Nothing it
+    /// sends is the family's own words or pictures, so no setting of the
+    /// others clears it and none of them gates it.
+    ///
+    /// It is the family's half of a two-key arrangement. The operator's half
+    /// is `MeResponse.greetingsEnabled`, and a client that shows this switch
+    /// shows it as the family's answer, not as a promise that a greeting will
+    /// arrive.
+    let aiGreeting: Bool
+    /// Whether an `@ai` mention in the family chat may ALSO be shown the
+    /// profile pictures of the members whose lines are in the transcript it
+    /// sends (protocol.md, "Profile pictures of members"). A FIFTH switch,
+    /// and the fourth about disclosure — beside `aiHistoryPhotos`, not
+    /// inside it, because that switch's sentence names "the most recent
+    /// photos in the family chat" and a profile picture is not in the chat.
+    ///
+    /// ALWAYS present on the wire and **false** by default, for every family
+    /// that predates it and for a server that predates the field, which
+    /// sends no face at all. It can only be true while `aiVision` is: the
+    /// server refuses to turn it on otherwise and turns it off in the same
+    /// write whenever `aiVision` goes off, so a PATCH answer is where this
+    /// client learns either.
+    let aiFaces: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -273,6 +307,8 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         case aiHistory = "ai_history"
         case aiVision = "ai_vision"
         case aiHistoryPhotos = "ai_history_photos"
+        case aiGreeting = "ai_greeting"
+        case aiFaces = "ai_faces"
     }
 
     init(
@@ -299,6 +335,16 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // while the server had it on — and it decides whether photographs
         // nobody chose leave the server.
         aiHistoryPhotos: Bool,
+        // And the fourth, undefaulted for the same reason once more: a
+        // rebuild that dropped it would show the good-morning message off on
+        // this device while the server had it on — and the family would have
+        // no way to explain the message that keeps arriving.
+        aiGreeting: Bool,
+        // And the fifth, undefaulted for the strongest reason on this list:
+        // it decides whether a member's own FACE may leave the server, and a
+        // rebuild that dropped it would show that off while the server had
+        // it on.
+        aiFaces: Bool,
         maxMembers: Int?
     ) {
         self.id = id
@@ -311,6 +357,8 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         self.aiHistory = aiHistory
         self.aiVision = aiVision
         self.aiHistoryPhotos = aiHistoryPhotos
+        self.aiGreeting = aiGreeting
+        self.aiFaces = aiFaces
     }
 
     /// Hand-written for the reason UserDTO's is, and this type had no
@@ -338,6 +386,13 @@ nonisolated struct FamilyDTO: Codable, Equatable, Sendable {
         // predates the field never sends a photo nobody pointed at, which
         // is exactly the state `false` reports.
         aiHistoryPhotos = try container.decodeIfPresent(Bool.self, forKey: .aiHistoryPhotos) ?? false
+        // FALSE again, and again the protocol's own default rather than a
+        // compatibility guess: a server that predates the field posts no
+        // greeting at all, which is exactly what `false` reports.
+        aiGreeting = try container.decodeIfPresent(Bool.self, forKey: .aiGreeting) ?? false
+        // FALSE, the protocol's own default: a server that predates the
+        // field sends no face, which is exactly what `false` reports.
+        aiFaces = try container.decodeIfPresent(Bool.self, forKey: .aiFaces) ?? false
     }
 }
 
@@ -693,6 +748,15 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     /// rather than throwing — which is also what makes a server that
     /// predates replies decode.
     let replyTo: ReplyToDTO?
+    /// Present when (and only when) this message is a reply: the TOP of
+    /// its chain, decided by the server at send time and never changed
+    /// (docs/protocol.md, "Threads"). Absent once retention has swept that
+    /// root.
+    let threadRootID: Int64?
+    /// Present when (and only when) this message is the root of a chain
+    /// with at least one reply — how many messages name it as their root,
+    /// recomputed by the server on every read. Absent, never 0, elsewhere.
+    let replyCount: Int64?
     /// Both present when (and only when) the body has been edited. The
     /// seq is the guard: a body only overwrites a stored one when it is
     /// at least as new (docs/protocol.md, "Editing").
@@ -719,6 +783,10 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
     /// call (docs/protocol.md, "Voice calls"). The body is then an English
     /// placeholder a client that knows this object never shows.
     let call: CallDTO?
+    /// Present when (and only when) the message names members — decided at
+    /// send time, in the sender's order, never changed by an edit
+    /// (docs/protocol.md, "Mentioning a member"). Absent, never [], otherwise.
+    let mentions: [MentionDTO]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -730,12 +798,15 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         case reactions
         case reactionSeq = "reaction_seq"
         case replyTo = "reply_to"
+        case threadRootID = "thread_root_id"
+        case replyCount = "reply_count"
         case editedAt = "edited_at"
         case editSeq = "edit_seq"
         case attachments
         case attachment
         case poll
         case call
+        case mentions
     }
 
     /// THE read rule for what a message carries: prefer the plural field,
@@ -761,12 +832,15 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         reactions: [ReactionDTO]? = nil,
         reactionSeq: Int64? = nil,
         replyTo: ReplyToDTO? = nil,
+        threadRootID: Int64? = nil,
+        replyCount: Int64? = nil,
         editedAt: Date? = nil,
         editSeq: Int64? = nil,
         attachments: [AttachmentDTO]? = nil,
         attachment: AttachmentDTO? = nil,
         poll: PollDTO? = nil,
-        call: CallDTO? = nil
+        call: CallDTO? = nil,
+        mentions: [MentionDTO]? = nil
     ) {
         self.id = id
         self.chatID = chatID
@@ -777,12 +851,15 @@ nonisolated struct MessageDTO: Codable, Equatable, Sendable {
         self.reactions = reactions
         self.reactionSeq = reactionSeq
         self.replyTo = replyTo
+        self.threadRootID = threadRootID
+        self.replyCount = replyCount
         self.editedAt = editedAt
         self.editSeq = editSeq
         self.attachments = attachments
         self.attachment = attachment
         self.poll = poll
         self.call = call
+        self.mentions = mentions
     }
 }
 
@@ -930,6 +1007,17 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
     /// server that predates the sweep (docs/protocol.md, "Accounts without
     /// a family"). The gate says so, so the deadline is known before it is met.
     var familylessAccountTTLDays: Int = 0
+    /// Whether this server posts the assistant's daily greeting at all —
+    /// `[greetings]` on AND a usable assistant, since the greeting is written
+    /// by that deployment (protocol.md, "The daily greeting"). ALWAYS present
+    /// on a current server; defaulted to FALSE for one that predates it,
+    /// which is also the right answer there.
+    ///
+    /// It exists for the reason `callsEnabled` does. `ai_greeting` is only
+    /// the family's half, so without this an owner who turned their half on
+    /// and saw nothing all week could not tell a server that never posts from
+    /// a switch that did not save.
+    var greetingsEnabled: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case user
@@ -943,6 +1031,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         case supportContact = "support_contact"
         case familyRegistrationEnabled = "family_registration_enabled"
         case familylessAccountTTLDays = "familyless_account_ttl_days"
+        case greetingsEnabled = "greetings_enabled"
     }
 
     init(
@@ -956,7 +1045,8 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         maxFamilyMembers: Int? = nil,
         supportContact: String? = nil,
         familyRegistrationEnabled: Bool = true,
-        familylessAccountTTLDays: Int = 0
+        familylessAccountTTLDays: Int = 0,
+        greetingsEnabled: Bool = false
     ) {
         self.user = user
         self.family = family
@@ -969,6 +1059,7 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         self.supportContact = supportContact
         self.familyRegistrationEnabled = familyRegistrationEnabled
         self.familylessAccountTTLDays = familylessAccountTTLDays
+        self.greetingsEnabled = greetingsEnabled
     }
 
     /// Hand-written for the reason every other defaulted field on this
@@ -989,6 +1080,8 @@ nonisolated struct MeResponse: Codable, Equatable, Sendable {
         familyRegistrationEnabled = try container.decodeIfPresent(Bool.self, forKey: .familyRegistrationEnabled) ?? true
         // Absent on a server from before the sweep, which removes nothing.
         familylessAccountTTLDays = try container.decodeIfPresent(Int.self, forKey: .familylessAccountTTLDays) ?? 0
+        // Absent on a server from before the greeting, which posts none.
+        greetingsEnabled = try container.decodeIfPresent(Bool.self, forKey: .greetingsEnabled) ?? false
     }
 }
 
@@ -1294,6 +1387,11 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
     /// It is an id THRESHOLD and never a reference: retention may already
     /// have swept the message it names, so nothing may try to fetch it.
     let lastReadMessageID: Int64?
+    /// `true` when (and only when) an unread message in the chat names the
+    /// caller — a filter over the rows `unread_count` counts, never a
+    /// second definition of unread. Absent otherwise, never `false`
+    /// (docs/protocol.md, "Mentioning a member").
+    let mentioned: Bool?
 
     enum CodingKeys: String, CodingKey {
         case chat
@@ -1303,6 +1401,7 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
         case maxEditSeq = "max_edit_seq"
         case maxPollSeq = "max_poll_seq"
         case lastReadMessageID = "last_read_message_id"
+        case mentioned
     }
 
     /// Explicit memberwise init so the seq fields default to absent —
@@ -1314,7 +1413,8 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
         maxReactionSeq: Int64? = nil,
         maxEditSeq: Int64? = nil,
         maxPollSeq: Int64? = nil,
-        lastReadMessageID: Int64? = nil
+        lastReadMessageID: Int64? = nil,
+        mentioned: Bool? = nil
     ) {
         self.chat = chat
         self.lastMessage = lastMessage
@@ -1323,6 +1423,7 @@ nonisolated struct ChatListItemDTO: Codable, Equatable, Sendable {
         self.maxEditSeq = maxEditSeq
         self.maxPollSeq = maxPollSeq
         self.lastReadMessageID = lastReadMessageID
+        self.mentioned = mentioned
     }
 }
 

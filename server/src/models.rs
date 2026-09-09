@@ -225,6 +225,48 @@ pub struct Family {
     /// server can see. A client that never heard of it reads an absent key
     /// as false, which is the truth for every family that predates it.
     pub ai_history_photos: bool,
+
+    /// Whether the assistant may post one unprompted good-morning message a
+    /// day into this family's chat (protocol.md, "The daily greeting").
+    ///
+    /// Always serialized, like the three above, and for the same reason: a
+    /// switch has no third state. Default FALSE, for every family created
+    /// before this and after it — a message a family cannot stop, mute or
+    /// delete may only ever start because somebody chose it.
+    ///
+    /// INDEPENDENT of the other three, uniquely among them. They answer
+    /// widening forms of one question — how much of what this family said and
+    /// photographed may be shown to a model — and so `ai_history_photos` is
+    /// bound to `ai_vision` by a CHECK. This one answers a different question
+    /// altogether: whether the assistant SPEAKS when nobody asked. Nothing it
+    /// sends is the family's own words or pictures, so there is no setting of
+    /// the others under which it becomes a wider disclosure, and none of them
+    /// clears it.
+    ///
+    /// It does nothing unless the OPERATOR has also turned greetings on for
+    /// the server, which is a value no client can see — so this is the
+    /// family's answer, not a promise that a greeting will arrive.
+    pub ai_greeting: bool,
+
+    /// Whether an `@ai` mention in the family chat may ALSO be shown the
+    /// profile pictures of the members whose lines are in the transcript it
+    /// sends (protocol.md, "Profile pictures of members"). A FIFTH switch,
+    /// and the fourth about disclosure: it stands beside `ai_history_photos`
+    /// rather than inside it because that switch's sentence names "the most
+    /// recent photos in the family chat", and a profile picture is not in
+    /// the chat — it is the first image in this protocol attached to no
+    /// message at all.
+    ///
+    /// Always serialized, like its neighbours, and **false** by default for
+    /// every family before and after it. It can only be `true` while
+    /// `ai_vision` is — migration 0038 says so as a CHECK, and
+    /// `PATCH /families/mine` refuses the one and clears the other — and it
+    /// does nothing unless `ai_history` is on and the server can see: a face
+    /// travels only for a name the model has been told, and with no
+    /// transcript there are no names. A client that never heard of it reads
+    /// an absent key as false, which is the truth for every family that
+    /// predates it.
+    pub ai_faces: bool,
 }
 
 /// `Report` object as listed for the owner (protocol.md, "Reporting a
@@ -355,6 +397,18 @@ pub struct Message {
     /// every read from the quoted row, never stored — see `ReplyTo`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reply_to: Option<ReplyTo>,
+    /// Present when (and only when) this message is a reply: the id of the
+    /// TOP of its chain — the first message in its ancestry that is not
+    /// itself a reply — decided at send time and STORED, unlike the quote
+    /// (protocol.md, "Threads"). Absent once retention has swept that root.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub thread_root_id: Option<i64>,
+    /// Present when (and only when) this message is the root of a chain
+    /// with at least one reply: how many messages name it as their root,
+    /// recomputed on every read. Absent — never 0 — on a message nobody
+    /// has answered and on every reply, whose count belongs to its root.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reply_count: Option<i64>,
     /// Both present when (and only when) the body has been edited. Absent —
     /// not null, and not a zero seq — on a message still in its original
     /// form, which is how a client tells "never edited" from "edited".
@@ -394,6 +448,13 @@ pub struct Message {
     /// column for it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub call: Option<CallRecord>,
+    /// Present when (and only when) the message names members — decided at
+    /// send time from what the sender's client sent, in the order sent,
+    /// never changed by an edit (protocol.md, "Mentioning a member").
+    /// Hydrated AFTER the fact by `handlers_chat::attach_mentions`, exactly
+    /// as `attachments` is. Absent, never an empty array, otherwise.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mentions: Option<Vec<Mention>>,
 }
 
 /// `Call` object: what a voice call left behind in the direct chat
@@ -601,6 +662,17 @@ impl Message {
         let edited_at = row
             .try_get::<Option<OffsetDateTime>, _>("edited_at")
             .unwrap_or_default();
+        // The chain, under the same try_get rule as the quote: a narrow
+        // SELECT that carries neither column reports both as absent. The
+        // count is a `count(*)` in MESSAGE_COLS and zero means "nobody
+        // answered", which is ABSENT on the wire, never 0.
+        let thread_root_id = row
+            .try_get::<Option<i64>, _>("thread_root_id")
+            .unwrap_or_default();
+        let reply_count = match row.try_get::<i64, _>("reply_count") {
+            Ok(count) if count > 0 => Some(count),
+            _ => None,
+        };
         Self {
             id: row.get("id"),
             chat_id: row.get("chat_id"),
@@ -611,6 +683,8 @@ impl Message {
             reactions: None,
             reaction_seq,
             reply_to,
+            thread_root_id,
+            reply_count,
             edited_at,
             edit_seq,
             // Not read from columns, by design: see each field's doc. The
@@ -620,6 +694,7 @@ impl Message {
             attachments: None,
             poll: None,
             call: None,
+            mentions: None,
         }
     }
 }
@@ -656,6 +731,23 @@ pub struct ChatListEntry {
     /// exactly as the two above (protocol.md, "Polls").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_poll_seq: Option<i64>,
+    /// `true` when (and only when) a message newer than the caller's read
+    /// marker, from somebody the caller has not blocked, names the caller
+    /// — a FILTER over exactly the rows `unread_count` counts, never a
+    /// second definition of unread. Omitted otherwise, never `false`
+    /// (protocol.md, "Mentioning a member").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentioned: Option<bool>,
+}
+
+/// A member a message names (protocol.md, "Mentioning a member"): the id,
+/// and the display name AS TYPED after the `@`, so a client can find the
+/// token in the body to highlight it without knowing what the member is
+/// called today. The same shape travels in and out.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Mention {
+    pub user_id: i64,
+    pub name: String,
 }
 
 /// Something a message carries: a photo, a video, a piece of audio, a file,
@@ -943,6 +1035,8 @@ mod tests {
             ai_history: true,
             ai_vision: false,
             ai_history_photos: false,
+            ai_greeting: false,
+            ai_faces: false,
         };
         let json = serde_json::to_value(&family).expect("serialize");
         assert!(
@@ -967,13 +1061,16 @@ mod tests {
             ai_history: true,
             ai_vision: false,
             ai_history_photos: false,
+            ai_greeting: false,
+            ai_faces: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
             serde_json::json!({
                 "id": 3, "name": "The Smiths", "join_policy": "open",
                 "created_at": "2026-08-19T17:03:12Z", "ai_history": true,
-                "ai_vision": false, "ai_history_photos": false
+                "ai_vision": false, "ai_history_photos": false,
+                "ai_greeting": false, "ai_faces": false
             })
         );
     }
@@ -991,6 +1088,8 @@ mod tests {
             ai_history: true,
             ai_vision: false,
             ai_history_photos: false,
+            ai_greeting: false,
+            ai_faces: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -998,7 +1097,8 @@ mod tests {
                 "id": 3, "name": "The Smiths", "join_policy": "open",
                 "created_at": "2026-08-19T17:03:12Z",
                 "invite_code": "ABCD2345", "language": "ru", "ai_history": true,
-                "ai_vision": false, "ai_history_photos": false
+                "ai_vision": false, "ai_history_photos": false,
+                "ai_greeting": false, "ai_faces": false
             })
         );
     }
@@ -1019,6 +1119,8 @@ mod tests {
             ai_history: true,
             ai_vision: false,
             ai_history_photos: false,
+            ai_greeting: false,
+            ai_faces: false,
         };
         assert_eq!(
             serde_json::to_value(&family).expect("serialize"),
@@ -1026,7 +1128,7 @@ mod tests {
                 "id": 3, "name": "The Smiths", "join_policy": "closed",
                 "created_at": "2026-08-19T17:03:12Z",
                 "max_members": 12, "ai_history": true, "ai_vision": false,
-                "ai_history_photos": false
+                "ai_history_photos": false, "ai_greeting": false, "ai_faces": false
             })
         );
     }
@@ -1242,6 +1344,7 @@ mod tests {
             max_reaction_seq: None,
             max_edit_seq: None,
             max_poll_seq: None,
+            mentioned: None,
         };
         assert_eq!(
             serde_json::to_value(&entry).expect("serialize"),

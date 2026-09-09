@@ -386,6 +386,11 @@ final class AppSession {
         supportContact = me.supportContact
         familyRegistrationEnabled = me.familyRegistrationEnabled
         familylessAccountTTLDays = me.familylessAccountTTLDays
+        // The operator's half of the daily greeting. Stored rather than held
+        // on this object because the settings screen draws the family's
+        // switch before the first /me of a session answers (protocol.md,
+        // "The daily greeting").
+        AppSettings.greetingsEnabled = me.greetingsEnabled
         // Replaced wholesale on every /me, which is step 1 of the
         // documented resync — so the block list is a step-1 fact and the
         // `member_blocked` frame is a latency optimisation rather than the

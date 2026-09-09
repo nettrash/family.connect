@@ -40,6 +40,7 @@ import me.nettrash.familyconnect.data.db.MessageEntity
 import me.nettrash.familyconnect.data.net.dto.PollCodec
 import me.nettrash.familyconnect.ui.components.AttachmentAlbum
 import me.nettrash.familyconnect.data.net.dto.PollDto
+import me.nettrash.familyconnect.util.PollVoteState
 import me.nettrash.familyconnect.data.net.dto.ReactionDto
 import me.nettrash.familyconnect.data.net.dto.ReactionsCodec
 import me.nettrash.familyconnect.util.TimeFormat
@@ -170,14 +171,24 @@ data class PollOptionView(
  */
 data class PollView(
     val options: List<PollOptionView>,
-    val closed: Boolean,
+    override val closed: Boolean,
     /** People who have voted, each counted once — a vote is one option. */
     val votedCount: Int,
     /** Live members of the family, for the "3 of 5 voted" footer; 0 = unknown. */
     val familySize: Int,
     /** Whether I have voted at all. */
     val hasVoted: Boolean,
-)
+) : PollVoteState {
+    /**
+     * Everyone who chose anything, under the name the shared badge rule asks
+     * for (`util/OpenPollsBadge.kt`). Declaring the interface here rather
+     * than counting by hand in the chat's view model is what keeps the
+     * toolbar badge and the open-polls screen agreeing about what "still to
+     * answer" means — and keeps both agreeing with iOS, where the same rule
+     * is a protocol conformance.
+     */
+    override val voterIds: List<Long> get() = options.flatMap { option -> option.voters.map { it.userId } }
+}
 
 /**
  * Resolve a stored poll into what a bubble draws.
