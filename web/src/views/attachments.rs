@@ -79,7 +79,7 @@ struct TileProps {
 /// bytes when there is not; and for a video without a poster, nothing —
 /// a tile never downloads a whole video to draw itself (docs/protocol.md,
 /// "A browser is a client too").
-fn tile_source(attachment: &Attachment) -> Option<Variant> {
+pub(crate) fn tile_source(attachment: &Attachment) -> Option<Variant> {
     if attachment.has_preview {
         Some(Variant::Preview)
     } else if attachment.kind == "photo" {

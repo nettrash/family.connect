@@ -57,6 +57,20 @@ enum NoteText {
     static func shouldShowCounter(_ text: String) -> Bool {
         remaining(text) <= 40
     }
+
+    /// The longest an event's place may be: "a `place` of at most 200
+    /// characters" — scalars again, as the server counts them.
+    static let maxPlaceLength = 200
+
+    /// `text` cut to `limit` scalars. `capped(_:)` is this at the note's own
+    /// limit; a place's is 200. Counting graphemes here would let a place
+    /// that looks under the limit be refused by the server.
+    static func capped(_ text: String, to limit: Int) -> String {
+        let scalars = text.unicodeScalars
+        guard scalars.count > limit else { return text }
+        let end = scalars.index(scalars.startIndex, offsetBy: limit)
+        return String(String.UnicodeScalarView(scalars[scalars.startIndex..<end]))
+    }
 }
 
 /// The sticker, at the size and colour the author has chosen, with the text
@@ -97,12 +111,42 @@ struct NotePreview: View {
 /// preview is what arrives first on a slow connection.
 struct NotePicture: View {
     let attachmentID: Int64
+    /// How tall the picture is drawn — see `height(cardHeight:hasCaption:)`.
+    var height: CGFloat = 84
 
     @Environment(AttachmentStore.self) private var store
 
+    /// 84 where the card has room for it, and less where it does not.
+    ///
+    /// A fixed 84 was right for the phone's medium and large stickers and
+    /// wrong for every smaller card: the Mac's small and medium cards are 88
+    /// and 110 tall inside 10 of padding, so 84 of picture pushed the caption
+    /// and the author line out through the bottom of the card. What is left
+    /// after the padding, the author line and — when there is one — a line
+    /// of caption, never below a strip that still reads as a picture.
+    static func height(cardHeight: CGFloat, hasCaption: Bool) -> CGFloat {
+        let room = cardHeight - 20 - 16 - (hasCaption ? 22 : 0)
+        return min(84, max(24, room))
+    }
+
+    /// READING `store.generation` HERE IS LOAD-BEARING, exactly as it is in
+    /// AttachmentView: the store's caches are `@ObservationIgnored`, so
+    /// `generation` is the only thing a view can depend on, and a view that
+    /// never touches it never redraws when its fetch lands. That is issue
+    /// #69: every picture pinned on another device — and the pinner's own,
+    /// on a Mac board window left open — stayed a spinner for good.
+    ///
+    /// The preview first, the photo itself once the server has said there is
+    /// no preview (`AttachmentStore.previewOrPhoto`) — a pin whose preview
+    /// upload was lost still has its picture.
+    private var image: Image? {
+        _ = store.generation
+        return store.previewOrPhoto(id: attachmentID)
+    }
+
     var body: some View {
         Group {
-            if let image = store.image(id: attachmentID, preview: true, mayArriveLate: true) {
+            if let image {
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -117,7 +161,7 @@ struct NotePicture: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 84)
+        .frame(height: height)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         // The picture is the note; VoiceOver hears the caption below it and
         // the note's own combined label, so a second announcement here

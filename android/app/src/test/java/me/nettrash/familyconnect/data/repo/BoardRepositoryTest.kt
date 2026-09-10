@@ -114,6 +114,76 @@ class BoardRepositoryTest {
         assertThat(noteDao.observeNotes().first()).hasSize(1)
     }
 
+    /**
+     * Issue #69: a device that ran a build from before kinds cached a photo
+     * note as a blank text note — at the same seq the server still has. The
+     * identical copy must repair it, not be refused as "not newer".
+     */
+    @Test
+    fun `a note cached before kinds is repaired by the same seq`() = runTest(dispatcher) {
+        val repository = repository()
+
+        repository.applyNote(noteDto(id = 12, text = "", boardSeq = 90))
+        val repaired = repository.applyNote(
+            noteDto(
+                id = 12, text = "", boardSeq = 90, kind = "photo",
+                attachment = me.nettrash.familyconnect.data.net.dto.AttachmentDto(
+                    id = 34, kind = "photo", mime = "image/jpeg", size = 1234, hasPreview = true,
+                ),
+            ),
+        )
+        runCurrent()
+
+        assertThat(repaired).isTrue()
+        assertThat(noteDao.findById(12)!!.kind).isEqualTo("photo")
+        assertThat(noteDao.findById(12)!!.attachmentJson).isNotNull()
+        // An OLDER copy is still refused.
+        assertThat(repository.applyNote(noteDto(id = 12, text = "", boardSeq = 80))).isFalse()
+        assertThat(noteDao.findById(12)!!.kind).isEqualTo("photo")
+    }
+
+    /**
+     * A full read REPLACES what is held: a note it leaves out is gone —
+     * deleted while this device was not listening — except one held above
+     * the read's mark, which arrived after the read was taken.
+     */
+    @Test
+    fun `a full board read removes what it no longer lists`() = runTest(dispatcher) {
+        val repository = repository()
+        repository.applyNote(noteDto(id = 1, boardSeq = 10))
+        repository.applyNote(noteDto(id = 3, boardSeq = 60))
+        boardApi.board = me.nettrash.familyconnect.data.net.dto.BoardResponse(
+            notes = listOf(noteDto(id = 2, boardSeq = 20)),
+            maxBoardSeq = 50,
+        )
+
+        repository.loadBoard()
+        runCurrent()
+
+        assertThat(noteDao.observeNotes().first().map { it.id }).containsExactly(2L, 3L)
+    }
+
+    /**
+     * Only a frame and a catch-up page move the board cursor: the answer to
+     * this device's own create or move is evidence about that one note, and
+     * REST works while the socket is down — exactly when the frames with
+     * lower seqs were missed (docs/protocol.md, "Board").
+     */
+    @Test
+    fun `the answer to my own change moves no cursor`() = runTest(dispatcher) {
+        val repository = repository()
+        settings.setBoardCursor(5)
+        boardApi.nextSeq = 100
+
+        repository.addNote("Milk", "yellow", "medium", "plain", 0.4, 0.3)
+        runCurrent()
+        val created = noteDao.observeNotes().first().single()
+        repository.updateNote(created.id, x = 0.6, y = 0.6)
+        runCurrent()
+
+        assertThat(settings.current.boardCursor).isEqualTo(5)
+    }
+
     /** The tombstone is the ONLY signal a note is gone. */
     @Test
     fun `a tombstone removes the note`() = runTest(dispatcher) {

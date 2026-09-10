@@ -908,7 +908,14 @@ final class ChatSyncCoordinator {
         // server's backfill badges the whole wall (BoardBadge).
         seedBoardContentMarkIfNeeded()
         let existing = fetchNote(dto.id)
-        if let existing, dto.boardSeq <= existing.boardSeq { return false }
+        // STRICTLY older is refused; the SAME seq is written. An equal seq is
+        // the same server state, so writing it changes nothing — except for a
+        // row this device cached before it knew about a field: a photo note
+        // or an event stored by a build from before kinds is a blank text
+        // note at that very seq, and refusing the identical copy left it
+        // blank on this device for good (issue #69). A board open's full
+        // read now repairs it.
+        if let existing, dto.boardSeq < existing.boardSeq { return false }
 
         if dto.isTombstone {
             if let existing { modelContext.delete(existing) }
@@ -1003,11 +1010,29 @@ final class ChatSyncCoordinator {
 
     /// Full board read — used the first time a board is opened, and
     /// whenever the local cursor is 0 (nothing applied yet).
+    ///
+    /// It REPLACES what is held (docs/protocol.md, "Board"): the read never
+    /// returns tombstones, so a note it leaves out is a note that is gone,
+    /// and merely applying what it did return kept every note deleted while
+    /// this device was not listening on the wall for as long as the cache
+    /// lived. The one exception is a note held at a seq ABOVE the read's
+    /// mark — it arrived after the read was taken — and it stays.
     func loadBoard() async {
         guard let response = try? await api.board() else { return }
-        for note in response.notes { applyNote(note) }
+        replaceBoard(with: response)
         boardCursor = max(boardCursor, response.maxBoardSeq)
         saveContext()
+    }
+
+    /// The cache half of `loadBoard`: everything but the cursor.
+    func replaceBoard(with response: BoardResponse) {
+        let listed = Set(response.notes.map(\.id))
+        let held = (try? modelContext.fetch(FetchDescriptor<NoteEntity>())) ?? []
+        for note in held
+        where !listed.contains(note.noteID) && note.boardSeq <= response.maxBoardSeq {
+            modelContext.delete(note)
+        }
+        for note in response.notes { applyNote(note) }
     }
 
     /// Board catch-up: after_seq pages until a short page, tombstones
@@ -1060,10 +1085,67 @@ final class ChatSyncCoordinator {
         else {
             return false
         }
+        // The answer to this device's own change moves NO cursor
+        // (docs/protocol.md, "Board"): it says nothing about another note's
+        // lower seq, and REST works while the socket is down — exactly when
+        // the frames carrying those were missed.
         applyNote(dto)
-        boardCursor = max(boardCursor, dto.boardSeq)
         saveContext()
         return true
+    }
+
+    /// Pin a prepared photo to the board: upload, preview, note — in that
+    /// order, because the server claims the upload inside the transaction
+    /// that writes the note (docs/protocol.md, "Board"). Answers nil once it
+    /// is on the wall, and otherwise why not, in words.
+    ///
+    /// One flow for the phone and the Mac (issue #69). The picture's own
+    /// preview goes into the attachment cache on the way, as a chat send's
+    /// does, so the pinning device draws its sticker from bytes it already
+    /// holds rather than fetching back what it just sent.
+    func pinPhoto(_ prepared: MediaPrep.Prepared, color: String, x: Double, y: Double) async -> String? {
+        let uploaded: AttachmentDTO
+        do {
+            uploaded = try await api.uploadAttachment(
+                fileURL: prepared.fileURL,
+                mime: prepared.mime,
+                kind: prepared.kind,
+                width: prepared.width,
+                height: prepared.height,
+                durationMS: nil)
+        } catch {
+            return Self.pinFailure(error)
+        }
+        if let previewJPEG = prepared.previewJPEG {
+            attachmentStore?.seed(previewJPEG, id: uploaded.id, preview: true)
+            try? await api.uploadPreview(attachmentID: uploaded.id, jpeg: previewJPEG)
+        }
+        do {
+            let dto = try await api.createNote(
+                text: "", color: color, size: NoteSize.medium.name, font: NoteFont.plain.name,
+                x: x, y: y, kind: NoteKind.photo.name, attachmentID: uploaded.id)
+            applyNote(dto)
+            saveContext()
+            return nil
+        } catch {
+            return Self.pinFailure(error)
+        }
+    }
+
+    /// Why a pin did not go up, as a person would be told it. `board_full`
+    /// is said, never swallowed (docs/protocol.md, "Board"), and a request
+    /// that never got an answer is not reported as a refusal.
+    nonisolated static func pinFailure(_ error: Error) -> String {
+        switch error as? APIError {
+        case .conflict(code: "board_full"?, message: _):
+            return String(localized: "The board is full. Take a note down to make room for this one.")
+        case .transport, .throttled, .server:
+            return String(localized: "The photo didn't reach the server. Check your connection and try again.")
+        case .payloadTooLarge:
+            return String(localized: "That photo is too large to pin.")
+        default:
+            return String(localized: "The server refused it.")
+        }
     }
 
     /// Move (anyone) or rewrite (the author) — which fields are sent is
@@ -1091,8 +1173,11 @@ final class ChatSyncCoordinator {
         else {
             return false
         }
+        // The answer to this device's own change moves NO cursor
+        // (docs/protocol.md, "Board"): it says nothing about another note's
+        // lower seq, and REST works while the socket is down — exactly when
+        // the frames carrying those were missed.
         applyNote(dto)
-        boardCursor = max(boardCursor, dto.boardSeq)
         saveContext()
         return true
     }
@@ -1103,8 +1188,11 @@ final class ChatSyncCoordinator {
     @discardableResult
     func answerEvent(id: Int64, answer: String?) async -> Bool {
         guard let dto = try? await api.answerNote(id: id, answer: answer) else { return false }
+        // The answer to this device's own change moves NO cursor
+        // (docs/protocol.md, "Board"): it says nothing about another note's
+        // lower seq, and REST works while the socket is down — exactly when
+        // the frames carrying those were missed.
         applyNote(dto)
-        boardCursor = max(boardCursor, dto.boardSeq)
         saveContext()
         return true
     }

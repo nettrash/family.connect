@@ -373,6 +373,8 @@ pub struct Store {
     /// frame landing after the answer that included its message must not
     /// count it a second time.
     pub listed: HashMap<i64, i64>,
+    /// The family board (board.rs).
+    pub board: crate::board::Board,
 }
 
 /// How long a `typing` frame stands before it is forgotten, in
@@ -421,6 +423,16 @@ impl Store {
 
     /// `GET /me`: who this is, and the block list — REPLACED, never merged.
     pub fn apply_me(&mut self, me: &Me) {
+        // Another family — the last member left and a new one was started,
+        // from another device — is another wall: nothing of the old one's
+        // feed will ever tombstone its notes, so they go now, and the next
+        // read is a whole read. The badge's marks are the person's and stay.
+        let family = |family: &Option<crate::model::Family>| family.as_ref().map(|f| f.id);
+        if self.my_user_id == me.user.id && family(&self.family) != family(&me.family) {
+            let board = std::mem::take(&mut self.board);
+            self.board.marks = board.marks;
+            self.board.marks_for = board.marks_for;
+        }
         self.my_user_id = me.user.id;
         self.family = me.family.clone();
         self.names.insert(me.user.id, me.user.display_name.clone());
@@ -2658,5 +2670,61 @@ mod tests {
         store.chats[0].unread_count = 30; // the list knows of more than loaded
         assert_eq!(store.opening_unread(42), 30);
         assert_eq!(store.opening_unread(7), 0, "no such chat");
+    }
+    /// Another family is another wall: nothing of the old one's feed will
+    /// tombstone its notes, so they go, and the next read is a whole one —
+    /// but the badge's marks are the person's, and stay.
+    #[wasm_bindgen_test]
+    fn a_new_family_starts_a_new_wall_and_keeps_the_marks() {
+        let family = |id: i64| crate::model::Family {
+            id,
+            name: "The Smiths".into(),
+            ai_history: true,
+            ai_vision: false,
+            ai_history_photos: false,
+        };
+        let me = |family_id: Option<i64>| Me {
+            user: User {
+                id: 7,
+                username: "me".into(),
+                display_name: "Me".into(),
+                deleted: false,
+            },
+            family: family_id.map(family),
+            blocked_user_ids: Vec::new(),
+            support_contact: None,
+        };
+        let mut store = Store::default();
+        store.apply_me(&me(Some(3)));
+        store.board.take_marks(
+            7,
+            fc_text::board::Marks {
+                note_id: 5,
+                content_seq: 50,
+            },
+        );
+        store.board.apply_full(
+            vec![crate::model::Note {
+                id: 1,
+                board_seq: 10,
+                author_id: Some(7),
+                text: Some("old wall".into()),
+                color: Some("yellow".into()),
+                x: Some(0.1),
+                y: Some(0.1),
+                ..Default::default()
+            }],
+            10,
+        );
+        store.apply_me(&me(Some(3)));
+        assert_eq!(store.board.notes.len(), 1, "the same family keeps its wall");
+        store.apply_me(&me(Some(4)));
+        assert!(store.board.notes.is_empty() && !store.board.loaded);
+        assert_eq!(store.board.cursor, 0);
+        assert_eq!(
+            store.board.marks.content_seq, 50,
+            "the marks are the person's"
+        );
+        assert_eq!(store.board.marks_for, 7);
     }
 }

@@ -46,9 +46,14 @@ NEVER_TRANSLATED = {
 # performs NO catalogue lookup, so "New Password" shipped English in all nine
 # languages while this gate exited 0. A position missing from this list is a
 # translation this script cannot see.
+#
+# DatePicker likewise: its label is a LocalizedStringKey, and "Starts" and
+# "Ends" on the board's event editor shipped English in all nine languages
+# while this gate exited 0, because the position was not on this list.
 CALLS = [
     "Text", "Button", "Label", "Toggle", "Picker", "Section", "Stepper",
     "LabeledContent", "TextField", "SecureField", "ContentUnavailableView",
+    "DatePicker",
 ]
 # `help` is a tooltip on the Mac and localizes like any other
 # LocalizedStringKey position — and was missing here, which is how a

@@ -40,6 +40,8 @@ use crate::staged::Prepared;
 pub enum PrepError {
     TooLarge,
     Unreadable,
+    /// Offered to the board, which pins photos and nothing else.
+    NotAPhoto,
 }
 
 impl PrepError {
@@ -47,6 +49,7 @@ impl PrepError {
         match self {
             PrepError::TooLarge => "That file is over the 100 MB limit.",
             PrepError::Unreadable => "Couldn't read that file.",
+            PrepError::NotAPhoto => "The board pins photos only.",
         }
     }
 }
@@ -60,6 +63,18 @@ pub async fn prepare(file: &File) -> Result<Prepared, PrepError> {
         Route::Video => video(file).await,
         Route::Audio(mime) => audio(file, mime).await,
         Route::File => as_file(file),
+    }
+}
+
+/// Prepare a picture for the family board — a PHOTO or nothing. A wall pins
+/// pictures (docs/protocol.md, "Board"): what the message rules would send
+/// as a video, a voice note or a file is refused, and so is a photo this
+/// browser cannot decode, exactly as a message's is.
+pub async fn prepare_photo(file: &File) -> Result<Prepared, PrepError> {
+    let head = head(file, 12).await;
+    match media::route(&file.type_(), &file.name(), &head) {
+        Route::Photo => photo(file).await,
+        _ => Err(PrepError::NotAPhoto),
     }
 }
 

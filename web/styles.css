@@ -139,9 +139,19 @@ button.link, .link {
 }
 
 .brand { font-weight: 600; }
-/* Next to the brand; the sign-out button keeps the far end. */
+/* Next to the brand; the board and the sign-out button keep the far end. */
 .status { margin-right: auto; color: var(--muted); font-size: 13px; }
+.bar-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 .signout { background: transparent; color: var(--tint); padding: 6px 8px; }
+.board-button {
+    background: transparent;
+    color: var(--tint);
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.board-button.is-active { background: color-mix(in srgb, var(--tint) 12%, transparent); }
 
 .split {
     flex: 1;
@@ -762,3 +772,176 @@ button.mention { cursor: pointer; }
 .emoji-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 2px; max-height: 320px; overflow-y: auto; }
 .emoji-grid button { background: transparent; padding: 4px; font-size: 22px; }
 .emoji-grid button:hover { background: var(--soft); }
+
+/* --- the family board ---------------------------------------------------- */
+
+/* The board takes the chat's place in the main pane, and like it never
+ * scrolls the page: the wall is exactly the space left under its bar. */
+.board { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.board-bar {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+}
+.board-title { margin: 0; font-size: 15px; flex: 1; min-width: 0; }
+.board-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.board-actions .secondary { background: transparent; color: var(--tint); padding: 6px 10px; }
+
+.board-wall {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--soft);
+    /* The stickers' z-indexes rank them against each other and nothing
+     * else: without a stacking context of its own, the twentieth note
+     * painted over the note sheet and took its clicks. */
+    isolation: isolate;
+}
+.board-wall.is-drop-target { outline: 3px solid var(--tint); outline-offset: -3px; }
+.board-empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-content: center;
+    text-align: center;
+    color: var(--muted);
+    margin: 0;
+    pointer-events: none;
+}
+.board-empty p { margin: 2px 0; }
+.board-empty-title { font-weight: 600; color: var(--ink); }
+
+/* A sticker. The pastels are fixed LIGHT colours in both appearances, so
+ * the ink is forced dark on them rather than following the page — the
+ * page's dark-mode white would be unreadable on yellow (BoardView). */
+.sticker {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px;
+    border-radius: 8px;
+    color: rgb(0 0 0 / 85%);
+    box-shadow: 0 2px 4px rgb(0 0 0 / 14%);
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    overflow: hidden;
+    transition: left .2s ease, top .2s ease, box-shadow .12s ease, transform .12s ease;
+}
+.sticker:focus-visible { outline: 2px solid var(--tint); outline-offset: 3px; }
+/* Lifted off the wall while in hand, and following the pointer exactly. */
+.sticker.is-dragging {
+    cursor: grabbing;
+    z-index: 10;
+    transition: box-shadow .12s ease, transform .12s ease;
+    box-shadow: 0 8px 22px rgb(0 0 0 / 28%);
+}
+
+.note-text {
+    flex: 1 1 auto;
+    /* Always a line of the words: an event's when and where give way
+     * before its title does. */
+    min-height: 1.2em;
+    overflow: hidden;
+    line-height: 1.2;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+/* Past the floor: cut with an ellipsis, at the lines it has room for. */
+.note-text.is-cut { display: -webkit-box; -webkit-box-orient: vertical; }
+.note-hidden { font-style: italic; color: rgb(0 0 0 / 45%); }
+.note-author {
+    flex: none;
+    font-size: 11px;
+    color: rgb(0 0 0 / 50%);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* A pinned picture fills the card, with the caption under it. */
+.note-picture {
+    flex: none;
+    min-height: 0;
+    border-radius: 6px;
+    overflow: hidden;
+    background: rgb(0 0 0 / 6%);
+}
+.sticker.is-photo .note-picture { flex: 1 1 auto; }
+.sticker.is-photo.has-caption .note-picture { flex: 0 0 55%; }
+.sticker.is-photo.has-caption .note-text { flex: 1 1 0; }
+.note-picture img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+.note-picture.is-loading { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .6; } }
+
+/* An event says WHEN before it says what. */
+.note-event { flex: 0 1 auto; min-height: 0; overflow: hidden; display: grid; align-content: start; gap: 1px; font-size: 11px; color: rgb(0 0 0 / 55%); min-width: 0; }
+.note-event > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* When may take two lines, as on the phone: an event cut before its end
+ * time is an event whose end nobody can read. */
+.note-when {
+    font-weight: 600;
+    color: rgb(0 0 0 / 75%);
+    white-space: normal !important;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+.note-event.is-past .note-when { color: rgb(0 0 0 / 40%); }
+
+/* The note, opened. */
+.note-sheet { width: min(480px, 100%); }
+.note-sheet textarea { resize: vertical; }
+.check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.check input { width: auto; }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.swatch {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1px solid rgb(0 0 0 / 15%);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+}
+.swatch:has(input:checked) { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--tint); }
+.swatch:has(input:focus-visible) { outline: 2px solid var(--tint); outline-offset: 4px; }
+.swatch input, .segmented input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.segmented { display: flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.segmented > label, .segmented > button {
+    position: relative;
+    flex: 1 1 auto;
+    text-align: center;
+    padding: 6px 10px;
+    font-size: 13px;
+    background: transparent;
+    color: var(--ink);
+    border-radius: 0;
+    cursor: pointer;
+}
+.segmented > * + * { border-left: 1px solid var(--line); }
+.segmented > .is-chosen { background: color-mix(in srgb, var(--tint) 16%, transparent); font-weight: 600; }
+.segmented > label:has(input:focus-visible) { outline: 2px solid var(--tint); outline-offset: -2px; }
+.sheet-preview { display: grid; place-items: center; padding: 8px 0; overflow-x: auto; }
+.sticker.is-preview { position: relative; cursor: default; transform: none; touch-action: auto; }
+.sheet-picture { padding: 0; background: transparent; border-radius: 8px; overflow: hidden; cursor: zoom-in; }
+.sheet-picture .note-picture { height: min(240px, 40vh); }
+.sheet-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; }
+.sheet-when { margin: 0; display: grid; gap: 2px; font-weight: 600; }
+.sheet-place { font-weight: 400; color: var(--muted); }
+.rsvp legend { font-size: 13px; color: var(--muted); }
+.note-sheet .dialog-actions { align-items: center; flex-wrap: wrap; }
+.note-sheet .spacer { flex: 1; }
+.note-sheet .confirm { font-size: 13px; }
+/* A fixed red in both appearances: the dark theme's pale --danger under
+ * white text was unreadable. */
+.danger-button { background: #b3261e; color: #fff; }
+.secondary.danger { color: var(--danger); }

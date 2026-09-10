@@ -10,8 +10,9 @@ use std::rc::Rc;
 use wasm_bindgen_futures::spawn_local;
 use yew::Callback;
 
-use crate::api::{self, ApiError};
+use crate::api::{self, ApiError, NewNote, NotePatch};
 use crate::live::{Live, Opening, Viewing};
+use crate::media::{MediaLoader, Variant};
 use crate::model::{Attachment, Reaction};
 use crate::outbox::Wake;
 use crate::socket::ClientFrame;
@@ -122,6 +123,82 @@ pub enum Action {
         text: String,
     },
     DismissNotice,
+    /// The family board, in the main pane instead of a chat.
+    OpenBoard,
+    /// The board is — or may just have come — in front of somebody: its
+    /// badge's marks rise to what is on it.
+    BoardShown,
+    /// Pin a new note. `done` hears None once the server has it and what
+    /// went wrong otherwise — and until then the editor keeps the words.
+    CreateNote {
+        note: NewNote,
+        done: Callback<Option<String>>,
+    },
+    /// Change a note: its author's words, colour, size, face or event, or
+    /// anybody's move. Heard the same way as a create.
+    UpdateNote {
+        note_id: i64,
+        patch: NotePatch,
+        done: Callback<Option<String>>,
+    },
+    /// Where a note was dropped. `done` hears when the move is over, either
+    /// way, so the sticker can let go of where it was drawn in hand.
+    MoveNote {
+        note_id: i64,
+        x: f64,
+        y: f64,
+        done: Callback<()>,
+    },
+    /// Take a note down — the author's.
+    DeleteNote {
+        note_id: i64,
+        done: Callback<Option<String>>,
+    },
+    /// Going, maybe, can't — or None to take an answer back. Anybody's.
+    /// `done` hears when the answer is in or refused, so a button lit at
+    /// once can go back to the server's truth either way.
+    AnswerEvent {
+        note_id: i64,
+        answer: Option<String>,
+        done: Callback<()>,
+    },
+    /// Peek at a note a block hides.
+    RevealNote {
+        note_id: i64,
+    },
+    /// A photo prepared for the wall, to pin at this fraction of it.
+    PinPhoto {
+        photo: Prepared,
+        at: (f64, f64),
+    },
+}
+
+/// What to tell somebody whose change to the board did not go in. The
+/// protocol's `message` is English for developers; these are the words the
+/// apps would use, and the fallback is that message when nothing better
+/// fits.
+pub fn board_failure(error: &ApiError) -> String {
+    match error.code() {
+        // Said to the person, never swallowed (docs/protocol.md, "Board").
+        Some("board_full") => {
+            "The board is full. Take a note down to make room for this one.".to_string()
+        }
+        Some("not_note_author") => "Only the person who wrote a note can change it.".to_string(),
+        Some("note_not_found") => "That note has been taken down.".to_string(),
+        Some("attachment_expired") => "The photo took too long to pin. Try again.".to_string(),
+        Some("attachment_too_large") => "That photo is too large to pin.".to_string(),
+        Some("invalid_attachment") => "The board pins photos only.".to_string(),
+        Some("not_in_family") => "You're not in a family, so there is no board.".to_string(),
+        _ => error.detail(),
+    }
+}
+
+/// A colour for a new sticker, picked at random as the apps pick one, so a
+/// run of new notes is not one yellow pile.
+pub fn random_color() -> String {
+    let palette = fc_text::board::COLORS;
+    let index = (js_sys::Math::random() * palette.len() as f64) as usize;
+    palette[index.min(palette.len() - 1)].to_string()
 }
 
 /// What the handler needs of the app.
@@ -132,6 +209,9 @@ pub struct Actions {
     pub sign_out: Callback<bool>,
     /// chat → when this client last SENT a typing frame there.
     pub last_typing: Shared<std::collections::HashMap<i64, f64>>,
+    /// The media cache, for a picture this tab has just pinned: drawn from
+    /// the bytes it sent rather than fetched back.
+    pub media: MediaLoader,
 }
 
 impl Actions {
@@ -171,6 +251,7 @@ impl Actions {
                 if live.read(|state| state.open_chat == Some(chat_id)) {
                     return;
                 }
+                live.now(|state| state.board_open = false);
                 // Nothing is read until the view has decided where the chat
                 // opens and says its reader is at the newest: a read
                 // reported first would leave no unread messages to draw the
@@ -534,7 +615,257 @@ impl Actions {
                     state.failure = None;
                 });
             }
+            Action::OpenBoard => {
+                // The chat and its panels give way: nothing is being READ
+                // while the board is in front (sync::reading), and the pane
+                // a chat comes back to is a fresh one, caught up on opening.
+                live.now(|state| {
+                    state.board_open = true;
+                    state.open_chat = None;
+                    state.at_newest = false;
+                    state.opening = None;
+                    state.store.open_polls = None;
+                    state.store.thread_view = None;
+                });
+                sync::mark_board_shown(&live, session);
+                // Never read yet — the first read failed, or has not come
+                // back: read it now rather than show "Loading" until the
+                // socket next reconnects.
+                let (loaded, link) = live.read(|state| {
+                    (
+                        state.store.board.loaded,
+                        state.connected.then_some(state.link),
+                    )
+                });
+                if !loaded {
+                    spawn_local(async move {
+                        sync::sync_board(&live, session, &token, 0, link).await;
+                        sync::mark_board_shown(&live, session);
+                    });
+                }
+            }
+            Action::BoardShown => sync::mark_board_shown(&live, session),
+            Action::CreateNote { note, done } => {
+                spawn_local(async move {
+                    match api::create_note(&token, &note).await {
+                        // The answer to this device's own create: applied
+                        // under the guard, and moving NO cursor.
+                        Ok(note) => {
+                            if live
+                                .update(session, |state| state.store.board.apply(note))
+                                .is_some()
+                            {
+                                done.emit(None);
+                            }
+                        }
+                        Err(error) => this.board_refused(session, &error, None, &done),
+                    }
+                });
+            }
+            Action::UpdateNote {
+                note_id,
+                patch,
+                done,
+            } => {
+                // An edit that changed nothing sends nothing.
+                if patch.is_empty() {
+                    done.emit(None);
+                    return;
+                }
+                spawn_local(async move {
+                    match api::patch_note(&token, note_id, &patch).await {
+                        Ok(note) => {
+                            if live
+                                .update(session, |state| state.store.board.apply(note))
+                                .is_some()
+                            {
+                                done.emit(None);
+                            }
+                        }
+                        Err(error) => this.board_refused(session, &error, Some(note_id), &done),
+                    }
+                });
+            }
+            Action::MoveNote {
+                note_id,
+                x,
+                y,
+                done,
+            } => {
+                spawn_local(async move {
+                    match api::patch_note(&token, note_id, &NotePatch::moved_to(x, y)).await {
+                        Ok(note) => {
+                            live.update(session, |state| state.store.board.apply(note));
+                        }
+                        Err(error) => {
+                            this.board_refused(session, &error, Some(note_id), &Callback::noop());
+                            if error.code() != Some("note_not_found") {
+                                this.fail_with(session, &error, "Couldn't move the note.");
+                            }
+                        }
+                    }
+                    done.emit(());
+                });
+            }
+            Action::DeleteNote { note_id, done } => {
+                spawn_local(async move {
+                    match api::delete_note(&token, note_id).await {
+                        Ok(()) => {
+                            if live
+                                .update(session, |state| state.store.board.forget(note_id))
+                                .is_some()
+                            {
+                                done.emit(None);
+                            }
+                        }
+                        Err(error) => this.board_refused(session, &error, Some(note_id), &done),
+                    }
+                });
+            }
+            Action::AnswerEvent {
+                note_id,
+                answer,
+                done,
+            } => {
+                spawn_local(async move {
+                    match api::answer_event(&token, note_id, answer.as_deref()).await {
+                        Ok(note) => {
+                            live.update(session, |state| state.store.board.apply(note));
+                        }
+                        Err(error) => {
+                            this.board_refused(session, &error, Some(note_id), &Callback::noop());
+                            this.fail_with(session, &error, "Couldn't send your answer.");
+                        }
+                    }
+                    done.emit(());
+                });
+            }
+            Action::RevealNote { note_id } => {
+                live.now(|state| {
+                    state.store.board.revealed.insert(note_id);
+                });
+            }
+            Action::PinPhoto { photo, at } => {
+                if live.read(|state| state.store.board.pinning) {
+                    live.now(|state| {
+                        state.failure = Some(crate::views::board::STILL_PINNING.to_string())
+                    });
+                    return;
+                }
+                live.now(|state| state.store.board.pinning = true);
+                spawn_local(async move {
+                    let pinned = this.pin_photo(session, &token, photo, at).await;
+                    live.update(session, |state| {
+                        state.store.board.pinning = false;
+                        if let Err(reason) = pinned {
+                            state.failure = Some(format!("Couldn't pin that photo. {reason}"));
+                        }
+                    });
+                });
+            }
         }
+    }
+
+    /// A refusal to a change on the board: a 401 signs out, a note that is
+    /// no longer there comes off this wall too, and `done` hears the words.
+    fn board_refused(
+        &self,
+        session: u64,
+        error: &ApiError,
+        note_id: Option<i64>,
+        done: &Callback<Option<String>>,
+    ) {
+        if *error == ApiError::Unauthorized {
+            expiry(&self.live, session, &self.sign_out)();
+            return;
+        }
+        if let (Some(note_id), Some("note_not_found")) = (note_id, error.code()) {
+            self.live
+                .update(session, |state| state.store.board.forget(note_id));
+        }
+        if self.live.is_live(session) {
+            done.emit(Some(board_failure(error)));
+        }
+    }
+
+    /// A failure for the bar, led by what did not happen.
+    fn fail_with(&self, session: u64, error: &ApiError, lead: &str) {
+        if *error == ApiError::Unauthorized {
+            return;
+        }
+        let text = format!("{lead} {}", board_failure(error));
+        self.live
+            .update(session, |state| state.failure = Some(text));
+    }
+
+    /// Upload, preview, pin — in that order, because the note may not exist
+    /// before the picture does: the server claims the upload inside the
+    /// transaction that writes the note (docs/protocol.md, "Board").
+    async fn pin_photo(
+        &self,
+        session: u64,
+        token: &str,
+        photo: Prepared,
+        at: (f64, f64),
+    ) -> Result<(), String> {
+        let item = crate::staged::OutgoingItem::new(&photo, -1);
+        let attachment = api::upload_attachment(token, &item, photo.file.as_ref())
+            .await
+            .map_err(|error| self.refusal(session, &error))?;
+        if let Some(preview) = photo.preview.clone() {
+            // The preview the sticker draws. Best effort, but not best effort
+            // once: tried twice more beside the pin, as a message's is.
+            if api::upload_preview(token, attachment.id, &preview)
+                .await
+                .is_err()
+            {
+                let token = token.to_string();
+                let preview = preview.clone();
+                let id = attachment.id;
+                spawn_local(async move {
+                    for wait in [2_000, 8_000] {
+                        gloo_timers::future::TimeoutFuture::new(wait).await;
+                        if api::upload_preview(&token, id, &preview).await.is_ok() {
+                            break;
+                        }
+                    }
+                });
+            }
+            // Only into the cache of the session that sent it: signed out
+            // mid-upload, these are nobody's to draw.
+            if self.live.is_live(session) {
+                self.media.seed(attachment.id, Variant::Preview, preview);
+            }
+        }
+        if let Some(file) = photo.file.clone().filter(|_| self.live.is_live(session)) {
+            self.media.seed(attachment.id, Variant::Original, file);
+        }
+        let note = NewNote {
+            text: String::new(),
+            color: random_color(),
+            size: fc_text::board::Size::Medium.name().to_string(),
+            font: fc_text::board::Font::Plain.name().to_string(),
+            x: at.0,
+            y: at.1,
+            kind: Some(fc_text::board::Kind::Photo.name().to_string()),
+            attachment_id: Some(attachment.id),
+            ..NewNote::default()
+        };
+        let note = api::create_note(token, &note)
+            .await
+            .map_err(|error| self.refusal(session, &error))?;
+        self.live
+            .update(session, |state| state.store.board.apply(note));
+        Ok(())
+    }
+
+    /// The words for a refused step of pinning — after signing out, if the
+    /// refusal was the session ending.
+    fn refusal(&self, session: u64, error: &ApiError) -> String {
+        if *error == ApiError::Unauthorized {
+            expiry(&self.live, session, &self.sign_out)();
+        }
+        board_failure(error)
     }
 
     /// Put my reaction on (or take it off) at once, and answer with what
@@ -749,18 +1080,20 @@ mod tests {
             ..Store::default()
         };
         store.apply_history(42, vec![message], false);
+        let live = Live::new(
+            AppState {
+                token: Some("t".into()),
+                store,
+                ..AppState::default()
+            },
+            Rc::new(|| {}),
+        );
         Actions {
-            live: Live::new(
-                AppState {
-                    token: Some("t".into()),
-                    store,
-                    ..AppState::default()
-                },
-                Rc::new(|| {}),
-            ),
+            live: live.clone(),
             channels: Rc::new(RefCell::new(None)),
             sign_out: Callback::noop(),
             last_typing: Rc::new(RefCell::new(HashMap::new())),
+            media: MediaLoader::new(live),
         }
     }
 
@@ -801,6 +1134,73 @@ mod tests {
         });
         actions.roll_back_reactions(session, 42, 100, before);
         assert_eq!(reactions_held(&actions), newer);
+    }
+
+    /// The words for a refused change to the board — `board_full` said out
+    /// loud, never swallowed — and the server's message when nothing fits.
+    #[wasm_bindgen_test]
+    fn a_refused_board_change_is_said_in_words() {
+        let refusal = |code: &str| ApiError::Server {
+            code: code.into(),
+            message: "for developers".into(),
+        };
+        assert!(board_failure(&refusal("board_full")).contains("The board is full"));
+        assert!(board_failure(&refusal("not_note_author")).contains("Only the person who wrote"));
+        assert_eq!(board_failure(&refusal("validation")), "for developers");
+        assert!(fc_text::board::COLORS.contains(&random_color().as_str()));
+    }
+
+    /// A save that changed nothing is answered at once and sends nothing.
+    #[wasm_bindgen_test]
+    fn an_unchanged_note_is_not_sent() {
+        let actions = actions();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let sink = heard.clone();
+        actions.handle(Action::UpdateNote {
+            note_id: 3,
+            patch: NotePatch::default(),
+            done: Callback::from(move |answer: Option<String>| sink.borrow_mut().push(answer)),
+        });
+        assert_eq!(*heard.borrow(), vec![None]);
+    }
+
+    /// Opening the board puts the chat and its panels away — nothing is
+    /// being READ while the board is in front — and choosing a chat puts the
+    /// board away again.
+    #[wasm_bindgen_test]
+    fn the_board_and_a_chat_take_turns_in_the_main_pane() {
+        let actions = actions();
+        actions.live.now(|state| {
+            state.open_chat = Some(42);
+            state.at_newest = true;
+        });
+        actions.handle(Action::OpenBoard);
+        actions.live.read(|state| {
+            assert!(state.board_open);
+            assert_eq!(state.open_chat, None);
+            assert!(!state.at_newest);
+            assert!(state.store.thread_view.is_none() && state.store.open_polls.is_none());
+            assert_eq!(crate::sync::reading(state), None, "no chat is being read");
+        });
+        actions.handle(Action::SelectChat(42));
+        actions.live.read(|state| {
+            assert!(!state.board_open);
+            assert_eq!(state.open_chat, Some(42));
+        });
+    }
+
+    /// Peeking at a hidden note is per note, and forgotten with the note.
+    #[wasm_bindgen_test]
+    fn revealing_a_note_is_per_note() {
+        let actions = actions();
+        actions.handle(Action::RevealNote { note_id: 12 });
+        actions
+            .live
+            .read(|state| assert!(state.store.board.revealed.contains(&12)));
+        actions.live.now(|state| state.store.board.forget(12));
+        actions
+            .live
+            .read(|state| assert!(!state.store.board.revealed.contains(&12)));
     }
 
     fn photo() -> Prepared {

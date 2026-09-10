@@ -117,6 +117,122 @@ pub struct Roster {
     pub assistant: Option<Assistant>,
     #[serde(default)]
     pub blocked_user_ids: Vec<i64>,
+    /// The board's high-water mark — which lives only here, and says whether
+    /// there is anything past this client's board cursor to catch up on.
+    #[serde(default)]
+    pub max_board_seq: i64,
+}
+
+/// One answer to an event.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct Rsvp {
+    pub user_id: i64,
+    /// `going` | `maybe` | `no` — kept as sent, so an answer from a newer
+    /// server is not mistaken for one of these (fc_text::board::Answer).
+    pub answer: String,
+}
+
+/// A sticker on the family board (docs/protocol.md, "Objects" and "Board").
+///
+/// A TOMBSTONE carries only `id`, `deleted` and `board_seq`, which is why
+/// everything else is optional here; a live note always has its author,
+/// text, colour and position, and one that arrives without them is a server
+/// fault the board refuses rather than drawing a blank. `size`, `font` and
+/// `kind` are absent only from a server that predates them.
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+pub struct Note {
+    pub id: i64,
+    pub board_seq: i64,
+    #[serde(default)]
+    pub deleted: bool,
+    #[serde(default)]
+    pub author_id: Option<i64>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub size: Option<String>,
+    #[serde(default)]
+    pub font: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The picture: a photo note's content, and an event's backdrop.
+    #[serde(default)]
+    pub attachment: Option<Attachment>,
+    /// An event's own three.
+    #[serde(default)]
+    pub starts_at: Option<String>,
+    #[serde(default)]
+    pub ends_at: Option<String>,
+    #[serde(default)]
+    pub place: Option<String>,
+    /// Present, possibly empty, on every event; absent on every other kind.
+    #[serde(default)]
+    pub rsvps: Option<Vec<Rsvp>>,
+    #[serde(default)]
+    pub x: Option<f64>,
+    #[serde(default)]
+    pub y: Option<f64>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// The `board_seq` of the last change to what the note SAYS — what the
+    /// badge counts. Absent on a tombstone and from an older server.
+    #[serde(default)]
+    pub content_seq: Option<i64>,
+}
+
+impl Note {
+    /// Whether this copy can be drawn: a tombstone cannot, and neither can a
+    /// live note missing what every live note has.
+    pub fn is_drawable(&self) -> bool {
+        !self.deleted
+            && self.author_id.is_some()
+            && self.text.is_some()
+            && self.color.is_some()
+            && self.x.is_some_and(f64::is_finite)
+            && self.y.is_some_and(f64::is_finite)
+    }
+
+    pub fn text(&self) -> &str {
+        self.text.as_deref().unwrap_or_default()
+    }
+
+    pub fn kind(&self) -> fc_text::board::Kind {
+        fc_text::board::Kind::from_name(self.kind.as_deref())
+    }
+
+    pub fn size(&self) -> fc_text::board::Size {
+        fc_text::board::Size::from_name(self.size.as_deref())
+    }
+
+    pub fn font(&self) -> fc_text::board::Font {
+        fc_text::board::Font::from_name(self.font.as_deref())
+    }
+
+    pub fn position(&self) -> (f64, f64) {
+        (self.x.unwrap_or_default(), self.y.unwrap_or_default())
+    }
+
+    pub fn rsvps(&self) -> &[Rsvp] {
+        self.rsvps.as_deref().unwrap_or(&[])
+    }
+
+    /// What `user_id` answered, as sent.
+    pub fn answer_of(&self, user_id: i64) -> Option<&str> {
+        self.rsvps()
+            .iter()
+            .find(|rsvp| rsvp.user_id == user_id)
+            .map(|rsvp| rsvp.answer.as_str())
+    }
+
+    /// How many gave `answer`.
+    pub fn count(&self, answer: fc_text::board::Answer) -> usize {
+        self.rsvps()
+            .iter()
+            .filter(|rsvp| rsvp.answer == answer.name())
+            .count()
+    }
 }
 
 impl Roster {
@@ -476,6 +592,74 @@ mod tests {
         // No former members and no assistant is an ordinary family too.
         let bare: Roster = serde_json::from_str(r#"{"members": []}"#).expect("reads");
         assert!(bare.names().is_empty());
+    }
+
+    /// A note in each of its shapes — and a tombstone, which carries nothing
+    /// but its id, its seq and that it is gone.
+    #[wasm_bindgen_test]
+    fn a_note_reads_every_shape_the_protocol_gives_it() {
+        let event: Note = serde_json::from_str(
+            r#"{"id": 12, "author_id": 7, "kind": "event", "text": "Picnic", "color": "blue",
+                "size": "large", "font": "casual", "x": 0.42, "y": 0.13,
+                "created_at": "2026-09-10T10:00:00Z", "updated_at": "2026-09-10T10:00:00Z",
+                "board_seq": 88, "content_seq": 84, "starts_at": "2026-09-12T11:00:00Z",
+                "place": "The park", "rsvps": [{"user_id": 9, "answer": "going"},
+                                               {"user_id": 11, "answer": "perhaps"}],
+                "invented": true}"#,
+        )
+        .expect("an event this client can read");
+        assert!(event.is_drawable());
+        assert_eq!(event.kind(), fc_text::board::Kind::Event);
+        assert_eq!(event.size(), fc_text::board::Size::Large);
+        assert_eq!(event.font(), fc_text::board::Font::Casual);
+        assert_eq!(event.content_seq, Some(84));
+        assert_eq!(event.answer_of(9), Some("going"));
+        assert_eq!(
+            event.answer_of(7),
+            None,
+            "the author's answer is not assumed"
+        );
+        assert_eq!(event.count(fc_text::board::Answer::Going), 1);
+        assert_eq!(
+            event.count(fc_text::board::Answer::Maybe),
+            0,
+            "an answer from a newer server is not a maybe"
+        );
+
+        let photo: Note = serde_json::from_str(
+            r#"{"id": 13, "author_id": 9, "kind": "photo", "text": "", "color": "yellow",
+                "x": 0.1, "y": 0.2, "board_seq": 90,
+                "attachment": {"id": 34, "kind": "photo", "has_preview": true}}"#,
+        )
+        .expect("reads");
+        assert!(photo.is_drawable(), "an empty caption is still a note");
+        assert_eq!(photo.attachment.as_ref().map(|a| a.id), Some(34));
+        assert_eq!(
+            photo.size(),
+            fc_text::board::Size::Medium,
+            "an older server's note"
+        );
+        assert!(photo.rsvps().is_empty());
+
+        let gone: Note = serde_json::from_str(r#"{"id": 12, "deleted": true, "board_seq": 91}"#)
+            .expect("a tombstone reads");
+        assert!(gone.deleted && !gone.is_drawable());
+
+        let broken: Note =
+            serde_json::from_str(r#"{"id": 14, "board_seq": 92, "text": "x"}"#).expect("reads");
+        assert!(
+            !broken.is_drawable(),
+            "a live note with no author or place is refused"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_roster_carries_the_boards_high_water_mark() {
+        let roster: Roster =
+            serde_json::from_str(r#"{"members": [], "max_board_seq": 88}"#).expect("reads");
+        assert_eq!(roster.max_board_seq, 88);
+        let older: Roster = serde_json::from_str(r#"{"members": []}"#).expect("reads");
+        assert_eq!(older.max_board_seq, 0);
     }
 
     #[wasm_bindgen_test]

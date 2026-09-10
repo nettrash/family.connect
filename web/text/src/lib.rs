@@ -22,6 +22,9 @@
 //! - [`media`] — attachments: which kind a picked file goes as, its name and
 //!   type, the server's magic-number check, and how a bubble lays one out.
 //! - [`wav`] — a voice note as WAV, for browsers that cannot record MP4.
+//! - [`board`] — the family board: what a note may say, the names its size,
+//!   colour, face and kind travel under, where it sits, how its text is
+//!   fitted, and what the badge counts.
 //! - [`links`] — web links, email addresses and phone numbers in a text run,
 //!   and the markdown label/destination precedence. Only http, https,
 //!   `mailto:` and `tel:` ever link — in a browser, anything else is a way
@@ -29,6 +32,7 @@
 
 pub mod assistant;
 pub mod assistant_pictures;
+pub mod board;
 pub mod call_record;
 pub mod composer;
 pub mod emoji;

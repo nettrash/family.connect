@@ -90,6 +90,14 @@ web-sys = { version = "0.3", features = [
     "DragEvent",
     "ClipboardItem",
     "ImageData",
+    "ResizeObserver",
+    "CssStyleDeclaration",
+    "DomTokenList",
+    "PointerEventInit",
+    "KeyboardEventInit",
+    "MouseEventInit",
+    "StorageEvent",
+    "CompositionEvent",
 ] }
 
 [dev-dependencies]

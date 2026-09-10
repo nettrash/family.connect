@@ -80,6 +80,15 @@ The consequences worth stating rather than discovering:
   everywhere. Everything else about a voice note — five minutes at most, staged so a caption can
   be added — is the apps' rule. A browser's location comes from its own geolocation, under the
   same freshness bar the apps apply (see "Locations"): never a fix older than two minutes.
+- **The board's two seen-marks are the one thing a browser keeps past the tab.** They live in
+  `localStorage`, under the account's user id, and they are two numbers — the highest note id and
+  the highest `content_seq` this browser has shown that account (see "Board") — which say how far
+  somebody has looked and nothing whatever about what the notes say. Kept for the tab alone, like
+  everything else here, they would be gone at every sign-in, and a badge that starts every session
+  by counting the whole wall as new is a badge that cries wolf until nobody reads it. Everything
+  that IS the board — its notes, their text, their pictures — lives in the tab's memory and goes
+  with it, and a browser reads the whole board again on every sign-in. A browser that has never
+  shown an account the board counts the whole wall, exactly as an app does on its first launch.
 
 Everything else in this document applies to a browser unchanged. Where a section says Windows and
 web are "not asked to draw" something yet, that is a statement about what has been BUILT, never a
@@ -898,6 +907,44 @@ reaction feed carries a message's full reaction state rather than a delta.
 the change feed as `{"id": 12, "deleted": true, "board_seq": 91}` with no content. Without that a
 client who was offline when a note was removed would go on showing it forever — there is no other
 signal that it is gone. The full-board read never returns tombstones; only the change feed does.
+
+**A full read REPLACES what a client holds.** Because it never returns tombstones, a note the read
+did not return is a note that is gone, and a client that merely applied the notes it was given
+would keep drawing every note deleted while it was not listening — for as long as it kept its
+cache, since nothing else will ever mention that note again. So a client drops every note it holds
+that the read did not return, with one exception: a note held at a `board_seq` ABOVE the read's
+`max_board_seq` arrived after the read was taken — in a frame, or in the answer to the client's
+own change — and it stays. And because note ids are never reused, a note a client has seen deleted
+— by a tombstone, by a full read that left it out, or by its own `DELETE` — is never brought back by
+an older copy of itself arriving late, from a page, a frame or a reply that was already in flight.
+Two full reads in flight at once can land in either order, and an older one landing second must
+change nothing: a client ignores a full read whose `max_board_seq` is below one it has already
+applied.
+
+`max_board_seq` is read BEFORE the notes it accompanies, and the server makes a family's board
+changes COMMIT IN `board_seq` ORDER — it takes the family's row before drawing a seq and holds it to
+the commit, so a change can never become visible after a later one. Together those make the mark a
+promise: every change at or below it is in the notes that come with it, and a change the notes
+already show may be above it. A client that sets its cursor to the mark may therefore read a change
+twice, which the per-note guard makes harmless, and never skips one. Without both halves a note
+deleted between the two reads — or whose tombstone's seq was drawn before a later change committed
+— came back live beside a mark already past its tombstone, and no catch-up would ever fetch it.
+
+**The board cursor moves in three ways and no others**: a full read sets it to its
+`max_board_seq`, a catch-up page to the highest `board_seq` on the page, and a frame to its own
+`board_seq` — the frame only once this connection has caught up, since a frame that jumped the
+cursor before the catch-up read it would have the catch-up start past everything it was there to
+fetch. The note in the answer to a client's own create, edit, move or RSVP is NOT one of them, for
+exactly the reason a reply moves no chat cursor (see "Semantics"): it is applied under the per-note
+guard like any other copy, and it is evidence about that one note and none at all about another
+note's lower `board_seq`. REST goes on working while the socket is down, which is precisely when the
+frames carrying those lower values were missed: a move answered with `board_seq` 100 would carry the
+cursor past somebody else's 99, and the next catch-up would ask only for what came after it.
+
+**`board_full` is said to the person.** A wall at its ceiling refuses a new note with `409
+board_full`, and a client tells whoever was pinning it that the board is full, and leaves what they
+wrote where they can keep it — the ceiling is the family's, and a note that silently did not appear
+is a note its author will assume everyone has read.
 
 ### Starting a family
 
@@ -3295,7 +3342,7 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 | Method & path | Body → Response |
 |---|---|
-| `GET /families/mine/board` | → `200 {notes: [Note], max_board_seq: 88}`. The whole board as it now stands, tombstones excluded, newest `board_seq` first. `max_board_seq` is `0` for a board nothing has ever been written to. Error: `not_in_family`. |
+| `GET /families/mine/board` | → `200 {notes: [Note], max_board_seq: 88}`. The whole board as it now stands, tombstones excluded, newest `board_seq` first. `max_board_seq` is `0` for a board nothing has ever been written to, and is read BEFORE the notes, so it is never above a change they missed; a client REPLACES what it holds with this read (see "Board"). Error: `not_in_family`. |
 | `GET /families/mine/board/changes` | Query: `after_seq` (default 0), `limit` (default 50, max 200) → `200 {notes: [Note]}` ordered by `board_seq` ascending, INCLUDING tombstones — the board catch-up, looped until a short page. Errors: `not_in_family`, `invalid_pagination`. |
 | `POST /families/mine/board/notes` | `{text, color, x, y, size?, font?, kind?, attachment_id?, starts_at?, ends_at?, place?}` → `201 {note: Note}`. Caller becomes the author. `size` defaults to `medium`, `font` to `plain` and `kind` to `text` when absent. `attachment_id` claims one photo this caller uploaded: REQUIRED by `kind: "photo"` (whose `text` may then be empty), optional on `kind: "event"` (the backdrop), refused on a text note. `starts_at` is required by — and only accepted on — an event, with `ends_at` and `place` optional there and nowhere else. Errors: `validation` (text empty on a text note or > 280; an `attachment_id` without the kind, or the kind without one), `invalid_note_kind`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `invalid_attachment` (not a photo), `attachment_not_found`, `attachment_already_used`, `attachment_expired`, `board_full` (409, over the note ceiling), `not_in_family`. An event also answers `validation` for a missing or unparseable `starts_at`, an `ends_at` before it, a `place` over 200 characters, or any of the three on a note that is not an event. |
 | `PATCH /families/mine/board/notes/{id}` | `{text?, color?, size?, font?, x?, y?, starts_at?, ends_at?, place?}` → `200 {note: Note}`. A note's KIND and its picture are fixed at creation: neither is patchable, and a photo note's caption may be set to empty here. An event's `starts_at`, `ends_at` and `place` are the AUTHOR'S, like its title — `place` may be sent empty to clear it, `ends_at` null to clear it — and are refused on any other kind. Any member may send `x`/`y`; only the author may send `text`, `color`, `size` or `font` (`not_note_author`, 403). Sending nothing that differs is a no-op: no new seq, no fan-out. Errors: `note_not_found` (404), `not_note_author`, `invalid_note_color`, `invalid_note_size`, `invalid_note_font`, `validation`, `not_in_family`. |

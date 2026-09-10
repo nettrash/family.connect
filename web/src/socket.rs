@@ -38,8 +38,8 @@ pub enum ClientFrame {
 /// What this client reads.
 ///
 /// `Unknown` is not a failure mode — it is the protocol's compatibility
-/// rule made a type. Everything this client has not learned yet (reactions,
-/// polls, board notes, call signalling) lands there and is dropped, exactly
+/// rule made a type. Everything this client has not learned yet (call
+/// signalling, and whatever comes next) lands there and is dropped, exactly
 /// as the protocol requires. There is no `ack`: that answers a `send` frame,
 /// and this client never sends one. `pong` lands in `Unknown` too — any
 /// frame at all is the proof of life the heartbeat is listening for.
@@ -107,6 +107,11 @@ pub enum ServerFrame {
     MemberBlocked {
         user_id: i64,
         blocked: bool,
+    },
+    /// One board note in whatever state it now has — created, edited,
+    /// moved, answered, or a tombstone. Never unread, never notifies.
+    BoardNote {
+        note: crate::model::Note,
     },
     #[serde(other)]
     Unknown,
@@ -219,7 +224,6 @@ mod tests {
     fn an_unknown_frame_type_is_ignored_rather_than_failing() {
         for text in [
             r#"{"type": "call_offer", "call_id": "6a1f0c3e", "chat_id": 42, "sdp": "v=0"}"#,
-            r#"{"type": "board_note", "note": {"id": 12, "board_seq": 88}}"#,
             r#"{"type": "something_invented_next_year"}"#,
         ] {
             assert_eq!(
@@ -315,6 +319,15 @@ mod tests {
                 blocked: true
             })
         );
+        assert!(matches!(
+            decode(r#"{"type": "board_note", "note": {"id": 12, "author_id": 7, "text": "Milk",
+                       "color": "yellow", "x": 0.4, "y": 0.1, "board_seq": 88}}"#),
+            Some(ServerFrame::BoardNote { ref note }) if note.id == 12 && note.is_drawable()
+        ));
+        assert!(matches!(
+            decode(r#"{"type": "board_note", "note": {"id": 12, "deleted": true, "board_seq": 91}}"#),
+            Some(ServerFrame::BoardNote { ref note }) if note.deleted
+        ));
     }
 
     /// Not JSON at all is a different thing from a frame this client does

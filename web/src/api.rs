@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use web_sys::{AbortController, Blob, RequestCache};
 
-use crate::model::{Attachment, Chat, ChatListItem, Me, Mention, Message, Poll, Reaction, Roster};
+use crate::model::{
+    Attachment, Chat, ChatListItem, Me, Mention, Message, Note, Poll, Reaction, Roster,
+};
 use crate::staged::OutgoingItem;
 use crate::store::Outgoing;
 
@@ -193,6 +195,98 @@ struct ReadRequest {
 #[derive(Debug, Serialize)]
 struct DirectRequest {
     user_id: i64,
+}
+
+/// `GET /families/mine/board`: the whole wall, and the high-water mark read
+/// before it (docs/protocol.md, "Board").
+#[derive(Debug, Clone, Deserialize)]
+pub struct BoardRead {
+    pub notes: Vec<Note>,
+    pub max_board_seq: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct NotesResponse {
+    notes: Vec<Note>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NoteResponse {
+    note: Note,
+}
+
+/// A note to pin (docs/protocol.md, "Board"). Size and face always go — a
+/// new note has a chosen one of each — and every part only some kinds have
+/// is LEFT OUT when there is none: the server refuses a `starts_at` on
+/// anything but an event and an `attachment_id` on a text note.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct NewNote {
+    pub text: String,
+    pub color: String,
+    pub size: String,
+    pub font: String,
+    pub x: f64,
+    pub y: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
+}
+
+/// A change to a note. Only what changed is sent, and WHICH fields are sent
+/// is what the server checks permission against: a move is `x` and `y` and
+/// nothing else, or a member's drag of somebody else's note comes back
+/// `not_note_author`.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct NotePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<String>,
+    /// A DOUBLE option: absent leaves the end alone, `Some(None)` — sent as
+    /// null — clears it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<Option<String>>,
+    /// Sent empty to clear it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
+}
+
+impl NotePatch {
+    /// Nothing to send — so nothing is sent.
+    pub fn is_empty(&self) -> bool {
+        *self == NotePatch::default()
+    }
+
+    /// Where a note was dropped, and nothing else.
+    pub fn moved_to(x: f64, y: f64) -> Self {
+        NotePatch {
+            x: Some(x),
+            y: Some(y),
+            ..NotePatch::default()
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RsvpRequest<'a> {
+    answer: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -716,6 +810,67 @@ pub async fn post_read(
     .await
 }
 
+/// `GET /families/mine/board` — the whole wall as it now stands.
+pub async fn board(token: &str) -> Result<BoardRead, ApiError> {
+    get(token, "/families/mine/board").await
+}
+
+/// `GET /families/mine/board/changes?after_seq=` — the board catch-up,
+/// tombstones included, looped by the caller until a short page.
+pub async fn board_changes(token: &str, after_seq: i64, limit: u32) -> Result<Vec<Note>, ApiError> {
+    let url = format!("/families/mine/board/changes?after_seq={after_seq}&limit={limit}");
+    let response: NotesResponse = get(token, &url).await?;
+    Ok(response.notes)
+}
+
+/// `POST /families/mine/board/notes` — the caller becomes the author.
+pub async fn create_note(token: &str, note: &NewNote) -> Result<Note, ApiError> {
+    let response: NoteResponse = with_body(
+        Request::post(&path("/families/mine/board/notes")),
+        token,
+        note,
+    )
+    .await?;
+    Ok(response.note)
+}
+
+/// `PATCH /families/mine/board/notes/{id}` — a move (anyone) or a rewrite
+/// (the author), by which fields are present.
+pub async fn patch_note(token: &str, note_id: i64, patch: &NotePatch) -> Result<Note, ApiError> {
+    let url = path(&format!("/families/mine/board/notes/{note_id}"));
+    let response: NoteResponse = with_body(Request::patch(&url), token, patch).await?;
+    Ok(response.note)
+}
+
+/// `PUT` / `DELETE …/notes/{id}/rsvp` — say whether you are coming, or take
+/// it back. Anyone in the family may; answering is not authorship.
+pub async fn answer_event(
+    token: &str,
+    note_id: i64,
+    answer: Option<&str>,
+) -> Result<Note, ApiError> {
+    let url = path(&format!("/families/mine/board/notes/{note_id}/rsvp"));
+    let response: NoteResponse = match answer {
+        Some(answer) => with_body(Request::put(&url), token, &RsvpRequest { answer }).await?,
+        None => {
+            read(
+                bearer(Request::delete(&url), token)
+                    .send()
+                    .await
+                    .map_err(network)?,
+            )
+            .await?
+        }
+    };
+    Ok(response.note)
+}
+
+/// `DELETE /families/mine/board/notes/{id}` — the author's; idempotent.
+pub async fn delete_note(token: &str, note_id: i64) -> Result<(), ApiError> {
+    let url = path(&format!("/families/mine/board/notes/{note_id}"));
+    empty::<()>(Request::delete(&url), token, None).await
+}
+
 /// `POST /families/reports` — one person, or one message of theirs.
 pub async fn report(
     token: &str,
@@ -901,6 +1056,95 @@ mod tests {
         )
         .expect("reads");
         assert_eq!(polls.polls[0].poll.options[0].votes, vec![7, 9]);
+    }
+
+    /// Each kind carries exactly its own parts: a text note no kind and no
+    /// picture, a photo its picture and an empty caption, an event its
+    /// times and place — never a null where the protocol means absent.
+    #[wasm_bindgen_test]
+    fn a_new_note_carries_only_what_its_kind_has() {
+        let text = NewNote {
+            text: "Milk".into(),
+            color: "yellow".into(),
+            size: "medium".into(),
+            font: "plain".into(),
+            x: 0.4,
+            y: 0.3,
+            ..NewNote::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&text).expect("encodes"),
+            serde_json::json!({"text": "Milk", "color": "yellow", "size": "medium",
+                               "font": "plain", "x": 0.4, "y": 0.3})
+        );
+        let photo = NewNote {
+            text: String::new(),
+            kind: Some("photo".into()),
+            attachment_id: Some(34),
+            ..text.clone()
+        };
+        let value = serde_json::to_value(&photo).expect("encodes");
+        assert_eq!(value["kind"], "photo");
+        assert_eq!(value["attachment_id"], 34);
+        assert_eq!(value["text"], "");
+        assert!(value.get("starts_at").is_none());
+        let event = NewNote {
+            kind: Some("event".into()),
+            starts_at: Some("2026-09-12T11:00:00Z".into()),
+            place: Some("The park".into()),
+            ..text
+        };
+        let value = serde_json::to_value(&event).expect("encodes");
+        assert_eq!(value["starts_at"], "2026-09-12T11:00:00Z");
+        assert!(
+            value.get("ends_at").is_none(),
+            "no end is left out, not null"
+        );
+        assert!(value.get("attachment_id").is_none());
+    }
+
+    /// A move is x and y and NOTHING else; an end cleared is null, an end
+    /// left alone is absent; and an edit that changed nothing is empty.
+    #[wasm_bindgen_test]
+    fn a_patch_sends_only_what_changed() {
+        assert_eq!(
+            serde_json::to_value(NotePatch::moved_to(0.25, 0.5)).expect("encodes"),
+            serde_json::json!({"x": 0.25, "y": 0.5})
+        );
+        let cleared = NotePatch {
+            ends_at: Some(None),
+            ..NotePatch::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&cleared).expect("encodes"),
+            serde_json::json!({"ends_at": null})
+        );
+        let moved_end = NotePatch {
+            ends_at: Some(Some("2026-09-12T13:00:00Z".into())),
+            place: Some(String::new()),
+            ..NotePatch::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&moved_end).expect("encodes"),
+            serde_json::json!({"ends_at": "2026-09-12T13:00:00Z", "place": ""})
+        );
+        assert!(NotePatch::default().is_empty());
+        assert!(!cleared.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_board_reads_its_whole_wall_and_its_changes() {
+        let read: BoardRead = serde_json::from_str(
+            r#"{"notes": [{"id": 12, "author_id": 7, "text": "Milk", "color": "yellow",
+                           "x": 0.4, "y": 0.1, "board_seq": 88}], "max_board_seq": 91}"#,
+        )
+        .expect("reads");
+        assert_eq!(read.max_board_seq, 91);
+        assert_eq!(read.notes[0].id, 12);
+        let changes: NotesResponse =
+            serde_json::from_str(r#"{"notes": [{"id": 12, "deleted": true, "board_seq": 92}]}"#)
+                .expect("reads");
+        assert!(changes.notes[0].deleted);
     }
 
     #[wasm_bindgen_test]
