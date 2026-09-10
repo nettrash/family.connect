@@ -1,0 +1,5 @@
+# Trunk's output, and the lock file this repo does not track for an app —
+# the same rule nettrash.me follows.
+/dist
+Cargo.lock
+target

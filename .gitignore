@@ -45,3 +45,9 @@ __pycache__/
 .idea/
 .vscode/
 android/app/src/nettrash/google-services.json
+
+# Web (web/) — Trunk's output and the lock file this repo does not track for
+# an application, the same rule nettrash.me follows.
+web/dist/
+web/target/
+web/Cargo.lock

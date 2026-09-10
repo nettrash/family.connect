@@ -254,3 +254,39 @@ ExecStopPost=/bin/sh -c 'echo "$(date -u +%%FT%%TZ) $EXIT_STATUS" > /var/lib/fam
 
 The App Store review notes promise Apple this server stays up. That promise is
 this section.
+
+---
+
+## 7. The web client
+
+A browser client lives in `web/` and is served **by this same nginx, from
+this same origin** — which is not a deployment convenience but the reason
+there is no CORS anywhere on this wire (docs/protocol.md, "A browser is a
+client too").
+
+Build it and put it where nginx looks:
+
+```bash
+cd web && trunk build --release     # writes web/dist
+sudo rsync -a --delete web/dist/ /var/www/family-connect/
+```
+
+`server/nginx/family-connect.conf` already has the `location /` that serves
+it; a server running the phone apps alone can comment that block out and
+keep the `return 404` beneath it, which is what every non-API path got
+before the web client existed.
+
+Two things about caching, and they are not symmetrical. Trunk puts a content
+hash in the name of the WASM bundle and its JS, so those may be cached for a
+year — the name changes when the bytes do. `index.html` names the current
+bundle and must NOT be cached, or a browser holding a stale copy asks for a
+bundle that is no longer on disk and gets a blank page. The config sets both.
+
+**Nothing about the server changes for a browser.** It registers no device,
+so it takes no push and needs no APNs or FCM key; its socket is the same
+socket the apps hold, and its session is an ordinary session with the same
+sliding expiry. The one operational difference is that a browser's token
+lives in `sessionStorage`, so closing the tab ends the session for that
+reader — which is what makes a shared machine safe and is worth saying to a
+family that asks why the web keeps signing them out and the phone does not.
+

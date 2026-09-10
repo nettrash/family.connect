@@ -12,6 +12,31 @@ disagree, this document wins; fix the code.
 - In production the server binds to loopback and sits behind nginx, which terminates TLS and
   proxies both REST and the WebSocket upgrade.
 
+### A browser is a client too
+
+A web client is served **from the same origin as the API**, by the same nginx that already proxies
+`/api/v1` — the static bundle at `/`, everything else exactly as it is. There is no CORS anywhere
+on this wire and none is planned: a second origin would mean preflights on every call, a
+credential story for a token in another site's storage, and a whole class of question this
+protocol does not otherwise have. So `{base}` for a browser is its own origin, and the user enters
+no server URL at all — the page it was served is the server it talks to, which is the one thing a
+browser knows that an app has to be told.
+
+Two consequences worth stating rather than discovering:
+
+- **A browser registers no device and receives no push.** `POST /devices` takes `ios`, `macos` or
+  `android`, and a web client sends none of them: it has no APNs or FCM token to give, and a
+  member reading in a tab is a member whose socket is live, which is exactly the case the push
+  gate already suppresses. The absence is deliberate, not a gap — everything else about delivery
+  is unchanged, because the socket is the same socket.
+- **The session token lives in `sessionStorage`, not `localStorage`.** It is the whole credential,
+  and a token that outlives the tab is a token left behind on a shared machine. Closing the tab is
+  a sign-out; `POST /auth/logout` on the way out is the one that also revokes it server-side.
+
+Everything else in this document applies to a browser unchanged. Where a section says Windows and
+web are "not asked to draw" something yet, that is a statement about what has been BUILT, never a
+different protocol.
+
 ## Compatibility rules
 
 - Clients MUST ignore unknown JSON fields in any response, and unknown `type` values in any

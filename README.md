@@ -36,6 +36,7 @@ family.connect/
 ├── ios/                   # SwiftUI client for iOS 17+ AND macOS 14+, one universal
 │                          # target (FamilyConnect.xcodeproj)
 ├── android/               # Jetpack Compose client, Android 8+ (Gradle, :app)
+├── web/                   # Yew (Rust → WASM) client, served from the server's own origin
 ├── tools/i18n/            # translation helper scripts
 ├── CHANGELOG              # plain-text release history
 ├── CODEOWNERS             # review ownership
@@ -51,6 +52,11 @@ family.connect/
   are delivered for real: APNs (including PushKit VoIP, which is what makes an incoming call
   ring) and FCM. A platform with no credentials configured falls back to logging the
   notification it would have sent, so a server without push keys works unchanged.
+- **Web client** (`web/`): Rust compiled to WASM with Yew, built by Trunk and served as static
+  files by the SAME nginx that proxies the API — same origin, so there is no CORS on this wire.
+  It signs in, lists chats and carries the live conversation; it registers no device and takes no
+  push, and its session token lives in `sessionStorage`, so closing the tab signs out. See
+  `docs/operations.md` §7.
 - **Clients** (`ios/`, `android/`): Telegram-simple. The Apple target builds one app for both
   iPhone and Mac. First run asks for the server address,
   then register or log in, then create a family or join one with an invite code (family owners
@@ -77,6 +83,12 @@ cd android
 cd ios
 xcodebuild test -project FamilyConnect.xcodeproj -scheme FamilyConnect \
   -destination 'platform=iOS Simulator,name=iPhone 17' CODE_SIGNING_ALLOWED=NO
+
+# Web (needs `rustup target add wasm32-unknown-unknown`, trunk and wasm-pack)
+cd web
+trunk build --release                         # writes web/dist
+cargo clippy --target wasm32-unknown-unknown --all-targets
+wasm-pack test --headless --chrome            # the tests run in a BROWSER, not `cargo test`
 ```
 
 ## Store builds with a predefined server
