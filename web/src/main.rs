@@ -18,10 +18,15 @@
 mod actions;
 mod api;
 mod live;
+mod location;
+mod media;
 mod model;
 mod outbox;
+mod prep;
+mod recorder;
 mod session;
 mod socket;
+mod staged;
 mod store;
 mod sync;
 mod time;
@@ -41,6 +46,7 @@ use yew::prelude::*;
 
 use actions::{Action, Actions};
 use live::{AppState, Live};
+use media::MediaLoader;
 use store::ThreadView;
 use sync::{network_back, page_visible, report_read, start_session, Channels, Shared};
 use views::chat_list::ChatList;
@@ -48,6 +54,7 @@ use views::conversation::Conversation;
 use views::login::Login;
 use views::open_polls::OpenPollsPanel;
 use views::thread_panel::ThreadPanel;
+use views::viewer::Viewer;
 
 #[function_component(App)]
 fn app() -> Html {
@@ -70,10 +77,15 @@ fn app() -> Html {
     .clone();
     let channels: Shared<Option<Channels>> = use_mut_ref(|| None);
     let last_typing = use_mut_ref(HashMap::<i64, f64>::new);
+    let media = {
+        let live = live.clone();
+        (*use_memo((), move |_| MediaLoader::new(live))).clone()
+    };
 
     // Signing out, from anywhere: a 401 and the button do the same thing.
     let sign_out = {
         let live = live.clone();
+        let media = media.clone();
         Callback::from(move |revoke: bool| {
             if revoke {
                 if let Some(held) = live.read(|state| state.token.clone()) {
@@ -81,6 +93,7 @@ fn app() -> Html {
                 }
             }
             session::clear();
+            media.clear();
             live.end_session();
         })
     };
@@ -133,7 +146,11 @@ fn app() -> Html {
         use_effect_with((), move |_| {
             let guard = Closure::<dyn Fn(web_sys::BeforeUnloadEvent)>::new(
                 move |event: web_sys::BeforeUnloadEvent| {
-                    if live.read(|state| !state.store.outbox.is_empty()) {
+                    // Something unsent, or something staged to send: both
+                    // live in this tab only.
+                    if live.read(|state| {
+                        !state.store.outbox.is_empty() || !state.store.staged.is_empty()
+                    }) {
                         event.prevent_default();
                         event.set_return_value("unsent");
                     }
@@ -244,6 +261,7 @@ fn app() -> Html {
                 revealed_quotes={store.revealed_quotes.clone()}
                 failed={store.failed_sends(chat_id)}
                 ai_failed={store.ai_failed.clone()}
+                family={store.family.clone()}
                 on_action={on_action.clone()}
             />
         }
@@ -265,7 +283,19 @@ fn app() -> Html {
         Html::default()
     };
 
+    let viewer = state.viewing.clone().map(|viewing| {
+        html! {
+            <Viewer
+                items={viewing.items}
+                index={viewing.index}
+                on_step={on_action.reform(Action::StepViewer)}
+                on_close={on_action.reform(|_: ()| Action::CloseViewer)}
+            />
+        }
+    });
+
     html! {
+        <ContextProvider<MediaLoader> context={media}>
         <div class="app">
             <header class="bar">
                 <span class="brand">{ "Family Connect" }</span>
@@ -319,6 +349,8 @@ fn app() -> Html {
                         typing={store.typing_names(item.chat.id, sync::now_ms())}
                         unanswered_polls={store.unanswered_polls(item.chat.id)}
                         draft={store.drafts.get(&item.chat.id).cloned().unwrap_or_default()}
+                        staged={store.staged.get(&item.chat.id).cloned().unwrap_or_default()}
+                        family={store.family.clone()}
                         support_contact={store.support_contact.clone()}
                         on_action={on_action.clone()}
                         now_ms={now}
@@ -331,7 +363,9 @@ fn app() -> Html {
                 }
                 { side_panel }
             </div>
+            { viewer.unwrap_or_default() }
         </div>
+        </ContextProvider<MediaLoader>>
     }
 }
 

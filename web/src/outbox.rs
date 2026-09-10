@@ -18,15 +18,25 @@ use futures::{FutureExt, StreamExt};
 
 use crate::api::ApiError;
 use crate::live::Live;
-use crate::model::Message;
-use crate::store::Outgoing;
+use crate::model::{Attachment, Message};
+use crate::staged::{OutgoingItem, StagedBytes};
+use crate::store::{Outgoing, LOST_IN_RELOAD};
 
 /// The codes that mean the server READ the send and refused it: the
 /// message will never be accepted as it stands. Every other answer — a
 /// timeout, a 502 from a proxy, a 429, an `internal` — leaves the outcome
 /// unknown. The protocol's list, and the phone clients'
 /// (ios ChatSyncCoordinator.terminalSendCodes).
-pub const TERMINAL_CODES: [&str; 10] = [
+///
+/// Two more than the apps' list, both from the UPLOAD a message with
+/// attachments starts with: `attachment_too_large` and `not_in_family`. The
+/// apps reach the same answer another way — they treat every 4xx but 408
+/// and 429 as final — and nothing about either gets better by waiting.
+/// Not the server's: this client's own word for bytes that can no longer
+/// be read — a picked file moved, changed or deleted before it went up.
+pub const LOCAL_FILE_GONE: &str = "local_file_gone";
+
+pub const TERMINAL_CODES: [&str; 13] = [
     "validation",
     "message_empty",
     "message_too_long",
@@ -37,6 +47,9 @@ pub const TERMINAL_CODES: [&str; 10] = [
     "invalid_attachment",
     "attachment_not_found",
     "attachment_already_used",
+    "attachment_too_large",
+    "not_in_family",
+    LOCAL_FILE_GONE,
 ];
 
 pub fn is_terminal(error: &ApiError) -> bool {
@@ -54,6 +67,23 @@ pub fn refusal(error: &ApiError) -> String {
         }
         Some("blocked") => "Not sent: you have blocked this person.".to_string(),
         Some("message_too_long") => "Not sent: the message is too long.".to_string(),
+        Some("attachment_too_large") => {
+            "Not sent: an attachment is over this server's size limit.".to_string()
+        }
+        Some("invalid_attachment") => {
+            "Not sent: the server can't take one of the attachments.".to_string()
+        }
+        Some("attachment_not_found") | Some("attachment_already_used") => {
+            "Not sent: an attachment is no longer there. Attach it again.".to_string()
+        }
+        Some("not_in_family") => "Not sent: join a family before sending attachments.".to_string(),
+        Some(LOCAL_FILE_GONE) => {
+            "Not sent: a file was moved, changed or deleted before it could go. Attach it again."
+                .to_string()
+        }
+        Some("attachment_expired") => {
+            "Not sent: its attachments expired on the server. Attach them again.".to_string()
+        }
         _ => format!("Not sent: {}", error.detail()),
     }
 }
@@ -96,6 +126,15 @@ pub fn floor_ms(error: &ApiError) -> f64 {
     }
 }
 
+/// One attachment to upload: which row it belongs to, what the upload
+/// says, and the bytes (none for a location).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Upload {
+    pub client_msg_id: String,
+    pub item: OutgoingItem,
+    pub bytes: StagedBytes,
+}
+
 /// Why the sender should look at the outbox again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wake {
@@ -109,22 +148,33 @@ pub enum Wake {
 
 /// The sender, for as long as `session` is the session.
 ///
-/// `send` makes one attempt; `nap` waits out the backoff after the
-/// `attempts`-th unknown outcome, and for no less than its second argument
-/// in milliseconds (`floor_ms`). Both are parameters so the rules can be
-/// tested without a server or a clock. Returns when the session ends, when
-/// the wake channel closes (which is how a sign-out stops it at once), or
-/// on a 401 — after calling `expired`.
-pub async fn drain<S, SF, N, NF>(
+/// A row with attachments is sent in steps: each attachment's upload, one
+/// at a time and in order, and then the message naming them (docs/
+/// protocol.md, "Uploading is a separate step from sending"). An upload
+/// that lands is kept — its id is good for the server's unclaimed grace —
+/// so a retry picks up at the first one still owed rather than sending a
+/// hundred megabytes again. Every step fails the way a send does: refused
+/// at once on a terminal code, retried with backoff on an unknown one.
+///
+/// `send` makes one attempt at the message and `upload` at one attachment;
+/// `nap` waits out the backoff after the `attempts`-th unknown outcome, and
+/// for no less than its second argument in milliseconds (`floor_ms`). All
+/// are parameters so the rules can be tested without a server or a clock.
+/// Returns when the session ends, when the wake channel closes (which is how
+/// a sign-out stops it at once), or on a 401 — after calling `expired`.
+pub async fn drain<S, SF, U, UF, N, NF>(
     live: Live,
     session: u64,
     mut wake: UnboundedReceiver<Wake>,
     send: S,
+    upload: U,
     nap: N,
     expired: impl Fn(),
 ) where
     S: Fn(Outgoing) -> SF,
     SF: Future<Output = Result<Message, ApiError>>,
+    U: Fn(Upload) -> UF,
+    UF: Future<Output = Result<Attachment, ApiError>>,
     N: Fn(u32, f64) -> NF,
     NF: Future<Output = ()>,
 {
@@ -136,23 +186,80 @@ pub async fn drain<S, SF, N, NF>(
             }
             continue;
         };
-        match send(row.clone()).await {
-            Ok(message) => {
-                live.update(session, |state| {
-                    let open = state.open_chat;
-                    state.store.settle(&row.client_msg_id, message, open);
-                });
+        let owed = row
+            .items
+            .iter()
+            .find(|item| item.attachment_id.is_none())
+            .cloned();
+        let outcome = match owed {
+            Some(item) => {
+                let bytes = live
+                    .read(|state| state.store.bytes.get(&item.provisional_id).cloned())
+                    .unwrap_or_default();
+                if !item.is_location() && bytes.file.is_none() {
+                    // Nothing to upload and nothing that can bring it back.
+                    live.update(session, |state| {
+                        state
+                            .store
+                            .refuse(&row.client_msg_id, LOST_IN_RELOAD.to_string())
+                    });
+                    continue;
+                }
+                let job = Upload {
+                    client_msg_id: row.client_msg_id.clone(),
+                    item: item.clone(),
+                    bytes,
+                };
+                match upload(job).await {
+                    Ok(attachment) => {
+                        live.update(session, |state| {
+                            state.store.landed(
+                                &row.client_msg_id,
+                                item.provisional_id,
+                                attachment.id,
+                            )
+                        });
+                        continue;
+                    }
+                    Err(error) => error,
+                }
             }
-            Err(ApiError::Unauthorized) => {
+            None => match send(row.clone()).await {
+                Ok(message) => {
+                    live.update(session, |state| {
+                        let open = state.open_chat;
+                        state.store.settle(&row.client_msg_id, message, open);
+                    });
+                    continue;
+                }
+                Err(error) => error,
+            },
+        };
+        match outcome {
+            ApiError::Unauthorized => {
                 expired();
                 return;
             }
-            Err(error) if is_terminal(&error) => {
+            // The server swept the uploads before this message claimed
+            // them: send the bytes again, while they are still here.
+            ref error if error.code() == Some("attachment_expired") => {
+                let again = live
+                    .update(session, |state| {
+                        state.store.expire_uploads(&row.client_msg_id)
+                    })
+                    .unwrap_or(false);
+                if !again {
+                    live.update(session, |state| {
+                        state.store.refuse(&row.client_msg_id, refusal(error))
+                    });
+                }
+            }
+            ref error if is_terminal(error) => {
                 live.update(session, |state| {
-                    state.store.refuse(&row.client_msg_id, refusal(&error))
+                    state.store.refuse(&row.client_msg_id, refusal(error))
                 });
             }
-            Err(error) => {
+            error => {
                 let floor = floor_ms(&error);
                 let still_queued = live
                     .update(session, |state| {
@@ -248,6 +355,10 @@ mod tests {
     struct Run {
         /// The `client_msg_id` of every attempt, in order.
         sent: Vec<String>,
+        /// The `attachment_ids` every send carried, in order.
+        claimed: Vec<Vec<i64>>,
+        /// The provisional id of every upload attempt, in order.
+        uploaded: Vec<i64>,
         /// The `attempts` every nap was asked for.
         naps: Vec<u32>,
         /// The floor every nap was given, in milliseconds.
@@ -259,7 +370,20 @@ mod tests {
     /// until it goes idle. The wake channel is closed up front, so idle is
     /// the end; naps are instant.
     async fn run(live: &Live, script: Vec<Answer>) -> Run {
+        run_with_uploads(live, script, Vec::new()).await
+    }
+
+    /// The same, with a script for the uploads too: an id that lands, or
+    /// the error the upload fails with.
+    async fn run_with_uploads(
+        live: &Live,
+        script: Vec<Answer>,
+        uploads: Vec<Result<i64, ApiError>>,
+    ) -> Run {
         let script = Rc::new(RefCell::new(VecDeque::from(script)));
+        let uploads = Rc::new(RefCell::new(VecDeque::from(uploads)));
+        let uploaded = Rc::new(RefCell::new(Vec::new()));
+        let claimed = Rc::new(RefCell::new(Vec::new()));
         let sent = Rc::new(RefCell::new(Vec::new()));
         let naps = Rc::new(RefCell::new(Vec::new()));
         let floors = Rc::new(RefCell::new(Vec::new()));
@@ -267,12 +391,36 @@ mod tests {
         let (wake, wake_in) = mpsc::unbounded::<Wake>();
         drop(wake);
 
+        let upload = {
+            let uploads = uploads.clone();
+            let uploaded = uploaded.clone();
+            move |job: Upload| {
+                uploaded.borrow_mut().push(job.item.provisional_id);
+                let answer = uploads
+                    .borrow_mut()
+                    .pop_front()
+                    .expect("the sender uploaded more often than the script allows");
+                let result = answer.map(|id| Attachment {
+                    id,
+                    kind: job.item.kind.clone(),
+                    ..Attachment::default()
+                });
+                async move { result }
+            }
+        };
         let send = {
             let script = script.clone();
             let sent = sent.clone();
+            let claimed = claimed.clone();
             let live = live.clone();
             move |row: Outgoing| {
                 sent.borrow_mut().push(row.client_msg_id.clone());
+                claimed.borrow_mut().push(
+                    row.items
+                        .iter()
+                        .map(|item| item.attachment_id.expect("sent before its upload landed"))
+                        .collect(),
+                );
                 let answer = script
                     .borrow_mut()
                     .pop_front()
@@ -311,14 +459,31 @@ mod tests {
             move || expired.set(expired.get() + 1)
         };
 
-        drain(live.clone(), live.session(), wake_in, send, nap, on_expired).await;
+        drain(
+            live.clone(),
+            live.session(),
+            wake_in,
+            send,
+            upload,
+            nap,
+            on_expired,
+        )
+        .await;
 
         assert!(script.borrow().is_empty(), "every scripted answer was used");
+        assert!(
+            uploads.borrow().is_empty(),
+            "every scripted upload was used"
+        );
         let sent = sent.borrow().clone();
+        let claimed = claimed.borrow().clone();
+        let uploaded = uploaded.borrow().clone();
         let naps = naps.borrow().clone();
         let floors = floors.borrow().clone();
         Run {
             sent,
+            claimed,
+            uploaded,
             naps,
             floors,
             expired: expired.get(),
@@ -336,6 +501,37 @@ mod tests {
                 },
             )
         });
+    }
+
+    fn photo() -> crate::staged::Prepared {
+        crate::staged::Prepared {
+            kind: "photo".into(),
+            mime: "image/jpeg".into(),
+            size: 3,
+            width: Some(4),
+            height: Some(3),
+            file: Some(web_sys::Blob::new().expect("a blob")),
+            preview: Some(web_sys::Blob::new().expect("a blob")),
+            ..crate::staged::Prepared::default()
+        }
+    }
+
+    /// A message with attachments: a photo, then a place.
+    fn queue_album(live: &Live, client_msg_id: &str) -> Vec<i64> {
+        live.now(|state| {
+            state.store.queue_send(
+                42,
+                client_msg_id.into(),
+                Draft {
+                    body: String::new(),
+                    attachments: vec![
+                        photo(),
+                        crate::staged::Prepared::location(55.75, 37.61, Some(10.0)),
+                    ],
+                    ..Draft::default()
+                },
+            )
+        })
     }
 
     fn thread_ids(live: &Live) -> Vec<i64> {
@@ -385,7 +581,17 @@ mod tests {
             let live = live.clone();
             let done = done.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                drain(live.clone(), live.session(), wake_in, send, nap, || {}).await;
+                let upload = |_: Upload| async { Err::<Attachment, _>(network()) };
+                drain(
+                    live.clone(),
+                    live.session(),
+                    wake_in,
+                    send,
+                    upload,
+                    nap,
+                    || {},
+                )
+                .await;
                 done.set(true);
             });
         }
@@ -618,5 +824,211 @@ mod tests {
         assert!(jittered_ms(8_000.0, 0.999_999) <= 8_000);
         // A random source out of range cannot make the wait longer.
         assert_eq!(jittered_ms(8_000.0, 7.0), 8_000);
+    }
+
+    // --- Attachments ------------------------------------------------------
+
+    /// Each attachment up, one at a time and in the order chosen, then ONE
+    /// message naming them in that order — and the bytes let go of once the
+    /// server has it.
+    #[wasm_bindgen_test]
+    async fn attachments_go_up_in_order_and_then_the_message_names_them() {
+        let live = signed_in();
+        let provisional = queue_album(&live, "a");
+        assert_eq!(provisional, vec![-1, -2]);
+
+        let run = run_with_uploads(&live, vec![Answer::Deliver(101)], vec![Ok(501), Ok(502)]).await;
+
+        assert_eq!(run.uploaded, vec![-1, -2]);
+        assert_eq!(run.claimed, vec![vec![501, 502]]);
+        live.read(|state| {
+            assert!(state.store.outbox.is_empty());
+            assert!(state.store.bytes.is_empty(), "the bytes went with the row");
+            assert_eq!(state.store.aliases.get(&501), Some(&-1));
+        });
+    }
+
+    /// An upload that landed is never sent again: the retry starts at the
+    /// first one still owed.
+    #[wasm_bindgen_test]
+    async fn a_retry_picks_up_after_what_already_landed() {
+        let live = signed_in();
+        queue_album(&live, "a");
+
+        let run = run_with_uploads(
+            &live,
+            vec![Answer::Deliver(101)],
+            vec![Ok(501), Err(network()), Ok(502)],
+        )
+        .await;
+
+        assert_eq!(run.uploaded, vec![-1, -2, -2], "the photo went up once");
+        assert_eq!(run.naps.len(), 1);
+        assert_eq!(run.claimed, vec![vec![501, 502]]);
+    }
+
+    /// An upload the server refuses fails the message at once, saying why,
+    /// and the message itself is never sent.
+    #[wasm_bindgen_test]
+    async fn a_refused_upload_fails_the_message_with_its_reason() {
+        let live = signed_in();
+        queue_album(&live, "a");
+
+        let run =
+            run_with_uploads(&live, Vec::new(), vec![Err(server("attachment_too_large"))]).await;
+
+        assert!(run.sent.is_empty());
+        assert!(run.naps.is_empty(), "a refusal is not retried");
+        let failed = live.read(|state| state.store.failed_sends(42));
+        assert_eq!(
+            failed.get("a").map(String::as_str),
+            Some("Not sent: an attachment is over this server's size limit.")
+        );
+    }
+
+    /// Swept before the message claimed them: every attachment goes up
+    /// again from the bytes still held, and the message is sent again.
+    #[wasm_bindgen_test]
+    async fn expired_uploads_are_sent_again() {
+        let live = signed_in();
+        queue_album(&live, "a");
+
+        let run = run_with_uploads(
+            &live,
+            vec![
+                Answer::Fail(server("attachment_expired")),
+                Answer::Deliver(101),
+            ],
+            vec![Ok(501), Ok(502), Ok(601), Ok(602)],
+        )
+        .await;
+
+        assert_eq!(run.uploaded, vec![-1, -2, -1, -2]);
+        assert_eq!(run.claimed, vec![vec![501, 502], vec![601, 602]]);
+        assert!(live.read(|state| state.store.outbox.is_empty()));
+    }
+
+    /// …but with the bytes gone there is nothing to send again, and the
+    /// message fails rather than retrying nothing for ever.
+    #[wasm_bindgen_test]
+    async fn expired_uploads_without_their_bytes_fail_the_message() {
+        let live = signed_in();
+        let provisional = queue_album(&live, "a");
+        // Both landed — and then the bytes went.
+        live.now(|state| {
+            state.store.landed("a", provisional[0], 501);
+            state.store.landed("a", provisional[1], 502);
+            state.store.bytes.clear();
+        });
+
+        let run = run_with_uploads(
+            &live,
+            vec![Answer::Fail(server("attachment_expired"))],
+            Vec::new(),
+        )
+        .await;
+
+        assert_eq!(run.sent, vec!["a"]);
+        assert_eq!(
+            live.read(|state| state.store.failed_sends(42))
+                .get("a")
+                .map(String::as_str),
+            Some("Not sent: its attachments expired on the server. Attach them again.")
+        );
+    }
+
+    /// A row that came back from a reload with bytes still to upload fails
+    /// AT ONCE, saying why — and a place, which needs no bytes, still goes.
+    #[wasm_bindgen_test]
+    async fn a_reload_fails_what_it_cannot_upload_and_sends_the_rest() {
+        let live = signed_in();
+        queue_album(&live, "album");
+        live.now(|state| {
+            state.store.queue_send(
+                42,
+                "place".into(),
+                Draft {
+                    attachments: vec![crate::staged::Prepared::location(1.0, 2.0, None)],
+                    ..Draft::default()
+                },
+            );
+        });
+        let saved = live.read(|state| state.store.outbox.clone());
+        let reloaded = signed_in();
+        reloaded.now(|state| state.store.restore_outbox(saved));
+
+        let run = run_with_uploads(&reloaded, vec![Answer::Deliver(101)], vec![Ok(701)]).await;
+
+        assert_eq!(run.uploaded.len(), 1, "only the place went up");
+        assert_eq!(run.claimed, vec![vec![701]]);
+        let failed = reloaded.read(|state| state.store.failed_sends(42));
+        assert_eq!(
+            failed.get("album").map(String::as_str),
+            Some(crate::store::LOST_IN_RELOAD)
+        );
+    }
+
+    /// A landed upload is progress: the count of unknown outcomes starts
+    /// again, so a flaky network that keeps carrying uploads is not given
+    /// up on for the failures between them.
+    #[wasm_bindgen_test]
+    async fn a_landed_upload_starts_the_count_again() {
+        let live = signed_in();
+        queue_album(&live, "a");
+
+        let run = run_with_uploads(
+            &live,
+            vec![Answer::Deliver(101)],
+            vec![
+                Err(network()),
+                Err(network()),
+                Ok(501),
+                Err(network()),
+                Ok(502),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            run.naps,
+            vec![1, 2, 1],
+            "the third failure counts as the first"
+        );
+        assert_eq!(run.claimed, vec![vec![501, 502]]);
+    }
+
+    /// A picked file moved or deleted before it went up fails as what it
+    /// is, at once — not as a network that never comes back.
+    #[wasm_bindgen_test]
+    async fn a_vanished_file_fails_saying_so() {
+        let live = signed_in();
+        queue_album(&live, "a");
+
+        let run = run_with_uploads(&live, Vec::new(), vec![Err(server(LOCAL_FILE_GONE))]).await;
+
+        assert!(run.naps.is_empty());
+        assert_eq!(
+            live.read(|state| state.store.failed_sends(42)).get("a").map(String::as_str),
+            Some("Not sent: a file was moved, changed or deleted before it could go. Attach it again.")
+        );
+    }
+
+    /// Bytes gone while the row waited — nothing can bring them back — fail
+    /// the row at once, without uploading nothing.
+    #[wasm_bindgen_test]
+    async fn a_row_whose_bytes_are_gone_is_not_uploaded() {
+        let live = signed_in();
+        queue_album(&live, "a");
+        live.now(|state| state.store.bytes.clear());
+
+        let run = run_with_uploads(&live, Vec::new(), Vec::new()).await;
+
+        assert!(run.uploaded.is_empty());
+        assert_eq!(
+            live.read(|state| state.store.failed_sends(42))
+                .get("a")
+                .map(String::as_str),
+            Some(crate::store::LOST_IN_RELOAD)
+        );
     }
 }

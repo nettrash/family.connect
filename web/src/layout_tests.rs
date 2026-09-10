@@ -320,6 +320,8 @@ fn props_with(
         revealed: Default::default(),
         revealed_quotes: Default::default(),
         opening,
+        staged: Vec::new(),
+        family: None,
         failed: Default::default(),
         ai_failed: Default::default(),
         peer_read: 0,
@@ -669,9 +671,12 @@ async fn a_poll_question_carries_its_mentions() {
     let handle =
         yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), asked).render();
     TimeoutFuture::new(50).await;
-    query(&root, "[aria-label='New poll']")
+    // Poll is in the paperclip's menu, as it is on the Mac.
+    query(&root, "[aria-label='Attach']")
         .dyn_into_html()
         .click();
+    TimeoutFuture::new(20).await;
+    click_labelled(&root, ".attach-menu [role=menuitem]", "Poll");
     TimeoutFuture::new(20).await;
     type_into(
         &query(&root, ".dialog .field input"),
@@ -746,6 +751,185 @@ async fn a_new_message_leaves_an_open_menu_where_it_was() {
         "the menu stayed on message 18"
     );
 
+    handle.destroy();
+    root.remove();
+}
+
+/// "Show the Assistant a Photo…" is a door that exists only where it leads
+/// somewhere: the assistant's own chat, on a server that can see, in a
+/// family that allows it — and is ABSENT otherwise, never offered inert.
+#[wasm_bindgen_test]
+async fn the_assistant_photo_door_is_there_only_when_all_three_allow_it() {
+    use crate::model::{Assistant, Family};
+    let menu_items = |vision: bool, ai_vision: bool, kind: &str| {
+        let kind = kind.to_string();
+        async move {
+            let root = pane();
+            let mut asked = props_with(
+                vec![my_message(100, "hi")],
+                Some(Opening {
+                    chat_id: 42,
+                    unread_count: 0,
+                    last_read_message_id: 100,
+                }),
+                Callback::noop(),
+            );
+            asked.item.chat.kind = kind;
+            asked.assistant = Some(Assistant {
+                user_id: 2,
+                display_name: "Assistant".into(),
+                mention: Some("@ai".into()),
+                draw: Some("/draw".into()),
+                vision,
+                images: false,
+            });
+            asked.family = Some(Family {
+                id: 3,
+                name: "The Smiths".into(),
+                ai_history: true,
+                ai_vision,
+                ai_history_photos: false,
+            });
+            let handle =
+                yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), asked)
+                    .render();
+            TimeoutFuture::new(50).await;
+            query(&root, "[aria-label='Attach']")
+                .dyn_into_html()
+                .click();
+            TimeoutFuture::new(20).await;
+            let found = root
+                .query_selector_all(".attach-menu [role=menuitem]")
+                .unwrap();
+            let labels: Vec<String> = (0..found.length())
+                .map(|index| {
+                    found
+                        .item(index)
+                        .unwrap()
+                        .text_content()
+                        .unwrap_or_default()
+                })
+                .collect();
+            handle.destroy();
+            root.remove();
+            labels
+        }
+    };
+    let door = "Show the Assistant a Photo…".to_string();
+    assert!(menu_items(true, true, "ai").await.contains(&door));
+    assert!(
+        !menu_items(false, true, "ai").await.contains(&door),
+        "a server that cannot see"
+    );
+    assert!(
+        !menu_items(true, false, "ai").await.contains(&door),
+        "a family that has not allowed it"
+    );
+    let family = menu_items(true, true, "family").await;
+    assert!(!family.contains(&door), "only in the assistant's own chat");
+    assert!(
+        family.contains(&"Poll".to_string()),
+        "and Poll only in the family chat"
+    );
+    assert!(!menu_items(true, true, "ai")
+        .await
+        .contains(&"Poll".to_string()));
+}
+
+/// Send takes what is staged with it, the box's words as its caption.
+#[wasm_bindgen_test]
+async fn a_send_carries_what_is_staged() {
+    let root = pane();
+    let (log, on_action) = recorder();
+    let mut asked = props_with(
+        vec![my_message(100, "hi")],
+        Some(Opening {
+            chat_id: 42,
+            unread_count: 0,
+            last_read_message_id: 100,
+        }),
+        on_action,
+    );
+    asked.staged = vec![crate::staged::Prepared::location(1.0, 2.0, None)];
+    let handle =
+        yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), asked).render();
+    TimeoutFuture::new(50).await;
+    type_into(&query(&root, "textarea"), "Look");
+    TimeoutFuture::new(20).await;
+    click_labelled(&root, ".composer button", "Send");
+    TimeoutFuture::new(20).await;
+    let sent = log
+        .borrow()
+        .iter()
+        .find_map(|action| match action {
+            Action::Send { draft, .. } => Some(draft.clone()),
+            _ => None,
+        })
+        .expect("sent");
+    assert_eq!(sent.body, "Look");
+    assert_eq!(sent.attachments.len(), 1);
+    handle.destroy();
+    root.remove();
+}
+
+/// A thread's box says it too: every send there replies to the root, so an
+/// `@ai` there is pointed at the root's photos.
+#[wasm_bindgen_test]
+async fn a_threads_box_says_what_goes_to_the_assistant() {
+    use crate::model::{Assistant, Attachment, Family};
+    use crate::views::thread_panel::{ThreadPanel, ThreadPanelProps};
+    let root = pane();
+    let mut photo_root = message(10);
+    photo_root.attachments = Some(vec![Attachment {
+        id: 34,
+        kind: "photo".into(),
+        mime: Some("image/jpeg".into()),
+        has_preview: true,
+        ..Attachment::default()
+    }]);
+    let props = ThreadPanelProps {
+        chat_id: 42,
+        root_id: 10,
+        messages: vec![photo_root],
+        my_user_id: 7,
+        is_family_chat: true,
+        is_ai_chat: false,
+        names: Default::default(),
+        members: Vec::new(),
+        assistant: Some(Assistant {
+            user_id: 2,
+            display_name: "Assistant".into(),
+            mention: Some("@ai".into()),
+            draw: Some("/draw".into()),
+            vision: true,
+            images: false,
+        }),
+        blocked: Default::default(),
+        revealed: Default::default(),
+        revealed_quotes: Default::default(),
+        failed: Default::default(),
+        ai_failed: Default::default(),
+        family: Some(Family {
+            id: 3,
+            name: "The Smiths".into(),
+            ai_history: true,
+            ai_vision: true,
+            ai_history_photos: false,
+        }),
+        on_action: Callback::noop(),
+    };
+    let handle =
+        yew::Renderer::<ThreadPanel>::with_root_and_props(root.clone().into(), props).render();
+    TimeoutFuture::new(50).await;
+    type_into(&query(&root, "textarea"), "@ai what is this?");
+    TimeoutFuture::new(20).await;
+    let said = query(&root, ".picture-notice")
+        .text_content()
+        .unwrap_or_default();
+    assert!(
+        said.contains("The photo you're replying to goes to the model"),
+        "{said}"
+    );
     handle.destroy();
     root.remove();
 }

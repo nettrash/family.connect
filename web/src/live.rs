@@ -39,6 +39,15 @@ pub struct AppState {
     /// because the "N new messages" divider is decided from it: a read
     /// reported first leaves nothing unread to draw a divider over.
     pub opening: Option<Opening>,
+    /// The photos and videos open full size, and which one is up.
+    pub viewing: Option<Viewing>,
+}
+
+/// What the viewer shows: a message's media, in sent order, at one of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Viewing {
+    pub items: Vec<crate::model::Attachment>,
+    pub index: usize,
 }
 
 /// A chat, as it stood when it had loaded and before it was read.

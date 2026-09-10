@@ -17,9 +17,11 @@ use gloo_net::http::{Request, RequestBuilder, Response};
 use gloo_timers::future::TimeoutFuture;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use web_sys::AbortController;
+use wasm_bindgen::JsCast;
+use web_sys::{AbortController, Blob, RequestCache};
 
-use crate::model::{Chat, ChatListItem, Me, Mention, Message, Poll, Reaction, Roster};
+use crate::model::{Attachment, Chat, ChatListItem, Me, Mention, Message, Poll, Reaction, Roster};
+use crate::staged::OutgoingItem;
 use crate::store::Outgoing;
 
 /// Everything under one prefix, so a change of base is one line.
@@ -110,6 +112,11 @@ struct MessageResponse {
     message: Message,
 }
 
+#[derive(Debug, Deserialize)]
+struct AttachmentResponse {
+    attachment: Attachment,
+}
+
 /// One message's whole reaction state — the answer to a reaction request
 /// and one row of the reaction catch-up.
 #[derive(Debug, Clone, Deserialize)]
@@ -156,6 +163,11 @@ struct SendRequest<'a> {
     mentions: &'a [Mention],
     #[serde(skip_serializing_if = "Option::is_none")]
     poll: Option<PollRequest<'a>>,
+    /// The attachments, in the sender's order — the array spelling, which
+    /// carries one as well as ten (the legacy `attachment_id` is never
+    /// sent).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    attachment_ids: Vec<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -430,27 +442,53 @@ pub const SEND_DEADLINE_MS: u32 = 10_000;
 /// is ABORTED, not merely abandoned, so a late answer cannot arrive for a
 /// send that has already been counted as unknown.
 pub async fn send_message(token: &str, row: &Outgoing) -> Result<Message, ApiError> {
-    let controller = AbortController::new()
-        .map_err(|_| ApiError::Network("This browser cannot time a request out.".into()))?;
+    let controller = controller()?;
     let request = bearer(
         Request::post(&path(&format!("/chats/{}/messages", row.chat_id))),
         token,
     )
     .abort_signal(Some(&controller.signal()))
-    .json(&SendRequest {
-        client_msg_id: &row.client_msg_id,
-        body: &row.body,
-        reply_to_message_id: row.reply_to_message_id,
-        mentions: &row.mentions,
-        poll: row.poll.as_deref().map(|options| PollRequest { options }),
-    })
+    .json(&send_request(row))
     .map_err(network)?;
     let attempt = async {
         let response: MessageResponse = read(request.send().await.map_err(network)?).await?;
         Ok(response.message)
     };
-    let deadline = TimeoutFuture::new(SEND_DEADLINE_MS);
-    match select(Box::pin(attempt), deadline).await {
+    within(controller, SEND_DEADLINE_MS, attempt).await
+}
+
+fn send_request(row: &Outgoing) -> SendRequest<'_> {
+    SendRequest {
+        client_msg_id: &row.client_msg_id,
+        body: &row.body,
+        reply_to_message_id: row.reply_to_message_id,
+        mentions: &row.mentions,
+        poll: row.poll.as_deref().map(|options| PollRequest { options }),
+        attachment_ids: row
+            .items
+            .iter()
+            .filter_map(|item| item.attachment_id)
+            .collect(),
+    }
+}
+
+/// How long one upload may take before it is given up as UNKNOWN: ten
+/// minutes, the apps' budget. A hundred megabytes over a slow uplink is
+/// minutes, and the ten seconds a message gets would cancel every video.
+pub const UPLOAD_DEADLINE_MS: u32 = 600_000;
+
+/// A preview is a few tens of kilobytes: a minute is generous, and a hung
+/// one must not hold the whole outbox for ten.
+pub const PREVIEW_DEADLINE_MS: u32 = 60_000;
+
+/// Send `request`, aborting it past `deadline_ms` so a late answer cannot
+/// arrive for an attempt that has already been counted as unknown.
+async fn within<T>(
+    controller: AbortController,
+    deadline_ms: u32,
+    attempt: impl std::future::Future<Output = Result<T, ApiError>>,
+) -> Result<T, ApiError> {
+    match select(Box::pin(attempt), TimeoutFuture::new(deadline_ms)).await {
         Either::Left((answer, _)) => answer,
         Either::Right(_) => {
             controller.abort();
@@ -459,6 +497,128 @@ pub async fn send_message(token: &str, row: &Outgoing) -> Result<Message, ApiErr
             ))
         }
     }
+}
+
+fn controller() -> Result<AbortController, ApiError> {
+    AbortController::new()
+        .map_err(|_| ApiError::Network("This browser cannot time a request out.".into()))
+}
+
+/// The query string an upload's metadata rides in (docs/protocol.md,
+/// "Attachments"): only what the item has.
+pub fn upload_query(item: &OutgoingItem) -> String {
+    let mut query = vec![format!("kind={}", item.kind)];
+    let mut number = |key: &str, value: Option<i64>| {
+        if let Some(value) = value {
+            query.push(format!("{key}={value}"));
+        }
+    };
+    number("width", item.width);
+    number("height", item.height);
+    number("duration_ms", item.duration_ms);
+    if let (Some(latitude), Some(longitude)) = (item.latitude, item.longitude) {
+        // Seven places: a centimetre, and more than any fix is good for.
+        query.push(format!("latitude={latitude:.7}"));
+        query.push(format!("longitude={longitude:.7}"));
+        if let Some(accuracy) = item.accuracy_m.filter(|accuracy| accuracy.is_finite()) {
+            query.push(format!("accuracy_m={}", accuracy.round().max(0.0) as i64));
+        }
+    }
+    if let Some(name) = item.name.as_deref().filter(|name| !name.is_empty()) {
+        query.push(format!(
+            "name={}",
+            String::from(js_sys::encode_uri_component(name))
+        ));
+    }
+    query.join("&")
+}
+
+/// `POST /attachments` — the bytes, raw, with their type; the metadata in
+/// the query. A location sends no body at all.
+pub async fn upload_attachment(
+    token: &str,
+    item: &OutgoingItem,
+    file: Option<&Blob>,
+) -> Result<Attachment, ApiError> {
+    let controller = controller()?;
+    let url = path(&format!("/attachments?{}", upload_query(item)));
+    let mut request = bearer(Request::post(&url), token).abort_signal(Some(&controller.signal()));
+    if !item.mime.is_empty() && !item.is_location() {
+        request = request.header("Content-Type", &item.mime);
+    }
+    let request = match file {
+        Some(file) => request.body(wasm_bindgen::JsValue::from(file.clone())),
+        None => request.build(),
+    }
+    .map_err(network)?;
+    let attempt = async {
+        let response: AttachmentResponse = read(request.send().await.map_err(network)?).await?;
+        Ok(response.attachment)
+    };
+    within(controller, UPLOAD_DEADLINE_MS, attempt).await
+}
+
+/// `PUT /attachments/{id}/preview` — the downscaled photo or the poster.
+/// Best effort: a message may go without it (docs/protocol.md).
+pub async fn upload_preview(token: &str, attachment_id: i64, jpeg: &Blob) -> Result<(), ApiError> {
+    let controller = controller()?;
+    let request = bearer(
+        Request::put(&path(&format!("/attachments/{attachment_id}/preview"))),
+        token,
+    )
+    .header("Content-Type", "image/jpeg")
+    .abort_signal(Some(&controller.signal()))
+    .body(wasm_bindgen::JsValue::from(jpeg.clone()))
+    .map_err(network)?;
+    let attempt = async {
+        let response = request.send().await.map_err(network)?;
+        check(&response).await
+    };
+    within(controller, PREVIEW_DEADLINE_MS, attempt).await
+}
+
+/// `GET /attachments/{id}` or its preview, as bytes in this tab's memory.
+///
+/// `no-store`: the server marks media `private, immutable`, which is right
+/// for an app's own cache and wrong for a browser's — shared with every
+/// account that signs in on the machine, and outliving the tab
+/// (docs/protocol.md, "A browser is a client too").
+pub async fn attachment_bytes(token: &str, id: i64, preview: bool) -> Result<Blob, ApiError> {
+    let url = if preview {
+        path(&format!("/attachments/{id}/preview"))
+    } else {
+        path(&format!("/attachments/{id}"))
+    };
+    let response = bearer(Request::get(&url), token)
+        .cache(RequestCache::NoStore)
+        .send()
+        .await
+        .map_err(network)?;
+    check(&response).await?;
+    // A FILE is served as an attachment that must never render (docs/
+    // protocol.md, "Files"), and that header does not travel with the
+    // bytes into a blob: URL of this page's own origin. So its bytes are
+    // re-typed as the least interesting type there is, and an uploaded
+    // .html or .svg can only ever be saved, never run here.
+    let is_file = response
+        .headers()
+        .get("Content-Disposition")
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("attachment"));
+    let raw: web_sys::Response = response.into();
+    let unreadable = || ApiError::Network("The answer could not be read.".into());
+    let promise = raw.blob().map_err(|_| unreadable())?;
+    let blob = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|_| unreadable())?
+        .dyn_into::<Blob>()
+        .map_err(|_| unreadable())?;
+    if !is_file {
+        return Ok(blob);
+    }
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("application/octet-stream");
+    Blob::new_with_blob_sequence_and_options(&js_sys::Array::of1(&blob), &options)
+        .map_err(|_| unreadable())
 }
 
 /// `PATCH /chats/{id}/messages/{mid}` — author only; the body alone changes.
@@ -599,20 +759,83 @@ mod tests {
             reply_to_message_id: None,
             mentions: Vec::new(),
             poll: None,
+            items: Vec::new(),
             attempts: 0,
             failed: None,
         }
     }
 
     fn encode(row: &Outgoing) -> serde_json::Value {
-        serde_json::to_value(SendRequest {
-            client_msg_id: &row.client_msg_id,
-            body: &row.body,
-            reply_to_message_id: row.reply_to_message_id,
-            mentions: &row.mentions,
-            poll: row.poll.as_deref().map(|options| PollRequest { options }),
-        })
-        .expect("encodes")
+        serde_json::to_value(send_request(row)).expect("encodes")
+    }
+
+    fn item(kind: &str, provisional_id: i64) -> OutgoingItem {
+        OutgoingItem {
+            provisional_id,
+            kind: kind.into(),
+            mime: String::new(),
+            size: 0,
+            width: None,
+            height: None,
+            duration_ms: None,
+            name: None,
+            latitude: None,
+            longitude: None,
+            accuracy_m: None,
+            has_preview: false,
+            attachment_id: None,
+        }
+    }
+
+    /// The array spelling, in the order chosen, carrying only what landed
+    /// — and nothing at all for a message without attachments.
+    #[wasm_bindgen_test]
+    fn a_send_names_its_attachments_in_order() {
+        let mut photos = row();
+        photos.body = String::new();
+        let mut first = item("photo", -1);
+        first.attachment_id = Some(34);
+        let mut second = item("photo", -2);
+        second.attachment_id = Some(35);
+        photos.items = vec![first, second];
+        assert_eq!(
+            encode(&photos),
+            serde_json::json!({"client_msg_id": "8f14e45f", "body": "", "attachment_ids": [34, 35]})
+        );
+    }
+
+    /// The upload's query: the kind, what the item has, the name escaped —
+    /// and a location's three numbers, to seven places and whole metres.
+    #[wasm_bindgen_test]
+    fn an_upload_says_what_it_is_in_the_query() {
+        let mut video = item("video", -1);
+        video.width = Some(1920);
+        video.height = Some(1080);
+        video.duration_ms = Some(8400);
+        assert_eq!(
+            upload_query(&video),
+            "kind=video&width=1920&height=1080&duration_ms=8400"
+        );
+        let mut file = item("file", -2);
+        file.name = Some("Q3 report & notes.pdf".into());
+        assert_eq!(
+            upload_query(&file),
+            "kind=file&name=Q3%20report%20%26%20notes.pdf"
+        );
+        let mut place = item("location", -3);
+        place.latitude = Some(55.7558);
+        place.longitude = Some(37.6173);
+        place.accuracy_m = Some(12.4);
+        assert_eq!(
+            upload_query(&place),
+            "kind=location&latitude=55.7558000&longitude=37.6173000&accuracy_m=12"
+        );
+        place.accuracy_m = None;
+        assert_eq!(
+            upload_query(&place),
+            "kind=location&latitude=55.7558000&longitude=37.6173000",
+            "no accuracy is no accuracy, never zero"
+        );
     }
 
     /// Delta-seconds, and nothing else: an HTTP date, a negative or a word

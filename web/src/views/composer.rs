@@ -6,8 +6,9 @@
 
 use std::collections::HashSet;
 
-use fc_text::{assistant, composer, mentions};
-use web_sys::HtmlTextAreaElement;
+use fc_text::assistant_pictures::{self, Candidate, MentionNotice, Switches};
+use fc_text::{assistant, composer, media, mentions};
+use web_sys::{File, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::model::{Assistant, Member, Mention};
@@ -25,6 +26,52 @@ pub struct Replying {
     pub name: String,
     /// Empty when the quoted row is hidden behind a block.
     pub excerpt: String,
+}
+
+/// What the picture disclosures read: what is staged, what the draft
+/// replies to, and the locks (docs/protocol.md, "Pictures").
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Pictures {
+    pub staged: Vec<Candidate>,
+    /// The attachments of the message being replied to.
+    pub quoted: Vec<Candidate>,
+    pub server_can_see: bool,
+    pub server_can_draw: bool,
+    pub family_allows: bool,
+    pub family_history: bool,
+    pub family_history_photos: bool,
+}
+
+impl Pictures {
+    /// What the strip above the box says, if anything: the assistant's own
+    /// chat says it of every staged photo; the family chat of an `@ai`
+    /// draft that carries one or replies to one.
+    pub fn notice(&self, draft: &str, is_ai_chat: bool, is_family_chat: bool) -> Option<String> {
+        if is_ai_chat {
+            let can_see = assistant_pictures::offers_picture_attach(
+                true,
+                self.server_can_see,
+                self.family_allows,
+            );
+            return assistant_pictures::private_notice(&self.staged, can_see);
+        }
+        if !is_family_chat {
+            return None;
+        }
+        MentionNotice::of(
+            draft,
+            &self.staged,
+            &self.quoted,
+            Switches {
+                server_can_see: self.server_can_see,
+                family_allows: self.family_allows,
+                family_history: self.family_history,
+                family_history_photos: self.family_history_photos,
+                server_can_draw: self.server_can_draw,
+            },
+        )
+        .map(|notice| notice.sentence())
+    }
 }
 
 /// The message being edited.
@@ -55,10 +102,40 @@ pub struct ComposerProps {
     /// The words in the box when the composer goes, kept for the reader's
     /// return.
     pub on_draft: Callback<String>,
-    pub on_new_poll: Callback<()>,
-    /// On the thread surface: no polls, no edits.
+    /// On the thread surface: no edits.
     #[prop_or_default]
     pub in_thread: bool,
+    /// What goes before the box: the conversation's attach menu.
+    #[prop_or_default]
+    pub attach: Html,
+    /// How many attachments are staged — with any, Send goes with no words
+    /// at all (a photo needs no caption).
+    #[prop_or_default]
+    pub staged: usize,
+    /// Something is being prepared or found: Send waits for it.
+    #[prop_or_default]
+    pub busy: bool,
+    /// Words to add to the end of the draft, each time the number moves —
+    /// a paste that did not land in the box, a dropped link.
+    #[prop_or_default]
+    pub append: (u32, String),
+    /// Each time this moves, the draft is taken — handed to `on_take` and
+    /// the box cleared — for a send that goes at once with something the
+    /// conversation holds: a location, with the draft as its caption.
+    #[prop_or_default]
+    pub take: u32,
+    #[prop_or_default]
+    pub on_take: Callback<Draft>,
+    /// Files pasted into the box — taken only where attachments are
+    /// (`takes_files`): the thread's box takes none, and a paste there must
+    /// stay the browser's rather than vanish.
+    #[prop_or_default]
+    pub on_files: Callback<Vec<File>>,
+    #[prop_or_default]
+    pub takes_files: bool,
+    /// What the picture disclosures read.
+    #[prop_or_default]
+    pub pictures: Pictures,
     /// Moves the cursor into the box each time it changes — a row's
     /// "Reply" on a surface whose every send is already a reply.
     #[prop_or_default]
@@ -202,6 +279,57 @@ pub fn composer(props: &ComposerProps) -> Html {
         })
     };
 
+    // Words from outside the box, onto the end of the draft, against the
+    // ceiling (fc_text::composer::appending — the Mac's appendToDraft).
+    {
+        let text = text.clone();
+        let notice = notice.clone();
+        let area = area.clone();
+        let latest = latest.clone();
+        use_effect_with(props.append.clone(), move |(count, addition)| {
+            if *count == 0 || addition.is_empty() {
+                return;
+            }
+            let draft = latest.borrow().clone();
+            let outcome = composer::appending(addition, &draft);
+            notice.set(outcome.notice().map(|notice| notice.english()));
+            match outcome {
+                composer::Paste::Appended(updated) | composer::Paste::Truncated(updated) => {
+                    text.set(updated)
+                }
+                composer::Paste::Full => {}
+            }
+            if let Some(area) = area.cast::<HtmlTextAreaElement>() {
+                let _ = area.focus();
+            }
+        });
+    }
+    // The draft, taken for a send that goes at once.
+    {
+        let text = text.clone();
+        let latest = latest.clone();
+        let on_take = props.on_take.clone();
+        let members = props.members.clone();
+        let is_family = props.is_family_chat;
+        use_effect_with(props.take, move |take| {
+            if *take == 0 {
+                return;
+            }
+            let body = composer::trimmed_for_send(&latest.borrow())
+                .unwrap_or("")
+                .to_string();
+            let mentioned = resolve_mentions(&body, &members, is_family);
+            text.set(String::new());
+            on_take.emit(Draft {
+                body,
+                mentions: mentioned,
+                ..Draft::default()
+            });
+        });
+    }
+
+    let staged = props.staged;
+    let busy = props.busy;
     let send = {
         let text = text.clone();
         let notice = notice.clone();
@@ -212,8 +340,14 @@ pub fn composer(props: &ComposerProps) -> Html {
         let is_family = props.is_family_chat;
         let editing = editing.clone();
         Callback::from(move |_: ()| {
-            let Some(body) = composer::trimmed_for_send(&text).map(str::to_string) else {
+            if busy {
                 return;
+            }
+            let body = match composer::trimmed_for_send(&text) {
+                Some(body) => body.to_string(),
+                // Nothing typed is still a send when something is staged.
+                None if staged > 0 && editing.is_none() => String::new(),
+                None => return,
             };
             notice.set(None);
             if let Some(edit) = &editing {
@@ -329,8 +463,37 @@ pub fn composer(props: &ComposerProps) -> Html {
             .as_ref()
             .is_some_and(|assistant| assistant.images);
     let offers_ai = props.is_family_chat && has_assistant && editing.is_none();
-    let offers_poll = props.is_family_chat && !props.in_thread && editing.is_none();
-    let empty = composer::trimmed_for_send(&text).is_none();
+    let empty =
+        composer::trimmed_for_send(&text).is_none() && (props.staged == 0 || editing.is_some());
+    // Files pasted into the box are staged; words stay the box's own.
+    let on_paste = {
+        let on_files = props.on_files.clone();
+        let takes_files = props.takes_files;
+        Callback::from(move |event: Event| {
+            if !takes_files {
+                return;
+            }
+            let Some(data) = wasm_bindgen::JsCast::dyn_ref::<web_sys::ClipboardEvent>(&event)
+                .and_then(web_sys::ClipboardEvent::clipboard_data)
+            else {
+                return;
+            };
+            let files: Vec<File> = data
+                .files()
+                .map(|list| {
+                    (0..list.length())
+                        .filter_map(|index| list.get(index))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let names: Vec<String> = files.iter().map(File::name).collect();
+            let text = data.get_data("text/plain").unwrap_or_default();
+            if media::paste_decision(&names, &text) == media::PasteDecision::Attach {
+                event.prevent_default();
+                on_files.emit(files);
+            }
+        })
+    };
 
     html! {
         <div class="composer-wrap">
@@ -351,6 +514,9 @@ pub fn composer(props: &ComposerProps) -> Html {
             }
             if let Some(message) = (*notice).clone() {
                 <p class="composer-notice" role="status">{ message }</p>
+            }
+            if let Some(sentence) = props.pictures.notice(&text, props.is_ai_chat, props.is_family_chat).filter(|_| editing.is_none()) {
+                <p class="picture-notice" role="note"><span aria-hidden="true">{ "👁 " }</span>{ sentence }</p>
             }
             if !suggestions.is_empty() {
                 <div class="suggestions" role="listbox" aria-label="Members">
@@ -377,12 +543,7 @@ pub fn composer(props: &ComposerProps) -> Html {
                 </div>
             }
             <div class="composer">
-                if offers_poll {
-                    <button class="tool" title="New poll" aria-label="New poll"
-                        onclick={let on_new_poll = props.on_new_poll.clone(); Callback::from(move |_: MouseEvent| on_new_poll.emit(()))}>
-                        { "📊" }
-                    </button>
-                }
+                { props.attach.clone() }
                 if offers_ai {
                     <button class="tool" title="Ask the assistant" aria-label="Ask the assistant" onclick={ask_assistant}>{ "✨" }</button>
                 }
@@ -396,10 +557,11 @@ pub fn composer(props: &ComposerProps) -> Html {
                     value={(*text).clone()}
                     oninput={on_input}
                     onkeydown={on_key}
+                    onpaste={on_paste}
                 />
                 <button
                     onclick={let send = send.clone(); Callback::from(move |_: MouseEvent| send.emit(()))}
-                    disabled={empty}
+                    disabled={empty || props.busy}
                 >
                     { if editing.is_some() { "Save" } else { "Send" } }
                 </button>
@@ -494,9 +656,17 @@ mod tests {
             },
             on_typing: Callback::noop(),
             on_draft: Callback::noop(),
-            on_new_poll: Callback::noop(),
             in_thread: false,
             focus: 0,
+            attach: Html::default(),
+            staged: 0,
+            busy: false,
+            append: (0, String::new()),
+            take: 0,
+            on_take: Callback::noop(),
+            on_files: Callback::noop(),
+            takes_files: false,
+            pictures: Pictures::default(),
         };
         let document = web_sys::window().unwrap().document().unwrap();
         let root = document.create_element("div").unwrap();
@@ -534,5 +704,113 @@ mod tests {
 
         handle.destroy();
         root.remove();
+    }
+
+    /// The disclosure a composer shows is the port's, decided from what is
+    /// staged, what is quoted, the draft and the locks.
+    #[wasm_bindgen_test]
+    fn the_picture_disclosure_follows_the_draft_and_the_locks() {
+        let photo = Candidate::new("photo", "image/jpeg", Some(40_000));
+        let open = Pictures {
+            staged: vec![photo.clone()],
+            server_can_see: true,
+            server_can_draw: true,
+            family_allows: true,
+            family_history: true,
+            ..Pictures::default()
+        };
+        let family = |draft: &str, pictures: &Pictures| pictures.notice(draft, false, true);
+        assert!(family("@ai what is this?", &open)
+            .unwrap()
+            .starts_with("This goes to the model"));
+        assert_eq!(
+            family("what is this?", &open),
+            None,
+            "no mention, no disclosure"
+        );
+        let shut = Pictures {
+            family_allows: false,
+            ..open.clone()
+        };
+        assert_eq!(family("@ai what is this?", &shut), None);
+        assert_eq!(
+            open.notice("@ai look", false, false),
+            None,
+            "a direct chat carries none"
+        );
+        // The assistant's own chat says it of every staged photo.
+        assert!(shut
+            .notice("", true, false)
+            .unwrap()
+            .starts_with("The assistant on this server can't look at pictures"));
+        assert!(open
+            .notice("", true, false)
+            .unwrap()
+            .ends_with("Nothing else from this chat does."));
+    }
+
+    /// With something staged, Send goes with no words at all — a photo
+    /// needs no caption — and without, an empty box sends nothing.
+    #[wasm_bindgen_test]
+    async fn staged_attachments_send_with_no_caption() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use wasm_bindgen::JsCast;
+        use web_sys::HtmlElement;
+
+        for (staged, expect) in [(1usize, 1usize), (0, 0)] {
+            let sent = Rc::new(RefCell::new(Vec::new()));
+            let props = ComposerProps {
+                chat_id: 42,
+                is_family_chat: true,
+                is_ai_chat: false,
+                my_user_id: 7,
+                members: Vec::new(),
+                blocked: HashSet::new(),
+                assistant: None,
+                replying: None,
+                editing: None,
+                initial: String::new(),
+                on_send: {
+                    let sent = sent.clone();
+                    Callback::from(move |draft: Draft| sent.borrow_mut().push(draft))
+                },
+                on_save_edit: Callback::noop(),
+                on_cancel: Callback::noop(),
+                on_typing: Callback::noop(),
+                on_draft: Callback::noop(),
+                in_thread: false,
+                focus: 0,
+                attach: Html::default(),
+                staged,
+                busy: false,
+                append: (0, String::new()),
+                take: 0,
+                on_take: Callback::noop(),
+                on_files: Callback::noop(),
+                takes_files: true,
+                pictures: Pictures::default(),
+            };
+            let document = web_sys::window().unwrap().document().unwrap();
+            let root = document.create_element("div").unwrap();
+            document.body().unwrap().append_child(&root).unwrap();
+            let handle =
+                yew::Renderer::<Composer>::with_root_and_props(root.clone(), props).render();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            let buttons = root.query_selector_all(".composer button").unwrap();
+            buttons
+                .item(buttons.length() - 1)
+                .unwrap()
+                .dyn_into::<HtmlElement>()
+                .unwrap()
+                .click();
+            gloo_timers::future::TimeoutFuture::new(20).await;
+            assert_eq!(sent.borrow().len(), expect, "staged {staged}");
+            if let Some(draft) = sent.borrow().first() {
+                assert_eq!(draft.body, "");
+            }
+            handle.destroy();
+            root.remove();
+        }
     }
 }

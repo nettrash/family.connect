@@ -350,7 +350,158 @@ button.link, .link {
 .awaiting { animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 .ai-failed { color: var(--muted); font-style: italic; font-size: 13px; margin: 2px 0; }
-.attachments-line { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+
+/* --- attachments ---------------------------------------------------------- *
+ * Sized from the attachment's metadata (views/attachments.rs), so a row is
+ * the height it will be before its picture lands. */
+.attachments { display: grid; gap: 4px; justify-items: start; margin: 2px 0 4px; }
+.bubble.is-media-only { background: transparent; border-color: transparent; padding: 0; }
+.bubble.is-media-only .bubble-foot { padding: 2px 4px 0; }
+
+.tile, .card {
+    position: relative;
+    display: block;
+    padding: 0;
+    overflow: hidden;
+    border-radius: var(--radius);
+    border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--ink) 10%, transparent), color-mix(in srgb, var(--ink) 4%, transparent));
+    cursor: pointer;
+    max-width: 100%;
+}
+.tile img, .card img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.tile.is-loading::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--ink) 25%, transparent);
+    border-top-color: var(--tint);
+    animation: spin 0.9s linear infinite;
+}
+.tile:has(.play).is-loading::after { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.play {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: rgb(0 0 0 / 40%);
+    color: #fff;
+    font-size: 18px;
+    padding-left: 3px;
+    pointer-events: none;
+}
+
+.album { position: relative; padding: 0; background: transparent; display: block; cursor: pointer; max-width: 100%; }
+.album-card { position: relative; width: 100%; }
+.album-layer { position: absolute; inset: 0; }
+.album-shrink { position: absolute; inset: 0; transform-origin: top center; }
+.album-top { position: absolute; inset: 0; }
+.album .card { width: 100%; height: 100%; }
+.album-count {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    color: #fff;
+    background: rgb(0 0 0 / 55%);
+    border-radius: 999px;
+    padding: 2px 6px;
+}
+
+.file-row, .location-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    text-align: left;
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
+    color: var(--ink);
+    border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+    border-radius: 10px;
+    padding: 6px 10px 6px 8px;
+    max-width: 320px;
+    min-width: 0;
+}
+.file-icon, .pin {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--tint) 12%, transparent);
+    flex: none;
+}
+.file-text { display: grid; min-width: 0; }
+.file-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-size { font-size: 12px; opacity: .7; white-space: nowrap; }
+.open-maps { margin-left: auto; font-size: 12px; color: var(--tint); white-space: nowrap; }
+
+.audio {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 260px;
+    max-width: 100%;
+    padding: 6px 8px;
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.audio-toggle { width: 36px; height: 36px; border-radius: 50%; padding: 0; flex: none; }
+.audio-track { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.audio-track input { width: 100%; accent-color: var(--tint); margin: 0; }
+.audio-times { display: flex; justify-content: space-between; font-size: 11px; font-variant-numeric: tabular-nums; opacity: .75; }
+.audio audio { display: none; }
+
+/* --- the viewer ------------------------------------------------------------ */
+.viewer {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    background: rgb(10 10 14 / 94%);
+    color: #f2f2f6;
+    outline: none;
+}
+.viewer-bar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
+.viewer-title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-position { font-size: 13px; opacity: .7; }
+.viewer .secondary { background: rgb(255 255 255 / 12%); color: #f2f2f6; }
+.viewer .link { color: #f2f2f6; font-size: 18px; }
+.viewer-stage { position: relative; min-height: 0; display: grid; place-items: center; overflow: hidden; }
+.viewer-photo, .viewer-video { position: relative; width: 100%; height: 100%; display: grid; place-items: center; overflow: hidden; }
+.viewer-photo img, .viewer-video img, .viewer-video video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.viewer-photo img { transition: transform .12s ease-out; touch-action: none; user-select: none; }
+.viewer-photo img.is-zoomed { cursor: grab; transition: none; }
+.viewer-loading { margin: 0; opacity: .8; }
+.viewer-loading.is-over { position: absolute; bottom: 16px; left: 0; right: 0; text-align: center; }
+.viewer-zoom { position: absolute; bottom: 12px; right: 16px; display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.viewer-arrow {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 2;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    padding: 0;
+    font-size: 28px;
+    line-height: 1;
+    background: rgb(255 255 255 / 14%);
+    color: #fff;
+}
+.viewer-arrow.is-previous { left: 16px; }
+.viewer-arrow.is-next { right: 16px; }
 
 .quote {
     border-left: 3px solid var(--tint);
@@ -497,6 +648,58 @@ button.mention { cursor: pointer; }
 .composer-banner .banner-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .composer-notice { padding: 4px 16px 0; font-size: 12px; color: var(--muted); }
+.picture-notice { margin: 0; padding: 6px 16px 0; font-size: 12px; color: var(--muted); }
+
+/* The media notices, the staged strip and the recording bar sit between the
+ * messages and the composer, and like the composer never scroll away. */
+.media-notice { flex: none; margin: 0; display: flex; gap: 8px; align-items: center; padding: 6px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+.media-notice .link { margin-left: auto; }
+
+.attach { position: relative; flex: none; }
+.attach .attach-menu { top: auto; bottom: 100%; left: 0; right: auto; margin-bottom: 6px; }
+.menu-backdrop { position: fixed; inset: 0; z-index: 4; }
+.hidden-picker { display: none; }
+
+.staging {
+    flex: none;
+    display: flex;
+    gap: 8px;
+    padding: 8px 16px;
+    overflow-x: auto;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+}
+.staged {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 240px;
+    padding: 4px 4px 4px 4px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--bg);
+    font-size: 12px;
+}
+.staged-thumb { width: 40px; height: 40px; border-radius: 7px; object-fit: cover; display: grid; place-items: center; background: var(--soft); flex: none; font-size: 18px; }
+.staged-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.staged-remove { background: transparent; color: var(--muted); padding: 2px 6px; flex: none; }
+
+.recording {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    font-variant-numeric: tabular-nums;
+}
+.recording-dot { color: var(--danger); animation: blink 1s steps(2) infinite; }
+.recording .secondary { margin-left: auto; background: transparent; color: var(--tint); }
+
+/* A drag over the pane: an accent border, as the Mac draws one. */
+.conversation.is-drop-target { outline: 3px solid var(--tint); outline-offset: -3px; }
 
 .suggestions {
     position: absolute;

@@ -1,3 +1,5 @@
+pub mod attach;
+pub mod attachments;
 pub mod body;
 pub mod bubble;
 pub mod chat_list;
@@ -9,3 +11,4 @@ pub mod poll;
 pub mod reactions;
 pub mod report;
 pub mod thread_panel;
+pub mod viewer;

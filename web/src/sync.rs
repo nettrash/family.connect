@@ -167,6 +167,7 @@ pub fn start_session(
         wake,
         expired.clone(),
     ));
+    let upload_token = token.clone();
     spawn_local(outbox::drain(
         live.clone(),
         session,
@@ -174,6 +175,10 @@ pub fn start_session(
         move |row| {
             let token = token.clone();
             async move { api::send_message(&token, &row).await }
+        },
+        move |job: outbox::Upload| {
+            let token = upload_token.clone();
+            async move { upload(&token, job).await }
         },
         |attempts, floor| {
             let ceiling = outbox::backoff_ceiling_ms(attempts);
@@ -183,6 +188,48 @@ pub fn start_session(
         move || expired(),
     ));
     spawn_local(sweep_typing(live.clone(), session));
+}
+
+/// One attachment up, and its preview after it.
+///
+/// The preview is best effort — a message may go without it — but not
+/// best effort ONCE: a video's poster is the one picture with no second
+/// source, and a poster that failed once is a grey tile for every
+/// recipient for good (docs/protocol.md, "A preview may be uploaded again,
+/// later"). So a failed one is tried twice more, beside the send rather
+/// than in front of it, from the bytes this tab still holds.
+async fn upload(token: &str, job: outbox::Upload) -> Result<crate::model::Attachment, ApiError> {
+    // A picked file is the person's own, and they may have moved, changed or
+    // deleted it since. The browser then fails the upload like a dropped
+    // network — and it would be retried as one, and end as "check your
+    // connection". Asked first, it fails as what it is.
+    if let Some(file) = &job.bytes.file {
+        if !crate::prep::readable(file).await {
+            return Err(ApiError::Server {
+                code: outbox::LOCAL_FILE_GONE.to_string(),
+                message: "The file changed or is gone.".to_string(),
+            });
+        }
+    }
+    let attachment = api::upload_attachment(token, &job.item, job.bytes.file.as_ref()).await?;
+    if let Some(preview) = job.bytes.preview {
+        if api::upload_preview(token, attachment.id, &preview)
+            .await
+            .is_err()
+        {
+            let token = token.to_string();
+            let id = attachment.id;
+            spawn_local(async move {
+                for wait in [2_000, 8_000] {
+                    gloo_timers::future::TimeoutFuture::new(wait).await;
+                    if api::upload_preview(&token, id, &preview).await.is_ok() {
+                        break;
+                    }
+                }
+            });
+        }
+    }
+    Ok(attachment)
 }
 
 /// What every connection owes, in the protocol's order (docs/protocol.md,

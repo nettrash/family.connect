@@ -12,6 +12,7 @@ use crate::model::{
     Assistant, ChatListItem, Me, Member, Mention, Message, Poll, PollOption, Reaction, ReplyParent,
     ReplyTo, Roster, User,
 };
+use crate::staged::{OutgoingItem, Prepared, StagedBytes};
 
 /// A quote's cut: 120 Unicode scalar values, the server's own cut
 /// (fc_text::excerpt), redone here when an edit to a quoted message is
@@ -204,7 +205,7 @@ impl Thread {
 /// Its bubble is in the thread under id 0; this is the other half — what
 /// the sender needs to try again, and what the bubble needs to say about
 /// it (docs/protocol.md, "Sending on an unreliable network").
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Outgoing {
     pub chat_id: i64,
     pub client_msg_id: String,
@@ -216,6 +217,11 @@ pub struct Outgoing {
     pub mentions: Vec<Mention>,
     /// A poll's options; the body is then its question.
     pub poll: Option<Vec<String>>,
+    /// Its attachments, in the order they were chosen — the order the
+    /// server keeps (docs/protocol.md, "Photos, videos, audio, files and
+    /// locations"). Uploaded one at a time before the message is sent.
+    #[serde(default)]
+    pub items: Vec<OutgoingItem>,
     /// Tries whose outcome was UNKNOWN. A refusal is not counted here: it
     /// ends the row outright.
     pub attempts: u32,
@@ -225,14 +231,21 @@ pub struct Outgoing {
 }
 
 /// What a person asked to send. Everything but the chat and the body is
-/// optional.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// optional — and with attachments, the body may be empty: a photo needs no
+/// caption.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Draft {
     pub body: String,
     pub reply_to_message_id: Option<i64>,
     pub mentions: Vec<Mention>,
     pub poll: Option<Vec<String>>,
+    pub attachments: Vec<Prepared>,
 }
+
+/// Why a queued message whose bytes a reload took fails at once — it has
+/// nothing left to upload, and waiting would only look like sending.
+pub const LOST_IN_RELOAD: &str =
+    "Not sent: its attachments were lost when the page reloaded. Attach them again.";
 
 /// How many unknown outcomes a message may have before it is shown as
 /// failed. The same six the phone clients allow.
@@ -305,6 +318,8 @@ pub struct Store {
     /// The live roster, which the mention suggestions offer from.
     pub members: Vec<Member>,
     pub assistant: Option<Assistant>,
+    /// The reader's family, with the owner's switches for the assistant.
+    pub family: Option<crate::model::Family>,
     /// The reader's own block list — replaced whole on every resync.
     pub blocked: HashSet<i64>,
     /// Hidden rows the reader has peeked at. Per row, per device, never on
@@ -340,6 +355,18 @@ pub struct Store {
     /// hand a stale read the generation of the thread opened after it.
     pub thread_openings: u64,
     pub open_polls: Option<OpenPolls>,
+    /// provisional id → the bytes a queued attachment still has to upload.
+    /// Memory only; see staged.rs.
+    pub bytes: HashMap<i64, StagedBytes>,
+    /// The last provisional id handed out. They count DOWN from -1, so none
+    /// can ever be taken for one of the server's.
+    pub last_provisional: i64,
+    /// chat → what the composer has staged there and not sent yet.
+    pub staged: HashMap<i64, Vec<Prepared>>,
+    /// The server's id → the provisional one its bubble drew under, so a
+    /// bubble that has just been acked draws from the same bytes rather
+    /// than fetching back what this device uploaded.
+    pub aliases: HashMap<i64, i64>,
     /// chat → the last message the most recent `GET /chats` listed, which
     /// its unread count already includes. A frame for a message at or below
     /// it is one the list has counted: the socket and the list race, and a
@@ -395,6 +422,7 @@ impl Store {
     /// `GET /me`: who this is, and the block list — REPLACED, never merged.
     pub fn apply_me(&mut self, me: &Me) {
         self.my_user_id = me.user.id;
+        self.family = me.family.clone();
         self.names.insert(me.user.id, me.user.display_name.clone());
         self.blocked = me.blocked_user_ids.iter().copied().collect();
         self.support_contact = me.support_contact.clone();
@@ -483,8 +511,14 @@ impl Store {
     /// so a message the person saw as "Sending…" goes on being sent rather
     /// than vanishing with the page (docs/protocol.md, "Sending on an
     /// unreliable network").
+    ///
+    /// Its attachments come back without their bytes, which a reload does
+    /// not keep. Uploads that had landed are good as they are; a row with
+    /// bytes still to upload fails at once, saying why — a location is the
+    /// exception, being three numbers the row still has. Every item gets a
+    /// fresh provisional id: the old session's could meet this one's.
     pub fn restore_outbox(&mut self, rows: Vec<Outgoing>) {
-        for row in rows {
+        for mut row in rows {
             if self
                 .outbox
                 .iter()
@@ -492,18 +526,17 @@ impl Store {
             {
                 continue;
             }
-            let failed = row.failed.clone();
-            let draft = Draft {
-                body: row.body.clone(),
-                reply_to_message_id: row.reply_to_message_id,
-                mentions: row.mentions.clone(),
-                poll: row.poll.clone(),
-            };
-            self.queue_send(row.chat_id, row.client_msg_id.clone(), draft);
-            if let Some(restored) = self.row_mut(&row.client_msg_id) {
-                restored.attempts = row.attempts;
-                restored.failed = failed;
+            for item in row.items.iter_mut() {
+                item.provisional_id = self.next_provisional();
             }
+            let lost = row
+                .items
+                .iter()
+                .any(|item| item.attachment_id.is_none() && !item.is_location());
+            if lost {
+                row.failed = Some(LOST_IN_RELOAD.to_string());
+            }
+            self.enqueue(row);
         }
     }
 
@@ -541,8 +574,14 @@ impl Store {
         // (chat, sender, client_msg_id), and nothing looser.
         if is_mine && message.id != 0 {
             if let Some(client_msg_id) = message.client_msg_id.as_deref() {
-                self.outbox
-                    .retain(|row| !(row.chat_id == chat_id && row.client_msg_id == client_msg_id));
+                if let Some(index) = self
+                    .outbox
+                    .iter()
+                    .position(|row| row.chat_id == chat_id && row.client_msg_id == client_msg_id)
+                {
+                    let row = self.outbox.remove(index);
+                    self.forget_bytes(&row);
+                }
             }
         }
 
@@ -673,6 +712,28 @@ impl Store {
         }
         thread.more_above = more_above;
         thread.paged = true;
+    }
+
+    /// How much of `chat_id` is unread as it opens: the list's count, or
+    /// what the rows now held say is above the reader's own marker — the
+    /// larger. With the socket down the list is a snapshot from before the
+    /// messages that just loaded; trusting it alone drew "1 new message"
+    /// over forty and marked all of them read. The marker only ever lags,
+    /// and a lagging marker counts MORE as new, which is the safe side.
+    pub fn opening_unread(&self, chat_id: i64) -> i64 {
+        let Some(item) = self.item(chat_id) else {
+            return 0;
+        };
+        let above_marker = self.threads.get(&chat_id).map_or(0, |thread| {
+            thread
+                .messages
+                .iter()
+                .filter(|message| {
+                    message.id > item.last_read_message_id && message.sender_id != self.my_user_id
+                })
+                .count() as i64
+        });
+        item.unread_count.max(above_marker)
     }
 
     /// Where opening `chat_id` picks up: after the newest message held, and
@@ -839,43 +900,72 @@ impl Store {
     }
 
     /// A person pressed Send. The bubble draws NOW, under id 0 — quoting
-    /// what it answers, if it answers anything — and the row joins the END
-    /// of the outbox; `apply_message` settles both when the server's copy
-    /// arrives.
-    pub fn queue_send(&mut self, chat_id: i64, client_msg_id: String, draft: Draft) {
-        let reply_to = draft
+    /// what it answers, if it answers anything, and drawing its attachments
+    /// from this device's own bytes under provisional ids — and the row
+    /// joins the END of the outbox; `apply_message` settles both when the
+    /// server's copy arrives. Answers the provisional ids given, in order.
+    pub fn queue_send(&mut self, chat_id: i64, client_msg_id: String, draft: Draft) -> Vec<i64> {
+        let mut items = Vec::with_capacity(draft.attachments.len());
+        for prepared in &draft.attachments {
+            let provisional = self.next_provisional();
+            items.push(OutgoingItem::new(prepared, provisional));
+            self.bytes.insert(
+                provisional,
+                StagedBytes {
+                    file: prepared.file.clone(),
+                    preview: prepared.preview.clone(),
+                },
+            );
+        }
+        let ids = items.iter().map(|item| item.provisional_id).collect();
+        self.enqueue(Outgoing {
+            chat_id,
+            client_msg_id,
+            body: draft.body,
+            reply_to_message_id: draft.reply_to_message_id,
+            mentions: draft.mentions,
+            poll: draft.poll,
+            items,
+            attempts: 0,
+            failed: None,
+        });
+        ids
+    }
+
+    fn next_provisional(&mut self) -> i64 {
+        self.last_provisional = self.last_provisional.min(0) - 1;
+        self.last_provisional
+    }
+
+    /// A row into the outbox, and its bubble into the thread.
+    fn enqueue(&mut self, row: Outgoing) {
+        let chat_id = row.chat_id;
+        let reply_to = row
             .reply_to_message_id
             .and_then(|id| self.local_quote(chat_id, id));
         // The chain a pending reply belongs to, decided the server's way —
         // the quoted message's own root, or the quoted message itself — so
         // the thread surface shows it (and any failure of it) at once.
-        let thread_root_id = draft.reply_to_message_id.map(|id| {
+        let thread_root_id = row.reply_to_message_id.map(|id| {
             self.find(chat_id, id)
                 .and_then(|quoted| quoted.thread_root_id)
                 .unwrap_or(id)
         });
-        self.outbox.push(Outgoing {
-            chat_id,
-            client_msg_id: client_msg_id.clone(),
-            body: draft.body.clone(),
-            reply_to_message_id: draft.reply_to_message_id,
-            mentions: draft.mentions.clone(),
-            poll: draft.poll.clone(),
-            attempts: 0,
-            failed: None,
-        });
+        let attachments: Vec<crate::model::Attachment> =
+            row.items.iter().map(OutgoingItem::as_attachment).collect();
         let pending = Message {
             id: 0,
             chat_id,
             sender_id: self.my_user_id,
-            client_msg_id: Some(client_msg_id),
-            body: draft.body,
+            client_msg_id: Some(row.client_msg_id.clone()),
+            body: row.body.clone(),
             reply_to,
             thread_root_id,
-            mentions: (!draft.mentions.is_empty()).then_some(draft.mentions),
+            mentions: (!row.mentions.is_empty()).then(|| row.mentions.clone()),
+            attachments: (!attachments.is_empty()).then_some(attachments),
             // A poll that is not numbered yet cannot be voted on: options
             // with no ids draw as the question and its choices, disabled.
-            poll: draft.poll.map(|options| Poll {
+            poll: row.poll.clone().map(|options| Poll {
                 poll_seq: 0,
                 closed: false,
                 options: options
@@ -889,7 +979,64 @@ impl Store {
             }),
             ..Message::default()
         };
+        self.outbox.push(row);
         self.apply_message(pending, None, Via::Pending);
+    }
+
+    /// One attachment of a queued message landed on the server. That is
+    /// progress, and the row's count of unknown outcomes starts again: a
+    /// network that just carried an upload is one worth trying again.
+    pub fn landed(&mut self, client_msg_id: &str, provisional_id: i64, attachment_id: i64) {
+        let Some(row) = self.row_mut(client_msg_id) else {
+            return;
+        };
+        if let Some(item) = row
+            .items
+            .iter_mut()
+            .find(|item| item.provisional_id == provisional_id)
+        {
+            item.attachment_id = Some(attachment_id);
+            row.attempts = 0;
+            self.aliases.insert(attachment_id, provisional_id);
+        }
+    }
+
+    /// The server swept this row's uploads before the message claimed them
+    /// (`attachment_expired`): upload them again — possible only while every
+    /// item still has its bytes, or is a location, which needs none.
+    /// Answers whether the row can go on.
+    pub fn expire_uploads(&mut self, client_msg_id: &str) -> bool {
+        let Some(row) = self
+            .outbox
+            .iter()
+            .find(|row| row.client_msg_id == client_msg_id)
+        else {
+            return false;
+        };
+        let recoverable = !row.items.is_empty()
+            && row.items.iter().all(|item| {
+                item.is_location()
+                    || self
+                        .bytes
+                        .get(&item.provisional_id)
+                        .is_some_and(|bytes| bytes.file.is_some())
+            });
+        if !recoverable {
+            return false;
+        }
+        if let Some(row) = self.row_mut(client_msg_id) {
+            for item in row.items.iter_mut() {
+                item.attachment_id = None;
+            }
+        }
+        true
+    }
+
+    /// The bytes a row no longer needs, gone with it.
+    fn forget_bytes(&mut self, row: &Outgoing) {
+        for item in &row.items {
+            self.bytes.remove(&item.provisional_id);
+        }
     }
 
     /// The quote a pending reply draws until the server's own arrives,
@@ -951,7 +1098,14 @@ impl Store {
     /// `apply_message`'s sender check, because a row that outlived its
     /// answer would be sent again, and again, for ever.
     pub fn settle(&mut self, client_msg_id: &str, message: Message, reading: Option<i64>) {
-        self.outbox.retain(|row| row.client_msg_id != client_msg_id);
+        if let Some(index) = self
+            .outbox
+            .iter()
+            .position(|row| row.client_msg_id == client_msg_id)
+        {
+            let row = self.outbox.remove(index);
+            self.forget_bytes(&row);
+        }
         self.apply_message(message, reading, Via::Answer);
     }
 
@@ -996,6 +1150,7 @@ impl Store {
             return;
         };
         let row = self.outbox.remove(index);
+        self.forget_bytes(&row);
         let is_it = |message: &Message| {
             message.id == 0 && message.client_msg_id.as_deref() == Some(client_msg_id)
         };
@@ -2413,5 +2568,95 @@ mod tests {
         store.apply_history(42, vec![message(100, ANNA, "old")], true);
         store.chats[0].last_message = Some(message(150, ANNA, "listed"));
         assert_eq!(store.resume_point(42), Some((140, 150)));
+    }
+
+    /// A reload's rows fail AT the reload when their bytes did not survive
+    /// it — shown at once, not whenever the outbox next reaches them — and
+    /// a row whose uploads all landed, or that is only a place, does not.
+    #[wasm_bindgen_test]
+    fn a_reload_fails_at_once_what_it_cannot_upload() {
+        let mut before = store();
+        before.queue_send(
+            42,
+            "photo".into(),
+            Draft {
+                attachments: vec![Prepared {
+                    kind: "photo".into(),
+                    mime: "image/jpeg".into(),
+                    file: Some(web_sys::Blob::new().expect("a blob")),
+                    ..Prepared::default()
+                }],
+                ..Draft::default()
+            },
+        );
+        before.queue_send(
+            42,
+            "landed".into(),
+            Draft {
+                attachments: vec![Prepared {
+                    kind: "photo".into(),
+                    mime: "image/jpeg".into(),
+                    file: Some(web_sys::Blob::new().expect("a blob")),
+                    ..Prepared::default()
+                }],
+                ..Draft::default()
+            },
+        );
+        let landed = before.outbox[1].items[0].provisional_id;
+        before.landed("landed", landed, 501);
+        before.queue_send(
+            42,
+            "place".into(),
+            Draft {
+                attachments: vec![Prepared::location(1.0, 2.0, None)],
+                ..Draft::default()
+            },
+        );
+
+        let mut after = store();
+        after.restore_outbox(before.outbox.clone());
+
+        let failed = after.failed_sends(42);
+        assert_eq!(
+            failed.get("photo").map(String::as_str),
+            Some(LOST_IN_RELOAD)
+        );
+        assert!(
+            !failed.contains_key("landed"),
+            "its upload is good for the grace"
+        );
+        assert!(!failed.contains_key("place"), "a place needs no bytes");
+        let ids: Vec<i64> = after
+            .outbox
+            .iter()
+            .flat_map(|row| &row.items)
+            .map(|item| item.provisional_id)
+            .collect();
+        assert!(ids.iter().all(|id| *id < 0), "{ids:?}");
+        let mut distinct = ids.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), ids.len(), "each its own");
+    }
+
+    /// A chat opening on a stale list count still sees what the rows it just
+    /// loaded say is new — above the reader's own marker, from somebody else.
+    #[wasm_bindgen_test]
+    fn an_opening_counts_at_least_what_it_can_see_is_new() {
+        let mut store = store();
+        store.chats[0].unread_count = 1; // the list, from before the messages
+        store.chats[0].last_read_message_id = 100;
+        let page: Vec<Message> = (99..=110)
+            .map(|id| message(id, if id == 105 { ME } else { ANNA }, "x"))
+            .collect();
+        store.apply_history(42, page, false);
+        assert_eq!(
+            store.opening_unread(42),
+            9,
+            "101..=110 from Anna, 105 being mine"
+        );
+        store.chats[0].unread_count = 30; // the list knows of more than loaded
+        assert_eq!(store.opening_unread(42), 30);
+        assert_eq!(store.opening_unread(7), 0, "no such chat");
     }
 }

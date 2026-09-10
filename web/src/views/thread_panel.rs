@@ -11,12 +11,13 @@ use std::collections::{HashMap, HashSet};
 use yew::prelude::*;
 
 use crate::actions::Action;
-use crate::model::{Assistant, Member, Message};
+use crate::model::{Assistant, Family, Member, Message};
 use crate::store::Draft;
 use crate::timeline;
 use crate::views::bubble::Bubble;
-use crate::views::composer::Composer;
+use crate::views::composer::{Composer, Pictures};
 use crate::views::conversation::row_key;
+use fc_text::assistant_pictures::Candidate;
 
 #[derive(Properties, PartialEq)]
 pub struct ThreadPanelProps {
@@ -35,6 +36,10 @@ pub struct ThreadPanelProps {
     pub revealed_quotes: HashSet<(i64, u8)>,
     pub failed: HashMap<String, String>,
     pub ai_failed: HashSet<i64>,
+    /// The reader's family, whose switches decide what may go to the
+    /// assistant.
+    #[prop_or_default]
+    pub family: Option<Family>,
     pub on_action: Callback<Action>,
 }
 
@@ -64,6 +69,48 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
         })
     };
     let noop_jump = Callback::from(|_: i64| {});
+    // Every send here replies to the root, so an `@ai` here is pointed at
+    // the ROOT'S photos — and says so, as the chat's own composer does
+    // (docs/protocol.md, "What a client's family-chat composer must say").
+    let pictures = Pictures {
+        staged: Vec::new(),
+        quoted: props
+            .messages
+            .iter()
+            .find(|message| message.id == root_id)
+            .map(|root| {
+                root.attachments()
+                    .iter()
+                    .map(|attachment| {
+                        Candidate::of_attachment(
+                            &attachment.kind,
+                            attachment.mime.as_deref().unwrap_or(""),
+                            attachment.size.map(|size| size.max(0) as u64),
+                            attachment.has_preview,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        server_can_see: props
+            .assistant
+            .as_ref()
+            .is_some_and(|assistant| assistant.vision),
+        server_can_draw: props.assistant.as_ref().is_some_and(|assistant| {
+            assistant.images
+                && assistant
+                    .draw
+                    .as_deref()
+                    .unwrap_or(fc_text::assistant::DRAW_TOKEN)
+                    == fc_text::assistant::DRAW_TOKEN
+        }),
+        family_allows: props.family.as_ref().is_some_and(|family| family.ai_vision),
+        family_history: props.family.as_ref().is_none_or(|family| family.ai_history),
+        family_history_photos: props
+            .family
+            .as_ref()
+            .is_some_and(|family| family.ai_history_photos),
+    };
     // "Reply" on any row here is the composer below: whatever the row, a
     // reply from this surface answers the root (ios ThreadView focuses its
     // composer).
@@ -138,9 +185,9 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
                 on_cancel={Callback::from(|_: ()| {})}
                 on_typing={props.on_action.reform(move |_: ()| Action::Typing { chat_id })}
                 on_draft={Callback::from(|_: String| {})}
-                on_new_poll={Callback::from(|_: ()| {})}
                 in_thread={true}
                 focus={*focus}
+                {pictures}
             />
         </aside>
     }
