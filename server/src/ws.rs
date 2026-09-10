@@ -306,14 +306,33 @@ impl ServerFrame {
     }
 }
 
-/// `GET /api/v1/ws` — authenticated upgrade. A bad token is rejected by the
-/// `AuthUser` extractor with a plain HTTP 401 before any upgrade happens.
+/// `GET /api/v1/ws` — authenticated upgrade. A bad token is a plain HTTP 401
+/// before any upgrade happens.
+///
+/// TWO places the token may be, in this order: the `Authorization` header,
+/// which is what every app sends, and a `bearer.<token>` WebSocket
+/// subprotocol, which is the only door a BROWSER has — its WebSocket API
+/// takes no headers (docs/protocol.md, "A browser is a client too"). Never
+/// the query string: a token in the URL is the whole credential written
+/// into every access log on the way.
 pub async fn ws_upgrade(
-    auth: AuthUser,
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
+    let from_subprotocol = crate::auth::bearer_from_header(&headers).is_none();
+    let token = crate::auth::bearer_from_header(&headers)
+        .or_else(|| crate::auth::bearer_from_subprotocols(&headers))
+        .ok_or_else(ApiError::unauthorized)?;
+    let auth = crate::auth::authenticate(&state, &token).await?;
+    // A browser that offered subprotocols must get ONE echoed back or it
+    // fails the handshake on its own side — and what is echoed is the
+    // product's name, never the offered token.
+    let ws = if from_subprotocol {
+        ws.protocols([crate::auth::WS_SUBPROTOCOL])
+    } else {
+        ws
+    };
     // Captured at UPGRADE and kept for the life of the connection: a socket
     // frame carries no headers, and the assistant has to answer in the
     // language of the device that asked (docs/protocol.md). Per-connection

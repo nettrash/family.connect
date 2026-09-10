@@ -32,6 +32,15 @@ Two consequences worth stating rather than discovering:
 - **The session token lives in `sessionStorage`, not `localStorage`.** It is the whole credential,
   and a token that outlives the tab is a token left behind on a shared machine. Closing the tab is
   a sign-out; `POST /auth/logout` on the way out is the one that also revokes it server-side.
+- **A browser authenticates its socket with a SUBPROTOCOL.** The WebSocket API in a browser takes
+  no headers, so it cannot send `Authorization` on the upgrade. It offers two subprotocols instead
+  — `family-connect` and `bearer.<token>` — and the server authenticates from the second and
+  echoes the FIRST back, which it must or the browser fails the handshake, and which means the
+  token goes up and never comes back down. Session tokens are base64url, exactly the characters a
+  subprotocol may carry, so nothing is encoded. The header still wins when both are present, and
+  every app goes on sending the header. A token in the QUERY STRING is refused even when it is
+  right: a URL is written into every access log and every proxy on the way, and nothing should
+  ever come to depend on the one place a credential leaks by default.
 
 Everything else in this document applies to a browser unchanged. Where a section says Windows and
 web are "not asked to draw" something yet, that is a statement about what has been BUILT, never a
@@ -3294,8 +3303,10 @@ The picture is never pushed and never travels in a WebSocket frame — a frame c
 
 ## WebSocket protocol
 
-Connect with `Authorization: Bearer <token>` on the upgrade request. A bad token fails the
-upgrade with `401`. The server closes with code `4401` when the session expires mid-connection.
+Connect with `Authorization: Bearer <token>` on the upgrade request — or, from a browser, offer the
+subprotocols `family-connect` and `bearer.<token>` and expect `family-connect` echoed back (see "A
+browser is a client too"). A bad token fails the upgrade with `401`; a token in the query string
+is not a token at all. The server closes with code `4401` when the session expires mid-connection.
 
 Frames are JSON text messages tagged by `"type"`.
 

@@ -8,9 +8,12 @@
 //! heard of is a frame it steps over, not an error it reports.
 //!
 //! The browser cannot send an `Authorization` header on a WebSocket
-//! upgrade — the API takes no headers. The protocol's upgrade wants one, so
-//! this client passes the token in the query string, which is the only door
-//! a browser has. See `url_for`.
+//! upgrade — the API takes no headers. It CAN offer subprotocols, which
+//! travel in `Sec-WebSocket-Protocol`, so the token rides there as
+//! `bearer.<token>` beside the product's own name (docs/protocol.md, "A
+//! browser is a client too"). Never in the URL: a token in the query string
+//! is the whole credential written into every access log on the way, and
+//! the server refuses it. See `protocols_for`.
 
 use serde::{Deserialize, Serialize};
 
@@ -67,12 +70,8 @@ pub enum ServerFrame {
 /// `https` becomes `wss` and `http` becomes `ws`, which is the protocol's
 /// rule; the host is whatever served the page, because a browser client has
 /// no server URL of its own (docs/protocol.md, "A browser is a client too").
-///
-/// The token rides in the QUERY STRING because the browser's WebSocket API
-/// accepts no headers. That is a real exposure — a URL reaches logs and
-/// history in ways a header does not — so it is confined to this one
-/// upgrade and never used for REST, where the header works.
-pub fn url_for(origin: &str, token: &str) -> String {
+/// No token here — see `protocols_for`.
+pub fn url_for(origin: &str) -> String {
     let scheme = if origin.starts_with("https://") {
         "wss://"
     } else {
@@ -82,7 +81,17 @@ pub fn url_for(origin: &str, token: &str) -> String {
         .trim_start_matches("https://")
         .trim_start_matches("http://")
         .trim_end_matches('/');
-    format!("{scheme}{host}/api/v1/ws?token={token}")
+    format!("{scheme}{host}/api/v1/ws")
+}
+
+/// The subprotocols this client offers: the product's name, which the
+/// server echoes back, and the one that carries the token.
+///
+/// The server must echo exactly one of them or the browser fails the
+/// handshake on its own side, and it echoes the NAME — so the token goes up
+/// and never comes back.
+pub fn protocols_for(token: &str) -> [String; 2] {
+    ["family-connect".to_string(), format!("bearer.{token}")]
 }
 
 /// Decode one text frame, forgiving what this client has not learned.
@@ -197,17 +206,28 @@ mod tests {
     #[wasm_bindgen_test]
     fn the_socket_url_follows_the_pages_own_scheme_and_host() {
         assert_eq!(
-            url_for("https://chat.example.com", "t0ken"),
-            "wss://chat.example.com/api/v1/ws?token=t0ken"
+            url_for("https://chat.example.com"),
+            "wss://chat.example.com/api/v1/ws"
         );
         assert_eq!(
-            url_for("http://192.168.1.10:8080", "t0ken"),
-            "ws://192.168.1.10:8080/api/v1/ws?token=t0ken"
+            url_for("http://192.168.1.10:8080"),
+            "ws://192.168.1.10:8080/api/v1/ws"
         );
         // A trailing slash on the origin must not double up in the path.
         assert_eq!(
-            url_for("https://chat.example.com/", "t0ken"),
-            "wss://chat.example.com/api/v1/ws?token=t0ken"
+            url_for("https://chat.example.com/"),
+            "wss://chat.example.com/api/v1/ws"
+        );
+    }
+
+    /// THE TOKEN IS NOT IN THE URL. A URL is written into every access log
+    /// on the way; a subprotocol travels in a header, which is not.
+    #[wasm_bindgen_test]
+    fn the_token_rides_in_a_subprotocol_and_never_in_the_url() {
+        assert!(!url_for("https://chat.example.com").contains("token"));
+        assert_eq!(
+            protocols_for("t0ken-_A9"),
+            ["family-connect".to_string(), "bearer.t0ken-_A9".to_string()]
         );
     }
 }
