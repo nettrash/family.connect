@@ -34,4 +34,11 @@ interface NoteDao {
 
     @Query("DELETE FROM notes")
     suspend fun deleteAll()
+
+    /**
+     * What a full board read leaves out, gone: every note at or below the
+     * read's mark that it did not list (docs/protocol.md, "Board").
+     */
+    @Query("DELETE FROM notes WHERE boardSeq <= :max AND id NOT IN (:listed)")
+    suspend fun deleteNotListed(max: Long, listed: List<Long>)
 }

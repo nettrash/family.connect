@@ -122,6 +122,116 @@ pub fn row_time(rfc3339: &str, now_ms: f64) -> String {
     .into()
 }
 
+/// When an event is, for its sticker and its note: "Sat, Sep 12, 11:00",
+/// with the end after a dash — its time alone on the same day, its date too
+/// on another. In the reader's zone and language, deliberately: the wire
+/// carries an instant, and a family in two countries each sees the moment
+/// in their own (ios EventFormat.when).
+pub fn event_when(starts_at: &str, ends_at: Option<&str>) -> String {
+    let Some(starts) = date_of(starts_at) else {
+        return String::new();
+    };
+    let day: String = starts
+        .to_locale_date_string(
+            &locale(),
+            &options(&[("weekday", "short"), ("month", "short"), ("day", "numeric")]),
+        )
+        .into();
+    let from = clock(starts_at);
+    let Some(ends) = ends_at.and_then(date_of) else {
+        return format!("{day}, {from}");
+    };
+    let to = clock(ends_at.unwrap_or_default());
+    if day_of_date(&ends) == day_of_date(&starts) {
+        format!("{day}, {from} – {to}")
+    } else {
+        let end_day: String = ends
+            .to_locale_date_string(
+                &locale(),
+                &options(&[("month", "short"), ("day", "numeric")]),
+            )
+            .into();
+        format!("{day}, {from} – {end_day} {to}")
+    }
+}
+
+/// Whether an event has been and gone — its end, or its start when it has
+/// none, is behind `now_ms`. A past event is drawn quieter, never removed:
+/// clearing the wall is the family's call.
+pub fn is_past(starts_at: &str, ends_at: Option<&str>, now_ms: f64) -> bool {
+    ends_at
+        .and_then(date_of)
+        .or_else(|| date_of(starts_at))
+        .is_some_and(|date| date.get_time() < now_ms)
+}
+
+/// An instant as a `datetime-local` input writes it — "2026-09-12T11:00" in
+/// the reader's own zone. Empty for a timestamp that cannot be read.
+pub fn local_input(rfc3339: &str) -> String {
+    let Some(date) = date_of(rfc3339) else {
+        return String::new();
+    };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}",
+        date.get_full_year(),
+        date.get_month() + 1,
+        date.get_date(),
+        date.get_hours(),
+        date.get_minutes()
+    )
+}
+
+/// What a `datetime-local` input holds, as the wire's RFC 3339 UTC — whole
+/// seconds, `Z`. The input's value is local time with no zone, which is
+/// exactly the form `Date` reads as local. None for an empty or broken one.
+pub fn from_local_input(value: &str) -> Option<String> {
+    if value.trim().is_empty() {
+        return None;
+    }
+    let date = Date::new(&JsValue::from_str(value));
+    if date.get_time().is_nan() {
+        return None;
+    }
+    let iso: String = date.to_iso_string().into();
+    // "2026-09-12T09:00:00.000Z" → "2026-09-12T09:00:00Z".
+    Some(match iso.split_once('.') {
+        Some((whole, _)) => format!("{whole}Z"),
+        None => iso,
+    })
+}
+
+/// The next round hour after `now_ms`, as the wire writes an instant: a
+/// family event is PLANNED, so a new one starts on something somebody might
+/// actually have meant rather than on the second the button was pressed.
+pub fn next_round_hour(now_ms: f64) -> String {
+    let date = Date::new(&JsValue::from_f64(now_ms + 3_600_000.0));
+    date.set_minutes(0);
+    date.set_seconds(0);
+    date.set_milliseconds(0);
+    let iso: String = date.to_iso_string().into();
+    match iso.split_once('.') {
+        Some((whole, _)) => format!("{whole}Z"),
+        None => iso,
+    }
+}
+
+/// A wire timestamp moved by `ms`, as the wire writes it.
+pub fn shifted(rfc3339: &str, ms: f64) -> Option<String> {
+    let at = instant(rfc3339)?;
+    let iso: String = Date::new(&JsValue::from_f64(at + ms))
+        .to_iso_string()
+        .into();
+    Some(match iso.split_once('.') {
+        Some((whole, _)) => format!("{whole}Z"),
+        None => iso,
+    })
+}
+
+/// Milliseconds since the epoch for a wire timestamp.
+pub fn instant(rfc3339: &str) -> Option<f64> {
+    date_of(rfc3339).map(|date| date.get_time())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +277,61 @@ mod tests {
         let label = day_label(older, now);
         assert!(label != "Today" && label != "Yesterday" && !label.is_empty());
         assert!(!label.contains("2026"), "no year on a day pill: {label}");
+    }
+
+    /// The input's local time goes out as the same instant in UTC, and
+    /// comes back to the input unchanged — whatever this machine's zone.
+    #[wasm_bindgen_test]
+    fn a_local_input_round_trips_through_the_wire() {
+        let wire = from_local_input("2026-09-12T11:00").expect("an instant");
+        assert!(wire.ends_with('Z') && !wire.contains('.'), "{wire}");
+        assert_eq!(local_input(&wire), "2026-09-12T11:00");
+        assert_eq!(
+            instant(&wire),
+            Some(Date::new_with_year_month_day_hr_min(2026, 8, 12, 11, 0).get_time())
+        );
+        assert_eq!(from_local_input(""), None);
+        assert_eq!(from_local_input("tomorrow"), None);
+        assert_eq!(local_input("nonsense"), "");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_new_event_starts_on_the_next_round_hour() {
+        let now = Date::new_with_year_month_day_hr_min(2026, 8, 10, 14, 37).get_time();
+        let next = next_round_hour(now);
+        assert_eq!(local_input(&next), "2026-09-10T15:00");
+        let late = Date::new_with_year_month_day_hr_min(2026, 8, 10, 23, 5).get_time();
+        assert_eq!(local_input(&next_round_hour(late)), "2026-09-11T00:00");
+    }
+
+    /// The same day writes the end as a time; another day, as a date too;
+    /// and no end, no dash.
+    #[wasm_bindgen_test]
+    fn an_event_says_when_in_one_line() {
+        let starts = local_iso(2026, 8, 12, 11, 0);
+        let same_day = local_iso(2026, 8, 12, 13, 30);
+        let next_day = local_iso(2026, 8, 13, 10, 0);
+        let alone = event_when(&starts, None);
+        assert!(!alone.contains('–'), "{alone}");
+        assert!(alone.contains(&clock(&starts)), "{alone}");
+        let short = event_when(&starts, Some(&same_day));
+        assert!(short.ends_with(&clock(&same_day)), "{short}");
+        assert!(short.contains(" – "), "{short}");
+        let long = event_when(&starts, Some(&next_day));
+        assert!(long.len() > short.len(), "{long} vs {short}");
+        assert!(long.contains("13"), "the end's own day: {long}");
+        assert_eq!(event_when("", None), "");
+    }
+
+    #[wasm_bindgen_test]
+    fn an_event_is_past_once_its_end_is() {
+        let now = Date::new_with_year_month_day_hr_min(2026, 8, 12, 12, 0).get_time();
+        let started = local_iso(2026, 8, 12, 11, 0);
+        let later = local_iso(2026, 8, 12, 13, 0);
+        assert!(is_past(&started, None, now), "no end: its start");
+        assert!(!is_past(&started, Some(&later), now), "still going");
+        assert!(!is_past(&later, None, now));
+        assert!(!is_past("", None, now), "unreadable is not past");
     }
 
     /// The first of the month's yesterday is the last day of the month

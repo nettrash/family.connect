@@ -180,6 +180,17 @@ impl MediaLoader {
         None
     }
 
+    /// Bytes this tab already has under a server id — a picture it has just
+    /// pinned itself — so drawing it does not fetch back what was sent.
+    /// Never over bytes already held: their URL may be on screen.
+    pub fn seed(&self, id: i64, variant: Variant, blob: Blob) {
+        self.fresh();
+        let mut cache = self.cache.borrow_mut();
+        if !cache.entries.contains_key(&(id, variant)) {
+            let _ = cache.insert((id, variant), blob);
+        }
+    }
+
     /// The bytes behind a cached entry, or behind a provisional id.
     fn held(&self, id: i64, variant: Variant) -> Option<Blob> {
         if let Some(entry) = self.cache.borrow().entries.get(&(id, variant)) {

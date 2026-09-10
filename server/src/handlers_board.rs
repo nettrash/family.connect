@@ -377,6 +377,18 @@ pub async fn get_board(
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
     let family_id = caller_family(&state, auth.user_id).await?;
+    // The high-water mark FIRST, then the notes (protocol.md, "Board"). The
+    // two are separate statements, and a change can commit between them:
+    // read in this order the mark can only be BELOW a change the notes
+    // already show, which a client's per-note guard makes harmless. Read the
+    // other way round, a note deleted in between came back live beside a
+    // mark already past its tombstone — and the cursor a client set from
+    // that mark meant no catch-up would ever fetch the tombstone again.
+    let max_board_seq: i64 =
+        sqlx::query_scalar("SELECT last_board_seq FROM families WHERE id = $1")
+            .bind(family_id)
+            .fetch_one(&state.pool)
+            .await?;
     let rows = sqlx::query(&format!(
         "SELECT {NOTE_COLS} FROM notes
          WHERE family_id = $1 AND deleted_at IS NULL
@@ -387,12 +399,6 @@ pub async fn get_board(
     .await?;
     let mut notes: Vec<Note> = rows.iter().map(Note::from_row).collect();
     attach_pictures(&state, &mut notes).await?;
-
-    let max_board_seq: i64 =
-        sqlx::query_scalar("SELECT last_board_seq FROM families WHERE id = $1")
-            .bind(family_id)
-            .fetch_one(&state.pool)
-            .await?;
 
     Ok((
         StatusCode::OK,
@@ -488,6 +494,7 @@ pub async fn create_note(
     };
 
     let mut tx = state.pool.begin().await?;
+    lock_board(&mut tx, family_id).await?;
     let live: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM notes WHERE family_id = $1 AND deleted_at IS NULL",
     )
@@ -570,6 +577,7 @@ pub async fn patch_note(
     let font = req.font.as_deref().map(validate_font).transpose()?;
 
     let mut tx = state.pool.begin().await?;
+    lock_board(&mut tx, family_id).await?;
     let locked = sqlx::query(
         "SELECT author_id, text, color, size, font, kind, starts_at, ends_at, place,
                 x, y, content_seq, deleted_at
@@ -752,6 +760,7 @@ pub async fn delete_note(
     let family_id = caller_family(&state, auth.user_id).await?;
 
     let mut tx = state.pool.begin().await?;
+    lock_board(&mut tx, family_id).await?;
     let locked = sqlx::query(
         "SELECT author_id, deleted_at FROM notes WHERE id = $1 AND family_id = $2 FOR UPDATE",
     )
@@ -815,8 +824,33 @@ pub async fn delete_note(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-/// GREATEST, not plain SET: two notes can commit out of seq order and the
-/// family's cursor must never move backwards.
+/// Take the family's row lock for a board change, FIRST in its
+/// transaction — before the note's own row and before a seq is drawn.
+///
+/// `board_seq` comes from a sequence, which hands out values before commit:
+/// without this, a change drawing 91 could commit AFTER one drawing 92, and
+/// for the moment between them `last_board_seq` would say 92 while 91 was not
+/// yet visible. A full read in that moment set a client's cursor past 91 for
+/// good — and when 91 was a TOMBSTONE, no catch-up would ever fetch it and
+/// the deleted note stayed on that wall (protocol.md, "Board"). Holding the
+/// family's row from before the seq until the commit makes seqs commit in
+/// order within a family, which is the only order a board is read in. It
+/// also makes the ceiling count exact: two creates at the ceiling can no
+/// longer both see room. Family-then-note is also the order a family's
+/// deletion takes the same two rows in, so it adds no deadlock.
+async fn lock_board(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    family_id: i64,
+) -> Result<(), ApiError> {
+    sqlx::query("SELECT id FROM families WHERE id = $1 FOR UPDATE")
+        .bind(family_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// GREATEST, not plain SET: the family's cursor must never move backwards
+/// (and, under `lock_board`, a later commit always carries the larger seq).
 async fn advance_family_seq(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     family_id: i64,
@@ -881,6 +915,7 @@ async fn set_rsvp(
     let family_id = caller_family(&state, auth.user_id).await?;
 
     let mut tx = state.pool.begin().await?;
+    lock_board(&mut tx, family_id).await?;
     let locked = sqlx::query(
         "SELECT kind, deleted_at FROM notes WHERE id = $1 AND family_id = $2 FOR UPDATE",
     )

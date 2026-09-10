@@ -32,7 +32,6 @@
 #if os(macOS)
 
 import SwiftData
-import PhotosUI
 import SwiftUI
 
 struct MacBoardView: View {
@@ -49,13 +48,14 @@ struct MacBoardView: View {
 
     @State private var editing: NoteEntity?
     @State private var composing = false
+    /// A note or an event: the one sheet writes both.
+    @State private var composingKind = NoteKind.text
     @State private var draftText = ""
     @State private var draftColor = NoteColor.palette.first ?? "yellow"
     @State private var draftSize = NoteSize.medium
     @State private var draftFont = NoteFont.plain
-    /// Pinning a picture: the picker, and the upload it turns into.
-    @State private var pickedPhoto: PhotosPickerItem?
-    @State private var showPhotoPicker = false
+    @State private var draftEvent = MacEventFields()
+    /// Pinning a picture: the upload it turns into, and what went wrong.
     @State private var pinning = false
     @State private var pinFailure: String?
 
@@ -64,28 +64,7 @@ struct MacBoardView: View {
             ZStack(alignment: .topLeading) {
                 Color(nsColor: .underPageBackgroundColor)
                 ForEach(notes) { note in
-                    MacNoteView(
-                        note: note,
-                        board: geometry.size,
-                        isMine: note.authorID == coordinator.currentUserID,
-                        authorName: displayName(for: note.authorID),
-                        isHiddenByBlock: MessagePresentation.isNoteHiddenByBlock(
-                            authorID: note.authorID,
-                            blockedUserIDs: coordinator.blockedUserIDs,
-                            currentUserID: coordinator.currentUserID),
-                        onMove: { x, y in
-                            _ = await coordinator.updateNote(id: note.noteID, x: x, y: y)
-                        },
-                        onResize: { size in
-                            Task { await coordinator.updateNote(id: note.noteID, size: size.name) }
-                        },
-                        onEdit: { editing = note },
-                        onDelete: {
-                            Task { _ = await coordinator.deleteNote(id: note.noteID) }
-                        },
-                        onAnswer: { answer in
-                            Task { await coordinator.answerEvent(id: note.noteID, answer: answer) }
-                        })
+                    sticker(for: note, board: geometry.size)
                 }
                 if notes.isEmpty {
                     ContentUnavailableView(
@@ -101,32 +80,33 @@ struct MacBoardView: View {
         .toolbar {
             ToolbarItem {
                 Button {
-                    draftText = ""
-                    draftColor = NoteColor.palette.randomElement() ?? "yellow"
-                    draftSize = .medium
-                    draftFont = .plain
-                    composing = true
+                    startComposing(.text)
                 } label: {
                     Label("Add Note", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
                 .help("Add a note")
             }
+            // The Mac could not pin an event at all — only answer one from a
+            // context menu, on a card that did not even say when it was
+            // (issue #69). The phone's button, the phone's fields.
             ToolbarItem {
                 Button {
-                    pickedPhoto = nil
-                    showPhotoPicker = true
+                    startComposing(.event)
+                } label: {
+                    Label("Add an event", systemImage: "calendar.badge.plus")
+                }
+                .help("Add an event")
+            }
+            ToolbarItem {
+                Button {
+                    pinPicture()
                 } label: {
                     Label("Pin a Photo", systemImage: "photo.badge.plus")
                 }
                 .disabled(pinning)
                 .help("Pin a photo")
             }
-        }
-        .photosPicker(isPresented: $showPhotoPicker, selection: $pickedPhoto, matching: .images)
-        .onChange(of: pickedPhoto) { _, item in
-            guard let item else { return }
-            pinPicture(item)
         }
         .alert(
             "Couldn't pin that photo.",
@@ -156,8 +136,12 @@ struct MacBoardView: View {
         .sheet(isPresented: $composing) {
             MacNoteEditor(
                 text: $draftText, color: $draftColor, size: $draftSize, font: $draftFont,
-                title: "New Note"
+                event: $draftEvent,
+                kind: composingKind,
+                title: composingKind == .event ? "New Event" : "New Note"
             ) {
+                let isEvent = composingKind == .event
+                let event = draftEvent
                 Task {
                     // Dropped near the middle with a little scatter, so a
                     // run of new notes does not stack into one pile.
@@ -167,7 +151,10 @@ struct MacBoardView: View {
                         size: draftSize.name,
                         font: draftFont.name,
                         x: Double.random(in: 0.25...0.65),
-                        y: Double.random(in: 0.25...0.65))
+                        y: Double.random(in: 0.25...0.65),
+                        startsAt: isEvent ? event.startsAt : nil,
+                        endsAt: isEvent && event.hasEnd ? event.endsAt : nil,
+                        place: isEvent && !event.trimmedPlace.isEmpty ? event.trimmedPlace : nil)
                 }
             }
         }
@@ -181,6 +168,48 @@ struct MacBoardView: View {
     /// being rewritten, and on nothing else. A drag changes no part of it.
     private var boardMark: BoardBadge.Marks {
         BoardBadge.marksAfterShowing(notes: notes, marks: .zero)
+    }
+
+    /// One sticker. Its own function for the reason BoardView's drafts are:
+    /// a literal this long inside a `ForEach` inside a `GeometryReader` is
+    /// more than the type-checker will do in reasonable time, and it says so
+    /// rather than being slow.
+    private func sticker(for note: NoteEntity, board: CGSize) -> MacNoteView {
+        MacNoteView(
+            note: note,
+            board: board,
+            isMine: note.authorID == coordinator.currentUserID,
+            authorName: displayName(for: note.authorID),
+            isHiddenByBlock: MessagePresentation.isNoteHiddenByBlock(
+                authorID: note.authorID,
+                blockedUserIDs: coordinator.blockedUserIDs,
+                currentUserID: coordinator.currentUserID),
+            onMove: { x, y in
+                _ = await coordinator.updateNote(id: note.noteID, x: x, y: y)
+            },
+            onResize: { size in
+                Task { await coordinator.updateNote(id: note.noteID, size: size.name) }
+            },
+            onEdit: { editing = note },
+            onDelete: {
+                Task { _ = await coordinator.deleteNote(id: note.noteID) }
+            },
+            myAnswer: note.myAnswer(coordinator.currentUserID),
+            onAnswer: { answer in
+                Task { await coordinator.answerEvent(id: note.noteID, answer: answer) }
+            })
+    }
+
+    /// A blank note — or event — to write. An event starts on the next
+    /// round hour and is blue, as on the phone; a note is any colour.
+    private func startComposing(_ kind: NoteKind) {
+        composingKind = kind
+        draftText = ""
+        draftColor = kind == .event ? "blue" : (NoteColor.palette.randomElement() ?? "yellow")
+        draftSize = .medium
+        draftFont = .plain
+        draftEvent = MacEventFields()
+        composing = true
     }
 
     private func markSeenIfFrontmost() {
@@ -197,7 +226,7 @@ struct MacBoardView: View {
 }
 
 /// One sticker: positioned by fraction, dragged locally, committed once.
-private struct MacNoteView: View {
+fileprivate struct MacNoteView: View {
     @State private var confirmDelete = false
     let note: NoteEntity
     let board: CGSize
@@ -211,6 +240,8 @@ private struct MacNoteView: View {
     let onResize: (NoteSize) -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    /// What this reader has answered, if it is an event.
+    var myAnswer: String?
     /// Say whether you are coming — ANY member may, so it sits outside
     /// every author gate (docs/protocol.md, "Board"). nil retracts.
     var onAnswer: (String?) -> Void = { _ in }
@@ -255,7 +286,20 @@ private struct MacNoteView: View {
             // and nothing while hidden by a block: the picture is content,
             // exactly as the text is (protocol.md, "Board").
             if !isHidden, NoteKind(name: note.kind) == .photo, let attachmentID = note.attachmentID {
-                NotePicture(attachmentID: attachmentID)
+                NotePicture(
+                    attachmentID: attachmentID,
+                    height: NotePicture.height(cardHeight: size.height, hasCaption: !note.text.isEmpty))
+            }
+            // An event says WHEN before it says what — the date is the reason
+            // it is on the wall — and who is coming. The Mac drew an event as
+            // its bare title (issue #69).
+            if !isHidden, NoteKind(name: note.kind) == .event, let starts = note.startsAt {
+                NoteEventBlock(
+                    starts: starts,
+                    ends: note.endsAt,
+                    place: note.place,
+                    going: note.answerCount(RsvpAnswer.going.name),
+                    maybe: note.answerCount(RsvpAnswer.maybe.name))
             }
             (isHidden ? Text("Hidden — blocked member") : Text(note.text))
                 // The hand the author chose (docs/protocol.md, "Board").
@@ -362,12 +406,18 @@ private struct MacNoteView: View {
             // is (protocol.md, "Board").
             if !isHidden, NoteKind(name: note.kind) == .event {
                 Divider()
+                // Checkmarked, like the Size menu: the answer already given
+                // reads as a state, where plain buttons said nothing about it.
                 Menu("Are you coming?") {
                     ForEach(RsvpAnswer.allCases) { choice in
-                        Button(choice.title) { onAnswer(choice.name) }
+                        Toggle(choice.title, isOn: Binding(
+                            get: { RsvpAnswer(name: myAnswer) == choice },
+                            set: { on in onAnswer(on ? choice.name : nil) }))
                     }
                     Divider()
-                    Button("No answer") { onAnswer(nil) }
+                    Toggle("No answer", isOn: Binding(
+                        get: { RsvpAnswer(name: myAnswer) == nil },
+                        set: { on in if on { onAnswer(nil) } }))
                 }
             }
         }
@@ -392,16 +442,39 @@ private extension Double {
     func clampedToBoard() -> Double { Swift.min(Swift.max(self, 0), 1) }
 }
 
-/// Compose a new note.
+/// What an event adds to a note: when it starts, whether and when it ends,
+/// and where. An hour is the shape most family things take, and only a
+/// starting point for the pickers.
+struct MacEventFields {
+    var startsAt: Date = Date().nextRoundHour
+    var hasEnd = false
+    var endsAt: Date = Date().nextRoundHour.addingTimeInterval(3600)
+    var place = ""
+
+    /// Trimmed, as the server stores it.
+    var trimmedPlace: String { place.trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
+/// Compose a new note — or event — or rewrite one.
 private struct MacNoteEditor: View {
     @Binding var text: String
     @Binding var color: String
     @Binding var size: NoteSize
     @Binding var font: NoteFont
+    @Binding var event: MacEventFields
+    /// What is being written. An event adds its when and where; a photo's
+    /// caption may be left empty — the picture is the note, and a caption
+    /// the Mac insisted on made a caption-less photo impossible to recolour
+    /// or resize at all.
+    let kind: NoteKind
     /// A key, not a String: `Text(title)` then goes through the catalog
     /// ("New Note" / "Edit Note") instead of shipping English verbatim.
     let title: LocalizedStringKey
     let onSave: () -> Void
+
+    private var canSave: Bool {
+        kind == .photo || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -421,6 +494,25 @@ private struct MacNoteEditor: View {
                 Text("\(NoteText.remaining(text)) characters left")
                     .font(.caption)
                     .foregroundStyle(NoteText.remaining(text) == 0 ? .red : .secondary)
+            }
+            // WHEN and WHERE, above the look: they are why the note is on
+            // the wall (docs/protocol.md, "Board").
+            if kind == .event {
+                DatePicker("Starts", selection: $event.startsAt)
+                    // A start moved past the end takes the end with it.
+                    .onChange(of: event.startsAt) { _, starts in
+                        if event.endsAt < starts { event.endsAt = starts.addingTimeInterval(3600) }
+                    }
+                Toggle("Has an end", isOn: $event.hasEnd)
+                if event.hasEnd {
+                    DatePicker("Ends", selection: $event.endsAt, in: event.startsAt...)
+                }
+                TextField("Place", text: $event.place)
+                    // Scalars, as the server counts them.
+                    .onChange(of: event.place) { _, new in
+                        let capped = NoteText.capped(new, to: NoteText.maxPlaceLength)
+                        if capped != new { event.place = capped }
+                    }
             }
             HStack(spacing: 6) {
                 ForEach(NoteColor.palette, id: \.self) { name in
@@ -469,7 +561,7 @@ private struct MacNoteEditor: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canSave)
             }
         }
         .padding(16)
@@ -477,48 +569,33 @@ private struct MacNoteEditor: View {
 }
 
 extension MacBoardView {
-    /// Prepare, upload, pin — the phone's flow, and for the same reason:
-    /// the server claims the upload inside the transaction that writes the
-    /// note, so the picture must exist first (docs/protocol.md, "Board").
-    fileprivate func pinPicture(_ item: PhotosPickerItem) {
+    /// Pick, prepare, pin. The pin itself — upload, preview, note, in that
+    /// order — is the coordinator's, shared with the phone (issue #69); the
+    /// pick is the Mac's own open panel, which reaches the file system and,
+    /// through its Media sidebar, the Photos library as well.
+    fileprivate func pinPicture() {
+        guard let url = MacFilePicker.pickPhotoToPin() else { return }
         pinning = true
         Task {
-            defer {
-                pinning = false
-                pickedPhoto = nil
-            }
+            defer { pinning = false }
+            let prepared: MediaPrep.Prepared
             do {
-                guard let data = try await item.loadTransferable(type: Data.self) else {
-                    pinFailure = String(localized: "Couldn't read that photo.")
-                    return
-                }
-                let prepared = try await MediaPrep.preparePhoto(from: data, limit: MediaPrep.sizeLimit)
-                defer { MediaPrep.discard(prepared) }
-                let uploaded = try await coordinator.api.uploadAttachment(
-                    fileURL: prepared.fileURL,
-                    mime: prepared.mime,
-                    kind: prepared.kind,
-                    width: prepared.width,
-                    height: prepared.height,
-                    durationMS: nil)
-                if let previewJPEG = prepared.previewJPEG {
-                    try? await coordinator.api.uploadPreview(
-                        attachmentID: uploaded.id, jpeg: previewJPEG)
-                }
-                let pinned = await coordinator.addNote(
-                    text: "",
-                    color: NoteColor.palette.randomElement() ?? "yellow",
-                    size: NoteSize.medium.name,
-                    font: NoteFont.plain.name,
-                    x: 0.35 + Double.random(in: -0.05...0.05),
-                    y: 0.30 + Double.random(in: -0.05...0.05),
-                    attachmentID: uploaded.id)
-                if !pinned {
-                    pinFailure = String(localized: "Couldn't pin that photo.")
-                }
+                prepared = try await MediaPrep.prepare(fileAt: url, limit: MediaPrep.sizeLimit)
             } catch {
                 pinFailure = String(localized: "Couldn't read that photo.")
+                return
             }
+            defer { MediaPrep.discard(prepared) }
+            // An animated image prepares as a file: a wall pins pictures.
+            guard prepared.kind == AttachmentDTO.Kind.photo else {
+                pinFailure = String(localized: "The board pins photos only.")
+                return
+            }
+            pinFailure = await coordinator.pinPhoto(
+                prepared,
+                color: NoteColor.palette.randomElement() ?? "yellow",
+                x: 0.35 + Double.random(in: -0.05...0.05),
+                y: 0.30 + Double.random(in: -0.05...0.05))
         }
     }
 }
@@ -533,19 +610,31 @@ private struct MacNoteEditorForExisting: View {
     @State private var color: String = "yellow"
     @State private var size: NoteSize = .medium
     @State private var font: NoteFont = .plain
+    @State private var event = MacEventFields()
+
+    private var kind: NoteKind { NoteKind(name: note.kind) }
 
     var body: some View {
         MacNoteEditor(
-            text: $text, color: $color, size: $size, font: $font, title: "Edit Note"
+            text: $text, color: $color, size: $size, font: $font, event: $event,
+            kind: kind,
+            title: kind == .event ? "Edit Event" : "Edit Note"
         ) {
+            let isEvent = kind == .event
+            let event = event
             Task {
                 // Size and font only when the author changed them, so a
                 // name this Mac does not know survives a text edit
-                // (NoteSize, NoteFont).
+                // (NoteSize, NoteFont). An event's own three only on an
+                // event — the server refuses them anywhere else — with the
+                // end a DOUBLE option: none clears it.
                 await coordinator.updateNote(
                     id: note.noteID, text: text, color: color,
                     size: size.patchName(replacing: note.size),
-                    font: font.patchName(replacing: note.font))
+                    font: font.patchName(replacing: note.font),
+                    startsAt: isEvent ? event.startsAt : nil,
+                    endsAt: isEvent ? .some(event.hasEnd ? event.endsAt : nil) : nil,
+                    place: isEvent ? event.trimmedPlace : nil)
             }
         }
         .onAppear {
@@ -553,6 +642,13 @@ private struct MacNoteEditorForExisting: View {
             color = note.color
             size = NoteSize(name: note.size)
             font = NoteFont(name: note.font)
+            if let starts = note.startsAt {
+                event = MacEventFields(
+                    startsAt: starts,
+                    hasEnd: note.endsAt != nil,
+                    endsAt: note.endsAt ?? starts.addingTimeInterval(3600),
+                    place: note.place ?? "")
+            }
         }
     }
 }

@@ -35,6 +35,62 @@ fn storage() -> Option<web_sys::Storage> {
     window()?.session_storage().ok()?
 }
 
+/// The board's two seen-marks, under the account's id — the ONE thing this
+/// client keeps past the tab (docs/protocol.md, "A browser is a client
+/// too"). Two numbers: how far this browser has shown that account the wall,
+/// and nothing of what is on it. Kept for the tab alone they would count the
+/// whole wall as new at every sign-in, and a badge that always cries wolf is
+/// a badge nobody reads.
+const BOARD_MARKS_KEY: &str = "fc.board.seen.";
+
+fn lasting() -> Option<web_sys::Storage> {
+    window()?.local_storage().ok()?
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SavedMarks {
+    note_id: i64,
+    content_seq: i64,
+}
+
+/// The marks this browser keeps for `user_id` — none at all (zero) for an
+/// account it has never shown the board, which then counts the whole wall,
+/// as an app does on its first launch.
+/// Where `user_id`'s marks are kept — also what a `storage` event from
+/// another tab names when it moves them.
+pub fn board_marks_key(user_id: i64) -> String {
+    format!("{BOARD_MARKS_KEY}{user_id}")
+}
+
+pub fn board_marks(user_id: i64) -> fc_text::board::Marks {
+    let saved = lasting()
+        .and_then(|storage| storage.get_item(&board_marks_key(user_id)).ok()?)
+        .and_then(|json| serde_json::from_str::<SavedMarks>(&json).ok());
+    saved
+        .map(|saved| fc_text::board::Marks {
+            note_id: saved.note_id,
+            content_seq: saved.content_seq,
+        })
+        .unwrap_or_default()
+}
+
+/// Keep `marks` for `user_id` — never below what is already kept: two tabs
+/// of one account both write, and neither may walk the other's back.
+pub fn save_board_marks(user_id: i64, marks: fc_text::board::Marks) {
+    if user_id == 0 {
+        return;
+    }
+    let Some(storage) = lasting() else { return };
+    let kept = fc_text::board::later(board_marks(user_id), marks);
+    let saved = SavedMarks {
+        note_id: kept.note_id,
+        content_seq: kept.content_seq,
+    };
+    if let Ok(json) = serde_json::to_string(&saved) {
+        let _ = storage.set_item(&board_marks_key(user_id), &json);
+    }
+}
+
 pub fn token() -> Option<String> {
     storage()?
         .get_item(TOKEN_KEY)
@@ -108,6 +164,59 @@ mod tests {
             items: Vec::new(),
             attempts: 2,
             failed: None,
+        }
+    }
+
+    /// The marks outlive a sign-out (that is what they are for), belong to
+    /// one account, only ever rise, and read as zero where there are none
+    /// or where what is there cannot be read.
+    #[wasm_bindgen_test]
+    fn the_board_marks_outlive_the_tab_per_account_and_only_rise() {
+        use fc_text::board::Marks;
+        let key = |id: i64| format!("{BOARD_MARKS_KEY}{id}");
+        let local = lasting().expect("local storage in the test browser");
+        for id in [9001, 9002] {
+            let _ = local.remove_item(&key(id));
+        }
+        assert_eq!(board_marks(9001), Marks::default());
+        let high = Marks {
+            note_id: 12,
+            content_seq: 90,
+        };
+        save_board_marks(9001, high);
+        assert_eq!(board_marks(9001), high);
+        save_board_marks(
+            9001,
+            Marks {
+                note_id: 20,
+                content_seq: 40,
+            },
+        );
+        assert_eq!(
+            board_marks(9001),
+            Marks {
+                note_id: 20,
+                content_seq: 90
+            },
+            "each only rises"
+        );
+        assert_eq!(
+            board_marks(9002),
+            Marks::default(),
+            "another account has its own"
+        );
+        clear();
+        assert_eq!(board_marks(9001).content_seq, 90, "a sign-out keeps them");
+        let _ = local.set_item(&key(9002), "not json");
+        assert_eq!(board_marks(9002), Marks::default());
+        save_board_marks(0, high);
+        assert_eq!(
+            board_marks(0),
+            Marks::default(),
+            "nobody's marks are not kept"
+        );
+        for id in [9001, 9002] {
+            let _ = local.remove_item(&key(id));
         }
     }
 

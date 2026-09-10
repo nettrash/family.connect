@@ -24,6 +24,14 @@ pub struct AppState {
     /// dialled. A browser's dial "succeeds" before the server has answered
     /// at all; the handshake is where a bad token is refused.
     pub connected: bool,
+    /// Which connection this is: every socket that opens moves it on. A
+    /// catch-up may say a cursor has "caught up" only for the connection it
+    /// ran on — one that finished before the socket opened, or on a socket
+    /// that has since dropped, has caught up with nothing the frames on
+    /// THIS connection can be trusted to follow.
+    pub link: u64,
+    /// The family board is what the main pane shows, instead of a chat.
+    pub board_open: bool,
     /// Something that went wrong, for the person to read.
     pub failure: Option<String>,
     /// Something that went RIGHT and is worth a word — "Reported to the

@@ -82,7 +82,14 @@ class BoardRepository @Inject constructor(
         // backfill badges the whole wall (BoardBadge.contentMarkSeed).
         seedContentMarkIfNeeded()
         val existing = noteDao.findById(note.id)
-        if (existing != null && note.boardSeq <= existing.boardSeq) return false
+        // STRICTLY older is refused; the SAME seq is written when it would
+        // change the row. An equal seq is the same server state — except to
+        // a row cached before this device knew a field: a photo note or an
+        // event stored by a build from before kinds is a blank text note at
+        // that very seq, and refusing the identical copy left it blank for
+        // good (issue #69). The comparison below keeps an unchanged copy a
+        // no-op, as it always was.
+        if (existing != null && note.boardSeq < existing.boardSeq) return false
 
         if (note.isTombstone) {
             // The guard covers deletion too: a stale tombstone must not
@@ -102,7 +109,7 @@ class BoardRepository @Inject constructor(
             return false
         }
         val now = System.currentTimeMillis()
-        noteDao.upsert(
+        val entity =
             NoteEntity(
                 id = note.id,
                 authorId = authorId,
@@ -134,8 +141,9 @@ class BoardRepository @Inject constructor(
                 // how this table spells "nobody said" — the badge then
                 // judges the note by its id, as it always did.
                 contentSeq = note.contentSeq ?: 0L,
-            ),
-        )
+            )
+        if (existing != null && note.boardSeq == existing.boardSeq && entity == existing) return false
+        noteDao.upsert(entity)
         return true
     }
 
@@ -157,6 +165,12 @@ class BoardRepository @Inject constructor(
     /** Full board read — the first open, and any time the cursor is 0. */
     suspend fun loadBoard(): Boolean {
         val board = boardApi.getBoard().okOrNull() ?: return false
+        // It REPLACES what is held (docs/protocol.md, "Board"): the read
+        // never returns tombstones, so a note it leaves out is a note that is
+        // gone, and merely applying what it did return kept every note
+        // deleted while this device was not listening. A note held ABOVE the
+        // read's mark arrived after the read was taken, and stays.
+        noteDao.deleteNotListed(board.maxBoardSeq, board.notes.map { it.id })
         board.notes.forEach { applyNote(it) }
         settings.setBoardCursor(maxOf(boardCursor(), board.maxBoardSeq))
         return true
@@ -205,8 +219,11 @@ class BoardRepository @Inject constructor(
                 boardApi.createNote(text, color, size, font, x, y, attachmentId, startsAt, endsAt, place)
         ) {
             is ApiResult.Ok -> {
+                // The answer to this device's own change moves NO cursor
+                // (docs/protocol.md, "Board"): it says nothing about another
+                // note's lower seq, and REST works while the socket is down —
+                // exactly when the frames carrying those were missed.
                 applyNote(result.value.note)
-                settings.setBoardCursor(maxOf(boardCursor(), result.value.note.boardSeq))
                 true
             }
             else -> false
@@ -242,8 +259,8 @@ class BoardRepository @Inject constructor(
         y: Double? = null,
     ): Boolean = when (val result = boardApi.patchNote(id, text, color, size, font, x, y)) {
         is ApiResult.Ok -> {
+            // Like a create's answer: applied, and moving no cursor.
             applyNote(result.value.note)
-            settings.setBoardCursor(maxOf(boardCursor(), result.value.note.boardSeq))
             true
         }
         else -> false

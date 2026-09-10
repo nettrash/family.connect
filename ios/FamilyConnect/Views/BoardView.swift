@@ -332,39 +332,26 @@ struct BoardView: View {
                 pinning = false
                 pickedPhoto = nil
             }
+            // Reading it is one failure; pinning it is another, and each is
+            // said as what it is — "couldn't read" for an upload that timed
+            // out was a message about the wrong thing.
+            let prepared: MediaPrep.Prepared
             do {
                 guard let data = try await item.loadTransferable(type: Data.self) else {
                     pinFailure = String(localized: "Couldn't read that photo.")
                     return
                 }
-                let prepared = try await MediaPrep.preparePhoto(from: data, limit: MediaPrep.sizeLimit)
-                defer { MediaPrep.discard(prepared) }
-                let uploaded = try await coordinator.api.uploadAttachment(
-                    fileURL: prepared.fileURL,
-                    mime: prepared.mime,
-                    kind: prepared.kind,
-                    width: prepared.width,
-                    height: prepared.height,
-                    durationMS: nil)
-                // The preview the sticker draws, sent as its own upload —
-                // the same second leg a photo message has.
-                if let previewJPEG = prepared.previewJPEG {
-                    try? await coordinator.api.uploadPreview(attachmentID: uploaded.id, jpeg: previewJPEG)
-                }
-                let pinned = await coordinator.addNote(
-                    text: "",
-                    color: NoteColor.palette.randomElement() ?? "yellow",
-                    size: NoteSize.medium.name,
-                    font: NoteFont.plain.name,
-                    x: 0.12 + slot * 0.03,
-                    y: 0.10 + slot * 0.06,
-                    attachmentID: uploaded.id)
-                if !pinned {
-                    pinFailure = String(localized: "Couldn't pin that photo.")
-                }
+                prepared = try await MediaPrep.preparePhoto(from: data, limit: MediaPrep.sizeLimit)
             } catch {
                 pinFailure = String(localized: "Couldn't read that photo.")
+                return
             }
+            defer { MediaPrep.discard(prepared) }
+            pinFailure = await coordinator.pinPhoto(
+                prepared,
+                color: NoteColor.palette.randomElement() ?? "yellow",
+                x: 0.12 + slot * 0.03,
+                y: 0.10 + slot * 0.06)
         }
     }
 }
@@ -426,7 +413,9 @@ private struct StickyNote: View {
             // picture is content, exactly as the text is (protocol.md,
             // "Board").
             if !isHidden, NoteKind(name: note.kind) == .photo, let attachmentID = note.attachmentID {
-                NotePicture(attachmentID: attachmentID)
+                NotePicture(
+                    attachmentID: attachmentID,
+                    height: NotePicture.height(cardHeight: side, hasCaption: !note.text.isEmpty))
             }
             // An event says WHEN before it says what: the date is the
             // reason it is on the wall (protocol.md, "Board").
@@ -629,8 +618,11 @@ private struct NoteEditor: View {
                     }
                     Section("Where") {
                         TextField("Place", text: $place)
+                            // Scalars, as the server counts: a place that
+                            // looked under 200 graphemes could be refused.
                             .onChange(of: place) { _, new in
-                                if new.count > 200 { place = String(new.prefix(200)) }
+                                let capped = NoteText.capped(new, to: NoteText.maxPlaceLength)
+                                if capped != new { place = capped }
                             }
                     }
                 } else if isEvent, let starts = draft.startsAt {

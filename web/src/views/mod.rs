@@ -1,5 +1,6 @@
 pub mod attach;
 pub mod attachments;
+pub mod board;
 pub mod body;
 pub mod bubble;
 pub mod chat_list;

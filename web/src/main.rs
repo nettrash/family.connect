@@ -17,6 +17,7 @@
 
 mod actions;
 mod api;
+mod board;
 mod live;
 mod location;
 mod media;
@@ -49,6 +50,7 @@ use live::{AppState, Live};
 use media::MediaLoader;
 use store::ThreadView;
 use sync::{network_back, page_visible, report_read, start_session, Channels, Shared};
+use views::board::BoardPane;
 use views::chat_list::ChatList;
 use views::conversation::Conversation;
 use views::login::Login;
@@ -187,6 +189,10 @@ fn app() -> Html {
                 }
                 network_back(&live, &channels);
                 let (session, token) = live.read(|state| (state.session, state.token.clone()));
+                // A board left open is shown again, to whoever came back.
+                if token.is_some() {
+                    sync::mark_board_shown(&live, session);
+                }
                 if let Some(token) = token {
                     let live = live.clone();
                     spawn_local(async move { report_read(&live, session, &token).await });
@@ -215,13 +221,53 @@ fn app() -> Html {
         });
     }
 
+    // Another tab of this browser showed the board: its marks are this
+    // tab's too, so the badge here comes down without waiting to reconnect.
+    {
+        let live = live.clone();
+        use_effect_with((), move |_| {
+            let heard = Closure::<dyn Fn(web_sys::StorageEvent)>::new(
+                move |event: web_sys::StorageEvent| {
+                    let me = live.read(|state| state.store.my_user_id);
+                    if me != 0 && event.key() == Some(session::board_marks_key(me)) {
+                        let kept = session::board_marks(me);
+                        live.now(|state| state.store.board.take_marks(me, kept));
+                    }
+                },
+            );
+            let window = web_sys::window().expect("a window");
+            let _ =
+                window.add_event_listener_with_callback("storage", heard.as_ref().unchecked_ref());
+            move || {
+                let _ = window
+                    .remove_event_listener_with_callback("storage", heard.as_ref().unchecked_ref());
+            }
+        });
+    }
+
     let on_action = Actions {
         live: live.clone(),
         channels: channels.clone(),
         sign_out: sign_out.clone(),
         last_typing,
+        media: media.clone(),
     }
     .callback();
+
+    // The board, while it is the pane in front: shown whenever what it
+    // shows changes — a note arriving, a note rewritten; never a drag, which
+    // changes neither mark — and as it opens (MacBoardView marks what the
+    // window shows, not only where it was opened).
+    {
+        let board_open = live.read(|state| state.board_open);
+        let marks = live.read(|state| state.store.board.marks_if_shown());
+        let on_action = on_action.clone();
+        use_effect_with((board_open, marks), move |(open, _)| {
+            if *open {
+                on_action.emit(Action::BoardShown);
+            }
+        });
+    }
 
     if token.is_none() {
         return html! { <Login on_signed_in={on_signed_in} /> };
@@ -294,6 +340,32 @@ fn app() -> Html {
         }
     });
 
+    // The way onto the board, with what is new on it since this browser
+    // last showed it (docs/protocol.md, "Board") — for a member of a family,
+    // which is the only kind of account that has one.
+    let board_button = store.family.is_some().then(|| {
+        let unread = store.board.unread();
+        let open = on_action.reform(|_: MouseEvent| Action::OpenBoard);
+        let label = match unread {
+            0 => "Board".to_string(),
+            1 => "Board, 1 new note".to_string(),
+            count => format!("Board, {count} new notes"),
+        };
+        html! {
+            <button
+                class={classes!("board-button", state.board_open.then_some("is-active"))}
+                aria-pressed={if state.board_open { "true" } else { "false" }}
+                aria-label={label}
+                onclick={open}
+            >
+                { "Board" }
+                if unread > 0 {
+                    <span class="badge" aria-hidden="true">{ unread }</span>
+                }
+            </button>
+        }
+    });
+
     html! {
         <ContextProvider<MediaLoader> context={media}>
         <div class="app">
@@ -304,7 +376,10 @@ fn app() -> Html {
                 if !state.connected {
                     <span class="status" role="status">{ "Connecting…" }</span>
                 }
-                <button class="signout" onclick={sign_out_click}>{ "Sign out" }</button>
+                <span class="bar-actions">
+                    { board_button.unwrap_or_default() }
+                    <button class="signout" onclick={sign_out_click}>{ "Sign out" }</button>
+                </span>
             </header>
             if let Some(message) = state.failure.clone() {
                 <p class="error" role="alert">
@@ -327,7 +402,19 @@ fn app() -> Html {
                     on_select={on_action.reform(Action::SelectChat)}
                     now_ms={now}
                 />
-                if let Some(item) = open_item {
+                if state.board_open && store.family.is_some() {
+                    <BoardPane
+                        notes={store.board.drawn()}
+                        loaded={store.board.loaded}
+                        my_user_id={store.my_user_id}
+                        names={store.names.clone()}
+                        blocked={store.blocked.clone()}
+                        revealed={store.board.revealed.clone()}
+                        pinning={store.board.pinning}
+                        now_minute={(now / 60_000.0).floor() as i64}
+                        on_action={on_action.clone()}
+                    />
+                } else if let Some(item) = open_item {
                     // Keyed by chat, so switching chats is a fresh pane: its
                     // scroll position, its "pinned to the newest" state and
                     // its unread anchor belong to the chat they were for.

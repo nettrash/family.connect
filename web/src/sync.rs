@@ -79,6 +79,25 @@ pub fn reading(state: &AppState) -> Option<i64> {
         .filter(|_| state.at_newest && page_visible() && page_focused())
 }
 
+/// Whether the board is in front of somebody: the pane showing it, in a
+/// window that is visible and in front. Only then has anybody been SHOWN
+/// what is on it — a board left open in a background tab has shown nobody
+/// the note that just landed (MacBoardView marks only as the key window).
+pub fn board_on_screen(state: &AppState) -> bool {
+    state.board_open && page_visible() && page_focused()
+}
+
+/// The board has been on screen: its marks rise to it, and are kept.
+pub fn mark_board_shown(live: &Live, session: u64) {
+    let kept = live.update(session, |state| {
+        (board_on_screen(state) && state.store.board.shown())
+            .then_some((state.store.my_user_id, state.store.board.marks))
+    });
+    if let Some(Some((user_id, marks))) = kept {
+        crate::session::save_board_marks(user_id, marks);
+    }
+}
+
 /// How the app reaches the session's long-lived tasks. Closed when the
 /// session ends, which stops every one of them at once rather than at its
 /// next tick.
@@ -156,7 +175,9 @@ pub fn start_session(
         let live = live.clone();
         let token = token.clone();
         let expired = expired.clone();
-        spawn_local(async move { resync(&live, session, &token, &expired).await });
+        // No connection yet: this one fills the screen, and leaves saying
+        // "caught up" to the resync the socket's opening runs.
+        spawn_local(async move { resync(&live, session, &token, &expired, None).await });
     }
     spawn_local(keep_socket(
         live.clone(),
@@ -236,11 +257,26 @@ async fn upload(token: &str, job: outbox::Upload) -> Result<crate::model::Attach
 /// "Semantics", resync): who this is and the block list, the roster, the
 /// chat list with its authoritative counts, and then — per chat this client
 /// holds messages of — what it missed: messages after the newest held, and
-/// the reactions, edits and polls that changed past each cursor.
-pub async fn resync(live: &Live, session: u64, token: &str, expired: &Rc<dyn Fn()>) {
+/// the reactions, edits and polls that changed past each cursor. The board
+/// catches up beside the chats, on its own cursor.
+///
+/// `link` is the connection this runs for, and None before any has opened:
+/// only a resync for the connection that is up NOW may let its frames move
+/// the cursors it caught up (see `AppState::link`).
+pub async fn resync(
+    live: &Live,
+    session: u64,
+    token: &str,
+    expired: &Rc<dyn Fn()>,
+    link: Option<u64>,
+) {
     match api::me(token).await {
         Ok(me) => {
-            live.update(session, |state| state.store.apply_me(&me));
+            let kept = crate::session::board_marks(me.user.id);
+            live.update(session, |state| {
+                state.store.apply_me(&me);
+                state.store.board.take_marks(me.user.id, kept);
+            });
         }
         Err(ApiError::Unauthorized) => {
             expired();
@@ -250,16 +286,79 @@ pub async fn resync(live: &Live, session: u64, token: &str, expired: &Rc<dyn Fn(
             live.update(session, |state| state.failure = Some(error.detail()));
         }
     }
-    // An account in no family has no roster; that is a real state rather
-    // than a failure worth showing.
+    // An account in no family has no roster — and no board; that is a real
+    // state rather than a failure worth showing.
     if let Ok(roster) = api::family(token).await {
+        let server_max = roster.max_board_seq;
         live.update(session, |state| state.store.apply_roster(&roster));
+        let live = live.clone();
+        let token = token.to_string();
+        spawn_local(async move { sync_board(&live, session, &token, server_max, link).await });
     }
     if !refresh_chats(live, session, token, expired).await {
         return;
     }
-    catch_up(live, session, token).await;
+    catch_up(live, session, token, link).await;
     report_read(live, session, token).await;
+}
+
+/// Whether a catch-up for `link` is a catch-up for the connection up now.
+fn on_this_link(state: &AppState, link: Option<u64>) -> bool {
+    state.connected && link == Some(state.link)
+}
+
+/// The board, brought up to date (docs/protocol.md, "Board"): the whole wall
+/// the first time this session reads it — which REPLACES what is held — and
+/// after that only what changed past the cursor, and nothing at all when the
+/// family's mark says nothing has. A failure is quiet: the wall and its
+/// badge wait for the next connection, which is when a reader would expect
+/// news anyway.
+pub async fn sync_board(
+    live: &Live,
+    session: u64,
+    token: &str,
+    server_max: i64,
+    link: Option<u64>,
+) {
+    let (loaded, cursor) = live.read(|state| (state.store.board.loaded, state.store.board.cursor));
+    if !loaded {
+        let Ok(read) = api::board(token).await else {
+            return;
+        };
+        if live
+            .update(session, |state| {
+                state.store.board.apply_full(read.notes, read.max_board_seq)
+            })
+            .is_none()
+        {
+            return;
+        }
+    } else if server_max > cursor {
+        // The cursor belongs to the LOOP, like the messages' after_id: read
+        // once, then moved by what each page returned.
+        let mut after = cursor;
+        loop {
+            let Ok(page) = api::board_changes(token, after, FEED_PAGE).await else {
+                return;
+            };
+            let short = (page.len() as u32) < FEED_PAGE;
+            after = page.iter().map(|note| note.board_seq).fold(after, i64::max);
+            if live
+                .update(session, |state| state.store.board.apply_page(page))
+                .is_none()
+            {
+                return;
+            }
+            if short {
+                break;
+            }
+        }
+    }
+    live.update(session, |state| {
+        if on_this_link(state, link) {
+            state.store.board.caught_up = true;
+        }
+    });
 }
 
 /// The chat list, as the server has it now — MERGED into what is held
@@ -295,7 +394,7 @@ pub async fn refresh_chats(live: &Live, session: u64, token: &str, expired: &Rc<
 /// message landing mid-loop cannot jump it past the rest. Then each of the
 /// three feeds, but only where the chat list says the server is ahead of
 /// the cursor held. A chat never opened holds nothing to have a hole in.
-async fn catch_up(live: &Live, session: u64, token: &str) {
+async fn catch_up(live: &Live, session: u64, token: &str, link: Option<u64>) {
     let held: Vec<(i64, i64, i64, [Option<i64>; 3])> = live.read(|state| {
         state
             .store
@@ -341,12 +440,17 @@ async fn catch_up(live: &Live, session: u64, token: &str) {
             }
         }
         live.update(session, |state| {
-            state.store.cursors.entry(chat_id).or_default().caught_up = true;
+            if on_this_link(state, link) {
+                state.store.cursors.entry(chat_id).or_default().caught_up = true;
+            }
         });
     }
     // A chat with nothing held has nothing to catch up: its cursors start
     // wherever the first frames take them.
     live.update(session, |state| {
+        if !on_this_link(state, link) {
+            return;
+        }
         let ids: Vec<i64> = state.store.chats.iter().map(|item| item.chat.id).collect();
         for chat_id in ids {
             if !state.store.threads.contains_key(&chat_id) {
@@ -631,6 +735,7 @@ async fn run_socket(
         for cursors in state.store.cursors.values_mut() {
             cursors.caught_up = false;
         }
+        state.store.board.caught_up = false;
     });
     true
 }
@@ -645,9 +750,15 @@ async fn opened(
     wake: &mpsc::UnboundedSender<Wake>,
     expired: &Rc<dyn Fn()>,
 ) {
-    live.update(session, |state| state.connected = true);
+    let Some(link) = live.update(session, |state| {
+        state.connected = true;
+        state.link += 1;
+        state.link
+    }) else {
+        return;
+    };
     let _ = wake.unbounded_send(Wake::Network);
-    resync(live, session, token, expired).await;
+    resync(live, session, token, expired, Some(link)).await;
 }
 
 /// One frame from the server, into the state. Returns a frame to answer
@@ -790,6 +901,10 @@ fn apply_frame(
             }
             None
         }
+        ServerFrame::BoardNote { note } => {
+            live.update(session, |state| state.store.board.apply_frame(note));
+            None
+        }
         // Everything this client has not learned yet, `pong` included —
         // stepped over, which is the protocol's compatibility rule.
         ServerFrame::Unknown => None,
@@ -815,5 +930,39 @@ async fn sweep_typing(live: Live, session: u64) {
         if stale {
             live.update(session, |state| state.store.prune_typing(now));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    /// Only a catch-up for the connection that is up NOW may let its frames
+    /// move the cursors it caught up: not the one that ran before any socket
+    /// opened, not one for a socket that has since dropped, and not one for
+    /// an earlier connection.
+    #[wasm_bindgen_test]
+    fn only_a_catch_up_on_this_connection_counts_as_caught_up() {
+        let mut state = AppState {
+            connected: true,
+            link: 3,
+            ..AppState::default()
+        };
+        assert!(on_this_link(&state, Some(3)));
+        assert!(!on_this_link(&state, None), "before any socket opened");
+        assert!(!on_this_link(&state, Some(2)), "an earlier connection's");
+        state.connected = false;
+        assert!(
+            !on_this_link(&state, Some(3)),
+            "a connection that has dropped"
+        );
+    }
+
+    /// Nobody has been shown a board that is not the pane in front of them.
+    #[wasm_bindgen_test]
+    fn a_board_that_is_not_open_has_shown_nobody_anything() {
+        let state = AppState::default();
+        assert!(!board_on_screen(&state));
     }
 }
