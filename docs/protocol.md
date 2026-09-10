@@ -2559,9 +2559,10 @@ mutation path and a sequence cursor of its own, and would be a new section here.
 
 An attachment belongs to whoever uploaded it until a message claims it, and to that message's chat
 afterwards. Before it is claimed only the uploader may read it; after, every member of the chat may.
-An attachment can be claimed once — by one message, alongside up to nine others: a second message
-naming it is `attachment_already_used`, and the same id twice in one `attachment_ids` array is
-`invalid_attachment`.
+An attachment can be claimed once — by one message, alongside up to nine others, OR by one board
+note (see "Board"): a second message naming it, or a message naming a picture already pinned to the
+board, is `attachment_already_used`, and the same id twice in one `attachment_ids` array is
+`invalid_attachment`. One owner per upload is what lets deleting either one take the bytes with it.
 **Unclaimed attachments are deleted after 24 hours** — a send the user abandoned must not leave
 100 MB on the server forever. The id is remembered for a further 30 days, without the bytes, so a
 client coming back with it is answered `attachment_expired` rather than `attachment_not_found` and
@@ -2714,9 +2715,11 @@ departing member can take with them without taking somebody else's. The other pe
 it go too; that is the honest reading of a private conversation ending. The member's private
 assistant thread goes the same way.
 
-Attachments the member uploaded are removed from the server's disk, subject to the one rule
-attachment deletion always obeys: a file is removed only once no row still names those bytes (see
-"One copy per family"). Their votes are retracted from any poll still open, which re-stamps that
+Uploads the member never USED — on no message and pinned to no note — are removed from the
+server's disk, subject to the one rule attachment deletion always obeys: a file is removed only
+once no row still names those bytes (see "One copy per family"). A picture on a message, or pinned
+to the board as a photo note or an event's backdrop, is part of what the family said and stays
+with it, exactly like the words. Their votes are retracted from any poll still open, which re-stamps that
 poll and fans out its new state — a tally must not go on counting somebody who no longer exists.
 
 **A deleted account is still resolvable, and that is what `former_members` is for.** Their messages

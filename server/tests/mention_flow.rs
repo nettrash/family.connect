@@ -300,7 +300,14 @@ async fn a_name_only_the_untrimmed_body_carries_is_refused() {
 
     // The name is the trailing space itself.
     assert_error(
-        post(&ts, &owner, chat_id, "@ ", json!([{"user_id": member_id, "name": " "}])).await,
+        post(
+            &ts,
+            &owner,
+            chat_id,
+            "@ ",
+            json!([{"user_id": member_id, "name": " "}]),
+        )
+        .await,
         400,
         "validation",
     )
@@ -401,7 +408,6 @@ async fn a_deleted_account_and_the_assistant_thread_are_both_validation() {
     .await;
     let _ = owner_id;
 }
-
 
 /// Nothing about blocks is checked, deliberately: a refusal keyed on who
 /// blocked the sender would tell them. The mention is accepted and then

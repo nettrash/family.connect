@@ -174,7 +174,9 @@ fn validate_event_fields(
         time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
             .map_err(|_| ApiError::validation(format!("{field} is not an RFC3339 timestamp")))
     };
-    let starts = starts_at.map(|value| parse(value, "starts_at")).transpose()?;
+    let starts = starts_at
+        .map(|value| parse(value, "starts_at"))
+        .transpose()?;
     let ends = ends_at.map(|value| parse(value, "ends_at")).transpose()?;
     // Only when BOTH are known: a PATCH may send one and not the other, and
     // the caller checks the stored pair afterwards.
@@ -318,7 +320,12 @@ async fn claim_picture(
 /// `NOTE_COLS` with twelve attachment columns would put them on every text
 /// note's SELECT as well.
 async fn attach_picture(state: &AppState, note: &mut Note) -> Result<(), ApiError> {
-    if note.kind.as_deref() != Some(Note::KIND_PHOTO) {
+    // A photo note's picture is its content; an event's is its backdrop,
+    // and optional. Both are read back here — only the text note has none.
+    if !matches!(
+        note.kind.as_deref(),
+        Some(Note::KIND_PHOTO) | Some(Note::KIND_EVENT)
+    ) {
         return Ok(());
     }
     let row = sqlx::query(
@@ -340,12 +347,11 @@ async fn attach_rsvps(state: &AppState, note: &mut Note) -> Result<(), ApiError>
     if note.kind.as_deref() != Some(Note::KIND_EVENT) {
         return Ok(());
     }
-    let rows = sqlx::query(
-        "SELECT user_id, answer FROM note_rsvps WHERE note_id = $1 ORDER BY user_id",
-    )
-    .bind(note.id)
-    .fetch_all(&state.pool)
-    .await?;
+    let rows =
+        sqlx::query("SELECT user_id, answer FROM note_rsvps WHERE note_id = $1 ORDER BY user_id")
+            .bind(note.id)
+            .fetch_all(&state.pool)
+            .await?;
     note.rsvps = Some(rows.iter().map(Rsvp::from_row).collect());
     Ok(())
 }
@@ -531,8 +537,7 @@ pub async fn create_note(
     // a photo note committed beside an unclaimed picture would be a note
     // pointing at nothing, and the sweeper would take the picture later.
     if let Some(attachment_id) = req.attachment_id {
-        note.attachment =
-            Some(claim_picture(&mut tx, attachment_id, auth.user_id, note.id).await?);
+        note.attachment = Some(claim_picture(&mut tx, attachment_id, auth.user_id, note.id).await?);
     }
     // An event is born with nobody having answered, which is `[]` and not
     // absent (protocol.md, "Board").
@@ -792,12 +797,11 @@ pub async fn delete_note(
     // ever show it. The ROW goes here, inside the transaction; the FILE
     // goes after the commit and only if no other row still names it —
     // since 0011 a family's identical uploads share one file.
-    let orphaned: Option<String> = sqlx::query_scalar(
-        "DELETE FROM attachments WHERE note_id = $1 RETURNING storage_key",
-    )
-    .bind(note_id)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let orphaned: Option<String> =
+        sqlx::query_scalar("DELETE FROM attachments WHERE note_id = $1 RETURNING storage_key")
+            .bind(note_id)
+            .fetch_optional(&mut *tx)
+            .await?;
     tx.commit().await?;
     if let Some(storage_key) = orphaned {
         crate::handlers_attachment::remove_if_unreferenced(&state, &storage_key).await?;

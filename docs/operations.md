@@ -272,9 +272,17 @@ sudo rsync -a --delete web/dist/ /var/www/family-connect/
 ```
 
 `server/nginx/family-connect.conf` already has the `location /` that serves
-it; a server running the phone apps alone can comment that block out and
-keep the `return 404` beneath it, which is what every non-API path got
-before the web client existed.
+it. A server running the phone apps alone REPLACES that block with
+`location / { return 404; }`, which is what every non-API path got before
+the web client existed — commenting it out is not the same, because nginx
+then serves its own default page.
+
+Merge it into the live file by hand rather than copying the repo's over it:
+the live one has certbot's TLS lines in it. And if the live server block sets
+an `add_header` of its own — HSTS, typically — repeat it inside the two
+nested locations under `location /`: nginx does not inherit a server-level
+`add_header` into a location that sets any `add_header` itself, so
+`index.html` and the bundle would be served without it.
 
 Two things about caching, and they are not symmetrical. Trunk puts a content
 hash in the name of the WASM bundle and its JS, so those may be cached for a

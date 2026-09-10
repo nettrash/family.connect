@@ -687,14 +687,17 @@ pub async fn scrub_account(
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    // An upload NO message ever claimed is a half-finished action of an
+    // An upload NOTHING ever claimed is a half-finished action of an
     // account that no longer exists, and nothing else would remove it for
-    // hours. A CLAIMED one is not touched: its message is part of the
-    // shared record and keeps its picture.
-    sqlx::query("DELETE FROM attachments WHERE uploader_id = $1 AND message_id IS NULL")
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
+    // hours. A CLAIMED one is not touched: its message — or the board note
+    // it is pinned to, which survives the account like the message does —
+    // is part of the shared record and keeps its picture.
+    sqlx::query(
+        "DELETE FROM attachments WHERE uploader_id = $1 AND message_id IS NULL AND note_id IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
 
     // (e) The scrub itself.
     //

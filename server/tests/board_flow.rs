@@ -1019,7 +1019,9 @@ async fn only_the_author_may_change_the_font_and_it_raises_no_badge() {
     let created = add_note(&server, &owner, "Milk").await;
     let note_id = created["note"]["id"].as_i64().expect("id");
     let created_seq = created["note"]["board_seq"].as_i64().expect("seq");
-    let content_seq = created["note"]["content_seq"].as_i64().expect("content seq");
+    let content_seq = created["note"]["content_seq"]
+        .as_i64()
+        .expect("content seq");
 
     assert_error(
         server
@@ -1192,7 +1194,10 @@ async fn a_photo_note_is_pinned_read_and_fetched_by_the_whole_family() {
     );
 
     // And so do both reads.
-    for path in ["/families/mine/board", "/families/mine/board/changes?after_seq=0"] {
+    for path in [
+        "/families/mine/board",
+        "/families/mine/board/changes?after_seq=0",
+    ] {
         let body: Value = server.get(&member, path).await.json().await.expect("JSON");
         let found = body["notes"]
             .as_array()
@@ -1200,7 +1205,11 @@ async fn a_photo_note_is_pinned_read_and_fetched_by_the_whole_family() {
             .iter()
             .find(|n| n["id"].as_i64() == Some(note_id))
             .unwrap_or_else(|| panic!("the note is missing from {path}"));
-        assert_eq!(found["attachment"]["id"].as_i64(), Some(attachment_id), "{path}");
+        assert_eq!(
+            found["attachment"]["id"].as_i64(),
+            Some(attachment_id),
+            "{path}"
+        );
     }
 
     // THE BYTES. A board note belongs to no chat, so chat membership can
@@ -1208,7 +1217,11 @@ async fn a_photo_note_is_pinned_read_and_fetched_by_the_whole_family() {
     let bytes = server
         .get(&member, &format!("/attachments/{attachment_id}"))
         .await;
-    assert_eq!(bytes.status(), 200, "every member can fetch a pinned picture");
+    assert_eq!(
+        bytes.status(),
+        200,
+        "every member can fetch a pinned picture"
+    );
 
     // A stranger cannot.
     let (stranger, _) = server.register("stranger", "Sam").await;
@@ -1353,7 +1366,12 @@ async fn the_ways_of_pinning_a_picture_wrong() {
     .await;
 
     // One picture, one note.
-    assert_eq!(pin_photo(&server, &owner, attachment_id, "once").await.status(), 201);
+    assert_eq!(
+        pin_photo(&server, &owner, attachment_id, "once")
+            .await
+            .status(),
+        201
+    );
     assert_error(
         pin_photo(&server, &owner, attachment_id, "twice").await,
         409,
@@ -1364,7 +1382,12 @@ async fn the_ways_of_pinning_a_picture_wrong() {
     // And somebody else's upload is not yours to pin.
     let (member, _) = server.register("cousin", "Cousin").await;
     let theirs = upload_photo(&server, &owner).await;
-    assert_error(pin_photo(&server, &member, theirs, "mine now").await, 409, "not_in_family").await;
+    assert_error(
+        pin_photo(&server, &member, theirs, "mine now").await,
+        409,
+        "not_in_family",
+    )
+    .await;
 }
 
 /// Deleting a photo note takes its picture with it: the tombstone carries
@@ -1383,7 +1406,10 @@ async fn deleting_a_photo_note_removes_its_picture() {
         .expect("JSON");
     let note_id = pinned["note"]["id"].as_i64().expect("id");
     assert_eq!(
-        server.get(&member, &format!("/attachments/{attachment_id}")).await.status(),
+        server
+            .get(&member, &format!("/attachments/{attachment_id}"))
+            .await
+            .status(),
         200
     );
 
@@ -1393,7 +1419,10 @@ async fn deleting_a_photo_note_removes_its_picture() {
     assert_eq!(deleted.status(), 204);
 
     assert_eq!(
-        server.get(&member, &format!("/attachments/{attachment_id}")).await.status(),
+        server
+            .get(&member, &format!("/attachments/{attachment_id}"))
+            .await
+            .status(),
         404,
         "the picture goes with the note"
     );
@@ -1415,7 +1444,12 @@ async fn the_unclaimed_sweep_leaves_a_pinned_picture_alone() {
     let (owner, _) = family_of_two(&server).await;
 
     let pinned_id = upload_photo(&server, &owner).await;
-    assert_eq!(pin_photo(&server, &owner, pinned_id, "The lake").await.status(), 201);
+    assert_eq!(
+        pin_photo(&server, &owner, pinned_id, "The lake")
+            .await
+            .status(),
+        201
+    );
     let loose_id = upload_photo(&server, &owner).await;
 
     // Age both uploads past the grace period.
@@ -1485,9 +1519,19 @@ async fn an_event_carries_its_times_its_place_and_an_empty_guest_list() {
     let note = &created["note"];
     let note_id = note["id"].as_i64().expect("id");
     assert_eq!(note["kind"], "event");
-    assert_eq!(note["text"], "Christmas dinner", "the title is the note's text");
-    assert_eq!(note["place"], "Gran's house", "trimmed, like every other text");
-    assert!(note["starts_at"].as_str().is_some_and(|s| s.starts_with("2026-12-24T17:00")));
+    assert_eq!(
+        note["text"], "Christmas dinner",
+        "the title is the note's text"
+    );
+    assert_eq!(
+        note["place"], "Gran's house",
+        "trimmed, like every other text"
+    );
+    assert!(
+        note["starts_at"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("2026-12-24T17:00"))
+    );
     assert_eq!(
         note["rsvps"].as_array().map(Vec::len),
         Some(0),
@@ -1498,7 +1542,10 @@ async fn an_event_carries_its_times_its_place_and_an_empty_guest_list() {
     let frame = next_frame_of_type(&mut member_ws, "board_note").await;
     assert_eq!(frame["note"]["kind"], "event", "got {frame}");
     assert_eq!(frame["note"]["place"], "Gran's house");
-    for path in ["/families/mine/board", "/families/mine/board/changes?after_seq=0"] {
+    for path in [
+        "/families/mine/board",
+        "/families/mine/board/changes?after_seq=0",
+    ] {
         let body: Value = server.get(&member, path).await.json().await.expect("JSON");
         let found = body["notes"]
             .as_array()
@@ -1513,7 +1560,10 @@ async fn an_event_carries_its_times_its_place_and_an_empty_guest_list() {
     // A text note carries none of it.
     let plain = add_note(&server, &owner, "Milk").await;
     assert!(plain["note"]["starts_at"].is_null(), "{plain}");
-    assert!(plain["note"]["rsvps"].is_null(), "only an event has a guest list");
+    assert!(
+        plain["note"]["rsvps"].is_null(),
+        "only an event has a guest list"
+    );
 }
 
 /// ANSWERING IS NOT AUTHORSHIP: any member may say they are coming, one
@@ -1532,7 +1582,9 @@ async fn anyone_may_answer_an_event_once_and_change_their_mind() {
         .expect("JSON");
     let note_id = created["note"]["id"].as_i64().expect("id");
     let created_seq = created["note"]["board_seq"].as_i64().expect("seq");
-    let content_seq = created["note"]["content_seq"].as_i64().expect("content seq");
+    let content_seq = created["note"]["content_seq"]
+        .as_i64()
+        .expect("content seq");
     let member_id = server.user_id(&member).await;
 
     // Somebody who did NOT write it answers.
@@ -1550,7 +1602,10 @@ async fn anyone_may_answer_an_event_once_and_change_their_mind() {
         json!([{"user_id": member_id, "answer": "going"}])
     );
     let answered_seq = answered["note"]["board_seq"].as_i64().expect("seq");
-    assert!(answered_seq > created_seq, "an answer reaches the other devices");
+    assert!(
+        answered_seq > created_seq,
+        "an answer reaches the other devices"
+    );
     assert_eq!(
         answered["note"]["content_seq"].as_i64(),
         Some(content_seq),
@@ -1588,7 +1643,10 @@ async fn anyone_may_answer_an_event_once_and_change_their_mind() {
 
     // And retracting leaves nobody — idempotently.
     let retracted: Value = server
-        .delete(&member, &format!("/families/mine/board/notes/{note_id}/rsvp"))
+        .delete(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}/rsvp"),
+        )
         .await
         .json()
         .await
@@ -1596,7 +1654,10 @@ async fn anyone_may_answer_an_event_once_and_change_their_mind() {
     assert_eq!(retracted["note"]["rsvps"].as_array().map(Vec::len), Some(0));
     let retracted_seq = retracted["note"]["board_seq"].as_i64().expect("seq");
     let nothing: Value = server
-        .delete(&member, &format!("/families/mine/board/notes/{note_id}/rsvp"))
+        .delete(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}/rsvp"),
+        )
         .await
         .json()
         .await
@@ -1650,8 +1711,15 @@ async fn only_the_author_may_move_an_event_in_time() {
         .await;
     assert_eq!(edited.status(), 200, "{:?}", edited.text().await);
     let edited: Value = edited.json().await.expect("JSON");
-    assert!(edited["note"]["starts_at"].as_str().is_some_and(|s| s.starts_with("2026-12-25T18:00")));
-    assert!(edited["note"]["place"].is_null(), "an emptied place is no place");
+    assert!(
+        edited["note"]["starts_at"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("2026-12-25T18:00"))
+    );
+    assert!(
+        edited["note"]["place"].is_null(),
+        "an emptied place is no place"
+    );
     assert!(edited["note"]["ends_at"].is_null(), "a null clears it");
 
     // An end before the start, checked against the STORED start.
@@ -1718,13 +1786,25 @@ async fn the_ways_of_pinning_an_event_wrong() {
     .await;
     // Unparseable, and an end before the start.
     assert_error(
-        pin_event(&server, &owner, "Dinner", json!({"starts_at": "christmas eve"})).await,
+        pin_event(
+            &server,
+            &owner,
+            "Dinner",
+            json!({"starts_at": "christmas eve"}),
+        )
+        .await,
         400,
         "validation",
     )
     .await;
     assert_error(
-        pin_event(&server, &owner, "Dinner", json!({"ends_at": "2026-12-24T16:00:00Z"})).await,
+        pin_event(
+            &server,
+            &owner,
+            "Dinner",
+            json!({"ends_at": "2026-12-24T16:00:00Z"}),
+        )
+        .await,
         400,
         "validation",
     )
@@ -1776,4 +1856,195 @@ async fn the_ways_of_pinning_an_event_wrong() {
         "invalid_rsvp",
     )
     .await;
+}
+
+// --- Whose picture it is (protocol.md, "Attachments", "Deleting an account") --
+
+/// An event's backdrop is read back EVERYWHERE, not only in the answer to
+/// the create: the board, the change feed, a move and an RSVP. Reading it
+/// back for photo notes alone lost it on every device the moment anything
+/// but its creation was read.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_events_backdrop_is_read_back_everywhere() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+
+    let backdrop = upload_photo(&server, &owner).await;
+    let response = pin_event(
+        &server,
+        &owner,
+        "Christmas dinner",
+        json!({"attachment_id": backdrop}),
+    )
+    .await;
+    assert_eq!(response.status(), 201, "{:?}", response.text().await);
+    let created: Value = response.json().await.expect("JSON");
+    let note_id = created["note"]["id"].as_i64().expect("id");
+    assert_eq!(created["note"]["attachment"]["id"].as_i64(), Some(backdrop));
+
+    for path in [
+        "/families/mine/board",
+        "/families/mine/board/changes?after_seq=0",
+    ] {
+        let body: Value = server.get(&member, path).await.json().await.expect("JSON");
+        let found = body["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .find(|n| n["id"].as_i64() == Some(note_id))
+            .unwrap_or_else(|| panic!("the event is missing from {path}"));
+        assert_eq!(
+            found["attachment"]["id"].as_i64(),
+            Some(backdrop),
+            "{path} lost the backdrop: {found}"
+        );
+    }
+
+    let moved: Value = server
+        .patch(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}"),
+            json!({"x": 0.7, "y": 0.2}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        moved["note"]["attachment"]["id"].as_i64(),
+        Some(backdrop),
+        "{moved}"
+    );
+
+    let answered: Value = server
+        .put(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}/rsvp"),
+            json!({"answer": "going"}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        answered["note"]["attachment"]["id"].as_i64(),
+        Some(backdrop),
+        "{answered}"
+    );
+}
+
+/// A picture pinned to the board is TAKEN: a message naming it is refused
+/// exactly as one naming another message's picture is, and the note keeps it.
+/// Two owners for one upload would let deleting either take the other's.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_pinned_picture_cannot_also_go_on_a_message() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+    let attachment_id = upload_photo(&server, &owner).await;
+    assert_eq!(
+        pin_photo(&server, &owner, attachment_id, "The lake")
+            .await
+            .status(),
+        201
+    );
+
+    let chat_id = server.family_chat_id(&owner).await;
+    assert_error(
+        server
+            .post(
+                &owner,
+                &format!("/chats/{chat_id}/messages"),
+                json!({"client_msg_id": "7d3e9a61-2b4c-4f1e-9a8d-5c6b7e8f9a01",
+                       "body": "", "attachment_ids": [attachment_id]}),
+            )
+            .await,
+        409,
+        "attachment_already_used",
+    )
+    .await;
+
+    let message_id: Option<i64> =
+        sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = $1")
+            .bind(attachment_id)
+            .fetch_one(&server.state.pool)
+            .await
+            .expect("reading the attachment");
+    assert_eq!(message_id, None, "the refused message took nothing");
+    assert_eq!(
+        server
+            .get(&member, &format!("/attachments/{attachment_id}"))
+            .await
+            .status(),
+        200,
+        "the note still shows it"
+    );
+}
+
+/// THE PERSON IS ERASED; THE WALL STAYS. A deleted account's photo notes and
+/// event backdrops keep their pictures, like its messages keep theirs — the
+/// cleanup of what it left half-finished must not mistake a pinned picture
+/// (no message, but a note) for an unused upload.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn deleting_an_account_keeps_the_pictures_on_its_board_notes() {
+    let server = spawn_server().await;
+    let (owner, member) = family_of_two(&server).await;
+
+    let photo = upload_photo(&server, &member).await;
+    let photo_note: Value = pin_photo(&server, &member, photo, "The lake")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let backdrop = upload_photo(&server, &member).await;
+    let event: Value = pin_event(
+        &server,
+        &member,
+        "Picnic",
+        json!({"attachment_id": backdrop}),
+    )
+    .await
+    .json()
+    .await
+    .expect("JSON");
+    // And one upload the member never used, which DOES go.
+    let loose = upload_photo(&server, &member).await;
+
+    let deleted = server
+        .post(&member, "/me/delete", json!({"password": "password123"}))
+        .await;
+    assert!(deleted.status().is_success(), "{:?}", deleted.text().await);
+
+    let board: Value = server
+        .get(&owner, "/families/mine/board")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    for (note, picture) in [(&photo_note, photo), (&event, backdrop)] {
+        let note_id = note["note"]["id"].as_i64().expect("id");
+        let found = board["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .find(|n| n["id"].as_i64() == Some(note_id))
+            .unwrap_or_else(|| panic!("note {note_id} left the wall"));
+        assert_eq!(found["attachment"]["id"].as_i64(), Some(picture), "{found}");
+        assert_eq!(
+            server
+                .get(&owner, &format!("/attachments/{picture}"))
+                .await
+                .status(),
+            200,
+            "the picture is still there to fetch"
+        );
+    }
+    let loose_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments WHERE id = $1")
+        .bind(loose)
+        .fetch_one(&server.state.pool)
+        .await
+        .expect("counting");
+    assert_eq!(loose_rows, 0, "the upload nothing used is cleaned up");
 }
