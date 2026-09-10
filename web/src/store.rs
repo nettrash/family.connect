@@ -84,6 +84,28 @@ impl Thread {
     }
 }
 
+/// A message this device wrote that the server has not confirmed yet.
+///
+/// Its bubble is in the thread under id 0; this is the other half — what
+/// the sender needs to try again, and what the bubble needs to say about
+/// it (docs/protocol.md, "Sending on an unreliable network").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outgoing {
+    pub chat_id: i64,
+    pub client_msg_id: String,
+    pub body: String,
+    /// Tries whose outcome was UNKNOWN. A refusal is not counted here: it
+    /// ends the row outright.
+    pub attempts: u32,
+    /// Why it will not be tried again until somebody asks. None while it
+    /// is still queued — which is what an unknown outcome leaves it.
+    pub failed: Option<String>,
+}
+
+/// How many unknown outcomes a message may have before it is shown as
+/// failed. The same six the phone clients allow.
+pub const MAX_SEND_ATTEMPTS: u32 = 6;
+
 /// Everything the signed-in app knows.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Store {
@@ -91,6 +113,9 @@ pub struct Store {
     pub chats: Vec<ChatListItem>,
     pub threads: HashMap<i64, Thread>,
     pub names: HashMap<i64, String>,
+    /// What this device has written and the server has not confirmed, in
+    /// the order it was written — which is the order it is sent in.
+    pub outbox: Vec<Outgoing>,
     /// chat → (member → when their last `typing` frame arrived, in
     /// milliseconds). Timestamps rather than a plain list because a typing
     /// frame says "still typing" and never says "stopped": without an
@@ -132,6 +157,17 @@ impl Store {
             typing.remove(&message.sender_id);
         }
 
+        // One of mine, numbered: the server has it, whichever path said so
+        // first — the POST's own answer, or the `message` frame the same
+        // send fans out to this socket. Matched on the protocol's dedup key,
+        // (chat, sender, client_msg_id), and nothing looser.
+        if is_mine && message.id != 0 {
+            if let Some(client_msg_id) = message.client_msg_id.as_deref() {
+                self.outbox
+                    .retain(|row| !(row.chat_id == chat_id && row.client_msg_id == client_msg_id));
+            }
+        }
+
         if let Some(item) = self.chats.iter_mut().find(|item| item.chat.id == chat_id) {
             item.last_message = Some(message.clone());
             if is_new && !is_mine && !is_open {
@@ -139,6 +175,128 @@ impl Store {
             }
         }
         self.threads.entry(chat_id).or_default().apply(message);
+    }
+
+    /// A person pressed Send. The bubble draws NOW, under id 0, and the row
+    /// joins the END of the outbox; `apply_message` settles both when the
+    /// server's copy arrives.
+    pub fn queue_send(&mut self, chat_id: i64, client_msg_id: String, body: String) {
+        self.outbox.push(Outgoing {
+            chat_id,
+            client_msg_id: client_msg_id.clone(),
+            body: body.clone(),
+            attempts: 0,
+            failed: None,
+        });
+        let pending = Message {
+            id: 0,
+            chat_id,
+            sender_id: self.my_user_id,
+            client_msg_id: Some(client_msg_id),
+            body,
+            created_at: String::new(),
+            edited_at: None,
+        };
+        self.apply_message(pending, None);
+    }
+
+    /// What to send next: the OLDEST row still queued. A failed row is
+    /// stepped over — it waits for a person — so one refusal does not hold
+    /// back everything written after it.
+    pub fn next_to_send(&self) -> Option<Outgoing> {
+        self.outbox.iter().find(|row| row.failed.is_none()).cloned()
+    }
+
+    /// The server's answer to this row's own POST: the row goes, whatever
+    /// else is true, and the message it answered with takes the bubble's
+    /// place. Removed by `client_msg_id` HERE rather than left to
+    /// `apply_message`'s sender check, because a row that outlived its
+    /// answer would be sent again, and again, for ever.
+    pub fn settle(&mut self, client_msg_id: &str, message: Message, open_chat: Option<i64>) {
+        self.outbox.retain(|row| row.client_msg_id != client_msg_id);
+        self.apply_message(message, open_chat);
+    }
+
+    /// The server read the send and refused it. The row fails NOW, with
+    /// the reason, and nobody tries it again until a person asks.
+    pub fn refuse(&mut self, client_msg_id: &str, reason: String) {
+        if let Some(row) = self.row_mut(client_msg_id) {
+            row.failed = Some(reason);
+        }
+    }
+
+    /// Nobody knows whether it landed. That is counted, and shown as a
+    /// failure only once the attempts run out — an unknown outcome is not a
+    /// red bubble (docs/protocol.md). Returns the count while the row is
+    /// still queued, and None once it has failed or is gone.
+    pub fn note_unknown(&mut self, client_msg_id: &str) -> Option<u32> {
+        let row = self.row_mut(client_msg_id)?;
+        row.attempts += 1;
+        if row.attempts >= MAX_SEND_ATTEMPTS {
+            row.failed = Some("Not sent. Check your connection and try again.".to_string());
+            return None;
+        }
+        Some(row.attempts)
+    }
+
+    /// A person pressed Retry: queued again with a fresh count, and IN
+    /// PLACE, so it goes before anything written after it.
+    pub fn retry(&mut self, client_msg_id: &str) {
+        if let Some(row) = self.row_mut(client_msg_id) {
+            row.attempts = 0;
+            row.failed = None;
+        }
+    }
+
+    /// A person gave up on it: the row goes, and so does its bubble.
+    pub fn discard(&mut self, client_msg_id: &str) {
+        let Some(index) = self
+            .outbox
+            .iter()
+            .position(|row| row.client_msg_id == client_msg_id)
+        else {
+            return;
+        };
+        let row = self.outbox.remove(index);
+        let is_it = |message: &Message| {
+            message.id == 0 && message.client_msg_id.as_deref() == Some(client_msg_id)
+        };
+        let Some(thread) = self.threads.get_mut(&row.chat_id) else {
+            return;
+        };
+        thread.messages.retain(|message| !is_it(message));
+        // The list's preview was this bubble; it goes back to what the
+        // thread now ends with.
+        let newest = thread.messages.last().cloned();
+        if let Some(item) = self
+            .chats
+            .iter_mut()
+            .find(|item| item.chat.id == row.chat_id)
+        {
+            if item.last_message.as_ref().is_some_and(is_it) {
+                item.last_message = newest;
+            }
+        }
+    }
+
+    /// The rows of one chat that have FAILED, by `client_msg_id`, with why.
+    /// A pending bubble that is not in here is still being sent.
+    pub fn failed_sends(&self, chat_id: i64) -> HashMap<String, String> {
+        self.outbox
+            .iter()
+            .filter(|row| row.chat_id == chat_id)
+            .filter_map(|row| {
+                row.failed
+                    .clone()
+                    .map(|reason| (row.client_msg_id.clone(), reason))
+            })
+            .collect()
+    }
+
+    fn row_mut(&mut self, client_msg_id: &str) -> Option<&mut Outgoing> {
+        self.outbox
+            .iter_mut()
+            .find(|row| row.client_msg_id == client_msg_id)
     }
 
     /// This device has read up to here: the badge goes, and the marker
@@ -424,6 +582,157 @@ mod tests {
         store.set_typing(42, 9, 4_000.0);
         assert_eq!(store.typing_names(42, 6_000.0), vec!["Anna".to_string()]);
         assert_eq!(store.typing.get(&42).map(HashMap::len), Some(1));
+    }
+
+    fn delivered(id: i64, sender: i64, client_msg_id: &str) -> Message {
+        let mut message = message(id, sender, "Six works");
+        message.client_msg_id = Some(client_msg_id.into());
+        message
+    }
+
+    /// Send draws the bubble NOW and queues the row at the END — the order
+    /// written is the order sent.
+    #[wasm_bindgen_test]
+    fn a_send_draws_at_once_and_queues_in_the_order_written() {
+        let mut store = store();
+        store.queue_send(42, "a".into(), "first".into());
+        store.queue_send(42, "b".into(), "second".into());
+
+        let thread = &store.threads[&42];
+        assert_eq!(thread.messages.len(), 2);
+        assert!(thread.messages.iter().all(|message| message.id == 0));
+        assert!(thread.messages.iter().all(|message| message.sender_id == 7));
+        assert_eq!(
+            store.next_to_send().map(|row| row.client_msg_id),
+            Some("a".to_string())
+        );
+        assert_eq!(
+            store.chats[0].unread_count, 0,
+            "my own message is not unread"
+        );
+    }
+
+    /// The POST's answer settles the row and becomes the bubble.
+    #[wasm_bindgen_test]
+    fn the_answer_settles_the_row_and_takes_the_bubbles_place() {
+        let mut store = store();
+        store.queue_send(42, "a".into(), "Six works".into());
+        store.settle("a", delivered(101, 7, "a"), Some(42));
+
+        assert!(store.outbox.is_empty());
+        assert_eq!(store.next_to_send(), None);
+        let ids: Vec<i64> = store.threads[&42].messages.iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec![101]);
+    }
+
+    /// The row goes on the POST's answer even when that answer does not
+    /// look like mine — a row that outlives its answer is sent for ever.
+    #[wasm_bindgen_test]
+    fn an_answer_settles_its_row_whatever_it_says_about_the_sender() {
+        let mut store = store();
+        store.my_user_id = 0; // `/me` has not answered yet
+        store.queue_send(42, "a".into(), "Six works".into());
+        store.settle("a", delivered(101, 7, "a"), Some(42));
+        assert!(store.outbox.is_empty());
+    }
+
+    /// The same send fans out to this socket as a `message` frame, and that
+    /// can land BEFORE the POST's own answer. Either copy settles it — but
+    /// only on the protocol's dedup key: same chat, same sender.
+    #[wasm_bindgen_test]
+    fn the_sockets_copy_landing_first_settles_the_row_too() {
+        let mut store = store();
+        store.queue_send(42, "a".into(), "Six works".into());
+
+        // Somebody else's message that happens to carry the same id is not
+        // mine, and settles nothing.
+        store.apply_message(delivered(100, 9, "a"), Some(42));
+        assert_eq!(store.outbox.len(), 1, "another sender's key is another key");
+
+        store.apply_message(delivered(101, 7, "a"), Some(42));
+        assert!(store.outbox.is_empty(), "my own copy settled it");
+    }
+
+    /// An unknown outcome is counted, not shown — until the attempts run
+    /// out, when it is shown and stepped over.
+    #[wasm_bindgen_test]
+    fn unknown_is_not_failed_until_the_attempts_run_out() {
+        let mut store = store();
+        store.queue_send(42, "a".into(), "first".into());
+        store.queue_send(42, "b".into(), "second".into());
+
+        for attempt in 1..MAX_SEND_ATTEMPTS {
+            assert_eq!(store.note_unknown("a"), Some(attempt));
+            assert!(
+                store.failed_sends(42).is_empty(),
+                "attempt {attempt} is not a failure"
+            );
+        }
+        assert_eq!(store.note_unknown("a"), None, "that was the last one");
+        assert!(store.failed_sends(42).contains_key("a"));
+        assert_eq!(
+            store.next_to_send().map(|row| row.client_msg_id),
+            Some("b".to_string()),
+            "a failed row does not hold back the next"
+        );
+        assert_eq!(store.note_unknown("gone"), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_refusal_fails_at_once_with_its_reason() {
+        let mut store = store();
+        store.queue_send(42, "a".into(), "first".into());
+        store.refuse("a", "Not sent: blocked.".into());
+        assert_eq!(
+            store.failed_sends(42).get("a").map(String::as_str),
+            Some("Not sent: blocked.")
+        );
+        assert_eq!(store.next_to_send(), None);
+        assert!(store.failed_sends(43).is_empty(), "per chat");
+    }
+
+    /// Retry puts the row back IN PLACE with a fresh count, so it goes
+    /// before anything written after it.
+    #[wasm_bindgen_test]
+    fn retry_requeues_in_place_with_a_fresh_count() {
+        let mut store = store();
+        store.queue_send(42, "a".into(), "first".into());
+        store.queue_send(42, "b".into(), "second".into());
+        store.note_unknown("a");
+        store.refuse("a", "Not sent.".into());
+
+        store.retry("a");
+
+        let next = store.next_to_send().expect("something to send");
+        assert_eq!(next.client_msg_id, "a");
+        assert_eq!(next.attempts, 0);
+        assert!(store.failed_sends(42).is_empty());
+    }
+
+    /// Discard takes the row AND its bubble, and the list's preview goes
+    /// back to what the chat now ends with.
+    #[wasm_bindgen_test]
+    fn discard_drops_the_row_its_bubble_and_its_preview() {
+        let mut store = store();
+        store.apply_message(message(100, 9, "Dinner?"), Some(42));
+        store.queue_send(42, "a".into(), "never mind".into());
+        assert_eq!(
+            store.chats[0]
+                .last_message
+                .as_ref()
+                .map(|m| m.body.as_str()),
+            Some("never mind")
+        );
+
+        store.discard("a");
+
+        assert!(store.outbox.is_empty());
+        let ids: Vec<i64> = store.threads[&42].messages.iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec![100]);
+        assert_eq!(
+            store.chats[0].last_message.as_ref().map(|m| m.id),
+            Some(100)
+        );
     }
 
     #[wasm_bindgen_test]

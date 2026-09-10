@@ -17,15 +17,14 @@
 
 use serde::{Deserialize, Serialize};
 
-/// What this client sends. Only the frames it actually uses.
+/// What this client says on the socket. Only the frames it actually uses —
+/// and no `send`: a browser sends every message over REST and only LISTENS
+/// here (docs/protocol.md, "A browser is a client too"; see outbox.rs). What
+/// is left is momentary, and is dropped rather than saved up while the
+/// socket is down.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientFrame {
-    Send {
-        chat_id: i64,
-        client_msg_id: String,
-        body: String,
-    },
     Read {
         chat_id: i64,
         last_read_message_id: i64,
@@ -41,14 +40,12 @@ pub enum ClientFrame {
 /// `Unknown` is not a failure mode — it is the protocol's compatibility
 /// rule made a type. Everything this client has not learned yet (reactions,
 /// polls, board notes, call signalling) lands there and is dropped, exactly
-/// as the protocol requires.
+/// as the protocol requires. There is no `ack`: that answers a `send` frame,
+/// and this client never sends one. `pong` lands in `Unknown` too — any
+/// frame at all is the proof of life the heartbeat is listening for.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame {
-    Ack {
-        client_msg_id: String,
-        message: crate::model::Message,
-    },
     Message {
         message: crate::model::Message,
     },
@@ -109,23 +106,24 @@ mod tests {
     use super::*;
     use wasm_bindgen_test::*;
 
+    /// The copy of this device's own REST send that fans out to its socket
+    /// carries the `client_msg_id` — which is what lets it settle the
+    /// outbox row if it lands first.
     #[wasm_bindgen_test]
-    fn the_send_frame_is_the_protocols() {
-        let frame = ClientFrame::Send {
-            chat_id: 42,
-            client_msg_id: "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01".into(),
-            body: "Dinner at 7?".into(),
-        };
-        let json: serde_json::Value = serde_json::to_value(&frame).expect("encodes");
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "type": "send",
-                "chat_id": 42,
-                "client_msg_id": "8f14e45f-ceea-4e17-a91c-0d9f8e7b2a01",
-                "body": "Dinner at 7?"
-            })
+    fn my_own_message_frame_carries_its_client_msg_id() {
+        let frame = decode(
+            r#"{"type": "message", "message": {"id": 1339, "chat_id": 42, "sender_id": 7,
+                "client_msg_id": "8f14e45f-ceea", "body": "Six works",
+                "created_at": "2026-08-19T17:05:00Z"}}"#,
         );
+        match frame {
+            Some(ServerFrame::Message { message }) => {
+                assert_eq!(message.client_msg_id.as_deref(), Some("8f14e45f-ceea"));
+            }
+            other => panic!("expected a message frame, got {other:?}"),
+        }
+        // And the heartbeat's answer is a frame like any other unknown one.
+        assert_eq!(decode(r#"{"type": "pong"}"#), Some(ServerFrame::Unknown));
     }
 
     #[wasm_bindgen_test]
