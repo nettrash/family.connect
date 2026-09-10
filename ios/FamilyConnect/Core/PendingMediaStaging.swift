@@ -109,8 +109,9 @@ nonisolated enum PendingMediaStaging {
     }
 
     /// Whether this file was written by `MediaPrep` for a send, and is
-    /// therefore ours to move rather than somebody's own document.
-    private static func isOurs(_ url: URL) -> Bool {
+    /// therefore ours to move — or delete — rather than somebody's own
+    /// document. `MediaPrep.discard` asks the same question.
+    static func isOurs(_ url: URL) -> Bool {
         let temporary = FileManager.default.temporaryDirectory
             .standardizedFileURL.path
         return url.standardizedFileURL.path.hasPrefix(temporary)

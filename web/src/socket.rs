@@ -49,6 +49,13 @@ pub enum ServerFrame {
     Message {
         message: crate::model::Message,
     },
+    /// The whole edited message — applied under the `edit_seq` guard, and
+    /// WHOLE, because the assistant's picture arrives as an attachment this
+    /// way. Separate from `message` because an edit neither counts as
+    /// unread nor notifies.
+    MessageEdited {
+        message: crate::model::Message,
+    },
     Read {
         chat_id: i64,
         user_id: i64,
@@ -57,6 +64,49 @@ pub enum ServerFrame {
     Typing {
         chat_id: i64,
         user_id: i64,
+    },
+    /// A message's whole reaction state, never a delta.
+    Reaction {
+        chat_id: i64,
+        message_id: i64,
+        reaction_seq: i64,
+        reactions: Vec<crate::model::Reaction>,
+    },
+    /// A poll's whole state, never a delta.
+    Poll {
+        chat_id: i64,
+        message_id: i64,
+        poll: crate::model::Poll,
+    },
+    /// The assistant, mid-answer. Cosmetic: the finished row follows as
+    /// `message_edited`.
+    AiDelta {
+        chat_id: i64,
+        message_id: i64,
+        text: String,
+    },
+    /// It stopped early; the row keeps what arrived.
+    AiError {
+        chat_id: i64,
+        message_id: i64,
+    },
+    MemberJoined {
+        user: crate::model::User,
+    },
+    MemberLeft {
+        user_id: i64,
+    },
+    /// An account was deleted — carrying the tombstone to WRITE.
+    MemberDeleted {
+        member: crate::model::Member,
+    },
+    FamilyOwner {
+        user_id: i64,
+    },
+    /// Reaches the BLOCKER's own devices and nobody else; full state.
+    MemberBlocked {
+        user_id: i64,
+        blocked: bool,
     },
     #[serde(other)]
     Unknown,
@@ -189,6 +239,80 @@ mod tests {
                 chat_id: 42,
                 user_id: 9,
                 last_read_message_id: 1338
+            })
+        );
+    }
+
+    /// Every frame this client now acts on, in the protocol's own words
+    /// (docs/protocol.md, "Server → client").
+    #[wasm_bindgen_test]
+    fn the_frames_this_client_acts_on_read_as_the_protocol_writes_them() {
+        let edited = decode(
+            r#"{"type": "message_edited", "message": {"id": 1339, "chat_id": 42, "sender_id": 2,
+                "body": "Seven works.", "created_at": "2026-08-19T17:05:00Z", "edit_seq": 88}}"#,
+        );
+        assert!(
+            matches!(edited, Some(ServerFrame::MessageEdited { ref message }) if message.edit_seq == Some(88))
+        );
+
+        let reaction = decode(
+            r#"{"type": "reaction", "chat_id": 42, "message_id": 1338, "reaction_seq": 124,
+                "reactions": [{"user_id": 9, "emoji": "❤️"}]}"#,
+        );
+        assert!(matches!(
+            reaction,
+            Some(ServerFrame::Reaction {
+                reaction_seq: 124,
+                ..
+            })
+        ));
+
+        let poll = decode(
+            r#"{"type": "poll", "chat_id": 42, "message_id": 1340,
+                "poll": {"poll_seq": 89, "closed": false,
+                         "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]}]}}"#,
+        );
+        assert!(matches!(poll, Some(ServerFrame::Poll { ref poll, .. }) if poll.poll_seq == 89));
+
+        assert_eq!(
+            decode(r#"{"type": "ai_delta", "chat_id": 42, "message_id": 1339, "text": "Sure — "}"#),
+            Some(ServerFrame::AiDelta {
+                chat_id: 42,
+                message_id: 1339,
+                text: "Sure — ".into()
+            })
+        );
+        assert_eq!(
+            decode(r#"{"type": "ai_error", "chat_id": 42, "message_id": 1339}"#),
+            Some(ServerFrame::AiError {
+                chat_id: 42,
+                message_id: 1339
+            })
+        );
+        assert!(matches!(
+            decode(r#"{"type": "member_joined", "family_id": 3,
+                       "user": {"id": 11, "username": "junior", "display_name": "Junior", "avatar_version": 0}}"#),
+            Some(ServerFrame::MemberJoined { ref user }) if user.id == 11
+        ));
+        assert_eq!(
+            decode(r#"{"type": "member_left", "family_id": 3, "user_id": 11}"#),
+            Some(ServerFrame::MemberLeft { user_id: 11 })
+        );
+        assert!(matches!(
+            decode(r#"{"type": "member_deleted", "family_id": 3,
+                       "member": {"id": 11, "username": "", "display_name": "Deleted account",
+                                  "avatar_version": 0, "deleted": true}}"#),
+            Some(ServerFrame::MemberDeleted { ref member }) if member.deleted
+        ));
+        assert_eq!(
+            decode(r#"{"type": "family_owner", "family_id": 3, "user_id": 9}"#),
+            Some(ServerFrame::FamilyOwner { user_id: 9 })
+        );
+        assert_eq!(
+            decode(r#"{"type": "member_blocked", "user_id": 11, "blocked": true}"#),
+            Some(ServerFrame::MemberBlocked {
+                user_id: 11,
+                blocked: true
             })
         );
     }

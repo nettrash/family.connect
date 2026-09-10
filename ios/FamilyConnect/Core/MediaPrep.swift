@@ -64,6 +64,20 @@ nonisolated enum MediaPrep {
         }
     }
 
+    /// Throw away an item that will not be sent: taken off the strip,
+    /// refused past the ten-item cap, or a board pin that is over.
+    ///
+    /// The file goes ONLY if MediaPrep wrote it. `prepareVideo` hands back
+    /// the ORIGINAL url when a clip already fits the ceiling, and a picked
+    /// or dropped file is the person's own — deleting `fileURL` without
+    /// asking deleted their video from wherever they kept it. The same
+    /// ownership test `PendingMediaStaging.adopt` uses to copy instead of
+    /// move.
+    static func discard(_ prepared: Prepared) {
+        guard PendingMediaStaging.isOurs(prepared.fileURL) else { return }
+        try? FileManager.default.removeItem(at: prepared.fileURL)
+    }
+
     enum PrepError: Error {
         /// The item could not be read or decoded at all.
         case unreadable

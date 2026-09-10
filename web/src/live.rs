@@ -26,6 +26,27 @@ pub struct AppState {
     pub connected: bool,
     /// Something that went wrong, for the person to read.
     pub failure: Option<String>,
+    /// Something that went RIGHT and is worth a word — "Reported to the
+    /// family owner." — which is not an error and is not drawn as one.
+    pub notice: Option<String>,
+    /// Whether the reader of the open chat is at its newest message, as its
+    /// view last said. A chat is READ only while this holds (see
+    /// `sync::reading`), and opening a chat sets it false until the view
+    /// has decided where the chat opens and looked.
+    pub at_newest: bool,
+    /// The open chat's unread state once its messages are in — None while
+    /// they are still loading. Taken BEFORE anything may read the chat,
+    /// because the "N new messages" divider is decided from it: a read
+    /// reported first leaves nothing unread to draw a divider over.
+    pub opening: Option<Opening>,
+}
+
+/// A chat, as it stood when it had loaded and before it was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Opening {
+    pub chat_id: i64,
+    pub unread_count: i64,
+    pub last_read_message_id: i64,
 }
 
 /// A handle on the one `AppState`.
