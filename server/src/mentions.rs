@@ -218,8 +218,14 @@ mod tests {
         // from the server on exactly these vectors.
         assert!(super::names_member("@AnnaЖ", "Anna"));
         assert!(super::names_member("@Anna文", "Anna"));
-        assert!(super::names_member("@Anna\u{0301} are you in?", "Anna"), "a combining mark");
-        assert!(super::names_member("@Anna\u{FE0F}", "Anna"), "a variation selector");
+        assert!(
+            super::names_member("@Anna\u{0301} are you in?", "Anna"),
+            "a combining mark"
+        );
+        assert!(
+            super::names_member("@Anna\u{FE0F}", "Anna"),
+            "a variation selector"
+        );
         assert!(!super::names_member("@Annab", "Anna"));
         assert!(!super::names_member("@Anna9", "Anna"));
         assert!(!super::names_member("@Anna_", "Anna"));

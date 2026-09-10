@@ -1053,9 +1053,10 @@ pub fn merge_attachment_ids(
 /// stamping `position` — the index into the sender's `attachment_ids`
 /// array, which is the order every read returns.
 ///
-/// Claimable once, by its uploader only. The `message_id IS NULL` guard in
-/// the UPDATE is the real guarantee (0025 removed the unique index that
-/// used to forbid a second attachment per MESSAGE — claiming stays
+/// Claimable once, by its uploader only — by one message or one board note,
+/// never both. The `message_id IS NULL AND note_id IS NULL` guard in the
+/// UPDATE is the real guarantee (0025 removed the unique index that used to
+/// forbid a second attachment per MESSAGE — claiming stays
 /// once-per-ATTACHMENT); the check below exists to answer with the
 /// protocol's error rather than silence.
 /// Runs inside the caller's transaction so that a refusal takes the
@@ -1069,7 +1070,7 @@ async fn claim_attachment(
 ) -> Result<Attachment, ApiError> {
     let row = sqlx::query(
         "UPDATE attachments SET message_id = $3, position = $4
-         WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL
+         WHERE id = $1 AND uploader_id = $2 AND message_id IS NULL AND note_id IS NULL
          RETURNING id, kind, mime, size_bytes, width, height, duration_ms, has_preview, name,
                    latitude, longitude, accuracy_m",
     )
@@ -1085,17 +1086,20 @@ async fn claim_attachment(
 
     // Tell "already claimed" apart from "not yours / no such thing" — the
     // first is worth retrying differently, the second is not.
-    let exists: Option<i64> =
-        sqlx::query_scalar("SELECT message_id FROM attachments WHERE id = $1 AND uploader_id = $2")
-            .bind(attachment_id)
-            .bind(uploader_id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .flatten();
-    if exists.is_some() {
+    // A picture pinned to the board is as taken as one on a message: one
+    // owner per upload is what lets deleting either take the bytes with it.
+    let taken: Option<bool> = sqlx::query_scalar(
+        "SELECT message_id IS NOT NULL OR note_id IS NOT NULL
+         FROM attachments WHERE id = $1 AND uploader_id = $2",
+    )
+    .bind(attachment_id)
+    .bind(uploader_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if taken == Some(true) {
         return Err(ApiError::conflict(
             codes::ATTACHMENT_ALREADY_USED,
-            "that attachment is already on another message",
+            "that attachment is already on another message or pinned to the board",
         ));
     }
     // The third answer, and the one a client can act on: an upload THIS

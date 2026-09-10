@@ -1654,7 +1654,11 @@ async fn a_third_members_reply_quoting_a_blocked_member_still_wakes_the_blocker(
 
     // Olive blocks Junior.
     let blocked = ts
-        .put(&owner, &format!("/families/members/{junior_id}/block"), json!({}))
+        .put(
+            &owner,
+            &format!("/families/members/{junior_id}/block"),
+            json!({}),
+        )
         .await;
     assert!(blocked.status().is_success(), "{}", blocked.status());
 
@@ -1690,8 +1694,7 @@ async fn a_third_members_reply_quoting_a_blocked_member_still_wakes_the_blocker(
         .wait_for(1, |path| path == "/3/device/ios-token-olive")
         .await;
     assert_eq!(
-        requests[0].body["aps"]["alert"]["title"],
-        "The Smiths — Gran mentioned you",
+        requests[0].body["aps"]["alert"]["title"], "The Smiths — Gran mentioned you",
         "a reply quoting a blocked member is still Gran's own words"
     );
 }

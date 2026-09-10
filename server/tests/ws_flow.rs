@@ -1166,7 +1166,10 @@ async fn a_browser_authenticates_the_socket_with_a_subprotocol() {
     );
     // And it is a real, authenticated socket.
     send_frame(&mut ws, json!({"type": "ping"})).await;
-    assert_eq!(next_frame_of_type(&mut ws, "pong").await, json!({"type": "pong"}));
+    assert_eq!(
+        next_frame_of_type(&mut ws, "pong").await,
+        json!({"type": "pong"})
+    );
 }
 
 /// A wrong token in the subprotocol is the same plain 401 a wrong header is.
@@ -1201,7 +1204,10 @@ async fn a_token_in_the_query_string_is_not_accepted() {
     let ts = spawn_server().await;
     let (token, _) = ts.register("owner", "Olive").await;
     let url = format!("{}?token={token}", ts.ws_url);
-    let request = url.as_str().into_client_request().expect("building the ws request");
+    let request = url
+        .as_str()
+        .into_client_request()
+        .expect("building the ws request");
     match tokio_tungstenite::connect_async(request).await {
         Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
             assert_eq!(response.status(), 401);
