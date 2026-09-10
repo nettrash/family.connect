@@ -18,6 +18,9 @@ mod socket;
 mod store;
 mod views;
 
+#[cfg(test)]
+mod layout_tests;
+
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -159,8 +162,9 @@ fn app() -> Html {
                     // is a chat that silently stops arriving, which is
                     // worse than one that never connected at all.
                     loop {
-                        let url = socket::url_for(&session::origin(), &held);
-                        if let Ok(ws) = WebSocket::open(&url) {
+                        let url = socket::url_for(&session::origin());
+                        let protocols = socket::protocols_for(&held);
+                        if let Ok(ws) = WebSocket::open_with_protocols(&url, &protocols) {
                             // THE CATCH-UP, before anything else: the
                             // frames missed while the socket was down
                             // are fetched with `after_id`, which is
@@ -238,7 +242,6 @@ fn app() -> Html {
                             next.mark_read(chat_id, newest);
                         }
                         store.set(next);
-                        views::conversation::scroll_to_newest();
                         if let Some(newest) = newest {
                             // Both legs: the frame is the fast one, and the
                             // POST is what survives a socket that is not up.
@@ -335,7 +338,6 @@ fn app() -> Html {
                 Some(chat_id),
             );
             store.set(next);
-            views::conversation::scroll_to_newest();
 
             // The socket when it is up, REST when it is not — the same
             // client_msg_id either way, which is what makes a retry
@@ -394,7 +396,11 @@ fn app() -> Html {
                     on_select={select_chat}
                 />
                 if current.is_some() {
+                    // Keyed by chat, so switching chats is a fresh pane:
+                    // its scroll position and "pinned to the newest"
+                    // state belong to the chat they were for.
                     <Conversation
+                        key={current.unwrap_or_default().to_string()}
                         messages={thread.messages.clone()}
                         my_user_id={store.my_user_id}
                         names={Rc::new(names).as_ref().clone()}
@@ -444,7 +450,6 @@ async fn catch_up(token: &str, store: &UseStateHandle<Store>, open_chat: Option<
             next.apply_message(message, Some(chat_id));
         }
         store.set(next);
-        views::conversation::scroll_to_newest();
         if short {
             return;
         }
@@ -490,7 +495,6 @@ async fn run_socket(
                     socket::ServerFrame::Unknown => continue,
                 }
                 store.set(next);
-                views::conversation::scroll_to_newest();
             }
             outgoing = outbox.next() => {
                 let Some(frame) = outgoing else { return };

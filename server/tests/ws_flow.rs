@@ -1133,3 +1133,79 @@ async fn a_send_frame_carries_mentions_and_so_do_the_ack_and_the_message() {
     let error = next_frame_of_type(&mut member_ws, "error").await;
     assert_eq!(error["code"], "validation", "{error}");
 }
+
+/// A BROWSER's upgrade: no `Authorization` header (the WebSocket API takes
+/// none), the token offered as a `bearer.<token>` subprotocol beside the
+/// product's own name — and the server echoes the NAME, never the token
+/// (docs/protocol.md, "A browser is a client too").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_browser_authenticates_the_socket_with_a_subprotocol() {
+    let ts = spawn_server().await;
+    let (token, _) = ts.register("owner", "Olive").await;
+
+    let mut request = ts
+        .ws_url
+        .as_str()
+        .into_client_request()
+        .expect("building the ws request");
+    request.headers_mut().insert(
+        tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
+        HeaderValue::from_str(&format!("family-connect, bearer.{token}")).expect("header value"),
+    );
+    let (mut ws, response) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("a browser's upgrade succeeds");
+    assert_eq!(
+        response
+            .headers()
+            .get("sec-websocket-protocol")
+            .and_then(|value| value.to_str().ok()),
+        Some("family-connect"),
+        "the product's name is echoed, and the token never is"
+    );
+    // And it is a real, authenticated socket.
+    send_frame(&mut ws, json!({"type": "ping"})).await;
+    assert_eq!(next_frame_of_type(&mut ws, "pong").await, json!({"type": "pong"}));
+}
+
+/// A wrong token in the subprotocol is the same plain 401 a wrong header is.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_bad_subprotocol_token_is_refused_before_the_upgrade() {
+    let ts = spawn_server().await;
+    let mut request = ts
+        .ws_url
+        .as_str()
+        .into_client_request()
+        .expect("building the ws request");
+    request.headers_mut().insert(
+        tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
+        HeaderValue::from_static("family-connect, bearer.not-a-real-token"),
+    );
+    let refused = tokio_tungstenite::connect_async(request).await;
+    match refused {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), 401);
+        }
+        other => panic!("expected a 401 before the upgrade, got {other:?}"),
+    }
+}
+
+/// THE URL IS NOT A DOOR. A token in the query string is the whole
+/// credential written into every access log on the way, so it is refused
+/// even when it is right — nothing should ever come to rely on it.
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_token_in_the_query_string_is_not_accepted() {
+    let ts = spawn_server().await;
+    let (token, _) = ts.register("owner", "Olive").await;
+    let url = format!("{}?token={token}", ts.ws_url);
+    let request = url.as_str().into_client_request().expect("building the ws request");
+    match tokio_tungstenite::connect_async(request).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), 401);
+        }
+        other => panic!("a query-string token must not authenticate, got {other:?}"),
+    }
+}

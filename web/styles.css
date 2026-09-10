@@ -93,7 +93,24 @@ button:disabled { opacity: .5; cursor: default; }
 
 /* --- the app ------------------------------------------------------------ */
 
-.app { min-height: 100dvh; display: flex; flex-direction: column; }
+/* THE SHELL IS EXACTLY THE WINDOW. The bar, the chat list and the composer
+ * stay put, and only the two panes scroll, each on its own.
+ *
+ * `height`, not `min-height`: a minimum lets the content push the shell
+ * taller than the window, and then the PAGE scrolls — bar, list and
+ * composer with it, which is the one thing a chat must never do. `vh`
+ * first for a browser without `dvh`; `dvh` then tracks a phone's
+ * collapsing toolbar, where `vh` would put the composer under it. */
+.app {
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.app > .bar,
+.app > .error { flex: none; }
 
 .bar {
     display: flex;
@@ -112,23 +129,48 @@ button:disabled { opacity: .5; cursor: default; }
     flex: 1;
     display: grid;
     grid-template-columns: minmax(220px, 300px) 1fr;
+    /* The row is pinned to the space the shell has, so each pane scrolls
+     * inside it instead of growing it. This and the panes' own
+     * `min-height: 0` are REDUNDANT on purpose: any one of them holds the
+     * layout in Chrome, and removing all of them lets the page scroll
+     * again (layout_tests::the_page_never_scrolls_only_the_two_panes_do).
+     * Two locks, so nobody deletes the only one thinking it is decoration. */
+    grid-template-rows: minmax(0, 1fr);
     min-height: 0;
+    overflow: hidden;
 }
 
 /* One column on a phone: the list, then the chat. */
+/* One column on a phone: the list above, the chat below, and still the
+ * same rule — each scrolls on its own and the composer never leaves. */
 @media (max-width: 720px) {
-    .split { grid-template-columns: 1fr; }
+    .split {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 35%) minmax(0, 1fr);
+    }
+    .chat-list {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+    }
 }
 
 .chat-list {
     border-right: 1px solid var(--line);
     background: var(--panel);
     overflow-y: auto;
+    /* Reaching the end of the list must not start scrolling something
+     * else — there is nothing else to scroll, and on a phone the chained
+     * gesture is a pull-to-refresh that reloads the app. */
+    overscroll-behavior: contain;
+    min-height: 0;
     display: flex;
     flex-direction: column;
 }
 
 .chat-row {
+    /* A row is its own height; in a scrolling column it must never be
+     * squeezed to make the list fit. */
+    flex: none;
     background: transparent;
     color: inherit;
     text-align: left;
@@ -163,12 +205,17 @@ button:disabled { opacity: .5; cursor: default; }
     font-size: 12px;
 }
 
-.conversation { display: flex; flex-direction: column; min-height: 0; }
+.conversation { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .conversation.empty { display: grid; place-items: center; color: var(--muted); }
 
 .messages {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
+    overscroll-behavior: contain;
+    /* Loading earlier messages inserts them ABOVE what is on screen; the
+     * browser keeps the reader's place rather than letting the page jump. */
+    overflow-anchor: auto;
     padding: 16px;
     display: flex;
     flex-direction: column;
@@ -178,6 +225,7 @@ button:disabled { opacity: .5; cursor: default; }
 .load-more { align-self: center; background: transparent; color: var(--tint); }
 
 .bubble {
+    flex: none;
     max-width: min(72ch, 78%);
     background: var(--panel);
     border: 1px solid var(--line);
@@ -196,9 +244,10 @@ button:disabled { opacity: .5; cursor: default; }
 .bubble .body { margin: 2px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .meta { font-size: 11px; color: var(--muted); }
 
-.typing { margin: 0 16px; color: var(--muted); font-size: 13px; }
+.typing { flex: none; margin: 0 16px; color: var(--muted); font-size: 13px; }
 
 .composer {
+    flex: none;
     display: flex;
     gap: 8px;
     padding: 12px 16px;

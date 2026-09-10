@@ -31,6 +31,10 @@ web-sys = { version = "0.3", features = [
     "ScrollToOptions",
     "ScrollBehavior",
     "Performance",
+    "Node",
+    "DomRect",
+    "Event",
+    "EventTarget",
 ] }
 
 [dev-dependencies]
