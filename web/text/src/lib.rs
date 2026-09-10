@@ -14,20 +14,28 @@
 //! - [`mentions`] — `@Name`: the composer's trigger and suggestions, who a
 //!   text names at send, and which tokens an incoming body highlights.
 //! - [`assistant`] — `@ai` and `/draw`, by the server's own grammar.
+//! - [`assistant_pictures`] — what a composer says before a photograph goes
+//!   to the assistant, and the four-photo, 5 MiB, JPEG-or-PNG bounds.
 //! - [`composer`] — the 4,000-character body limit and where a cut may land.
 //! - [`call_record`] — how a call record reads.
 //! - [`excerpt`] — the server's 120-character quote cut.
+//! - [`media`] — attachments: which kind a picked file goes as, its name and
+//!   type, the server's magic-number check, and how a bubble lays one out.
+//! - [`wav`] — a voice note as WAV, for browsers that cannot record MP4.
 //! - [`links`] — web links, email addresses and phone numbers in a text run,
 //!   and the markdown label/destination precedence. Only http, https,
 //!   `mailto:` and `tel:` ever link — in a browser, anything else is a way
 //!   to run script.
 
 pub mod assistant;
+pub mod assistant_pictures;
 pub mod call_record;
 pub mod composer;
 pub mod emoji;
 pub mod excerpt;
 pub mod links;
 pub mod markdown;
+pub mod media;
 pub mod mentions;
 pub mod reactions;
+pub mod wav;

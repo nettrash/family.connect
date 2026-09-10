@@ -105,6 +105,7 @@ mod tests {
             reply_to_message_id: Some(7),
             mentions: Vec::new(),
             poll: Some(vec!["Yes".into(), "No".into()]),
+            items: Vec::new(),
             attempts: 2,
             failed: None,
         }

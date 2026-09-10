@@ -11,10 +11,11 @@ use wasm_bindgen_futures::spawn_local;
 use yew::Callback;
 
 use crate::api::{self, ApiError};
-use crate::live::{Live, Opening};
-use crate::model::Reaction;
+use crate::live::{Live, Opening, Viewing};
+use crate::model::{Attachment, Reaction};
 use crate::outbox::Wake;
 use crate::socket::ClientFrame;
+use crate::staged::Prepared;
 use crate::store::{self, Draft, OpenPolls, Thread, ThreadView};
 use crate::sync::{self, expiry, wake, Channels, Shared, PAGE};
 
@@ -28,6 +29,16 @@ pub enum Action {
     Send {
         chat_id: i64,
         draft: Draft,
+    },
+    /// Something prepared, into the chat's staging strip — refused past the
+    /// ten a message may carry.
+    Stage {
+        chat_id: i64,
+        item: Prepared,
+    },
+    Unstage {
+        chat_id: i64,
+        index: usize,
     },
     SaveEdit {
         chat_id: i64,
@@ -89,6 +100,15 @@ pub enum Action {
     /// The open chat's view says whether its reader is at the newest
     /// message — which is what decides whether the chat is being read.
     AtNewest(bool),
+    /// A message's photos and videos, full size, starting at one.
+    OpenViewer {
+        items: Vec<Attachment>,
+        index: usize,
+    },
+    StepViewer(usize),
+    CloseViewer,
+    /// Something went wrong that a person should read.
+    Fail(String),
     OpenDirect {
         user_id: i64,
     },
@@ -194,9 +214,10 @@ impl Actions {
                         if state.open_chat != Some(chat_id) {
                             return;
                         }
+                        let unread_count = state.store.opening_unread(chat_id);
                         state.opening = state.store.item(chat_id).map(|item| Opening {
                             chat_id,
-                            unread_count: item.unread_count,
+                            unread_count,
                             last_read_message_id: item.last_read_message_id,
                         });
                     });
@@ -228,12 +249,39 @@ impl Actions {
                 // The bubble draws now and the row joins the outbox, whose
                 // sender takes it from there (outbox.rs). Nothing here waits.
                 live.now(|state| {
+                    // What was staged went with it — when it is what went.
+                    // A location goes alone and leaves the strip as it was.
+                    let from_strip = !draft.attachments.is_empty()
+                        && state.store.staged.get(&chat_id) == Some(&draft.attachments);
                     state
                         .store
                         .queue_send(chat_id, uuid::Uuid::new_v4().to_string(), draft);
                     state.store.drafts.remove(&chat_id);
+                    if from_strip {
+                        state.store.staged.remove(&chat_id);
+                    }
                 });
                 wake(&self.channels, Wake::Queued);
+            }
+            Action::Stage { chat_id, item } => {
+                live.now(|state| {
+                    let staged = state.store.staged.entry(chat_id).or_default();
+                    if fc_text::media::can_stage(staged.len()) {
+                        staged.push(item);
+                    }
+                });
+            }
+            Action::Unstage { chat_id, index } => {
+                live.now(|state| {
+                    if let Some(staged) = state.store.staged.get_mut(&chat_id) {
+                        if index < staged.len() {
+                            staged.remove(index);
+                        }
+                        if staged.is_empty() {
+                            state.store.staged.remove(&chat_id);
+                        }
+                    }
+                });
             }
             Action::SaveEdit {
                 chat_id,
@@ -461,6 +509,24 @@ impl Actions {
                         state.store.drafts.insert(chat_id, text);
                     }
                 });
+            }
+            Action::OpenViewer { items, index } => {
+                if !items.is_empty() {
+                    live.now(|state| state.viewing = Some(Viewing { items, index }));
+                }
+            }
+            Action::StepViewer(index) => {
+                live.now(|state| {
+                    if let Some(viewing) = state.viewing.as_mut() {
+                        viewing.index = index.min(viewing.items.len().saturating_sub(1));
+                    }
+                });
+            }
+            Action::CloseViewer => {
+                live.now(|state| state.viewing = None);
+            }
+            Action::Fail(text) => {
+                live.now(|state| state.failure = Some(text));
             }
             Action::DismissNotice => {
                 live.now(|state| {
@@ -735,5 +801,72 @@ mod tests {
         });
         actions.roll_back_reactions(session, 42, 100, before);
         assert_eq!(reactions_held(&actions), newer);
+    }
+
+    fn photo() -> Prepared {
+        Prepared {
+            kind: "photo".into(),
+            mime: "image/jpeg".into(),
+            size: 3,
+            file: Some(web_sys::Blob::new().expect("a blob")),
+            preview: Some(web_sys::Blob::new().expect("a blob")),
+            ..Prepared::default()
+        }
+    }
+
+    fn staged(actions: &Actions) -> usize {
+        actions
+            .live
+            .read(|state| state.store.staged.get(&42).map(Vec::len).unwrap_or(0))
+    }
+
+    /// Ten a message, and the eleventh is not staged whichever door it
+    /// came through.
+    #[wasm_bindgen_test]
+    fn no_more_than_ten_are_staged() {
+        let actions = actions();
+        for _ in 0..11 {
+            actions.handle(Action::Stage {
+                chat_id: 42,
+                item: photo(),
+            });
+        }
+        assert_eq!(staged(&actions), 10);
+        actions.handle(Action::Unstage {
+            chat_id: 42,
+            index: 0,
+        });
+        assert_eq!(staged(&actions), 9);
+    }
+
+    /// Sending what was staged empties the strip; sending a place — which
+    /// always goes alone — leaves the strip exactly as it was.
+    #[wasm_bindgen_test]
+    fn a_location_send_leaves_the_strip_alone() {
+        let actions = actions();
+        for _ in 0..2 {
+            actions.handle(Action::Stage {
+                chat_id: 42,
+                item: photo(),
+            });
+        }
+        actions.handle(Action::Send {
+            chat_id: 42,
+            draft: Draft {
+                attachments: vec![Prepared::location(1.0, 2.0, None)],
+                ..Draft::default()
+            },
+        });
+        assert_eq!(staged(&actions), 2, "the photos wait for the next message");
+
+        let strip = actions.live.read(|state| state.store.staged[&42].clone());
+        actions.handle(Action::Send {
+            chat_id: 42,
+            draft: Draft {
+                attachments: strip,
+                ..Draft::default()
+            },
+        });
+        assert_eq!(staged(&actions), 0, "what went is gone from the strip");
     }
 }

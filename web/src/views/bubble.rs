@@ -10,6 +10,7 @@ use yew::prelude::*;
 use crate::actions::Action;
 use crate::model::{Call, Message};
 use crate::time;
+use crate::views::attachments::AttachmentStack;
 use crate::views::body::Body;
 use crate::views::poll::PollView;
 use crate::views::reactions::{chips, details, EmojiPicker, QUICK_REACTIONS};
@@ -26,28 +27,6 @@ pub const HEART: &str = "\u{2764}\u{FE0F}";
 /// `mine` is whether this device's person placed the call.
 pub fn call_record_line(call: &Call, mine: bool) -> String {
     fc_text::call_record::label(&call.outcome, call.duration_secs, call.video, mine)
-}
-
-/// One line saying what an attachment is, until the next phase draws it.
-fn attachment_line(message: &Message) -> Option<String> {
-    let attachments = message.attachments();
-    if attachments.is_empty() {
-        return None;
-    }
-    let names: Vec<String> = attachments
-        .iter()
-        .map(|attachment| match attachment.kind.as_str() {
-            "photo" => "📷 Photo".to_string(),
-            "video" => "🎬 Video".to_string(),
-            "audio" => "🎤 Voice message".to_string(),
-            "location" => "📍 Location".to_string(),
-            _ => format!(
-                "📎 {}",
-                attachment.name.clone().unwrap_or_else(|| "File".into())
-            ),
-        })
-        .collect();
-    Some(names.join("  "))
 }
 
 #[derive(Properties, PartialEq)]
@@ -504,6 +483,18 @@ pub fn bubble(props: &BubbleProps) -> Html {
         Html::default()
     };
 
+    // Nothing but photos and videos, and nothing above them: the pictures
+    // ARE the message, and draw without a balloon round them (the Mac's
+    // bare media row).
+    let media_only = message.body.is_empty()
+        && message.reply_to.is_none()
+        && message.poll.is_none()
+        && !message.attachments().is_empty()
+        && message
+            .attachments()
+            .iter()
+            .all(|attachment| fc_text::media::is_media(&attachment.kind));
+
     // The ladder was drawn against a phone's 17-point body text; scaled to
     // this page's 15px the way the Mac scales it to 13, so the proportion
     // is the phone's.
@@ -557,6 +548,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 props.failed.is_some().then_some("is-failed"),
                 message.call.is_some().then_some("is-call"),
                 emoji_size.is_some().then_some("is-emoji-only"),
+                media_only.then_some("is-media-only"),
             )}
             ondblclick={on_double}
         >
@@ -564,10 +556,15 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 <span class="sender">{ name_of(&props.names, message.sender_id) }</span>
             }
             { quote.unwrap_or_default() }
-            { body }
-            if let Some(line) = attachment_line(message) {
-                <p class="attachments-line">{ line }</p>
+            if !message.attachments().is_empty() {
+                <AttachmentStack
+                    attachments={message.attachments().to_vec()}
+                    mine={mine && !media_only}
+                    on_open={props.on_action.reform(|(items, index)| Action::OpenViewer { items, index })}
+                    on_notice={props.on_action.reform(Action::Fail)}
+                />
             }
+            { body }
             if message.poll.is_some() {
                 <PollView
                     message={message.clone()}

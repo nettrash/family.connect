@@ -29,6 +29,22 @@ pub struct User {
 pub struct Family {
     pub id: i64,
     pub name: String,
+    /// Whether an `@ai` mention may be sent the chat's recent words.
+    /// ALWAYS present, and true by default — absent only from a server
+    /// that predates it, where it was always so.
+    #[serde(default = "yes")]
+    pub ai_history: bool,
+    /// Whether a photograph may be shown to the assistant at all. False
+    /// unless the owner turned it on (docs/protocol.md, "Pictures").
+    #[serde(default)]
+    pub ai_vision: bool,
+    /// Whether a mention may also be shown the chat's recent photos.
+    #[serde(default)]
+    pub ai_history_photos: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A trimmed `GET /me`: who this is, whether they are in a family, and the

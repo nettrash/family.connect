@@ -60,6 +60,26 @@ The consequences worth stating rather than discovering:
   unsent — the same rows, the same `client_msg_id`s, their attempts and failures — rather than
   losing what the sender saw as "Sending…". Closing the tab ends the session and loses the outbox
   with it, so a page with anything still unsent asks the browser to confirm before it closes.
+  What is kept is the ROW, not the bytes: a photo or a recording waiting to upload lives in the
+  tab's memory, and storage that outlived the tab would be a family's pictures left on a shared
+  machine. So after a reload a message whose attachments had all landed is sent as it stands —
+  the ids are good for the server's unclaimed grace — and one whose bytes had not finished
+  uploading fails at once, visibly, saying they were lost, rather than waiting to be retried with
+  nothing to send.
+- **A browser fetches media with its token, and keeps none of it.** An `<img>`, `<video>` or
+  `<audio>` element cannot send `Authorization`, and a token in a URL is refused, so a browser
+  reads `GET /attachments/{id}` and its preview with `fetch` and draws the bytes from memory. It
+  asks with `cache: no-store`. The server's `Cache-Control: private, immutable` is right for an
+  app's own cache and wrong for a browser's, which every account that signs in on the machine
+  shares and which outlives the tab — the reason the token lives in `sessionStorage` in the first
+  place. A reload fetches again; that is the price, and it is paid only by the reader. A tile
+  never downloads a VIDEO to draw itself: it draws the poster, or a placeholder until one lands.
+- **A browser records voice notes into MP4 (AAC) where it can, and into WAV where it cannot —
+  never WebM.** WebM is what most browsers' recorders produce by default, `kind=audio` does not
+  accept it, and a family's phones could not play it if it did. WAV is large, and it plays
+  everywhere. Everything else about a voice note — five minutes at most, staged so a caption can
+  be added — is the apps' rule. A browser's location comes from its own geolocation, under the
+  same freshness bar the apps apply (see "Locations"): never a fix older than two minutes.
 
 Everything else in this document applies to a browser unchanged. Where a section says Windows and
 web are "not asked to draw" something yet, that is a statement about what has been BUILT, never a
