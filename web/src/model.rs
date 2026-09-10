@@ -18,6 +18,11 @@ pub struct User {
     pub id: i64,
     pub username: String,
     pub display_name: String,
+    /// Present, and true, only on an account that has been deleted — whose
+    /// `display_name` is then the English placeholder a client should
+    /// replace with its own words.
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -26,7 +31,8 @@ pub struct Family {
     pub name: String,
 }
 
-/// A trimmed `GET /me`: who this is, and whether they are in a family.
+/// A trimmed `GET /me`: who this is, whether they are in a family, and the
+/// few server switches this client acts on.
 ///
 /// `family` is null for an account that has not joined one — a real state
 /// this client has to draw rather than a failure.
@@ -35,24 +41,53 @@ pub struct Me {
     pub user: User,
     #[serde(default)]
     pub family: Option<Family>,
+    /// The caller's own block list — the WHOLE of it, replaced rather than
+    /// merged on every read (docs/protocol.md, "Blocking a member").
+    #[serde(default)]
+    pub blocked_user_ids: Vec<i64>,
+    /// The operator's published contact, shown as sent and never made a
+    /// link (docs/protocol.md, "Reporting a member").
+    #[serde(default)]
+    pub support_contact: Option<String>,
 }
 
-/// One person in `GET /families/mine` — trimmed to what draws a name.
+/// One person in `GET /families/mine`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Member {
     pub id: i64,
     pub display_name: String,
+    #[serde(default)]
+    pub username: String,
+    /// `owner` | `member`; absent on a former member.
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 /// The family's assistant, which speaks in the chat under an account of
-/// its own and so needs a name like anybody else.
+/// its own and so needs a name like anybody else. ABSENT when the server
+/// has none — and that absence is the whole capability check: no
+/// `assistant`, no `@ai` offered (docs/protocol.md, "The assistant").
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Assistant {
     pub user_id: i64,
     pub display_name: String,
+    /// The token that asks for it in the family chat — `@ai`.
+    #[serde(default)]
+    pub mention: Option<String>,
+    /// The token that asks it for a picture — `/draw`.
+    #[serde(default)]
+    pub draw: Option<String>,
+    /// Whether this SERVER can look at a picture.
+    #[serde(default)]
+    pub vision: bool,
+    /// Whether this SERVER can make one.
+    #[serde(default)]
+    pub images: bool,
 }
 
-/// `GET /families/mine`, trimmed to the names in it.
+/// `GET /families/mine`, trimmed to what this client draws.
 ///
 /// `former_members` is there for exactly this: the messages somebody left
 /// behind when their account was deleted still need a name on them. It is
@@ -64,18 +99,21 @@ pub struct Roster {
     pub former_members: Vec<Member>,
     #[serde(default)]
     pub assistant: Option<Assistant>,
+    #[serde(default)]
+    pub blocked_user_ids: Vec<i64>,
 }
 
 impl Roster {
     /// Everybody this family's messages can be from, by user id.
-    pub fn names(self) -> Vec<(i64, String)> {
+    pub fn names(&self) -> Vec<(i64, String)> {
         let assistant = self
             .assistant
-            .map(|assistant| (assistant.user_id, assistant.display_name));
+            .as_ref()
+            .map(|assistant| (assistant.user_id, assistant.display_name.clone()));
         self.former_members
-            .into_iter()
-            .chain(self.members)
-            .map(|member| (member.id, member.display_name))
+            .iter()
+            .chain(self.members.iter())
+            .map(|member| (member.id, member.display_name.clone()))
             .chain(assistant)
             .collect()
     }
@@ -92,36 +130,23 @@ pub struct Chat {
     pub peer_user_id: Option<i64>,
 }
 
-/// One row of `GET /chats`.
-///
-/// `last_read_message_id` is ALWAYS present (the protocol says so
-/// explicitly, and `0` is a real answer meaning "never reported"), so it is
-/// not an Option. `unread_count` likewise.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ChatListItem {
-    pub chat: Chat,
-    #[serde(default)]
-    pub last_message: Option<Message>,
-    pub unread_count: i64,
-    pub last_read_message_id: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Message {
-    pub id: i64,
-    pub chat_id: i64,
-    pub sender_id: i64,
-    #[serde(default)]
-    pub client_msg_id: Option<String>,
-    pub body: String,
-    pub created_at: String,
-    /// Present only on an edited message, which is what makes it the mark
-    /// rather than a second timestamp to reconcile.
-    #[serde(default)]
-    pub edited_at: Option<String>,
-}
-
 impl Chat {
+    pub const FAMILY: &'static str = "family";
+    pub const DIRECT: &'static str = "direct";
+    pub const AI: &'static str = "ai";
+
+    pub fn is_family(&self) -> bool {
+        self.kind == Self::FAMILY
+    }
+
+    pub fn is_direct(&self) -> bool {
+        self.kind == Self::DIRECT
+    }
+
+    pub fn is_ai(&self) -> bool {
+        self.kind == Self::AI
+    }
+
     /// What to call this chat in a list.
     ///
     /// The family chat carries the family's name as its title; a direct
@@ -135,24 +160,179 @@ impl Chat {
     }
 }
 
-impl Message {
-    /// The clock a bubble shows: `HH:MM` out of the protocol's RFC 3339.
-    ///
-    /// Cut from the string rather than parsed into a date type: the wire
-    /// carries UTC, this client shows UTC, and pulling in a date library to
-    /// take five characters would be the wrong trade. When this client
-    /// learns to show local time it will need one, and that is the moment
-    /// to add it — not before.
-    pub fn clock(&self) -> String {
-        self.created_at
-            .split('T')
-            .nth(1)
-            .map(|time| time.chars().take(5).collect())
-            .unwrap_or_default()
-    }
+/// One row of `GET /chats`.
+///
+/// `last_read_message_id` is ALWAYS present (the protocol says so
+/// explicitly, and `0` is a real answer meaning "never reported"), so it is
+/// not an Option. `unread_count` likewise. The three `max_*_seq` are
+/// high-water marks, omitted until the first reaction, edit or poll.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ChatListItem {
+    pub chat: Chat,
+    #[serde(default)]
+    pub last_message: Option<Message>,
+    pub unread_count: i64,
+    pub last_read_message_id: i64,
+    #[serde(default)]
+    pub max_reaction_seq: Option<i64>,
+    #[serde(default)]
+    pub max_edit_seq: Option<i64>,
+    #[serde(default)]
+    pub max_poll_seq: Option<i64>,
+    /// An unread message here names the reader. Absent, never false.
+    #[serde(default)]
+    pub mentioned: bool,
+}
 
+/// The quote a reply carries, RECOMPUTED by the server on every read —
+/// with exactly one more level under it when the quoted message was itself
+/// a reply (docs/protocol.md, "Replies").
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct ReplyTo {
+    pub message_id: i64,
+    pub sender_id: i64,
+    pub excerpt: String,
+    #[serde(default)]
+    pub parent: Option<ReplyParent>,
+}
+
+/// The second level of a quote, which by construction has no third.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct ReplyParent {
+    pub message_id: i64,
+    pub sender_id: i64,
+    pub excerpt: String,
+}
+
+/// A member named in a body — `name` exactly AS TYPED after the `@`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct Mention {
+    pub user_id: i64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct Reaction {
+    pub user_id: i64,
+    pub emoji: String,
+}
+
+/// An attachment's metadata. The bytes are fetched separately, and only
+/// what a kind actually has is present: dimensions on photos and videos, a
+/// duration on video and audio, a name on files, coordinates on locations.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
+pub struct Attachment {
+    pub id: i64,
+    /// `photo` | `video` | `audio` | `file` | `location`.
+    pub kind: String,
+    #[serde(default)]
+    pub mime: Option<String>,
+    #[serde(default)]
+    pub size: Option<i64>,
+    #[serde(default)]
+    pub width: Option<i64>,
+    #[serde(default)]
+    pub height: Option<i64>,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub has_preview: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub latitude: Option<f64>,
+    #[serde(default)]
+    pub longitude: Option<f64>,
+    #[serde(default)]
+    pub accuracy_m: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct PollOption {
+    pub id: i64,
+    pub text: String,
+    /// Everybody who chose this option — full state, never a delta.
+    pub votes: Vec<i64>,
+}
+
+/// A poll's options and votes. The QUESTION is the message body.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct Poll {
+    pub poll_seq: i64,
+    pub closed: bool,
+    pub options: Vec<PollOption>,
+}
+
+/// The record of a call, whose body is an English placeholder this client
+/// never shows (docs/protocol.md, "Voice calls").
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct Call {
+    /// `completed` | `missed` | `declined` | `failed`.
+    pub outcome: String,
+    #[serde(default)]
+    pub duration_secs: Option<i64>,
+    #[serde(default)]
+    pub video: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
+pub struct Message {
+    pub id: i64,
+    pub chat_id: i64,
+    pub sender_id: i64,
+    #[serde(default)]
+    pub client_msg_id: Option<String>,
+    pub body: String,
+    pub created_at: String,
+    /// Present only on an edited message, with `edit_seq` beside it — the
+    /// value that guards applying an edit (docs/protocol.md, "Editing").
+    #[serde(default)]
+    pub edited_at: Option<String>,
+    #[serde(default)]
+    pub edit_seq: Option<i64>,
+    /// Present once the message has ever been reacted to; `[]` after the
+    /// last reaction goes, which is "cleared", not "no data".
+    #[serde(default)]
+    pub reactions: Option<Vec<Reaction>>,
+    #[serde(default)]
+    pub reaction_seq: Option<i64>,
+    #[serde(default)]
+    pub reply_to: Option<ReplyTo>,
+    #[serde(default)]
+    pub thread_root_id: Option<i64>,
+    /// On a ROOT with at least one reply: how many name it as their root.
+    #[serde(default)]
+    pub reply_count: Option<i64>,
+    #[serde(default)]
+    pub mentions: Option<Vec<Mention>>,
+    #[serde(default)]
+    pub attachments: Option<Vec<Attachment>>,
+    #[serde(default)]
+    pub poll: Option<Poll>,
+    #[serde(default)]
+    pub call: Option<Call>,
+}
+
+impl Message {
     pub fn is_edited(&self) -> bool {
         self.edited_at.is_some()
+    }
+
+    /// The edit guard's value: absent counts as 0 (docs/protocol.md).
+    pub fn edit_seq(&self) -> i64 {
+        self.edit_seq.unwrap_or(0)
+    }
+
+    pub fn attachments(&self) -> &[Attachment] {
+        self.attachments.as_deref().unwrap_or(&[])
+    }
+
+    pub fn reactions(&self) -> &[Reaction] {
+        self.reactions.as_deref().unwrap_or(&[])
+    }
+
+    pub fn mentions(&self) -> &[Mention] {
+        self.mentions.as_deref().unwrap_or(&[])
     }
 }
 
@@ -160,38 +340,6 @@ impl Message {
 mod tests {
     use super::*;
     use wasm_bindgen_test::*;
-
-    #[wasm_bindgen_test]
-    fn a_message_reads_its_clock_out_of_the_wire_timestamp() {
-        let message = Message {
-            id: 1,
-            chat_id: 42,
-            sender_id: 7,
-            client_msg_id: None,
-            body: "Dinner at 7?".into(),
-            created_at: "2026-08-19T17:03:12Z".into(),
-            edited_at: None,
-        };
-        assert_eq!(message.clock(), "17:03");
-        assert!(!message.is_edited());
-    }
-
-    /// A timestamp this client cannot read must not panic and must not draw
-    /// something wrong — an empty clock is the honest answer.
-    #[wasm_bindgen_test]
-    fn a_timestamp_without_a_time_reads_as_nothing() {
-        let message = Message {
-            id: 1,
-            chat_id: 42,
-            sender_id: 7,
-            client_msg_id: None,
-            body: String::new(),
-            created_at: "2026-08-19".into(),
-            edited_at: Some("2026-08-19T18:00:00Z".into()),
-        };
-        assert_eq!(message.clock(), "");
-        assert!(message.is_edited());
-    }
 
     /// The protocol's first compatibility rule, as a test: a newer server
     /// sends fields this client has never heard of, and it reads the
@@ -208,6 +356,72 @@ mod tests {
         let message: Message = serde_json::from_str(json).expect("a message this client can read");
         assert_eq!(message.id, 1338);
         assert_eq!(message.body, "@Anna are you in?");
+        assert_eq!(message.mentions()[0].name, "Anna");
+        assert_eq!(message.thread_root_id, Some(1337));
+    }
+
+    /// Everything a message can carry, in the protocol's own shapes.
+    #[wasm_bindgen_test]
+    fn a_full_message_reads_every_part() {
+        let json = r#"{
+            "id": 1340, "chat_id": 42, "sender_id": 9, "client_msg_id": "8f14e45f",
+            "body": "Pizza or pasta?", "created_at": "2026-08-19T17:03:12Z",
+            "edited_at": "2026-08-19T17:04:00Z", "edit_seq": 88,
+            "reactions": [{"user_id": 7, "emoji": "❤️"}], "reaction_seq": 123,
+            "reply_to": {"message_id": 41, "sender_id": 9, "excerpt": "See you at six",
+                         "parent": {"message_id": 38, "sender_id": 4, "excerpt": "What time?"}},
+            "attachments": [{"id": 34, "kind": "photo", "mime": "image/jpeg", "size": 182734,
+                             "width": 1600, "height": 1200, "has_preview": true}],
+            "attachment": {"id": 34, "kind": "photo"},
+            "poll": {"poll_seq": 89, "closed": false,
+                     "options": [{"id": 5, "text": "Pizza", "votes": [7, 9]},
+                                 {"id": 6, "text": "Pasta", "votes": []}]},
+            "call": {"outcome": "completed", "duration_secs": 222, "video": true}
+        }"#;
+        let message: Message = serde_json::from_str(json).expect("reads");
+        assert_eq!(message.edit_seq(), 88);
+        assert_eq!(message.reactions()[0].emoji, "❤️");
+        let quote = message.reply_to.as_ref().expect("a quote");
+        assert_eq!(quote.parent.as_ref().map(|p| p.message_id), Some(38));
+        assert_eq!(message.attachments()[0].width, Some(1600));
+        let poll = message.poll.as_ref().expect("a poll");
+        assert_eq!(poll.options[0].votes, vec![7, 9]);
+        let call = message.call.as_ref().expect("a call record");
+        assert!(call.video);
+        assert_eq!(call.duration_secs, Some(222));
+    }
+
+    /// A message in its first form has none of it, and says so by absence.
+    #[wasm_bindgen_test]
+    fn a_plain_message_has_none_of_it() {
+        let json = r#"{"id": 1, "chat_id": 42, "sender_id": 7, "body": "hi",
+                       "created_at": "2026-08-19T17:03:12Z"}"#;
+        let message: Message = serde_json::from_str(json).expect("reads");
+        assert!(!message.is_edited());
+        assert_eq!(message.edit_seq(), 0, "absent counts as 0 for the guard");
+        assert!(
+            message.reactions.is_none(),
+            "no data, which is not the same as cleared"
+        );
+        assert!(message.attachments().is_empty());
+        assert!(message.poll.is_none() && message.call.is_none() && message.reply_to.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_chat_row_reads_its_cursors_and_mention_mark() {
+        let json = r#"{"chat": {"id": 42, "kind": "family", "title": "The Smiths"},
+                       "last_message": null, "unread_count": 3, "last_read_message_id": 1337,
+                       "max_reaction_seq": 123, "mentioned": true}"#;
+        let item: ChatListItem = serde_json::from_str(json).expect("reads");
+        assert_eq!(item.max_reaction_seq, Some(123));
+        assert_eq!(item.max_edit_seq, None, "never edited");
+        assert!(item.mentioned);
+        assert!(item.chat.is_family());
+
+        let quiet = r#"{"chat": {"id": 43, "kind": "direct", "peer_user_id": 9},
+                        "unread_count": 0, "last_read_message_id": 0}"#;
+        let item: ChatListItem = serde_json::from_str(quiet).expect("reads");
+        assert!(!item.mentioned, "absent is false");
     }
 
     /// The roster names everybody a message can be from: the members, the
@@ -227,7 +441,8 @@ mod tests {
             ],
             "max_board_seq": 88,
             "assistant": {"user_id": 2, "display_name": "Assistant", "mention": "@ai",
-                          "draw": true, "vision": false, "images": true}
+                          "draw": "/draw", "vision": false, "images": true},
+            "blocked_user_ids": [4]
         }"#;
         let roster: Roster = serde_json::from_str(json).expect("a roster this client can read");
         let names: std::collections::HashMap<i64, String> = roster.names().into_iter().collect();
@@ -235,6 +450,12 @@ mod tests {
         assert_eq!(names.get(&4).map(String::as_str), Some("Gran"));
         assert_eq!(names.get(&2).map(String::as_str), Some("Assistant"));
         assert_eq!(names.len(), 4);
+        let assistant = roster.assistant.as_ref().expect("an assistant");
+        assert_eq!(assistant.mention.as_deref(), Some("@ai"));
+        assert!(assistant.images && !assistant.vision);
+        assert_eq!(roster.blocked_user_ids, vec![4]);
+        assert_eq!(roster.members[0].role.as_deref(), Some("owner"));
+        assert!(roster.former_members[0].deleted);
 
         // No former members and no assistant is an ordinary family too.
         let bare: Roster = serde_json::from_str(r#"{"members": []}"#).expect("reads");
@@ -269,5 +490,15 @@ mod tests {
             peer_user_id: Some(9),
         };
         assert_eq!(empty.display_title(Some("Anna")), "Anna");
+    }
+
+    #[wasm_bindgen_test]
+    fn me_reads_the_block_list_and_the_support_contact() {
+        let json = r#"{"user": {"id": 7, "username": "me", "display_name": "Me"},
+                       "family": {"id": 3, "name": "The Smiths"},
+                       "blocked_user_ids": [9, 11], "support_contact": "ops@example.com"}"#;
+        let me: Me = serde_json::from_str(json).expect("reads");
+        assert_eq!(me.blocked_user_ids, vec![9, 11]);
+        assert_eq!(me.support_contact.as_deref(), Some("ops@example.com"));
     }
 }

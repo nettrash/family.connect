@@ -2225,7 +2225,7 @@ struct ConversationView: View {
     /// prepared file cleaned up, because nothing else owns it now.
     private func stage(_ prepared: MediaPrep.Prepared) {
         guard StagedAttachment.canAdd(to: staged.count) else {
-            try? FileManager.default.removeItem(at: prepared.fileURL)
+            MediaPrep.discard(prepared)
             mediaState = .idle
             composerNotice = String(
                 localized: "You can attach up to \(StagedAttachment.maxPerMessage) items.")
@@ -2272,20 +2272,22 @@ struct ConversationView: View {
         }
     }
 
-    /// Throw away ONE staged item and its temp file.
+    /// Throw away ONE staged item, and its temp file if it has one.
     ///
-    /// The file is ours: `MediaPrep` wrote it into a temp directory and
-    /// nothing else will clean it up, because the delete that normally
-    /// consumes it lives in `sendMedia` — which never ran.
+    /// Usually the file is ours — `MediaPrep` wrote it into a temp
+    /// directory, and nothing else will clean it up because the delete
+    /// that normally consumes it lives in `sendMedia`, which never ran. But
+    /// a video that already fits the ceiling is staged as the person's OWN
+    /// file, and `MediaPrep.discard` is what knows not to delete that.
     private func discardStaged(_ item: StagedAttachment) {
-        try? FileManager.default.removeItem(at: item.prepared.fileURL)
+        MediaPrep.discard(item.prepared)
         staged.removeAll { $0.id == item.id }
     }
 
     /// Throw away the whole staged set.
     private func discardStaged() {
         for item in staged {
-            try? FileManager.default.removeItem(at: item.prepared.fileURL)
+            MediaPrep.discard(item.prepared)
         }
         staged = []
     }

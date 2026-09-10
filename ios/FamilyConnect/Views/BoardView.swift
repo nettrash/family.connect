@@ -338,7 +338,7 @@ struct BoardView: View {
                     return
                 }
                 let prepared = try await MediaPrep.preparePhoto(from: data, limit: MediaPrep.sizeLimit)
-                defer { try? FileManager.default.removeItem(at: prepared.fileURL) }
+                defer { MediaPrep.discard(prepared) }
                 let uploaded = try await coordinator.api.uploadAttachment(
                     fileURL: prepared.fileURL,
                     mime: prepared.mime,

@@ -51,8 +51,15 @@ The consequences worth stating rather than discovering:
   to the sender's own socket carries the `client_msg_id`, and either copy landing first settles
   it. What a browser still says on the socket — `read`, `typing`, `ping` — is momentary: said
   while the socket is down it is dropped, not saved up and delivered late. Nothing is lost by
-  that, because a browser also reports `read` over REST whenever it opens a chat, catches up
-  after a reconnect, or comes back into view.
+  that, because a browser also reports `read` over REST whenever its reader arrives at the newest
+  message of the open chat — on opening it, after a catch-up, on scrolling back down, on the tab
+  coming back into view or the window to the front. Never before: a reader scrolled up in the
+  history, or opening a chat at its unread divider with the newest below the fold, has not read
+  what is down there, and a marker once reported is wrong on every device.
+- **The outbox is kept beside the token, in `sessionStorage`.** A reload goes on sending what was
+  unsent — the same rows, the same `client_msg_id`s, their attempts and failures — rather than
+  losing what the sender saw as "Sending…". Closing the tab ends the session and loses the outbox
+  with it, so a page with anything still unsent asks the browser to confirm before it closes.
 
 Everything else in this document applies to a browser unchanged. Where a section says Windows and
 web are "not asked to draw" something yet, that is a statement about what has been BUILT, never a
@@ -492,7 +499,7 @@ of its own; tapping it opens the chain on its own surface — the root at the to
 it in order, a composer at the bottom. "View thread" is also offered on any reply in a chain. Rows
 on that surface draw exactly as they do in the chat — the same bubbles, the same quotes, the same
 hidden-row rule for a blocked member, the same reactions — because a second, simpler renderer is a
-second place for those rules to drift. Windows and web are not asked to draw any of this yet.
+second place for those rules to drift. The web client draws it too; Windows is not asked to yet.
 
 ### Editing
 
@@ -1221,7 +1228,7 @@ equally long names the LOWER `user_id` first; a token once claimed is not offere
 without the claim both would be named and both woken — and in a family with two members called
 Anna, one `@Anna` names the one with the lower id on every platform rather than whichever the
 roster happened to list first. A bubble marks the tokens by the same rule. The list rides on the pending row, so
-a retry re-sends it. Windows and web are not asked to draw any of this yet.
+a retry re-sends it. The web client does all of it too; Windows is not asked to yet.
 
 #### Mentioning the assistant in the family chat
 

@@ -1,0 +1,15 @@
+[package]
+name = "fc-text"
+version = "1.0.0"
+edition = "2021"
+authors = ["nettrash"]
+description = "Family Connect's message-text rules, ported from the Apple app for the web client: the markdown subset, link detection, emoji-only messages, mentions and the assistant's tokens."
+license = "MIT"
+publish = false
+
+# Pure Rust with no browser in it, so every rule is tested natively in
+# milliseconds (`cargo test` here) rather than in a headless browser.
+[dependencies]
+# Extended grapheme clusters — Swift's `Character` — which the mention and
+# composer rules cut on, and the standard library does not provide.
+unicode-segmentation = "1.13"

@@ -77,6 +77,25 @@ pub fn jittered_ms(ceiling: f64, random: f64) -> u32 {
     (ceiling * random.clamp(0.0, 1.0)) as u32
 }
 
+/// The longest a `Retry-After` is taken at its word, in milliseconds. The
+/// protocol asks a client to honour it but to cap it "at something sane":
+/// past a minute, the person is better served by the row's own backoff and
+/// a network that comes back cutting it short.
+pub const RETRY_AFTER_CAP_MS: f64 = 60_000.0;
+
+/// The least the next wait may be: what a 429 asked for, capped — and
+/// nothing otherwise. The server knows how long its bucket needs; guessing
+/// shorter spends the next attempt on another 429 (ios ChatSyncCoordinator
+/// takes the larger of its backoff and `Retry-After`).
+pub fn floor_ms(error: &ApiError) -> f64 {
+    match error {
+        ApiError::Throttled {
+            retry_after_secs: Some(seconds),
+        } => (f64::from(*seconds) * 1_000.0).min(RETRY_AFTER_CAP_MS),
+        _ => 0.0,
+    }
+}
+
 /// Why the sender should look at the outbox again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wake {
@@ -91,7 +110,8 @@ pub enum Wake {
 /// The sender, for as long as `session` is the session.
 ///
 /// `send` makes one attempt; `nap` waits out the backoff after the
-/// `attempts`-th unknown outcome. Both are parameters so the rules can be
+/// `attempts`-th unknown outcome, and for no less than its second argument
+/// in milliseconds (`floor_ms`). Both are parameters so the rules can be
 /// tested without a server or a clock. Returns when the session ends, when
 /// the wake channel closes (which is how a sign-out stops it at once), or
 /// on a 401 — after calling `expired`.
@@ -105,7 +125,7 @@ pub async fn drain<S, SF, N, NF>(
 ) where
     S: Fn(Outgoing) -> SF,
     SF: Future<Output = Result<Message, ApiError>>,
-    N: Fn(u32) -> NF,
+    N: Fn(u32, f64) -> NF,
     NF: Future<Output = ()>,
 {
     while live.is_live(session) {
@@ -132,7 +152,8 @@ pub async fn drain<S, SF, N, NF>(
                     state.store.refuse(&row.client_msg_id, refusal(&error))
                 });
             }
-            Err(_) => {
+            Err(error) => {
+                let floor = floor_ms(&error);
                 let still_queued = live
                     .update(session, |state| {
                         state.store.note_unknown(&row.client_msg_id)
@@ -145,7 +166,7 @@ pub async fn drain<S, SF, N, NF>(
                 // the wait short; a new message does NOT, or typing ahead
                 // on a dead connection would spend this row's attempts in
                 // seconds. Biased so a nap that is already over wins.
-                let mut rest = Box::pin(nap(attempts).fuse());
+                let mut rest = Box::pin(nap(attempts, floor).fuse());
                 loop {
                     futures::select_biased! {
                         () = rest => break,
@@ -173,7 +194,7 @@ mod tests {
 
     use crate::live::AppState;
     use crate::model::{Chat, ChatListItem};
-    use crate::store::{Store, MAX_SEND_ATTEMPTS};
+    use crate::store::{Draft, Store, MAX_SEND_ATTEMPTS};
 
     /// What the fake server says to one attempt.
     enum Answer {
@@ -211,6 +232,10 @@ mod tests {
                         last_message: None,
                         unread_count: 0,
                         last_read_message_id: 0,
+                        max_reaction_seq: None,
+                        max_edit_seq: None,
+                        max_poll_seq: None,
+                        mentioned: false,
                     }],
                     ..Store::default()
                 },
@@ -225,6 +250,8 @@ mod tests {
         sent: Vec<String>,
         /// The `attempts` every nap was asked for.
         naps: Vec<u32>,
+        /// The floor every nap was given, in milliseconds.
+        floors: Vec<f64>,
         expired: u32,
     }
 
@@ -235,6 +262,7 @@ mod tests {
         let script = Rc::new(RefCell::new(VecDeque::from(script)));
         let sent = Rc::new(RefCell::new(Vec::new()));
         let naps = Rc::new(RefCell::new(Vec::new()));
+        let floors = Rc::new(RefCell::new(Vec::new()));
         let expired = Rc::new(Cell::new(0));
         let (wake, wake_in) = mpsc::unbounded::<Wake>();
         drop(wake);
@@ -256,7 +284,7 @@ mod tests {
                     client_msg_id: Some(row.client_msg_id.clone()),
                     body: row.body.clone(),
                     created_at: "2026-09-10T10:00:00Z".into(),
-                    edited_at: None,
+                    ..Message::default()
                 };
                 let result = match answer {
                     Answer::Deliver(id) => Ok(delivered(id)),
@@ -271,8 +299,10 @@ mod tests {
         };
         let nap = {
             let naps = naps.clone();
-            move |attempts: u32| {
+            let floors = floors.clone();
+            move |attempts: u32, floor: f64| {
                 naps.borrow_mut().push(attempts);
+                floors.borrow_mut().push(floor);
                 futures::future::ready(())
             }
         };
@@ -286,18 +316,25 @@ mod tests {
         assert!(script.borrow().is_empty(), "every scripted answer was used");
         let sent = sent.borrow().clone();
         let naps = naps.borrow().clone();
+        let floors = floors.borrow().clone();
         Run {
             sent,
             naps,
+            floors,
             expired: expired.get(),
         }
     }
 
     fn queue(live: &Live, client_msg_id: &str) {
         live.now(|state| {
-            state
-                .store
-                .queue_send(42, client_msg_id.into(), format!("body of {client_msg_id}"))
+            state.store.queue_send(
+                42,
+                client_msg_id.into(),
+                Draft {
+                    body: format!("body of {client_msg_id}"),
+                    ..Draft::default()
+                },
+            )
         });
     }
 
@@ -335,14 +372,14 @@ mod tests {
                         client_msg_id: Some(row.client_msg_id),
                         body: row.body,
                         created_at: "2026-09-10T10:00:00Z".into(),
-                        edited_at: None,
+                        ..Message::default()
                     })
                 };
                 async move { result }
             }
         };
         // A backoff that never ends on its own: only a wake can end it.
-        let nap = |_: u32| futures::future::pending::<()>();
+        let nap = |_: u32, _: f64| futures::future::pending::<()>();
         let done = Rc::new(Cell::new(false));
         {
             let live = live.clone();
@@ -401,6 +438,43 @@ mod tests {
         assert_eq!(run.naps, vec![1, 2], "a growing backoff between tries");
         assert!(live.read(|state| state.store.outbox.is_empty()));
         assert_eq!(thread_ids(&live), vec![101], "one bubble, now the real one");
+    }
+
+    /// A 429 is not a refusal, and the wait after it is at least what the
+    /// server asked for — capped, so a proxy asking for an hour does not
+    /// park a message for an hour. Without a header, the backoff alone.
+    #[wasm_bindgen_test]
+    async fn a_429_waits_at_least_what_the_server_asked_for() {
+        let live = signed_in();
+        queue(&live, "a");
+        let throttled = |seconds: Option<u32>| {
+            Answer::Fail(ApiError::Throttled {
+                retry_after_secs: seconds,
+            })
+        };
+
+        let run = run(
+            &live,
+            vec![
+                throttled(Some(12)),
+                throttled(Some(3_600)),
+                throttled(None),
+                Answer::Fail(network()),
+                Answer::Deliver(101),
+            ],
+        )
+        .await;
+
+        assert_eq!(run.sent, vec!["a"; 5]);
+        assert_eq!(
+            run.floors,
+            vec![12_000.0, RETRY_AFTER_CAP_MS, 0.0, 0.0],
+            "the server's word, capped; nothing when it said nothing"
+        );
+        assert_eq!(thread_ids(&live), vec![101]);
+        assert!(!is_terminal(&ApiError::Throttled {
+            retry_after_secs: None
+        }));
     }
 
     /// Unknown is NOT failed — until the attempts are spent, and then it is
