@@ -123,6 +123,8 @@ button:disabled { opacity: .5; cursor: default; }
 }
 
 .brand { font-weight: 600; }
+/* Next to the brand; the sign-out button keeps the far end. */
+.status { margin-right: auto; color: var(--muted); font-size: 13px; }
 .signout { background: transparent; color: var(--tint); padding: 6px 8px; }
 
 .split {
@@ -243,6 +245,24 @@ button:disabled { opacity: .5; cursor: default; }
 .sender { font-size: 12px; color: var(--muted); display: block; }
 .bubble .body { margin: 2px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .meta { font-size: 11px; color: var(--muted); }
+
+/* Not delivered yet, and not delivered at all: neither may look like a
+ * message that arrived. */
+.bubble.is-pending { opacity: .75; }
+.bubble.is-failed { opacity: 1; border: 1px solid #b3261e; }
+.send-failed { color: #b3261e; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.send-failed .link {
+    background: transparent;
+    color: var(--tint);
+    padding: 0;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+    .bubble.is-failed { border-color: #f2b8b5; }
+    .send-failed { color: #f2b8b5; }
+}
 
 .typing { flex: none; margin: 0 16px; color: var(--muted); font-size: 13px; }
 

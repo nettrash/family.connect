@@ -22,7 +22,7 @@ protocol does not otherwise have. So `{base}` for a browser is its own origin, a
 no server URL at all — the page it was served is the server it talks to, which is the one thing a
 browser knows that an app has to be told.
 
-Two consequences worth stating rather than discovering:
+The consequences worth stating rather than discovering:
 
 - **A browser registers no device and receives no push.** `POST /devices` takes `ios`, `macos` or
   `android`, and a web client sends none of them: it has no APNs or FCM token to give, and a
@@ -41,6 +41,18 @@ Two consequences worth stating rather than discovering:
   every app goes on sending the header. A token in the QUERY STRING is refused even when it is
   right: a URL is written into every access log and every proxy on the way, and nothing should
   ever come to depend on the one place a credential leaks by default.
+- **A browser SENDS over REST, and only listens on the socket.** Every message goes out as
+  `POST /chats/{id}/messages`, one at a time and in the order it was written, under exactly the
+  rules of "Sending on an unreliable network": delivered, refused or unknown; a terminal code
+  fails the message at once, and unknown is retried with backoff and shown as failed only when
+  the attempts are spent. The HTTP response is the ack, so there is no ack deadline to keep and
+  no way for a socket that is down — or one a sleeping laptop left half-open, which a browser
+  cannot tell from a live one — to swallow a message. The `message` frame the same send fans out
+  to the sender's own socket carries the `client_msg_id`, and either copy landing first settles
+  it. What a browser still says on the socket — `read`, `typing`, `ping` — is momentary: said
+  while the socket is down it is dropped, not saved up and delivered late. Nothing is lost by
+  that, because a browser also reports `read` over REST whenever it opens a chat, catches up
+  after a reconnect, or comes back into view.
 
 Everything else in this document applies to a browser unchanged. Where a section says Windows and
 web are "not asked to draw" something yet, that is a statement about what has been BUILT, never a

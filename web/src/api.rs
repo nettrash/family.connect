@@ -12,10 +12,13 @@
 //! works, and nothing here has been tested against a server it does not
 //! call.
 
+use futures::future::{select, Either};
 use gloo_net::http::Request;
+use gloo_timers::future::TimeoutFuture;
 use serde::{Deserialize, Serialize};
+use web_sys::AbortController;
 
-use crate::model::{ChatListItem, Me, Message};
+use crate::model::{ChatListItem, Me, Message, Roster};
 
 /// Everything under one prefix, so a change of base is one line.
 const API: &str = "/api/v1";
@@ -206,26 +209,56 @@ pub async fn messages_after(
     Ok(response.messages)
 }
 
-/// `POST /chats/{id}/messages` — the REST leg of a send.
+/// `GET /families/mine` — the names of everybody a message can be from.
+pub async fn family(token: &str) -> Result<Roster, ApiError> {
+    let request = Request::get(&format!("{API}/families/mine"))
+        .header("Authorization", &format!("Bearer {token}"));
+    read(request.send().await.map_err(network)?).await
+}
+
+/// How long one send may take before its outcome counts as UNKNOWN: the
+/// protocol's 10 s ("Sending on an unreliable network"). A browser's fetch
+/// has no deadline of its own and will wait on a dead connection for as
+/// long as the operating system does, which is far longer than a person.
+pub const SEND_DEADLINE_MS: u32 = 10_000;
+
+/// `POST /chats/{id}/messages` — how a browser sends every message.
 ///
-/// The socket is the fast path; this is what a send falls back to when the
-/// socket is not open. Both carry the SAME `client_msg_id`, which is what
-/// makes a retry idempotent rather than a duplicate (docs/protocol.md).
+/// A retry carries the SAME `client_msg_id`, which is what makes it
+/// idempotent rather than a duplicate: the server answers a repeat with the
+/// message it already has (docs/protocol.md). Past the deadline the request
+/// is ABORTED, not merely abandoned, so a late answer cannot arrive for a
+/// send that has already been counted as unknown.
 pub async fn send_message(
     token: &str,
     chat_id: i64,
     client_msg_id: &str,
     body: &str,
 ) -> Result<Message, ApiError> {
+    let controller = AbortController::new()
+        .map_err(|_| ApiError::Network("This browser cannot time a request out.".into()))?;
     let request = Request::post(&format!("{API}/chats/{chat_id}/messages"))
         .header("Authorization", &format!("Bearer {token}"))
+        .abort_signal(Some(&controller.signal()))
         .json(&SendRequest {
             client_msg_id,
             body,
         })
         .map_err(network)?;
-    let response: MessageResponse = read(request.send().await.map_err(network)?).await?;
-    Ok(response.message)
+    let attempt = async {
+        let response: MessageResponse = read(request.send().await.map_err(network)?).await?;
+        Ok(response.message)
+    };
+    let deadline = TimeoutFuture::new(SEND_DEADLINE_MS);
+    match select(Box::pin(attempt), deadline).await {
+        Either::Left((answer, _)) => answer,
+        Either::Right(_) => {
+            controller.abort();
+            Err(ApiError::Network(
+                "The server did not answer in time.".into(),
+            ))
+        }
+    }
 }
 
 /// `POST /chats/{id}/read` — monotonic on the server, so a stale report is

@@ -216,6 +216,9 @@ fn props(count: i64) -> ConversationProps {
         on_typing: Callback::noop(),
         can_load_more: false,
         on_load_more: Callback::noop(),
+        failed: Default::default(),
+        on_retry: Callback::noop(),
+        on_discard: Callback::noop(),
     }
 }
 

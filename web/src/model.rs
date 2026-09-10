@@ -37,6 +37,50 @@ pub struct Me {
     pub family: Option<Family>,
 }
 
+/// One person in `GET /families/mine` — trimmed to what draws a name.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Member {
+    pub id: i64,
+    pub display_name: String,
+}
+
+/// The family's assistant, which speaks in the chat under an account of
+/// its own and so needs a name like anybody else.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Assistant {
+    pub user_id: i64,
+    pub display_name: String,
+}
+
+/// `GET /families/mine`, trimmed to the names in it.
+///
+/// `former_members` is there for exactly this: the messages somebody left
+/// behind when their account was deleted still need a name on them. It is
+/// omitted when there are none.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Roster {
+    pub members: Vec<Member>,
+    #[serde(default)]
+    pub former_members: Vec<Member>,
+    #[serde(default)]
+    pub assistant: Option<Assistant>,
+}
+
+impl Roster {
+    /// Everybody this family's messages can be from, by user id.
+    pub fn names(self) -> Vec<(i64, String)> {
+        let assistant = self
+            .assistant
+            .map(|assistant| (assistant.user_id, assistant.display_name));
+        self.former_members
+            .into_iter()
+            .chain(self.members)
+            .map(|member| (member.id, member.display_name))
+            .chain(assistant)
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Chat {
     pub id: i64,
@@ -164,6 +208,37 @@ mod tests {
         let message: Message = serde_json::from_str(json).expect("a message this client can read");
         assert_eq!(message.id, 1338);
         assert_eq!(message.body, "@Anna are you in?");
+    }
+
+    /// The roster names everybody a message can be from: the members, the
+    /// former members whose messages are still there, and the assistant.
+    #[wasm_bindgen_test]
+    fn the_roster_names_members_former_members_and_the_assistant() {
+        let json = r#"{
+            "family": {"id": 3, "name": "The Smiths", "join_policy": "open"},
+            "members": [
+                {"id": 7, "username": "me", "display_name": "Me", "role": "owner", "avatar_version": 0},
+                {"id": 9, "username": "anna", "display_name": "Anna", "role": "member",
+                 "avatar_version": 3, "birthday": {"month": 3, "day": 14}}
+            ],
+            "former_members": [
+                {"id": 4, "username": "deleted-4", "display_name": "Gran", "avatar_version": 0,
+                 "deleted": true}
+            ],
+            "max_board_seq": 88,
+            "assistant": {"user_id": 2, "display_name": "Assistant", "mention": "@ai",
+                          "draw": true, "vision": false, "images": true}
+        }"#;
+        let roster: Roster = serde_json::from_str(json).expect("a roster this client can read");
+        let names: std::collections::HashMap<i64, String> = roster.names().into_iter().collect();
+        assert_eq!(names.get(&9).map(String::as_str), Some("Anna"));
+        assert_eq!(names.get(&4).map(String::as_str), Some("Gran"));
+        assert_eq!(names.get(&2).map(String::as_str), Some("Assistant"));
+        assert_eq!(names.len(), 4);
+
+        // No former members and no assistant is an ordinary family too.
+        let bare: Roster = serde_json::from_str(r#"{"members": []}"#).expect("reads");
+        assert!(bare.names().is_empty());
     }
 
     #[wasm_bindgen_test]
