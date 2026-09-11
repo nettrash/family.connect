@@ -736,7 +736,7 @@ object NoteTasks {
     /** The lines that say something, trimmed — what a save sends. */
     fun written(lines: List<DraftTaskLine>): List<TaskLineRequest> =
         lines.filter { it.text.isNotBlank() }
-            .map { TaskLineRequest(id = null, text = it.text.trim()) }
+            .map { TaskLineRequest(id = it.itemId, text = it.text.trim()) }
 }
 
 /**
@@ -1684,7 +1684,7 @@ internal fun NoteDialog(
                                     }
                                 },
                             )
-                            if (canEdit) {
+                            if (true) {
                                 OutlinedTextField(
                                     value = line.text,
                                     onValueChange = { value ->
