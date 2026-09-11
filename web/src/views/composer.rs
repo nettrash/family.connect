@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 
 use fc_text::assistant_pictures::{self, Candidate, MentionNotice, Switches};
+use fc_text::i18n::{t, t1};
 use fc_text::{assistant, composer, media, mentions};
 use web_sys::{File, HtmlTextAreaElement};
 use yew::prelude::*;
@@ -292,7 +293,7 @@ pub fn composer(props: &ComposerProps) -> Html {
             }
             let draft = latest.borrow().clone();
             let outcome = composer::appending(addition, &draft);
-            notice.set(outcome.notice().map(|notice| notice.english()));
+            notice.set(outcome.notice().map(|notice| notice.said()));
             match outcome {
                 composer::Paste::Appended(updated) | composer::Paste::Truncated(updated) => {
                     text.set(updated)
@@ -382,7 +383,7 @@ pub fn composer(props: &ComposerProps) -> Html {
             // and said so, rather than refused later by the server.
             let value = match composer::clamping(&value) {
                 Some(clamped) => {
-                    notice.set(Some(composer::Notice::Clamped.english()));
+                    notice.set(Some(composer::Notice::Clamped.said()));
                     let clamped = clamped.to_string();
                     area.set_value(&clamped);
                     clamped
@@ -500,16 +501,16 @@ pub fn composer(props: &ComposerProps) -> Html {
             if let Some(reply) = props.replying.clone() {
                 <div class="composer-banner">
                     <span class="banner-text">
-                        { format!("Replying to {}", reply.name) }
+                        { t1("Replying to %@", &reply.name) }
                         if !reply.excerpt.is_empty() { { format!(": {}", reply.excerpt) } }
                     </span>
-                    <button class="link" onclick={cancel.clone()} aria-label="Cancel reply">{ "✕" }</button>
+                    <button class="link" onclick={cancel.clone()} aria-label={t("Cancel reply")}>{ "✕" }</button>
                 </div>
             }
             if editing.is_some() {
                 <div class="composer-banner">
-                    <span class="banner-text">{ "Editing message" }</span>
-                    <button class="link" onclick={cancel} aria-label="Cancel editing">{ "✕" }</button>
+                    <span class="banner-text">{ t("Editing message") }</span>
+                    <button class="link" onclick={cancel} aria-label={t("Cancel editing")}>{ "✕" }</button>
                 </div>
             }
             if let Some(message) = (*notice).clone() {
@@ -519,7 +520,7 @@ pub fn composer(props: &ComposerProps) -> Html {
                 <p class="picture-notice" role="note"><span aria-hidden="true">{ "👁 " }</span>{ sentence }</p>
             }
             if !suggestions.is_empty() {
-                <div class="suggestions" role="listbox" aria-label="Members">
+                <div class="suggestions" role="listbox" aria-label={t("Members")}>
                     { for suggestions.iter().enumerate().map(|(index, member)| {
                         let accept = accept.clone();
                         let name = member.display_name.clone();
@@ -545,14 +546,14 @@ pub fn composer(props: &ComposerProps) -> Html {
             <div class="composer">
                 { props.attach.clone() }
                 if offers_ai {
-                    <button class="tool" title="Ask the assistant" aria-label="Ask the assistant" onclick={ask_assistant}>{ "✨" }</button>
+                    <button class="tool" title={t("Ask the assistant")} aria-label={t("Ask the assistant")} onclick={ask_assistant}>{ "✨" }</button>
                 }
                 if can_draw && editing.is_none() {
-                    <button class="tool" title="Ask for a picture" aria-label="Ask for a picture" onclick={ask_picture}>{ "🎨" }</button>
+                    <button class="tool" title={t("Ask for a picture")} aria-label={t("Ask for a picture")} onclick={ask_picture}>{ "🎨" }</button>
                 }
                 <textarea
                     ref={area}
-                    aria-label="Message"
+                    aria-label={t("Message")}
                     rows="2"
                     value={(*text).clone()}
                     oninput={on_input}
@@ -563,7 +564,7 @@ pub fn composer(props: &ComposerProps) -> Html {
                     onclick={let send = send.clone(); Callback::from(move |_: MouseEvent| send.emit(()))}
                     disabled={empty || props.busy}
                 >
-                    { if editing.is_some() { "Save" } else { "Send" } }
+                    { if editing.is_some() { t("Save") } else { t("Send") } }
                 </button>
             </div>
         </div>

@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use fc_text::emoji::EMOJI_CATALOG;
 pub use fc_text::emoji::QUICK_REACTIONS;
+use fc_text::i18n::t;
 use fc_text::reactions::{self as rules, ReactionDetail};
 use yew::prelude::*;
 
@@ -77,7 +78,7 @@ pub fn emoji_picker(props: &EmojiPickerProps) -> Html {
     let current = &EMOJI_CATALOG[(*category).min(EMOJI_CATALOG.len() - 1)];
     html! {
         <div class="dialog-backdrop" onkeydown={on_key}>
-            <div class="dialog emoji-picker" role="dialog" aria-modal="true" aria-label="More reactions">
+            <div class="dialog emoji-picker" role="dialog" aria-modal="true" aria-label={t("More reactions")}>
                 <div class="emoji-tabs" role="tablist">
                     { for EMOJI_CATALOG.iter().enumerate().map(|(index, group)| {
                         let pick = {
@@ -89,7 +90,7 @@ pub fn emoji_picker(props: &EmojiPickerProps) -> Html {
                                 role="tab"
                                 class={classes!((index == *category).then_some("is-active"))}
                                 aria-selected={(index == *category).to_string()}
-                                title={group.name}
+                                title={t(group.name)}
                                 onclick={pick}
                             >
                                 { group.emoji.first().copied().unwrap_or("·") }
@@ -97,7 +98,7 @@ pub fn emoji_picker(props: &EmojiPickerProps) -> Html {
                         }
                     }) }
                 </div>
-                <div class="emoji-grid" role="tabpanel" aria-label={current.name}>
+                <div class="emoji-grid" role="tabpanel" aria-label={t(current.name)}>
                     { for current.emoji.iter().map(|emoji| {
                         let on_pick = props.on_pick.clone();
                         let chosen = emoji.to_string();
@@ -109,7 +110,7 @@ pub fn emoji_picker(props: &EmojiPickerProps) -> Html {
                     }) }
                 </div>
                 <div class="dialog-actions">
-                    <button class="secondary" onclick={close}>{ "Cancel" }</button>
+                    <button class="secondary" onclick={close}>{ t("Cancel") }</button>
                 </div>
             </div>
         </div>

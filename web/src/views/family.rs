@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use fc_text::account::{self, cap_footer, cap_state};
+use fc_text::i18n::{t, t1, t2, tn};
 use gloo_timers::callback::Timeout;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlInputElement, HtmlSelectElement};
@@ -240,7 +241,7 @@ pub fn family_pane(props: &FamilyProps) -> Html {
             <div class="identity-text">
                 <strong>{ family.name.clone() }</strong>
                 <span class="muted">
-                    { if count == 1 { "1 member".to_string() } else { format!("{count} members") } }
+                    { tn("%lld members", count) }
                 </span>
             </div>
         </div>
@@ -259,15 +260,15 @@ pub fn family_pane(props: &FamilyProps) -> Html {
         html! {
             <>
                 <section class="group" aria-labelledby="family-invite">
-                    <h3 id="family-invite">{ "Invite code" }</h3>
+                    <h3 id="family-invite">{ t("Invite code") }</h3>
                     <div class="setting-row">
                         <span class="code invite-code">{ code.clone().unwrap_or_else(|| "…".to_string()) }</span>
                         <span class="row-actions">
-                            <button class="link" disabled={code.is_none()} onclick={copy}>{ "Copy" }</button>
-                            <button class="link" disabled={*busy} onclick={set_tool(Tool::Rotate)}>{ "Rotate" }</button>
+                            <button class="link" disabled={code.is_none()} onclick={copy}>{ t("Copy") }</button>
+                            <button class="link" disabled={*busy} onclick={set_tool(Tool::Rotate)}>{ t("Rotate") }</button>
                         </span>
                     </div>
-                    <p class="footnote">{ "Rotating invalidates the current code immediately." }</p>
+                    <p class="footnote">{ t("Rotating invalidates the current code immediately.") }</p>
                 </section>
                 <JoinRequests
                     requests={props.join_requests.clone()}
@@ -325,7 +326,7 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                     <span>
                         <strong>{ member.display_name.clone() }</strong>
                         if member.is_owner() {
-                            <span class="capsule">{ "Owner" }</span>
+                            <span class="capsule">{ t("Owner") }</span>
                         }
                     </span>
                     <span class="muted">{ format!("@{}", member.username) }</span>
@@ -335,22 +336,22 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                 </div>
                 <span class="row-actions">
                     if !is_me && !blocked {
-                        <button class="link" aria-label={format!("Message {}", member.display_name)} onclick={message}>{ "Message" }</button>
+                        <button class="link" aria-label={t1("Message %@", &member.display_name)} onclick={message}>{ t("Message") }</button>
                     }
                     if !is_me {
                         <span class="menu-anchor">
                             <button class="link" data-trigger={format!("safety-{id}")}
-                                aria-label={format!("Safety for {}", member.display_name)}
+                                aria-label={t1("Safety for %@", &member.display_name)}
                                 aria-haspopup="menu" aria-expanded={if safety_open { "true" } else { "false" }}
                                 onclick={open_menu(Tool::Safety(id), format!("[data-trigger=safety-{id}]"))}>
-                                { "Safety" }
+                                { t("Safety") }
                             </button>
                             if safety_open {
                                 <div class="menu-backdrop" onclick={set_tool(Tool::Nothing)} aria-hidden="true"></div>
                                 <div class="menu" role="menu" onkeydown={menu_keys.clone()}>
-                                    <button role="menuitem" onclick={set_tool(Tool::Report(id))}>{ "Report…" }</button>
+                                    <button role="menuitem" onclick={set_tool(Tool::Report(id))}>{ t("Report…") }</button>
                                     <button role="menuitem" class={classes!((!blocked).then_some("danger"))} onclick={block}>
-                                        { if blocked { "Unblock" } else { "Block" } }
+                                        { if blocked { t("Unblock") } else { t("Block") } }
                                     </button>
                                 </div>
                             }
@@ -359,7 +360,7 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                     if owner {
                         <span class="menu-anchor">
                             <button class="link" data-trigger={format!("more-{id}")}
-                                aria-label={format!("More for {}", member.display_name)} aria-haspopup="menu"
+                                aria-label={t1("More for %@", &member.display_name)} aria-haspopup="menu"
                                 aria-expanded={if menu_open { "true" } else { "false" }}
                                 onclick={open_menu(Tool::Menu(id), format!("[data-trigger=more-{id}]"))}>
                                 { "⋯" }
@@ -367,10 +368,10 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                             if menu_open {
                                 <div class="menu-backdrop" onclick={set_tool(Tool::Nothing)} aria-hidden="true"></div>
                                 <div class="menu" role="menu" onkeydown={menu_keys.clone()}>
-                                    <button role="menuitem" onclick={set_tool(Tool::Birthday(id))}>{ "Birthday…" }</button>
+                                    <button role="menuitem" onclick={set_tool(Tool::Birthday(id))}>{ t("Birthday…") }</button>
                                     if removable {
-                                        <button role="menuitem" onclick={set_tool(Tool::Password(id))}>{ "Reset Password…" }</button>
-                                        <button role="menuitem" class="danger" onclick={set_tool(Tool::Remove(id))}>{ "Remove from Family" }</button>
+                                        <button role="menuitem" onclick={set_tool(Tool::Password(id))}>{ t("Reset Password…") }</button>
+                                        <button role="menuitem" class="danger" onclick={set_tool(Tool::Remove(id))}>{ t("Remove from Family") }</button>
                                     }
                                 </div>
                             }
@@ -385,9 +386,9 @@ pub fn family_pane(props: &FamilyProps) -> Html {
     let tool_dialog = match &*tool {
         Tool::Rotate => html! {
             <Confirm
-                title="Rotate the invite code?"
-                message="Rotating invalidates the current code immediately."
-                confirm="Rotate Code"
+                title={t("Rotate the invite code?")}
+                message={t("Rotating invalidates the current code immediately.")}
+                confirm={t("Rotate Code")}
                 on_confirm={rotate}
                 on_cancel={close_tool.clone()}
             />
@@ -425,8 +426,8 @@ pub fn family_pane(props: &FamilyProps) -> Html {
             };
             html! {
                 <Confirm
-                    title={format!("Remove {} from the family?", named(*id))}
-                    confirm="Remove"
+                    title={t1("Remove %@ from the family?", &named(*id))}
+                    confirm={t("Remove")}
                     on_confirm={remove}
                     on_cancel={close_tool.clone()}
                 />
@@ -462,8 +463,8 @@ pub fn family_pane(props: &FamilyProps) -> Html {
     html! {
         <section class="pane family-pane" aria-labelledby="family-title" ref={pane}>
             <header class="pane-head">
-                <h2 id="family-title">{ "Family" }</h2>
-                <button class="link" onclick={close}>{ "Done" }</button>
+                <h2 id="family-title">{ t("Family") }</h2>
+                <button class="link" onclick={close}>{ t("Done") }</button>
             </header>
             <div class="pane-body">
                 { header }
@@ -472,7 +473,7 @@ pub fn family_pane(props: &FamilyProps) -> Html {
                 }
                 { owner_sections.unwrap_or_default() }
                 <section class="group" aria-labelledby="family-members">
-                    <h3 id="family-members">{ "Members" }</h3>
+                    <h3 id="family-members">{ t("Members") }</h3>
                     <ul class="members">{ for member_rows }</ul>
                 </section>
             </div>
@@ -521,7 +522,7 @@ fn join_requests(props: &RequestsProps) -> Html {
     };
     html! {
         <section class="group" aria-labelledby="family-requests">
-            <h3 id="family-requests">{ "Join requests" }</h3>
+            <h3 id="family-requests">{ t("Join requests") }</h3>
             <ul class="members">
                 { for props.requests.iter().map(|request| {
                     let busy = deciding.is_some();
@@ -533,8 +534,8 @@ fn join_requests(props: &RequestsProps) -> Html {
                                 <span class="muted">{ format!("@{}", request.user.username) }</span>
                             </div>
                             <span class="row-actions">
-                                <button class="link" disabled={busy} onclick={decide(request.id, true)}>{ "Approve" }</button>
-                                <button class="link danger" disabled={busy} onclick={decide(request.id, false)}>{ "Decline" }</button>
+                                <button class="link" disabled={busy} onclick={decide(request.id, true)}>{ t("Approve") }</button>
+                                <button class="link danger" disabled={busy} onclick={decide(request.id, false)}>{ t("Decline") }</button>
                             </span>
                         </li>
                     }
@@ -551,7 +552,7 @@ fn join_requests(props: &RequestsProps) -> Html {
 /// WAITING: full is a condition, not an answer.
 pub fn request_failure(error: &ApiError) -> String {
     match error.code() {
-        Some("family_full") => "The family is full. Raise the member limit or wait for somebody to leave — the request is still waiting.".to_string(),
+        Some("family_full") => t("The family is full. Raise the member limit or wait for somebody to leave — the request is still waiting.").to_string(),
         _ => generic_failure(error),
     }
 }
@@ -584,7 +585,7 @@ fn reports(props: &ReportsProps) -> Html {
                     resolving.set(None);
                     if failure.is_some() {
                         error.set(Some(
-                            "Couldn't mark that as handled. Try again.".to_string(),
+                            t("Couldn't mark that as handled. Try again.").to_string(),
                         ));
                     }
                 }),
@@ -593,9 +594,9 @@ fn reports(props: &ReportsProps) -> Html {
     };
     html! {
         <section class="group" aria-labelledby="family-reports">
-            <h3 id="family-reports">{ "Reports" }</h3>
+            <h3 id="family-reports">{ t("Reports") }</h3>
             if props.reports.is_empty() {
-                <p class="footnote">{ "Members can report a message or a person to you." }</p>
+                <p class="footnote">{ t("Members can report a message or a person to you.") }</p>
             }
             // Keyed rows in a fragment of their own: beside the heading and
             // the two `if`s, the keys would otherwise count for nothing.
@@ -605,7 +606,7 @@ fn reports(props: &ReportsProps) -> Html {
                     <article class="report-row" key={report.id.to_string()}>
                         <strong>{ reason_label(&report.reason) }</strong>
                         <span class="muted">
-                            { format!("{} reported {}", report.reporter.display_name, report.reported.display_name) }
+                            { t2("%@ reported %@", &report.reporter.display_name, &report.reported.display_name) }
                         </span>
                         if let Some(excerpt) = report.message_excerpt.clone().filter(|excerpt| !excerpt.is_empty()) {
                             <p class="excerpt verbatim">{ excerpt }</p>
@@ -615,7 +616,7 @@ fn reports(props: &ReportsProps) -> Html {
                         }
                         <span class="row-actions">
                             <button class="link" disabled={resolving.is_some()} onclick={resolve(report.id)}>
-                                { "Mark as handled" }
+                                { t("Mark as handled") }
                             </button>
                         </span>
                     </article>
@@ -633,7 +634,7 @@ pub fn reason_label(reason: &str) -> &'static str {
     REASONS
         .iter()
         .find(|(code, _)| *code == reason)
-        .map_or("Something else", |(_, label)| label)
+        .map_or(t("Something else"), |(_, label)| t(label))
 }
 
 /// What a reported message carried, as a chat-list preview says it.
@@ -641,12 +642,12 @@ pub fn carried(attachments: &[ReportedAttachment]) -> Option<String> {
     let first = attachments.first()?;
     let count = attachments.len();
     Some(match first.kind.as_str() {
-        "photo" if count > 1 => format!("{count} photos"),
-        "photo" => "Photo".to_string(),
-        "video" => "Video".to_string(),
-        "audio" => "Voice message".to_string(),
-        "location" => "Location".to_string(),
-        _ => first.name.clone().unwrap_or_else(|| "File".to_string()),
+        "photo" if count > 1 => tn("%lld Photos", count as i64),
+        "photo" => t("Photo").to_string(),
+        "video" => t("Video").to_string(),
+        "audio" => t("Voice message").to_string(),
+        "location" => t("Location").to_string(),
+        _ => first.name.clone().unwrap_or_else(|| t("File").to_string()),
     })
 }
 
@@ -656,6 +657,8 @@ struct PolicyProps {
     on_action: Callback<Action>,
 }
 
+/// The three the protocol allows, with the key each is said by (a `const`
+/// cannot look a translation up).
 pub const POLICIES: [(&str, &str); 3] = [
     ("open", "Join immediately"),
     ("approval", "Need approval"),
@@ -665,9 +668,9 @@ pub const POLICIES: [(&str, &str); 3] = [
 /// The caption under the join policy, for the policy in force.
 pub fn policy_caption(policy: &str) -> &'static str {
     match policy {
-        "approval" => "With approval, join requests wait here until you approve them.",
-        "closed" => "The invite code stops working — nobody new can join. Requests already waiting are unaffected, and you can still approve them.",
-        _ => "Anyone with the invite code joins straight away.",
+        "approval" => t("With approval, join requests wait here until you approve them."),
+        "closed" => t("The invite code stops working — nobody new can join. Requests already waiting are unaffected, and you can still approve them."),
+        _ => t("Anyone with the invite code joins straight away."),
     }
 }
 
@@ -707,7 +710,9 @@ fn join_policy(props: &PolicyProps) -> Html {
                     busy.set(false);
                     asked.set(None);
                     if failure.is_some() {
-                        error.set(Some("Couldn't change the policy. Try again.".to_string()));
+                        error.set(Some(
+                            t("Couldn't change the policy. Try again.").to_string(),
+                        ));
                     }
                 }),
             });
@@ -715,13 +720,13 @@ fn join_policy(props: &PolicyProps) -> Html {
     };
     html! {
         <section class="group" aria-labelledby="family-policy">
-            <h3 id="family-policy">{ "Join policy" }</h3>
+            <h3 id="family-policy">{ t("Join policy") }</h3>
             <fieldset class="segmented">
-                <legend class="visually-hidden">{ "New members" }</legend>
+                <legend class="visually-hidden">{ t("New members") }</legend>
                 { for POLICIES.iter().map(|(code, label)| html! {
                     <label class={classes!((current == *code).then_some("is-chosen"))}>
                         <input type="radio" name="join-policy" value={*code} checked={current == *code} onchange={choose(code)} />
-                        { *label }
+                        { t(label) }
                     </label>
                 }) }
             </fieldset>
@@ -810,7 +815,8 @@ fn member_limit(props: &LimitProps) -> Html {
                                 drop(held);
                                 if failure.is_some() {
                                     error.set(Some(
-                                        "Couldn't change the member limit. Try again.".to_string(),
+                                        t("Couldn't change the member limit. Try again.")
+                                            .to_string(),
                                     ));
                                 }
                                 redraw.force_update();
@@ -863,18 +869,18 @@ fn member_limit(props: &LimitProps) -> Html {
     let footer = cap_footer(cap_state(drawn, props.count, ceiling));
     html! {
         <section class="group" aria-labelledby="family-limit">
-            <h3 id="family-limit">{ "Member limit" }</h3>
+            <h3 id="family-limit">{ t("Member limit") }</h3>
             <label class="setting-row toggle">
-                <span>{ "Limit members" }</span>
+                <span>{ t("Limit members") }</span>
                 <input type="checkbox" role="switch" checked={drawn.is_some()} onchange={toggle} />
             </label>
             if let Some(value) = drawn {
                 <div class="setting-row">
-                    <label for="most-members">{ "Most members" }</label>
+                    <label for="most-members">{ t("Most members") }</label>
                     <span class="stepper">
-                        <button class="link" aria-label="Fewer" disabled={value <= 1} onclick={step(-1)}>{ "−" }</button>
+                        <button class="link" aria-label={t("Fewer")} disabled={value <= 1} onclick={step(-1)}>{ "−" }</button>
                         <input id="most-members" type="number" min="1" max={ceiling.to_string()} value={value.to_string()} onchange={typed} />
-                        <button class="link" aria-label="More" disabled={value >= ceiling} onclick={step(1)}>{ "+" }</button>
+                        <button class="link" aria-label={t("More")} disabled={value >= ceiling} onclick={step(1)}>{ "+" }</button>
                     </span>
                 </div>
             }
@@ -968,9 +974,9 @@ fn assistant_settings(props: &AssistantProps) -> Html {
                     pending.set(None);
                     error.set(failure.map(|failure| match failure.code() {
                         Some("not_family_owner") => {
-                            "Only the family owner can change this.".to_string()
+                            t("Only the family owner can change this.").to_string()
                         }
-                        _ => "Couldn't save that. Try again.".to_string(),
+                        _ => t("Couldn't save that. Try again.").to_string(),
                     }));
                 }),
             });
@@ -1000,12 +1006,12 @@ fn assistant_settings(props: &AssistantProps) -> Html {
     let dependent = |extra_history: &str| -> Option<String> {
         if !vision {
             Some(
-                "Not available here: the assistant on this server can't look at pictures."
+                t("Not available here: the assistant on this server can't look at pictures.")
                     .to_string(),
             )
         } else if !family.ai_vision {
             Some(
-                "Turn on Can be shown photos first — the server refuses this while that is off."
+                t("Turn on Can be shown photos first — the server refuses this while that is off.")
                     .to_string(),
             )
         } else if !family.ai_history {
@@ -1014,74 +1020,78 @@ fn assistant_settings(props: &AssistantProps) -> Html {
             None
         }
     };
-    let photos_note = dependent("While Sees recent history is off this does nothing: the chat's history isn't sent, so no photo from it is either.");
-    let faces_note = dependent("While Sees recent history is off this does nothing: no names are sent, so no faces are either.");
+    let photos_note = dependent(t(
+        "While Sees recent history is off this does nothing: the chat's history isn't sent, so no photo from it is either.",
+    ));
+    let faces_note = dependent(t(
+        "While Sees recent history is off this does nothing: no names are sent, so no faces are either.",
+    ));
     let pictures_on = vision && family.ai_vision;
     html! {
         <>
             <section class="group" aria-labelledby="assistant-language">
-                <h3 id="assistant-language">{ "Assistant language" }</h3>
+                <h3 id="assistant-language">{ t("Assistant language") }</h3>
                 <label class="setting-row">
-                    <span>{ "Answers in" }</span>
+                    <span>{ t("Answers in") }</span>
                     <select onchange={language}>
-                        <option value="" selected={current_language.is_empty()}>{ "Not set" }</option>
+                        <option value="" selected={current_language.is_empty()}>{ t("Not set") }</option>
                         { for account::LANGUAGES.iter().map(|(code, name)| html! {
                             <option value={*code} selected={current_language.eq_ignore_ascii_case(code)}>{ *name }</option>
                         }) }
                     </select>
                 </label>
-                <p class="footnote">{ format!("The language {token} answers in when it is asked in the family chat. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked.") }</p>
+                <p class="footnote">{ t1("The language %@ answers in when it is asked in the family chat. It is not this app's language — that follows the device. With none chosen, it answers in the language of whoever asked.", &token) }</p>
                 <label class="setting-row toggle">
-                    <span>{ "Sees recent history" }</span>
+                    <span>{ t("Sees recent history") }</span>
                     <input type="checkbox" role="switch" checked={family.ai_history}
                         onchange={switch(|on| FamilyPatch { ai_history: Some(on), ..FamilyPatch::default() })} />
                 </label>
-                <p class="footnote">{ format!("With this on, mentioning {token} in the family chat sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent.") }</p>
+                <p class="footnote">{ t1("With this on, mentioning %@ in the family chat sends the last month of that chat to the assistant, so it can answer questions about what was said earlier. With it off, only the message that mentions it is sent.", &token) }</p>
             </section>
             <section class="group" aria-labelledby="assistant-pictures">
-                <h3 id="assistant-pictures">{ "Pictures" }</h3>
+                <h3 id="assistant-pictures">{ t("Pictures") }</h3>
                 if vision {
                     <label class="setting-row toggle">
-                        <span>{ "Can be shown photos" }</span>
+                        <span>{ t("Can be shown photos") }</span>
                         <input type="checkbox" role="switch" checked={family.ai_vision}
                             onchange={switch(|on| FamilyPatch { ai_vision: Some(on), ..FamilyPatch::default() })} />
                     </label>
-                    <p class="footnote">{ format!("With this on, a photo is sent to the model your server is set up to use when a member attaches it to a question in their own chat with the assistant, attaches it to an {token} message in the family chat, or replies to a photo with {token} — never a photo the assistant was not pointed at, never from an earlier message unless Recent photos is on, and never a video, file or place. With it off, no photo is ever sent.") }</p>
+                    <p class="footnote">{ t2("With this on, a photo is sent to the model your server is set up to use when a member attaches it to a question in their own chat with the assistant, attaches it to an %@ message in the family chat, or replies to a photo with %@ — never a photo the assistant was not pointed at, never from an earlier message unless Recent photos is on, and never a video, file or place. With it off, no photo is ever sent.", &token, &token) }</p>
                 }
                 <label class="setting-row toggle">
-                    <span>{ "Recent photos" }</span>
+                    <span>{ t("Recent photos") }</span>
                     <input type="checkbox" role="switch" disabled={!pictures_on} checked={family.ai_history_photos}
                         onchange={switch(|on| FamilyPatch { ai_history_photos: Some(on), ..FamilyPatch::default() })} />
                 </label>
                 <p class="footnote">
-                    { format!("With this on, whenever anyone mentions {token} in the family chat, the most recent photos in that chat — up to {limit}, from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on.") }
+                    { t2("With this on, whenever anyone mentions %@ in the family chat, the most recent photos in that chat — up to %lld, from anyone, that nobody pointed the assistant at — also go to the model your server is set up to use, after any photo on the message itself or on the one it replies to. Nearly every mention then sends pictures, which costs more. It is off unless you turn it on.", &token, &limit.to_string()) }
                     if let Some(note) = photos_note {
                         { format!(" {note}") }
                     }
                 </p>
                 <label class="setting-row toggle">
-                    <span>{ "Member faces" }</span>
+                    <span>{ t("Member faces") }</span>
                     <input type="checkbox" role="switch" disabled={!pictures_on} checked={family.ai_faces}
                         onchange={switch(|on| FamilyPatch { ai_faces: Some(on), ..FamilyPatch::default() })} />
                 </label>
                 <p class="footnote">
-                    { format!("With this on, whenever anyone mentions {token} in the family chat, the profile pictures of the members named in that chat's recent history — up to {limit} — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent.") }
+                    { t2("With this on, whenever anyone mentions %@ in the family chat, the profile pictures of the members named in that chat's recent history — up to %lld — also go to the model your server is set up to use, so it can tell who is who. They are the pictures members chose for themselves, not photos anyone attached; never a member who has left, and never anyone outside this family. Most mentions then send pictures, which costs more. It is off unless you turn it on; with it off, no face is ever sent.", &token, &limit.to_string()) }
                     if let Some(note) = faces_note {
                         { format!(" {note}") }
                     }
                 </p>
             </section>
             <section class="group" aria-labelledby="assistant-greeting">
-                <h3 id="assistant-greeting">{ "Daily greeting" }</h3>
+                <h3 id="assistant-greeting">{ t("Daily greeting") }</h3>
                 <label class="setting-row toggle">
-                    <span>{ "Good morning message" }</span>
+                    <span>{ t("Good morning message") }</span>
                     <input type="checkbox" role="switch" disabled={!props.greetings} checked={family.ai_greeting}
                         onchange={switch(|on| FamilyPatch { ai_greeting: Some(on), ..FamilyPatch::default() })} />
                 </label>
                 <p class="footnote">
-                    { "With this on, the assistant posts one short good-morning message into the family chat each day, mentioning the star signs of the birthdays your family has set. It never sends anyone's name or birth date, only the signs; it makes no claims about the date; and it never sounds a notification — it is simply there when you next open the chat." }
+                    { t("With this on, the assistant posts one short good-morning message into the family chat each day, mentioning the star signs of the birthdays your family has set. It never sends anyone's name or birth date, only the signs; it makes no claims about the date; and it never sounds a notification — it is simply there when you next open the chat.") }
                     if !props.greetings {
-                        { " Not available here: this server doesn't post daily greetings." }
+                        { " " }{ t("Not available here: this server doesn't post daily greetings.") }
                     }
                 </p>
             </section>
@@ -1294,7 +1304,8 @@ mod tests {
         );
         assert_eq!(
             carried(&[photo.clone(), photo]).as_deref(),
-            Some("2 photos")
+            Some("2 Photos"),
+            "the apps' own words for a pile of them"
         );
         assert_eq!(
             carried(&[ReportedAttachment {

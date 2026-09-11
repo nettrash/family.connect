@@ -24,6 +24,7 @@ mod live;
 mod location;
 mod media;
 mod model;
+mod notify;
 mod outbox;
 mod prep;
 mod recorder;
@@ -39,6 +40,7 @@ mod views;
 #[cfg(test)]
 mod layout_tests;
 
+use fc_text::i18n::{t, t1, tn};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -292,6 +294,40 @@ fn app() -> Html {
         });
     }
 
+    // THE PAGE'S TITLE, from one place. A tab is what a browser has
+    // instead of an icon to badge: it carries the unread count — derived
+    // from the store, as a running app derives its badge — and gives way to
+    // a call that is ringing, which is the one thing more urgent than a
+    // number (docs/protocol.md, "A browser is a client too").
+    {
+        let unread = live.read(|state| state.store.unread_total());
+        let ringing = live.read(|state| {
+            state
+                .call
+                .as_ref()
+                .filter(|call| call.stage == calls::Stage::Incoming)
+                .map(|call| {
+                    state
+                        .store
+                        .names
+                        .get(&call.peer_user_id)
+                        .cloned()
+                        .unwrap_or_else(|| t("Someone").to_string())
+                })
+        });
+        use_effect_with((unread, ringing), move |(unread, ringing)| {
+            let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+                return;
+            };
+            document.set_title(&match ringing {
+                // The apps' own words, with the glyph a tab strip needs to
+                // say it at four characters wide.
+                Some(name) => format!("☎ {}", t1("%@ is calling", name)),
+                None => fc_text::notify::page_title(BRAND, *unread),
+            });
+        });
+    }
+
     let on_action = Actions {
         live: live.clone(),
         channels: channels.clone(),
@@ -423,9 +459,8 @@ fn app() -> Html {
         let unread = store.board.unread();
         let open = on_action.reform(|_: MouseEvent| Action::OpenBoard);
         let label = match unread {
-            0 => "Board".to_string(),
-            1 => "Board, 1 new note".to_string(),
-            count => format!("Board, {count} new notes"),
+            0 => t("Board").to_string(),
+            count => tn("Board, %lld new notes", count as i64),
         };
         html! {
             <button
@@ -434,7 +469,7 @@ fn app() -> Html {
                 aria-label={label}
                 onclick={open}
             >
-                { "Board" }
+                { t("Board") }
                 if unread > 0 {
                     <span class="badge" aria-hidden="true">{ unread }</span>
                 }
@@ -464,11 +499,11 @@ fn app() -> Html {
     let family_button = store
         .family
         .is_some()
-        .then(|| panel_button(Panel::Family, "Family"));
+        .then(|| panel_button(Panel::Family, t("Family")));
     let settings_button = store
         .account
         .is_some()
-        .then(|| panel_button(Panel::Settings, "Settings"));
+        .then(|| panel_button(Panel::Settings, t("Settings")));
     let close_panel = on_action.reform(|_: ()| Action::ClosePanel);
     let panel = match (state.panel, store.account.clone(), store.family.clone()) {
         (Some(Panel::Settings), Some(account), family) => Some(html! {
@@ -506,17 +541,17 @@ fn app() -> Html {
         <ContextProvider<MediaLoader> context={media}>
         <div class="app">
             <header class="bar">
-                <span class="brand">{ "Family Connect" }</span>
+                <span class="brand">{ BRAND }</span>
                 // Live updates are paused, and the bar says so. Sending is
                 // not: that goes over REST whether the socket is up or not.
                 if !state.connected {
-                    <span class="status" role="status">{ "Connecting…" }</span>
+                    <span class="status" role="status">{ t("Connecting…") }</span>
                 }
                 <span class="bar-actions">
                     { board_button.unwrap_or_default() }
                     { family_button.unwrap_or_default() }
                     { settings_button.unwrap_or_default() }
-                    <button class="signout" onclick={sign_out_click}>{ "Sign out" }</button>
+                    <button class="signout" onclick={sign_out_click}>{ t("Log out") }</button>
                 </span>
             </header>
             // A call is a BAND under the bar rather than a panel over the
@@ -525,7 +560,7 @@ fn app() -> Html {
             // talk.
             if let Some(call) = state.call.clone() {
                 <CallPanel
-                    name={store.names.get(&call.peer_user_id).cloned().unwrap_or_else(|| "Someone".to_string())}
+                    name={store.names.get(&call.peer_user_id).cloned().unwrap_or_else(|| t("Someone").to_string())}
                     avatar_version={store.members.iter().find(|member| member.id == call.peer_user_id).map_or(0, |member| member.avatar_version)}
                     {call}
                     on_action={on_action.clone()}
@@ -534,12 +569,12 @@ fn app() -> Html {
             if let Some(message) = state.failure.clone() {
                 <p class="error" role="alert">
                     { message }
-                    <button class="link" onclick={dismiss.clone()} aria-label="Dismiss">{ "✕" }</button>
+                    <button class="link" onclick={dismiss.clone()} aria-label={t("Dismiss")}>{ "✕" }</button>
                 </p>
             } else if let Some(message) = state.notice.clone() {
                 <p class="notice" role="status">
                     { message }
-                    <button class="link" onclick={dismiss} aria-label="Dismiss">{ "✕" }</button>
+                    <button class="link" onclick={dismiss} aria-label={t("Dismiss")}>{ "✕" }</button>
                 </p>
             }
             <div class={classes!("split", (store.thread_view.is_some() || store.open_polls.is_some()).then_some("with-panel"))}>
@@ -601,7 +636,7 @@ fn app() -> Html {
                     />
                 } else {
                     <section class="conversation empty">
-                        <p>{ "Pick a chat." }</p>
+                        <p>{ t("Pick a chat from the sidebar.") }</p>
                     </section>
                 }
                 { side_panel }
@@ -609,9 +644,9 @@ fn app() -> Html {
             { viewer.unwrap_or_default() }
             if *confirming_sign_out {
                 <Confirm
-                    title="Sign out?"
+                    title={t("Log out?")}
                     message={sign_out_message(!store.outbox.is_empty() || !store.staged.is_empty())}
-                    confirm="Sign Out"
+                    confirm={t("Log Out")}
                     on_confirm={{
                         let confirming = confirming_sign_out.clone();
                         let sign_out = sign_out.clone();
@@ -635,13 +670,18 @@ fn app() -> Html {
 /// What signing out means for this tab: the messages are the server's, the
 /// session is the tab's — and what the tab has not sent yet goes with it.
 fn sign_out_message(unsent: bool) -> String {
-    let lead = "Messages stay on the family server; this tab forgets its session.";
+    let lead = t("Messages stay on the family server; this tab forgets its session.");
     if unsent {
-        format!("{lead} What hasn't been sent yet is lost.")
+        // Two sentences, each its own key: the second is only ever added to
+        // the first, and a translation must be free to say it its own way.
+        format!("{lead} {}", t("What hasn't been sent yet is lost."))
     } else {
         lead.to_string()
     }
 }
+
+/// What this client is called, in its own title and on its own screen.
+const BRAND: &str = "Family Connect";
 
 fn token_is_set(live: &Live) -> bool {
     live.read(|state| state.token.is_some())
@@ -653,7 +693,34 @@ fn token_is_set(live: &Live) -> bool {
 #[cfg(test)]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
+/// The languages this browser asks for, in the reader's own order.
+fn browser_languages() -> Vec<String> {
+    let Some(window) = web_sys::window() else {
+        return Vec::new();
+    };
+    let listed = window.navigator().languages();
+    let mut tags: Vec<String> = listed.iter().filter_map(|tag| tag.as_string()).collect();
+    // Safari has answered an empty list here; `language` is the one it
+    // always has.
+    if tags.is_empty() {
+        tags.extend(window.navigator().language());
+    }
+    tags
+}
+
 fn main() {
     wasm_logger::init(wasm_logger::Config::default());
+    // The reader's language, before anything is drawn in it. Theirs, not
+    // the family's: `Family.language` is what the assistant answers in
+    // (docs/protocol.md, "The family's language").
+    let lang = fc_text::i18n::Lang::best(&browser_languages());
+    fc_text::i18n::use_lang(lang);
+    if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+        if let Some(root) = document.document_element() {
+            // So a browser hyphenates, spell-checks and reads the page in
+            // the language it is written in.
+            let _ = root.set_attribute("lang", lang.tag());
+        }
+    }
     yew::Renderer::<App>::new().render();
 }

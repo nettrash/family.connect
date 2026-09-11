@@ -10,6 +10,7 @@
 //! on the wire — which is why a client may hold them: they decide a
 //! sentence somebody reads before pixels leave their house, and a sentence
 //! that disagreed with the server would be worse than none.
+use crate::i18n::{t, t1, t2, tn};
 
 use crate::assistant;
 
@@ -104,7 +105,7 @@ pub fn private_notice(staged: &[Candidate], can_see: bool) -> Option<String> {
     }
     if !can_see {
         return Some(
-            "The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it."
+            t("The assistant on this server can't look at pictures, so it will be told a photo is here but won't be shown it.")
                 .to_string(),
         );
     }
@@ -113,20 +114,24 @@ pub fn private_notice(staged: &[Candidate], can_see: bool) -> Option<String> {
         .filter(|candidate| is_shown_to_model(&candidate.kind, &candidate.mime, candidate.bytes))
         .count();
     if carried < photos.len() {
-        return Some(UNREADABLE.to_string());
+        return Some(unreadable().to_string());
     }
     if photos.len() > MAX_PER_QUESTION {
-        return Some(format!(
-            "The first {MAX_PER_QUESTION} photos go to the model your server is set up to use. The rest are named to it, not shown."
+        return Some(tn(
+            "The first %lld photos go to the model your server is set up to use. The rest are named to it, not shown.",
+            MAX_PER_QUESTION as i64,
         ));
     }
     Some(
-        "This goes to the model your server is set up to use, with your question. Nothing else from this chat does."
+        t("This goes to the model your server is set up to use, with your question. Nothing else from this chat does.")
             .to_string(),
     )
 }
 
-const UNREADABLE: &str = "A photo here is too large, or in a format the model can't read, so it will be told it's here but won't be shown it.";
+/// A function, not a const: a translated string is not a constant.
+fn unreadable() -> &'static str {
+    t("A photo here is too large, or in a format the model can't read, so it will be told it's here but won't be shown it.")
+}
 
 /// The strip above the FAMILY composer while an `@ai` draft carries — or
 /// replies to — a photograph (MentionPictureNotice).
@@ -211,38 +216,59 @@ impl MentionNotice {
         let token = assistant::TOKEN;
         if self.unreadable > 0 {
             if recent == 0 {
-                return UNREADABLE.to_string();
+                return unreadable().to_string();
             }
+            // Two sentences, each its own key: the apps say the second on
+            // its own too, and a translation must be free to order its
+            // words without reaching into the first.
             return format!(
-                "{UNREADABLE} Up to {recent} of the most recent photos in this chat may still go."
+                "{} {}",
+                unreadable(),
+                tn(
+                    "Up to %lld of the most recent photos in this chat may still go.",
+                    recent as i64,
+                )
             );
         }
         if self.extra > 0 {
-            return format!(
-                "Only the first {MAX_PER_QUESTION} photos go to the model your server is set up to use — yours first, then the ones you're replying to. The rest are named to it, not shown."
+            return tn(
+                "Only the first %lld photos go to the model your server is set up to use — yours first, then the ones you're replying to. The rest are named to it, not shown.",
+                MAX_PER_QUESTION as i64,
             );
         }
         match (self.shown_on_mention > 0, self.shown_on_quote > 0) {
-            (true, false) if recent > 0 => format!(
-                "This goes to the model your server is set up to use, with your {token} message, and up to {recent} of the most recent photos in this chat may go too."
+            (true, false) if recent > 0 => t2(
+                "This goes to the model your server is set up to use, with your %@ message, and up to %lld of the most recent photos in this chat may go too.",
+                token,
+                &recent.to_string(),
             ),
-            (true, false) => format!(
-                "This goes to the model your server is set up to use, with your {token} message. No other photo in this chat does."
+            (true, false) => t1(
+                "This goes to the model your server is set up to use, with your %@ message. No other photo in this chat does.",
+                token,
             ),
-            (false, true) if recent > 0 => format!(
-                "The photo you're replying to goes to the model your server is set up to use, with your {token} message, and up to {recent} of the most recent photos in this chat may go too."
+            (false, true) if recent > 0 => t2(
+                "The photo you're replying to goes to the model your server is set up to use, with your %@ message, and up to %lld of the most recent photos in this chat may go too.",
+                token,
+                &recent.to_string(),
             ),
-            (false, true) => format!(
-                "The photo you're replying to goes to the model your server is set up to use, with your {token} message. No other photo in this chat does."
+            (false, true) => t1(
+                "The photo you're replying to goes to the model your server is set up to use, with your %@ message. No other photo in this chat does.",
+                token,
             ),
-            (true, true) if recent > 0 => format!(
-                "This and the photo you're replying to go to the model your server is set up to use, with your {token} message, and up to {recent} of the most recent photos in this chat may go too."
+            (true, true) if recent > 0 => t2(
+                "This and the photo you're replying to go to the model your server is set up to use, with your %@ message, and up to %lld of the most recent photos in this chat may go too.",
+                token,
+                &recent.to_string(),
             ),
-            (true, true) => format!(
-                "This and the photo you're replying to go to the model your server is set up to use, with your {token} message. No other photo in this chat does."
+            (true, true) => t1(
+                "This and the photo you're replying to go to the model your server is set up to use, with your %@ message. No other photo in this chat does.",
+                token,
             ),
-            (false, false) => format!(
-                "Up to {recent} of the most recent photos in this chat go to the model your server is set up to use, with your {token} message — pictures nobody pointed it at, whoever sent them."
+            // The count comes first in the key, so it is the first argument.
+            (false, false) => t2(
+                "Up to %lld of the most recent photos in this chat go to the model your server is set up to use, with your %@ message — pictures nobody pointed it at, whoever sent them.",
+                &recent.to_string(),
+                token,
             ),
         }
     }
@@ -449,7 +475,7 @@ mod tests {
             .sentence()
             .contains("yours first, then the ones you're replying to"));
         let unreadable = notice(ASK, &[], &[photo(Some(10), "image/heic")]).unwrap();
-        assert_eq!(unreadable.sentence(), UNREADABLE);
+        assert_eq!(unreadable.sentence(), super::unreadable());
         let both = notice(ASK, &vec![jpeg(); 5], &[photo(Some(10), "image/heic")]).unwrap();
         assert!(both.extra == 1 && both.unreadable == 1);
         assert!(both.sentence().starts_with("A photo here is too large"));
@@ -564,7 +590,7 @@ mod tests {
             .starts_with("The assistant on this server can't look at pictures"));
         assert_eq!(
             private_notice(&[photo(Some(10), "image/heic")], true).as_deref(),
-            Some(UNREADABLE)
+            Some(super::unreadable())
         );
         assert!(private_notice(&vec![jpeg(); 5], true)
             .unwrap()

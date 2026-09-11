@@ -8,6 +8,7 @@
 //! Counts are in Unicode SCALARS and trimming is Rust's, because both are
 //! what the server does: a web client written in the same language cannot
 //! disagree with it about where a name starts or how long it is.
+use crate::i18n::{t, tn, tp};
 
 /// The fewest characters a password may have.
 pub const MIN_PASSWORD_CHARS: usize = 8;
@@ -26,9 +27,11 @@ pub enum UsernameProblem {
 impl UsernameProblem {
     pub fn message(self) -> &'static str {
         match self {
-            UsernameProblem::Length => "A username is 3 to 32 characters.",
-            UsernameProblem::Characters => "A username may use only letters, digits, “_” and “.”.",
-            UsernameProblem::Reserved => "That username is reserved.",
+            UsernameProblem::Length => t("A username is 3 to 32 characters."),
+            UsernameProblem::Characters => {
+                t("A username may use only letters, digits, “_” and “.”.")
+            }
+            UsernameProblem::Reserved => t("That username is reserved."),
         }
     }
 }
@@ -137,21 +140,25 @@ pub fn cap_state(cap: Option<i64>, members: i64, ceiling: i64) -> CapState {
     }
 }
 
-/// The footer under the member limit, in words (ios MacFamilyView, with a
-/// singular the Apple catalogue lacks: "1 members now").
+/// The footer under the member limit, in words (ios MacFamilyView). The
+/// singular the Apple catalogue lacks — "1 members now" — is in the web's
+/// own English beside it, so the sentence is right in English and still
+/// translated everywhere else.
 pub fn cap_footer(state: CapState) -> String {
     match state {
-        CapState::OpenToCeiling { ceiling } => {
-            format!("No limit of your own. This server allows up to {ceiling} members in a family.")
-        }
-        CapState::Frozen { members: 1 } => {
-            "1 member now. Nobody new can join until somebody leaves; no one is removed."
-                .to_string()
-        }
-        CapState::Frozen { members } => format!(
-            "{members} members now. Nobody new can join until somebody leaves; no one is removed."
+        CapState::OpenToCeiling { ceiling } => tn(
+            "No limit of your own. This server allows up to %lld members in a family.",
+            ceiling,
         ),
-        CapState::Room { members, seats } => format!("{members} of {seats} seats used."),
+        CapState::Frozen { members } => tn(
+            "%lld members now. Nobody new can join until somebody leaves; no one is removed.",
+            members,
+        ),
+        CapState::Room { members, seats } => tp(
+            "%lld of %lld seats used.",
+            members,
+            &[&members.to_string(), &seats.to_string()],
+        ),
     }
 }
 

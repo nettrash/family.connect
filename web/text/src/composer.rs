@@ -18,6 +18,7 @@
 //! `Character`s. A cut between scalars lands inside a cluster and leaves an
 //! emoji's debris in the field: a skin tone with no hand, a flag with half
 //! its letters.
+use crate::i18n::t1;
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -67,19 +68,24 @@ pub enum Notice {
 }
 
 impl Notice {
-    /// The words the Apple composers show, in English.
+    /// The words the Apple composers show, in the reader's language.
     ///
     /// The limit is written `4,000`: Apple's `String(localized:)` formats an
     /// interpolated integer for the reader's locale, and an English one
-    /// groups thousands. (Android's `%1$d` prints `4000`.)
-    pub fn english(self) -> String {
+    /// groups thousands. (Android's `%1$d` prints `4000`.) It is filled into
+    /// the key's `%lld` already grouped.
+    pub fn said(self) -> String {
         let limit = grouped(BODY_LIMIT);
         match self {
-            Notice::Clamped => format!("A message can be at most {limit} characters."),
-            Notice::Truncated => {
-                format!("A message can be at most {limit} characters. The rest wasn't pasted.")
-            }
-            Notice::Full => format!("The message is already at the {limit}-character limit."),
+            Notice::Clamped => t1("A message can be at most %lld characters.", &limit),
+            Notice::Truncated => t1(
+                "A message can be at most %lld characters. The rest wasn't pasted.",
+                &limit,
+            ),
+            Notice::Full => t1(
+                "The message is already at the %lld-character limit.",
+                &limit,
+            ),
         }
     }
 }
@@ -295,15 +301,15 @@ mod tests {
     #[test]
     fn notices_say_what_apple_says() {
         assert_eq!(
-            Notice::Clamped.english(),
+            Notice::Clamped.said(),
             "A message can be at most 4,000 characters."
         );
         assert_eq!(
-            Notice::Truncated.english(),
+            Notice::Truncated.said(),
             "A message can be at most 4,000 characters. The rest wasn't pasted."
         );
         assert_eq!(
-            Notice::Full.english(),
+            Notice::Full.said(),
             "The message is already at the 4,000-character limit."
         );
         assert_eq!(appending("x", "").notice(), None);

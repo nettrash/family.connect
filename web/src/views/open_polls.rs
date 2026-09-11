@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use fc_text::i18n::t;
 use yew::prelude::*;
 
 use crate::actions::Action;
@@ -44,14 +45,14 @@ pub fn open_polls_panel(props: &OpenPollsProps) -> Html {
     let mut messages = props.messages.clone();
     messages.sort_by_key(|message| message.id);
     html! {
-        <aside class="thread-panel open-polls-panel" aria-label="Open polls" onkeydown={on_key}>
+        <aside class="thread-panel open-polls-panel" aria-label={t("Open polls")} onkeydown={on_key}>
             <header class="thread-bar">
-                <h2>{ "Open polls" }</h2>
-                <button class="link" onclick={close} aria-label="Close">{ "✕" }</button>
+                <h2>{ t("Open polls") }</h2>
+                <button class="link" onclick={close} aria-label={t("Close")}>{ "✕" }</button>
             </header>
             <div class="thread-messages">
                 if messages.is_empty() {
-                    <p class="empty-note">{ "Nothing to decide" }</p>
+                    <p class="empty-note">{ t("Nothing to decide") }</p>
                 }
                 // Keyed, in a list of their own (see views/conversation.rs).
                 <>

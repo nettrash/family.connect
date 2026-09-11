@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use fc_text::i18n::{t, tn};
 use yew::prelude::*;
 
 use crate::model::{ChatListItem, Message};
@@ -39,7 +40,7 @@ pub struct ChatListProps {
 /// a preview with nothing in it is a row that looks like nothing happened.
 pub fn preview(message: &Message, my_user_id: i64, blocked: &HashSet<i64>) -> String {
     if message.sender_id != my_user_id && blocked.contains(&message.sender_id) {
-        return "Hidden — blocked member".to_string();
+        return t("Hidden — blocked member").to_string();
     }
     if let Some(call) = &message.call {
         return crate::views::bubble::call_record_line(call, message.sender_id == my_user_id);
@@ -52,15 +53,15 @@ pub fn preview(message: &Message, my_user_id: i64, blocked: &HashSet<i64>) -> St
         .first()
         .map(|attachment| attachment.kind.as_str())
     {
-        Some("photo") if attachments.len() > 1 => format!("{} photos", attachments.len()),
-        Some("photo") => "Photo".to_string(),
-        Some("video") => "Video".to_string(),
-        Some("audio") => "Voice message".to_string(),
-        Some("location") => "Location".to_string(),
+        Some("photo") if attachments.len() > 1 => tn("%lld Photos", attachments.len() as i64),
+        Some("photo") => t("Photo").to_string(),
+        Some("video") => t("Video").to_string(),
+        Some("audio") => t("Voice message").to_string(),
+        Some("location") => t("Location").to_string(),
         Some("file") => attachments[0]
             .name
             .clone()
-            .unwrap_or_else(|| "File".to_string()),
+            .unwrap_or_else(|| t("File").to_string()),
         _ => String::new(),
     }
 }
@@ -68,7 +69,7 @@ pub fn preview(message: &Message, my_user_id: i64, blocked: &HashSet<i64>) -> St
 #[function_component(ChatList)]
 pub fn chat_list(props: &ChatListProps) -> Html {
     html! {
-        <nav class="chat-list" aria-label="Chats">
+        <nav class="chat-list" aria-label={t("Chats")}>
             { for props.chats.iter().map(|item| {
                 let chat_id = item.chat.id;
                 let selected = props.selected == Some(chat_id);
@@ -84,7 +85,7 @@ pub fn chat_list(props: &ChatListProps) -> Html {
                         preview(message, props.my_user_id, &props.blocked),
                         time::row_time(&message.created_at, props.now_ms),
                     ),
-                    None => ("No messages yet".to_string(), String::new()),
+                    None => (t("No messages yet").to_string(), String::new()),
                 };
                 html! {
                     <button
@@ -116,10 +117,10 @@ pub fn chat_list(props: &ChatListProps) -> Html {
                         <span class="chat-foot">
                             <span class="chat-preview">{ line }</span>
                             if item.mentioned {
-                                <span class="mention-mark" aria-label="You were mentioned">{ "@" }</span>
+                                <span class="mention-mark" aria-label={t("You were mentioned")}>{ "@" }</span>
                             }
                             if item.unread_count > 0 {
-                                <span class="badge" aria-label={format!("{} unread", item.unread_count)}>
+                                <span class="badge" aria-label={tn("%lld unread", item.unread_count)}>
                                     { item.unread_count }
                                 </span>
                             }
@@ -175,7 +176,7 @@ mod tests {
                 ..Default::default()
             },
         ]);
-        assert_eq!(preview(&photos, 7, &blocked), "2 photos");
+        assert_eq!(preview(&photos, 7, &blocked), "2 Photos");
         let mut file = message(9, "");
         file.attachments = Some(vec![Attachment {
             id: 3,

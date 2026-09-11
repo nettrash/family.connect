@@ -12,17 +12,18 @@ use yew::prelude::*;
 use crate::actions::Action;
 use crate::api::ApiError;
 use crate::views::dialog::Modal;
+use fc_text::i18n::{t, t1, tn};
 
 /// What is wrong with a new password and its confirmation, if anything.
 pub fn new_password_problem(new: &str, confirmation: &str) -> Option<String> {
     if !account::password_ok(new) {
-        return Some(format!(
-            "Use at least {} characters.",
-            account::MIN_PASSWORD_CHARS
+        return Some(tn(
+            "Use at least %lld characters.",
+            account::MIN_PASSWORD_CHARS as i64,
         ));
     }
     if new != confirmation {
-        return Some("Those two do not match.".to_string());
+        return Some(t("Those two do not match.").to_string());
     }
     None
 }
@@ -53,8 +54,8 @@ pub fn change_password_dialog(props: &ChangePasswordProps) -> Html {
 
     if *changed {
         return html! {
-            <Modal key="changed" title="Password changed" on_cancel={props.on_close.clone()}>
-                <p class="dialog-message">{ "Your other devices have been signed out." }</p>
+            <Modal key="changed" title={t("Password changed")} on_cancel={props.on_close.clone()}>
+                <p class="dialog-message">{ t("Your other devices have been signed out.") }</p>
                 <div class="dialog-actions">
                     <button class="primary" onclick={close}>{ "OK" }</button>
                 </div>
@@ -87,9 +88,9 @@ pub fn change_password_dialog(props: &ChangePasswordProps) -> Html {
                         None => changed.set(true),
                         Some(failure) => error.set(Some(match failure.code() {
                             Some("invalid_credentials") => {
-                                "That current password is not right.".to_string()
+                                t("That current password is not right.").to_string()
                             }
-                            _ => "Couldn't change your password. Try again.".to_string(),
+                            _ => t("Couldn't change your password. Try again.").to_string(),
                         })),
                     }
                 }),
@@ -97,28 +98,28 @@ pub fn change_password_dialog(props: &ChangePasswordProps) -> Html {
         })
     };
     html! {
-        <Modal key="form" title="Change Password" on_cancel={props.on_close.clone()} busy={*busy}>
+        <Modal key="form" title={t("Change Password")} on_cancel={props.on_close.clone()} busy={*busy}>
             <form class="dialog-form" onsubmit={submit}>
                 <label class="field">
-                    { "Current Password" }
+                    { t("Current Password") }
                     <input type="password" autocomplete="current-password" value={(*current).clone()} oninput={field(&current)} />
                 </label>
-                <p class="footnote">{ "Your other devices will be signed out. This one stays signed in." }</p>
+                <p class="footnote">{ t("Your other devices will be signed out. This one stays signed in.") }</p>
                 <label class="field">
-                    { "New Password" }
+                    { t("New Password") }
                     <input type="password" autocomplete="new-password" value={(*new).clone()} oninput={field(&new)} />
                 </label>
                 <label class="field">
-                    { "Confirm New Password" }
+                    { t("Confirm New Password") }
                     <input type="password" autocomplete="new-password" value={(*confirmation).clone()} oninput={field(&confirmation)} />
                 </label>
                 if let Some(message) = (*error).clone() {
                     <p class="error" role="alert">{ message }</p>
                 }
                 <div class="dialog-actions">
-                    <button type="button" class="secondary" disabled={*busy} onclick={close}>{ "Cancel" }</button>
+                    <button type="button" class="secondary" disabled={*busy} onclick={close}>{ t("Cancel") }</button>
                     <button type="submit" class="primary" disabled={*busy || current.is_empty() || new.is_empty()}>
-                        { "Save" }
+                        { t("Save") }
                     </button>
                 </div>
             </form>
@@ -148,8 +149,8 @@ pub fn reset_password_dialog(props: &ResetPasswordProps) -> Html {
 
     if *done {
         return html! {
-            <Modal key="done" title="Password reset" on_cancel={props.on_close.clone()}>
-                <p class="dialog-message">{ format!("{} has been signed out everywhere.", props.name) }</p>
+            <Modal key="done" title={t("Password reset")} on_cancel={props.on_close.clone()}>
+                <p class="dialog-message">{ t1("%@ has been signed out everywhere.", &props.name) }</p>
                 <div class="dialog-actions">
                     <button class="primary" onclick={close}>{ "OK" }</button>
                 </div>
@@ -181,36 +182,36 @@ pub fn reset_password_dialog(props: &ResetPasswordProps) -> Html {
                     busy.set(false);
                     match failure {
                         None => finished.set(true),
-                        Some(_) => {
-                            error.set(Some("Couldn't reset that password. Try again.".to_string()))
-                        }
+                        Some(_) => error.set(Some(
+                            t("Couldn't reset that password. Try again.").to_string(),
+                        )),
                     }
                 }),
             });
         })
     };
     html! {
-        <Modal key="form" title="Reset Password" on_cancel={props.on_close.clone()} busy={*busy}>
+        <Modal key="form" title={t("Reset Password")} on_cancel={props.on_close.clone()} busy={*busy}>
             <form class="dialog-form" onsubmit={submit}>
-                <p class="dialog-message">{ format!("New password for {}", props.name) }</p>
+                <p class="dialog-message">{ t1("New password for %@", &props.name) }</p>
                 <label class="field">
-                    { "New Password" }
+                    { t("New Password") }
                     <input type="password" autocomplete="new-password" value={(*new).clone()} oninput={field(&new)} />
                 </label>
                 <label class="field">
-                    { "Confirm New Password" }
+                    { t("Confirm New Password") }
                     <input type="password" autocomplete="new-password" value={(*confirmation).clone()} oninput={field(&confirmation)} />
                 </label>
                 <p class="footnote">
-                    { format!("{} will be signed out on every device and will need this password to sign back in. Tell it to them somewhere safe — the server has no way to email it.", props.name) }
+                    { t1("%@ will be signed out on every device and will need this password to sign back in. Tell it to them somewhere safe — the server has no way to email it.", &props.name) }
                 </p>
                 if let Some(message) = (*error).clone() {
                     <p class="error" role="alert">{ message }</p>
                 }
                 <div class="dialog-actions">
-                    <button type="button" class="secondary" disabled={*busy} onclick={close}>{ "Cancel" }</button>
+                    <button type="button" class="secondary" disabled={*busy} onclick={close}>{ t("Cancel") }</button>
                     <button type="submit" class="danger-button" disabled={*busy || new.is_empty()}>
-                        { "Reset" }
+                        { t("Reset") }
                     </button>
                 </div>
             </form>

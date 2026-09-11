@@ -112,6 +112,35 @@ The consequences worth stating rather than discovering:
   everywhere. Everything else about a voice note — five minutes at most, staged so a caption can
   be added — is the apps' rule. A browser's location comes from its own geolocation, under the
   same freshness bar the apps apply (see "Locations"): never a fix older than two minutes.
+- **A browser notifies ITSELF, and names who rather than what.** It registers no device and takes
+  no push, so what it has instead is the tab it is already in: the number of unread messages in the
+  page's TITLE — derived from its own store, exactly as a running app derives the badge it puts on
+  its icon — and, once somebody has asked for it, one notification per message that arrives while
+  the tab is not in front. A browser will not let a page ask unprompted, so asking is a switch in
+  its settings and not a prompt on arrival. What such a notification says is the title the push
+  rules give ("Titles", above: the sender in a direct chat; `"<Family> — <Sender>"`, or
+  `"<Family> — <Sender> mentioned you"`, in the family chat) and, for a body, what a server with
+  `include_message_body = false` would send — `"New message"`, `"New note"`. Never the words
+  themselves: `[push] include_message_body` is the operator's decision about family text on a lock
+  screen, it is not on the wire, and a browser that cannot know it has been told no does not get to
+  guess. What is notified is what is pushed — a message (a poll included), a board note — under the
+  same gating, the block first among it: a member a reader has blocked wakes nobody, and typing,
+  reads, reactions, edits and note moves notify no more than they push.
+- **A browser reads the app in the BROWSER's language, and says the apps' own words.** The nine
+  the apps ship in are the nine a browser reads in (`en`, `de`, `es`, `fr`, `ja`, `ru`, `sr`,
+  `sr-Latn`, `zh-Hans` — "The family's language" lists the same nine for the assistant), chosen
+  from what the browser asks for, in the reader's own order of preference: a tag is matched on its
+  own terms and then on its base language, so `de-AT` reads German and `sr-Latn-RS` reads Serbian
+  in Latin script while `sr-RS` reads it in Cyrillic; a Chinese tag reads Simplified, which is
+  closer than English; and a language none of the nine covers reads English. The chosen one is put
+  on the document as `lang`, because a screen reader's pronunciation and a browser's hyphenation
+  both come from there and neither can guess. What a string is looked up BY is the apps' own
+  English source string — the key in `Localizable.xcstrings` — so the three clients say the same
+  words to the same family, an untranslated string is readable English rather than a blank, and a
+  string the web says that the apps do not is English until somebody translates it. This is the
+  READER's language and it is nobody else's: the family's language is what the assistant answers
+  in, and the two are deliberately separate, so a Serbian grandmother reads a Russian family's
+  chat in Serbian (see "The family's language", which says the same thing from the other end).
 - **The board's two seen-marks are the one thing a browser keeps past the tab.** They live in
   `localStorage`, under the account's user id, and they are two numbers — the highest note id and
   the highest `content_seq` this browser has shown that account (see "Board") — which say how far
@@ -1079,8 +1108,9 @@ matters, because `/me` is what a client bootstraps from.
 
 What it is FOR, today, is one thing: the assistant answers in it when it is asked in the family
 chat (see "Mentioning the assistant in the family chat"). It is deliberately NOT a display
-language — clients go on drawing their interface in whatever the device is set to, and a family
-setting that silently re-languaged somebody's phone would be a surprise nobody asked for. It is
+language — clients go on drawing their interface in whatever the device is set to, a browser in
+whatever it asks for (see "A browser is a client too"), and a family setting that silently
+re-languaged somebody's phone would be a surprise nobody asked for. It is
 also deliberately not applied to a member's private assistant thread, for the reason given there.
 
 ### Birthdays

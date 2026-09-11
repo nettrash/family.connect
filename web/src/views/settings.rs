@@ -10,6 +10,7 @@
 //! family with nobody left in it: that dialog says leaving deletes the
 //! family, and it is shown only when the server said so.
 
+use fc_text::i18n::{t, t1, tn, tp};
 use fc_text::media::display_size;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlInputElement;
@@ -18,6 +19,7 @@ use yew::prelude::*;
 use crate::actions::{Action, LeaveContext};
 use crate::api::ApiError;
 use crate::model::{Family, Me, MemberStats, Stats};
+use crate::notify;
 use crate::prep;
 use crate::time;
 use crate::views::avatar::Avatar;
@@ -61,28 +63,34 @@ enum Leave {
 /// What the leave dialog says (ios MacSettingsView).
 pub fn leave_message(context: &LeaveContext) -> String {
     match context {
-        LeaveContext::Member => "You'll lose access to the family chat and your direct chats. Your history returns if you rejoin.".to_string(),
-        LeaveContext::Successor(name) => format!("{name} becomes the owner. You'll lose access to the family chat and your direct chats; your history returns if you rejoin."),
-        LeaveContext::LastMember => "You're the only member left. Leaving deletes the family and everything in it.".to_string(),
+        LeaveContext::Member => t("You'll lose access to the family chat and your direct chats. Your history returns if you rejoin.").to_string(),
+        LeaveContext::Successor(name) => t1(
+            "%@ becomes the owner. You'll lose access to the family chat and your direct chats; your history returns if you rejoin.",
+            name,
+        ),
+        LeaveContext::LastMember => t("You're the only member left. Leaving deletes the family and everything in it.").to_string(),
     }
 }
 
-const LEAVE_FAILED: &str = "Couldn't leave right now. Try again.";
+/// A function, not a const: a translated string is not a constant.
+fn leave_failed() -> &'static str {
+    t("Couldn't leave right now. Try again.")
+}
 
 /// Leaving as the last member DELETES the family, which the protocol makes
 /// "a different dialog and a different confirmation" (`next_owner_user_id`)
 /// — not the ordinary leave with one sentence changed, which is the Mac's.
 pub fn leave_title(context: &LeaveContext) -> &'static str {
     match context {
-        LeaveContext::LastMember => "Delete the family?",
-        _ => "Leave the family?",
+        LeaveContext::LastMember => t("Delete the family?"),
+        _ => t("Leave the family?"),
     }
 }
 
 pub fn leave_button(context: &LeaveContext) -> &'static str {
     match context {
-        LeaveContext::LastMember => "Leave and Delete",
-        _ => "Leave Family",
+        LeaveContext::LastMember => t("Leave and Delete"),
+        _ => t("Leave Family"),
     }
 }
 
@@ -96,6 +104,32 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
     let leave_reads = use_mut_ref(|| 0u64);
     let picture_busy = use_state(|| false);
     let picture_error = use_state(|| Option::<String>::None);
+    // The switch, and what the browser has already been told: a site whose
+    // notifications were refused cannot ask again, and says so instead.
+    let notify_on = use_state(|| notify::wanted() && notify::permission() == "granted");
+    let notify_refused = use_state(|| notify::permission() == "denied");
+    let ask_to_notify = {
+        let notify_on = notify_on.clone();
+        let notify_refused = notify_refused.clone();
+        Callback::from(move |event: Event| {
+            let input: HtmlInputElement = event.target_unchecked_into();
+            if !input.checked() {
+                notify::set_wanted(false);
+                notify_on.set(false);
+                return;
+            }
+            // Asked for from the click that asked for it — the only moment
+            // a browser allows the question at all.
+            let notify_on = notify_on.clone();
+            let notify_refused = notify_refused.clone();
+            spawn_local(async move {
+                let allowed = notify::ask().await;
+                notify::set_wanted(allowed);
+                notify_on.set(allowed);
+                notify_refused.set(notify::permission() == "denied");
+            });
+        })
+    };
 
     let read_leave = {
         let leave = leave.clone();
@@ -122,7 +156,7 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                         Ok(context) => leave.set(Leave::Ready(context)),
                         Err(_) => {
                             leave.set(Leave::Closed);
-                            leave_error.set(Some(LEAVE_FAILED.to_string()));
+                            leave_error.set(Some(leave_failed().to_string()));
                         }
                     }
                 }),
@@ -183,7 +217,7 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                     }),
                     Err(_) => {
                         busy.set(false);
-                        error.set(Some("That image couldn't be read.".to_string()));
+                        error.set(Some(t("That image couldn't be read.").to_string()));
                     }
                 }
             });
@@ -243,7 +277,7 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                     // reads afresh.
                     if answer.is_err() {
                         leave.set(Leave::Closed);
-                        leave_error.set(Some(LEAVE_FAILED.to_string()));
+                        leave_error.set(Some(leave_failed().to_string()));
                     }
                 }),
             });
@@ -253,7 +287,7 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
     let birthday = me
         .birthday
         .map(|held| time::birthday(held.month, held.day))
-        .unwrap_or_else(|| "Not set".to_string());
+        .unwrap_or_else(|| t("Not set").to_string());
     let has_picture = me.avatar_version > 0;
     let close = props.on_close.reform(|_: MouseEvent| ());
 
@@ -298,8 +332,8 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
     html! {
         <section class="pane settings-pane" aria-labelledby="settings-title">
             <header class="pane-head">
-                <h2 id="settings-title">{ "Settings" }</h2>
-                <button class="link" onclick={close}>{ "Done" }</button>
+                <h2 id="settings-title">{ t("Settings") }</h2>
+                <button class="link" onclick={close}>{ t("Done") }</button>
             </header>
             <div class="pane-body">
                 <div class="identity">
@@ -309,17 +343,17 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                         <span class="muted">{ format!("@{}", me.username) }</span>
                     </div>
                     if account.is_owner() {
-                        <span class="capsule">{ "Owner" }</span>
+                        <span class="capsule">{ t("Owner") }</span>
                     }
                 </div>
 
                 <section class="group" aria-labelledby="settings-profile">
-                    <h3 id="settings-profile">{ "Profile" }</h3>
+                    <h3 id="settings-profile">{ t("Profile") }</h3>
                     <div class="setting-row">
-                        <span>{ "Photo" }</span>
+                        <span>{ t("Photo") }</span>
                         <span class="row-actions">
                             <label class={classes!("button-like", picture_busy.then_some("is-disabled"))}>
-                                { if has_picture { "Change Photo" } else { "Add Photo" } }
+                                { if has_picture { t("Change Photo") } else { t("Add Photo") } }
                                 <input
                                     type="file"
                                     accept="image/*"
@@ -330,7 +364,7 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                             </label>
                             if has_picture {
                                 <button class="link danger" disabled={*picture_busy} onclick={remove_picture}>
-                                    { "Remove Photo" }
+                                    { t("Remove Photo") }
                                 </button>
                             }
                         </span>
@@ -339,24 +373,24 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                         <p class="error" role="alert">{ message }</p>
                     }
                     <div class="setting-row">
-                        <span>{ "Birthday" }</span>
+                        <span>{ t("Birthday") }</span>
                         <span class="row-actions">
                             <span class="muted">{ birthday }</span>
                             <button class="link" onclick={show(Open::Birthday)}>
-                                { if me.birthday.is_some() { "Change Birthday…" } else { "Add Birthday…" } }
+                                { if me.birthday.is_some() { t("Change Birthday…") } else { t("Add Birthday…") } }
                             </button>
                         </span>
                     </div>
                     <div class="setting-row">
-                        <button class="link" onclick={show(Open::Password)}>{ "Change Password…" }</button>
+                        <button class="link" onclick={show(Open::Password)}>{ t("Change Password…") }</button>
                     </div>
                 </section>
 
                 if let Some(family) = &props.family {
                     <section class="group" aria-labelledby="settings-family">
-                        <h3 id="settings-family">{ "Family" }</h3>
+                        <h3 id="settings-family">{ t("Family") }</h3>
                         <div class="setting-row">
-                            <span>{ "Name" }</span>
+                            <span>{ t("Name") }</span>
                             <span class="muted">{ family.name.clone() }</span>
                         </div>
                         <div class="setting-row">
@@ -364,7 +398,7 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                                 class="link danger"
                                 disabled={matches!(*leave, Leave::Reading | Leave::Leaving(_))}
                                 onclick={start_leave}
-                            >{ "Leave Family" }</button>
+                            >{ t("Leave Family") }</button>
                         </div>
                         if let (Some(message), Leave::Closed) = ((*leave_error).clone(), &*leave) {
                             <p class="error" role="alert">{ message }</p>
@@ -373,32 +407,55 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
                 }
 
                 <section class="group" aria-labelledby="settings-statistics">
-                    <h3 id="settings-statistics">{ "Statistics" }</h3>
+                    <h3 id="settings-statistics">{ t("Statistics") }</h3>
                     <div class="setting-row">
-                        <button class="link" onclick={show(Open::Statistics)}>{ "Statistics…" }</button>
+                        <button class="link" onclick={show(Open::Statistics)}>{ t("Statistics…") }</button>
                     </div>
                 </section>
 
+                <section class="group" aria-labelledby="settings-notify">
+                    <h3 id="settings-notify">{ t("Notifications") }</h3>
+                    <label class="setting-row toggle">
+                        <span>{ t("Tell me when a message arrives") }</span>
+                        <input
+                            type="checkbox"
+                            role="switch"
+                            disabled={!notify::supported() || *notify_refused}
+                            checked={*notify_on}
+                            onchange={ask_to_notify}
+                        />
+                    </label>
+                    <p class="footnote">
+                        if !notify::supported() {
+                            { t("This browser doesn't show notifications.") }
+                        } else if *notify_refused {
+                            { t("Notifications are blocked for this site. Allow them in your browser's site settings and switch this on again.") }
+                        } else {
+                            { t("While this tab is not in front, a notification says who wrote — never what they wrote, which stays on this page.") }
+                        }
+                    </p>
+                </section>
+
                 <section class="group" aria-labelledby="settings-privacy">
-                    <h3 id="settings-privacy">{ "Privacy" }</h3>
+                    <h3 id="settings-privacy">{ t("Privacy") }</h3>
                     <div class="setting-row">
-                        <a href={PRIVACY_URL} target="_blank" rel="noopener noreferrer">{ "Privacy Policy" }</a>
+                        <a href={PRIVACY_URL} target="_blank" rel="noopener noreferrer">{ t("Privacy Policy") }</a>
                     </div>
                     <div class="setting-row">
-                        <a href={SUPPORT_URL} target="_blank" rel="noopener noreferrer">{ "Support" }</a>
+                        <a href={SUPPORT_URL} target="_blank" rel="noopener noreferrer">{ t("Support") }</a>
                     </div>
                 </section>
 
                 <section class="group">
                     <div class="setting-row">
-                        <button class="link" onclick={props.on_sign_out.reform(|_: MouseEvent| ())}>{ "Sign Out" }</button>
+                        <button class="link" onclick={props.on_sign_out.reform(|_: MouseEvent| ())}>{ t("Log Out") }</button>
                     </div>
                     <div class="setting-row">
-                        <button class="link danger" onclick={show(Open::Delete)}>{ "Delete Account…" }</button>
+                        <button class="link danger" onclick={show(Open::Delete)}>{ t("Delete Account…") }</button>
                     </div>
                 </section>
 
-                <p class="version">{ format!("Family Connect for the web {}", env!("CARGO_PKG_VERSION")) }</p>
+                <p class="version">{ t1("Family Connect for the web %@", env!("CARGO_PKG_VERSION")) }</p>
             </div>
             { leave_dialog }
             { dialog }
@@ -410,14 +467,14 @@ pub fn settings_pane(props: &SettingsProps) -> Html {
 pub fn picture_failure(error: &ApiError, uploading: bool) -> String {
     match error.code() {
         Some("avatar_too_large") | Some(crate::api::TOO_LARGE) => {
-            "That photo is too large for this server.".to_string()
+            t("That photo is too large for this server.").to_string()
         }
-        Some("invalid_image") => "That file isn't a photo we can use.".to_string(),
+        Some("invalid_image") => t("That file isn't a photo we can use.").to_string(),
         _ => match error {
-            ApiError::Network(_) => "Can't reach the server. Check your connection.".to_string(),
+            ApiError::Network(_) => t("Can't reach the server. Check your connection.").to_string(),
             ApiError::Throttled { .. } => error.detail(),
-            _ if uploading => "Couldn't upload the photo.".to_string(),
-            _ => "Couldn't remove the photo.".to_string(),
+            _ if uploading => t("Couldn't upload the photo.").to_string(),
+            _ => t("Couldn't remove the photo.").to_string(),
         },
     }
 }
@@ -476,10 +533,10 @@ fn delete_account_dialog(props: &DeleteProps) -> Html {
                     if let Some(failure) = failure {
                         error.set(Some(match failure.code() {
                             Some("invalid_credentials") => {
-                                "That password is not right.".to_string()
+                                t("That password is not right.").to_string()
                             }
-                            Some("validation") => "Type your password to confirm.".to_string(),
-                            _ => "Couldn't delete your account. Try again.".to_string(),
+                            Some("validation") => t("Type your password to confirm.").to_string(),
+                            _ => t("Couldn't delete your account. Try again.").to_string(),
                         }));
                     }
                 }),
@@ -493,39 +550,39 @@ fn delete_account_dialog(props: &DeleteProps) -> Html {
     let cancel = props.on_close.reform(|_: MouseEvent| ());
     html! {
         <>
-            <Modal title="Delete Account" on_cancel={props.on_close.clone()} busy={*busy}>
+            <Modal title={t("Delete Account")} on_cancel={props.on_close.clone()} busy={*busy}>
                 <form class="dialog-form" onsubmit={ask}>
-                    <h3>{ "What happens" }</h3>
+                    <h3>{ t("What happens") }</h3>
                     <ul class="consequences">
-                        <li>{ "Your account, password, profile picture and birthday are deleted, and every device you are signed in on is signed out." }</li>
-                        <li>{ "Your direct chats are deleted — for the other person too. So is your private chat with the assistant." }</li>
-                        <li>{ "Your messages in the family chat, your board notes and your reactions stay. They are shown from then on as “Deleted account”." }</li>
+                        <li>{ t("Your account, password, profile picture and birthday are deleted, and every device you are signed in on is signed out.") }</li>
+                        <li>{ t("Your direct chats are deleted — for the other person too. So is your private chat with the assistant.") }</li>
+                        <li>{ t("Your messages in the family chat, your board notes and your reactions stay. They are shown from then on as “Deleted account”.") }</li>
                         if props.owner {
-                            <li>{ "You own this family: ownership passes to the longest-standing remaining member. If you are its last member, the family is deleted with you — its chat, its board and its invite code." }</li>
+                            <li>{ t("You own this family: ownership passes to the longest-standing remaining member. If you are its last member, the family is deleted with you — its chat, its board and its invite code.") }</li>
                         }
                     </ul>
-                    <p class="footnote">{ "There is no grace period and no way to cancel afterwards." }</p>
+                    <p class="footnote">{ t("There is no grace period and no way to cancel afterwards.") }</p>
                     <label class="field">
-                        { "Password" }
+                        { t("Password") }
                         <input type="password" autocomplete="current-password" value={(*password).clone()} oninput={on_input} />
                     </label>
-                    <p class="footnote">{ "Type your password to confirm it is you. Being signed in is not proof." }</p>
+                    <p class="footnote">{ t("Type your password to confirm it is you. Being signed in is not proof.") }</p>
                     if let Some(message) = (*error).clone() {
                         <p class="error" role="alert">{ message }</p>
                     }
                     <div class="dialog-actions">
-                        <button type="button" class="secondary" disabled={*busy} onclick={cancel}>{ "Cancel" }</button>
+                        <button type="button" class="secondary" disabled={*busy} onclick={cancel}>{ t("Cancel") }</button>
                         <button type="submit" class="danger-button" disabled={*busy || password.is_empty()}>
-                            { "Delete" }
+                            { t("Delete") }
                         </button>
                     </div>
                 </form>
             </Modal>
             if *asking {
                 <Confirm
-                    title="Delete your account?"
-                    message="This happens immediately and cannot be undone."
-                    confirm="Delete Account"
+                    title={t("Delete your account?")}
+                    message={t("This happens immediately and cannot be undone.")}
+                    confirm={t("Delete Account")}
                     busy={*busy}
                     on_confirm={delete}
                     on_cancel={back}
@@ -577,21 +634,21 @@ fn statistics_dialog(props: &StatisticsProps) -> Html {
     let retry = load.reform(|_: MouseEvent| ());
     let close = props.on_close.reform(|_: MouseEvent| ());
     let body = match &*numbers {
-        Numbers::Loading => html! { <p class="muted" role="status">{ "Loading…" }</p> },
+        Numbers::Loading => html! { <p class="muted" role="status">{ t("Loading…") }</p> },
         Numbers::Failed => html! {
             <div class="unavailable">
-                <strong>{ "Couldn't load statistics" }</strong>
-                <p class="muted">{ "Check your connection and try again." }</p>
-                <button onclick={retry}>{ "Retry" }</button>
+                <strong>{ t("Couldn't load statistics") }</strong>
+                <p class="muted">{ t("Check your connection and try again.") }</p>
+                <button onclick={retry}>{ t("Retry") }</button>
             </div>
         },
         Numbers::Shown(stats) => statistics(stats),
     };
     html! {
-        <Modal title="Statistics" class={classes!("statistics")} on_cancel={props.on_close.clone()}>
+        <Modal title={t("Statistics")} class={classes!("statistics")} on_cancel={props.on_close.clone()}>
             { body }
             <div class="dialog-actions">
-                <button class="primary" onclick={close}>{ "Done" }</button>
+                <button class="primary" onclick={close}>{ t("Done") }</button>
             </div>
         </Modal>
     }
@@ -618,38 +675,38 @@ fn statistics(stats: &Stats) -> Html {
     html! {
         <>
             <section class="group">
-                <h3>{ "The family" }</h3>
-                { number_row("Members", totals.members.to_string()) }
-                { number_row("Messages", totals.messages.to_string()) }
-                { number_row("Board notes", totals.board_notes.to_string()) }
+                <h3>{ t("The family") }</h3>
+                { number_row(t("Members"), totals.members.to_string()) }
+                { number_row(t("Messages"), totals.messages.to_string()) }
+                { number_row(t("Board notes"), totals.board_notes.to_string()) }
             </section>
             <section class="group">
-                <h3>{ "Attachments" }</h3>
-                { number_row("Photos", files.photo.to_string()) }
-                { number_row("Videos", files.video.to_string()) }
-                { number_row("Audio", files.audio.to_string()) }
-                { number_row("Files", files.file.to_string()) }
-                { number_row("Locations", files.location.to_string()) }
-                { number_row("Sent", display_size(sent)) }
+                <h3>{ t("Attachments") }</h3>
+                { number_row(t("Photos"), files.photo.to_string()) }
+                { number_row(t("Videos"), files.video.to_string()) }
+                { number_row(t("Audio"), files.audio.to_string()) }
+                { number_row(t("Files"), files.file.to_string()) }
+                { number_row(t("Locations"), files.location.to_string()) }
+                { number_row(t("Sent"), display_size(sent)) }
                 if let Some(stored) = files.stored_bytes {
-                    { number_row("On disk", display_size(stored.max(0) as u64)) }
+                    { number_row(t("On disk"), display_size(stored.max(0) as u64)) }
                 }
                 if let Some(saved) = saved {
-                    <p class="footnote">{ format!("{} saved by storing one copy of identical files.", display_size(saved)) }</p>
+                    <p class="footnote">{ t1("%@ saved by storing one copy of identical files.", &display_size(saved)) }</p>
                 }
             </section>
             if ai.questions > 0 || ai.images > 0 {
                 <section class="group">
-                    <h3>{ "Assistant" }</h3>
-                    { number_row("Questions", ai.questions.to_string()) }
-                    { number_row("Tokens", (ai.prompt_tokens + ai.completion_tokens).to_string()) }
+                    <h3>{ t("Assistant") }</h3>
+                    { number_row(t("Questions"), ai.questions.to_string()) }
+                    { number_row(t("Tokens"), (ai.prompt_tokens + ai.completion_tokens).to_string()) }
                     if ai.images > 0 {
-                        { number_row("Pictures", ai.images.to_string()) }
+                        { number_row(t("Pictures"), ai.images.to_string()) }
                     }
                 </section>
             }
             <section class="group">
-                <h3>{ "Who sends what" }</h3>
+                <h3>{ t("Who sends what") }</h3>
                 { for stats.members.iter().map(|member| html! {
                     <div class="setting-row stat-member">
                         <span>
@@ -666,38 +723,28 @@ fn statistics(stats: &Stats) -> Html {
 
 /// What one member sends, besides words (ios StatisticsView).
 pub fn member_line(member: &MemberStats) -> String {
-    let count = |n: i64, one: &str, many: &str| {
-        if n == 1 {
-            format!("1 {one}")
-        } else {
-            format!("{n} {many}")
-        }
-    };
     let mut parts = Vec::new();
     let files = &member.attachments;
     if files.count > 0 {
-        parts.push(format!(
-            "{}, {}",
-            count(files.count, "attachment", "attachments"),
-            display_size(files.bytes.max(0) as u64)
+        // The count chooses the form; the arguments are the key's own, and
+        // a translation may say the size first.
+        parts.push(tp(
+            "%lld attachments, %@",
+            files.count,
+            &[
+                &files.count.to_string(),
+                &display_size(files.bytes.max(0) as u64),
+            ],
         ));
     }
     if member.ai.questions > 0 {
-        parts.push(count(
-            member.ai.questions,
-            "question to the assistant",
-            "questions to the assistant",
-        ));
+        parts.push(tn("%lld questions to the assistant", member.ai.questions));
     }
     if member.ai.images > 0 {
-        parts.push(count(
-            member.ai.images,
-            "picture from the assistant",
-            "pictures from the assistant",
-        ));
+        parts.push(tn("%lld pictures from the assistant", member.ai.images));
     }
     if parts.is_empty() {
-        "Words only".to_string()
+        t("Words only").to_string()
     } else {
         parts.join(" · ")
     }

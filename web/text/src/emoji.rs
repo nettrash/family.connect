@@ -336,6 +336,8 @@ pub struct EmojiCategory {
 ///
 /// The source JSON listed 💢 twice in Hearts; the apps drop the second, and
 /// so does this.
+/// The eight, in the apps' order. A `name` is the KEY it is said by (a
+/// static cannot look a translation up).
 pub static EMOJI_CATALOG: [EmojiCategory; 8] = [
     EmojiCategory {
         name: "Smileys",

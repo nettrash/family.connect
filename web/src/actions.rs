@@ -5,6 +5,7 @@
 //! optimistic, what waits for the answer, what a failure undoes, which
 //! answers may and may not move a cursor) here, next to the others.
 
+use fc_text::i18n::{t, t1};
 use std::rc::Rc;
 
 use wasm_bindgen_futures::spawn_local;
@@ -310,14 +311,14 @@ pub fn board_failure(error: &ApiError) -> String {
     match error.code() {
         // Said to the person, never swallowed (docs/protocol.md, "Board").
         Some("board_full") => {
-            "The board is full. Take a note down to make room for this one.".to_string()
+            t("The board is full. Take a note down to make room for this one.").to_string()
         }
-        Some("not_note_author") => "Only the person who wrote a note can change it.".to_string(),
-        Some("note_not_found") => "That note has been taken down.".to_string(),
-        Some("attachment_expired") => "The photo took too long to pin. Try again.".to_string(),
-        Some("attachment_too_large") => "That photo is too large to pin.".to_string(),
-        Some("invalid_attachment") => "The board pins photos only.".to_string(),
-        Some("not_in_family") => "You're not in a family, so there is no board.".to_string(),
+        Some("not_note_author") => t("Only the person who wrote a note can change it.").to_string(),
+        Some("note_not_found") => t("That note has been taken down.").to_string(),
+        Some("attachment_expired") => t("The photo took too long to pin. Try again.").to_string(),
+        Some("attachment_too_large") => t("That photo is too large to pin.").to_string(),
+        Some("invalid_attachment") => t("The board pins photos only.").to_string(),
+        Some("not_in_family") => t("You're not in a family, so there is no board.").to_string(),
         _ => error.detail(),
     }
 }
@@ -670,11 +671,11 @@ impl Actions {
                         // kept from them, and the server's answer is the same
                         // either way on purpose (docs/protocol.md, "Reporting
                         // a member") — so this says only what is true of both.
-                        Ok(()) => this.notice(session, "Report sent."),
+                        Ok(()) => this.notice(session, t("Report sent.")),
                         Err(error) => this.fail_saying(
                             session,
                             &error,
-                            "Couldn't send the report. Try again.",
+                            t("Couldn't send the report. Try again."),
                         ),
                     }
                 });
@@ -695,7 +696,7 @@ impl Actions {
                         Err(error) => this.fail_saying(
                             session,
                             &error,
-                            "Couldn't change that right now. Try again.",
+                            t("Couldn't change that right now. Try again."),
                         ),
                     }
                 });
@@ -730,7 +731,7 @@ impl Actions {
                             this.handle(Action::SelectChat(chat.id));
                         }
                         Err(error) => {
-                            this.fail_saying(session, &error, "That didn't work. Try again.")
+                            this.fail_saying(session, &error, t("That didn't work. Try again."))
                         }
                     }
                 });
@@ -898,7 +899,9 @@ impl Actions {
                                 this.notice(
                                     session,
                                     &format!(
-                                        "Ownership passed on: {heir} is now the owner of the family."
+                                        "{}: {}",
+                                        t("Ownership passed on"),
+                                        t1("%@ is now the owner of the family.", heir)
                                     ),
                                 );
                             }
@@ -1192,7 +1195,7 @@ impl Actions {
                         Err(error) => {
                             this.board_refused(session, &error, Some(note_id), &Callback::noop());
                             if error.code() != Some("note_not_found") {
-                                this.fail_with(session, &error, "Couldn't move the note.");
+                                this.fail_with(session, &error, t("Couldn't move the note."));
                             }
                         }
                     }
@@ -1226,7 +1229,7 @@ impl Actions {
                         }
                         Err(error) => {
                             this.board_refused(session, &error, Some(note_id), &Callback::noop());
-                            this.fail_with(session, &error, "Couldn't send your answer.");
+                            this.fail_with(session, &error, t("Couldn't send your answer."));
                         }
                     }
                     done.emit(());
@@ -1240,7 +1243,7 @@ impl Actions {
             Action::PinPhoto { photo, at } => {
                 if live.read(|state| state.store.board.pinning) {
                     live.now(|state| {
-                        state.failure = Some(crate::views::board::STILL_PINNING.to_string())
+                        state.failure = Some(crate::views::board::still_pinning().to_string())
                     });
                     return;
                 }
@@ -1250,7 +1253,8 @@ impl Actions {
                     live.update(session, |state| {
                         state.store.board.pinning = false;
                         if let Err(reason) = pinned {
-                            state.failure = Some(format!("Couldn't pin that photo. {reason}"));
+                            state.failure =
+                                Some(format!("{} {reason}", t("Couldn't pin that photo.")));
                         }
                     });
                 });

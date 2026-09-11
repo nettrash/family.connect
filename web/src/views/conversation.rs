@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use fc_text::i18n::{t, t1, t2, tn};
 use fc_text::media;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -363,7 +364,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 name: names
                     .get(&user_id)
                     .cloned()
-                    .unwrap_or_else(|| "Someone".to_string()),
+                    .unwrap_or_else(|| t("Someone").to_string()),
                 message_id,
             }));
         })
@@ -378,7 +379,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
             name: names
                 .get(&message.sender_id)
                 .cloned()
-                .unwrap_or_else(|| "Someone".to_string()),
+                .unwrap_or_else(|| t("Someone").to_string()),
             excerpt: if hidden {
                 String::new()
             } else {
@@ -466,9 +467,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
     // Which busy it is, because the two have different ways out
     // (MacConversationView.composerBusyNotice).
     let busy_reason = if editing.is_some() {
-        Some("Finish editing before attaching something.".to_string())
+        Some(t("Finish editing before attaching something.").to_string())
     } else if *preparing || *locating || recording_on {
-        Some("Wait until the current attachment is done.".to_string())
+        Some(t("Wait until the current attachment is done.").to_string())
     } else {
         None
     };
@@ -495,7 +496,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 return;
             }
             preparing.set(true);
-            media_notice.set(Some("Preparing…".to_string()));
+            media_notice.set(Some(t("Preparing…").to_string()));
             let on_action = on_action.clone();
             let preparing = preparing.clone();
             let media_notice = media_notice.clone();
@@ -508,9 +509,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
                         return;
                     }
                     if !media::can_stage(count) {
-                        said = Some(format!(
-                            "You can attach up to {} items.",
-                            media::MAX_PER_MESSAGE
+                        said = Some(tn(
+                            "You can attach up to %lld items.",
+                            media::MAX_PER_MESSAGE as i64,
                         ));
                         break;
                     }
@@ -547,9 +548,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 match read_clipboard().await {
                     Clip::Files(files) => ingest.emit(files),
                     Clip::Text(text) => append_text.emit(text),
-                    Clip::Nothing => notice.emit("There's nothing to paste.".to_string()),
+                    Clip::Nothing => notice.emit(t("There's nothing to paste.").to_string()),
                     Clip::Denied => notice.emit(
-                        "This browser didn't let Family read the clipboard. Paste with ⌘V or Ctrl+V instead."
+                        t("This browser didn't let Family read the clipboard. Paste with ⌘V or Ctrl+V instead.")
                             .to_string(),
                     ),
                 }
@@ -636,13 +637,13 @@ pub fn conversation(props: &ConversationProps) -> Html {
                     return;
                 }
                 let Some(recorded) = recorded else {
-                    media_notice.set(Some("That recording was too short.".to_string()));
+                    media_notice.set(Some(t("That recording was too short.").to_string()));
                     return;
                 };
                 if !media::can_stage(staged) {
-                    media_notice.set(Some(format!(
-                        "You can attach up to {} items.",
-                        media::MAX_PER_MESSAGE
+                    media_notice.set(Some(tn(
+                        "You can attach up to %lld items.",
+                        media::MAX_PER_MESSAGE as i64,
                     )));
                     return;
                 }
@@ -738,7 +739,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 let media_notice = media_notice.clone();
                 Callback::from(move |_: ()| {
                     locating.set(true);
-                    media_notice.set(Some("Finding your location…".to_string()));
+                    media_notice.set(Some(t("Finding your location…").to_string()));
                 })
             };
             let locating = locating.clone();
@@ -1024,13 +1025,13 @@ pub fn conversation(props: &ConversationProps) -> Html {
                             class="link"
                             disabled={props.on_call}
                             onclick={place(false)}
-                        >{ "Call" }</button>
+                        >{ t("Call") }</button>
                         if props.video_calls_enabled {
                             <button
                                 class="link"
                                 disabled={props.on_call}
                                 onclick={place(true)}
-                            >{ "Video" }</button>
+                            >{ t("Video") }</button>
                         }
                     </span>
                 }
@@ -1039,7 +1040,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                         let on_action = props.on_action.clone();
                         Callback::from(move |_: MouseEvent| on_action.emit(Action::ShowOpenPolls { chat_id }))
                     }>
-                        { "Open polls" }
+                        { t("Open polls") }
                         if props.unanswered_polls > 0 {
                             <span class="badge">{ props.unanswered_polls }</span>
                         }
@@ -1051,7 +1052,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                     <button class="load-more" onclick={
                         let on_action = props.on_action.clone();
                         Callback::from(move |_: MouseEvent| on_action.emit(Action::LoadMore { chat_id }))
-                    }>{ "Earlier messages" }</button>
+                    }>{ t("Earlier messages") }</button>
                 }
                 // The rows in a list of their OWN: keys only count in a list
                 // where every child has one, and "Earlier messages" above
@@ -1077,7 +1078,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                             }
                             if row.unread_divider_above {
                                 <div id="unread-divider" class="unread-divider" role="separator">
-                                    { if divider_count == 1 { "1 new message".to_string() } else { format!("{divider_count} new messages") } }
+                                    { tn("%lld new messages", divider_count as i64) }
                                 </div>
                             }
                             <div class={classes!("row", (*highlight == Some(message.id)).then_some("is-highlighted"))}>
@@ -1117,7 +1118,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
                 </>
             </div>
             if !*at_newest {
-                <button class="jump-newest" onclick={jump_to_newest} aria-label="Jump to the newest message">{ "↓" }</button>
+                <button class="jump-newest" onclick={jump_to_newest} aria-label={t("Jump to the newest message")}>{ "↓" }</button>
             }
             if !props.typing.is_empty() {
                 <p class="typing" aria-live="polite">{ typing_line(&props.typing) }</p>
@@ -1129,7 +1130,7 @@ pub fn conversation(props: &ConversationProps) -> Html {
             if let Some(text) = (*media_notice).clone() {
                 <p class="composer-notice media-notice" role="status">
                     { text }
-                    <button class="link" aria-label="Dismiss"
+                    <button class="link" aria-label={t("Dismiss")}
                             onclick={let media_notice = media_notice.clone(); Callback::from(move |_: MouseEvent| media_notice.set(None))}>
                         { "✕" }
                     </button>
@@ -1184,9 +1185,9 @@ pub fn conversation(props: &ConversationProps) -> Html {
 pub fn typing_line(names: &[String]) -> String {
     match names {
         [] => String::new(),
-        [one] => format!("{one} is typing…"),
-        [one, two] => format!("{one} and {two} are typing…"),
-        _ => "Several people are typing…".to_string(),
+        [one] => t1("%@ is typing…", one),
+        [one, two] => t2("%@ and %@ are typing…", one, two),
+        _ => t("Several people are typing…").to_string(),
     }
 }
 

@@ -12,6 +12,7 @@ use crate::api::ApiError;
 use crate::model::Birthday;
 use crate::time;
 use crate::views::dialog::Modal;
+use fc_text::i18n::{t, t1};
 
 #[derive(Properties, PartialEq)]
 pub struct BirthdayProps {
@@ -94,19 +95,19 @@ pub fn birthday_dialog(props: &BirthdayProps) -> Html {
     let cancel = props.on_close.reform(|_: MouseEvent| ());
 
     let title = match (&props.user_id, &props.name) {
-        (Some(_), Some(name)) => format!("Birthday for {name}"),
-        _ => "Birthday".to_string(),
+        (Some(_), Some(name)) => t1("Birthday for %@", name),
+        _ => t("Birthday").to_string(),
     };
     let footnote = if props.user_id.is_some() {
-        "A day and a month, with no year. Everyone in the family sees it."
+        t("A day and a month, with no year. Everyone in the family sees it.")
     } else {
-        "A day and a month, with no year — so being wished a happy birthday never means publishing your age."
+        t("A day and a month, with no year — so being wished a happy birthday never means publishing your age.")
     };
     html! {
         <Modal title={title} on_cancel={props.on_close.clone()} busy={*busy}>
             <div class="birthday-fields">
                 <label class="field">
-                    { "Month" }
+                    { t("Month") }
                     <select onchange={pick_month}>
                         { for (1..=12u32).map(|value| html! {
                             <option value={value.to_string()} selected={value == *month}>
@@ -116,7 +117,7 @@ pub fn birthday_dialog(props: &BirthdayProps) -> Html {
                     </select>
                 </label>
                 <label class="field">
-                    { "Day" }
+                    { t("Day") }
                     <select onchange={pick_day}>
                         { for (1..=account::days_in(*month)).map(|value| html! {
                             <option value={value.to_string()} selected={value == *day}>
@@ -133,11 +134,11 @@ pub fn birthday_dialog(props: &BirthdayProps) -> Html {
             <div class="dialog-actions">
                 if props.current.is_some() {
                     <button class="secondary danger push-left" disabled={*busy} onclick={remove}>
-                        { "Remove Birthday" }
+                        { t("Remove Birthday") }
                     </button>
                 }
-                <button class="secondary" disabled={*busy} onclick={cancel}>{ "Cancel" }</button>
-                <button class="primary" disabled={*busy} onclick={save}>{ "Save" }</button>
+                <button class="secondary" disabled={*busy} onclick={cancel}>{ t("Cancel") }</button>
+                <button class="primary" disabled={*busy} onclick={save}>{ t("Save") }</button>
             </div>
         </Modal>
     }
@@ -146,8 +147,8 @@ pub fn birthday_dialog(props: &BirthdayProps) -> Html {
 /// Why a birthday did not save (ios BirthdayFailure).
 pub fn birthday_failure(error: &ApiError) -> String {
     match error.code() {
-        Some("validation") => "That date doesn't exist.".to_string(),
-        Some("not_family_owner") => "Only the family owner can do that.".to_string(),
-        _ => "Couldn't save that birthday. Try again.".to_string(),
+        Some("validation") => t("That date doesn't exist.").to_string(),
+        Some("not_family_owner") => t("Only the family owner can do that.").to_string(),
+        _ => t("Couldn't save that birthday. Try again.").to_string(),
     }
 }

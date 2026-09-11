@@ -22,6 +22,7 @@
 //! says `call_end` on the way out through `Wire` — the socket itself, not the
 //! frame channel, because nothing polls a channel after the page is gone.
 
+use fc_text::i18n::t;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -196,23 +197,23 @@ pub fn refusal_reason(code: &str) -> &'static str {
 /// plain thing: they know what they did.
 pub fn ended_line(reason: &str, call: &CallState) -> String {
     match reason {
-        "decline" if call.outgoing => "Declined".to_string(),
-        "timeout" if call.outgoing => "No answer".to_string(),
+        "decline" if call.outgoing => t("Declined").to_string(),
+        "timeout" if call.outgoing => t("No answer").to_string(),
         "timeout" => fc_text::call_record::label(
             fc_text::call_record::outcome::MISSED,
             None,
             call.video,
             false,
         ),
-        "answered_elsewhere" => "Answered on another device".to_string(),
-        "busy" => "Busy".to_string(),
-        "unreachable" | "unavailable" => "Unavailable".to_string(),
-        "blocked" => "You've blocked them.".to_string(),
-        "calls_disabled" => "Calls are off on this server.".to_string(),
-        "video_calls_disabled" => "Video calls are off on this server.".to_string(),
-        "microphone_denied" => NO_MICROPHONE.to_string(),
-        "failed" => "Call failed".to_string(),
-        _ => "Call ended".to_string(),
+        "answered_elsewhere" => t("Answered on another device").to_string(),
+        "busy" => t("Busy").to_string(),
+        "unreachable" | "unavailable" => t("Unavailable").to_string(),
+        "blocked" => t("You've blocked them.").to_string(),
+        "calls_disabled" => t("Calls are off on this server.").to_string(),
+        "video_calls_disabled" => t("Video calls are off on this server.").to_string(),
+        "microphone_denied" => no_microphone().to_string(),
+        "failed" => t("Call failed").to_string(),
+        _ => t("Call ended").to_string(),
     }
 }
 
@@ -229,7 +230,9 @@ pub fn unload_reason(call: &CallState) -> &'static str {
 
 /// No microphone, no call. The browser's own permission, and its own
 /// prompt: this is only ever shown, never worked around.
-pub const NO_MICROPHONE: &str = "Microphone access is needed for calls.";
+pub fn no_microphone() -> &'static str {
+    t("Microphone access is needed for calls.")
+}
 
 #[derive(Default)]
 struct Inner {
@@ -1459,7 +1462,7 @@ mod tests {
             ended_line("video_calls_disabled", &call),
             "Video calls are off on this server."
         );
-        assert_eq!(ended_line("microphone_denied", &call), NO_MICROPHONE);
+        assert_eq!(ended_line("microphone_denied", &call), no_microphone());
         // The callee's own words differ: a call they did not take is the
         // missed call the record calls it.
         call.outgoing = false;

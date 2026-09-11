@@ -22,6 +22,7 @@
 //! largest centred square, at most 512 across, over white, as a JPEG stepped
 //! down in quality until it fits the byte budget fc_text::avatar keeps.
 
+use fc_text::i18n::t;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -52,9 +53,9 @@ pub enum PrepError {
 impl PrepError {
     pub fn message(self) -> &'static str {
         match self {
-            PrepError::TooLarge => "That file is over the 100 MB limit.",
-            PrepError::Unreadable => "Couldn't read that file.",
-            PrepError::NotAPhoto => "The board pins photos only.",
+            PrepError::TooLarge => t("That file is over the 100 MB limit."),
+            PrepError::Unreadable => t("Couldn't read that file."),
+            PrepError::NotAPhoto => t("The board pins photos only."),
         }
     }
 }

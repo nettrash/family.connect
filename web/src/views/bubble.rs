@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use fc_text::i18n::{t, tn};
 use yew::prelude::*;
 
 use crate::actions::Action;
@@ -92,7 +93,7 @@ fn name_of(names: &HashMap<i64, String>, user: i64) -> String {
     names
         .get(&user)
         .cloned()
-        .unwrap_or_else(|| "Someone".to_string())
+        .unwrap_or_else(|| t("Someone").to_string())
 }
 
 #[function_component(Bubble)]
@@ -157,23 +158,23 @@ pub fn bubble(props: &BubbleProps) -> Html {
         return html! {
             <article id={format!("m-{id}")} class="bubble is-hidden">
                 <button class="link" onclick={emit(Action::Reveal { message_id: id })}>
-                    { "Hidden — blocked member" }
+                    { t("Hidden — blocked member") }
                 </button>
                 <div class="bubble-foot">
                     <span class="meta">{ time::clock(&message.created_at) }</span>
                     if is_other_member {
-                        <button class="more" aria-label="Message actions" aria-haspopup="menu" onclick={toggle_menu}>{ "⋯" }</button>
+                        <button class="more" aria-label={t("Message actions")} aria-haspopup="menu" onclick={toggle_menu}>{ "⋯" }</button>
                     }
                 </div>
                 if *menu_open && is_other_member {
                     <div class="menu" role="menu" onmouseleave={close_menu}>
-                        <div class="menu-section">{ "Safety" }</div>
+                        <div class="menu-section">{ t("Safety") }</div>
                         if can_report {
-                            <button role="menuitem" onclick={report}>{ "Report…" }</button>
+                            <button role="menuitem" onclick={report}>{ t("Report…") }</button>
                         }
                         <button role="menuitem"
                             onclick={act(Action::Block { user_id: message.sender_id, blocked: false })}>
-                            { "Unblock" }
+                            { t("Unblock") }
                         </button>
                     </div>
                 }
@@ -233,7 +234,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                 if let Some(parent) = &quote.parent {
                     <div class="quote-parent">
                         if hidden_level(parent.sender_id, props.parent_revealed) {
-                            <button class="link" onclick={reveal(1)}>{ "which replied to a hidden message" }</button>
+                            <button class="link" onclick={reveal(1)}>{ t("which replied to a hidden message") }</button>
                         } else {
                             <span class="quote-name">{ name_of(&props.names, parent.sender_id) }</span>
                             <span class="quote-text">{ &parent.excerpt }</span>
@@ -241,7 +242,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     </div>
                 }
                 if hidden_level(quote.sender_id, props.quote_revealed) {
-                    <button class="link" onclick={reveal(0)}>{ "Replying to a hidden message" }</button>
+                    <button class="link" onclick={reveal(0)}>{ t("Replying to a hidden message") }</button>
                 } else {
                     <span class="quote-name">{ name_of(&props.names, quote.sender_id) }</span>
                     <span class="quote-text">{ &quote.excerpt }</span>
@@ -294,7 +295,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
         // the chip and not named here (fc_text::reactions::reaction_details).
         let rows = details(message.reactions(), &props.names, me, &props.blocked);
         html! {
-            <div class="popover" role="dialog" aria-label="Who reacted">
+            <div class="popover" role="dialog" aria-label={t("Who reacted")}>
                 { for rows.iter().map(|row| {
                     let own = my_reaction.as_deref() == Some(row.emoji.as_str());
                     html! {
@@ -303,13 +304,13 @@ pub fn bubble(props: &BubbleProps) -> Html {
                             <span>{ row.names.join(", ") }</span>
                             if own {
                                 <button class="link" onclick={emit(Action::Unreact { chat_id, message_id: id })}>
-                                    { "Click to remove" }
+                                    { t("Click to remove") }
                                 </button>
                             }
                         </div>
                     }
                 }) }
-                <button class="link" onclick={close}>{ "Close" }</button>
+                <button class="link" onclick={close}>{ t("Close") }</button>
             </div>
         }
     });
@@ -394,44 +395,44 @@ pub fn bubble(props: &BubbleProps) -> Html {
                                 { *emoji }
                             </button>
                         }) }
-                        <button role="menuitem" class="link" onclick={more}>{ "More reactions…" }</button>
+                        <button role="menuitem" class="link" onclick={more}>{ t("More reactions…") }</button>
                     </div>
                     if !message.reactions().is_empty() {
-                        <button role="menuitem" onclick={who}>{ "See who reacted" }</button>
+                        <button role="menuitem" onclick={who}>{ t("See who reacted") }</button>
                     }
                     if props.can_reply {
-                        <button role="menuitem" onclick={reply}>{ "Reply" }</button>
+                        <button role="menuitem" onclick={reply}>{ t("Reply") }</button>
                     }
                     if can_view_thread {
                         <button role="menuitem" onclick={act(Action::OpenThread { chat_id, message_id: id })}>
-                            { "View thread" }
+                            { t("View thread") }
                         </button>
                     }
                     if can_edit {
-                        <button role="menuitem" onclick={edit}>{ "Edit" }</button>
+                        <button role="menuitem" onclick={edit}>{ t("Edit") }</button>
                     }
                 }
                 if !message.body.is_empty() {
-                    <button role="menuitem" onclick={copy}>{ "Copy" }</button>
+                    <button role="menuitem" onclick={copy}>{ t("Copy") }</button>
                 }
                 if failed {
-                    <button role="menuitem" onclick={act(Action::Retry(client_msg_id.clone()))}>{ "Try Again" }</button>
-                    <button role="menuitem" class="danger" onclick={act(Action::Discard(client_msg_id))}>{ "Delete" }</button>
+                    <button role="menuitem" onclick={act(Action::Retry(client_msg_id.clone()))}>{ t("Try Again") }</button>
+                    <button role="menuitem" class="danger" onclick={act(Action::Discard(client_msg_id))}>{ t("Delete") }</button>
                 }
                 if is_other_member {
-                    <div class="menu-section">{ "Safety" }</div>
+                    <div class="menu-section">{ t("Safety") }</div>
                     if can_report {
-                        <button role="menuitem" onclick={report.clone()}>{ "Report…" }</button>
+                        <button role="menuitem" onclick={report.clone()}>{ t("Report…") }</button>
                     }
                     if blocked_sender {
                         <button role="menuitem"
                             onclick={act(Action::Block { user_id: message.sender_id, blocked: false })}>
-                            { "Unblock" }
+                            { t("Unblock") }
                         </button>
                     } else {
                         <button role="menuitem" class="danger"
                             onclick={act(Action::Block { user_id: message.sender_id, blocked: true })}>
-                            { "Block" }
+                            { t("Block") }
                         </button>
                     }
                 }
@@ -472,20 +473,20 @@ pub fn bubble(props: &BubbleProps) -> Html {
         html! {
             <span class="meta send-failed" role="alert">
                 { reason }
-                <button class="link" onclick={emit(Action::Retry(client_msg_id.clone()))}>{ "Retry" }</button>
-                <button class="link" onclick={emit(Action::Discard(client_msg_id))}>{ "Discard" }</button>
+                <button class="link" onclick={emit(Action::Retry(client_msg_id.clone()))}>{ t("Retry") }</button>
+                <button class="link" onclick={emit(Action::Discard(client_msg_id))}>{ t("Discard") }</button>
             </span>
         }
     } else if !acked {
-        html! { <span class="meta sending">{ "Sending…" }</span> }
+        html! { <span class="meta sending">{ t("Sending…") }</span> }
     } else if props.run_end || message.is_edited() {
         html! {
             <span class="meta">
                 { time::clock(&message.created_at) }
-                if message.is_edited() { <span class="edited">{ " · edited" }</span> }
+                if message.is_edited() { <span class="edited">{ " · " }{ t("edited") }</span> }
                 if mine && !props.is_family_chat {
                     <span class={classes!("tick", props.seen.then_some("is-seen"))}
-                          aria-label={if props.seen { "Seen" } else { "Sent" }}>
+                          aria-label={if props.seen { t("Seen") } else { t("Sent") }}>
                         { if props.seen { " ✓✓" } else { " ✓" } }
                     </span>
                 }
@@ -522,7 +523,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
             html! {
                 <button class="link" onclick={Callback::from(move |_: MouseEvent| {
                     on_action.emit(Action::PlaceCall { chat_id, video })
-                })}>{ "Call back" }</button>
+                })}>{ t("Call back") }</button>
             }
         });
         html! {
@@ -534,9 +535,9 @@ pub fn bubble(props: &BubbleProps) -> Html {
         }
     } else if props.awaited {
         if props.ai_failed {
-            html! { <p class="body ai-failed">{ "Couldn't answer that. Ask again." }</p> }
+            html! { <p class="body ai-failed">{ t("Couldn't answer that. Ask again.") }</p> }
         } else {
-            html! { <p class="body awaiting" aria-label="The assistant is answering">{ "▍" }</p> }
+            html! { <p class="body awaiting" aria-label={t("The assistant is answering")}>{ "▍" }</p> }
         }
     } else if let Some(size) = emoji_size {
         // One to four emoji: drawn large, bare, and as themselves — no
@@ -557,7 +558,7 @@ pub fn bubble(props: &BubbleProps) -> Html {
                     />
                 }
                 if props.ai_failed {
-                    <p class="ai-failed">{ "Couldn't answer that. Ask again." }</p>
+                    <p class="ai-failed">{ t("Couldn't answer that. Ask again.") }</p>
                 }
             </>
         }
@@ -613,13 +614,13 @@ pub fn bubble(props: &BubbleProps) -> Html {
             { chip_row.unwrap_or_default() }
             if let Some(count) = message.reply_count.filter(|_| !props.in_thread) {
                 <button class="thread-chip" onclick={emit(Action::OpenThread { chat_id, message_id: id })}
-                        aria-label={format!("{count} replies")} title="Opens the thread">
-                    { format!("↩ {count} {} ›", if count == 1 { "reply" } else { "replies" }) }
+                        aria-label={tn("%lld replies", count)} title={t("Opens the thread")}>
+                    { format!("↩ {} ›", tn("%lld replies", count)) }
                 </button>
             }
             <div class="bubble-foot">
                 { meta }
-                <button class="more" aria-label="Message actions" aria-haspopup="menu" onclick={toggle_menu}>{ "⋯" }</button>
+                <button class="more" aria-label={t("Message actions")} aria-haspopup="menu" onclick={toggle_menu}>{ "⋯" }</button>
             </div>
             { menu.unwrap_or_default() }
             { reactors.unwrap_or_default() }

@@ -8,6 +8,7 @@
 //! screen and picture-in-picture with it. Save hands over the ORIGINAL,
 //! never the preview a bubble draws.
 
+use fc_text::i18n::{t, t2};
 use wasm_bindgen::JsCast;
 use web_sys::HtmlElement;
 use yew::prelude::*;
@@ -75,14 +76,14 @@ pub fn viewer(props: &ViewerProps) -> Html {
             <header class="viewer-bar">
                 <span class="viewer-title">{ title }</span>
                 if count > 1 {
-                    <span class="viewer-position">{ format!("{} of {}", index + 1, count) }</span>
+                    <span class="viewer-position">{ t2("%lld of %lld", &(index + 1).to_string(), &count.to_string()) }</span>
                 }
                 <SaveButton attachment={item.clone()} />
-                <button class="link" onclick={close} aria-label="Close">{ "✕" }</button>
+                <button class="link" onclick={close} aria-label={t("Close")}>{ "✕" }</button>
             </header>
             <div class="viewer-stage">
                 if let Some(previous) = previous {
-                    <button class="viewer-arrow is-previous" onclick={previous} aria-label="Previous">{ "‹" }</button>
+                    <button class="viewer-arrow is-previous" onclick={previous} aria-label={t("Previous")}>{ "‹" }</button>
                 }
                 if item.kind == "video" {
                     <VideoView key={item.id} attachment={item.clone()} />
@@ -90,7 +91,7 @@ pub fn viewer(props: &ViewerProps) -> Html {
                     <PhotoView key={item.id} attachment={item.clone()} />
                 }
                 if let Some(next) = next {
-                    <button class="viewer-arrow is-next" onclick={next} aria-label="Next">{ "›" }</button>
+                    <button class="viewer-arrow is-next" onclick={next} aria-label={t("Next")}>{ "›" }</button>
                 }
             </div>
         </div>
@@ -112,7 +113,7 @@ fn save_button(props: &ItemProps) -> Html {
         .map(|url| Callback::from(move |_: MouseEvent| download(&url, &name)));
     html! {
         <button class="secondary" onclick={save.clone().unwrap_or_default()} disabled={save.is_none()}>
-            { "Save…" }
+            { t("Save…") }
         </button>
     }
 }
@@ -217,15 +218,15 @@ fn photo_view(props: &ItemProps) -> Html {
                     onpointercancel={on_up}
                 />
             } else {
-                <p class="viewer-loading">{ "Loading…" }</p>
+                <p class="viewer-loading">{ t("Loading…") }</p>
             }
             if full.is_none() {
-                <p class="viewer-loading is-over">{ "Loading…" }</p>
+                <p class="viewer-loading is-over">{ t("Loading…") }</p>
             }
             <div class="viewer-zoom">
-                <button class="secondary" onclick={zoom_out} disabled={*scale <= 1.0} aria-label="Zoom out">{ "−" }</button>
+                <button class="secondary" onclick={zoom_out} disabled={*scale <= 1.0} aria-label={t("Zoom out")}>{ "−" }</button>
                 <span>{ format!("{:.0}%", *scale * 100.0) }</span>
-                <button class="secondary" onclick={zoom_in} disabled={*scale >= MAX_ZOOM} aria-label="Zoom in">{ "+" }</button>
+                <button class="secondary" onclick={zoom_in} disabled={*scale >= MAX_ZOOM} aria-label={t("Zoom in")}>{ "+" }</button>
             </div>
         </div>
     }
@@ -246,7 +247,7 @@ fn video_view(props: &ItemProps) -> Html {
                 if let Some(poster) = poster {
                     <img src={poster} alt="" draggable="false" />
                 }
-                <p class="viewer-loading is-over">{ "Loading video…" }</p>
+                <p class="viewer-loading is-over">{ t("Loading video…") }</p>
             }
         </div>
     }

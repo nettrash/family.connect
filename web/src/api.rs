@@ -12,6 +12,7 @@
 //! works, and nothing here has been tested against a server it does not
 //! call.
 
+use fc_text::i18n::{t, t1};
 use futures::future::{select, Either};
 use gloo_net::http::{Request, RequestBuilder, Response};
 use gloo_timers::future::TimeoutFuture;
@@ -47,6 +48,13 @@ pub enum ApiError {
     /// (docs/protocol.md, "Error shape"). Never a refusal. `retry_after_secs`
     /// is the header's delta-seconds, when it sent one.
     Throttled { retry_after_secs: Option<u32> },
+    /// It ANSWERED, but not in the protocol's shape: a status with no body a
+    /// client can read (nginx's own rate limit, a 502 while the server
+    /// restarts). A variant of its own rather than a sentence, because
+    /// "the server had a problem" is a different thing to say than "can't
+    /// reach the server" — and because a sentence to match on stops
+    /// matching the moment it is translated.
+    Answered { status: u16 },
     /// It did not answer, or the answer was not what this client can read.
     Network(String),
 }
@@ -57,9 +65,12 @@ impl ApiError {
     /// use it; this is the fallback when there is nothing better.
     pub fn detail(&self) -> String {
         match self {
-            ApiError::Unauthorized => "Your session has expired.".to_string(),
+            ApiError::Unauthorized => t("Your session has expired.").to_string(),
             ApiError::Server { message, .. } => message.clone(),
-            ApiError::Throttled { .. } => "The server is busy. Try again in a moment.".to_string(),
+            ApiError::Throttled { .. } => {
+                t("The server is busy. Try again in a moment.").to_string()
+            }
+            ApiError::Answered { status } => t1("The server answered %lld.", &status.to_string()),
             ApiError::Network(detail) => detail.clone(),
         }
     }
@@ -423,7 +434,7 @@ async fn check(response: &Response) -> Result<(), ApiError> {
         // A body that is not the protocol's shape is still a failure, and
         // saying which status it was beats saying nothing: nginx answers
         // its own rate limit and a dead upstream with HTML.
-        Err(_) => Err(ApiError::Network(format!("The server answered {status}."))),
+        Err(_) => Err(ApiError::Answered { status }),
     }
 }
 
@@ -904,7 +915,7 @@ async fn within<T>(
         Either::Right(_) => {
             controller.abort();
             Err(ApiError::Network(
-                "The server did not answer in time.".into(),
+                t("The server did not answer in time.").to_string(),
             ))
         }
     }
@@ -912,7 +923,7 @@ async fn within<T>(
 
 fn controller() -> Result<AbortController, ApiError> {
     AbortController::new()
-        .map_err(|_| ApiError::Network("This browser cannot time a request out.".into()))
+        .map_err(|_| ApiError::Network(t("This browser cannot time a request out.").to_string()))
 }
 
 /// The query string an upload's metadata rides in (docs/protocol.md,
@@ -1016,7 +1027,7 @@ pub async fn attachment_bytes(token: &str, id: i64, preview: bool) -> Result<Blo
         .get("Content-Disposition")
         .is_some_and(|value| value.to_ascii_lowercase().starts_with("attachment"));
     let raw: web_sys::Response = response.into();
-    let unreadable = || ApiError::Network("The answer could not be read.".into());
+    let unreadable = || ApiError::Network(t("The answer could not be read.").to_string());
     let promise = raw.blob().map_err(|_| unreadable())?;
     let blob = wasm_bindgen_futures::JsFuture::from(promise)
         .await
@@ -1048,7 +1059,7 @@ pub async fn avatar_bytes(token: &str, user_id: i64) -> Result<Blob, ApiError> {
     .map_err(network)?;
     check(&response).await?;
     let raw: web_sys::Response = response.into();
-    let unreadable = || ApiError::Network("The answer could not be read.".into());
+    let unreadable = || ApiError::Network(t("The answer could not be read.").to_string());
     let promise = raw.blob().map_err(|_| unreadable())?;
     wasm_bindgen_futures::JsFuture::from(promise)
         .await

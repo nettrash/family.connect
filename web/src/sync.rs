@@ -3,6 +3,7 @@
 //! that arrive, and the small timers. The app starts it and a sign-out
 //! stops it; nothing a person clicks lives here.
 
+use fc_text::i18n::t;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -232,7 +233,7 @@ async fn upload(token: &str, job: outbox::Upload) -> Result<crate::model::Attach
         if !crate::prep::readable(file).await {
             return Err(ApiError::Server {
                 code: outbox::LOCAL_FILE_GONE.to_string(),
-                message: "The file changed or is gone.".to_string(),
+                message: t("The file changed or is gone.").to_string(),
             });
         }
     }
@@ -367,6 +368,81 @@ pub fn put_away_panes(state: &mut AppState) {
     state.board_open = false;
     state.viewing = None;
     state.panel = None;
+}
+
+/// Whether the tab is in front of somebody: what decides whether a message
+/// is news to be notified about, or something they are watching arrive.
+fn in_front() -> bool {
+    page_visible() && page_focused()
+}
+
+/// The notification a message that arrived while the tab was elsewhere is
+/// worth — when the reader asked for them, and under the gating the push
+/// rules use (docs/protocol.md, "A browser is a client too").
+///
+/// The BLOCK is the first of that gating, and it reaches one step further
+/// than the sender: the assistant's answer to a blocked member's question
+/// would otherwise light up a tab for a thread its reader cannot read.
+fn notify_message(live: &Live, session: u64, message: &crate::model::Message) {
+    if in_front() || !crate::notify::wanted() {
+        return;
+    }
+    let told = live.read(|state| {
+        let store = &state.store;
+        if message.sender_id == store.my_user_id || store.blocked.contains(&message.sender_id) {
+            return None;
+        }
+        let from_the_assistant = store
+            .assistant
+            .as_ref()
+            .is_some_and(|assistant| assistant.user_id == message.sender_id);
+        let answering_a_blocked_member = message
+            .reply_to
+            .as_ref()
+            .is_some_and(|quote| store.blocked.contains(&quote.sender_id));
+        if from_the_assistant && answering_a_blocked_member {
+            return None;
+        }
+        let item = store.item(message.chat_id)?;
+        let family = item
+            .chat
+            .is_family()
+            .then(|| store.family.as_ref().map(|family| family.name.clone()))
+            .flatten();
+        let sender = store
+            .names
+            .get(&message.sender_id)
+            .cloned()
+            .unwrap_or_else(|| t("Someone").to_string());
+        let mentioned = message
+            .mentions()
+            .iter()
+            .any(|mention| mention.user_id == store.my_user_id);
+        Some((
+            fc_text::notify::title(family.as_deref(), &sender, mentioned),
+            message.chat_id,
+        ))
+    });
+    let Some((title, chat_id)) = told else {
+        return;
+    };
+    let live = live.clone();
+    crate::notify::tell(
+        &title,
+        fc_text::notify::new_message(),
+        &format!("chat-{chat_id}"),
+        move || {
+            // Clicking it is asking to read that chat, on the tab it has
+            // just brought to the front.
+            live.update(session, |state| {
+                state.open_chat = Some(chat_id);
+                state.at_newest = false;
+                state.opening = None;
+                state.board_open = false;
+                state.panel = None;
+            });
+        },
+    );
 }
 
 /// Whether a catch-up for `link` is a catch-up for the connection up now.
@@ -899,6 +975,7 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
     };
     match frame {
         ServerFrame::Message { message } => {
+            notify_message(live, session, &message);
             let chat_id = message.chat_id;
             let (answer, unknown_chat) = live.update(session, |state| {
                 let reading = reading(state);
@@ -1060,7 +1137,39 @@ fn apply_frame(wiring: &Wiring, frame: ServerFrame) -> Option<ClientFrame> {
             None
         }
         ServerFrame::BoardNote { note } => {
-            live.update(session, |state| state.store.board.apply_frame(note));
+            let author = note.author_id;
+            let news = live.update(session, |state| {
+                let before = state.store.board.unread();
+                state.store.board.apply_frame(note);
+                let mine = Some(state.store.my_user_id) == author;
+                let blocked = author.is_some_and(|author| state.store.blocked.contains(&author));
+                let said = (!mine && !blocked && state.store.board.unread() > before).then(|| {
+                    let who = author
+                        .and_then(|author| state.store.names.get(&author).cloned())
+                        .unwrap_or_else(|| t("Someone").to_string());
+                    let family = state
+                        .store
+                        .family
+                        .as_ref()
+                        .map(|family| family.name.clone());
+                    fc_text::notify::title(family.as_deref(), &who, false)
+                });
+                said
+            });
+            // A note is news only when it SAYS something new — a note that
+            // was moved raises no badge, and notifies nobody either.
+            if let Some(Some(title)) = news {
+                if !in_front() && crate::notify::wanted() {
+                    let live = live.clone();
+                    crate::notify::tell(&title, fc_text::notify::new_note(), "board", move || {
+                        live.update(session, |state| {
+                            state.board_open = true;
+                            state.open_chat = None;
+                            state.panel = None;
+                        });
+                    });
+                }
+            }
             None
         }
         // A call's signalling. Every one of these is for the call this tab
