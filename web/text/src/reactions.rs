@@ -19,6 +19,7 @@
 //! server takes any string of at most 32 bytes) is one chip on the Apple
 //! apps and two here and on Android. No emoji has a canonical
 //! decomposition, so real emoji never differ.
+use crate::i18n::t;
 
 use std::collections::{HashMap, HashSet};
 
@@ -116,13 +117,18 @@ pub fn reaction_chips(reactions: &[Reaction], current_user_id: i64) -> Vec<React
     chips
 }
 
-/// How the reader is named in "See who reacted".
-pub const YOU_LABEL: &str = "You";
+/// How the reader is named in "See who reacted". A function, not a const:
+/// a translated string is not a constant.
+pub fn you_label() -> &'static str {
+    t("You")
+}
 
 /// How a reactor the roster does not know is named — the name the web
 /// client already gives an unknown typist. Swift says the same; Android
 /// says "Member <id>".
-pub const SOMEONE_LABEL: &str = "Someone";
+pub fn someone_label() -> &'static str {
+    t("Someone")
+}
 
 /// One emoji's row in "See who reacted".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,7 +193,7 @@ pub fn reaction_details(
         } else if !blocked_user_ids.contains(&reaction.user_id) {
             let name = names
                 .get(&reaction.user_id)
-                .map_or(SOMEONE_LABEL, String::as_str);
+                .map_or(someone_label(), String::as_str);
             row.others.push(name.to_string());
             row.other_ids.push(reaction.user_id);
         }
@@ -196,7 +202,7 @@ pub fn reaction_details(
         .map(|row| {
             // "You" leads its emoji, so the reader's own id leads it too.
             let (names, lead_user_id) = if row.mine {
-                let mut names = vec![YOU_LABEL.to_string()];
+                let mut names = vec![you_label().to_string()];
                 names.extend(row.others);
                 (names, Some(current_user_id))
             } else {

@@ -6,6 +6,7 @@
 //! the same thing the apps get from the operating system, and the reason
 //! this client carries no date library of its own.
 
+use fc_text::i18n::t;
 use js_sys::{Date, Object, Reflect};
 use wasm_bindgen::JsValue;
 
@@ -82,10 +83,10 @@ pub fn clock(rfc3339: &str) -> String {
 pub fn day_label(day: Day, now_ms: f64) -> String {
     let today = today(now_ms);
     if day == today {
-        return "Today".to_string();
+        return t("Today").to_string();
     }
     if day == previous(today) {
-        return "Yesterday".to_string();
+        return t("Yesterday").to_string();
     }
     let date = Date::new_with_year_month_day(day.year, day.month as i32, day.day as i32);
     date.to_locale_date_string(
@@ -107,7 +108,7 @@ pub fn row_time(rfc3339: &str, now_ms: f64) -> String {
         return clock(rfc3339);
     }
     if when == previous(today) {
-        return "Yesterday".to_string();
+        return t("Yesterday").to_string();
     }
     let age_days = (now_ms - date.get_time()) / 86_400_000.0;
     if (0.0..7.0).contains(&age_days) {

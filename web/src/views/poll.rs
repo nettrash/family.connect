@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use fc_text::i18n::{t, t1, tn, tp};
 use yew::prelude::*;
 
 use crate::model::{Message, Poll};
@@ -64,7 +65,7 @@ pub fn drawable_voters(votes: &[i64], blocked: &HashSet<i64>) -> Vec<i64> {
 /// sent, or what is wrong.
 pub fn validate(question: &str, options: &[String]) -> Result<Vec<String>, &'static str> {
     if question.trim().is_empty() {
-        return Err("Ask a question.");
+        return Err(t("Ask a question."));
     }
     let trimmed: Vec<String> = options
         .iter()
@@ -72,23 +73,23 @@ pub fn validate(question: &str, options: &[String]) -> Result<Vec<String>, &'sta
         .filter(|option| !option.is_empty())
         .collect();
     if trimmed.len() < MIN_OPTIONS {
-        return Err("Give at least two options.");
+        return Err(t("Give at least two options."));
     }
     if trimmed.len() > MAX_OPTIONS {
-        return Err("A poll has at most ten options.");
+        return Err(t("A poll has at most ten options."));
     }
     if trimmed
         .iter()
         .any(|option| option.chars().count() > MAX_OPTION_CHARS)
     {
-        return Err("An option can be at most 100 characters.");
+        return Err(t("An option can be at most 100 characters."));
     }
     let mut seen = HashSet::new();
     if !trimmed
         .iter()
         .all(|option| seen.insert(option.to_lowercase()))
     {
-        return Err("Two options are the same.");
+        return Err(t("Two options are the same."));
     }
     Ok(trimmed)
 }
@@ -119,20 +120,26 @@ pub fn poll_view(props: &PollViewProps) -> Html {
     let votable = props.message.id != 0 && !poll.closed;
     let voted = voter_count(poll);
     let footer = if props.member_count > 0 {
-        format!("{voted} of {} voted", props.member_count)
+        // The count that chooses the form is the one that VARIES; the
+        // roster's size is the second argument, wherever a language puts it.
+        tp(
+            "%lld of %lld voted",
+            voted as i64,
+            &[&voted.to_string(), &props.member_count.to_string()],
+        )
     } else {
-        format!("{voted} voted")
+        tn("%lld voted", voted as i64)
     };
     let is_author = props.message.sender_id == me;
     let name = |user: i64| -> String {
         if user == me {
-            "You".to_string()
+            t("You").to_string()
         } else {
             props
                 .names
                 .get(&user)
                 .cloned()
-                .unwrap_or_else(|| "Someone".to_string())
+                .unwrap_or_else(|| t("Someone").to_string())
         }
     };
     html! {
@@ -157,10 +164,15 @@ pub fn poll_view(props: &PollViewProps) -> Html {
                         }
                     })
                 };
+                let votes = tp(
+                    "%@. %lld votes",
+                    count as i64,
+                    &[&option.text, &count.to_string()],
+                );
                 let label = if chosen {
-                    format!("{}. {count} votes. Your choice", option.text)
+                    format!("{votes}. {}", t("Your choice"))
                 } else {
-                    format!("{}. {count} votes", option.text)
+                    votes
                 };
                 html! {
                     <div class="poll-option">
@@ -178,7 +190,7 @@ pub fn poll_view(props: &PollViewProps) -> Html {
                         if !shown.is_empty() {
                             <span class="poll-voters">
                                 { shown.join(", ") }
-                                if more > 0 { { format!(" +{more}") } }
+                                if more > 0 { { format!(" {}", tn("+%lld", more as i64)) } }
                             </span>
                         }
                     </div>
@@ -187,14 +199,14 @@ pub fn poll_view(props: &PollViewProps) -> Html {
             <div class="poll-foot">
                 <span>{ footer }</span>
                 if poll.closed {
-                    <span class="poll-closed">{ "🔒 Poll closed" }</span>
+                    <span class="poll-closed">{ format!("🔒 {}", t("Poll closed")) }</span>
                 } else if is_author && votable {
                     <button
                         class="link"
-                        title="Ends the poll. This cannot be undone."
+                        title={t("Ends the poll. This cannot be undone.")}
                         onclick={let on_close = props.on_close.clone(); Callback::from(move |_: MouseEvent| on_close.emit(()))}
                     >
-                        { "Close poll" }
+                        { t("Close poll") }
                     </button>
                 }
             </div>
@@ -270,38 +282,38 @@ pub fn poll_composer(props: &PollComposerProps) -> Html {
     html! {
         <div class="dialog-backdrop">
             <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="poll-title">
-                <h2 id="poll-title">{ "New poll" }</h2>
+                <h2 id="poll-title">{ t("New poll") }</h2>
                 <label class="field">
-                    <span>{ "Question" }</span>
+                    <span>{ t("Question") }</span>
                     <input value={(*question).clone()} oninput={on_question} maxlength="4000" />
                 </label>
-                <p class="footnote">{ "The question is the message everyone sees." }</p>
+                <p class="footnote">{ t("The question is the message everyone sees.") }</p>
                 <fieldset class="options">
-                    <legend>{ "Options" }</legend>
+                    <legend>{ t("Options") }</legend>
                     { for options.iter().enumerate().map(|(index, option)| html! {
                         <div class="option-row">
                             <input
                                 value={option.clone()}
                                 oninput={edit_option(index)}
                                 maxlength={MAX_OPTION_CHARS.to_string()}
-                                aria-label={format!("Option {}", index + 1)}
+                                aria-label={t1("Option %lld", &(index + 1).to_string())}
                             />
                             if options.len() > MIN_OPTIONS {
-                                <button class="link" onclick={remove_option(index)} aria-label="Remove option">{ "✕" }</button>
+                                <button class="link" onclick={remove_option(index)} aria-label={t("Remove option")}>{ "✕" }</button>
                             }
                         </div>
                     }) }
                     if options.len() < MAX_OPTIONS {
-                        <button class="link" onclick={add_option}>{ "Add option" }</button>
+                        <button class="link" onclick={add_option}>{ t("Add option") }</button>
                     }
                 </fieldset>
-                <p class="footnote">{ "Between 2 and 10 options. They can't be changed once the poll is sent." }</p>
+                <p class="footnote">{ t("Between 2 and 10 options. They can't be changed once the poll is sent.") }</p>
                 if let Some(reason) = *problem {
                     <p class="error" role="alert">{ reason }</p>
                 }
                 <div class="dialog-actions">
-                    <button class="secondary" onclick={cancel}>{ "Cancel" }</button>
-                    <button class="primary" onclick={submit}>{ "Send" }</button>
+                    <button class="secondary" onclick={cancel}>{ t("Cancel") }</button>
+                    <button class="primary" onclick={submit}>{ t("Send") }</button>
                 </div>
             </div>
         </div>

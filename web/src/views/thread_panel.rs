@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use fc_text::i18n::{t, tn};
 use yew::prelude::*;
 
 use crate::actions::Action;
@@ -121,10 +122,10 @@ pub fn thread_panel(props: &ThreadPanelProps) -> Html {
     };
     let replies = props.messages.len().saturating_sub(1);
     html! {
-        <aside class="thread-panel" aria-label="Thread" onkeydown={on_key}>
+        <aside class="thread-panel" aria-label={t("Thread")} onkeydown={on_key}>
             <header class="thread-bar">
-                <h2>{ if replies == 1 { "1 reply".to_string() } else { format!("{replies} replies") } }</h2>
-                <button class="link" onclick={close} aria-label="Close the thread">{ "✕" }</button>
+                <h2>{ tn("%lld replies", replies as i64) }</h2>
+                <button class="link" onclick={close} aria-label={t("Close the thread")}>{ "✕" }</button>
             </header>
             <div class="thread-messages">
                 { for props.messages.iter().map(|message| {

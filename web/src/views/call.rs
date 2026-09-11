@@ -15,6 +15,7 @@ use yew::prelude::*;
 use crate::actions::Action;
 use crate::calls::{CallState, Calls, Stage};
 use crate::views::avatar::Avatar;
+use fc_text::i18n::{t, t1};
 
 #[derive(Properties, PartialEq)]
 pub struct CallProps {
@@ -61,28 +62,6 @@ pub fn call_panel(props: &CallProps) -> Html {
         });
     }
 
-    // A ringing tab says so in its title: with the window behind another
-    // one, that and the tone are all there is (docs/protocol.md, "A browser
-    // is a client too" — a browser rings only while its tab is open).
-    {
-        let name = props.name.clone();
-        let ringing = call.stage == Stage::Incoming;
-        use_effect_with(ringing, move |ringing| {
-            let document = web_sys::window().and_then(|window| window.document());
-            let held = document.as_ref().map(|document| document.title());
-            if *ringing {
-                if let Some(document) = document.as_ref() {
-                    document.set_title(&format!("☎ {name} is calling"));
-                }
-            }
-            move || {
-                if let (Some(document), Some(held)) = (document, held) {
-                    document.set_title(&held);
-                }
-            }
-        });
-    }
-
     // A ringing call takes the focus, on Accept: Return answers it, and a
     // screen reader reads the call rather than wherever the page was.
     {
@@ -110,7 +89,7 @@ pub fn call_panel(props: &CallProps) -> Html {
         <section
             class={classes!("call", call.video.then_some("is-video"), incoming.then_some("is-incoming"))}
             role="dialog"
-            aria-label={format!("Call with {}", props.name)}
+            aria-label={t1("Call with %@", &props.name)}
         >
             <div class="call-who">
                 <Avatar
@@ -149,23 +128,23 @@ pub fn call_panel(props: &CallProps) -> Html {
                     // Nothing left to do: the panel is saying why, and
                     // goes on its own.
                 } else if incoming {
-                    <button class="danger-button" onclick={act(Action::DeclineCall)}>{ "Decline" }</button>
-                    <button class="primary" ref={accept} onclick={act(Action::AnswerCall)}>{ "Accept" }</button>
+                    <button class="danger-button" onclick={act(Action::DeclineCall)}>{ t("Decline") }</button>
+                    <button class="primary" ref={accept} onclick={act(Action::AnswerCall)}>{ t("Accept") }</button>
                 } else {
                     // Each button is named for what it DOES, so it needs no
                     // pressed state to be read correctly.
                     <button
                         class={classes!("secondary", call.muted.then_some("is-chosen"))}
                         onclick={act(Action::ToggleMute)}
-                    >{ if call.muted { "Unmute" } else { "Mute" } }</button>
+                    >{ if call.muted { t("Unmute") } else { t("Mute") } }</button>
                     if call.video {
                         <button
                             class={classes!("secondary", (!call.camera).then_some("is-chosen"))}
                             onclick={act(Action::ToggleCamera)}
-                        >{ if call.camera { "Turn camera off" } else { "Turn camera on" } }</button>
+                        >{ if call.camera { t("Turn camera off") } else { t("Turn camera on") } }</button>
                     }
                     <button class="danger-button" onclick={act(Action::EndCall)}>
-                        { if call.answered() { "Hang Up" } else { "Cancel" } }
+                        { if call.answered() { t("Hang Up") } else { t("Cancel") } }
                     </button>
                 }
             </div>
@@ -201,14 +180,14 @@ fn media_element(node: &NodeRef) -> Option<HtmlMediaElement> {
 /// Where the call is, in words — and once it is up, how long it has been.
 pub fn status_line(call: &CallState, now_ms: f64) -> String {
     match call.stage {
-        Stage::Dialling => "Calling…".to_string(),
-        Stage::Ringing => "Ringing…".to_string(),
-        Stage::Incoming if call.video => "Incoming video call".to_string(),
-        Stage::Incoming => "Incoming call".to_string(),
-        Stage::Connecting => "Connecting…".to_string(),
+        Stage::Dialling => t("Calling…").to_string(),
+        Stage::Ringing => t("Ringing…").to_string(),
+        Stage::Incoming if call.video => t("Incoming video call").to_string(),
+        Stage::Incoming => t("Incoming call").to_string(),
+        Stage::Connecting => t("Connecting…").to_string(),
         Stage::Talking => match call.answered_at {
             Some(answered) => fc_text::call_record::duration(((now_ms - answered) / 1000.0) as i64),
-            None => "Connected".to_string(),
+            None => t("Connected").to_string(),
         },
         // Over: why, in the apps' words, for the moment the panel stays.
         Stage::Ended => {

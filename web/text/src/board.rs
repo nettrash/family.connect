@@ -12,6 +12,7 @@
 //! note from a newer server with a fourth size or a fifth colour still has
 //! to be readable, and a hole in the family's shared layout would be worse
 //! than a sticker drawn in the default.
+use crate::i18n::{t, t1, t2, t3};
 
 /// The longest a note may be: "text is trimmed, non-empty and at most 280
 /// characters" — counted as the server counts them, in Unicode scalars.
@@ -122,9 +123,9 @@ impl Size {
 
     pub fn title(self) -> &'static str {
         match self {
-            Size::Small => "Small",
-            Size::Medium => "Medium",
-            Size::Large => "Large",
+            Size::Small => t("Small"),
+            Size::Medium => t("Medium"),
+            Size::Large => t("Large"),
         }
     }
 
@@ -262,10 +263,10 @@ impl Font {
 
     pub fn title(self) -> &'static str {
         match self {
-            Font::Plain => "Plain",
-            Font::Serif => "Serif",
-            Font::Mono => "Mono",
-            Font::Casual => "Casual",
+            Font::Plain => t("Plain"),
+            Font::Serif => t("Serif"),
+            Font::Mono => t("Mono"),
+            Font::Casual => t("Casual"),
         }
     }
 
@@ -352,9 +353,9 @@ impl Answer {
 
     pub fn title(self) -> &'static str {
         match self {
-            Answer::Going => "Going",
-            Answer::Maybe => "Maybe",
-            Answer::No => "Can't",
+            Answer::Going => t("Going"),
+            Answer::Maybe => t("Maybe"),
+            Answer::No => t("Can't"),
         }
     }
 }
@@ -365,15 +366,24 @@ impl Answer {
 pub fn going_line(going: usize, maybe: usize) -> Option<String> {
     match (going, maybe) {
         (0, 0) => None,
-        (going, 0) => Some(format!("{going} going")),
-        (0, maybe) => Some(format!("{maybe} maybe")),
-        (going, maybe) => Some(format!("{going} going, {maybe} maybe")),
+        (going, 0) => Some(t1("%lld going", &going.to_string())),
+        (0, maybe) => Some(t1("%lld maybe", &maybe.to_string())),
+        (going, maybe) => Some(t2(
+            "%lld going, %lld maybe",
+            &going.to_string(),
+            &maybe.to_string(),
+        )),
     }
 }
 
 /// Everybody's answers, in the note that opens.
 pub fn guest_line(going: usize, maybe: usize, no: usize) -> String {
-    format!("{going} going · {maybe} maybe · {no} can't")
+    t3(
+        "%lld going · %lld maybe · %lld can't",
+        &going.to_string(),
+        &maybe.to_string(),
+        &no.to_string(),
+    )
 }
 
 /// A few degrees of tilt, derived from the id so a note keeps the same

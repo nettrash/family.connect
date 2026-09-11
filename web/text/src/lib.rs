@@ -32,6 +32,13 @@
 //!   and the markdown label/destination precedence. Only http, https,
 //!   `mailto:` and `tel:` ever link — in a browser, anything else is a way
 //!   to run script.
+//! - [`i18n`] — the nine languages, and how a string is found in them: the
+//!   KEY is the apps' own English source string, so the modules above say
+//!   the same words the phone says. Every other module here reads the
+//!   reader's language through it (docs/protocol.md, "A browser is a client
+//!   too").
+//! - [`notify`] — what a browser's own notification says, and the unread
+//!   count in the page's title.
 
 pub mod account;
 pub mod assistant;
@@ -42,9 +49,11 @@ pub mod call_record;
 pub mod composer;
 pub mod emoji;
 pub mod excerpt;
+pub mod i18n;
 pub mod links;
 pub mod markdown;
 pub mod media;
 pub mod mentions;
+pub mod notify;
 pub mod reactions;
 pub mod wav;

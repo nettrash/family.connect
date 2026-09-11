@@ -9,9 +9,9 @@
 //! never say different things about the same call.
 //!
 //! The wording is decided as a [`CallRecordLine`] — which sentence, with
-//! which parameters — and rendered by [`CallRecordLine::english`], so a
-//! translation table can be added beside it later without touching the
-//! decision.
+//! which parameters — and said by [`CallRecordLine::said`] in the reader's
+//! language, so the decision and the words stay apart.
+use crate::i18n::{t, t1};
 
 /// The four outcomes the wire names (`CallDTO.Outcome`). Anything else is
 /// an outcome this build does not know, and is still drawn as a call.
@@ -70,39 +70,55 @@ impl CallRecordLine {
         }
     }
 
-    /// The sentence in English — the Apple string catalog's source strings.
-    pub fn english(&self) -> String {
-        let kind = |video: bool| if video { "Video call" } else { "Voice call" };
+    /// The sentence, in the reader's language. Its keys ARE the apps' own
+    /// source strings, so a record reads the same on every platform.
+    pub fn said(&self) -> String {
         match *self {
             CallRecordLine::Completed {
                 video,
                 duration_secs: Some(secs),
-            } => format!("{} · {}", kind(video), duration(secs)),
+            } => {
+                if video {
+                    t1("Video call · %@", &duration(secs))
+                } else {
+                    t1("Voice call · %@", &duration(secs))
+                }
+            }
             CallRecordLine::Completed {
                 video,
                 duration_secs: None,
             }
-            | CallRecordLine::Unknown { video } => kind(video).to_string(),
-            CallRecordLine::NoAnswer => "No answer".to_string(),
-            CallRecordLine::Missed { video: false } => "Missed voice call".to_string(),
-            CallRecordLine::Missed { video: true } => "Missed video call".to_string(),
-            CallRecordLine::DeclinedByThem { video } => format!("{} declined", kind(video)),
-            CallRecordLine::DeclinedByMe { video: false } => "Declined voice call".to_string(),
-            CallRecordLine::DeclinedByMe { video: true } => "Declined video call".to_string(),
+            | CallRecordLine::Unknown { video } => {
+                if video {
+                    t("Video call").to_string()
+                } else {
+                    t("Voice call").to_string()
+                }
+            }
+            CallRecordLine::NoAnswer => t("No answer").to_string(),
+            CallRecordLine::Missed { video: false } => t("Missed voice call").to_string(),
+            CallRecordLine::Missed { video: true } => t("Missed video call").to_string(),
+            // The apps say each of these whole, not a kind with a word
+            // after it: a language that puts the verb first cannot be
+            // handed "%@ declined".
+            CallRecordLine::DeclinedByThem { video: false } => t("Voice call declined").to_string(),
+            CallRecordLine::DeclinedByThem { video: true } => t("Video call declined").to_string(),
+            CallRecordLine::DeclinedByMe { video: false } => t("Declined voice call").to_string(),
+            CallRecordLine::DeclinedByMe { video: true } => t("Declined video call").to_string(),
             CallRecordLine::Failed {
                 duration_secs: Some(secs),
-            } => format!("Call failed · {}", duration(secs)),
+            } => t1("Call failed · %@", &duration(secs)),
             CallRecordLine::Failed {
                 duration_secs: None,
-            } => "Call failed".to_string(),
+            } => t("Call failed").to_string(),
         }
     }
 }
 
-/// The one line a record is drawn with, in English —
+/// The one line a record is drawn with, in the reader's language —
 /// `CallRecordText.label(outcome:durationSecs:video:isMine:)`.
 pub fn label(outcome: &str, duration_secs: Option<i64>, video: bool, is_mine: bool) -> String {
-    CallRecordLine::new(outcome, duration_secs, video, is_mine).english()
+    CallRecordLine::new(outcome, duration_secs, video, is_mine).said()
 }
 
 /// `3:42`, or `1:03:42` past an hour — the same shape the in-call timer

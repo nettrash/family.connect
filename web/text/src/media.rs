@@ -10,6 +10,7 @@
 //! `handlers_attachment.rs::matches_magic`, so that what this client decides
 //! to send as a video or as audio is exactly what the server will take as
 //! one rather than a guess that comes back `invalid_attachment`.
+use crate::i18n::{t, t1, tn};
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -309,14 +310,12 @@ pub fn sanitized_name(raw: &str) -> Option<String> {
 /// two of a gigabyte, and no trailing zero.
 pub fn display_size(bytes: u64) -> String {
     if bytes == 0 {
-        return "Zero KB".to_string();
+        return t("Zero KB").to_string();
     }
     if bytes < 1_000 {
-        return if bytes == 1 {
-            "1 byte".to_string()
-        } else {
-            format!("{bytes} bytes")
-        };
+        // The unit is a word here, so it is said in the reader's language;
+        // above a kilobyte it is a symbol every one of the nine uses.
+        return tn("%lld bytes", bytes as i64);
     }
     let trimmed = |value: f64, places: usize| -> String {
         let text = format!("{value:.places$}");
@@ -328,13 +327,13 @@ pub fn display_size(bytes: u64) -> String {
     };
     let kb = bytes as f64 / 1e3;
     if kb.round() < 1_000.0 {
-        return format!("{} KB", kb.round() as u64);
+        return t1("%@ KB", &(kb.round() as u64).to_string());
     }
     let mb = bytes as f64 / 1e6;
     if (mb * 10.0).round() / 10.0 < 1_000.0 {
-        return format!("{} MB", trimmed(mb, 1));
+        return t1("%@ MB", &trimmed(mb, 1));
     }
-    format!("{} GB", trimmed(bytes as f64 / 1e9, 2))
+    t1("%@ GB", &trimmed(bytes as f64 / 1e9, 2))
 }
 
 /// "3:42" — elapsed or total time of a recording (ios AudioRecorder.timeLabel).
@@ -443,7 +442,7 @@ pub fn maps_url(latitude: f64, longitude: f64, name: Option<&str>) -> String {
     let label = name
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .unwrap_or("Location");
+        .unwrap_or_else(|| t("Location"));
     url.push_str("&q=");
     for byte in label.bytes() {
         match byte {
@@ -462,11 +461,11 @@ pub fn display_name<'a>(kind: &str, name: Option<&'a str>) -> std::borrow::Cow<'
     match name.filter(|name| !name.is_empty()) {
         Some(name) => std::borrow::Cow::Borrowed(name),
         None => std::borrow::Cow::Borrowed(match kind {
-            "video" => "Video",
-            "audio" => "Audio",
-            "location" => "Location",
-            "file" => "File",
-            _ => "Photo",
+            "video" => t("Video"),
+            "audio" => t("Audio"),
+            "location" => t("Location"),
+            "file" => t("File"),
+            _ => t("Photo"),
         }),
     }
 }

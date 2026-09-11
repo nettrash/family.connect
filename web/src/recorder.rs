@@ -7,6 +7,7 @@
 //! staged, like the Mac's, so a caption can be added and a recording made
 //! by accident can still be thrown away.
 
+use fc_text::i18n::t;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -32,10 +33,8 @@ pub enum Failure {
 impl Failure {
     pub fn message(self) -> &'static str {
         match self {
-            Failure::MicrophoneDenied => {
-                "Family needs permission to use your microphone. Allow it in your browser's settings for this site."
-            }
-            Failure::CouldNotStart => "Couldn't start recording.",
+            Failure::MicrophoneDenied => { t("Family needs permission to use your microphone. Allow it in your browser's settings for this site.") }
+            Failure::CouldNotStart => t("Couldn't start recording."),
         }
     }
 }

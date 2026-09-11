@@ -7,6 +7,7 @@
 //! once they land, so a row is the height it will be from the moment it is
 //! drawn and a picture arriving does not shove the chat.
 
+use fc_text::i18n::{t, t1, t2, tn};
 use fc_text::media;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlAudioElement;
@@ -102,7 +103,7 @@ fn tile(props: &TileProps) -> Html {
     let (width, height) = media::tile_size(attachment.width, attachment.height);
     let video = attachment.kind == "video";
     let open = props.on_open.reform(|_: MouseEvent| ());
-    let label = if video { "Video" } else { "Photo" };
+    let label = if video { t("Video") } else { t("Photo") };
     // A spinner only for bytes that are on their way: a video with no poster
     // has none to wait for, and an outbox id whose bytes a reload took will
     // never have any.
@@ -114,7 +115,7 @@ fn tile(props: &TileProps) -> Html {
             // is — a thread panel, a phone — without losing the shape.
             style={format!("width:{width:.0}px;aspect-ratio:{width:.0}/{height:.0}")}
             onclick={open}
-            aria-label={format!("Open {}", label.to_lowercase())}
+            aria-label={t1("Open %@", &label.to_lowercase())}
         >
             if let Some(url) = url {
                 <img src={url} alt={label} draggable="false" />
@@ -164,7 +165,7 @@ fn album(props: &AlbumProps) -> Html {
             class="album"
             style={format!("width:{:.0}px;padding-top:{:.0}px", card.0, media::PEEK)}
             onclick={open}
-            aria-label={format!("Album, 1 of {}", props.items.len())}
+            aria-label={tn("Album, 1 of %lld", props.items.len() as i64)}
         >
             <div class="album-card" style={format!("aspect-ratio:{:.0}/{:.0}", card.0, card.1)}>
                 { behind(2, media::Layer::THIRD).unwrap_or_default() }
@@ -304,7 +305,7 @@ fn file_row(props: &FileRowProps) -> Html {
                     busy.set(false);
                     match url {
                         Some(url) => download(&url, &file),
-                        None => on_notice.emit("The file could not be downloaded.".to_string()),
+                        None => on_notice.emit(t("The file could not be downloaded.").to_string()),
                     }
                 }),
             );
@@ -312,12 +313,12 @@ fn file_row(props: &FileRowProps) -> Html {
     };
     html! {
         <button class={classes!("file-row", props.mine.then_some("on-tint"))} onclick={save}
-                title={name.clone()} aria-label={format!("Save {name}")}>
+                title={name.clone()} aria-label={t1("Save %@", &name)}>
             <span class="file-icon" aria-hidden="true">{ "📄" }</span>
             <span class="file-text">
                 <span class="file-name">{ middle_truncate(&name, 40) }</span>
                 <span class="file-size">
-                    { if *busy { "Preparing…".to_string() } else { size } }
+                    { if *busy { t("Preparing…").to_string() } else { size } }
                 </span>
             </span>
         </button>
@@ -446,15 +447,15 @@ fn audio_player(props: &AudioProps) -> Html {
     };
     let loading = *asked && !*playing && url.is_none();
     let (glyph, label) = if *playing {
-        ("⏸", "Pause")
+        ("⏸", t("Pause"))
     } else if loading {
-        ("…", "Loading")
+        ("…", t("Loading"))
     } else {
-        ("▶", "Play")
+        ("▶", t("Play"))
     };
     html! {
         <div class={classes!("audio", props.mine.then_some("on-tint"))}
-             aria-label={format!("Audio, {}", media::time_label(total))}>
+             aria-label={t1("Audio, %@", &media::time_label(total))}>
             <button class="audio-toggle" onclick={toggle} aria-label={label}>{ glyph }</button>
             <div class="audio-track">
                 <input
@@ -464,7 +465,7 @@ fn audio_player(props: &AudioProps) -> Html {
                     step="0.1"
                     value={format!("{:.2}", elapsed.min(total))}
                     oninput={on_scrub}
-                    aria-label="Position"
+                    aria-label={t("Position")}
                 />
                 <div class="audio-times">
                     <span>{ media::time_label(*elapsed) }</span>
@@ -512,7 +513,7 @@ fn location_row(props: &LocationProps) -> Html {
     html! {
         <button class={classes!("location-row", props.mine.then_some("on-tint"))}
                 onclick={open.unwrap_or_default()} disabled={place.is_none()}
-                aria-label={format!("{name}. {line}. Open in Maps")}>
+                aria-label={t2("%@. %@. Open in Maps", &name, &line)}>
             <span class="pin" aria-hidden="true">{ "📍" }</span>
             <span class="file-text">
                 <span class="file-name">{ name }</span>
@@ -521,7 +522,7 @@ fn location_row(props: &LocationProps) -> Html {
                 }
             </span>
             if place.is_some() {
-                <span class="open-maps">{ "Open in Maps" }</span>
+                <span class="open-maps">{ t("Open in Maps") }</span>
             }
         </button>
     }

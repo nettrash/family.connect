@@ -17,6 +17,7 @@ use web_sys::HtmlElement;
 use yew::prelude::*;
 
 use crate::api::ApiError;
+use fc_text::i18n::t;
 
 thread_local! {
     static NEXT_ID: Cell<u64> = const { Cell::new(0) };
@@ -190,7 +191,7 @@ pub fn confirm(props: &ConfirmProps) -> Html {
                 <p class="error" role="alert">{ error }</p>
             }
             <div class="dialog-actions">
-                <button class="secondary" disabled={props.busy} onclick={cancel}>{ "Cancel" }</button>
+                <button class="secondary" disabled={props.busy} onclick={cancel}>{ t("Cancel") }</button>
                 <button
                     class={if props.destructive { "danger-button" } else { "primary" }}
                     disabled={props.busy}
@@ -205,13 +206,17 @@ pub fn confirm(props: &ConfirmProps) -> Html {
 pub fn generic_failure(error: &ApiError) -> String {
     match error {
         ApiError::Throttled { .. } => error.detail(),
-        _ if server_trouble(error) => SERVER_TROUBLE.to_string(),
-        ApiError::Network(_) => "Can't reach the server. Check your connection.".to_string(),
-        _ => "That didn't work. Try again.".to_string(),
+        _ if server_trouble(error) => server_trouble_line().to_string(),
+        ApiError::Network(_) => t("Can't reach the server. Check your connection.").to_string(),
+        _ => t("That didn't work. Try again.").to_string(),
     }
 }
 
-pub const SERVER_TROUBLE: &str = "The server had a problem. Try again in a moment.";
+/// What to say when the server answered a failure of its own. A function
+/// rather than a const: a translated string is not a constant.
+pub fn server_trouble_line() -> &'static str {
+    t("The server had a problem. Try again in a moment.")
+}
 
 /// The server — or the proxy in front of it — ANSWERED, and the answer was
 /// a failure of its own rather than a refusal of the request: `internal`,
@@ -220,7 +225,7 @@ pub const SERVER_TROUBLE: &str = "The server had a problem. Try again in a momen
 /// is fine.
 pub fn server_trouble(error: &ApiError) -> bool {
     match error {
-        ApiError::Network(detail) => detail.starts_with("The server answered"),
+        ApiError::Answered { .. } => true,
         ApiError::Server { code, .. } => code == "internal",
         _ => false,
     }

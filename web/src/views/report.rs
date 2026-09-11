@@ -3,6 +3,7 @@
 //! same disclosure and the same escalation line the apps show
 //! (ios Views/ReportSheet.swift).
 
+use fc_text::i18n::{t, t1};
 use yew::prelude::*;
 
 use crate::views::dialog::Modal;
@@ -16,7 +17,10 @@ pub struct ReportTarget {
 }
 
 /// The protocol's fixed four, in the apps' order, with harassment chosen
-/// to start with — the reason this feature most exists for.
+/// to start with — the reason this feature most exists for. The second half
+/// is the KEY, said in the reader's language where it is shown: a `const`
+/// cannot look a translation up, and a radio button is not the only place
+/// these are read.
 pub const REASONS: [(&str, &str); 4] = [
     ("spam", "Spam"),
     ("harassment", "Harassment"),
@@ -55,16 +59,16 @@ pub fn report_dialog(props: &ReportProps) -> Html {
     // who reports a message without knowing the owner will read it has been
     // surprised by their own app — most of all in a direct chat.
     let disclosure = if props.target.message_id.is_some() {
-        "Your family owner will see this message and its text."
+        t("Your family owner will see this message and its text.")
     } else {
-        "Your family owner will be told you reported this member."
+        t("Your family owner will be told you reported this member.")
     };
     // The shared frame: it takes the focus as it opens — the chosen reason —
     // so Escape and Tab work from the keyboard, and gives it back after.
     html! {
-        <Modal title="Report" on_cancel={props.on_cancel.clone()}>
+        <Modal title={t("Report")} on_cancel={props.on_cancel.clone()}>
                 <fieldset class="reasons">
-                    <legend>{ format!("Why are you reporting {}?", props.target.name) }</legend>
+                    <legend>{ t1("Why are you reporting %@?", &props.target.name) }</legend>
                     { for REASONS.iter().map(|(code, label)| html! {
                         <label class="reason">
                             <input
@@ -74,21 +78,21 @@ pub fn report_dialog(props: &ReportProps) -> Html {
                                 checked={*reason == *code}
                                 onchange={choose(code)}
                             />
-                            { *label }
+                            { t(label) }
                         </label>
                     }) }
                 </fieldset>
                 <p class="footnote">{ disclosure }</p>
                 if let Some(contact) = props.support_contact.clone().filter(|contact| !contact.is_empty()) {
                     <section class="escalation">
-                        <h3>{ "If the problem is the owner" }</h3>
+                        <h3>{ t("If the problem is the owner") }</h3>
                         <p class="verbatim">{ contact }</p>
-                        <p class="footnote">{ "This server's operator published this contact." }</p>
+                        <p class="footnote">{ t("This server's operator published this contact.") }</p>
                     </section>
                 }
                 <div class="dialog-actions">
-                    <button class="secondary" onclick={cancel}>{ "Cancel" }</button>
-                    <button class="primary" onclick={submit}>{ "Report" }</button>
+                    <button class="secondary" onclick={cancel}>{ t("Cancel") }</button>
+                    <button class="primary" onclick={submit}>{ t("Report") }</button>
                 </div>
         </Modal>
     }

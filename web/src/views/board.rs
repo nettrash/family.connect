@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use fc_text::board::{self as rules, Answer, Font, Kind, Size};
+use fc_text::i18n::{t, t1, t2, tn};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
@@ -76,12 +77,12 @@ pub fn is_hidden(
 pub fn author_name(note: &Note, my_user_id: i64, names: &HashMap<i64, String>) -> String {
     let author = note.author_id.unwrap_or_default();
     if author == my_user_id {
-        return "You".to_string();
+        return t("You").to_string();
     }
     names
         .get(&author)
         .cloned()
-        .unwrap_or_else(|| "Someone".to_string())
+        .unwrap_or_else(|| t("Someone").to_string())
 }
 
 /// Where a new note lands: near the middle, scattered so a run of them
@@ -103,9 +104,11 @@ fn scattered_photo() -> (f64, f64) {
     )
 }
 
-/// What a second photo offered while one is on its way is told.
-pub const STILL_PINNING: &str =
-    "A photo is still being pinned. Add the next one when it is on the board.";
+/// What a second photo offered while one is on its way is told. A function,
+/// not a const: a translated string is not a constant.
+pub fn still_pinning() -> &'static str {
+    t("A photo is still being pinned. Add the next one when it is on the board.")
+}
 
 /// Whether a drag carries files — the only thing a wall takes.
 fn carries_files(data: &DataTransfer) -> bool {
@@ -184,7 +187,7 @@ pub fn board_pane(props: &BoardProps) -> Html {
             // One at a time, and said so: a second photo quietly dropped is a
             // photo its sender thinks is on the wall.
             if *preparing.borrow() || pinning {
-                on_action.emit(Action::Fail(STILL_PINNING.to_string()));
+                on_action.emit(Action::Fail(still_pinning().to_string()));
                 return;
             }
             *preparing.borrow_mut() = true;
@@ -203,7 +206,8 @@ pub fn board_pane(props: &BoardProps) -> Html {
                 match prepared {
                     Ok(photo) => on_action.emit(Action::PinPhoto { photo, at }),
                     Err(error) => on_action.emit(Action::Fail(format!(
-                        "Couldn't pin that photo. {}",
+                        "{} {}",
+                        t("Couldn't pin that photo."),
                         error.message()
                     ))),
                 }
@@ -301,7 +305,7 @@ pub fn board_pane(props: &BoardProps) -> Html {
             };
             if count > 1 {
                 on_action.emit(Action::Fail(
-                    "The board pins one photo at a time — the first is on its way.".to_string(),
+                    t("The board pins one photo at a time — the first is on its way.").to_string(),
                 ));
             }
             // Dropped where the pointer is, the card centred under it.
@@ -374,7 +378,7 @@ pub fn board_pane(props: &BoardProps) -> Html {
                 note.author_id == Some(props.my_user_id),
                 author_name(note, props.my_user_id, &props.names),
             ),
-            _ => (true, "You".to_string()),
+            _ => (true, t("You").to_string()),
         };
         let gone = matches!(note, Some(None));
         Some(html! {
@@ -399,14 +403,14 @@ pub fn board_pane(props: &BoardProps) -> Html {
     // keys moved them under a dialog.
     let behind = sheet_view.is_some().then_some("");
     html! {
-        <section class="board" aria-label="Board">
+        <section class="board" aria-label={t("Board")}>
             <header class="board-bar" inert={behind}>
-                <h2 class="board-title">{ "Board" }</h2>
+                <h2 class="board-title">{ t("Board") }</h2>
                 <div class="board-actions">
-                    <button class="secondary" onclick={open_new(Kind::Text)} title="Add a note">{ "Add Note" }</button>
-                    <button class="secondary" onclick={open_new(Kind::Event)} title="Add an event">{ "Add Event" }</button>
-                    <button class="secondary" onclick={pick_photo} disabled={busy} aria-busy={busy.then_some("true")} title="Pin a photo">
-                        { if busy { "Pinning…" } else { "Pin a Photo" } }
+                    <button class="secondary" onclick={open_new(Kind::Text)} title={t("Add a note")}>{ t("Add Note") }</button>
+                    <button class="secondary" onclick={open_new(Kind::Event)} title={t("Add an event")}>{ t("Add Event") }</button>
+                    <button class="secondary" onclick={pick_photo} disabled={busy} aria-busy={busy.then_some("true")} title={t("Pin a photo")}>
+                        { if busy { t("Pinning…") } else { t("Pin a Photo") } }
                     </button>
                 </div>
                 <input
@@ -458,11 +462,11 @@ pub fn board_pane(props: &BoardProps) -> Html {
                     </>
                 }
                 if !props.loaded {
-                    <p class="board-empty">{ "Loading the board…" }</p>
+                    <p class="board-empty">{ t("Loading the board…") }</p>
                 } else if props.notes.is_empty() {
                     <div class="board-empty">
-                        <p class="board-empty-title">{ "The board is empty" }</p>
-                        <p>{ "Add a note — everyone in the family sees it." }</p>
+                        <p class="board-empty-title">{ t("The board is empty") }</p>
+                        <p>{ t("Add a note — everyone in the family sees it.") }</p>
                     </div>
                 }
             </div>
@@ -868,10 +872,10 @@ fn sticker(props: &StickerProps) -> Html {
             }
         });
     let label = if hidden {
-        "Hidden note from a blocked member".to_string()
+        t("Hidden note from a blocked member").to_string()
     } else {
         let mut what = match (kind, caption.is_empty()) {
-            (Kind::Photo, true) => "a photo".to_string(),
+            (Kind::Photo, true) => t("a photo").to_string(),
             _ => caption.clone(),
         };
         // The label stands in for the card's content, so an event's when,
@@ -892,9 +896,9 @@ fn sticker(props: &StickerProps) -> Html {
             }
         }
         if props.mine {
-            format!("Your note: {what}")
+            t1("Your note: %@", &what)
         } else {
-            format!("Note from {}: {what}", props.author)
+            t2("Note from %@: %@", &props.author, &what)
         }
     };
     let style = format!(
@@ -932,7 +936,7 @@ fn sticker(props: &StickerProps) -> Html {
             role="button"
             tabindex="0"
             aria-label={label}
-            aria-description="Enter opens it; the arrow keys move it."
+            aria-description={t("Enter opens it; the arrow keys move it.")}
             onpointerdown={on_down}
             onpointermove={on_move}
             onpointerup={on_up}
@@ -947,7 +951,7 @@ fn sticker(props: &StickerProps) -> Html {
             }
             { event_block.unwrap_or_default() }
             if hidden {
-                <FittedText text="Hidden — blocked member" font={note.font()} {size} class={classes!("note-hidden")} />
+                <FittedText text={t("Hidden — blocked member")} font={note.font()} {size} class={classes!("note-hidden")} />
             } else if kind != Kind::Photo || !caption.is_empty() {
                 <FittedText text={AttrValue::from(note.text().to_string())} font={note.font()} {size} />
             }
@@ -1218,14 +1222,14 @@ impl Draft {
         if kind == Kind::Event {
             let starts = time::from_local_input(&self.starts).and_then(|at| time::instant(&at));
             let Some(starts) = starts else {
-                return Some("Pick when it starts.");
+                return Some(t("Pick when it starts."));
             };
             if self.has_end {
                 let ends = time::from_local_input(&self.ends).and_then(|at| time::instant(&at));
                 match ends {
-                    None => return Some("Pick when it ends, or turn the end off."),
+                    None => return Some(t("Pick when it ends, or turn the end off.")),
                     Some(ends) if ends < starts => {
-                        return Some("The end can't be before the start.")
+                        return Some(t("The end can't be before the start."))
                     }
                     Some(_) => {}
                 }
@@ -1674,16 +1678,16 @@ fn note_sheet(props: &SheetProps) -> Html {
     };
 
     let title = match (props.sheet, kind, editable) {
-        (Sheet::New(Kind::Event), _, _) => "New Event",
-        (Sheet::New(_), _, _) => "New Note",
-        (_, Kind::Event, _) => "Event",
-        (_, Kind::Photo, _) => "Photo",
-        _ => "Note",
+        (Sheet::New(Kind::Event), _, _) => t("New Event"),
+        (Sheet::New(_), _, _) => t("New Note"),
+        (_, Kind::Event, _) => t("Event"),
+        (_, Kind::Photo, _) => t("Photo"),
+        _ => t("Note"),
     };
     let field_label = match kind {
-        Kind::Event => "Title",
-        Kind::Photo => "Caption",
-        Kind::Text => "Note",
+        Kind::Event => t("Title"),
+        Kind::Photo => t("Caption"),
+        Kind::Text => t("Note"),
     };
 
     // Answering is its own act: ANY member may, so it is not part of the
@@ -1740,13 +1744,13 @@ fn note_sheet(props: &SheetProps) -> Html {
             });
             html! {
                 <fieldset class="rsvp">
-                    <legend>{ "Are you coming?" }</legend>
-                    <div class="segmented" role="group" aria-label="Are you coming?">
+                    <legend>{ t("Are you coming?") }</legend>
+                    <div class="segmented" role="group" aria-label={t("Are you coming?")}>
                         <button
                             class={classes!(mine.is_none().then_some("is-chosen"))}
                             aria-pressed={if mine.is_none() { "true" } else { "false" }}
                             onclick={answer(None)}
-                        >{ "No answer" }</button>
+                        >{ t("No answer") }</button>
                         { for Answer::ALL.iter().map(|choice| html! {
                             <button
                                 class={classes!((mine == Some(*choice)).then_some("is-chosen"))}
@@ -1773,7 +1777,7 @@ fn note_sheet(props: &SheetProps) -> Html {
             html! {
                 <button
                     class="sheet-picture"
-                    aria-label="View the photo"
+                    aria-label={t("View the photo")}
                     onclick={Callback::from(move |_: MouseEvent| on_action.emit(Action::OpenViewer { items: items.clone(), index: 0 }))}
                 >
                     <NotePicture {attachment} />
@@ -1782,27 +1786,27 @@ fn note_sheet(props: &SheetProps) -> Html {
         });
 
     let body = if props.gone {
-        html! { <p class="footnote">{ "This note has been taken down." }</p> }
+        html! { <p class="footnote">{ t("This note has been taken down.") }</p> }
     } else if editable {
         let draft_now = now.draft.clone();
         let when_fields = (kind == Kind::Event).then(|| {
             html! {
                 <fieldset>
-                    <legend>{ "When" }</legend>
-                    <label class="field">{ "Starts" }
+                    <legend>{ t("When") }</legend>
+                    <label class="field">{ t("Starts") }
                         <input type="datetime-local" value={draft_now.starts.clone()} onchange={on_starts} required={true} />
                     </label>
                     <label class="check">
                         <input type="checkbox" checked={draft_now.has_end} onchange={on_has_end} />
-                        { "Has an end" }
+                        { t("Has an end") }
                     </label>
                     if draft_now.has_end {
-                        <label class="field">{ "Ends" }
+                        <label class="field">{ t("Ends") }
                             <input type="datetime-local" min={draft_now.starts.clone()} value={draft_now.ends.clone()} onchange={on_ends} />
                         </label>
                     }
-                    <label class="field">{ "Place" }
-                        <input ref={place_field.clone()} type="text" value={draft_now.place.clone()} oninput={on_place.0} placeholder="Where" />
+                    <label class="field">{ t("Place") }
+                        <input ref={place_field.clone()} type="text" value={draft_now.place.clone()} oninput={on_place.0} placeholder={t("Where")} />
                     </label>
                 </fieldset>
             }
@@ -1829,8 +1833,8 @@ fn note_sheet(props: &SheetProps) -> Html {
         let preview_text = if draft_now.text.trim().is_empty() {
             match kind {
                 Kind::Photo => String::new(),
-                Kind::Event => "Your event".to_string(),
-                Kind::Text => "Your note".to_string(),
+                Kind::Event => t("Your event").to_string(),
+                Kind::Text => t("Your note").to_string(),
             }
         } else {
             draft_now.text.clone()
@@ -1849,18 +1853,18 @@ fn note_sheet(props: &SheetProps) -> Html {
                         rows="4"
                         value={draft_now.text.clone()}
                         oninput={on_text.0}
-                        placeholder={if kind == Kind::Photo { "Say something about it (optional)" } else { "" }}
+                        placeholder={if kind == Kind::Photo { t("Say something about it (optional)") } else { "" }}
                     />
                 </label>
                 if rules::shows_counter(&draft_now.text) {
                     <p class={classes!("footnote", (rules::remaining(&draft_now.text) == 0).then_some("danger"))}>
-                        { format!("{} characters left", rules::remaining(&draft_now.text)) }
+                        { tn("%lld characters left", rules::remaining(&draft_now.text) as i64) }
                     </p>
                 }
                 { when_fields.unwrap_or_default() }
                 <fieldset>
-                    <legend>{ "Colour" }</legend>
-                    <div class="swatches" role="radiogroup" aria-label="Colour">
+                    <legend>{ t("Colour") }</legend>
+                    <div class="swatches" role="radiogroup" aria-label={t("Colour")}>
                         { for rules::COLORS.iter().map(|name| html! {
                             <label class="swatch" style={format!("background:{}", rules::color_hex(name))} title={*name}>
                                 <input type="radio" name="note-color" value={*name}
@@ -1872,8 +1876,8 @@ fn note_sheet(props: &SheetProps) -> Html {
                     </div>
                 </fieldset>
                 <fieldset>
-                    <legend>{ "Size" }</legend>
-                    <div class="segmented" role="radiogroup" aria-label="Size">
+                    <legend>{ t("Size") }</legend>
+                    <div class="segmented" role="radiogroup" aria-label={t("Size")}>
                         { for Size::ALL.iter().map(|size| html! {
                             <label class={classes!((draft_now.size == *size).then_some("is-chosen"))}>
                                 <input type="radio" name="note-size" checked={draft_now.size == *size} onchange={choose_size(*size)} />
@@ -1883,8 +1887,8 @@ fn note_sheet(props: &SheetProps) -> Html {
                     </div>
                 </fieldset>
                 <fieldset>
-                    <legend>{ "Font" }</legend>
-                    <div class="segmented" role="radiogroup" aria-label="Font">
+                    <legend>{ t("Font") }</legend>
+                    <div class="segmented" role="radiogroup" aria-label={t("Font")}>
                         // Each face's name written IN that face.
                         { for Font::ALL.iter().map(|font| html! {
                             <label class={classes!((draft_now.font == *font).then_some("is-chosen"))} style={format!("font-family:{}", font.css_family())}>
@@ -1897,7 +1901,7 @@ fn note_sheet(props: &SheetProps) -> Html {
                 // The sticker as the wall will draw it, type already
                 // fitted: the size is a choice with its result in front of
                 // the author, not a name (docs/protocol.md, "Board").
-                <div class="sheet-preview" aria-label="Preview" role="img">
+                <div class="sheet-preview" aria-label={t("Preview")} role="img">
                     <div
                         class={classes!("sticker", "is-preview", preview_picture.is_some().then_some("is-photo"), (!preview_text.is_empty()).then_some("has-caption"))}
                         style={format!("width:{}px;height:{}px;background:{};", card.0, card.1, rules::color_hex(&draft_now.color))}
@@ -1937,7 +1941,7 @@ fn note_sheet(props: &SheetProps) -> Html {
                 if !note.text().trim().is_empty() {
                     <p class="sheet-text" style={format!("font-family:{}", note.font().css_family())}>{ note.text().to_string() }</p>
                 }
-                <p class="footnote">{ format!("Written by {}", props.author) }</p>
+                <p class="footnote">{ t1("Written by %@", &props.author) }</p>
                 { answering.unwrap_or_default() }
             </>
         }
@@ -1954,21 +1958,21 @@ fn note_sheet(props: &SheetProps) -> Html {
                 <div class="dialog-actions">
                     if editable && matches!(props.sheet, Sheet::Open(_)) {
                         if now.confirming {
-                            <span class="confirm">{ "Delete this note?" }</span>
-                            <button class="secondary" onclick={keep}>{ "Keep" }</button>
-                            <button class="danger-button" onclick={delete} disabled={now.saving}>{ "Delete" }</button>
+                            <span class="confirm">{ t("Delete this note?") }</span>
+                            <button class="secondary" onclick={keep}>{ t("Keep") }</button>
+                            <button class="danger-button" onclick={delete} disabled={now.saving}>{ t("Delete") }</button>
                         } else {
-                            <button class="secondary danger" onclick={ask_delete} disabled={now.saving}>{ "Delete Note" }</button>
+                            <button class="secondary danger" onclick={ask_delete} disabled={now.saving}>{ t("Delete Note") }</button>
                         }
                     }
                     <span class="spacer" />
                     if editable {
-                        <button class="secondary" onclick={close_click}>{ "Cancel" }</button>
+                        <button class="secondary" onclick={close_click}>{ t("Cancel") }</button>
                         <button class="primary" onclick={save_click} disabled={now.saving || problem == Some("")}>
-                            { if now.saving { "Saving…" } else { "Save" } }
+                            { if now.saving { t("Saving…") } else { t("Save") } }
                         </button>
                     } else {
-                        <button class="primary" onclick={close_click}>{ "Done" }</button>
+                        <button class="primary" onclick={close_click}>{ t("Done") }</button>
                     }
                 </div>
             </div>

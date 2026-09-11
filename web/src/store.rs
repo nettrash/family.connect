@@ -6,6 +6,7 @@
 //! browser (fetch, socket, storage) live in api/socket/session and are the
 //! only places that do.
 
+use fc_text::i18n::t;
 use std::collections::{HashMap, HashSet};
 
 use crate::model::{
@@ -244,8 +245,10 @@ pub struct Draft {
 
 /// Why a queued message whose bytes a reload took fails at once — it has
 /// nothing left to upload, and waiting would only look like sending.
-pub const LOST_IN_RELOAD: &str =
-    "Not sent: its attachments were lost when the page reloaded. Attach them again.";
+/// A function, not a const: a translated string is not a constant.
+pub fn lost_in_reload() -> &'static str {
+    t("Not sent: its attachments were lost when the page reloaded. Attach them again.")
+}
 
 /// How many unknown outcomes a message may have before it is shown as
 /// failed. The same six the phone clients allow.
@@ -768,7 +771,7 @@ impl Store {
                 .iter()
                 .any(|item| item.attachment_id.is_none() && !item.is_location());
             if lost {
-                row.failed = Some(LOST_IN_RELOAD.to_string());
+                row.failed = Some(lost_in_reload().to_string());
             }
             self.enqueue(row);
         }
@@ -1359,7 +1362,12 @@ impl Store {
         let row = self.row_mut(client_msg_id)?;
         row.attempts += 1;
         if row.attempts >= MAX_SEND_ATTEMPTS {
-            row.failed = Some("Not sent. Check your connection and try again.".to_string());
+            // Two sentences, so the second is the apps' own.
+            row.failed = Some(format!(
+                "{} {}",
+                t("Not sent."),
+                t("Check your connection and try again.")
+            ));
             return None;
         }
         Some(row.attempts)
@@ -1540,6 +1548,13 @@ impl Store {
         }
     }
 
+    /// Every unread message, across every chat — the number a running
+    /// client puts in front of its reader (the apps put it on their icon,
+    /// a tab puts it in its title; ios Core/UnreadBadge.swift).
+    pub fn unread_total(&self) -> i64 {
+        self.chats.iter().map(|item| item.unread_count).sum()
+    }
+
     /// How many of the family chat's open polls this reader has not voted
     /// in — the badge's number (ios OpenPollsBadge). A closed poll never
     /// counts, nor a question the reader has chosen not to see.
@@ -1613,7 +1628,7 @@ impl Store {
         self.names
             .get(&user_id)
             .cloned()
-            .unwrap_or_else(|| "Someone".to_string())
+            .unwrap_or_else(|| t("Someone").to_string())
     }
 }
 
@@ -2873,7 +2888,7 @@ mod tests {
         let failed = after.failed_sends(42);
         assert_eq!(
             failed.get("photo").map(String::as_str),
-            Some(LOST_IN_RELOAD)
+            Some(lost_in_reload())
         );
         assert!(
             !failed.contains_key("landed"),

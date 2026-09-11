@@ -9,6 +9,7 @@
 //! animated-GIF rule, and none can differ from the others in ways nobody
 //! notices until a send fails.
 
+use fc_text::i18n::{t, t1};
 use fc_text::media;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -156,7 +157,7 @@ pub fn attach_menu(props: &MenuProps) -> Html {
     }
     html! {
         <div class="attach">
-            <button class="tool" title="Attach a photo, video or file" aria-label="Attach"
+            <button class="tool" title={t("Attach a photo, video or file")} aria-label={t("Attach")}
                     aria-haspopup="menu" aria-expanded={(*open).to_string()} onclick={toggle}>
                 { "📎" }
             </button>
@@ -170,14 +171,14 @@ pub fn attach_menu(props: &MenuProps) -> Html {
                 <div class="menu-backdrop" onclick={close.clone()} aria-hidden="true"></div>
                 <div class="menu attach-menu" role="menu" onmouseleave={close} onkeydown={on_menu_key}>
                     if props.offers_pictures {
-                        { item("Show the Assistant a Photo…", pick_pictures) }
+                        { item(t("Show the Assistant a Photo…"), pick_pictures) }
                     }
-                    { item("Attach a File…", pick) }
-                    { item("Paste", props.on_paste.clone()) }
-                    { item("Record Audio", props.on_record.clone()) }
-                    { item("Location", props.on_location.clone()) }
+                    { item(t("Attach a File…"), pick) }
+                    { item(t("Paste"), props.on_paste.clone()) }
+                    { item(t("Record Audio"), props.on_record.clone()) }
+                    { item(t("Location"), props.on_location.clone()) }
                     if props.offers_poll {
-                        { item("Poll", props.on_poll.clone()) }
+                        { item(t("Poll"), props.on_poll.clone()) }
                     }
                 </div>
             }
@@ -199,14 +200,14 @@ pub fn staging_strip(props: &StripProps) -> Html {
         return Html::default();
     }
     html! {
-        <div class="staging" aria-label="Attachments to send">
+        <div class="staging" aria-label={t("Attachments to send")}>
             { for props.items.iter().enumerate().map(|(index, item)| {
                 let remove = props.on_remove.reform(move |_: MouseEvent| index);
                 html! {
                     <div class="staged" key={index}>
                         <Thumb item={item.clone()} />
                         <span class="staged-label">{ label(item) }</span>
-                        <button class="staged-remove" onclick={remove} aria-label={format!("Remove {}", label(item))}>{ "✕" }</button>
+                        <button class="staged-remove" onclick={remove} aria-label={t1("Remove %@", &label(item))}>{ "✕" }</button>
                     </div>
                 }
             }) }
@@ -217,11 +218,11 @@ pub fn staging_strip(props: &StripProps) -> Html {
 /// What a staged item is called on its chip.
 pub fn label(item: &Prepared) -> String {
     match item.kind.as_str() {
-        "audio" if item.name.is_none() => format!(
-            "Voice note · {}",
-            media::time_label(item.duration_ms.unwrap_or(0) as f64 / 1000.0)
+        "audio" if item.name.is_none() => t1(
+            "Voice note · %@",
+            &media::time_label(item.duration_ms.unwrap_or(0) as f64 / 1000.0),
         ),
-        "location" => "Location".to_string(),
+        "location" => t("Location").to_string(),
         kind => {
             let name = media::display_name(kind, item.name.as_deref()).into_owned();
             if kind == "file" || kind == "audio" {
@@ -331,11 +332,11 @@ pub fn recording_bar(props: &RecordingProps) -> Html {
     html! {
         // A group with a name, not a live region: the clock changing every
         // second is not news to announce every second.
-        <div class="recording" role="group" aria-label="Recording a voice note" onkeydown={on_key}>
+        <div class="recording" role="group" aria-label={t("Recording a voice note")} onkeydown={on_key}>
             <span class="recording-dot" aria-hidden="true">{ "●" }</span>
-            <span aria-live="off">{ format!("Recording {}", media::time_label(*elapsed / 1000.0)) }</span>
-            <button class="secondary" onclick={props.on_cancel.reform(|_: MouseEvent| ())}>{ "Cancel" }</button>
-            <button ref={stop} onclick={props.on_stop.reform(|_: MouseEvent| ())}>{ "Stop" }</button>
+            <span aria-live="off">{ t1("Recording %@", &media::time_label(*elapsed / 1000.0)) }</span>
+            <button class="secondary" onclick={props.on_cancel.reform(|_: MouseEvent| ())}>{ t("Cancel") }</button>
+            <button ref={stop} onclick={props.on_stop.reform(|_: MouseEvent| ())}>{ t("Stop") }</button>
         </div>
     }
 }

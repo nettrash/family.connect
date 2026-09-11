@@ -17,6 +17,7 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
+use fc_text::i18n::t;
 use fc_text::markdown::{self, Block, ColumnAlignment, Font, Style, Table, Text};
 use fc_text::{assistant, links, mentions};
 use gloo_timers::callback::Timeout;
@@ -249,7 +250,7 @@ pub fn body(props: &BodyProps) -> Html {
                 let open_direct = props.on_open_direct.clone();
                 let user_id = *user_id;
                 html! {
-                    <button class="mention" title="Message them"
+                    <button class="mention" title={t("Message them")}
                         onclick={Callback::from(move |event: MouseEvent| {
                             event.stop_propagation();
                             open_direct.emit(user_id);

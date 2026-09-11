@@ -11,6 +11,7 @@
 //! waited. When the socket did not come up, nothing was ever sent — and
 //! nothing said so.
 
+use fc_text::i18n::{t, t1};
 use std::future::Future;
 
 use futures::channel::mpsc::UnboundedReceiver;
@@ -20,7 +21,7 @@ use crate::api::ApiError;
 use crate::live::Live;
 use crate::model::{Attachment, Message};
 use crate::staged::{OutgoingItem, StagedBytes};
-use crate::store::{Outgoing, LOST_IN_RELOAD};
+use crate::store::{lost_in_reload, Outgoing};
 
 /// The codes that mean the server READ the send and refused it: the
 /// message will never be accepted as it stands. Every other answer — a
@@ -63,28 +64,30 @@ pub fn is_terminal(error: &ApiError) -> bool {
 pub fn refusal(error: &ApiError) -> String {
     match error.code() {
         Some("not_chat_member") | Some("chat_not_found") => {
-            "Not sent: you are no longer in this chat.".to_string()
+            t("Not sent: you are no longer in this chat.").to_string()
         }
-        Some("blocked") => "Not sent: you have blocked this person.".to_string(),
-        Some("message_too_long") => "Not sent: the message is too long.".to_string(),
+        Some("blocked") => t("Not sent: you have blocked this person.").to_string(),
+        Some("message_too_long") => t("Not sent: the message is too long.").to_string(),
         Some("attachment_too_large") => {
-            "Not sent: an attachment is over this server's size limit.".to_string()
+            t("Not sent: an attachment is over this server's size limit.").to_string()
         }
         Some("invalid_attachment") => {
-            "Not sent: the server can't take one of the attachments.".to_string()
+            t("Not sent: the server can't take one of the attachments.").to_string()
         }
         Some("attachment_not_found") | Some("attachment_already_used") => {
-            "Not sent: an attachment is no longer there. Attach it again.".to_string()
+            t("Not sent: an attachment is no longer there. Attach it again.").to_string()
         }
-        Some("not_in_family") => "Not sent: join a family before sending attachments.".to_string(),
-        Some(LOCAL_FILE_GONE) => {
-            "Not sent: a file was moved, changed or deleted before it could go. Attach it again."
-                .to_string()
+        Some("not_in_family") => {
+            t("Not sent: join a family before sending attachments.").to_string()
         }
+        Some(LOCAL_FILE_GONE) => t(
+            "Not sent: a file was moved, changed or deleted before it could go. Attach it again.",
+        )
+        .to_string(),
         Some("attachment_expired") => {
-            "Not sent: its attachments expired on the server. Attach them again.".to_string()
+            t("Not sent: its attachments expired on the server. Attach them again.").to_string()
         }
-        _ => format!("Not sent: {}", error.detail()),
+        _ => t1("Not sent: %@", &error.detail()),
     }
 }
 
@@ -201,7 +204,7 @@ pub async fn drain<S, SF, U, UF, N, NF>(
                     live.update(session, |state| {
                         state
                             .store
-                            .refuse(&row.client_msg_id, LOST_IN_RELOAD.to_string())
+                            .refuse(&row.client_msg_id, lost_in_reload().to_string())
                     });
                     continue;
                 }
@@ -964,7 +967,7 @@ mod tests {
         let failed = reloaded.read(|state| state.store.failed_sends(42));
         assert_eq!(
             failed.get("album").map(String::as_str),
-            Some(crate::store::LOST_IN_RELOAD)
+            Some(crate::store::lost_in_reload())
         );
     }
 
@@ -1028,7 +1031,7 @@ mod tests {
             live.read(|state| state.store.failed_sends(42))
                 .get("a")
                 .map(String::as_str),
-            Some(crate::store::LOST_IN_RELOAD)
+            Some(crate::store::lost_in_reload())
         );
     }
 }

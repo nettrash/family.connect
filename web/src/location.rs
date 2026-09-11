@@ -11,6 +11,7 @@
 //! browser's permission prompt: the clock starts once the browser may look
 //! (the Mac settles permission before it starts hunting, #41).
 
+use fc_text::i18n::t;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -50,10 +51,8 @@ pub enum LocationError {
 impl LocationError {
     pub fn message(self) -> &'static str {
         match self {
-            LocationError::Denied => {
-                "Family needs permission to use your location. Allow it in your browser's settings for this site."
-            }
-            LocationError::NotFound => "Could not find your location.",
+            LocationError::Denied => { t("Family needs permission to use your location. Allow it in your browser's settings for this site.") }
+            LocationError::NotFound => t("Could not find your location."),
         }
     }
 }

@@ -939,3 +939,34 @@ async fn a_threads_box_says_what_goes_to_the_assistant() {
     handle.destroy();
     root.remove();
 }
+
+/// The whole page in another language: the reader's, from the browser, and
+/// applied where it can only be seen in a real render — an attribute Yew
+/// writes and a button's own words.
+#[wasm_bindgen_test]
+async fn a_russian_reader_reads_the_page_in_russian() {
+    use fc_text::i18n::{use_lang, Lang};
+
+    install_stylesheet();
+    let root = fixed_root(
+        "position:fixed;top:0;left:0;width:600px;height:320px;\
+         display:grid;grid-template-rows:minmax(0,1fr);",
+    );
+    use_lang(Lang::Ru);
+    let handle =
+        yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props(3)).render();
+    TimeoutFuture::new(50).await;
+    let label = query(&root, "textarea")
+        .get_attribute("aria-label")
+        .unwrap_or_default();
+    let send = query(&root, ".composer button:not(.tool):not(.link)")
+        .text_content()
+        .unwrap_or_default();
+    // Back to English BEFORE the assertions: every other test here reads
+    // the page in it, and the reader's language outlives one test.
+    use_lang(Lang::En);
+    handle.destroy();
+    root.remove();
+    assert_eq!(label, "Сообщение");
+    assert_eq!(send.trim(), "Отправить");
+}

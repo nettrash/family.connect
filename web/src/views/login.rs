@@ -13,7 +13,8 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api::{self, ApiError};
-use crate::views::dialog::{server_trouble, SERVER_TROUBLE};
+use crate::views::dialog::{server_trouble, server_trouble_line};
+use fc_text::i18n::t;
 
 #[derive(Properties, PartialEq)]
 pub struct LoginProps {
@@ -95,11 +96,13 @@ pub fn login(props: &LoginProps) -> Html {
                     return;
                 }
                 if account::name(&shown_name).is_none() {
-                    error.set(Some("A display name is 1 to 64 characters.".to_string()));
+                    error.set(Some(t("A display name is 1 to 64 characters.").to_string()));
                     return;
                 }
                 if !account::password_ok(&secret) {
-                    error.set(Some("A password needs at least 8 characters.".to_string()));
+                    error.set(Some(
+                        t("A password needs at least 8 characters.").to_string(),
+                    ));
                     return;
                 }
             }
@@ -129,30 +132,30 @@ pub fn login(props: &LoginProps) -> Html {
 
     let registering = *mode == Mode::Register;
     let button = match (*mode, *busy) {
-        (Mode::SignIn, false) => "Sign in",
-        (Mode::SignIn, true) => "Signing in…",
-        (Mode::Register, false) => "Create Account",
-        (Mode::Register, true) => "Creating account…",
+        (Mode::SignIn, false) => t("Log In"),
+        (Mode::SignIn, true) => t("Logging in…"),
+        (Mode::Register, false) => t("Create Account"),
+        (Mode::Register, true) => t("Creating account…"),
     };
     html! {
         <main class="login">
             <form class="login-card" onsubmit={submit}>
                 <h1>{ "Family Connect" }</h1>
-                <div class="segmented" role="group" aria-label="Sign in or register">
+                <div class="segmented" role="group" aria-label={t("Log in or register")}>
                     <button
                         type="button"
                         class={classes!((!registering).then_some("is-chosen"))}
                         aria-pressed={if registering { "false" } else { "true" }}
                         onclick={switch_to(Mode::SignIn)}
-                    >{ "Sign in" }</button>
+                    >{ t("Log In") }</button>
                     <button
                         type="button"
                         class={classes!(registering.then_some("is-chosen"))}
                         aria-pressed={if registering { "true" } else { "false" }}
                         onclick={switch_to(Mode::Register)}
-                    >{ "Register" }</button>
+                    >{ t("Register") }</button>
                 </div>
-                <label for="username">{ "Username" }</label>
+                <label for="username">{ t("Username") }</label>
                 <input
                     id="username"
                     ref={first}
@@ -164,7 +167,7 @@ pub fn login(props: &LoginProps) -> Html {
                     oninput={field(&username)}
                 />
                 if registering {
-                    <label for="display-name">{ "Display name" }</label>
+                    <label for="display-name">{ t("Display name") }</label>
                     <input
                         id="display-name"
                         type="text"
@@ -173,7 +176,7 @@ pub fn login(props: &LoginProps) -> Html {
                         oninput={field(&display_name)}
                     />
                 }
-                <label for="password">{ "Password" }</label>
+                <label for="password">{ t("Password") }</label>
                 <input
                     id="password"
                     type="password"
@@ -185,7 +188,7 @@ pub fn login(props: &LoginProps) -> Html {
                     <p class="error" role="alert">{ message }</p>
                 } else if registering {
                     <p class="hint">
-                        { "Usernames are 3–32 letters, digits, dots or underscores. Passwords need at least 8 characters." }
+                        { t("Usernames are 3–32 letters, digits, dots or underscores. Passwords need at least 8 characters.") }
                     </p>
                 }
                 <button type="submit" disabled={*busy}>{ button }</button>
@@ -200,7 +203,7 @@ pub fn login(props: &LoginProps) -> Html {
 fn sign_in_failure(failure: &ApiError) -> String {
     match failure {
         ApiError::Server { code, .. } if code == "invalid_credentials" => {
-            "Wrong username or password.".to_string()
+            t("Wrong username or password.").to_string()
         }
         other => unanswered(other),
     }
@@ -211,12 +214,13 @@ fn sign_in_failure(failure: &ApiError) -> String {
 /// was.
 fn unanswered(failure: &ApiError) -> String {
     match failure {
-        _ if server_trouble(failure) => SERVER_TROUBLE.to_string(),
+        _ if server_trouble(failure) => server_trouble_line().to_string(),
         ApiError::Server { message, .. } if !message.is_empty() => message.clone(),
-        ApiError::Server { .. } => "The server rejected the request.".to_string(),
-        ApiError::Network(_) => "Can't reach the server. Check your connection.".to_string(),
+        ApiError::Server { .. } => t("The server rejected the request.").to_string(),
+        ApiError::Network(_) => t("Can't reach the server. Check your connection.").to_string(),
+        ApiError::Answered { .. } => server_trouble_line().to_string(),
         ApiError::Throttled { .. } => failure.detail(),
-        ApiError::Unauthorized => "The server rejected the request. Try again.".to_string(),
+        ApiError::Unauthorized => t("The server rejected the request. Try again.").to_string(),
     }
 }
 
@@ -226,7 +230,7 @@ fn unanswered(failure: &ApiError) -> String {
 fn register_failure(failure: &ApiError) -> String {
     match failure {
         ApiError::Server { code, .. } if code == "username_taken" => {
-            "That username is taken.".to_string()
+            t("That username is taken.").to_string()
         }
         other => unanswered(other),
     }
@@ -283,7 +287,7 @@ mod tests {
             "Can't reach the server. Check your connection."
         );
         assert_eq!(
-            sign_in_failure(&ApiError::Network("The server answered 502.".into())),
+            sign_in_failure(&ApiError::Answered { status: 502 }),
             "The server had a problem. Try again in a moment."
         );
     }

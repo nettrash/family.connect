@@ -11,6 +11,7 @@
 //! here is one the protocol says may be absent, and a field that is not is
 //! one it says is always present.
 
+use fc_text::i18n::t;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -527,7 +528,7 @@ impl Chat {
         if let Some(title) = self.title.as_ref().filter(|title| !title.is_empty()) {
             return title.clone();
         }
-        peer_name.unwrap_or("Chat").to_string()
+        peer_name.unwrap_or_else(|| t("Chat")).to_string()
     }
 }
 

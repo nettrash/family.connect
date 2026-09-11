@@ -17,7 +17,8 @@ use yew::prelude::*;
 use crate::actions::Action;
 use crate::api::ApiError;
 use crate::model::Me;
-use crate::views::dialog::{server_trouble, SERVER_TROUBLE};
+use crate::views::dialog::{server_trouble, server_trouble_line};
+use fc_text::i18n::{t, t1, tn};
 
 /// Where the project — the server and how to install it — lives.
 pub const REPOSITORY: &str = "https://github.com/nettrash/family.connect";
@@ -68,28 +69,28 @@ pub fn family_gate(props: &GateProps) -> Html {
     let body = match *step {
         Step::Choose => html! {
             <>
-                <p class="greeting">{ format!("Hi, {}", account.user.display_name) }</p>
+                <p class="greeting">{ t1("Hi, %@", &account.user.display_name) }</p>
                 if !open {
                     <section class="closed-server">
-                        <h2>{ "This server doesn't take new families." }</h2>
+                        <h2>{ t("This server doesn't take new families.") }</h2>
                         <p class="hint">
-                            { "Family Connect is built for one family on a server of its own. To start yours, run your own server and invite everyone from there." }
+                            { t("Family Connect is built for one family on a server of its own. To start yours, run your own server and invite everyone from there.") }
                         </p>
                         <a href={REPOSITORY} target="_blank" rel="noopener noreferrer">
-                            { "How to run your own server" }
+                            { t("How to run your own server") }
                         </a>
                     </section>
                 }
                 <div class="doors">
                     if open {
                         <button class="door" onclick={go(Step::Create)}>
-                            <strong>{ "Create a family" }</strong>
-                            <span>{ "Start fresh — you'll be the owner and can invite everyone else." }</span>
+                            <strong>{ t("Create a family") }</strong>
+                            <span>{ t("Start fresh — you'll be the owner and can invite everyone else.") }</span>
                         </button>
                     }
                     <button class="door" onclick={go(Step::Join)}>
-                        <strong>{ "Join a family" }</strong>
-                        <span>{ "Enter the invite code a family member shared with you." }</span>
+                        <strong>{ t("Join a family") }</strong>
+                        <span>{ t("Enter the invite code a family member shared with you.") }</span>
                     </button>
                 </div>
                 if ttl > 0 {
@@ -108,25 +109,25 @@ pub fn family_gate(props: &GateProps) -> Html {
     html! {
         <main class="login gate">
             <section class="login-card gate-card" aria-labelledby="gate-title">
-                <h1 id="gate-title">{ "Your Family" }</h1>
+                <h1 id="gate-title">{ t("Your Family") }</h1>
                 if let Some(failure) = props.failure.clone() {
                     <p class="error" role="alert">
                         { failure }
-                        <button class="link" onclick={dismiss.clone()} aria-label="Dismiss">{ "✕" }</button>
+                        <button class="link" onclick={dismiss.clone()} aria-label={t("Dismiss")}>{ "✕" }</button>
                     </p>
                 } else if let Some(notice) = props.notice.clone() {
                     <p class="notice" role="status">
                         { notice }
-                        <button class="link" onclick={dismiss} aria-label="Dismiss">{ "✕" }</button>
+                        <button class="link" onclick={dismiss} aria-label={t("Dismiss")}>{ "✕" }</button>
                     </p>
                 }
                 if props.declined {
                     <p class="banner" role="status">
-                        { "Your request to join was declined. You can ask for a new invite code and try again." }
+                        { t("Your request to join was declined. You can ask for a new invite code and try again.") }
                     </p>
                 }
                 { body }
-                <button class="link signout" onclick={sign_out}>{ "Sign out" }</button>
+                <button class="link signout" onclick={sign_out}>{ t("Log out") }</button>
             </section>
         </main>
     }
@@ -134,14 +135,10 @@ pub fn family_gate(props: &GateProps) -> Html {
 
 /// The deadline, said before it is met.
 pub fn ttl_line(days: i64) -> String {
-    if days == 1 {
-        "An account that doesn't join a family within 1 day is removed from this server."
-            .to_string()
-    } else {
-        format!(
-            "An account that doesn't join a family within {days} days is removed from this server."
-        )
-    }
+    tn(
+        "An account that doesn't join a family within %lld days is removed from this server.",
+        days,
+    )
 }
 
 /// A field that takes the focus as its step opens: one field, and on a
@@ -190,7 +187,7 @@ fn create_family(props: &StepProps) -> Html {
                 return;
             }
             let Some(chosen) = account::name(&name) else {
-                error.set(Some("A family name is 1 to 64 characters.".to_string()));
+                error.set(Some(t("A family name is 1 to 64 characters.").to_string()));
                 return;
             };
             busy.set(true);
@@ -216,14 +213,14 @@ fn create_family(props: &StepProps) -> Html {
     };
     html! {
         <form class="gate-step" onsubmit={submit}>
-            <button type="button" class="link back" onclick={props.on_back.clone()}>{ "‹ Back" }</button>
-            <h2>{ "Create a Family" }</h2>
-            <label for="family-name">{ "Family name" }</label>
+            <button type="button" class="link back" onclick={props.on_back.clone()}>{ format!("‹ {}", t("Back")) }</button>
+            <h2>{ t("Create a Family") }</h2>
+            <label for="family-name">{ t("Family name") }</label>
             <input
                 id="family-name"
                 ref={field}
                 type="text"
-                placeholder="The Smiths"
+                placeholder={t("The Smiths")}
                 autocomplete="off"
                 autocapitalize="words"
                 value={(*name).clone()}
@@ -232,10 +229,10 @@ fn create_family(props: &StepProps) -> Html {
             if let Some(message) = (*error).clone() {
                 <p class="error" role="alert">{ message }</p>
             } else {
-                <p class="hint">{ "This names your family chat too. 1–64 characters." }</p>
+                <p class="hint">{ t("This names your family chat too. 1–64 characters.") }</p>
             }
             <button type="submit" disabled={*busy || name.trim().is_empty()}>
-                { if *busy { "Creating…" } else { "Create Family" } }
+                { if *busy { t("Creating…") } else { t("Create Family") } }
             </button>
         </form>
     }
@@ -244,18 +241,18 @@ fn create_family(props: &StepProps) -> Html {
 /// Why a family was not made (ios CreateFamilyView).
 pub fn create_failure(error: &ApiError) -> String {
     if server_trouble(error) {
-        return SERVER_TROUBLE.to_string();
+        return server_trouble_line().to_string();
     }
     match error.code() {
         // Reachable only on a server that shut its door after the gate was
         // drawn: the gate itself offers no Create there.
         Some("family_registration_disabled") => {
-            "This server doesn't take new families.".to_string()
+            t("This server doesn't take new families.").to_string()
         }
-        Some("already_in_family") => "You're already in a family.".to_string(),
+        Some("already_in_family") => t("You're already in a family.").to_string(),
         Some(_) => match error {
             ApiError::Server { message, .. } if !message.is_empty() => message.clone(),
-            _ => "The server rejected that name.".to_string(),
+            _ => t("The server rejected that name.").to_string(),
         },
         None => unreached(error),
     }
@@ -317,9 +314,9 @@ fn join_family(props: &StepProps) -> Html {
     };
     html! {
         <form class="gate-step" onsubmit={submit}>
-            <button type="button" class="link back" onclick={props.on_back.clone()}>{ "‹ Back" }</button>
-            <h2>{ "Join a Family" }</h2>
-            <label for="invite-code">{ "Invite code" }</label>
+            <button type="button" class="link back" onclick={props.on_back.clone()}>{ format!("‹ {}", t("Back")) }</button>
+            <h2>{ t("Join a Family") }</h2>
+            <label for="invite-code">{ t("Invite code") }</label>
             // Shown in capitals as it is typed and sent in capitals: people
             // read a code off somebody else's screen and should not have to
             // fight the keyboard's idea of case either way.
@@ -338,10 +335,10 @@ fn join_family(props: &StepProps) -> Html {
             if let Some(message) = (*error).clone() {
                 <p class="error" role="alert">{ message }</p>
             } else {
-                <p class="hint">{ "Any family member can read the code to you; the owner finds it under Family." }</p>
+                <p class="hint">{ t("Any family member can read the code to you; the owner finds it under Family.") }</p>
             }
             <button type="submit" disabled={*busy || code.trim().is_empty()}>
-                { if *busy { "Joining…" } else { "Join" } }
+                { if *busy { t("Joining…") } else { t("Join") } }
             </button>
         </form>
     }
@@ -352,25 +349,25 @@ fn join_family(props: &StepProps) -> Html {
 /// so the first sentence is right for it too.
 pub fn join_failure(error: &ApiError) -> String {
     if server_trouble(error) {
-        return SERVER_TROUBLE.to_string();
+        return server_trouble_line().to_string();
     }
     match error.code() {
         Some("invalid_invite_code") => {
-            "That code doesn't match any family. Check it and try again.".to_string()
+            t("That code doesn't match any family. Check it and try again.").to_string()
         }
         // The second is the one join that can answer it: an account scrubbed
         // while its join was on the way (the action signs it out).
         Some("already_in_family") | Some("user_already_in_family") => {
-            "You're already in a family.".to_string()
+            t("You're already in a family.").to_string()
         }
-        Some("join_request_pending") => "You already have a pending request.".to_string(),
+        Some("join_request_pending") => t("You already have a pending request.").to_string(),
         Some("family_full") => {
-            "That family is full right now. Ask them to make room, then try the code again."
+            t("That family is full right now. Ask them to make room, then try the code again.")
                 .to_string()
         }
         Some(_) => match error {
             ApiError::Server { message, .. } if !message.is_empty() => message.clone(),
-            _ => "The server rejected that code.".to_string(),
+            _ => t("The server rejected that code.").to_string(),
         },
         None => unreached(error),
     }
@@ -381,8 +378,8 @@ pub fn join_failure(error: &ApiError) -> String {
 fn unreached(error: &ApiError) -> String {
     match error {
         ApiError::Throttled { .. } => error.detail(),
-        _ if server_trouble(error) => SERVER_TROUBLE.to_string(),
-        _ => "Can't reach the server. Try again.".to_string(),
+        _ if server_trouble(error) => server_trouble_line().to_string(),
+        _ => t("Can't reach the server. Try again.").to_string(),
     }
 }
 
@@ -412,14 +409,14 @@ pub fn pending_approval(props: &PendingProps) -> Html {
     html! {
         <main class="login gate">
             <section class="login-card gate-card pending" aria-labelledby="pending-title">
-                <h1 id="pending-title">{ "Almost There" }</h1>
+                <h1 id="pending-title">{ t("Almost There") }</h1>
                 <div class="hourglass" aria-hidden="true">{ "⌛" }</div>
-                <h2>{ "Waiting for approval" }</h2>
+                <h2>{ t("Waiting for approval") }</h2>
                 <p class="hint">
-                    { "The family owner needs to approve your request. This page updates automatically — or check right now." }
+                    { t("The family owner needs to approve your request. This page updates automatically — or check right now.") }
                 </p>
-                <button onclick={check}>{ "Check now" }</button>
-                <button class="link signout" onclick={sign_out}>{ "Sign out" }</button>
+                <button onclick={check}>{ t("Check now") }</button>
+                <button class="link signout" onclick={sign_out}>{ t("Log out") }</button>
             </section>
         </main>
     }
@@ -467,7 +464,7 @@ mod tests {
             "Can't reach the server. Try again."
         );
         assert_eq!(
-            join_failure(&ApiError::Network("The server answered 502.".into())),
+            join_failure(&ApiError::Answered { status: 502 }),
             "The server had a problem. Try again in a moment."
         );
     }
