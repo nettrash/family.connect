@@ -602,7 +602,12 @@ button.link, .link {
 .md th, .md td { border: 1px solid var(--line); padding: 3px 8px; vertical-align: top; }
 .md th { background: var(--soft); }
 .md a { color: var(--tint); text-decoration: underline; }
-.mention { color: var(--tint); font-weight: 600; background: transparent; padding: 0; }
+/* A mention is BOLD and nothing else (docs/protocol.md, "Mentioning a
+ * member"): the tint it used to take is this balloon's own background on
+ * my own messages, so @Anna was invisible in exactly the place somebody
+ * reads their own words back. `color: inherit` because a <button> would
+ * otherwise take the user agent's. */
+.mention { color: inherit; font-weight: 600; background: transparent; padding: 0; }
 button.mention { cursor: pointer; }
 
 /* A message of one to four emoji is drawn large and without a balloon. */
@@ -644,7 +649,17 @@ button.mention { cursor: pointer; }
     align-items: flex-end;
 }
 
-.composer textarea { resize: none; max-height: 12em; }
+/* One line tall, growing with what is typed to five lines and no further
+ * (the Mac's `.lineLimit(1...5)`). The height itself is fitted in script —
+ * `field-sizing: content` is not in every browser yet — so what is here is
+ * the line it is measured in and the ceiling it stops at: five lines plus
+ * the padding and borders of the box. */
+.composer textarea {
+    resize: none;
+    line-height: 1.25;
+    max-height: calc(1.25em * 5 + 20px);
+    overflow-y: auto;
+}
 .composer .tool { background: transparent; color: var(--tint); padding: 8px; }
 
 .composer-banner {

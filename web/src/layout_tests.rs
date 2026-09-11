@@ -970,3 +970,159 @@ async fn a_russian_reader_reads_the_page_in_russian() {
     assert_eq!(label, "Сообщение");
     assert_eq!(send.trim(), "Отправить");
 }
+
+/// The composer is ONE ROW: the box for the words is as tall as the buttons
+/// beside it, not twice their height — and it grows with what is typed,
+/// to five lines and no further.
+#[wasm_bindgen_test]
+async fn the_message_box_is_as_tall_as_the_buttons_beside_it() {
+    install_stylesheet();
+    let root = fixed_root(
+        "position:fixed;top:0;left:0;width:600px;height:320px;\
+         display:grid;grid-template-rows:minmax(0,1fr);",
+    );
+    let handle =
+        yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), props(3)).render();
+    TimeoutFuture::new(50).await;
+    let area = query(&root, ".composer textarea");
+    let send = query(&root, ".composer button:not(.tool):not(.link)");
+    let empty = area.get_bounding_client_rect().height();
+    let button = send.get_bounding_client_rect().height();
+    assert!(
+        (empty - button).abs() <= 2.0,
+        "an empty box is the height of the Send button: {empty} vs {button}"
+    );
+
+    // One line stays one line; five lines is five lines tall.
+    type_into(&area, "one line, typed");
+    TimeoutFuture::new(30).await;
+    let one_line = area.get_bounding_client_rect().height();
+    assert!(
+        (one_line - empty).abs() <= 1.0,
+        "a line of words does not make it grow: {one_line} vs {empty}"
+    );
+
+    type_into(&area, "one\ntwo\nthree\nfour\nfive");
+    TimeoutFuture::new(30).await;
+    let five = area.get_bounding_client_rect().height();
+    assert!(
+        five - one_line >= 60.0,
+        "five lines grew the box by four of them: {five} vs {one_line}"
+    );
+
+    // And no further: the sixth line scrolls inside a box the same height.
+    type_into(&area, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight");
+    TimeoutFuture::new(30).await;
+    let many = area.get_bounding_client_rect().height();
+    let scroller = area
+        .dyn_ref::<HtmlTextAreaElement>()
+        .expect("a textarea")
+        .scroll_height();
+    assert!(
+        (many - five).abs() <= 1.0,
+        "the ceiling holds at five lines: {many} vs {five}"
+    );
+    assert!(
+        f64::from(scroller) > many + 1.0,
+        "and what is past it scrolls inside: {scroller} vs {many}"
+    );
+
+    // Emptied by a send, it comes back to one row.
+    type_into(&area, "");
+    TimeoutFuture::new(30).await;
+    let back = area.get_bounding_client_rect().height();
+    assert!(
+        (back - empty).abs() <= 1.0,
+        "an emptied box is one row again: {back} vs {empty}"
+    );
+    handle.destroy();
+    root.remove();
+}
+
+/// A mention is BOLD, and the SAME COLOUR as the words around it — on my
+/// own balloon above all, whose background is the tint the mention used to
+/// be drawn in (docs/protocol.md, "Mentioning a member").
+#[wasm_bindgen_test]
+async fn a_mention_is_bold_and_the_colour_of_the_words_around_it() {
+    install_stylesheet();
+    let root = fixed_root(
+        "position:fixed;top:0;left:0;width:600px;height:400px;\
+         display:grid;grid-template-rows:minmax(0,1fr);",
+    );
+    let named = |id: i64, sender: i64| Message {
+        id,
+        chat_id: 42,
+        sender_id: sender,
+        body: "@Anna are you in?".into(),
+        created_at: "2026-08-19T17:03:12Z".into(),
+        mentions: Some(vec![Mention {
+            user_id: 8,
+            name: "Anna".into(),
+        }]),
+        ..Message::default()
+    };
+    // 7 is the reader, so the first is mine and the second is theirs.
+    let mut with_mentions = props_with(
+        vec![named(1, 7), named(2, 9)],
+        Some(Opening {
+            chat_id: 42,
+            unread_count: 0,
+            last_read_message_id: 0,
+        }),
+        Callback::noop(),
+    );
+    with_mentions.members = vec![Member {
+        id: 8,
+        display_name: "Anna".into(),
+        ..Member::default()
+    }];
+    let handle =
+        yew::Renderer::<Conversation>::with_root_and_props(root.clone().into(), with_mentions)
+            .render();
+    TimeoutFuture::new(50).await;
+
+    let window = web_sys::window().expect("a window");
+    let colour = |element: &Element| -> String {
+        window
+            .get_computed_style(element)
+            .ok()
+            .flatten()
+            .and_then(|style| style.get_property_value("color").ok())
+            .unwrap_or_default()
+    };
+    let weight = |element: &Element| -> String {
+        window
+            .get_computed_style(element)
+            .ok()
+            .flatten()
+            .and_then(|style| style.get_property_value("font-weight").ok())
+            .unwrap_or_default()
+    };
+
+    let bubbles = root.query_selector_all(".bubble").expect("a selector");
+    assert_eq!(bubbles.length(), 2, "one of mine, one of theirs");
+    for index in 0..bubbles.length() {
+        let bubble: Element = bubbles.get(index).expect("a bubble").dyn_into().unwrap();
+        let mention = bubble
+            .query_selector(".mention")
+            .expect("a selector")
+            .expect("the mention is drawn");
+        let body = bubble
+            .query_selector(".md")
+            .expect("a selector")
+            .expect("the body is drawn");
+        assert_eq!(
+            colour(&mention),
+            colour(&body),
+            "the mention reads in the body's own colour, bubble {index}"
+        );
+        let heavy: i32 = weight(&mention).parse().unwrap_or(400);
+        assert!(
+            heavy >= 600,
+            "and it is bold: {} in bubble {index}",
+            weight(&mention)
+        );
+    }
+    handle.destroy();
+    root.remove();
+}

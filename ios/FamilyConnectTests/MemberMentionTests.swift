@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import SwiftUI
 import Testing
 @testable import FamilyConnect
 
@@ -148,5 +149,39 @@ struct MemberMentionTests {
         let url = try #require(MemberMentions.url(for: 42))
         #expect(MemberMentions.userID(from: url) == 42)
         #expect(MemberMentions.userID(from: URL(string: "https://example.com/42")!) == nil)
+    }
+
+    /// A mention is BOLD and keeps the body's colour — on my own balloon
+    /// above all, whose background IS the accent (docs/protocol.md,
+    /// "Mentioning a member"). It is a `.link` run, and a link run draws
+    /// in the accent unless somebody says otherwise, which is how `@Anna`
+    /// came to be invisible in the messages a person reads back most.
+    @Test("a mention is bold and never the accent colour")
+    func mentionIsBoldAndNotTinted() throws {
+        let anna = MentionDTO(userID: 8, name: "Anna")
+        for isMine in [true, false] {
+            let body = MessageLinks.attributedBody(
+                "@Anna are you in?", isMine: isMine, mentions: [anna])
+            let mention = try #require(body.runs.first { $0.link != nil })
+            #expect(String(body[mention.range].characters) == "@Anna")
+            #expect(mention.inlinePresentationIntent == .stronglyEmphasized)
+            #expect(mention.foregroundColor != .accentColor)
+            #expect(mention.foregroundColor == (isMine ? .white : .primary))
+            #expect(mention.underlineStyle == nil, "a mention is not a link to look at")
+        }
+    }
+
+    /// The assistant's own token follows the same rule, and it is not a
+    /// link at all — so nothing tints it either way.
+    @Test("the assistant's token is bold and never the accent colour")
+    func assistantTokenIsBoldAndNotTinted() throws {
+        for isMine in [true, false] {
+            let body = MessageLinks.attributedBody("@ai what is this?", isMine: isMine)
+            let marked = try #require(
+                body.runs.first { String(body[$0.range].characters) == "@ai" })
+            #expect(marked.inlinePresentationIntent == .stronglyEmphasized)
+            #expect(marked.foregroundColor != .accentColor)
+            #expect(marked.foregroundColor == (isMine ? .white : .primary))
+        }
     }
 }

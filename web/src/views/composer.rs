@@ -305,6 +305,20 @@ pub fn composer(props: &ComposerProps) -> Html {
             }
         });
     }
+    // One line tall, growing with what is typed to the five the stylesheet
+    // allows — the Mac's `TextField(axis: .vertical).lineLimit(1...5)`.
+    // Fitted after every render that changed the text rather than in the
+    // input handler: the box is also filled from outside it (a mention
+    // accepted, words appended, an edit begun, a draft restored with a
+    // chat) and emptied by a send, and each of those has to fit too.
+    {
+        let area = area.clone();
+        use_effect_with((*text).clone(), move |_| {
+            if let Some(area) = area.cast::<HtmlTextAreaElement>() {
+                fit(&area);
+            }
+        });
+    }
     // The draft, taken for a send that goes at once.
     {
         let text = text.clone();
@@ -554,7 +568,7 @@ pub fn composer(props: &ComposerProps) -> Html {
                 <textarea
                     ref={area}
                     aria-label={t("Message")}
-                    rows="2"
+                    rows="1"
                     value={(*text).clone()}
                     oninput={on_input}
                     onkeydown={on_key}
@@ -569,6 +583,18 @@ pub fn composer(props: &ComposerProps) -> Html {
             </div>
         </div>
     }
+}
+
+/// A textarea as tall as what it holds, inside the ceiling the stylesheet
+/// sets. `height: auto` comes first, or `scroll_height` only ever reports
+/// what the box already grew to; the borders are added back because
+/// everything here is `box-sizing: border-box` and `scroll_height` counts
+/// the padding but not them.
+fn fit(area: &HtmlTextAreaElement) {
+    let style = area.style();
+    let _ = style.set_property("height", "auto");
+    let borders = (area.offset_height() - area.client_height()).max(0);
+    let _ = style.set_property("height", &format!("{}px", area.scroll_height() + borders));
 }
 
 #[cfg(test)]
