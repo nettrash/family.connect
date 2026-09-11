@@ -22,6 +22,10 @@
 //  Styling: link runs are underlined; on own bubbles (white text on the
 //  tint background) they are forced white — the default accent-colored
 //  link would drown in the tint. Other bubbles keep the accent color.
+//  A MENTION is not a link in this sense: `@Name`, `@ai` and `/draw` are
+//  bold in the body's own colour on every bubble (docs/protocol.md,
+//  "Mentioning a member"), because the accent IS the tint that my own
+//  balloon is painted with.
 //
 //  Bubble bodies re-render on every ConversationView body evaluation
 //  and detection is regex-grade work, so results are memoized in a
@@ -302,9 +306,13 @@ nonisolated enum MessageLinks {
             else { continue }
             attributed[target].inlinePresentationIntent = .stronglyEmphasized
             attributed[target].link = url
-            if !isMine {
-                attributed[target].foregroundColor = .accentColor
-            }
+            // BOLD, in the body's own colour — never the accent
+            // (docs/protocol.md, "Mentioning a member"). The colour is
+            // SAID rather than left alone because a `.link` run is drawn
+            // in the accent by default, and the accent is this balloon's
+            // background on my own messages: `@Anna` was invisible in
+            // exactly the place somebody reads their own words back.
+            attributed[target].foregroundColor = isMine ? .white : .primary
         }
     }
 
@@ -387,9 +395,11 @@ nonisolated enum MessageLinks {
                 continue
             }
             attributed[target].inlinePresentationIntent = .stronglyEmphasized
-            if !isMine {
-                attributed[target].foregroundColor = .accentColor
-            }
+            // The body's own colour, said for the same two reasons as a
+            // member mention's: a mark that is only a weight cannot
+            // collide with a background, and a colour on the run is what
+            // tells this mark apart from markdown's own bold.
+            attributed[target].foregroundColor = isMine ? .white : .primary
         }
     }
 

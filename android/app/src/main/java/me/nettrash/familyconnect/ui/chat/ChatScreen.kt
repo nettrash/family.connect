@@ -3699,7 +3699,10 @@ private fun BubbleContent(
         // under dynamic color), on theirs they take primary — mirrors
         // iOS (white vs accent).
         val linkColor = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
-        val mentionColor = if (isMine) LocalContentColor.current else MaterialTheme.colorScheme.primary
+        // A mention is BOLD and keeps the body's colour on every bubble
+        // (docs/protocol.md, "Mentioning a member"): primary IS the tint of
+        // my own balloon, so a tinted @Anna vanished into it.
+        val mentionColor = LocalContentColor.current
         val acked = entity.serverId != null
         // The detector coroutines outlive recomposition and keep the
         // lambda instance they started with (pointerInput only restarts on

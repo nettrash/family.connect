@@ -1332,6 +1332,14 @@ client that has that door (the reader's own name, a member who has since left an
 account are highlighted and not tappable). A mention by a member the reader has blocked is inside
 a hidden row and draws as one.
 
+**Highlighted means BOLD, in the body's own colour.** Not a colour of its own, on any client: a
+mention sits inside a balloon whose background is the accent colour on the reader's own messages,
+so a mention drawn in that same accent is invisible exactly where somebody is most likely to read
+it back — and a link run is tinted by default on the Apple platforms, which is how one client got
+there without meaning to. Weight carries the same news and cannot collide with a background. The
+same holds for `@ai` and for `/draw`. A client that gives the mark a background or an underline is
+free to, as long as the text itself stays the colour of the words around it.
+
 **The notification.** A mention is not a seventh push event: it is the message's own push, with a
 different title for the people named. The mentioned member's devices get title
 **`"<Family> — <Sender> mentioned you"`** and the ordinary body (the message text, or `"New
