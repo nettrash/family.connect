@@ -271,13 +271,7 @@ pub async fn resync(
     link: Option<u64>,
 ) {
     match api::me(token).await {
-        Ok(me) => {
-            let kept = crate::session::board_marks(me.user.id);
-            live.update(session, |state| {
-                state.store.apply_me(&me);
-                state.store.board.take_marks(me.user.id, kept);
-            });
-        }
+        Ok(me) => apply_account(live, session, &me),
         Err(ApiError::Unauthorized) => {
             expired();
             return;
@@ -288,9 +282,12 @@ pub async fn resync(
     }
     // An account in no family has no roster — and no board; that is a real
     // state rather than a failure worth showing.
+    let writes = live.read(|state| state.store.family_writes);
     if let Ok(roster) = api::family(token).await {
         let server_max = roster.max_board_seq;
-        live.update(session, |state| state.store.apply_roster(&roster));
+        live.update(session, |state| {
+            take_roster(&mut state.store, roster, writes)
+        });
         let live = live.clone();
         let token = token.to_string();
         spawn_local(async move { sync_board(&live, session, &token, server_max, link).await });
@@ -300,6 +297,72 @@ pub async fn resync(
     }
     catch_up(live, session, token, link).await;
     report_read(live, session, token).await;
+}
+
+/// What `/me` said, taken in: the account, the family it is in (and, when
+/// that changed, everything the old one held put away), the board's marks,
+/// and whether a join request is still waiting — kept past a reload, since
+/// a refusal is only ever told by the request vanishing.
+pub fn apply_account(live: &Live, session: u64, me: &crate::model::Me) {
+    let kept = crate::session::board_marks(me.user.id);
+    let waited = crate::session::awaiting_join() == Some(me.user.id);
+    let waiting = live.update(session, |state| {
+        state.store.awaiting_join |= waited;
+        if state.store.apply_me(me) {
+            put_away_panes(state);
+        }
+        state.store.board.take_marks(me.user.id, kept);
+        state.store.awaiting_join
+    });
+    if let Some(waiting) = waiting {
+        crate::session::set_awaiting_join(waiting.then_some(me.user.id));
+    }
+}
+
+/// A roster read, taken in — without the family settings it carries when an
+/// answer to the owner's own change landed after it was ASKED for: that
+/// answer is the newer copy, and the read would put the old one back.
+pub fn take_roster(store: &mut crate::store::Store, mut roster: crate::model::Roster, writes: u64) {
+    if store.family_writes != writes {
+        roster.family = None;
+    }
+    store.apply_roster(&roster);
+}
+
+/// What the family pane shows its owner: the family as it stands now (the
+/// invite code may have been rotated elsewhere), the requests waiting and
+/// the reports open. A member reads the roster alone.
+pub async fn read_family_admin(live: &Live, session: u64, token: &str) {
+    let writes = live.read(|state| state.store.family_writes);
+    if let Ok(roster) = api::family(token).await {
+        live.update(session, |state| {
+            take_roster(&mut state.store, roster, writes)
+        });
+    }
+    if !live.read(|state| state.store.is_owner()) {
+        return;
+    }
+    let requests = api::join_requests(token).await;
+    let reports = api::reports(token).await;
+    live.update(session, |state| {
+        if let Ok(requests) = requests {
+            state.store.join_requests = requests;
+        }
+        if let Ok(reports) = reports {
+            state.store.reports = reports;
+        }
+    });
+}
+
+/// The account is in another family now, or in none: whatever pane was open
+/// was the old family's.
+pub fn put_away_panes(state: &mut AppState) {
+    state.open_chat = None;
+    state.opening = None;
+    state.at_newest = false;
+    state.board_open = false;
+    state.viewing = None;
+    state.panel = None;
 }
 
 /// Whether a catch-up for `link` is a catch-up for the connection up now.
@@ -876,11 +939,40 @@ fn apply_frame(
             None
         }
         ServerFrame::MemberJoined { user } => {
-            live.update(session, |state| state.store.member_joined(&user));
+            let joined_me = live.update(session, |state| {
+                let me = state.store.my_user_id;
+                let familyless = state.store.family.is_none();
+                state.store.member_joined(&user);
+                user.id == me && familyless
+            })?;
+            // It is ME who joined — the owner approved the request this
+            // account was waiting on, which the server says to the family,
+            // me included: `/me` and everything after it, now, rather than
+            // at the next tick of the waiting screen's poll.
+            if joined_me {
+                let live = live.clone();
+                let token = token.to_string();
+                let expired = expired.clone();
+                let link = live.read(|state| state.connected.then_some(state.link));
+                spawn_local(async move { resync(&live, session, &token, &expired, link).await });
+            }
             None
         }
         ServerFrame::MemberLeft { user_id } => {
-            live.update(session, |state| state.store.member_left(user_id));
+            let me = live.update(session, |state| {
+                state.store.member_left(user_id);
+                state.store.my_user_id
+            })?;
+            // It is ME who left — the owner removed me, or I left from
+            // another device: `/me` says what I am now, and the family gate
+            // takes it from there.
+            if user_id == me {
+                let live = live.clone();
+                let token = token.to_string();
+                let expired = expired.clone();
+                let link = live.read(|state| state.connected.then_some(state.link));
+                spawn_local(async move { resync(&live, session, &token, &expired, link).await });
+            }
             None
         }
         ServerFrame::MemberDeleted { member } => {
@@ -890,7 +982,18 @@ fn apply_frame(
             None
         }
         ServerFrame::FamilyOwner { user_id } => {
-            live.update(session, |state| state.store.family_owner(user_id));
+            let me = live.update(session, |state| {
+                state.store.family_owner(user_id);
+                state.store.my_user_id
+            })?;
+            // The family is mine now: what only its owner is shown — the
+            // invite code, the requests waiting, the reports — is read now,
+            // not the next time the family pane happens to open.
+            if user_id == me {
+                let live = live.clone();
+                let token = token.to_string();
+                spawn_local(async move { read_family_admin(&live, session, &token).await });
+            }
             None
         }
         ServerFrame::MemberBlocked { user_id, blocked } => {
@@ -964,5 +1067,101 @@ mod tests {
     fn a_board_that_is_not_open_has_shown_nobody_anything() {
         let state = AppState::default();
         assert!(!board_on_screen(&state));
+    }
+
+    fn me(pending: bool) -> crate::model::Me {
+        crate::model::Me {
+            user: crate::model::User {
+                id: 7,
+                ..Default::default()
+            },
+            pending_join_request: pending.then(|| crate::model::PendingJoin {
+                family_id: 3,
+                family_name: "The Smiths".into(),
+                created_at: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// A reload in the waiting room must not forget that it was waiting:
+    /// the refusal is only ever told by the request vanishing, and a tab
+    /// that had forgotten would take "declined" for "never asked".
+    #[wasm_bindgen_test]
+    fn a_reload_remembers_the_request_it_was_waiting_on() {
+        let fresh = || {
+            Live::new(
+                AppState {
+                    token: Some("t".into()),
+                    ..AppState::default()
+                },
+                std::rc::Rc::new(|| {}),
+            )
+        };
+        let live = fresh();
+        apply_account(&live, live.session(), &me(true));
+        assert_eq!(
+            crate::session::awaiting_join(),
+            Some(7),
+            "kept for a reload"
+        );
+
+        // The reload: a new page, and a `/me` that no longer has it.
+        let live = fresh();
+        apply_account(&live, live.session(), &me(false));
+        assert!(live.read(|state| state.store.join_declined));
+        assert_eq!(
+            crate::session::awaiting_join(),
+            None,
+            "said once, then forgotten"
+        );
+
+        // Somebody else signing in on the same tab is not the one who waited.
+        crate::session::set_awaiting_join(Some(8));
+        let live = fresh();
+        apply_account(&live, live.session(), &me(false));
+        assert!(!live.read(|state| state.store.join_declined));
+        crate::session::set_awaiting_join(None);
+    }
+
+    fn family(max_members: Option<i64>) -> crate::model::Family {
+        crate::model::Family {
+            id: 3,
+            name: "The Smiths".into(),
+            max_members,
+            ..Default::default()
+        }
+    }
+
+    /// A roster read asked for before the owner's own change answered must
+    /// not put the old settings back — but its members still count.
+    #[wasm_bindgen_test]
+    fn a_roster_read_older_than_a_change_does_not_undo_it() {
+        let mut store = crate::store::Store {
+            family: Some(family(None)),
+            ..Default::default()
+        };
+        let asked = store.family_writes;
+        store.apply_family(family(Some(6)));
+        let roster = crate::model::Roster {
+            family: Some(family(None)),
+            members: vec![crate::model::Member {
+                id: 9,
+                display_name: "Anna".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        take_roster(&mut store, roster.clone(), asked);
+        assert_eq!(
+            store.family.as_ref().unwrap().max_members,
+            Some(6),
+            "the change stands"
+        );
+        assert_eq!(store.members.len(), 1, "the members are taken");
+        // A read asked for after it is the newer copy, and is taken whole.
+        let now = store.family_writes;
+        take_roster(&mut store, roster, now);
+        assert_eq!(store.family.as_ref().unwrap().max_members, None);
     }
 }

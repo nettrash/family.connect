@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct User {
     pub id: i64,
     pub username: String,
@@ -23,12 +23,42 @@ pub struct User {
     /// replace with its own words.
     #[serde(default)]
     pub deleted: bool,
+    /// How many times this person has set a profile picture: 0 is none, and
+    /// initials are drawn. A cache key, never reused for another picture.
+    #[serde(default)]
+    pub avatar_version: i64,
+    /// A day and a month, never a year — present only when one is set.
+    #[serde(default)]
+    pub birthday: Option<Birthday>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// A birthday: a day and a month, and deliberately no year — nobody should
+/// have to publish their age to be wished a happy birthday (docs/protocol.md,
+/// "Birthdays"). 29 February is a perfectly good one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct Birthday {
+    pub month: u32,
+    pub day: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct Family {
     pub id: i64,
     pub name: String,
+    /// `open` | `approval` | `closed` — what the invite code does.
+    #[serde(default = "open")]
+    pub join_policy: String,
+    /// Present for the OWNER only.
+    #[serde(default)]
+    pub invite_code: Option<String>,
+    /// The family's own cap, when the owner has set one. Absent is NOT the
+    /// server's ceiling: it is "we never set one" (docs/protocol.md, Family).
+    #[serde(default)]
+    pub max_members: Option<i64>,
+    /// The one language the family speaks, when the owner has chosen one.
+    /// Absent is unset — and unset is not English.
+    #[serde(default)]
+    pub language: Option<String>,
     /// Whether an `@ai` mention may be sent the chat's recent words.
     /// ALWAYS present, and true by default — absent only from a server
     /// that predates it, where it was always so.
@@ -41,10 +71,29 @@ pub struct Family {
     /// Whether a mention may also be shown the chat's recent photos.
     #[serde(default)]
     pub ai_history_photos: bool,
+    /// Whether the assistant says its one unprompted good morning.
+    #[serde(default)]
+    pub ai_greeting: bool,
+    /// Whether a mention may be shown the members' profile pictures.
+    #[serde(default)]
+    pub ai_faces: bool,
 }
 
 fn yes() -> bool {
     true
+}
+
+fn open() -> String {
+    "open".to_string()
+}
+
+/// The caller's own join request, while one is waiting on an owner.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PendingJoin {
+    pub family_id: i64,
+    pub family_name: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
 }
 
 /// A trimmed `GET /me`: who this is, whether they are in a family, and the
@@ -52,7 +101,7 @@ fn yes() -> bool {
 ///
 /// `family` is null for an account that has not joined one — a real state
 /// this client has to draw rather than a failure.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct Me {
     pub user: User,
     #[serde(default)]
@@ -65,10 +114,41 @@ pub struct Me {
     /// link (docs/protocol.md, "Reporting a member").
     #[serde(default)]
     pub support_contact: Option<String>,
+    /// `owner` | `member`, or absent without a family.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// The caller's live join request, if one is waiting.
+    #[serde(default)]
+    pub pending_join_request: Option<PendingJoin>,
+    /// The operator's ceiling on any family's size — the most an owner's own
+    /// cap may be, and the cap for a family that set none.
+    #[serde(default)]
+    pub max_family_members: Option<i64>,
+    /// Whether this server takes NEW families. Absent is true: every server
+    /// from before the switch took them (docs/protocol.md, "Starting a
+    /// family").
+    #[serde(default = "yes")]
+    pub family_registration_enabled: bool,
+    /// Days an account may go without a family before the server removes
+    /// it; 0 when the sweep is off, and when a server predates it.
+    #[serde(default)]
+    pub familyless_account_ttl_days: i64,
+    /// Whether this server posts the assistant's daily greeting at all —
+    /// the operator's half of the switch whose family half is
+    /// `Family::ai_greeting`. Absent is off: a server from before it posts
+    /// none.
+    #[serde(default)]
+    pub greetings_enabled: bool,
+}
+
+impl Me {
+    pub fn is_owner(&self) -> bool {
+        self.role.as_deref() == Some("owner")
+    }
 }
 
 /// One person in `GET /families/mine`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct Member {
     pub id: i64,
     pub display_name: String,
@@ -79,6 +159,16 @@ pub struct Member {
     pub role: Option<String>,
     #[serde(default)]
     pub deleted: bool,
+    #[serde(default)]
+    pub avatar_version: i64,
+    #[serde(default)]
+    pub birthday: Option<Birthday>,
+}
+
+impl Member {
+    pub fn is_owner(&self) -> bool {
+        self.role.as_deref() == Some("owner")
+    }
 }
 
 /// The family's assistant, which speaks in the chat under an account of
@@ -108,7 +198,7 @@ pub struct Assistant {
 /// `former_members` is there for exactly this: the messages somebody left
 /// behind when their account was deleted still need a name on them. It is
 /// omitted when there are none.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct Roster {
     pub members: Vec<Member>,
     #[serde(default)]
@@ -121,6 +211,124 @@ pub struct Roster {
     /// there is anything past this client's board cursor to catch up on.
     #[serde(default)]
     pub max_board_seq: i64,
+    /// The family itself — the owner's invite code and switches with it.
+    #[serde(default)]
+    pub family: Option<Family>,
+    /// For the OWNER: who would inherit the family if they left right now.
+    /// A prediction, read fresh before the leave dialog names anybody.
+    #[serde(default)]
+    pub next_owner_user_id: Option<i64>,
+}
+
+/// Somebody asking to join, for the owner (`GET /families/join-requests`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct JoinRequest {
+    pub id: i64,
+    pub user: User,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+/// One open report in the owner's inbox (docs/protocol.md, "Reporting a
+/// member"). `message_excerpt` is the WHOLE body, frozen when it was
+/// reported, and never cut.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Report {
+    pub id: i64,
+    pub reporter: User,
+    pub reported: User,
+    pub reason: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<i64>,
+    #[serde(default)]
+    pub message_excerpt: Option<String>,
+    /// What the reported message carried, trimmed as a chat-list preview
+    /// is — for a caption-less photo, the only thing on the row that says
+    /// what was reported.
+    #[serde(default)]
+    pub message_attachments: Vec<ReportedAttachment>,
+}
+
+/// One attachment of a reported message: its kind and name, no bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ReportedAttachment {
+    pub kind: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// What was sent, by kind (`GET /families/mine/stats`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct AttachmentCounts {
+    #[serde(default)]
+    pub count: i64,
+    #[serde(default)]
+    pub photo: i64,
+    #[serde(default)]
+    pub video: i64,
+    #[serde(default)]
+    pub audio: i64,
+    #[serde(default)]
+    pub file: i64,
+    #[serde(default)]
+    pub location: i64,
+    #[serde(default)]
+    pub bytes: i64,
+    /// Each distinct file once — a family total only.
+    #[serde(default)]
+    pub stored_bytes: Option<i64>,
+}
+
+/// What the assistant was asked, and what it cost.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct AiCounts {
+    #[serde(default)]
+    pub questions: i64,
+    #[serde(default)]
+    pub prompt_tokens: i64,
+    #[serde(default)]
+    pub completion_tokens: i64,
+    #[serde(default)]
+    pub images: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct StatsTotals {
+    #[serde(default)]
+    pub members: i64,
+    #[serde(default)]
+    pub messages: i64,
+    #[serde(default)]
+    pub board_notes: i64,
+    #[serde(default)]
+    pub attachments: AttachmentCounts,
+    #[serde(default)]
+    pub ai: AiCounts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct MemberStats {
+    pub user_id: i64,
+    pub display_name: String,
+    #[serde(default)]
+    pub messages: i64,
+    #[serde(default)]
+    pub attachments: AttachmentCounts,
+    #[serde(default)]
+    pub ai: AiCounts,
+}
+
+/// The family's numbers. The rows do NOT add up to the totals when the
+/// reader has blocked somebody, and the gap is the block: never sum them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Stats {
+    #[serde(default)]
+    pub generated_at: Option<String>,
+    pub totals: StatsTotals,
+    #[serde(default)]
+    pub members: Vec<MemberStats>,
 }
 
 /// One answer to an event.

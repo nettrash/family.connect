@@ -32,6 +32,11 @@ pub struct AppState {
     pub link: u64,
     /// The family board is what the main pane shows, instead of a chat.
     pub board_open: bool,
+    /// The account's own panel, or the family's, open over the app.
+    pub panel: Option<Panel>,
+    /// The waiting room's `/me` is out: the next tick waits for it rather
+    /// than piling another on a slow server.
+    pub polling: bool,
     /// Something that went wrong, for the person to read.
     pub failure: Option<String>,
     /// Something that went RIGHT and is worth a word — "Reported to the
@@ -49,6 +54,15 @@ pub struct AppState {
     pub opening: Option<Opening>,
     /// The photos and videos open full size, and which one is up.
     pub viewing: Option<Viewing>,
+}
+
+/// The panels the bar opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panel {
+    /// Who you are, and what you can do about your account.
+    Settings,
+    /// Who is in the family — and, for its owner, the family's settings.
+    Family,
 }
 
 /// What the viewer shows: a message's media, in sent order, at one of them.

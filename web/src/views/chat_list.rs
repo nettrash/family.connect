@@ -9,6 +9,7 @@ use yew::prelude::*;
 
 use crate::model::{ChatListItem, Message};
 use crate::time;
+use crate::views::avatar::Avatar;
 
 #[derive(Properties, PartialEq)]
 pub struct ChatListProps {
@@ -18,6 +19,10 @@ pub struct ChatListProps {
     /// called by the person at the other end.
     pub names: HashMap<i64, String>,
     pub blocked: HashSet<i64>,
+    /// userId → `avatar_version`, for a direct chat's picture: the person
+    /// at the other end.
+    #[prop_or_default]
+    pub avatars: HashMap<i64, i64>,
     pub my_user_id: i64,
     pub selected: Option<i64>,
     pub on_select: Callback<i64>,
@@ -91,6 +96,17 @@ pub fn chat_list(props: &ChatListProps) -> Html {
                         aria-current={selected.then_some("true")}
                         {onclick}
                     >
+                        // The family is a house; a direct chat is the peer's
+                        // face; the assistant's chat has no peer id, and is
+                        // the initials of its name (ios MacChatView).
+                        <Avatar
+                            title={item.chat.display_title(peer)}
+                            family={item.chat.is_family()}
+                            user_id={item.chat.peer_user_id.filter(|_| item.chat.is_direct())}
+                            version={item.chat.peer_user_id.and_then(|peer| props.avatars.get(&peer).copied()).unwrap_or(0)}
+                            size={34}
+                        />
+                        <span class="chat-text">
                         <span class="chat-head">
                             <span class="chat-title">{ item.chat.display_title(peer) }</span>
                             if !when.is_empty() {
@@ -107,6 +123,7 @@ pub fn chat_list(props: &ChatListProps) -> Html {
                                     { item.unread_count }
                                 </span>
                             }
+                        </span>
                         </span>
                     </button>
                 }

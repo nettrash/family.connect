@@ -10,8 +10,8 @@ use std::rc::Rc;
 use wasm_bindgen_futures::spawn_local;
 use yew::Callback;
 
-use crate::api::{self, ApiError, NewNote, NotePatch};
-use crate::live::{Live, Opening, Viewing};
+use crate::api::{self, ApiError, FamilyPatch, NewNote, NotePatch};
+use crate::live::{Live, Opening, Panel, Viewing};
 use crate::media::{MediaLoader, Variant};
 use crate::model::{Attachment, Reaction};
 use crate::outbox::Wake;
@@ -171,6 +171,121 @@ pub enum Action {
         photo: Prepared,
         at: (f64, f64),
     },
+    /// Open a panel from the bar — or close it.
+    OpenPanel(Panel),
+    ClosePanel,
+    /// Read `/me` again, and everything after it when the family changed.
+    RefreshAccount,
+    /// The waiting screen's tick: `/me` alone, and the whole resync only
+    /// once it says the request was answered (ios PendingApprovalView).
+    PollAccount,
+    /// Start a family, as its owner.
+    CreateFamily {
+        name: String,
+        done: Done,
+    },
+    /// Join with an invite code: `done` hears `joined` or `pending`.
+    JoinFamily {
+        invite_code: String,
+        done: Callback<Result<String, ApiError>>,
+    },
+    /// What a leave dialog says, from a FRESH roster (docs/protocol.md,
+    /// `POST /families/leave`): who inherits, or that nobody is left.
+    ReadLeaveContext {
+        done: Callback<Result<LeaveContext, ApiError>>,
+    },
+    /// Leave the family: `done` hears who it passed to, if anybody.
+    LeaveFamily {
+        done: Callback<Result<Option<String>, ApiError>>,
+    },
+    ChangePassword {
+        current: String,
+        new: String,
+        done: Done,
+    },
+    /// The account, for good — and a sign-out once the server has it.
+    DeleteAccount {
+        password: String,
+        done: Done,
+    },
+    /// A birthday — the reader's own when `user_id` is None, a member's
+    /// (the owner's tool) otherwise; None clears it.
+    SetBirthday {
+        user_id: Option<i64>,
+        birthday: Option<crate::model::Birthday>,
+        done: Done,
+    },
+    /// A new profile picture (prepared by prep::avatar), or None to go back
+    /// to initials.
+    SetAvatar {
+        jpeg: Option<web_sys::Blob>,
+        done: Done,
+    },
+    /// The owner's tools.
+    ChangeFamily {
+        patch: FamilyPatch,
+        done: Done,
+    },
+    RotateInviteCode {
+        done: Done,
+    },
+    DecideJoinRequest {
+        id: i64,
+        approve: bool,
+        done: Done,
+    },
+    ResolveReport {
+        id: i64,
+        done: Done,
+    },
+    RemoveMember {
+        user_id: i64,
+        done: Done,
+    },
+    ResetMemberPassword {
+        user_id: i64,
+        new_password: String,
+        done: Done,
+    },
+    /// The family's numbers, read afresh on every opening and kept by the
+    /// view that asked (ios StatisticsView never caches them either).
+    LoadStats {
+        done: Callback<Result<crate::model::Stats, ApiError>>,
+    },
+}
+
+/// How an account or family change came back to the dialog that asked:
+/// None when it went in, the refusal otherwise — worded by the dialog, which
+/// knows what it was asking. A 401 never gets here: that is the sign-out.
+pub type Done = Callback<Option<ApiError>>;
+
+/// What leaving would mean, read from the roster as it stands now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaveContext {
+    /// A member: the family goes on without them.
+    Member,
+    /// The owner, and this member inherits.
+    Successor(String),
+    /// The owner, and nobody is left: leaving deletes the family.
+    LastMember,
+}
+
+/// The owner's leave dialog from a fresh roster. `next_owner_user_id` is the
+/// server's prediction; ABSENT on that read — and only on that read — means
+/// nobody is left. A successor the same roster does not name is no answer
+/// at all, and never "last member": that dialog deletes the family.
+pub fn leave_context(roster: &crate::model::Roster, owner: bool) -> Option<LeaveContext> {
+    if !owner {
+        return Some(LeaveContext::Member);
+    }
+    match roster.next_owner_user_id {
+        None => Some(LeaveContext::LastMember),
+        Some(id) => roster
+            .members
+            .iter()
+            .find(|member| member.id == id)
+            .map(|member| LeaveContext::Successor(member.display_name.clone())),
+    }
 }
 
 /// What to tell somebody whose change to the board did not go in. The
@@ -235,6 +350,22 @@ impl Actions {
             .update(session, |state| state.failure = Some(detail));
     }
 
+    /// A failure said in this client's words rather than the protocol's
+    /// English, which is for developers (ios MacFamilyView) — unless it was
+    /// the server asking for a slower pace, which says so.
+    fn fail_saying(&self, session: u64, error: &ApiError, text: &str) {
+        if *error == ApiError::Unauthorized {
+            expiry(&self.live, session, &self.sign_out)();
+            return;
+        }
+        let text = match error {
+            ApiError::Throttled { .. } => error.detail(),
+            _ => text.to_string(),
+        };
+        self.live
+            .update(session, |state| state.failure = Some(text));
+    }
+
     fn notice(&self, session: u64, text: &str) {
         let text = text.to_string();
         self.live.update(session, |state| state.notice = Some(text));
@@ -248,10 +379,13 @@ impl Actions {
         let this = self.clone();
         match action {
             Action::SelectChat(chat_id) => {
-                if live.read(|state| state.open_chat == Some(chat_id)) {
+                if live.read(|state| state.open_chat == Some(chat_id) && state.panel.is_none()) {
                     return;
                 }
-                live.now(|state| state.board_open = false);
+                live.now(|state| {
+                    state.board_open = false;
+                    state.panel = None;
+                });
                 // Nothing is read until the view has decided where the chat
                 // opens and says its reader is at the newest: a read
                 // reported first would leave no unread messages to draw the
@@ -516,8 +650,16 @@ impl Actions {
             } => {
                 spawn_local(async move {
                     match api::report(&token, user_id, &reason, message_id).await {
-                        Ok(()) => this.notice(session, "Reported to the family owner."),
-                        Err(error) => this.fail(session, &error),
+                        // Not "to the owner": a report ABOUT the owner is
+                        // kept from them, and the server's answer is the same
+                        // either way on purpose (docs/protocol.md, "Reporting
+                        // a member") — so this says only what is true of both.
+                        Ok(()) => this.notice(session, "Report sent."),
+                        Err(error) => this.fail_saying(
+                            session,
+                            &error,
+                            "Couldn't send the report. Try again.",
+                        ),
                     }
                 });
             }
@@ -534,7 +676,11 @@ impl Actions {
                                 sync::refresh_chats(&live, session, &token, &expired).await;
                             }
                         }
-                        Err(error) => this.fail(session, &error),
+                        Err(error) => this.fail_saying(
+                            session,
+                            &error,
+                            "Couldn't change that right now. Try again.",
+                        ),
                     }
                 });
             }
@@ -567,7 +713,9 @@ impl Actions {
                             sync::refresh_chats(&live, session, &token, &expired).await;
                             this.handle(Action::SelectChat(chat.id));
                         }
-                        Err(error) => this.fail(session, &error),
+                        Err(error) => {
+                            this.fail_saying(session, &error, "That didn't work. Try again.")
+                        }
                     }
                 });
             }
@@ -609,6 +757,314 @@ impl Actions {
             Action::Fail(text) => {
                 live.now(|state| state.failure = Some(text));
             }
+            Action::OpenPanel(panel) => {
+                // A panel takes the pane the chat or the board had; nothing
+                // is being read behind it (sync::reading).
+                live.now(|state| {
+                    state.panel = Some(panel);
+                    state.board_open = false;
+                    state.open_chat = None;
+                    state.at_newest = false;
+                    state.opening = None;
+                    state.store.open_polls = None;
+                    state.store.thread_view = None;
+                });
+                if panel == Panel::Family {
+                    spawn_local(async move { this.read_family_admin(session, &token).await });
+                }
+            }
+            Action::ClosePanel => {
+                live.now(|state| state.panel = None);
+            }
+            Action::RefreshAccount => {
+                spawn_local(async move { this.refresh_account(session, &token).await });
+            }
+            Action::PollAccount => {
+                // One at a time: a slow server gets its answer waited for.
+                if live.read(|state| state.polling) {
+                    return;
+                }
+                let asked = live.now(|state| {
+                    state.polling = true;
+                    state.store.account_reads
+                });
+                spawn_local(async move {
+                    let answer = api::me(&token).await;
+                    let fresh = live
+                        .update(session, |state| {
+                            state.polling = false;
+                            state.store.account_reads == asked
+                        })
+                        .unwrap_or(false);
+                    match answer {
+                        // Another `/me` was taken in while this one was out
+                        // — the resync an approval sets off — and this answer
+                        // is older than it: "still waiting" would undo it.
+                        Ok(_) if !fresh => {}
+                        // Approved: the whole resync, as a connection would
+                        // run it — the chats, the board, the roster.
+                        Ok(me) if me.family.is_some() => {
+                            this.refresh_account(session, &token).await
+                        }
+                        // Still waiting, or declined: `/me` says which.
+                        Ok(me) => sync::apply_account(&live, session, &me),
+                        Err(ApiError::Unauthorized) => expiry(&live, session, &this.sign_out)(),
+                        // A bad minute: the next tick asks again.
+                        Err(_) => {}
+                    }
+                });
+            }
+            Action::CreateFamily { name, done } => {
+                spawn_local(async move {
+                    match api::create_family(&token, &name).await {
+                        Ok(_) => {
+                            this.refresh_account(session, &token).await;
+                            done.emit(None);
+                        }
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::JoinFamily { invite_code, done } => {
+                spawn_local(async move {
+                    match api::join_family(&token, &invite_code).await {
+                        Ok(joined) => {
+                            this.refresh_account(session, &token).await;
+                            done.emit(Ok(joined.status));
+                        }
+                        Err(ApiError::Unauthorized) => expiry(&live, session, &this.sign_out)(),
+                        Err(error) => {
+                            // The one join that answers this: an account the
+                            // server scrubbed while its join was on the way,
+                            // and the session went with it (docs/protocol.md,
+                            // "Accounts without a family"). `/me` says so —
+                            // with the 401 that signs out.
+                            if error.code() == Some("user_already_in_family") {
+                                this.refresh_account(session, &token).await;
+                            }
+                            done.emit(Err(error));
+                        }
+                    }
+                });
+            }
+            Action::ReadLeaveContext { done } => {
+                spawn_local(async move {
+                    let writes = live.read(|state| state.store.family_writes);
+                    match api::family(&token).await {
+                        Ok(roster) => {
+                            live.update(session, |state| {
+                                sync::take_roster(&mut state.store, roster.clone(), writes)
+                            });
+                            let owner = live.read(|state| state.store.is_owner());
+                            // A successor the fresh roster does not name
+                            // is no answer; the dialog says so rather than
+                            // guess (see `leave_context`).
+                            done.emit(leave_context(&roster, owner).ok_or_else(|| {
+                                ApiError::Network("no successor on the roster".into())
+                            }));
+                        }
+                        Err(ApiError::Unauthorized) => expiry(&live, session, &this.sign_out)(),
+                        Err(error) => done.emit(Err(error)),
+                    }
+                });
+            }
+            Action::LeaveFamily { done } => {
+                spawn_local(async move {
+                    // Who inherits is named from the roster as it stood
+                    // BEFORE leaving — afterwards there is none to read.
+                    let names = live.read(|state| state.store.names.clone());
+                    match api::leave_family(&token).await {
+                        Ok(successor) => {
+                            let heir = successor.and_then(|id| names.get(&id).cloned());
+                            // Said on the family gate, which is where this
+                            // account lands (ios "Ownership passed on").
+                            if let Some(heir) = &heir {
+                                this.notice(
+                                    session,
+                                    &format!(
+                                        "Ownership passed on: {heir} is now the owner of the family."
+                                    ),
+                                );
+                            }
+                            this.refresh_account(session, &token).await;
+                            done.emit(Ok(heir));
+                        }
+                        Err(ApiError::Unauthorized) => expiry(&live, session, &this.sign_out)(),
+                        Err(error) => done.emit(Err(error)),
+                    }
+                });
+            }
+            Action::ChangePassword { current, new, done } => {
+                spawn_local(async move {
+                    match api::change_password(&token, &current, &new).await {
+                        Ok(()) => done.emit(None),
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::DeleteAccount { password, done } => {
+                spawn_local(async move {
+                    match api::delete_account(&token, &password).await {
+                        Ok(()) => {
+                            done.emit(None);
+                            // Gone, and its sessions with it: nothing to
+                            // revoke, only this tab to forget — if it is
+                            // still the session that asked.
+                            expiry(&live, session, &this.sign_out)();
+                        }
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::SetBirthday {
+                user_id,
+                birthday,
+                done,
+            } => {
+                spawn_local(async move {
+                    let answer = match user_id {
+                        None => api::set_my_birthday(&token, birthday).await.map(|user| {
+                            live.update(session, |state| match user {
+                                Some(user) => state.store.apply_my_user(user),
+                                None => {
+                                    let me = state.store.my_user_id;
+                                    state.store.set_birthday(me, None);
+                                }
+                            });
+                        }),
+                        Some(user_id) => api::set_member_birthday(&token, user_id, birthday)
+                            .await
+                            .map(|member| {
+                                live.update(session, |state| {
+                                    state
+                                        .store
+                                        .set_birthday(user_id, member.and_then(|m| m.birthday))
+                                });
+                            }),
+                    };
+                    match answer {
+                        Ok(()) => done.emit(None),
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::SetAvatar { jpeg, done } => {
+                spawn_local(async move {
+                    let answer = match jpeg {
+                        Some(jpeg) => api::upload_avatar(&token, &jpeg).await.map(|user| {
+                            // Drawn from the bytes just sent, never fetched
+                            // back, under the version the server gave them.
+                            if live.is_live(session) {
+                                this.media.seed(
+                                    user.id,
+                                    crate::media::Variant::Avatar(user.avatar_version),
+                                    jpeg.clone(),
+                                );
+                            }
+                            live.update(session, |state| state.store.apply_my_user(user));
+                        }),
+                        // Only the version goes: the rest of the profile —
+                        // the birthday — is as it was (ios drops it here).
+                        None => api::delete_avatar(&token).await.map(|()| {
+                            live.update(session, |state| {
+                                let me = state.store.my_user_id;
+                                state.store.set_avatar_version(me, 0);
+                            });
+                        }),
+                    };
+                    match answer {
+                        Ok(()) => done.emit(None),
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::ChangeFamily { patch, done } => {
+                spawn_local(async move {
+                    match api::patch_family(&token, &patch).await {
+                        Ok(family) => {
+                            live.update(session, |state| state.store.apply_family(family));
+                            done.emit(None);
+                        }
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::RotateInviteCode { done } => {
+                spawn_local(async move {
+                    match api::rotate_invite_code(&token).await {
+                        Ok(code) => {
+                            live.update(session, |state| state.store.set_invite_code(code));
+                            done.emit(None);
+                        }
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::DecideJoinRequest { id, approve, done } => {
+                spawn_local(async move {
+                    match api::decide_join_request(&token, id, approve).await {
+                        Ok(()) => {
+                            live.update(session, |state| {
+                                state.store.join_requests.retain(|request| request.id != id)
+                            });
+                            done.emit(None);
+                            // A new member: the roster, and the chats it
+                            // brings, as a resync reads them.
+                            if approve {
+                                this.refresh_account(session, &token).await;
+                            }
+                            this.read_family_admin(session, &token).await;
+                        }
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::ResolveReport { id, done } => {
+                spawn_local(async move {
+                    match api::resolve_report(&token, id).await {
+                        Ok(()) => {
+                            live.update(session, |state| {
+                                state.store.reports.retain(|report| report.id != id)
+                            });
+                            done.emit(None);
+                        }
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::RemoveMember { user_id, done } => {
+                spawn_local(async move {
+                    match api::remove_member(&token, user_id).await {
+                        Ok(()) => {
+                            live.update(session, |state| state.store.member_left(user_id));
+                            done.emit(None);
+                            this.refresh_account(session, &token).await;
+                        }
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::ResetMemberPassword {
+                user_id,
+                new_password,
+                done,
+            } => {
+                spawn_local(async move {
+                    match api::reset_member_password(&token, user_id, &new_password).await {
+                        Ok(()) => done.emit(None),
+                        Err(error) => this.said(session, error, &done),
+                    }
+                });
+            }
+            Action::LoadStats { done } => {
+                spawn_local(async move {
+                    match api::stats(&token).await {
+                        Ok(stats) => done.emit(Ok(stats)),
+                        Err(ApiError::Unauthorized) => expiry(&live, session, &this.sign_out)(),
+                        Err(error) => done.emit(Err(error)),
+                    }
+                });
+            }
             Action::DismissNotice => {
                 live.now(|state| {
                     state.notice = None;
@@ -621,6 +1077,7 @@ impl Actions {
                 // a chat comes back to is a fresh one, caught up on opening.
                 live.now(|state| {
                     state.board_open = true;
+                    state.panel = None;
                     state.open_chat = None;
                     state.at_newest = false;
                     state.opening = None;
@@ -764,6 +1221,31 @@ impl Actions {
                 });
             }
         }
+    }
+
+    /// A refused account or family change, handed to the dialog that asked
+    /// — or, for a 401, the sign-out every other ended session gets.
+    fn said(&self, session: u64, error: ApiError, done: &Done) {
+        if error == ApiError::Unauthorized {
+            expiry(&self.live, session, &self.sign_out)();
+        } else if self.live.is_live(session) {
+            done.emit(Some(error));
+        }
+    }
+
+    /// `/me` again, and — when it says the account is in a family — the
+    /// roster, the chats and the board with it: the whole resync, as a
+    /// connection would run it.
+    async fn refresh_account(&self, session: u64, token: &str) {
+        let expired = expiry(&self.live, session, &self.sign_out);
+        let link = self
+            .live
+            .read(|state| state.connected.then_some(state.link));
+        sync::resync(&self.live, session, token, &expired, link).await;
+    }
+
+    async fn read_family_admin(&self, session: u64, token: &str) {
+        sync::read_family_admin(&self.live, session, token).await;
     }
 
     /// A refusal to a change on the board: a 401 signs out, a note that is
@@ -1268,5 +1750,70 @@ mod tests {
             },
         });
         assert_eq!(staged(&actions), 0, "what went is gone from the strip");
+    }
+
+    fn roster(next_owner: Option<i64>) -> crate::model::Roster {
+        crate::model::Roster {
+            members: vec![
+                crate::model::Member {
+                    id: ME,
+                    display_name: "Me".into(),
+                    role: Some("owner".into()),
+                    ..Default::default()
+                },
+                crate::model::Member {
+                    id: ANNA,
+                    display_name: "Anna".into(),
+                    role: Some("member".into()),
+                    ..Default::default()
+                },
+            ],
+            next_owner_user_id: next_owner,
+            ..Default::default()
+        }
+    }
+
+    /// Absent on a FRESH read, and only there, is "nobody left" — the
+    /// dialog that deletes the family. A successor the same read does not
+    /// name is no answer at all.
+    #[wasm_bindgen_test]
+    fn the_leave_dialog_is_built_from_what_the_fresh_roster_says() {
+        assert_eq!(
+            leave_context(&roster(None), false),
+            Some(LeaveContext::Member)
+        );
+        assert_eq!(
+            leave_context(&roster(Some(ANNA)), true),
+            Some(LeaveContext::Successor("Anna".into()))
+        );
+        assert_eq!(
+            leave_context(&roster(None), true),
+            Some(LeaveContext::LastMember)
+        );
+        assert_eq!(leave_context(&roster(Some(404)), true), None);
+    }
+
+    /// The waiting room asks one `/me` at a time: a tick while one is out
+    /// waits for it, rather than piling another onto a slow server.
+    #[wasm_bindgen_test]
+    async fn the_waiting_room_asks_one_at_a_time() {
+        let actions = actions();
+        actions.live.now(|state| state.polling = true);
+        actions.handle(Action::PollAccount);
+        // A second poll would have gone out and come back (the test page has
+        // no API behind it) and let go of the flag by now.
+        gloo_timers::future::TimeoutFuture::new(300).await;
+        assert!(
+            actions.live.read(|state| state.polling),
+            "no second one went"
+        );
+        actions.live.now(|state| state.polling = false);
+        actions.handle(Action::PollAccount);
+        assert!(actions.live.read(|state| state.polling), "one is out");
+        gloo_timers::future::TimeoutFuture::new(300).await;
+        assert!(
+            !actions.live.read(|state| state.polling),
+            "and let go once answered"
+        );
     }
 }

@@ -155,6 +155,35 @@ pub fn event_when(starts_at: &str, ends_at: Option<&str>) -> String {
     }
 }
 
+/// A birthday as the reader's language writes a day of the year — "March
+/// 14", "14 марта", "3月14日" — and never a year: a birthday has none on the
+/// wire, and 2024 is only there so the 29th of February resolves (ios
+/// Birthday.formatted).
+pub fn birthday(month: u32, day: u32) -> String {
+    let date = Date::new(&JsValue::from_f64(
+        Date::utc(2024.0, f64::from(month) - 1.0) + f64::from(day.saturating_sub(1)) * 86_400_000.0,
+    ));
+    date.to_locale_date_string(
+        &locale(),
+        &options(&[("month", "long"), ("day", "numeric"), ("timeZone", "UTC")]),
+    )
+    .into()
+}
+
+/// A month's name standing alone, as a picker lists it — "January",
+/// "январь" — in the reader's language.
+pub fn month_name(month: u32) -> String {
+    let date = Date::new(&JsValue::from_f64(Date::utc(
+        2024.0,
+        f64::from(month) - 1.0,
+    )));
+    date.to_locale_date_string(
+        &locale(),
+        &options(&[("month", "long"), ("timeZone", "UTC")]),
+    )
+    .into()
+}
+
 /// Whether an event has been and gone — its end, or its start when it has
 /// none, is behind `now_ms`. A past event is drawn quieter, never removed:
 /// clearing the wall is the family's call.

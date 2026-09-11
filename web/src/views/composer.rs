@@ -582,6 +582,7 @@ mod tests {
             username: name.to_lowercase(),
             role: Some("member".into()),
             deleted: false,
+            ..Default::default()
         }
     }
 
