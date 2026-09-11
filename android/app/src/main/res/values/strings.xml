@@ -588,4 +588,11 @@
         <item quantity="one">+%1$d more</item>
         <item quantity="other">+%1$d more</item>
     </plurals>
+    <string name="s_nobody_answered">Nobody has answered yet.</string>
+    <string name="s_add_to_calendar">Add to Calendar</string>
+    <string name="s_draw_backdrop">Draw a backdrop</string>
+    <string name="s_draw_another_backdrop">Draw another backdrop</string>
+    <string name="s_drawing">Drawing…</string>
+    <string name="s_draw_failed">Couldn\'t draw that.</string>
+    <string name="s_no_calendar_app">No calendar app to add it to.</string>
 </resources>

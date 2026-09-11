@@ -541,4 +541,11 @@
         <item quantity="few">+%1$d još</item>
         <item quantity="other">+%1$d još</item>
     </plurals>
+    <string name="s_nobody_answered">Još niko nije odgovorio.</string>
+    <string name="s_add_to_calendar">Dodaj u kalendar</string>
+    <string name="s_draw_backdrop">Nacrtaj pozadinu</string>
+    <string name="s_draw_another_backdrop">Nacrtaj drugu pozadinu</string>
+    <string name="s_drawing">Crta…</string>
+    <string name="s_draw_failed">Nije moglo da se nacrta.</string>
+    <string name="s_no_calendar_app">Nema aplikacije kalendara za dodavanje.</string>
 </resources>

@@ -595,6 +595,10 @@ fn app() -> Html {
                         notes={store.board.drawn()}
                         loaded={store.board.loaded}
                         my_user_id={store.my_user_id}
+                        // Whether this SERVER can make a picture at all —
+                        // what the backdrop action hangs on
+                        // (docs/protocol.md, "Board").
+                        can_draw={store.assistant.as_ref().is_some_and(|assistant| assistant.images)}
                         names={store.names.clone()}
                         members={store.members.clone()}
                         blocked={store.blocked.clone()}

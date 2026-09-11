@@ -1387,6 +1387,194 @@ pub async fn delete_rsvp(
     set_rsvp(auth, state, note_id, None).await
 }
 
+/// `POST /families/mine/board/notes/{id}/backdrop` — ask the assistant for
+/// a picture to sit behind an event.
+///
+/// THE AUTHOR'S, AND AN EVENT'S. A backdrop is part of what the note looks
+/// like, which is the author's business like its colour; the other kinds
+/// have nowhere to put one — a photo note IS its picture
+/// (docs/protocol.md, "Board").
+///
+/// WHAT LEAVES THE SERVER IS THE TITLE. No place, no times, no answers, no
+/// history, no language instruction — the `/draw` rule unchanged, which is
+/// also why this takes no request body: a prompt from the client would be a
+/// second way to send words to a model from a screen that is not the
+/// assistant's chat.
+///
+/// THE MODEL IS CALLED WITH NO LOCK HELD. The board's row lock serialises
+/// every write to a family's wall, and an image model takes seconds — so
+/// the permission read comes first, the drawing happens outside any
+/// transaction, and the note is locked and re-checked afterwards. A note
+/// deleted or handed over meanwhile loses the picture that was drawn for it,
+/// which is why the bytes are discarded on that path rather than left for
+/// the sweeper: no row ever pointed at them.
+pub async fn draw_backdrop(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(note_id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let family_id = caller_family(&state, auth.user_id).await?;
+    // Before anything is drawn: this server can draw at all, and this
+    // caller may ask for this note.
+    let Some(route) = state.cfg.ai.images_route() else {
+        return Err(ApiError::forbidden(
+            codes::PICTURES_UNAVAILABLE,
+            "this server has no picture model configured",
+        ));
+    };
+    let Some(assistant_id) = crate::handlers_ai::assistant_user_id(&state).await? else {
+        return Err(ApiError::forbidden(
+            codes::PICTURES_UNAVAILABLE,
+            "this server has no assistant",
+        ));
+    };
+    let held = sqlx::query(
+        "SELECT author_id, kind, text FROM notes
+         WHERE id = $1 AND family_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(note_id)
+    .bind(family_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(held) = held else {
+        return Err(ApiError::not_found(
+            codes::NOTE_NOT_FOUND,
+            "no such note on this board",
+        ));
+    };
+    if held.get::<i64, _>("author_id") != auth.user_id {
+        return Err(ApiError::forbidden(
+            codes::NOT_NOTE_AUTHOR,
+            "only the author can change this note's backdrop",
+        ));
+    }
+    if held.get::<String, _>("kind") != Note::KIND_EVENT {
+        return Err(ApiError::validation("only an event has a backdrop"));
+    }
+    let title: String = held.get("text");
+
+    // The slow part, with nothing locked.
+    let image = crate::ai::generate_image(&state.http, &route, &state.cfg.ai.images, title.trim())
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "the assistant could not draw a backdrop");
+            ApiError::Internal(error)
+        })?;
+
+    // Written to disk first, and bound in the transaction below: the note
+    // holds ONE backdrop (a unique index over `attachments(note_id)` says
+    // so), so the row it replaces has to go in the same breath as the new
+    // one arrives.
+    let written = crate::handlers_ai::write_picture(&state, &format!("ai-note-{note_id}"), &image)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "could not write a drawn backdrop");
+            ApiError::Internal(error)
+        })?;
+
+    let mut tx = state.pool.begin().await?;
+    lock_board(&mut tx, family_id).await?;
+    // Re-read under the lock: the note may have gone, or changed hands,
+    // while the model was drawing.
+    let still = sqlx::query(
+        "SELECT author_id FROM notes
+         WHERE id = $1 AND family_id = $2 AND kind = $3 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(note_id)
+    .bind(family_id)
+    .bind(Note::KIND_EVENT)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let gone = match &still {
+        None => true,
+        Some(row) => row.get::<i64, _>("author_id") != auth.user_id,
+    };
+    if gone {
+        // Nothing will ever point at those bytes.
+        drop(tx);
+        written.discard(&state).await;
+        return Err(ApiError::not_found(
+            codes::NOTE_NOT_FOUND,
+            "no such note on this board",
+        ));
+    }
+
+    // Out with the old — its key kept, so its file can go after the commit
+    // if no other row names it, exactly as a deleted note's does.
+    let replaced: Option<String> =
+        sqlx::query_scalar("DELETE FROM attachments WHERE note_id = $1 RETURNING storage_key")
+            .bind(note_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let inserted = sqlx::query(
+        "INSERT INTO attachments
+            (uploader_id, note_id, kind, mime, size_bytes, storage_key, family_id, position)
+         VALUES ($1, $2, 'photo', $3, $4, $5, $6, 0)",
+    )
+    .bind(assistant_id)
+    .bind(note_id)
+    .bind(written.mime)
+    .bind(written.bytes)
+    .bind(&written.storage_key)
+    .bind(family_id)
+    .execute(&mut *tx)
+    .await;
+    if let Err(error) = inserted {
+        drop(tx);
+        written.discard(&state).await;
+        tracing::warn!(%error, "could not bind a drawn backdrop to its note");
+        return Err(ApiError::Internal(error.into()));
+    }
+
+    // A new seq, so the picture reaches the other devices through the one
+    // feed — and `content_seq` untouched, because the note says exactly
+    // what it said before (protocol.md, "Board").
+    let seq: i64 = sqlx::query_scalar("SELECT nextval('family_board_seq')")
+        .fetch_one(&mut *tx)
+        .await?;
+    let row = sqlx::query(&format!(
+        "UPDATE notes SET board_seq = $2, updated_at = now() WHERE id = $1
+         RETURNING {NOTE_COLS}"
+    ))
+    .bind(note_id)
+    .bind(seq)
+    .fetch_one(&mut *tx)
+    .await?;
+    advance_family_seq(&mut tx, family_id, seq).await?;
+    tx.commit().await?;
+    if let Some(key) = replaced {
+        crate::handlers_attachment::remove_if_unreferenced(&state, &key).await?;
+    }
+
+    // What it cost, for Family Statistics: one image and no tokens, as a
+    // `/draw` is — and no message, because there is none (protocol.md,
+    // "Family statistics"). Best effort, like the chat's own accounting: a
+    // picture the family can see must not fail because a counter did not
+    // save.
+    if let Err(error) = sqlx::query(
+        "INSERT INTO ai_usage (user_id, family_id, message_id, prompt_tokens,
+                               completion_tokens, images)
+         VALUES ($1, $2, NULL, 0, 0, 1)",
+    )
+    .bind(auth.user_id)
+    .bind(family_id)
+    .execute(&state.pool)
+    .await
+    {
+        tracing::warn!(%error, "could not record the backdrop against the family's pictures");
+    }
+
+    let mut note = Note::from_row(&row);
+    hydrate(&state, &mut note).await?;
+    // Fanned out, never pushed: only creation notifies, and nobody should
+    // be woken because an event got a picture.
+    events::log_fanout_error(
+        "board_note",
+        events::deliver_board_note(&state, family_id, &note).await,
+    );
+    Ok((StatusCode::OK, Json(json!({"note": note}))).into_response())
+}
+
 /// `PUT /families/mine/board/notes/{id}/tasks/{item_id}` — "this one is
 /// done", from anyone in the family.
 ///

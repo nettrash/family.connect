@@ -1266,6 +1266,16 @@ struct TaskDone {
     done: bool,
 }
 
+/// `POST …/notes/{id}/backdrop` — ask the assistant for a picture to sit
+/// behind an event. The AUTHOR's, and drawn from the note's own title: there
+/// is nothing to send (docs/protocol.md, "Board").
+pub async fn draw_backdrop(token: &str, note_id: i64) -> Result<Note, ApiError> {
+    let url = path(&format!("/families/mine/board/notes/{note_id}/backdrop"));
+    let response: NoteResponse =
+        with_body(Request::post(&url), token, &serde_json::json!({})).await?;
+    Ok(response.note)
+}
+
 /// `DELETE /families/mine/board/notes/{id}` — the author's; idempotent.
 pub async fn delete_note(token: &str, note_id: i64) -> Result<(), ApiError> {
     let url = path(&format!("/families/mine/board/notes/{note_id}"));

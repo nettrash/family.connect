@@ -132,6 +132,11 @@ import androidx.compose.ui.res.pluralStringResource
 import me.nettrash.familyconnect.data.net.dto.TaskItemDto
 import me.nettrash.familyconnect.data.net.dto.TaskItemsCodec
 import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
+import android.content.Context
+import android.content.Intent
+import android.provider.CalendarContract
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -146,6 +151,7 @@ import me.nettrash.familyconnect.data.net.dto.NoteMentionsCodec
 import me.nettrash.familyconnect.ui.chat.MentionSuggestionsRow
 import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.data.net.dto.RsvpCodec
+import me.nettrash.familyconnect.data.net.dto.RsvpDto
 import me.nettrash.familyconnect.ui.components.rememberAttachmentImage
 import me.nettrash.familyconnect.ui.components.EmptyState
 import kotlin.math.roundToInt
@@ -394,9 +400,19 @@ internal fun NoteEventBlock(note: NoteEntity, modifier: Modifier = Modifier) {
     val going = rsvps.count { it.answer == RsvpAnswers.GOING }
     val maybe = rsvps.count { it.answer == RsvpAnswers.MAYBE }
     val past = EventFormat.isPast(startsAt, note.endsAt, System.currentTimeMillis())
-    Column(modifier = modifier) {
+    // A CALENDAR ENTRY (docs/protocol.md, "Board"): the date in a block of
+    // its own, the time beside it, the place under that. The shape is the
+    // same on all four clients — a wall where one device shows a calendar
+    // page and another a paragraph of small print is not the same wall.
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+    NoteDateBlock(startsAt = startsAt, past = past)
+    Column {
         Text(
-            text = EventFormat.whenLine(startsAt, note.endsAt),
+            text = EventFormat.clockLine(startsAt, note.endsAt),
             style = MaterialTheme.typography.labelSmall,
             color = Color.Black.copy(alpha = if (past) 0.4f else 0.75f),
             maxLines = 2,
@@ -424,6 +440,40 @@ internal fun NoteEventBlock(note: NoteEntity, modifier: Modifier = Modifier) {
                 overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+    }
+}
+
+/**
+ * The date, as a torn calendar page: the day's number over its short month,
+ * on paper of its own so it reads as a date and not as another line of
+ * small print (docs/protocol.md, "Board").
+ *
+ * Not read out: the sticker's own label already says when the event is, and
+ * a screen reader hearing "24 Dec" twice is worse than once.
+ */
+@Composable
+internal fun NoteDateBlock(startsAt: Long, past: Boolean, modifier: Modifier = Modifier) {
+    val (day, month) = EventFormat.block(startsAt)
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(Color.White.copy(alpha = if (past) 0.3f else 0.55f))
+            .padding(horizontal = 5.dp, vertical = 3.dp)
+            .clearAndSetSemantics {},
+    ) {
+        Text(
+            text = day,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = Color.Black.copy(alpha = if (past) 0.45f else 0.78f),
+        )
+        Text(
+            text = month.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFFB2261E).copy(alpha = if (past) 0.5f else 0.85f),
+        )
     }
 }
 
@@ -589,6 +639,40 @@ object EventFormat {
     }
 
     /**
+     * The date as a CALENDAR BLOCK: the day's number and its short month,
+     * both in the reader's own language (docs/protocol.md, "Board").
+     *
+     * Two strings rather than one, because they are drawn one over the
+     * other — which is the point of the block — and because a joined
+     * "24 Dec" would put them in an order some languages do not use.
+     */
+    fun block(startsAt: Long): Pair<String, String> {
+        val starts = Instant.ofEpochMilli(startsAt).atZone(ZoneId.systemDefault())
+        return starts.format(DateTimeFormatter.ofPattern("d")) to
+            starts.format(DateTimeFormatter.ofPattern("LLL"))
+    }
+
+    /**
+     * The TIME, beside the block that already says the date: "16:00",
+     * "16:00 – 20:00", or "16:00 – 25 Dec 02:00" when it ends on another
+     * day.
+     */
+    fun clockLine(startsAt: Long, endsAt: Long?): String {
+        val zone = ZoneId.systemDefault()
+        val starts = Instant.ofEpochMilli(startsAt).atZone(zone)
+        val from = starts.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
+        if (endsAt == null) return from
+        val ends = Instant.ofEpochMilli(endsAt).atZone(zone)
+        val to = if (ends.toLocalDate() == starts.toLocalDate()) {
+            ends.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
+        } else {
+            ends.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)) + " " +
+                ends.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
+        }
+        return "$from – $to"
+    }
+
+    /**
      * Has it already happened? A past event is drawn quieter rather than
      * removed: the wall is the family's, and clearing it is their call.
      */
@@ -698,6 +782,39 @@ object NoteNames {
             }
             if (at < text.length) append(text.substring(at))
         }
+    }
+}
+
+/**
+ * Hand an event to the platform's own calendar (docs/protocol.md, "Board").
+ *
+ * `ACTION_INSERT` opens the calendar app's OWN editor with the fields
+ * filled in, which is why this needs no permission at all: nothing is
+ * written until somebody presses save there. `WRITE_CALENDAR` would let the
+ * app write silently, and asking a family for that to copy one event would
+ * be a worse trade than one extra tap.
+ *
+ * What it copies is the title, the times and the place. Not who is coming —
+ * that is the family's business and not the calendar's — and not the
+ * backdrop.
+ *
+ * Apple counterpart: `EventCalendar` (an `.ics` handed to the share sheet,
+ * for the same reason: no permission).
+ */
+private fun addEventToCalendar(context: Context, draft: NoteDraft) {
+    val startsAt = draft.startsAt ?: return
+    val intent = Intent(Intent.ACTION_INSERT)
+        .setData(CalendarContract.Events.CONTENT_URI)
+        .putExtra(CalendarContract.Events.TITLE, draft.text.trim())
+        .putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, startsAt)
+    draft.endsAt?.let { intent.putExtra(CalendarContract.EXTRA_EVENT_END_TIME, it) }
+    draft.place?.takeIf { it.isNotBlank() }?.let {
+        intent.putExtra(CalendarContract.Events.EVENT_LOCATION, it)
+    }
+    // A phone with no calendar app at all is rare and possible; a crash
+    // there would be this feature's fault.
+    runCatching { context.startActivity(intent) }.onFailure {
+        Toast.makeText(context, R.string.s_no_calendar_app, Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -897,6 +1014,17 @@ data class NoteDraft(
      * the boxes draw (docs/protocol.md, "Board").
      */
     val items: List<TaskItemDto> = emptyList(),
+    /** An event's own three, for the calendar copy and the card. */
+    val startsAt: Long? = null,
+    val endsAt: Long? = null,
+    val place: String? = null,
+    /** Everybody's answers, for naming who is coming. */
+    val rsvps: List<RsvpDto> = emptyList(),
+    /**
+     * Whether this event already has a backdrop — the difference between
+     * "Draw a backdrop" and "Draw another".
+     */
+    val hasBackdrop: Boolean = false,
     val x: Double,
     val y: Double,
     val authorId: Long,
@@ -915,6 +1043,8 @@ fun BoardScreen(
     val blockedUserIds by viewModel.blockedUserIds.collectAsStateWithLifecycle()
     val memberNames by viewModel.memberNames.collectAsStateWithLifecycle()
     val mentionRoster by viewModel.mentionRoster.collectAsStateWithLifecycle()
+    val canDraw by viewModel.canDraw.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var editing by remember { mutableStateOf<NoteDraft?>(null) }
 
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -1089,6 +1219,12 @@ fun BoardScreen(
                                 .firstOrNull { it.userId == myUserId }?.answer,
                             mentions = NoteMentionsCodec.decode(note.mentionsJson),
                             items = TaskItemsCodec.decode(note.itemsJson),
+                            startsAt = note.startsAt,
+                            endsAt = note.endsAt,
+                            place = note.place,
+                            rsvps = RsvpCodec.decode(note.rsvpsJson),
+                            hasBackdrop = AttachmentsCodec.decode(note.attachmentJson)
+                                ?.isNotEmpty() == true,
                             x = note.x,
                             y = note.y,
                             authorId = note.authorId,
@@ -1156,6 +1292,17 @@ fun BoardScreen(
             },
             myAnswer = draft.myAnswer,
             roster = mentionRoster,
+            names = memberNames,
+            canDraw = canDraw,
+            onDrawBackdrop = { onSettled ->
+                draft.noteId?.let { viewModel.drawBackdrop(it, onSettled) }
+            },
+            onAddToCalendar = {
+                // The platform's own calendar editor, through an intent —
+                // no permission, no .ics, and the family's answers are not
+                // copied into it (docs/protocol.md, "Board").
+                addEventToCalendar(context, draft)
+            },
             onOpenChat = { userId ->
                 // The note closes first: the chat it opens is what the
                 // reader asked for, and a dialog still over it is not.
@@ -1542,6 +1689,18 @@ internal fun NoteDialog(
      */
     roster: List<MentionDto> = emptyList(),
     onOpenChat: (Long) -> Unit = {},
+    /**
+     * Every name this family has, for naming who is coming — former
+     * members included, as an old note's author is (docs/protocol.md,
+     * "Board").
+     */
+    names: Map<Long, String> = emptyMap(),
+    /** Whether this SERVER can draw at all (`assistant.images`). */
+    canDraw: Boolean = false,
+    /** Ask the assistant for a backdrop; hears when it has landed. */
+    onDrawBackdrop: ((Boolean) -> Unit) -> Unit = {},
+    /** Put a copy in this reader's own calendar. */
+    onAddToCalendar: () -> Unit = {},
     onDelete: (() -> Unit)?,
 ) {
     // A TextFieldValue, not a String: accepting a name off the strip
@@ -1625,6 +1784,72 @@ internal fun NoteDialog(
                                 Text(
                                     stringResource(
                                         option?.let(RsvpAnswers::label) ?: R.string.s_rsvp_none,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.size(4.dp))
+                    // WHO IS COMING, by name: the card counts and the note
+                    // names (docs/protocol.md, "Board").
+                    val groups = RsvpAnswers.all.mapNotNull { answer ->
+                        val named = draft.rsvps
+                            .filter { it.answer == answer }
+                            .mapNotNull { names[it.userId] }
+                        if (named.isEmpty()) null else answer to named.joinToString(", ")
+                    }
+                    if (groups.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.s_nobody_answered),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        groups.forEach { (answer, named) ->
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    text = stringResource(RsvpAnswers.label(answer)),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = named,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    // A copy for this reader's own calendar — anybody's —
+                    // and the picture behind it, which is the author's.
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = onAddToCalendar) {
+                            Text(stringResource(R.string.s_add_to_calendar))
+                        }
+                        if (canEdit && canDraw) {
+                            var drawing by remember(draft.noteId) { mutableStateOf(false) }
+                            TextButton(
+                                onClick = {
+                                    // An image model takes seconds, and a
+                                    // button pressed twice is two bills.
+                                    if (!drawing) {
+                                        drawing = true
+                                        onDrawBackdrop { drawing = false }
+                                    }
+                                },
+                                enabled = !drawing,
+                            ) {
+                                Text(
+                                    stringResource(
+                                        when {
+                                            drawing -> R.string.s_drawing
+                                            draft.hasBackdrop -> R.string.s_draw_another_backdrop
+                                            else -> R.string.s_draw_backdrop
+                                        },
                                     ),
                                 )
                             }

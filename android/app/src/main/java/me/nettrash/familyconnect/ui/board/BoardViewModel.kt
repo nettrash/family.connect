@@ -324,6 +324,20 @@ class BoardViewModel @Inject constructor(
         viewModelScope.launch { boardRepository.answerNote(id, answer) }
     }
 
+    /**
+     * Ask the assistant for an event's backdrop — the author's, and it
+     * takes seconds, so the caller hears when it has landed
+     * (docs/protocol.md, "Board").
+     */
+    fun drawBackdrop(noteId: Long, onSettled: (Boolean) -> Unit = {}) {
+        viewModelScope.launch { onSettled(boardRepository.drawBackdrop(noteId)) }
+    }
+
+    /** Whether this SERVER can draw at all (`assistant.images`). */
+    val canDraw: StateFlow<Boolean> = settings.state
+        .map { it.assistantImages }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     fun deleteNote(id: Long) {
         viewModelScope.launch { boardRepository.deleteNote(id) }
     }

@@ -1248,6 +1248,17 @@ final class ChatSyncCoordinator {
         return true
     }
 
+    /// Ask the assistant for a picture to sit behind an event. The
+    /// AUTHOR's, and drawn from the note's own title — there is nothing to
+    /// send (docs/protocol.md, "Board").
+    @discardableResult
+    func drawBackdrop(noteID: Int64) async -> Bool {
+        guard let dto = try? await api.drawBackdrop(noteID: noteID) else { return false }
+        applyNote(dto)
+        saveContext()
+        return true
+    }
+
     func deleteNote(id: Int64) async -> Bool {
         do {
             try await api.deleteNote(id: id)

@@ -1038,6 +1038,15 @@ actor APIClient {
         return response.note
     }
 
+    /// `POST …/notes/{id}/backdrop` — the assistant draws a picture for an
+    /// event from its own title. No body: the prompt is the title
+    /// (docs/protocol.md, "Board").
+    func drawBackdrop(noteID: Int64) async throws -> NoteDTO {
+        let response: NoteResponse = try await request(
+            "POST", "/families/mine/board/notes/\(noteID)/backdrop")
+        return response.note
+    }
+
     func deleteNote(id: Int64) async throws {
         try await requestVoid("DELETE", "/families/mine/board/notes/\(id)")
     }

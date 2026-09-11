@@ -979,6 +979,24 @@ class FakeBoardApi : BoardApi {
         )
     }
 
+    /** Every backdrop asked for, and the picture this fake draws. */
+    val backdrops = mutableListOf<Long>()
+
+    override suspend fun drawBackdrop(noteId: Long): ApiResult<NoteResponse> {
+        backdrops += noteId
+        return ApiResult.Ok(
+            NoteResponse(
+                noteDto(
+                    id = noteId,
+                    boardSeq = nextSeq++,
+                    kind = "event",
+                    startsAt = "2026-12-24T16:00:00Z",
+                    attachment = FakeAttachmentApi.attachment(id = 900 + noteId),
+                ),
+            ),
+        )
+    }
+
     override suspend fun tickTask(
         noteId: Long,
         itemId: Long,

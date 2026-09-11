@@ -522,4 +522,11 @@
     <plurals name="s_more_things">
         <item quantity="other">ほか %1$d 件</item>
     </plurals>
+    <string name="s_nobody_answered">まだ誰も回答していません。</string>
+    <string name="s_add_to_calendar">カレンダーに追加</string>
+    <string name="s_draw_backdrop">背景を描く</string>
+    <string name="s_draw_another_backdrop">別の背景を描く</string>
+    <string name="s_drawing">描いています…</string>
+    <string name="s_draw_failed">描けませんでした。</string>
+    <string name="s_no_calendar_app">追加できるカレンダーアプリがありません。</string>
 </resources>

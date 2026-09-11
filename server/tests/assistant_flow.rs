@@ -5202,3 +5202,279 @@ async fn the_private_thread_never_carries_a_face() {
     assert_eq!(inline_images(&call), 0, "{}", call.raw);
     assert!(!call.raw.contains("PROFILE PICTURE"), "{}", call.raw);
 }
+
+// -- the board's backdrop -----------------------------------------------------
+//
+// The assistant drawing a picture to sit behind a family EVENT
+// (docs/protocol.md, "Board"). It lives here rather than in board_flow.rs
+// because the thing worth asserting is the assistant's: WHAT LEFT THE SERVER
+// to fetch the picture, and the mock provider is what can say.
+
+/// Every file the server has actually written, counted by walking the
+/// blob tree — the only way to see a leak the API cannot show.
+fn stored_blobs(ts: &TestServer) -> usize {
+    // `blob_path` shards by the key's last four characters, so the root is
+    // three levels up from any path it hands back.
+    let probe = ts.state.storage.blob_path("probe");
+    let Some(root) = probe
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+    else {
+        return 0;
+    };
+    fn walk(dir: &std::path::Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .map(|entry| {
+                let path = entry.path();
+                if path.is_dir() { walk(&path) } else { 1 }
+            })
+            .sum()
+    }
+    walk(root)
+}
+
+/// Pin an event, and hand back its id.
+async fn pin_event(ts: &TestServer, token: &str, title: &str) -> i64 {
+    let response = ts
+        .post(
+            token,
+            "/families/mine/board/notes",
+            json!({
+                "text": title, "color": "blue", "kind": "event",
+                "x": 0.2, "y": 0.3, "starts_at": "2026-12-24T16:00:00Z",
+                "place": "Gran's house",
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), 201);
+    response.json::<Value>().await.expect("JSON")["note"]["id"]
+        .as_i64()
+        .expect("id")
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn an_events_backdrop_is_drawn_from_its_title_and_nothing_else() {
+    let (mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    ts.join(&member, &code, "joined").await;
+
+    let note_id = pin_event(&ts, &owner, "Christmas dinner").await;
+    let before: Value = ts
+        .get(&owner, "/families/mine/board")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let pinned = before["notes"]
+        .as_array()
+        .expect("notes")
+        .iter()
+        .find(|note| note["id"].as_i64() == Some(note_id))
+        .expect("the event")
+        .clone();
+    assert!(pinned.get("attachment").is_none(), "no backdrop yet");
+    let content_seq = pinned["content_seq"].as_i64().expect("seq");
+    let board_seq = pinned["board_seq"].as_i64().expect("seq");
+
+    let drawn: Value = ts
+        .post(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}/backdrop"),
+            json!({}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let first = drawn["note"]["attachment"]["id"]
+        .as_i64()
+        .expect("the backdrop");
+    assert_eq!(drawn["note"]["attachment"]["kind"], "photo");
+    // It reaches the other devices (a new board_seq) and raises NO badge:
+    // the note says exactly what it said.
+    assert!(drawn["note"]["board_seq"].as_i64().expect("seq") > board_seq);
+    assert_eq!(drawn["note"]["content_seq"].as_i64(), Some(content_seq));
+
+    // WHAT LEFT THE SERVER: one request, to the IMAGES deployment, whose
+    // prompt is the title and nothing else — no place, no times, no
+    // transcript, no language line.
+    let image_calls: Vec<ProviderCall> = mock
+        .calls()
+        .into_iter()
+        .filter(|call| call.path.starts_with("/images/"))
+        .collect();
+    assert_eq!(image_calls.len(), 1);
+    assert_eq!(image_calls[0].path, format!("/images/{IMAGES_DEPLOYMENT}"));
+    assert_eq!(image_calls[0].body["prompt"], "Christmas dinner");
+    assert!(
+        !image_calls[0].raw.contains("Gran's house"),
+        "the place never leaves: {}",
+        image_calls[0].raw
+    );
+    assert!(
+        !image_calls[0].raw.contains("2026-12-24"),
+        "nor the time: {}",
+        image_calls[0].raw
+    );
+
+    // Every member can fetch it — a board picture is readable by the
+    // family whose wall it is.
+    let fetched = ts.get(&member, &format!("/attachments/{first}")).await;
+    assert!(fetched.status().is_success(), "{}", fetched.status());
+
+    // Asking again REPLACES it, and the one it replaced is gone.
+    let again: Value = ts
+        .post(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}/backdrop"),
+            json!({}),
+        )
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    let second = again["note"]["attachment"]["id"]
+        .as_i64()
+        .expect("the new backdrop");
+    assert_ne!(second, first, "a second ask is a second picture");
+    assert_eq!(
+        ts.get(&owner, &format!("/attachments/{first}"))
+            .await
+            .status(),
+        404,
+        "the picture it replaced is gone"
+    );
+    // And its BYTES are gone with it, which no API answer can show: a
+    // family paying per picture should not be paying rent on the ones
+    // they replaced.
+    assert_eq!(stored_blobs(&ts), 1, "one backdrop on disk, not two");
+
+    // Two pictures, on the family's bill, with no tokens between them.
+    let stats: Value = ts
+        .get(&owner, "/families/mine/stats")
+        .await
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(stats["totals"]["ai"]["images"].as_i64(), Some(2));
+    // No tokens between them: an image model reports none, and a family
+    // reading only the token totals would see this as free.
+    assert_eq!(stats["totals"]["ai"]["prompt_tokens"].as_i64(), Some(0));
+    assert_eq!(stats["totals"]["ai"]["questions"].as_i64(), Some(2));
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn the_ways_of_asking_for_a_backdrop_wrong() {
+    let (_mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_pictures(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    let (_, code) = ts.create_family(&owner, "The Smiths").await;
+    ts.set_open_policy(&owner).await;
+    let (member, _) = ts.register("junior", "Junior").await;
+    ts.join(&member, &code, "joined").await;
+
+    let note_id = pin_event(&ts, &owner, "Christmas dinner").await;
+    // A backdrop is part of what the note LOOKS like, which is the
+    // author's, like its colour.
+    assert_error(
+        ts.post(
+            &member,
+            &format!("/families/mine/board/notes/{note_id}/backdrop"),
+            json!({}),
+        )
+        .await,
+        403,
+        "not_note_author",
+    )
+    .await;
+
+    // Only an event has a backdrop: a photo note IS its picture, and a
+    // text note has nowhere to put one.
+    let plain = ts
+        .post(
+            &owner,
+            "/families/mine/board/notes",
+            json!({"text": "Milk", "color": "yellow", "x": 0.1, "y": 0.1}),
+        )
+        .await;
+    let plain_id = plain.json::<Value>().await.expect("JSON")["note"]["id"]
+        .as_i64()
+        .expect("id");
+    assert_error(
+        ts.post(
+            &owner,
+            &format!("/families/mine/board/notes/{plain_id}/backdrop"),
+            json!({}),
+        )
+        .await,
+        400,
+        "validation",
+    )
+    .await;
+
+    // Another family's event is no such note.
+    let (stranger, _) = ts.register("stranger", "Stranger").await;
+    ts.create_family(&stranger, "The Joneses").await;
+    assert_error(
+        ts.post(
+            &stranger,
+            &format!("/families/mine/board/notes/{note_id}/backdrop"),
+            json!({}),
+        )
+        .await,
+        404,
+        "note_not_found",
+    )
+    .await;
+
+    // And a deleted one likewise.
+    ts.delete(&owner, &format!("/families/mine/board/notes/{note_id}"))
+        .await;
+    assert_error(
+        ts.post(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}/backdrop"),
+            json!({}),
+        )
+        .await,
+        404,
+        "note_not_found",
+    )
+    .await;
+}
+
+/// A server with no images deployment says so, instead of drawing nothing:
+/// the button is hung on `assistant.images`, so reaching this is a race or
+/// a client that did not look (docs/protocol.md, "Board").
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn a_server_that_cannot_draw_says_so() {
+    let (_mock, addr) = spawn_mock_provider().await;
+    let ts = server_with_text_only(addr).await;
+    let (owner, _) = ts.register("owner", "Olive").await;
+    ts.create_family(&owner, "The Smiths").await;
+    let note_id = pin_event(&ts, &owner, "Christmas dinner").await;
+
+    assert_error(
+        ts.post(
+            &owner,
+            &format!("/families/mine/board/notes/{note_id}/backdrop"),
+            json!({}),
+        )
+        .await,
+        403,
+        "pictures_unavailable",
+    )
+    .await;
+}

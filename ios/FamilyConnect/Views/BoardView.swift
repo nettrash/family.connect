@@ -74,6 +74,9 @@ private struct NoteDraft: Identifiable {
     /// The things to do, as stored: the ids a rewrite keeps and the ticks
     /// the boxes draw (docs/protocol.md, "Board").
     var items: [TaskItemDTO] = []
+    /// Whether this event already has a backdrop, which is the difference
+    /// between "Draw a backdrop" and "Draw another".
+    var hasBackdrop: Bool = false
     var x: Double
     var y: Double
     var authorID: Int64
@@ -301,7 +304,10 @@ struct BoardView: View {
             onDelete: draft.noteID.map { id in { delete(id: id) } },
             currentUserID: currentUserID,
             onOpenChat: onOpenChat,
-            mentionCandidates: mentionCandidates(matching:))
+            mentionCandidates: mentionCandidates(matching:),
+            names: displayName(for:),
+            canDraw: AppSettings.assistantImages,
+            onDrawBackdrop: { noteID in await coordinator.drawBackdrop(noteID: noteID) })
     }
 
     /// What the editor's strip offers for a half-typed name: the live
@@ -333,6 +339,7 @@ struct BoardView: View {
             rsvps: note.rsvpList,
             mentions: note.mentionList,
             items: note.taskList,
+            hasBackdrop: note.attachmentID != nil,
             x: note.x,
             y: note.y,
             authorID: note.authorID)
@@ -654,6 +661,16 @@ private struct NoteEditor: View {
     /// The members a half-typed `@` could mean, and what picking one
     /// writes into the text.
     var mentionCandidates: (String) -> [MentionDTO] = { _ in [] }
+    /// Every name this family has, former members included: who answered
+    /// an event is named from this, exactly as an old note's author is
+    /// (docs/protocol.md, "Board").
+    var names: (Int64) -> String = { _ in "" }
+    /// Whether this SERVER can draw at all (`assistant.images`), which is
+    /// what the backdrop action hangs on.
+    var canDraw: Bool = false
+    /// Ask the assistant for a backdrop — the AUTHOR's, and answers
+    /// whether it landed so the button can stop saying "Drawing…".
+    var onDrawBackdrop: (Int64) async -> Bool = { _ in false }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -679,6 +696,14 @@ private struct NoteEditor: View {
     /// answers the tap at once and goes back to the note's own truth when
     /// the answer — or the refusal — lands.
     @State private var ticking: [Int64: Bool] = [:]
+    /// A backdrop being drawn.
+    @State private var drawing = false
+    /// A backdrop this sheet has drawn. The draft it was opened with says
+    /// what the note held THEN, so without this the button would still
+    /// offer a first backdrop after one had just arrived.
+    @State private var drewBackdrop = false
+    /// The `.ics` this sheet has written, if it is an event.
+    @State private var calendarFile: URL?
 
     init(
         draft: NoteDraft,
@@ -690,7 +715,10 @@ private struct NoteEditor: View {
         onDelete: (() -> Void)?,
         currentUserID: Int64 = -1,
         onOpenChat: ((Int64) -> Void)? = nil,
-        mentionCandidates: @escaping (String) -> [MentionDTO] = { _ in [] }
+        mentionCandidates: @escaping (String) -> [MentionDTO] = { _ in [] },
+        names: @escaping (Int64) -> String = { _ in "" },
+        canDraw: Bool = false,
+        onDrawBackdrop: @escaping (Int64) async -> Bool = { _ in false }
     ) {
         self.draft = draft
         self.canEdit = canEdit
@@ -702,6 +730,9 @@ private struct NoteEditor: View {
         self.currentUserID = currentUserID
         self.onOpenChat = onOpenChat
         self.mentionCandidates = mentionCandidates
+        self.names = names
+        self.canDraw = canDraw
+        self.onDrawBackdrop = onDrawBackdrop
         // A new list opens with one empty line, so the first thing to do
         // is one tap away rather than two.
         _lines = State(initialValue: draft.kind == .tasks && draft.items.isEmpty && draft.noteID == nil
@@ -742,6 +773,19 @@ private struct NoteEditor: View {
         return draft.items.first { $0.id == itemID }?.done ?? false
     }
 
+    /// Ask for a backdrop, and say so while it is being drawn: an image
+    /// model takes seconds, and a button pressed twice is two bills.
+    private func drawBackdrop(_ noteID: Int64) {
+        guard !drawing else { return }
+        drawing = true
+        Task {
+            if await onDrawBackdrop(noteID) {
+                drewBackdrop = true
+            }
+            drawing = false
+        }
+    }
+
     /// Tick or untick, and show it at once. One request per line at a
     /// time: a second tap while the first is in flight is the tap that
     /// would undo it.
@@ -774,11 +818,54 @@ private struct NoteEditor: View {
         onAnswer(noteID, choice?.name)
     }
 
-    private var guestLine: String {
-        let going = draft.rsvps.count { $0.answer == RsvpAnswer.going.name }
-        let maybe = draft.rsvps.count { $0.answer == RsvpAnswer.maybe.name }
-        let no = draft.rsvps.count { $0.answer == RsvpAnswer.no.name }
-        return String(localized: "\(going) going · \(maybe) maybe · \(no) can't")
+    /// WHO IS COMING, by name, in the note somebody has opened — grouped
+    /// by answer, in the roster's own order, the reader among them
+    /// (docs/protocol.md, "Board"). The sticker counts; this names.
+    @ViewBuilder
+    private var guests: some View {
+        let groups = RsvpAnswer.allCases.compactMap { choice -> (RsvpAnswer, String)? in
+            let named = draft.rsvps
+                .filter { $0.answer == choice.name }
+                .map { names($0.userID) }
+                .filter { !$0.isEmpty }
+            return named.isEmpty ? nil : (choice, named.joined(separator: ", "))
+        }
+        if groups.isEmpty {
+            // A sentence, not an empty list of names: a member who has not
+            // answered is in no group at all.
+            Text("Nobody has answered yet.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(groups, id: \.0) { group in
+                LabeledContent {
+                    Text(group.1)
+                } label: {
+                    Text(group.0.title)
+                }
+                .font(.callout)
+            }
+        }
+    }
+
+    /// The file a ShareLink hands to the system: the title, the times and
+    /// the place, and nothing else (EventCalendar).
+    ///
+    /// Written ONCE, when the sheet appears, and not in a computed
+    /// property: `ShareLink` wants its item while the body is being
+    /// evaluated, and a body that wrote a temp file every time SwiftUI
+    /// asked for it would write one per keystroke.
+    private func writeCalendarFile() {
+        guard isEvent, calendarFile == nil, let starts = draft.startsAt else { return }
+        let title = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let ics = EventCalendar.ics(
+            noteID: draft.noteID ?? 0,
+            title: title,
+            startsAt: starts,
+            endsAt: draft.endsAt,
+            place: draft.place.isEmpty ? nil : draft.place)
+        else { return }
+        calendarFile = EventCalendar.file(named: title, ics: ics)
     }
 
     /// The lines of a task list: a box everybody may tap, and — for the
@@ -940,10 +1027,32 @@ private struct NoteEditor: View {
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-                        if !draft.rsvps.isEmpty {
-                            Text(guestLine)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        guests
+                    }
+                }
+                // A copy for the reader's own calendar, and the picture
+                // behind it — one is anybody's, the other the author's
+                // (docs/protocol.md, "Board").
+                if isEvent, draft.noteID != nil {
+                    Section {
+                        if let file = calendarFile {
+                            ShareLink(item: file) {
+                                Label("Add to Calendar", systemImage: "calendar.badge.plus")
+                            }
+                        }
+                        if canEdit, canDraw, let noteID = draft.noteID {
+                            Button {
+                                drawBackdrop(noteID)
+                            } label: {
+                                if drawing {
+                                    Label("Drawing…", systemImage: "paintbrush")
+                                } else if draft.hasBackdrop || drewBackdrop {
+                                    Label("Draw another backdrop", systemImage: "paintbrush")
+                                } else {
+                                    Label("Draw a backdrop", systemImage: "paintbrush")
+                                }
+                            }
+                            .disabled(drawing)
                         }
                     }
                 }
@@ -1034,6 +1143,9 @@ private struct NoteEditor: View {
             }
             .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
+            // The calendar copy is written once, when the sheet appears:
+            // a ShareLink needs its file before anybody taps it.
+            .onAppear { writeCalendarFile() }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

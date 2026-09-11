@@ -12,7 +12,7 @@
 //! note from a newer server with a fourth size or a fifth colour still has
 //! to be readable, and a hole in the family's shared layout would be worse
 //! than a sticker drawn in the default.
-use crate::i18n::{t, t1, t2, t3};
+use crate::i18n::{t, t1, t2};
 
 /// The longest a note may be: "text is trimmed, non-empty and at most 280
 /// characters" — counted as the server counts them, in Unicode scalars.
@@ -388,15 +388,6 @@ pub fn going_line(going: usize, maybe: usize) -> Option<String> {
     }
 }
 
-/// Everybody's answers, in the note that opens.
-pub fn guest_line(going: usize, maybe: usize, no: usize) -> String {
-    t3(
-        "%lld going · %lld maybe · %lld can't",
-        &going.to_string(),
-        &maybe.to_string(),
-        &no.to_string(),
-    )
-}
 
 /// A few degrees of tilt, derived from the id so a note keeps the same
 /// angle for everyone and across reloads — a wall of perfectly square notes
@@ -782,7 +773,6 @@ mod tests {
         assert_eq!(going_line(3, 0).as_deref(), Some("3 going"));
         assert_eq!(going_line(0, 2).as_deref(), Some("2 maybe"));
         assert_eq!(going_line(3, 2).as_deref(), Some("3 going, 2 maybe"));
-        assert_eq!(guest_line(1, 2, 0), "1 going · 2 maybe · 0 can't");
         assert_eq!(Answer::No.title(), "Can't");
     }
 
