@@ -27,6 +27,9 @@ package me.nettrash.familyconnect.ui.board
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -254,7 +257,7 @@ class NoteDialogTest {
                 authorName = "Bob",
                 onDismiss = {},
                 onSave = { _, _, _, _, _ -> },
-                onTick = { itemId, done -> ticked += itemId to done },
+                onTick = { itemId, done, _ -> ticked += itemId to done },
                 onDelete = null,
             )
         }
@@ -272,6 +275,82 @@ class NoteDialogTest {
         compose.onNodeWithContentDescription("Milk").performClick()
 
         assertThat(ticked).containsExactly(12L to true, 11L to false).inOrder()
+    }
+
+    /**
+     * A line nobody has saved has no id yet, so there is nothing to tick:
+     * the box is there — a row that grew one on save would jump under the
+     * finger — and it is disabled, which is what says why
+     * (docs/protocol.md, "Board").
+     */
+    @Test
+    fun aLineNobodyHasSavedCannotBeTicked() {
+        val ticked = mutableListOf<Pair<Long, Boolean>>()
+        compose.setContent {
+            NoteDialog(
+                draft = listDraft().copy(noteId = null, items = emptyList()),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                onTick = { itemId, done, _ -> ticked += itemId to done },
+                onDelete = null,
+            )
+        }
+
+        // A new list opens with one empty row, and its box is dead.
+        compose.onNodeWithContentDescription("Done").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Done").performClick()
+        assertThat(ticked).isEmpty()
+    }
+
+    /**
+     * A box is lit before the round trip, so a tick the server REFUSED has
+     * to go back to what the note says (docs/protocol.md, "Board" — the
+     * tick is a state, and the state is the family's).
+     */
+    @Test
+    fun aRefusedTickGoesBackToWhatTheNoteSays() {
+        compose.setContent {
+            NoteDialog(
+                draft = listDraft(),
+                canEdit = false,
+                authorName = "Bob",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                // Nothing landed: the server said no.
+                onTick = { _, _, onSettled -> onSettled(false) },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithContentDescription("Bread").performClick()
+
+        compose.onNodeWithContentDescription("Bread").assertIsOff()
+        // And the line that WAS done is still drawn done.
+        compose.onNodeWithContentDescription("Milk").assertIsOn()
+    }
+
+    /** And one that landed keeps its mark, for the same reason. */
+    @Test
+    fun aTickThatLandedKeepsItsMark() {
+        compose.setContent {
+            NoteDialog(
+                draft = listDraft(),
+                canEdit = false,
+                authorName = "Bob",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                onTick = { _, _, onSettled -> onSettled(true) },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithContentDescription("Bread").performClick()
+
+        // The draft this dialog opened with says Bread was NOT done, so a
+        // mark dropped here would show the tick undoing itself.
+        compose.onNodeWithContentDescription("Bread").assertIsOn()
     }
 
     @Test

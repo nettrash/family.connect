@@ -95,6 +95,49 @@ interface BoardApi {
     suspend fun deleteNote(id: Long): ApiResult<Unit>
 }
 
+/**
+ * What a new note SENDS, as a value — the one piece of this adapter that
+ * decides anything, so it is a function a test can hold (docs/protocol.md,
+ * "Board").
+ *
+ * What it decides is the KIND: a note carries one when it is a picture, an
+ * event or a task list, and none at all when it is words on a sticker,
+ * which is what an absent kind means and what a client predating kinds
+ * sends. The three signals arrive as the fields that make each kind
+ * meaningful — the picture, the start, the lines.
+ */
+internal fun newNoteRequest(
+    text: String,
+    color: String,
+    size: String,
+    font: String,
+    x: Double,
+    y: Double,
+    attachmentId: Long? = null,
+    startsAt: String? = null,
+    endsAt: String? = null,
+    place: String? = null,
+    mentions: List<MentionDto> = emptyList(),
+    items: List<TaskLineRequest>? = null,
+): CreateNoteRequest = CreateNoteRequest(
+    text, color, size, x, y, font,
+    kind = when {
+        startsAt != null -> NoteKinds.EVENT
+        attachmentId != null -> NoteKinds.PHOTO
+        items != null -> NoteKinds.TASKS
+        else -> null
+    },
+    attachmentId = attachmentId,
+    startsAt = startsAt,
+    endsAt = endsAt,
+    place = place,
+    // Absent when nobody is named, as the wire has it.
+    mentions = mentions.ifEmpty { null },
+    // NOT `ifEmpty { null }`: an empty list IS a list, and dropping it
+    // would pin a plain sticker instead (docs/protocol.md, "Board").
+    items = items,
+)
+
 @Singleton
 class DefaultBoardApi @Inject constructor(
     private val client: ApiClient,
@@ -125,23 +168,11 @@ class DefaultBoardApi @Inject constructor(
     ): ApiResult<NoteResponse> =
         client.post(
             "/families/mine/board/notes",
-            CreateNoteRequest(
-                text, color, size, x, y, font,
-                kind = when {
-                    startsAt != null -> NoteKinds.EVENT
-                    attachmentId != null -> NoteKinds.PHOTO
-                    items != null -> NoteKinds.TASKS
-                    else -> null
-                },
+            newNoteRequest(
+                text = text, color = color, size = size, font = font, x = x, y = y,
                 attachmentId = attachmentId,
-                startsAt = startsAt,
-                endsAt = endsAt,
-                place = place,
-                mentions = mentions.ifEmpty { null },
-                // NOT `ifEmpty { null }`: an empty list is a list, and
-                // dropping it would make the note a plain sticker
-                // (docs/protocol.md, "Board").
-                items = items,
+                startsAt = startsAt, endsAt = endsAt, place = place,
+                mentions = mentions, items = items,
             ),
         )
 
