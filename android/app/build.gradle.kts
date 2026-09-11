@@ -268,6 +268,9 @@ dependencies {
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     implementation(libs.androidx.hilt.navigation.compose)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.hilt.work)
+    ksp(libs.androidx.hilt.compiler)
     implementation(libs.androidx.hilt.lifecycle.viewmodel.compose)
 
     // Serialization & Network. OkHttp covers both REST and the WebSocket —
@@ -318,6 +321,7 @@ dependencies {
     // virtual-clock backoff / ack-timeout / debounce tests.
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.work.testing)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
     // Compose UI tests as local Robolectric tests (NoteDialogTest): the BOM

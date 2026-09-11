@@ -3770,6 +3770,18 @@ client keeps trying.
   server still holds the upload it names — unclaimed uploads are swept after
   `limits.attachment_grace_hours` — so a client that has thrown its copy away has no way to
   recover, and the message can never be sent.
+- **An upload may be handed to the system, and may land while the app is not running.** A phone
+  suspends or kills an app that is not in front of somebody, and a 90 MB video does not finish in
+  the seconds a departing app is given — so a client gives the remaining uploads to whatever its
+  platform has for work that outlives the app (a background `URLSession`, a `WorkManager` job) and
+  reads the results back when it next runs. Two consequences, both the client's to hold:
+  **a landed upload whose answer was lost is invisible** — the id never reached anybody, so the
+  bytes are re-uploaded and the first copy is left for the sweep, which is what
+  `limits.attachment_grace_hours` is for; and **the same send must not run twice at once**, because
+  two passes over one row would each upload the remainder. Nothing here changes the wire: an upload
+  is still `POST /attachments`, still unclaimed until a message names it, and the message is still
+  posted only once every id is in hand. A client that cannot do any of this is not broken — it
+  finishes on its next foreground, which is the floor this section already sets.
 - **`attachment_expired` means upload it again, not give up.** A send naming an upload the sweep
   has already taken is answered `attachment_expired` (404) rather than `attachment_not_found`, and
   only for an upload the CALLER made: the two are different situations and only one of them has a

@@ -45,6 +45,26 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         return true
     }
 
+    // MARK: - Uploads the app was not around for
+
+    /// iOS has relaunched this app — possibly straight into the background
+    /// — because a transfer it was carrying for us finished
+    /// (docs/protocol.md, "Sending on an unreliable network"). Recreating
+    /// the session is what delivers the answers; the completion handler
+    /// must be called when they are done, or the app is eventually barred
+    /// from background sessions altogether.
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard identifier == BackgroundUploads.identifier else {
+            completionHandler()
+            return
+        }
+        BackgroundUploads.shared.holdSystemCompletion(completionHandler)
+    }
+
     // MARK: - Siri
 
     /// The in-app intent handler (iOS 14+): no Intents extension, the

@@ -31,6 +31,25 @@ interface PendingAttachmentDao {
     )
     suspend fun sendsOwingUploads(): List<String>
 
+    /**
+     * Every send a background job should still try: it owes an upload AND
+     * its message is still on its way — not acked, not failed.
+     *
+     * [sendsOwingUploads] answers the narrower question of what rows exist,
+     * which is right for the in-app resume (it re-reads the row itself and
+     * declines quietly). A scheduled job needs the wider one: a refusal
+     * the app has already written onto the row as failed leaves its item
+     * rows in place, and a job that watched only the items would come back
+     * with backoff for ever over a send that can never go.
+     */
+    @Query(
+        "SELECT DISTINCT p.clientMsgId FROM pending_attachments p " +
+            "JOIN messages m ON m.clientMsgId = p.clientMsgId " +
+            "WHERE p.attachmentId IS NULL AND m.serverId IS NULL AND m.status = 'SENDING' " +
+            "ORDER BY p.localId ASC",
+    )
+    suspend fun sendsWorthUploading(): List<String>
+
     /** Every staged path still named by a row — what a sweep must keep. */
     @Query("SELECT localPath FROM pending_attachments WHERE localPath IS NOT NULL")
     suspend fun stagedPaths(): List<String>

@@ -78,8 +78,12 @@ import me.nettrash.familyconnect.data.repo.AttachmentRepository
 import me.nettrash.familyconnect.data.repo.AvatarSource
 import me.nettrash.familyconnect.data.repo.ContentResolverAvatarSource
 import me.nettrash.familyconnect.data.repo.DefaultShareImporter
+import me.nettrash.familyconnect.data.repo.MediaStaging
+import me.nettrash.familyconnect.data.repo.MediaUploadScheduler
+import me.nettrash.familyconnect.data.repo.MediaUploadWorker
 import me.nettrash.familyconnect.data.repo.PosterCache
 import me.nettrash.familyconnect.data.repo.ShareImporter
+import me.nettrash.familyconnect.data.repo.WorkManagerUploads
 import me.nettrash.familyconnect.data.push.FirebasePushTokenProvider
 import me.nettrash.familyconnect.data.push.PushTokenProvider
 import me.nettrash.familyconnect.data.settings.DataStoreSettingsRepository
@@ -118,6 +122,9 @@ abstract class AppModule {
 
     @Binds
     abstract fun bindAttachmentApi(impl: DefaultAttachmentApi): AttachmentApi
+
+    @Binds
+    abstract fun bindMediaUploadScheduler(impl: WorkManagerUploads): MediaUploadScheduler
 
     @Binds
     abstract fun bindBoardApi(impl: DefaultBoardApi): BoardApi
@@ -245,8 +252,20 @@ abstract class AppModule {
 
         @Provides
         @Singleton
-        fun provideLocalDataWiper(db: AppDatabase): LocalDataWiper =
-            LocalDataWiper { db.wipeAll() }
+        fun provideLocalDataWiper(
+            db: AppDatabase,
+            @ApplicationContext context: Context,
+        ): LocalDataWiper = LocalDataWiper {
+            // The staged bytes and the jobs that would upload them go with
+            // the rows: a send composed in one account must never reach the
+            // next, and a scheduled upload would outlive the sign-out that
+            // took its row away.
+            val staged = db.pendingAttachmentDao().stagedPaths()
+            val staging = MediaStaging(context)
+            db.wipeAll()
+            staged.forEach { staging.remove(it) }
+            MediaUploadWorker.cancelAll(context)
+        }
 
         @Provides
         @Singleton
