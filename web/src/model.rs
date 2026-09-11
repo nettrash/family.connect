@@ -755,6 +755,46 @@ mod tests {
         assert_eq!(message.thread_root_id, Some(1337));
     }
 
+    /// A TASK LIST as the server really sends one — this JSON is a
+    /// transcript of a live `POST` and a live tick, not a hand-written
+    /// guess (docs/protocol.md, "Board").
+    #[wasm_bindgen_test]
+    fn a_task_list_reads_as_the_server_sends_it() {
+        let json = r#"{
+            "author_id": 2, "board_seq": 2, "color": "green", "content_seq": 1,
+            "created_at": "2026-09-11T14:43:36.832551Z", "font": "plain", "id": 1,
+            "items": [
+                {"done": true, "done_by": 3, "id": 1, "text": "Milk"},
+                {"done": false, "id": 2, "text": "Bread"}
+            ],
+            "kind": "tasks", "size": "medium", "text": "Saturday",
+            "updated_at": "2026-09-11T14:43:36.841601Z", "x": 0.2, "y": 0.3
+        }"#;
+        let note: Note = serde_json::from_str(json).expect("a note this client can read");
+        assert_eq!(note.kind.as_deref(), Some("tasks"));
+        assert_eq!(note.text.as_deref(), Some("Saturday"));
+        let items = note.items.expect("a list carries its lines");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].text, "Milk");
+        assert!(items[0].done);
+        assert_eq!(items[0].done_by, Some(3));
+        // Not done means nobody did it, so the server sends no `done_by`
+        // at all — and this client reads that as nobody.
+        assert!(!items[1].done);
+        assert_eq!(items[1].done_by, None);
+
+        // An empty list is a list, and a note that is not one carries no
+        // `items` at all: the difference a client draws the block on.
+        let blank: Note = serde_json::from_str(
+            r#"{"id": 2, "board_seq": 3, "kind": "tasks", "text": "Sunday", "items": []}"#,
+        )
+        .expect("reads");
+        assert_eq!(blank.items, Some(Vec::new()));
+        let plain: Note =
+            serde_json::from_str(r#"{"id": 3, "board_seq": 4, "text": "Milk"}"#).expect("reads");
+        assert_eq!(plain.items, None);
+    }
+
     /// Everything a message can carry, in the protocol's own shapes.
     #[wasm_bindgen_test]
     fn a_full_message_reads_every_part() {

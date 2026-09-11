@@ -83,13 +83,16 @@ struct BoardSyncTests {
         endsAt: Date? = nil,
         place: String? = nil,
         rsvps: [RsvpDTO]? = nil,
-        mentions: [MentionDTO]? = nil
+        mentions: [MentionDTO]? = nil,
+        /// nil on every kind but a list; `[]` on a list nothing has been
+        /// written into yet (docs/protocol.md, "Board").
+        items: [TaskItemDTO]? = nil
     ) -> NoteDTO {
         NoteDTO(
             id: id, authorID: 7, text: text, color: color, size: size, font: font,
             kind: kind, attachment: attachment,
             startsAt: startsAt, endsAt: endsAt, place: place, rsvps: rsvps,
-            mentions: mentions, x: x, y: y,
+            items: items, mentions: mentions, x: x, y: y,
             createdAt: Self.stamp, updatedAt: Self.stamp, boardSeq: boardSeq,
             contentSeq: contentSeq, deleted: nil)
     }
@@ -98,7 +101,7 @@ struct BoardSyncTests {
         NoteDTO(
             id: id, authorID: nil, text: nil, color: nil, size: nil, font: nil,
             kind: nil, attachment: nil, startsAt: nil, endsAt: nil, place: nil, rsvps: nil,
-            mentions: nil, x: nil, y: nil,
+            items: nil, mentions: nil, x: nil, y: nil,
             createdAt: nil, updatedAt: nil, boardSeq: boardSeq, contentSeq: nil,
             deleted: true)
     }
@@ -192,7 +195,7 @@ struct BoardSyncTests {
             NoteDTO(
                 id: 1, authorID: nil, text: nil, color: nil, size: nil, font: nil,
                 kind: nil, attachment: nil, startsAt: nil, endsAt: nil, place: nil, rsvps: nil,
-                mentions: nil, x: nil, y: nil,
+                items: nil, mentions: nil, x: nil, y: nil,
                 createdAt: nil, updatedAt: nil, boardSeq: 3, contentSeq: nil,
                 deleted: nil))
 
@@ -279,6 +282,124 @@ struct BoardSyncTests {
         // A text note carries none of it.
         #expect(harness.note(2)?.startsAt == nil)
         #expect(harness.note(2)?.rsvpsJSON == nil)
+    }
+
+    /// A LIST keeps its lines, their ids and their ticks — and an empty
+    /// list is still a list, which is the difference `[]` and nil carry
+    /// (docs/protocol.md, "Board").
+    @Test("a task list keeps its lines, their ids and their ticks")
+    func taskListNote() throws {
+        let harness = try makeHarness(host: "board-tasks.test")
+        defer { harness.tearDown() }
+
+        harness.coordinator.applyNote(
+            note(
+                id: 1, text: "Saturday", boardSeq: 10, kind: "tasks",
+                items: [
+                    TaskItemDTO(id: 11, text: "Milk", done: true, doneBy: 9),
+                    TaskItemDTO(id: 12, text: "Bread", done: false, doneBy: nil),
+                ]))
+        harness.coordinator.applyNote(
+            note(id: 2, text: "Sunday", boardSeq: 11, kind: "tasks", items: []))
+        harness.coordinator.applyNote(note(id: 3, boardSeq: 12))
+
+        let list = try #require(harness.note(1))
+        #expect(list.kind == "tasks")
+        #expect(list.taskList.map(\.text) == ["Milk", "Bread"])
+        #expect(list.taskList.map(\.id) == [11, 12])
+        #expect(list.taskList.first?.done == true)
+        #expect(list.taskList.first?.doneBy == 9)
+        #expect(list.tasksDone == 1)
+        // An empty list is a list: the rows are there to be written into.
+        #expect(harness.note(2)?.taskList.isEmpty == true)
+        #expect(harness.note(2)?.itemsJSON == "[]")
+        // And a note that is not a list carries none of it at all — the
+        // difference a client draws the block on.
+        #expect(harness.note(3)?.itemsJSON == nil)
+        #expect(harness.note(3)?.tasksDone == 0)
+
+        // A LATER frame rewrites the lines in place — which is how a tick
+        // by somebody else arrives at all: the frame carries the whole
+        // note, and a row that kept its old copy would draw a list nobody
+        // has (docs/protocol.md, "Board").
+        harness.coordinator.applyNote(
+            note(
+                id: 1, text: "Saturday", boardSeq: 13, kind: "tasks",
+                items: [
+                    TaskItemDTO(id: 11, text: "Oat milk", done: true, doneBy: 9),
+                    TaskItemDTO(id: 12, text: "Bread", done: true, doneBy: 11),
+                    TaskItemDTO(id: 14, text: "Eggs", done: false, doneBy: nil),
+                ]))
+        let after = try #require(harness.note(1))
+        #expect(after.taskList.map(\.text) == ["Oat milk", "Bread", "Eggs"])
+        #expect(after.tasksDone == 2)
+        #expect(after.taskList.last?.id == 14)
+    }
+
+    /// A task list as the server REALLY sends one: this JSON is a
+    /// transcript of a live `POST` and a live tick, not a hand-written
+    /// guess — the only kind of fixture that catches a field this client
+    /// spells differently from the server (docs/protocol.md, "Board").
+    @Test("A task list decodes as the server sends it")
+    func taskListDecoding() throws {
+        let decoder = APICoding.decoder()
+
+        let list = Data(#"""
+        {"author_id": 2, "board_seq": 2, "color": "green", "content_seq": 1,
+         "created_at": "2026-09-11T14:43:36.832551Z", "font": "plain", "id": 1,
+         "items": [{"done": true, "done_by": 3, "id": 1, "text": "Milk"},
+                   {"done": false, "id": 2, "text": "Bread"}],
+         "kind": "tasks", "size": "medium", "text": "Saturday",
+         "updated_at": "2026-09-11T14:43:36.841601Z", "x": 0.2, "y": 0.3}
+        """#.utf8)
+        let decoded = try decoder.decode(NoteDTO.self, from: list)
+        #expect(decoded.kind == "tasks")
+        let items = try #require(decoded.items)
+        #expect(items.count == 2)
+        #expect(items[0] == TaskItemDTO(id: 1, text: "Milk", done: true, doneBy: 3))
+        // Not done means nobody did it, so the server sends no `done_by`
+        // at all — and this client reads that as nobody.
+        #expect(items[1] == TaskItemDTO(id: 2, text: "Bread", done: false, doneBy: nil))
+
+        // An empty list is a list, and a note that is not one carries no
+        // `items` at all: the difference a client draws the block on.
+        let blank = Data(#"""
+        {"id": 2, "board_seq": 3, "kind": "tasks", "text": "Sunday", "items": []}
+        """#.utf8)
+        #expect(try decoder.decode(NoteDTO.self, from: blank).items == [])
+        let plain = Data(#"{"id": 3, "board_seq": 4, "text": "Milk"}"#.utf8)
+        #expect(try decoder.decode(NoteDTO.self, from: plain).items == nil)
+    }
+
+    /// What a STICKER draws of a list, and what it leaves
+    /// (docs/protocol.md, "Board").
+    @Test("a sticker draws the first lines of a list and says how many are left")
+    func taskListOnTheWall() {
+        #expect(BoardTasks.onWall == 5)
+        #expect(BoardTasks.drawn(of: 0) == (0, 0))
+        #expect(BoardTasks.drawn(of: 3) == (3, 0))
+        // A list of exactly the cap says nothing extra.
+        #expect(BoardTasks.drawn(of: 5) == (5, 0))
+        #expect(BoardTasks.drawn(of: 6) == (5, 1))
+        #expect(BoardTasks.drawn(of: 20) == (5, 15))
+    }
+
+    /// What a save SENDS: the lines that say something, trimmed, with the
+    /// ids they keep — which is what carries a tick through a rewrite
+    /// (docs/protocol.md, "Board").
+    @Test("a list sends the lines that say something, with their ids")
+    func writtenLines() {
+        let written = DraftTaskLine.written([
+            DraftTaskLine(itemID: 11, text: "  Oat milk "),
+            DraftTaskLine(itemID: nil, text: "Bread"),
+            // Somebody who started typing and stopped: not a thing to do,
+            // and a line the server would refuse.
+            DraftTaskLine(itemID: nil, text: "   "),
+        ])
+
+        #expect(written.count == 2)
+        #expect(written[0] == APIClient.TaskLineRequest(id: 11, text: "Oat milk"))
+        #expect(written[1] == APIClient.TaskLineRequest(id: nil, text: "Bread"))
     }
 
     /// The same rule one field over: an older server has no font field, and

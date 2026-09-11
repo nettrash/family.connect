@@ -60,6 +60,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.automirrored.outlined.StickyNote2
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Switch
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.DatePickerDialog
@@ -68,6 +69,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material.icons.filled.AddAPhoto
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
+import androidx.compose.material.icons.filled.Checklist
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -121,6 +126,12 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import me.nettrash.familyconnect.data.net.dto.AttachmentDto
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.res.pluralStringResource
+import me.nettrash.familyconnect.data.net.dto.TaskItemDto
+import me.nettrash.familyconnect.data.net.dto.TaskItemsCodec
+import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -201,6 +212,16 @@ object NoteText {
         val points = text.codePointCount(0, text.length)
         if (points <= MAX_LENGTH) return text
         return text.substring(0, text.offsetByCodePoints(0, MAX_LENGTH))
+    }
+
+    /**
+     * The same cut at another limit: a task list's line is 100, counted
+     * the same way (docs/protocol.md, "Board").
+     */
+    fun cappedTo(text: String, limit: Int): String {
+        val points = text.codePointCount(0, text.length)
+        if (points <= limit) return text
+        return text.substring(0, text.offsetByCodePoints(0, limit))
     }
 
     /** How many more characters may be typed. Never negative. */
@@ -501,9 +522,24 @@ object NoteKinds {
     const val PHOTO = "photo"
     const val EVENT = "event"
 
+    /** Something the family has to get done (docs/protocol.md, "Board"). */
+    const val TASKS = "tasks"
+
     fun isPhoto(kind: String): Boolean = kind == PHOTO
 
+    fun isTasks(kind: String): Boolean = kind == TASKS
+
     fun isEvent(kind: String): Boolean = kind == EVENT
+
+    /** What the sheet over a note of this kind is called. */
+    fun sheetTitle(kind: String, isNew: Boolean): Int = when {
+        isTasks(kind) && isNew -> R.string.s_new_list
+        isTasks(kind) -> R.string.s_list
+        isEvent(kind) && isNew -> R.string.s_add_event
+        isEvent(kind) -> R.string.s_event
+        isNew -> R.string.s_new_note
+        else -> R.string.s_note
+    }
 }
 
 /**
@@ -666,6 +702,58 @@ object NoteNames {
 }
 
 /**
+ * A task list on the board (docs/protocol.md, "Board").
+ *
+ * The WALL draws the first lines with their state and then how many are
+ * left, and takes no tap: a sticker's whole face is a drag handle, and a
+ * row of small boxes on it would be a wall nobody could tidy. The tick is
+ * one tap further on, in the note somebody has opened.
+ *
+ * Web counterpart: `wall_list` in web/src/views/board.rs.
+ * Apple counterpart: `NoteTaskBlock` in Views/NoteTaskList.swift.
+ */
+object NoteTasks {
+    /**
+     * How many lines a sticker draws. One number for all four clients,
+     * like [BoardWall.SCREENS] and for the same reason: a list that ran to
+     * a different point on the phone and on the Mac would be a different
+     * list. The note itself always has them all.
+     */
+    const val ON_WALL = 5
+
+    /** The lines a sticker draws, and how many it had to leave. */
+    fun drawn(total: Int): Pair<Int, Int> {
+        val shown = minOf(total, ON_WALL)
+        return shown to (total - shown)
+    }
+
+    /** The most lines one list may hold, and the longest one may be — the
+     *  server's own numbers, so a client never lets somebody write a list
+     *  whose save fails for a reason nobody can see. */
+    const val MAX_ITEMS = 20
+    const val MAX_ITEM_CHARS = 100
+
+    /** The lines that say something, trimmed — what a save sends. */
+    fun written(lines: List<DraftTaskLine>): List<TaskLineRequest> =
+        lines.filter { it.text.isNotBlank() }
+            .map { TaskLineRequest(id = null, text = it.text.trim()) }
+}
+
+/**
+ * One line as the AUTHOR is writing it: the server's id where there is one,
+ * and the words.
+ *
+ * [itemId] is what carries a line's TICK through a rewrite, and [key] is
+ * what a list of composables needs — a line nobody has saved has no server
+ * id yet, and two of them would otherwise be the same row.
+ */
+data class DraftTaskLine(
+    val key: Long,
+    val itemId: Long? = null,
+    val text: String = "",
+)
+
+/**
  * The wall's own look: a cork ground, and a pin through every note.
  *
  * Decoration, and nowhere on the wire (docs/protocol.md, "Board"): where a
@@ -804,6 +892,11 @@ data class NoteDraft(
      * from the text on save, and never from this.
      */
     val mentions: List<MentionDto> = emptyList(),
+    /**
+     * The things to do, as stored: the ids a rewrite keeps and the ticks
+     * the boxes draw (docs/protocol.md, "Board").
+     */
+    val items: List<TaskItemDto> = emptyList(),
     val x: Double,
     val y: Double,
     val authorId: Long,
@@ -871,6 +964,28 @@ fun BoardScreen(
                 Icon(
                     Icons.Filled.Event,
                     contentDescription = stringResource(R.string.s_add_event),
+                )
+            }
+            Spacer(Modifier.size(12.dp))
+            SmallFloatingActionButton(onClick = {
+                // A list starts with one empty line, so the first thing to
+                // do is one tap away rather than two.
+                val slot = notes.size % NoteColors.palette.size
+                editing = NoteDraft(
+                    noteId = null,
+                    text = "",
+                    color = "green",
+                    size = NoteSizes.MEDIUM,
+                    font = NoteFonts.PLAIN,
+                    kind = NoteKinds.TASKS,
+                    x = 0.12 + slot * 0.03,
+                    y = 0.10 + slot * 0.06,
+                    authorId = myUserId ?: -1L,
+                )
+            }) {
+                Icon(
+                    Icons.Filled.Checklist,
+                    contentDescription = stringResource(R.string.s_add_task_list),
                 )
             }
             Spacer(Modifier.size(12.dp))
@@ -973,6 +1088,7 @@ fun BoardScreen(
                             myAnswer = RsvpCodec.decode(note.rsvpsJson)
                                 .firstOrNull { it.userId == myUserId }?.answer,
                             mentions = NoteMentionsCodec.decode(note.mentionsJson),
+                            items = TaskItemsCodec.decode(note.itemsJson),
                             x = note.x,
                             y = note.y,
                             authorId = note.authorId,
@@ -1012,15 +1128,32 @@ fun BoardScreen(
                 else -> memberNames[draft.authorId] ?: stringResource(R.string.s_someone)
             },
             onDismiss = { editing = null },
-            onSave = { text, color, size, font ->
+            onSave = { text, color, size, font, lines ->
                 editing = null
+                val isList = NoteKinds.isTasks(draft.kind)
+                val written = NoteTasks.written(lines)
                 if (draft.noteId == null) {
-                    viewModel.addNote(text, color, size, font, draft.x, draft.y)
+                    if (isList) {
+                        viewModel.addList(text, color, size, font, draft.x, draft.y, written)
+                    } else {
+                        viewModel.addNote(text, color, size, font, draft.x, draft.y)
+                    }
                 } else {
-                    viewModel.editNote(draft.noteId, text, color, size, font)
+                    // Sent only when they DIFFER: the lines are the
+                    // author's field, and a patch that carried them
+                    // unchanged would make opening a list to read it an
+                    // edit (docs/protocol.md, "Board").
+                    val held = draft.items.map { TaskLineRequest(id = it.id, text = it.text) }
+                    viewModel.editNote(
+                        draft.noteId, text, color, size, font,
+                        items = if (isList && written != held) written else null,
+                    )
                 }
             },
             onAnswer = { answer -> draft.noteId?.let { viewModel.answerEvent(it, answer) } },
+            onTick = { itemId, done ->
+                draft.noteId?.let { viewModel.tickTask(it, itemId, done) }
+            },
             myAnswer = draft.myAnswer,
             roster = mentionRoster,
             onOpenChat = { userId ->
@@ -1255,6 +1388,54 @@ internal fun StickyNote(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            // A LIST says what is on it, under its title: the first lines
+            // with their state, and then how many are left. No tap here —
+            // the tick is in the note when it is opened (docs/protocol.md,
+            // "Board").
+            if (!isHidden && NoteKinds.isTasks(note.kind)) {
+                val items = remember(note.itemsJson) { TaskItemsCodec.decode(note.itemsJson) }
+                val (shown, left) = NoteTasks.drawn(items.size)
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                    // The sticker's own label already says what the note
+                    // says; these rows are not separate news.
+                    modifier = Modifier.clearAndSetSemantics {},
+                ) {
+                    items.take(shown).forEach { item ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = if (item.done) {
+                                    Icons.Filled.CheckBox
+                                } else {
+                                    Icons.Filled.CheckBoxOutlineBlank
+                                },
+                                contentDescription = null,
+                                tint = Color.Black.copy(alpha = if (item.done) 0.45f else 0.7f),
+                                modifier = Modifier.size(12.dp),
+                            )
+                            Text(
+                                text = item.text,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Black.copy(alpha = if (item.done) 0.45f else 0.7f),
+                                textDecoration = if (item.done) TextDecoration.LineThrough else null,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    if (left > 0) {
+                        Text(
+                            text = pluralStringResource(R.plurals.s_more_things, left, left),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontStyle = FontStyle.Italic,
+                            color = Color.Black.copy(alpha = 0.45f),
+                        )
+                    }
+                }
+            }
             }
             // The byline keeps its small style at every size: it is who
             // wrote the note, not part of what they wrote. While hidden
@@ -1339,12 +1520,17 @@ internal fun NoteDialog(
     canEdit: Boolean,
     authorName: String,
     onDismiss: () -> Unit,
-    onSave: (String, String, String, String) -> Unit,
+    onSave: (String, String, String, String, List<DraftTaskLine>) -> Unit,
     /**
      * Say whether this reader is coming — ANY member may, so it is not part
      * of the save, which is the author's (docs/protocol.md, "Board").
      */
     onAnswer: (String?) -> Unit = {},
+    /**
+     * Tick or untick one line — ANY member may, for the same reason, so it
+     * is not part of the save either (docs/protocol.md, "Board").
+     */
+    onTick: (Long, Boolean) -> Unit = { _, _ -> },
     myAnswer: String? = null,
     /**
      * Everybody a name may mean, and everybody a name may OPEN — the one
@@ -1361,6 +1547,24 @@ internal fun NoteDialog(
         mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length)))
     }
     var color by remember(draft.noteId) { mutableStateOf(draft.color) }
+    // The lines as the author is writing them. A new list opens with one
+    // empty row, so the first thing to do is one tap away rather than two.
+    var lines by remember(draft.noteId) {
+        mutableStateOf(
+            if (draft.items.isEmpty() && draft.noteId == null && NoteKinds.isTasks(draft.kind)) {
+                listOf(DraftTaskLine(key = 0L))
+            } else {
+                draft.items.mapIndexed { at, item ->
+                    DraftTaskLine(key = at.toLong(), itemId = item.id, text = item.text)
+                }
+            },
+        )
+    }
+    var nextLineKey by remember(draft.noteId) { mutableStateOf(draft.items.size.toLong() + 1) }
+    // Ticks on their way: the line and the state being sent, so a box
+    // answers the tap at once and goes back to the note's own truth when
+    // the answer — or the refusal — lands.
+    var ticking by remember(draft.noteId) { mutableStateOf(mapOf<Long, Boolean>()) }
     // Held RAW, like the colour: a name this client does not know is
     // drawn as medium, and the picker says so below, but Save must hand
     // back what was there unless the author actually picked a step —
@@ -1389,11 +1593,7 @@ internal fun NoteDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(
-                stringResource(
-                    if (draft.noteId == null) R.string.s_new_note else R.string.s_note,
-                ),
-            )
+            Text(stringResource(NoteKinds.sheetTitle(draft.kind, isNew = draft.noteId == null)))
         },
         text = {
             Column {
@@ -1424,6 +1624,135 @@ internal fun NoteDialog(
                                     ),
                                 )
                             }
+                        }
+                    }
+                    Spacer(Modifier.size(16.dp))
+                }
+                // THE LIST. One block for the author and for everybody
+                // else, because the boxes are everybody's: what canEdit
+                // adds is the words beside each box, the remove and the
+                // add (docs/protocol.md, "Board").
+                if (NoteKinds.isTasks(draft.kind)) {
+                    Text(
+                        text = stringResource(R.string.s_things_to_do),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.size(4.dp))
+                    if (lines.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.s_nothing_on_this_list),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    lines.forEachIndexed { at, line ->
+                        // The tap's own answer first, then the note's: a
+                        // box that waited for the round trip would feel
+                        // broken on a phone connection.
+                        val done = line.itemId?.let { id ->
+                            ticking[id] ?: draft.items.firstOrNull { it.id == id }?.done ?: false
+                        } ?: false
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            // Labelled with the LINE: a bare box says
+                            // nothing to a screen reader, and the words
+                            // beside it are a field of their own.
+                            val boxLabel = line.text.ifBlank {
+                                stringResource(R.string.s_done)
+                            }
+                            Checkbox(
+                                checked = done,
+                                modifier = Modifier.semantics {
+                                    contentDescription = boxLabel
+                                },
+                                // A line nobody has saved has nothing to
+                                // tick yet: the box is there — the row
+                                // would jump if it appeared on save — and
+                                // it is disabled, which says why.
+                                enabled = line.itemId != null,
+                                onCheckedChange = { want: Boolean ->
+                                    val id = line.itemId
+                                    // One request per line at a time: a
+                                    // second tap while the first is in
+                                    // flight is the tap that would undo it.
+                                    if (id != null && !ticking.containsKey(id)) {
+                                        ticking = ticking + (id to want)
+                                        onTick(id, want)
+                                    }
+                                },
+                            )
+                            if (canEdit) {
+                                OutlinedTextField(
+                                    value = line.text,
+                                    onValueChange = { value ->
+                                        lines = lines.toMutableList().also {
+                                            it[at] = line.copy(
+                                                text = NoteText.cappedTo(
+                                                    value, NoteTasks.MAX_ITEM_CHARS,
+                                                ),
+                                            )
+                                        }
+                                    },
+                                    label = { Text(stringResource(R.string.s_thing_to_do)) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(onClick = {
+                                    lines = lines.filterIndexed { index, _ -> index != at }
+                                }) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = stringResource(R.string.s_remove),
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = line.text,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    textDecoration = if (done) {
+                                        TextDecoration.LineThrough
+                                    } else {
+                                        null
+                                    },
+                                    color = if (done) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
+                    if (draft.items.isNotEmpty()) {
+                        Text(
+                            text = stringResource(
+                                R.string.s_tasks_done_of,
+                                draft.items.count { item ->
+                                    ticking[item.id] ?: item.done
+                                },
+                                draft.items.size,
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (canEdit) {
+                        TextButton(
+                            onClick = {
+                                lines = lines + DraftTaskLine(key = nextLineKey)
+                                nextLineKey += 1
+                            },
+                            // Held to the server's ceiling here, where
+                            // somebody can see why: a twenty-first line
+                            // typed and then refused is a save that fails
+                            // for a reason nobody was shown.
+                            enabled = lines.size < NoteTasks.MAX_ITEMS,
+                        ) {
+                            Text(stringResource(R.string.s_add_a_thing))
                         }
                     }
                     Spacer(Modifier.size(16.dp))
@@ -1606,7 +1935,7 @@ internal fun NoteDialog(
         confirmButton = {
             if (canEdit) {
                 TextButton(
-                    onClick = { onSave(text.text, color, size, font) },
+                    onClick = { onSave(text.text, color, size, font, lines) },
                     enabled = text.text.isNotBlank(),
                 ) {
                     Text(stringResource(R.string.s_save))

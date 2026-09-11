@@ -544,4 +544,21 @@
     <string name="s_rsvp_question">Ты придёшь?</string>
     <string name="s_rsvp_none">Нет ответа</string>
     <string name="s_event">Событие</string>
+    <string name="s_list">Список</string>
+    <string name="s_new_list">Новый список</string>
+    <string name="s_add_list">Список</string>
+    <string name="s_add_task_list">Добавить список дел</string>
+    <string name="s_things_to_do">Дела</string>
+    <string name="s_thing_to_do">Дело</string>
+    <string name="s_add_a_thing">Добавить дело</string>
+    <string name="s_nothing_on_this_list">В этом списке пока ничего нет.</string>
+    <string name="s_your_list">Ваш список</string>
+    <string name="s_tasks_done_of">Сделано %1$d из %2$d</string>
+    <string name="s_done">Готово</string>
+    <plurals name="s_more_things">
+        <item quantity="one">+%1$d ещё</item>
+        <item quantity="few">+%1$d ещё</item>
+        <item quantity="many">+%1$d ещё</item>
+        <item quantity="other">+%1$d ещё</item>
+    </plurals>
 </resources>

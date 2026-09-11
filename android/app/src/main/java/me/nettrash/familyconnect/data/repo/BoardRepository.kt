@@ -34,6 +34,8 @@ import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NoteDto
 import me.nettrash.familyconnect.data.net.dto.NoteMentionsCodec
 import me.nettrash.familyconnect.data.net.dto.RsvpCodec
+import me.nettrash.familyconnect.data.net.dto.TaskItemsCodec
+import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
 import me.nettrash.familyconnect.data.settings.SettingsRepository
@@ -142,6 +144,7 @@ class BoardRepository @Inject constructor(
                 place = note.place,
                 rsvpsJson = note.rsvps?.let(RsvpCodec::encode),
                 mentionsJson = note.mentions?.let(NoteMentionsCodec::encode),
+                itemsJson = note.items?.let(TaskItemsCodec::encode),
                 x = x,
                 y = y,
                 createdAt = note.createdAt?.let(TimeFormat::parseTimestamp) ?: existing?.createdAt ?: now,
@@ -236,12 +239,17 @@ class BoardRepository @Inject constructor(
         startsAt: String? = null,
         endsAt: String? = null,
         place: String? = null,
+        /**
+         * A task list's lines — what makes this a list. Empty is still a
+         * list; null is not one (docs/protocol.md, "Board").
+         */
+        items: List<TaskLineRequest>? = null,
     ): Boolean =
         when (
             val result =
                 boardApi.createNote(
                     text, color, size, font, x, y, attachmentId, startsAt, endsAt, place,
-                    namedMembers(text),
+                    namedMembers(text), items,
                 )
         ) {
             is ApiResult.Ok -> {
@@ -283,6 +291,12 @@ class BoardRepository @Inject constructor(
         font: String? = null,
         x: Double? = null,
         y: Double? = null,
+        /**
+         * REPLACES a task list's lines, and the author's like its title. A
+         * move sends none, which leaves them alone (docs/protocol.md,
+         * "Board").
+         */
+        items: List<TaskLineRequest>? = null,
     ): Boolean = when (
         val result = boardApi.patchNote(
             id, text, color, size, font, x, y,
@@ -291,10 +305,26 @@ class BoardRepository @Inject constructor(
             // sends none, so a dragged note keeps the names it had
             // (docs/protocol.md, "Board").
             mentions = text?.let { namedMembers(it) },
+            items = items,
         )
     ) {
         is ApiResult.Ok -> {
             // Like a create's answer: applied, and moving no cursor.
+            applyNote(result.value.note)
+            true
+        }
+        else -> false
+    }
+
+    /**
+     * Tick or untick one line. ANY member may, which is why this is not
+     * `updateNote` — ticking is not authorship, and it is a STATE rather
+     * than a toggle (docs/protocol.md, "Board").
+     */
+    suspend fun tickTask(noteId: Long, itemId: Long, done: Boolean): Boolean = when (
+        val result = boardApi.tickTask(noteId, itemId, done)
+    ) {
+        is ApiResult.Ok -> {
             applyNote(result.value.note)
             true
         }

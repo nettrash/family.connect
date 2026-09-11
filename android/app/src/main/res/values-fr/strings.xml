@@ -526,4 +526,19 @@
     <string name="s_rsvp_question">Tu viens ?</string>
     <string name="s_rsvp_none">Pas de réponse</string>
     <string name="s_event">Événement</string>
+    <string name="s_list">Liste</string>
+    <string name="s_new_list">Nouvelle liste</string>
+    <string name="s_add_list">Ajouter une liste</string>
+    <string name="s_add_task_list">Ajouter une liste de tâches</string>
+    <string name="s_things_to_do">À faire</string>
+    <string name="s_thing_to_do">Tâche</string>
+    <string name="s_add_a_thing">Ajouter une tâche</string>
+    <string name="s_nothing_on_this_list">Rien sur cette liste pour l\'instant.</string>
+    <string name="s_your_list">Votre liste</string>
+    <string name="s_tasks_done_of">%1$d sur %2$d faites</string>
+    <string name="s_done">Terminé</string>
+    <plurals name="s_more_things">
+        <item quantity="one">+%1$d autre</item>
+        <item quantity="other">+%1$d autres</item>
+    </plurals>
 </resources>

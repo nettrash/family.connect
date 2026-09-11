@@ -29,6 +29,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -37,6 +38,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performTouchInput
 import com.google.common.truth.Truth.assertThat
+import me.nettrash.familyconnect.data.net.dto.TaskItemDto
 import me.nettrash.familyconnect.data.net.dto.MentionDto
 import org.junit.Rule
 import org.junit.Test
@@ -69,7 +71,7 @@ class NoteDialogTest {
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},
-                onSave = { text, color, size, font -> saved = listOf(text, color, size, font) },
+                onSave = { text, color, size, font, _ -> saved = listOf(text, color, size, font) },
                 onDelete = null,
             )
         }
@@ -93,7 +95,7 @@ class NoteDialogTest {
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},
-                onSave = { text, color, size, font -> saved = listOf(text, color, size, font) },
+                onSave = { text, color, size, font, _ -> saved = listOf(text, color, size, font) },
                 onDelete = null,
             )
         }
@@ -122,7 +124,7 @@ class NoteDialogTest {
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},
-                onSave = { text, color, size, font -> saved = listOf(text, color, size, font) },
+                onSave = { text, color, size, font, _ -> saved = listOf(text, color, size, font) },
                 onDelete = null,
             )
         }
@@ -143,7 +145,7 @@ class NoteDialogTest {
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},
-                onSave = { text, color, size, font -> saved = listOf(text, color, size, font) },
+                onSave = { text, color, size, font, _ -> saved = listOf(text, color, size, font) },
                 onDelete = null,
             )
         }
@@ -168,7 +170,7 @@ class NoteDialogTest {
                 canEdit = true,
                 authorName = "You",
                 onDismiss = {},
-                onSave = { text, color, size, font -> saved = listOf(text, color, size, font) },
+                onSave = { text, color, size, font, _ -> saved = listOf(text, color, size, font) },
                 roster = roster,
                 onDelete = null,
             )
@@ -208,7 +210,7 @@ class NoteDialogTest {
                 canEdit = false,
                 authorName = "Bob",
                 onDismiss = { dismissed = true },
-                onSave = { _, _, _, _ -> },
+                onSave = { _, _, _, _, _ -> },
                 roster = roster,
                 onOpenChat = { opened += it },
                 onDelete = null,
@@ -221,5 +223,86 @@ class NoteDialogTest {
 
         assertThat(opened).containsExactly(2L)
         assertThat(dismissed).isFalse()
+    }
+
+    // MARK: - task lists (docs/protocol.md, "Board")
+
+    private fun listDraft() = NoteDraft(
+        noteId = 5L,
+        text = "Saturday",
+        color = "green",
+        size = "medium",
+        font = "plain",
+        kind = NoteKinds.TASKS,
+        items = listOf(
+            TaskItemDto(id = 11, text = "Milk", done = true, doneBy = 3L),
+            TaskItemDto(id = 12, text = "Bread", done = false),
+        ),
+        x = 0.1,
+        y = 0.1,
+        authorId = 1L,
+    )
+
+    @Test
+    fun aReaderTicksALineAndCannotRewriteIt() {
+        val ticked = mutableListOf<Pair<Long, Boolean>>()
+        compose.setContent {
+            NoteDialog(
+                draft = listDraft(),
+                // Not the author: the boxes are still theirs to tap.
+                canEdit = false,
+                authorName = "Bob",
+                onDismiss = {},
+                onSave = { _, _, _, _, _ -> },
+                onTick = { itemId, done -> ticked += itemId to done },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("Milk").assertIsDisplayed()
+        compose.onNodeWithText("1 of 2 done").assertIsDisplayed()
+        // A reader writes nothing: there is no field beside a box.
+        compose.onAllNodesWithText("Thing to do").assertCountEquals(0)
+        compose.onAllNodesWithText("Add a thing").assertCountEquals(0)
+
+        // A STATE, not a toggle: the line that is done asks for false, the
+        // one that is not asks for true. Found by the line each box is
+        // LABELLED with — a bare box says nothing to a screen reader.
+        compose.onNodeWithContentDescription("Bread").performClick()
+        compose.onNodeWithContentDescription("Milk").performClick()
+
+        assertThat(ticked).containsExactly(12L to true, 11L to false).inOrder()
+    }
+
+    @Test
+    fun theAuthorWritesTheLinesAndSaveSendsTheIdsItKeeps() {
+        var saved: List<DraftTaskLine>? = null
+        compose.setContent {
+            NoteDialog(
+                draft = listDraft(),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { _, _, _, _, lines -> saved = lines },
+                onDelete = null,
+            )
+        }
+
+        // One field per line, each holding what the line says.
+        val fields = compose.onAllNodesWithText("Thing to do")
+        fields.assertCountEquals(2)
+        compose.onNodeWithText("Add a thing").performClick()
+        compose.onAllNodesWithText("Thing to do").assertCountEquals(3)
+        compose.onAllNodesWithText("Thing to do")[2].performTextInput("Eggs")
+
+        compose.onNodeWithText("Save").performClick()
+
+        val lines = saved ?: error("nothing was saved")
+        assertThat(lines.map { it.itemId }).containsExactly(11L, 12L, null).inOrder()
+        assertThat(NoteTasks.written(lines).map { it.text })
+            .containsExactly("Milk", "Bread", "Eggs").inOrder()
+        // The ids it kept are what carry the ticks through the rewrite.
+        assertThat(NoteTasks.written(lines).map { it.id })
+            .containsExactly(11L, 12L, null).inOrder()
     }
 }

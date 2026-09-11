@@ -44,6 +44,7 @@ import me.nettrash.familyconnect.util.BoardBadge
 import me.nettrash.familyconnect.util.badgeMarks
 import me.nettrash.familyconnect.util.marks
 import me.nettrash.familyconnect.data.net.dto.MentionDto
+import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
 import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.util.resolvedDisplayName
 import me.nettrash.familyconnect.util.resolvedDisplayNames
@@ -221,6 +222,35 @@ class BoardViewModel @Inject constructor(
         viewModelScope.launch { boardRepository.addNote(text, color, size, font, x, y) }
     }
 
+    /**
+     * Pin a task list: a title and the lines it starts with — empty is
+     * still a list (docs/protocol.md, "Board").
+     */
+    fun addList(
+        title: String,
+        color: String,
+        size: String,
+        font: String,
+        x: Double,
+        y: Double,
+        items: List<TaskLineRequest>,
+    ) {
+        viewModelScope.launch {
+            boardRepository.addNote(
+                text = title, color = color, size = size, font = font, x = x, y = y,
+                items = items,
+            )
+        }
+    }
+
+    /**
+     * Ticking is the SHARED act, like moving and like answering: any
+     * member may (docs/protocol.md, "Board").
+     */
+    fun tickTask(noteId: Long, itemId: Long, done: Boolean) {
+        viewModelScope.launch { boardRepository.tickTask(noteId, itemId, done) }
+    }
+
     /** Anyone in the family may move any note. */
     fun moveNote(id: Long, x: Double, y: Double) {
         viewModelScope.launch { boardRepository.updateNote(id, x = x, y = y) }
@@ -231,9 +261,23 @@ class BoardViewModel @Inject constructor(
      * Size and font are author's fields like text and color — a move never
      * carries them (docs/protocol.md, "Board").
      */
-    fun editNote(id: Long, text: String, color: String, size: String, font: String) {
+    fun editNote(
+        id: Long,
+        text: String,
+        color: String,
+        size: String,
+        font: String,
+        /**
+         * A task list's lines, when they changed — null on every other
+         * kind and on a list whose lines stand as they were, so opening
+         * one to read it is not an edit (docs/protocol.md, "Board").
+         */
+        items: List<TaskLineRequest>? = null,
+    ) {
         viewModelScope.launch {
-            boardRepository.updateNote(id, text = text, color = color, size = size, font = font)
+            boardRepository.updateNote(
+                id, text = text, color = color, size = size, font = font, items = items,
+            )
         }
     }
 

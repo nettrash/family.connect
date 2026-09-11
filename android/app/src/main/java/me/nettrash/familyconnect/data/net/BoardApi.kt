@@ -20,6 +20,8 @@ import me.nettrash.familyconnect.data.net.dto.PatchNoteRequest
 import javax.inject.Inject
 import javax.inject.Singleton
 import me.nettrash.familyconnect.data.net.dto.RsvpRequest
+import me.nettrash.familyconnect.data.net.dto.TaskDoneRequest
+import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
 import me.nettrash.familyconnect.ui.board.NoteKinds
 
 interface BoardApi {
@@ -44,6 +46,12 @@ interface BoardApi {
         place: String? = null,
         /** The members the text names (docs/protocol.md, "Board"). */
         mentions: List<MentionDto> = emptyList(),
+        /**
+         * A task list's lines — what makes this a list, the way [startsAt]
+         * makes a note an event. Empty is still a list; null is not one
+         * (docs/protocol.md, "Board").
+         */
+        items: List<TaskLineRequest>? = null,
     ): ApiResult<NoteResponse>
 
     /**
@@ -70,7 +78,19 @@ interface BoardApi {
          * which leaves them alone (docs/protocol.md, "Board").
          */
         mentions: List<MentionDto>? = null,
+        /**
+         * REPLACES a task list's lines, and the author's like its title: a
+         * line carrying its id keeps its TICK (docs/protocol.md, "Board").
+         */
+        items: List<TaskLineRequest>? = null,
     ): ApiResult<NoteResponse>
+
+    /**
+     * Tick or untick one line of a task list. ANY member may; ticking is
+     * not authorship, and it is a STATE rather than a toggle so two phones
+     * cannot undo each other (docs/protocol.md, "Board").
+     */
+    suspend fun tickTask(noteId: Long, itemId: Long, done: Boolean): ApiResult<NoteResponse>
 
     suspend fun deleteNote(id: Long): ApiResult<Unit>
 }
@@ -101,6 +121,7 @@ class DefaultBoardApi @Inject constructor(
         endsAt: String?,
         place: String?,
         mentions: List<MentionDto>,
+        items: List<TaskLineRequest>?,
     ): ApiResult<NoteResponse> =
         client.post(
             "/families/mine/board/notes",
@@ -109,6 +130,7 @@ class DefaultBoardApi @Inject constructor(
                 kind = when {
                     startsAt != null -> NoteKinds.EVENT
                     attachmentId != null -> NoteKinds.PHOTO
+                    items != null -> NoteKinds.TASKS
                     else -> null
                 },
                 attachmentId = attachmentId,
@@ -116,6 +138,10 @@ class DefaultBoardApi @Inject constructor(
                 endsAt = endsAt,
                 place = place,
                 mentions = mentions.ifEmpty { null },
+                // NOT `ifEmpty { null }`: an empty list is a list, and
+                // dropping it would make the note a plain sticker
+                // (docs/protocol.md, "Board").
+                items = items,
             ),
         )
 
@@ -135,13 +161,27 @@ class DefaultBoardApi @Inject constructor(
         x: Double?,
         y: Double?,
         mentions: List<MentionDto>?,
+        items: List<TaskLineRequest>?,
     ): ApiResult<NoteResponse> =
         client.patch(
             "/families/mine/board/notes/$id",
             PatchNoteRequest(
                 text, color, size, x, y, font,
                 mentions = mentions?.ifEmpty { null },
+                // An empty list here CLEARS the lines, which is what
+                // removing the last one means.
+                items = items,
             ),
+        )
+
+    override suspend fun tickTask(
+        noteId: Long,
+        itemId: Long,
+        done: Boolean,
+    ): ApiResult<NoteResponse> =
+        client.put(
+            "/families/mine/board/notes/$noteId/tasks/$itemId",
+            TaskDoneRequest(done),
         )
 
     override suspend fun deleteNote(id: Long): ApiResult<Unit> =

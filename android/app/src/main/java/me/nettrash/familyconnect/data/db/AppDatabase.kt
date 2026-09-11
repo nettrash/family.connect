@@ -43,7 +43,7 @@ fun interface LocalDataWiper {
         NoteEntity::class,
         PendingAttachmentEntity::class,
     ],
-    version = 26,
+    version = 27,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -433,6 +433,22 @@ abstract class AppDatabase : RoomDatabase() {
          * All four nullable: they are meaningless on every other kind, and
          * every note already pinned has none.
          */
+        /**
+         * v27: the two lists a note can carry — the members it NAMES and
+         * the things to DO (docs/protocol.md, "Board").
+         *
+         * Both in one step because they land in one release. Nullable with
+         * no default: null is what every note already pinned means by
+         * "names nobody" and "is not a list", so nothing on a wall changes
+         * when the columns arrive.
+         */
+        val MIGRATION_26_27: Migration = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE notes ADD COLUMN mentionsJson TEXT")
+                db.execSQL("ALTER TABLE notes ADD COLUMN itemsJson TEXT")
+            }
+        }
+
         val MIGRATION_25_26: Migration = object : Migration(25, 26) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN startsAt INTEGER")
@@ -519,6 +535,7 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_23_24,
                 MIGRATION_24_25,
                 MIGRATION_25_26,
+                MIGRATION_26_27,
             )
         }
     }

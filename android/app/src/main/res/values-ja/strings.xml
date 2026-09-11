@@ -508,4 +508,18 @@
     <string name="s_rsvp_question">参加する？</string>
     <string name="s_rsvp_none">未回答</string>
     <string name="s_event">予定</string>
+    <string name="s_list">リスト</string>
+    <string name="s_new_list">新規リスト</string>
+    <string name="s_add_list">リストを追加</string>
+    <string name="s_add_task_list">やることリストを追加</string>
+    <string name="s_things_to_do">やること</string>
+    <string name="s_thing_to_do">やること</string>
+    <string name="s_add_a_thing">やることを追加</string>
+    <string name="s_nothing_on_this_list">このリストにはまだ何もありません。</string>
+    <string name="s_your_list">あなたのリスト</string>
+    <string name="s_tasks_done_of">%2$d 件中 %1$d 件完了</string>
+    <string name="s_done">完了</string>
+    <plurals name="s_more_things">
+        <item quantity="other">ほか %1$d 件</item>
+    </plurals>
 </resources>

@@ -462,6 +462,12 @@ data class NoteEntity(
      * "Board").
      */
     val mentionsJson: String? = null,
+    /**
+     * The things to do, the wire's list stored verbatim (TaskItemsCodec).
+     * Null on every other kind; "[]" on a task list nothing has been
+     * written into yet — the difference is the point, as with [rsvpsJson].
+     */
+    val itemsJson: String? = null,
     /** Fractions of the board, 0..1 from the top-left. */
     val x: Double,
     val y: Double,

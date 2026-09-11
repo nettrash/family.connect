@@ -525,4 +525,20 @@
     <string name="s_rsvp_question">Dolaziš li?</string>
     <string name="s_rsvp_none">Bez odgovora</string>
     <string name="s_event">Događaj</string>
+    <string name="s_list">Spisak</string>
+    <string name="s_new_list">Novi spisak</string>
+    <string name="s_add_list">Dodaj spisak</string>
+    <string name="s_add_task_list">Dodaj spisak zadataka</string>
+    <string name="s_things_to_do">Stvari za uraditi</string>
+    <string name="s_thing_to_do">Stvar za uraditi</string>
+    <string name="s_add_a_thing">Dodaj stvar</string>
+    <string name="s_nothing_on_this_list">Na ovom spisku još nema ničega.</string>
+    <string name="s_your_list">Vaš spisak</string>
+    <string name="s_tasks_done_of">%1$d od %2$d završeno</string>
+    <string name="s_done">Gotovo</string>
+    <plurals name="s_more_things">
+        <item quantity="one">+%1$d još</item>
+        <item quantity="few">+%1$d još</item>
+        <item quantity="other">+%1$d još</item>
+    </plurals>
 </resources>

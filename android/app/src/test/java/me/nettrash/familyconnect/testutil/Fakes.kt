@@ -37,6 +37,8 @@ import me.nettrash.familyconnect.data.net.dto.ChatsResponse
 import me.nettrash.familyconnect.data.net.dto.DeviceResponse
 import me.nettrash.familyconnect.data.net.dto.MessagePollStateDto
 import me.nettrash.familyconnect.data.net.dto.MentionDto
+import me.nettrash.familyconnect.data.net.dto.TaskItemDto
+import me.nettrash.familyconnect.data.net.dto.TaskLineRequest
 import me.nettrash.familyconnect.data.net.dto.NewPollDto
 import me.nettrash.familyconnect.data.net.dto.PollDto
 import me.nettrash.familyconnect.data.net.dto.PollOptionDto
@@ -863,6 +865,10 @@ class FakeBoardApi : BoardApi {
 
     var createResult: ((NoteDto) -> ApiResult<NoteResponse>)? = null
     var nextSeq = 1L
+    /** The ids this fake hands out for new task lines, as a server does. */
+    var nextItemId = 100L
+    /** Every tick, as (note, item, state). */
+    val ticked = mutableListOf<Triple<Long, Long, Boolean>>()
 
     override suspend fun getBoard(): ApiResult<BoardResponse> = ApiResult.Ok(board)
 
@@ -886,10 +892,12 @@ class FakeBoardApi : BoardApi {
         endsAt: String?,
         place: String?,
         mentions: List<MentionDto>,
+        items: List<TaskLineRequest>?,
     ): ApiResult<NoteResponse> {
         val kind = when {
             startsAt != null -> "event"
             attachmentId != null -> "photo"
+            items != null -> "tasks"
             else -> null
         }
         created += CreateNoteRequest(
@@ -902,6 +910,8 @@ class FakeBoardApi : BoardApi {
             // Absent when nobody is named, as the wire has it: the
             // client sends names only when there are some.
             mentions = mentions.takeIf { it.isNotEmpty() },
+            // An empty list IS a list, so it is not dropped here.
+            items = items,
         )
         val note = noteDto(
             id = nextSeq, text = text, color = color, size = size, font = font,
@@ -913,6 +923,10 @@ class FakeBoardApi : BoardApi {
             place = place,
             rsvps = if (kind == "event") emptyList() else null,
             mentions = mentions.takeIf { it.isNotEmpty() },
+            // The ids are the SERVER's, which this fake plays too.
+            items = items?.map { line ->
+                TaskItemDto(id = line.id ?: (nextItemId++), text = line.text)
+            },
         )
         nextSeq++
         return createResult?.invoke(note) ?: ApiResult.Ok(NoteResponse(note))
@@ -927,8 +941,11 @@ class FakeBoardApi : BoardApi {
         x: Double?,
         y: Double?,
         mentions: List<MentionDto>?,
+        items: List<TaskLineRequest>?,
     ): ApiResult<NoteResponse> {
-        patched += id to PatchNoteRequest(text, color, size, x, y, font, mentions = mentions)
+        patched += id to PatchNoteRequest(
+            text, color, size, x, y, font, mentions = mentions, items = items,
+        )
         val note = noteDto(
             id = id,
             text = text ?: "note $id",
@@ -938,6 +955,9 @@ class FakeBoardApi : BoardApi {
             y = y ?: 0.0,
             boardSeq = nextSeq++,
             mentions = mentions,
+            items = items?.map { line ->
+                TaskItemDto(id = line.id ?: (nextItemId++), text = line.text)
+            },
         )
         return ApiResult.Ok(NoteResponse(note))
     }
@@ -954,6 +974,26 @@ class FakeBoardApi : BoardApi {
                     id = id, boardSeq = nextSeq, kind = "event",
                     startsAt = "2026-12-24T17:00:00Z",
                     rsvps = answer?.let { listOf(RsvpDto(userId = 7, answer = it)) } ?: emptyList(),
+                ),
+            ),
+        )
+    }
+
+    override suspend fun tickTask(
+        noteId: Long,
+        itemId: Long,
+        done: Boolean,
+    ): ApiResult<NoteResponse> {
+        ticked += Triple(noteId, itemId, done)
+        return ApiResult.Ok(
+            NoteResponse(
+                noteDto(
+                    id = noteId,
+                    boardSeq = nextSeq++,
+                    kind = "tasks",
+                    items = listOf(
+                        TaskItemDto(id = itemId, text = "Milk", done = done, doneBy = 7L),
+                    ),
                 ),
             ),
         )
@@ -993,6 +1033,8 @@ fun noteDto(
     rsvps: List<RsvpDto>? = null,
     /** The members the text names (docs/protocol.md, "Board"). */
     mentions: List<MentionDto>? = null,
+    /** The things to do: `[]` on an empty list, null on any other kind. */
+    items: List<TaskItemDto>? = null,
 ) = NoteDto(
     id = id,
     authorId = if (deleted == true) null else authorId,
@@ -1013,6 +1055,7 @@ fun noteDto(
     place = if (deleted == true) null else place,
     rsvps = if (deleted == true) null else rsvps,
     mentions = if (deleted == true) null else mentions,
+    items = if (deleted == true) null else items,
     deleted = deleted,
 )
 
