@@ -247,8 +247,18 @@ class BoardViewModel @Inject constructor(
      * Ticking is the SHARED act, like moving and like answering: any
      * member may (docs/protocol.md, "Board").
      */
-    fun tickTask(noteId: Long, itemId: Long, done: Boolean) {
-        viewModelScope.launch { boardRepository.tickTask(noteId, itemId, done) }
+    fun tickTask(
+        noteId: Long,
+        itemId: Long,
+        done: Boolean,
+        /**
+         * Whether it LANDED. The box is lit before the round trip, and a
+         * tick the server refused has to go back to what the note says —
+         * see the dialog, which holds the note as it was OPENED.
+         */
+        onSettled: (Boolean) -> Unit = {},
+    ) {
+        viewModelScope.launch { onSettled(boardRepository.tickTask(noteId, itemId, done)) }
     }
 
     /** Anyone in the family may move any note. */

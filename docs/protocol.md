@@ -993,7 +993,10 @@ its own request that any member may send.
 
 A replacement carries back the ids it wants to keep: `items: [{id?, text}]`, where an entry with an
 `id` the note already holds is that item, rewritten and moved to wherever it now sits, and an entry
-without one is a new item. An item the author leaves out is gone. **An item that keeps its id keeps
+without one is a new item. An item the author leaves out is gone. REORDERING is therefore on the
+wire — the order sent is the order kept — though no client offers it yet: today a list is written
+in the order it was typed, and an author who wants a different one rewrites the lines. **An item
+that keeps its id keeps
 its tick**, which is the whole point of sending ids at all: fixing a typo in "Bred" must not
 untick it and must not tell the family that nobody bought the bread. An `id` that is not this
 note's is `validation` — a client sending somebody else's item id has a bug, and silently treating

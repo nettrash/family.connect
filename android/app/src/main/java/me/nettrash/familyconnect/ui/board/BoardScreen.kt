@@ -1151,8 +1151,8 @@ fun BoardScreen(
                 }
             },
             onAnswer = { answer -> draft.noteId?.let { viewModel.answerEvent(it, answer) } },
-            onTick = { itemId, done ->
-                draft.noteId?.let { viewModel.tickTask(it, itemId, done) }
+            onTick = { itemId, done, onSettled ->
+                draft.noteId?.let { viewModel.tickTask(it, itemId, done, onSettled) }
             },
             myAnswer = draft.myAnswer,
             roster = mentionRoster,
@@ -1529,8 +1529,12 @@ internal fun NoteDialog(
     /**
      * Tick or untick one line — ANY member may, for the same reason, so it
      * is not part of the save either (docs/protocol.md, "Board").
+     *
+     * The third argument hears whether it LANDED: a box is lit before the
+     * round trip, and a tick the server refused has to go back to what
+     * the note says — which is what this dialog was opened with.
      */
-    onTick: (Long, Boolean) -> Unit = { _, _ -> },
+    onTick: (Long, Boolean, (Boolean) -> Unit) -> Unit = { _, _, _ -> },
     myAnswer: String? = null,
     /**
      * Everybody a name may mean, and everybody a name may OPEN — the one
@@ -1680,11 +1684,20 @@ internal fun NoteDialog(
                                     // flight is the tap that would undo it.
                                     if (id != null && !ticking.containsKey(id)) {
                                         ticking = ticking + (id to want)
-                                        onTick(id, want)
+                                        onTick(id, want) { landed ->
+                                            // A tick that landed keeps its
+                                            // mark for the life of the
+                                            // dialog: the draft it opened
+                                            // with says what the note said
+                                            // BEFORE, so dropping the mark
+                                            // would show the tick undoing
+                                            // itself.
+                                            if (!landed) ticking = ticking - id
+                                        }
                                     }
                                 },
                             )
-                            if (true) {
+                            if (canEdit) {
                                 OutlinedTextField(
                                     value = line.text,
                                     onValueChange = { value ->
