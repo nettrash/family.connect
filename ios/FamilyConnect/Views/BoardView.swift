@@ -296,7 +296,7 @@ struct BoardView: View {
                 Task { await coordinator.answerEvent(id: noteID, answer: answer) }
             },
             onTick: { noteID, itemID, done in
-                Task { await coordinator.tickTask(noteID: noteID, itemID: itemID, done: done) }
+                await coordinator.tickTask(noteID: noteID, itemID: itemID, done: done)
             },
             onDelete: draft.noteID.map { id in { delete(id: id) } },
             currentUserID: currentUserID,
@@ -641,7 +641,11 @@ private struct NoteEditor: View {
     /// Ticking a line is its own act too, and for the same reason: any
     /// member may, so it does not go through `onSave` either
     /// (docs/protocol.md, "Board").
-    var onTick: (Int64, Int64, Bool) -> Void = { _, _, _ in }
+    ///
+    /// Answers whether it LANDED, because the box is lit before the round
+    /// trip: a tick the server refused has to go back to what the note
+    /// says, and this sheet's copy of the note is the one it opened with.
+    var onTick: (Int64, Int64, Bool) async -> Bool = { _, _, _ in false }
     let onDelete: (() -> Void)?
     /// Who is reading, and where a name goes — see the reader's view
     /// below (docs/protocol.md, "Board").
@@ -682,7 +686,7 @@ private struct NoteEditor: View {
         authorName: String,
         onSave: @escaping (String, String, NoteSize, NoteFont, EventEdit, [DraftTaskLine]) -> Void,
         onAnswer: @escaping (Int64, String?) -> Void = { _, _ in },
-        onTick: @escaping (Int64, Int64, Bool) -> Void = { _, _, _ in },
+        onTick: @escaping (Int64, Int64, Bool) async -> Bool = { _, _, _ in false },
         onDelete: (() -> Void)?,
         currentUserID: Int64 = -1,
         onOpenChat: ((Int64) -> Void)? = nil,
@@ -741,10 +745,19 @@ private struct NoteEditor: View {
     /// Tick or untick, and show it at once. One request per line at a
     /// time: a second tap while the first is in flight is the tap that
     /// would undo it.
+    ///
+    /// A tick that LANDED keeps its mark for the life of the sheet — the
+    /// draft it was opened with says what the note said before, so
+    /// dropping the mark would show the tick undoing itself. One that was
+    /// refused drops it, which puts the box back on that same truth.
     private func tick(_ itemID: Int64, to done: Bool) {
         guard let noteID = draft.noteID, ticking[itemID] == nil else { return }
         ticking[itemID] = done
-        onTick(noteID, itemID, done)
+        Task {
+            if await onTick(noteID, itemID, done) == false {
+                ticking[itemID] = nil
+            }
+        }
     }
 
     /// This reader's answer, kept locally so the picker moves at once —
