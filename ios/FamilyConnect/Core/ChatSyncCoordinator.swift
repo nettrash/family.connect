@@ -420,6 +420,10 @@ final class ChatSyncCoordinator {
                 chatID: presence.chatID, isAtNewest: presence.isAtNewest, isFrontmost: false)
         }
         isInBackground = true
+        // The bytes go to the system on the way out. `UploadLifeline` only
+        // ever bought seconds; this is what finishes a video somebody
+        // pressed Send on and walked away from.
+        Task { await handOverPendingUploads() }
         guard socketTask != nil else { return }
         // A call holds the socket open: its `call_end`, its candidates and
         // an ICE restart all arrive over it, and the audio session (or the
@@ -2078,10 +2082,44 @@ final class ChatSyncCoordinator {
         // the allowance merely postpones it to the next trigger rather than
         // destroying it — but finishing an upload already in progress is
         // still far better than starting it again later.
+        // What had already landed before this pass — the system's uploader
+        // brought these back while the app was away, so their previews are
+        // still owed here. Anything uploaded BELOW keeps the send path's
+        // own best-effort-once rule, whose second chance is the poster
+        // repair pass (issue #54).
+        let landedElsewhere = Set(
+            pendingMediaItems(for: localID)
+                .filter { $0.attachmentID != nil && !$0.previewUploaded }
+                .map(\.itemID))
+
+        // One uploader per item: bytes the system is already carrying are
+        // not uploaded again here — two copies of one video cost somebody
+        // their data allowance and leave the server holding an unclaimed
+        // one until the sweep (docs/protocol.md, "Sending on an unreliable
+        // network").
+        #if os(iOS)
+        let handedOver = await BackgroundUploads.shared.inFlightItemIDs()
+        #else
+        let handedOver: Set<String> = []
+        #endif
         await UploadLifeline.withLifeline {
             for item in self.pendingMediaItems(for: localID) where item.attachmentID == nil {
+                if handedOver.contains(item.itemID) { continue }
                 guard await self.upload(item: item, localID: localID) else { return }
             }
+        }
+
+        // A preview still owed for bytes that landed somewhere else — the
+        // system's uploader, or an attempt whose PUT failed. The poster is
+        // the one picture with no second source of pixels, so it is not
+        // left to the repair pass alone (issue #54).
+        for item in pendingMediaItems(for: localID)
+        where landedElsewhere.contains(item.itemID) && item.previewFileName != nil {
+            guard let attachmentID = item.attachmentID, !item.previewUploaded else { continue }
+            let jpeg = item.previewFileName.flatMap(PendingMediaStaging.url(for:))
+                .flatMap { try? Data(contentsOf: $0) }
+            guard jpeg != nil else { continue }
+            await sendPreview(for: item, attachmentID: attachmentID, jpeg: jpeg)
         }
 
         // Everything landed? Write the set onto the row and hand it to the
@@ -2176,14 +2214,29 @@ final class ChatSyncCoordinator {
         fetchMessage(localID: localID)?.pendingAttachmentCount -= 1
         saveContext()
 
+        await sendPreview(for: item, attachmentID: attachment.id, jpeg: previewJPEG)
+        return true
+    }
+
+    /// The poster or thumbnail that rides with an item whose bytes have
+    /// landed — from either uploader.
+    ///
+    /// Split out of `upload(item:)` because the bytes and the preview no
+    /// longer always go up together: the system's uploader carries the
+    /// bytes alone (`BackgroundUploads`), so the resume leg has to be able
+    /// to finish the preview for an item it never uploaded itself.
+    /// Idempotent through `previewUploaded`.
+    private func sendPreview(
+        for item: PendingMediaItemEntity, attachmentID: Int64, jpeg: Data?
+    ) async {
         var hasPreview = false
-        if let previewJPEG {
+        if let jpeg {
             // Best-effort: a bubble with no preview fetches the full image,
             // which is worse but not broken. The RESULT is what the row
             // records — claiming a preview that failed would leave the
             // bubble waiting for bytes that are not there.
             do {
-                try await api.uploadPreview(attachmentID: attachment.id, jpeg: previewJPEG)
+                try await api.uploadPreview(attachmentID: attachmentID, jpeg: jpeg)
                 hasPreview = true
             } catch {
                 AppLog.sync.error("Preview upload failed: \(String(describing: error), privacy: .public)")
@@ -2192,17 +2245,104 @@ final class ChatSyncCoordinator {
             // Distinguishable on purpose from the line above: a video that
             // never HAD a poster and one whose poster upload failed need
             // different fixes.
-            AppLog.sync.error("Video \(attachment.id, privacy: .public) sent with no poster frame")
+            AppLog.sync.error("Video \(attachmentID, privacy: .public) sent with no poster frame")
         }
         if item.kind == "video" {
             // Best-effort ONCE was the bug (issue #54): a poster is the only
             // image with no second source of pixels, so a lost one is a grey
             // tile for every recipient, forever.
-            attachmentStore?.notePosterUpload(id: attachment.id, landed: hasPreview)
+            attachmentStore?.notePosterUpload(id: attachmentID, landed: hasPreview)
         }
         item.previewUploaded = hasPreview
         saveContext()
-        return true
+    }
+
+    // MARK: - Uploads the app is not around for
+
+    /// Hand every upload still owed to the system, so a send survives
+    /// somebody leaving the app (docs/protocol.md, "Sending on an
+    /// unreliable network"; `BackgroundUploads` for why it is only the
+    /// bytes). iOS only — a Mac app is not suspended for being in the
+    /// background, and its in-process leg is already the right answer.
+    func handOverPendingUploads() async {
+        #if os(iOS)
+        let descriptor = FetchDescriptor<PendingMediaItemEntity>(
+            predicate: #Predicate { $0.attachmentID == nil },
+            sortBy: [SortDescriptor(\.createdAt), SortDescriptor(\.position)])
+        guard let items = try? modelContext.fetch(descriptor), !items.isEmpty else { return }
+        // Read off the store on this actor, then build the requests on
+        // the API client's: a `PendingMediaItemEntity` is a model object
+        // and does not leave the main actor.
+        struct Owed {
+            let itemID: String
+            let fileURL: URL
+            let mime: String
+            let kind: String
+            let width: Int?
+            let height: Int?
+            let durationMS: Int?
+            let name: String?
+        }
+        let owed: [Owed] = items.compactMap { item in
+            // A location has no bytes to upload and a missing file has none
+            // left; both are the in-process leg's business.
+            guard item.kind != AttachmentDTO.Kind.location,
+                  let fileName = item.fileName,
+                  let fileURL = PendingMediaStaging.url(for: fileName),
+                  FileManager.default.fileExists(atPath: fileURL.path)
+            else { return nil }
+            return Owed(
+                itemID: item.itemID, fileURL: fileURL, mime: item.mime, kind: item.kind,
+                width: item.width, height: item.height, durationMS: item.durationMS,
+                name: item.name)
+        }
+        var handovers: [BackgroundUploads.Handover] = []
+        for item in owed {
+            guard let request = try? await api.attachmentUploadRequest(
+                mime: item.mime,
+                kind: item.kind,
+                width: item.width,
+                height: item.height,
+                durationMS: item.durationMS,
+                name: item.name)
+            else { continue }
+            handovers.append(BackgroundUploads.Handover(
+                itemID: item.itemID, request: request, fileURL: item.fileURL))
+        }
+        await BackgroundUploads.shared.hand(over: handovers)
+        #endif
+    }
+
+    /// Write down an upload the system finished while the app was away.
+    ///
+    /// The same two fields `upload(item:)` writes in one save, and for the
+    /// same reason: a count decremented without the id is a row that will
+    /// be delivered with an attachment missing. The preview and the message
+    /// itself are left to the ordinary leg, which the caller kicks.
+    func recordBackgroundUpload(itemID: String, attachment: AttachmentDTO) {
+        let descriptor = FetchDescriptor<PendingMediaItemEntity>(
+            predicate: #Predicate { $0.itemID == itemID })
+        guard let item = (try? modelContext.fetch(descriptor))?.first,
+              item.attachmentID == nil
+        else { return }
+        item.attachmentID = attachment.id
+        fetchMessage(localID: item.messageLocalID)?.pendingAttachmentCount -= 1
+        saveContext()
+        // What this device already holds, so its own bubble draws from
+        // those bytes rather than fetching back what it just sent.
+        if let previewJPEG = item.previewFileName.flatMap(PendingMediaStaging.url(for:))
+            .flatMap({ try? Data(contentsOf: $0) }) {
+            attachmentStore?.seed(previewJPEG, id: attachment.id, preview: true)
+            // A marker, in case nothing else gets the chance: the resume
+            // leg normally PUTs this poster within the second, but a
+            // process that is killed again before it runs would otherwise
+            // leave a video with no poster for everybody else, forever
+            // (issue #54). `repairPosters()` clears it on success.
+            if item.kind == AttachmentDTO.Kind.video {
+                attachmentStore?.notePosterUpload(id: attachment.id, landed: false)
+            }
+        }
+        AppLog.sync.info("A background upload landed for a queued send")
     }
 
     /// The unfinished attachments of one send, in the sender's order.

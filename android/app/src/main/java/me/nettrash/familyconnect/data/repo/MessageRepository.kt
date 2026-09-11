@@ -94,6 +94,12 @@ class MessageRepository @Inject constructor(
     private val clock: Clock,
     private val pendingAttachmentDao: PendingAttachmentDao,
     private val staging: MediaStaging,
+    /**
+     * Who finishes an upload the app is not around for (docs/protocol.md,
+     * "Sending on an unreliable network"). Defaulted so a unit test that
+     * sends media needs no WorkManager; Hilt binds the real one.
+     */
+    private val uploads: MediaUploadScheduler = MediaUploadScheduler.None,
 ) {
     /** The device's words for the chat-list previews (see [PreviewLabels]). */
     private val previewLabels: PreviewLabels by lazy { PreviewLabels.from(appContext) }
@@ -504,7 +510,14 @@ class MessageRepository @Inject constructor(
                 }
             }
         }
+        // Two uploaders, deliberately: this coroutine is the one that
+        // starts NOW, while somebody is still looking at the bubble, and
+        // the scheduled job is the one that survives them leaving the app
+        // — a 90 MB video does not finish in the seconds a departing
+        // process is given. `uploadPending`'s own guard makes whichever
+        // arrives second a no-op.
         scope.launch { uploadPending(clientMsgId) }
+        uploads.schedule(clientMsgId)
         return clientMsgId
     }
 
@@ -768,6 +781,10 @@ class MessageRepository @Inject constructor(
                 // whole resync open. The guard inside makes a second call
                 // a no-op.
                 scope.launch { uploadPending(row.clientMsgId) }
+                // And asked for again, because this is also the catch-up
+                // after a process that was killed mid-upload: the job it
+                // had may have been spent while there was no network.
+                uploads.schedule(row.clientMsgId)
                 return@forEach
             }
             if (!pendingAcks.containsKey(row.clientMsgId)) {

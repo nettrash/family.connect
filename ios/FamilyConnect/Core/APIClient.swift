@@ -733,15 +733,19 @@ actor APIClient {
         String(format: "%.7f", locale: Locale(identifier: "en_US_POSIX"), value)
     }
 
-    func uploadAttachment(
-        fileURL: URL,
+    /// The one `POST /attachments` request, built once and performed by
+    /// either uploader: this client, or the background `URLSession` that
+    /// finishes a send somebody has walked away from (see
+    /// `BackgroundUploads`). Two places building the same query is two
+    /// places to get `name`'s encoding wrong.
+    func attachmentUploadRequest(
         mime: String,
         kind: String,
         width: Int?,
         height: Int?,
         durationMS: Int?,
         name: String? = nil
-    ) async throws -> AttachmentDTO {
+    ) throws -> URLRequest {
         guard let serverURL else { throw APIError.notConfigured }
         var query = [URLQueryItem(name: "kind", value: kind)]
         if let width { query.append(URLQueryItem(name: "width", value: String(width))) }
@@ -763,6 +767,21 @@ actor APIClient {
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
+        return request
+    }
+
+    func uploadAttachment(
+        fileURL: URL,
+        mime: String,
+        kind: String,
+        width: Int?,
+        height: Int?,
+        durationMS: Int?,
+        name: String? = nil
+    ) async throws -> AttachmentDTO {
+        let request = try attachmentUploadRequest(
+            mime: mime, kind: kind, width: width, height: height,
+            durationMS: durationMS, name: name)
 
         let (data, response) = try await uploadFromFile(request, fileURL: fileURL)
         guard (200..<300).contains(response.statusCode) else {

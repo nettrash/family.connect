@@ -184,6 +184,24 @@ struct FamilyConnectApp: App {
             // holds the answer from last time; this is what reads it.
             coordinator.loadBlocksFromStore()
 
+            #if os(iOS)
+            // The system's uploader, wired to the store it writes into
+            // (docs/protocol.md, "Sending on an unreliable network"). An
+            // upload that landed while the app was away is recorded here,
+            // and the outbox — kicked when the hand-back is done — posts
+            // the message with nothing left to upload.
+            BackgroundUploads.shared.landed = { [weak coordinator] itemID, attachment in
+                coordinator?.recordBackgroundUpload(itemID: itemID, attachment: attachment)
+            }
+            BackgroundUploads.shared.finishedEvents = { [weak coordinator] in
+                Task { await coordinator?.sweepOutbox() }
+            }
+            // Adopting the previous process's transfers before anything
+            // asks what is in flight, so the in-process leg does not
+            // start a second copy of a video the system is still sending.
+            Task { await BackgroundUploads.shared.adopt() }
+            #endif
+
             // Store side effects for the phase machine, wired as closures
             // so AppSession itself stays SwiftData-free (and testable).
             session.hasCachedChats = {
@@ -321,6 +339,12 @@ struct FamilyConnectApp: App {
                 for item in staged { PendingMediaStaging.remove(itemID: item.itemID) }
                 try? context.delete(model: PendingMediaItemEntity.self)
                 try? context.save()
+                #if os(iOS)
+                // And whatever the system was still carrying for those
+                // rows: an upload that lands after the sign-out belongs to
+                // an account this device no longer holds.
+                BackgroundUploads.shared.cancelAll()
+                #endif
             }
             coordinator.bind(attachmentStore: attachments)
             // Logout wipes the store; faces must go with it, or the next
