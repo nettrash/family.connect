@@ -163,6 +163,16 @@ pub enum Action {
         answer: Option<String>,
         done: Callback<()>,
     },
+    /// Tick or untick one line of a task list — a STATE, not a toggle, so
+    /// two phones tapping the same line cannot undo each other. Anybody's:
+    /// ticking is not authorship (docs/protocol.md, "Board"). `done` hears
+    /// when it is in or refused, like an answer's.
+    TickTask {
+        note_id: i64,
+        item_id: i64,
+        done_now: bool,
+        done: Callback<()>,
+    },
     /// Peek at a note a block hides.
     RevealNote {
         note_id: i64,
@@ -1230,6 +1240,25 @@ impl Actions {
                         Err(error) => {
                             this.board_refused(session, &error, Some(note_id), &Callback::noop());
                             this.fail_with(session, &error, t("Couldn't send your answer."));
+                        }
+                    }
+                    done.emit(());
+                });
+            }
+            Action::TickTask {
+                note_id,
+                item_id,
+                done_now,
+                done,
+            } => {
+                spawn_local(async move {
+                    match api::tick_task(&token, note_id, item_id, done_now).await {
+                        Ok(note) => {
+                            live.update(session, |state| state.store.board.apply(note));
+                        }
+                        Err(error) => {
+                            this.board_refused(session, &error, Some(note_id), &Callback::noop());
+                            this.fail_with(session, &error, t("Couldn't tick that off."));
                         }
                     }
                     done.emit(());

@@ -951,6 +951,18 @@ pub struct Note {
     /// has answered; absent on every other kind.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rsvps: Option<Vec<Rsvp>>,
+    /// The things to do, in the author's order. Present on every `tasks`
+    /// note and `[]` on one nothing has been written into yet; absent on
+    /// every other kind (docs/protocol.md, "Board").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<TaskItem>>,
+    /// The members this note NAMES, in the author's order (docs/protocol.md,
+    /// "Board"). Absent when it names nobody — never `[]`, so a client that
+    /// has never heard of note mentions reads exactly what it read before.
+    /// Re-decided on every edit, unlike a message's, because an edit to a
+    /// note notifies nobody.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<Mention>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub x: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1018,7 +1030,7 @@ impl Note {
     /// What a note IS (docs/protocol.md, "Board"): words on a sticker, or a
     /// picture pinned to the wall. A photo note is a note in every other
     /// respect — same slot, same ceiling, same feed, same block rule.
-    pub const KINDS: [&'static str; 3] = ["text", "photo", "event"];
+    pub const KINDS: [&'static str; 4] = ["text", "photo", "event", "tasks"];
 
     /// The kind a note takes when none is sent — and what every note on
     /// every wall was before kinds existed.
@@ -1026,6 +1038,7 @@ impl Note {
 
     pub const KIND_PHOTO: &str = "photo";
     pub const KIND_EVENT: &str = "event";
+    pub const KIND_TASKS: &str = "tasks";
 
     /// Longest a place may be. A line on a card, not an address book.
     pub const MAX_PLACE_CHARS: usize = 200;
@@ -1058,6 +1071,8 @@ impl Note {
                 ends_at: None,
                 place: None,
                 rsvps: None,
+                items: None,
+                mentions: None,
                 x: None,
                 y: None,
                 created_at: None,
@@ -1086,6 +1101,13 @@ impl Note {
             // rather than absent on an event, which the caller decides
             // because only it knows the kind is meaningful here.
             rsvps: None,
+            // Hydrated by the caller as well, and `[]` rather than absent
+            // on a task list — an empty list is a list.
+            items: None,
+            // Hydrated by the caller as well: a note that names nobody
+            // reports nothing rather than `[]`, so a client that predates
+            // note mentions reads exactly what it read before.
+            mentions: None,
             x: Some(row.get("x")),
             y: Some(row.get("y")),
             created_at: Some(row.get("created_at")),
@@ -1104,6 +1126,39 @@ impl Note {
 pub struct Rsvp {
     pub user_id: i64,
     pub answer: String,
+}
+
+/// One line of a task list (docs/protocol.md, "Board").
+///
+/// `id` is the server's and stable for the life of the item, because it is
+/// what a tick refers to: a position would move under somebody's finger the
+/// moment the author inserted a line above it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskItem {
+    pub id: i64,
+    pub text: String,
+    pub done: bool,
+    /// Who ticked it — absent while it is not done. Kept after they leave:
+    /// a tick is a fact about the ITEM, not about the member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_by: Option<i64>,
+}
+
+impl TaskItem {
+    /// Longest one line may be. A thing to do, not a paragraph about it.
+    pub const MAX_TEXT_CHARS: usize = 100;
+
+    pub fn from_row(row: &PgRow) -> Self {
+        let done_at: Option<OffsetDateTime> = row.get("done_at");
+        Self {
+            id: row.get("id"),
+            text: row.get("text"),
+            done: done_at.is_some(),
+            // Only meaningful while it is done, and a deleted account's
+            // tick keeps the item done without a name behind it.
+            done_by: done_at.and_then(|_| row.get::<Option<i64>, _>("done_by")),
+        }
+    }
 }
 
 impl Rsvp {

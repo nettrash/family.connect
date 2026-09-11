@@ -706,6 +706,22 @@ data class RsvpDto(
 )
 
 /** The board's own codec: the wire's `rsvps` stored verbatim. */
+/**
+ * The same, for the members a note names — stored verbatim so the highlight
+ * is drawn from what the server said rather than guessed at
+ * (docs/protocol.md, "Board").
+ */
+object NoteMentionsCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun encode(mentions: List<MentionDto>): String? =
+        mentions.takeIf { it.isNotEmpty() }?.let { json.encodeToString(it) }
+
+    fun decode(raw: String?): List<MentionDto> =
+        raw?.let { runCatching { json.decodeFromString<List<MentionDto>>(it) }.getOrNull() }
+            .orEmpty()
+}
+
 object RsvpCodec {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -969,6 +985,11 @@ data class NoteDto(
      * on every other kind.
      */
     val rsvps: List<RsvpDto>? = null,
+    /**
+     * The members this note NAMES, in the author's order
+     * (docs/protocol.md, "Board"). Null when it names nobody.
+     */
+    val mentions: List<MentionDto>? = null,
 ) {
     val isTombstone: Boolean get() = deleted == true
 }
@@ -1001,6 +1022,8 @@ data class CreateNoteRequest(
     @SerialName("starts_at") val startsAt: String? = null,
     @SerialName("ends_at") val endsAt: String? = null,
     val place: String? = null,
+    /** The members the text names (docs/protocol.md, "Board"). */
+    val mentions: List<MentionDto>? = null,
 )
 
 /**
@@ -1019,6 +1042,12 @@ data class PatchNoteRequest(
     val font: String? = null,
     @SerialName("starts_at") val startsAt: String? = null,
     val place: String? = null,
+    /**
+     * REPLACES the note's names, and rides with every text edit: they are
+     * re-decided on each one, and a text patch without them clears them
+     * (docs/protocol.md, "Board").
+     */
+    val mentions: List<MentionDto>? = null,
 )
 
 @Serializable

@@ -855,6 +855,18 @@ button.mention { cursor: pointer; }
 .board-empty p { margin: 2px 0; }
 .board-empty-title { font-weight: 600; color: var(--ink); }
 
+/* The names a half-typed `@` could mean, in the note editor. Chips, not
+ * the chat's keyboard list: a dialog's Tab belongs to its fields. */
+.note-names { display: flex; flex-wrap: wrap; gap: 6px; }
+.note-name {
+    background: var(--soft);
+    color: var(--tint);
+    border: 1px solid var(--line);
+    padding: 4px 8px;
+    font-size: 13px;
+    border-radius: 999px;
+}
+
 /* A sticker. The pastels are fixed LIGHT colours in both appearances, so
  * the ink is forced dark on them rather than following the page — the
  * page's dark-mode white would be unreadable on yellow (BoardView). */
@@ -952,6 +964,43 @@ button.mention { cursor: pointer; }
 .note-picture img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 .note-picture.is-loading { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .6; } }
+
+/* A TASK LIST on the wall: the first lines with their state, and then how
+ * many are left (docs/protocol.md, "Board"). Inside `.note-text`, so the
+ * fitting scales the title and the lines together — and aria-hidden, since
+ * nothing here takes a tap: the sticker's label already says the note. */
+.note-tasks { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 1px; min-width: 0; }
+.note-task {
+    display: flex;
+    gap: 4px;
+    align-items: baseline;
+    font-size: 0.85em;
+    min-width: 0;
+}
+.note-task-box { flex: none; }
+.note-task-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-task.is-done .note-task-text { text-decoration: line-through; opacity: .55; }
+.note-task-more { opacity: .6; font-style: italic; }
+
+/* The list in the note somebody has opened, which is where a tap ticks. */
+.task-list { min-width: 0; }
+.task-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.task-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.task-box { flex: none; width: auto; min-width: 0; }
+.task-line { flex: 1 1 auto; min-width: 0; }
+.task-line-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.task-row.is-done .task-line-text { text-decoration: line-through; opacity: .6; }
+.task-drop {
+    flex: none;
+    background: none;
+    border: 0;
+    padding: 4px 8px;
+    font-size: 18px;
+    line-height: 1;
+    color: var(--muted);
+    cursor: pointer;
+}
+.task-drop:hover { color: var(--danger); }
 
 /* An event says WHEN before it says what. */
 .note-event { flex: 0 1 auto; min-height: 0; overflow: hidden; display: grid; align-content: start; gap: 1px; font-size: 11px; color: rgb(0 0 0 / 55%); min-width: 0; }

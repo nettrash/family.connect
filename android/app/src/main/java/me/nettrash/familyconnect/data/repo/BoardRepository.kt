@@ -24,12 +24,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.NoteDao
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.net.ApiResult
 import me.nettrash.familyconnect.data.net.BoardApi
 import me.nettrash.familyconnect.data.net.dto.AttachmentsCodec
+import me.nettrash.familyconnect.data.net.dto.MentionDto
 import me.nettrash.familyconnect.data.net.dto.NoteDto
+import me.nettrash.familyconnect.data.net.dto.NoteMentionsCodec
 import me.nettrash.familyconnect.data.net.dto.RsvpCodec
 import me.nettrash.familyconnect.data.net.ws.ChatSocket
 import me.nettrash.familyconnect.data.net.ws.ServerFrame
@@ -37,6 +40,7 @@ import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.di.AppScope
 import me.nettrash.familyconnect.util.BoardBadge
 import me.nettrash.familyconnect.util.badgeMarks
+import me.nettrash.familyconnect.util.MemberMention
 import me.nettrash.familyconnect.util.TimeFormat
 import me.nettrash.familyconnect.util.marks
 import javax.inject.Inject
@@ -46,6 +50,11 @@ import javax.inject.Singleton
 class BoardRepository @Inject constructor(
     private val boardApi: BoardApi,
     private val noteDao: NoteDao,
+    /**
+     * The roster a note's names are resolved against (docs/protocol.md,
+     * "Board").
+     */
+    private val memberDao: MemberDao,
     private val settings: SettingsRepository,
     socket: ChatSocket,
     @param:AppScope private val scope: CoroutineScope,
@@ -132,6 +141,7 @@ class BoardRepository @Inject constructor(
                 endsAt = note.endsAt?.let(TimeFormat::parseTimestamp),
                 place = note.place,
                 rsvpsJson = note.rsvps?.let(RsvpCodec::encode),
+                mentionsJson = note.mentions?.let(NoteMentionsCodec::encode),
                 x = x,
                 y = y,
                 createdAt = note.createdAt?.let(TimeFormat::parseTimestamp) ?: existing?.createdAt ?: now,
@@ -202,6 +212,19 @@ class BoardRepository @Inject constructor(
         }
     }
 
+    /**
+     * The members a note's text names (docs/protocol.md, "Board").
+     *
+     * Resolved HERE rather than on the screen, so a note written from
+     * anywhere in the app names the same people: the names are read off
+     * the text against the live roster, exactly as a message's are.
+     */
+    private suspend fun namedMembers(text: String): List<MentionDto> {
+        if (!text.contains('@')) return emptyList()
+        val roster = memberDao.activeMembers().map { MentionDto(it.userId, it.displayName) }
+        return MemberMention.resolve(text, roster)
+    }
+
     suspend fun addNote(
         text: String,
         color: String,
@@ -216,7 +239,10 @@ class BoardRepository @Inject constructor(
     ): Boolean =
         when (
             val result =
-                boardApi.createNote(text, color, size, font, x, y, attachmentId, startsAt, endsAt, place)
+                boardApi.createNote(
+                    text, color, size, font, x, y, attachmentId, startsAt, endsAt, place,
+                    namedMembers(text),
+                )
         ) {
             is ApiResult.Ok -> {
                 // The answer to this device's own change moves NO cursor
@@ -257,7 +283,16 @@ class BoardRepository @Inject constructor(
         font: String? = null,
         x: Double? = null,
         y: Double? = null,
-    ): Boolean = when (val result = boardApi.patchNote(id, text, color, size, font, x, y)) {
+    ): Boolean = when (
+        val result = boardApi.patchNote(
+            id, text, color, size, font, x, y,
+            // A text edit carries the names again — they are re-decided on
+            // every one, and a text patch without them clears them. A move
+            // sends none, so a dragged note keeps the names it had
+            // (docs/protocol.md, "Board").
+            mentions = text?.let { namedMembers(it) },
+        )
+    ) {
         is ApiResult.Ok -> {
             // Like a create's answer: applied, and moving no cursor.
             applyNote(result.value.note)

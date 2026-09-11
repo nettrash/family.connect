@@ -855,13 +855,36 @@ actor APIClient {
         let startsAt: Date?
         let endsAt: Date?
         let place: String?
+        /// The members the text names (docs/protocol.md, "Board"), omitted
+        /// when it names nobody.
+        let mentions: [MentionDTO]?
+        /// A task list's lines, on a `tasks` note and nowhere else — the
+        /// server refuses them on any other kind.
+        let items: [TaskLineRequest]?
 
         enum CodingKeys: String, CodingKey {
-            case text, color, size, font, x, y, kind, place
+            case text, color, size, font, x, y, kind, place, mentions, items
             case attachmentID = "attachment_id"
             case startsAt = "starts_at"
             case endsAt = "ends_at"
         }
+    }
+
+    /// One line the author is writing. `id` says "the line you already
+    /// have", which is what carries its TICK through a rewrite; nil, the
+    /// line is new (docs/protocol.md, "Board").
+    struct TaskLineRequest: Encodable, Equatable, Sendable {
+        let id: Int64?
+        let text: String
+
+        init(id: Int64? = nil, text: String) {
+            self.id = id
+            self.text = text
+        }
+    }
+
+    private struct TaskDoneRequest: Encodable {
+        let done: Bool
     }
 
     private struct RsvpRequest: Encodable {
@@ -888,9 +911,17 @@ actor APIClient {
         /// by hand below.
         let endsAt: Date??
         let place: String?
+        /// REPLACES the note's names, and rides with every text edit: a
+        /// note's names are re-decided on each one, and a text patch
+        /// without them clears them (docs/protocol.md, "Board").
+        let mentions: [MentionDTO]?
+        /// REPLACES a task list's lines, and is the author's like its
+        /// title: a line carrying its id keeps its TICK, one without an id
+        /// is new, and a line left out is gone (docs/protocol.md, "Board").
+        let items: [TaskLineRequest]?
 
         enum CodingKeys: String, CodingKey {
-            case text, color, size, font, x, y, place
+            case text, color, size, font, x, y, place, mentions, items
             case startsAt = "starts_at"
             case endsAt = "ends_at"
         }
@@ -904,6 +935,8 @@ actor APIClient {
             try container.encodeIfPresent(x, forKey: .x)
             try container.encodeIfPresent(y, forKey: .y)
             try container.encodeIfPresent(place, forKey: .place)
+            try container.encodeIfPresent(mentions, forKey: .mentions)
+            try container.encodeIfPresent(items, forKey: .items)
             try container.encodeIfPresent(startsAt, forKey: .startsAt)
             if let endsAt {
                 // Present, and possibly null — which is what CLEARS it.
@@ -943,14 +976,28 @@ actor APIClient {
         attachmentID: Int64? = nil,
         startsAt: Date? = nil,
         endsAt: Date? = nil,
-        place: String? = nil
+        place: String? = nil,
+        mentions: [MentionDTO] = [],
+        items: [TaskLineRequest]? = nil
     ) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
             "POST", "/families/mine/board/notes",
             body: CreateNoteRequest(
                 text: text, color: color, size: size, font: font, x: x, y: y,
                 kind: kind, attachmentID: attachmentID,
-                startsAt: startsAt, endsAt: endsAt, place: place))
+                startsAt: startsAt, endsAt: endsAt, place: place,
+                mentions: mentions.isEmpty ? nil : mentions,
+                items: items))
+        return response.note
+    }
+
+    /// Tick or untick one line of a task list. ANY member may; ticking is
+    /// not authorship, and it is a STATE rather than a toggle so two
+    /// phones cannot undo each other (docs/protocol.md, "Board").
+    func tickTask(noteID: Int64, itemID: Int64, done: Bool) async throws -> NoteDTO {
+        let response: NoteResponse = try await request(
+            "PUT", "/families/mine/board/notes/\(noteID)/tasks/\(itemID)",
+            body: TaskDoneRequest(done: done))
         return response.note
     }
 
@@ -977,13 +1024,17 @@ actor APIClient {
         y: Double? = nil,
         startsAt: Date? = nil,
         endsAt: Date?? = nil,
-        place: String? = nil
+        place: String? = nil,
+        mentions: [MentionDTO]? = nil,
+        items: [TaskLineRequest]? = nil
     ) async throws -> NoteDTO {
         let response: NoteResponse = try await request(
             "PATCH", "/families/mine/board/notes/\(id)",
             body: PatchNoteRequest(
                 text: text, color: color, size: size, font: font, x: x, y: y,
-                startsAt: startsAt, endsAt: endsAt, place: place))
+                startsAt: startsAt, endsAt: endsAt, place: place,
+                mentions: mentions?.isEmpty == true ? nil : mentions,
+                items: items))
         return response.note
     }
 

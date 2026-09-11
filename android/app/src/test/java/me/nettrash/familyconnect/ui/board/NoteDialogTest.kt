@@ -8,6 +8,12 @@
  * a swatch selects that color, the selection is published to semantics,
  * and Save hands the picked color back.
  *
+ * The mention strip and the reader's doors are here for the same reason:
+ * the strip is the only way a name gets into a note without being typed
+ * exactly right, and a name in an OPEN note is the one place on the board
+ * where a tap goes somewhere other than the note (docs/protocol.md,
+ * "Board").
+ *
  * The size row is the same contract one field over: a segmented button
  * selects a step, the selection is published to semantics, and Save hands
  * the picked size back beside the colour.
@@ -18,12 +24,20 @@
 
 package me.nettrash.familyconnect.ui.board
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.performTouchInput
 import com.google.common.truth.Truth.assertThat
+import me.nettrash.familyconnect.data.net.dto.MentionDto
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -139,5 +153,73 @@ class NoteDialogTest {
 
         compose.onNodeWithText("Save").performClick()
         assertThat(saved).isEqualTo(listOf("hi", "yellow", "small", "plain"))
+    }
+
+    // MARK: - the names a note says (docs/protocol.md, "Board")
+
+    private val roster = listOf(MentionDto(2L, "Anna"), MentionDto(3L, "Bob"))
+
+    @Test
+    fun pickingANameOffTheStripWritesItIntoTheNote() {
+        var saved: List<String>? = null
+        compose.setContent {
+            NoteDialog(
+                draft = draft().copy(text = ""),
+                canEdit = true,
+                authorName = "You",
+                onDismiss = {},
+                onSave = { text, color, size, font -> saved = listOf(text, color, size, font) },
+                roster = roster,
+                onDelete = null,
+            )
+        }
+
+        // Nothing offered until an `@` is being typed.
+        compose.onAllNodesWithContentDescription("Mention Anna").assertCountEquals(0)
+
+        compose.onNodeWithText("Note").performTextInput("Milk @An")
+        compose.onNodeWithContentDescription("Mention Anna").assertIsDisplayed()
+        // Narrowed as the name is typed: Bob is not what `@An` could be.
+        compose.onAllNodesWithContentDescription("Mention Bob").assertCountEquals(0)
+
+        compose.onNodeWithContentDescription("Mention Anna").performClick()
+        compose.onNodeWithText("Save").performClick()
+
+        // The half-typed name is REPLACED, not appended to, and the space
+        // after it is what lets the next word start a sentence rather than
+        // a longer name.
+        assertThat(saved).isEqualTo(listOf("Milk @Anna ", "yellow", "medium", "plain"))
+    }
+
+    @Test
+    fun aNameInAnOpenNoteOpensTheChatWithThatMember() {
+        val opened = mutableListOf<Long>()
+        var dismissed = false
+        compose.setContent {
+            NoteDialog(
+                draft = draft().copy(
+                    // The name FIRST, so the test can put the tap on it
+                    // without knowing where the line ends.
+                    text = "@Anna please bring milk",
+                    mentions = listOf(MentionDto(2L, "Anna")),
+                    authorId = 9L,
+                ),
+                // A reader, not the author: the note is drawn, not edited.
+                canEdit = false,
+                authorName = "Bob",
+                onDismiss = { dismissed = true },
+                onSave = { _, _, _, _ -> },
+                roster = roster,
+                onOpenChat = { opened += it },
+                onDelete = null,
+            )
+        }
+
+        compose.onNodeWithText("@Anna please bring milk").performTouchInput {
+            click(Offset(left + 4f, top + 4f))
+        }
+
+        assertThat(opened).containsExactly(2L)
+        assertThat(dismissed).isFalse()
     }
 }

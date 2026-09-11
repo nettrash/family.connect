@@ -82,12 +82,14 @@ struct BoardSyncTests {
         startsAt: Date? = nil,
         endsAt: Date? = nil,
         place: String? = nil,
-        rsvps: [RsvpDTO]? = nil
+        rsvps: [RsvpDTO]? = nil,
+        mentions: [MentionDTO]? = nil
     ) -> NoteDTO {
         NoteDTO(
             id: id, authorID: 7, text: text, color: color, size: size, font: font,
             kind: kind, attachment: attachment,
-            startsAt: startsAt, endsAt: endsAt, place: place, rsvps: rsvps, x: x, y: y,
+            startsAt: startsAt, endsAt: endsAt, place: place, rsvps: rsvps,
+            mentions: mentions, x: x, y: y,
             createdAt: Self.stamp, updatedAt: Self.stamp, boardSeq: boardSeq,
             contentSeq: contentSeq, deleted: nil)
     }
@@ -96,7 +98,7 @@ struct BoardSyncTests {
         NoteDTO(
             id: id, authorID: nil, text: nil, color: nil, size: nil, font: nil,
             kind: nil, attachment: nil, startsAt: nil, endsAt: nil, place: nil, rsvps: nil,
-            x: nil, y: nil,
+            mentions: nil, x: nil, y: nil,
             createdAt: nil, updatedAt: nil, boardSeq: boardSeq, contentSeq: nil,
             deleted: true)
     }
@@ -190,7 +192,7 @@ struct BoardSyncTests {
             NoteDTO(
                 id: 1, authorID: nil, text: nil, color: nil, size: nil, font: nil,
                 kind: nil, attachment: nil, startsAt: nil, endsAt: nil, place: nil, rsvps: nil,
-                x: nil, y: nil,
+                mentions: nil, x: nil, y: nil,
                 createdAt: nil, updatedAt: nil, boardSeq: 3, contentSeq: nil,
                 deleted: nil))
 

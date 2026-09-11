@@ -22,6 +22,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -29,6 +30,7 @@ import kotlinx.coroutines.launch
 import me.nettrash.familyconnect.data.db.MemberDao
 import me.nettrash.familyconnect.data.db.NoteEntity
 import me.nettrash.familyconnect.data.repo.BoardRepository
+import me.nettrash.familyconnect.data.repo.ChatRepository
 import me.nettrash.familyconnect.di.AppScope
 import me.nettrash.familyconnect.data.repo.MediaPrep
 import me.nettrash.familyconnect.data.net.ApiResult
@@ -41,6 +43,9 @@ import me.nettrash.familyconnect.data.settings.SettingsRepository
 import me.nettrash.familyconnect.util.BoardBadge
 import me.nettrash.familyconnect.util.badgeMarks
 import me.nettrash.familyconnect.util.marks
+import me.nettrash.familyconnect.data.net.dto.MentionDto
+import me.nettrash.familyconnect.util.MemberMention
+import me.nettrash.familyconnect.util.resolvedDisplayName
 import me.nettrash.familyconnect.util.resolvedDisplayNames
 import javax.inject.Inject
 
@@ -50,6 +55,7 @@ class BoardViewModel @Inject constructor(
     @param:ApplicationContext private val appContext: Context,
     private val boardRepository: BoardRepository,
     private val familyRepository: FamilyRepository,
+    private val chatRepository: ChatRepository,
     memberDao: MemberDao,
     private val settings: SettingsRepository,
     private val attachmentApi: AttachmentApi,
@@ -149,6 +155,39 @@ class BoardViewModel @Inject constructor(
     val memberNames: StateFlow<Map<Long, String>> = memberDao.observeMembers()
         .map { members -> members.resolvedDisplayNames(appContext) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /**
+     * Everybody a name in a note may mean, and everybody a name in one may
+     * OPEN — the same set, which is the point (docs/protocol.md, "Board":
+     * a name is a door only where there is somebody to open it with). The
+     * ACTIVE roster, so a member who has left or deleted their account is
+     * neither offered nor a door, minus the reader themself and anyone
+     * they have blocked — exactly what the chat's own composer offers.
+     */
+    val mentionRoster: StateFlow<List<MentionDto>> = combine(
+        memberDao.observeActiveMembers(),
+        settings.state,
+    ) { members, state ->
+        members
+            .filter { it.userId != state.myUserId && it.userId !in state.blockedUserIds }
+            .map { MentionDto(it.userId, it.resolvedDisplayName(appContext)) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * A tap on a name in an OPEN note opens the one-to-one chat with that
+     * member (docs/protocol.md, "Board"). Guarded against the ids the
+     * drawing already refuses to make doors of, because a roster that
+     * changed while the note was open must not be a way past the rule.
+     */
+    fun openDirectChat(userId: Long, onOpened: (Long) -> Unit) {
+        if (mentionRoster.value.none { it.userId == userId }) return
+        viewModelScope.launch {
+            when (val result = chatRepository.createDirect(userId)) {
+                is ApiResult.Ok -> onOpened(result.value.id)
+                else -> Unit
+            }
+        }
+    }
 
     /**
      * Opening the board catches up rather than re-reading: the family call

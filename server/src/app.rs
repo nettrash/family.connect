@@ -210,6 +210,12 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/families/mine/board/notes/{note_id}/rsvp",
             put(handlers_board::put_rsvp).delete(handlers_board::delete_rsvp),
         )
+        // Ticking a line off a task list is the shared act too, for the
+        // same reason and with its own route (docs/protocol.md, "Board").
+        .route(
+            "/api/v1/families/mine/board/notes/{note_id}/tasks/{item_id}",
+            put(handlers_board::put_task_done),
+        )
         // Devices
         .route("/api/v1/devices", post(handlers_device::register_device))
         .route(

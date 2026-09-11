@@ -456,6 +456,12 @@ data class NoteEntity(
      * difference is the point.
      */
     val rsvpsJson: String? = null,
+    /**
+     * The members this note names, the wire's list stored verbatim
+     * (NoteMentionsCodec). Null when it names nobody (docs/protocol.md,
+     * "Board").
+     */
+    val mentionsJson: String? = null,
     /** Fractions of the board, 0..1 from the top-left. */
     val x: Double,
     val y: Double,

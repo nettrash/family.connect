@@ -67,6 +67,14 @@ final class NoteEntity {
     /// Who is coming, as the wire's list stored verbatim (RsvpCodec). Nil
     /// on every other kind; "[]" on an event nobody has answered.
     var rsvpsJSON: String?
+    /// The members this note names, the wire's list stored verbatim
+    /// (MentionCodec). Nil when it names nobody (docs/protocol.md,
+    /// "Board"), which is what a lightweight migration fills it with.
+    var mentionsJSON: String?
+    /// The things to do, the wire's list stored verbatim (TaskCodec). Nil
+    /// on every other kind; "[]" on a list nothing has been written into
+    /// yet — which is what a lightweight migration fills it with.
+    var itemsJSON: String?
     /// Fractions of the board, 0…1 from the top-left, so a note sits in the
     /// same relative place on a phone and a tablet.
     var x: Double
@@ -101,6 +109,8 @@ final class NoteEntity {
         endsAt: Date? = nil,
         place: String? = nil,
         rsvpsJSON: String? = nil,
+        mentionsJSON: String? = nil,
+        itemsJSON: String? = nil,
         x: Double,
         y: Double,
         createdAt: Date,
@@ -122,6 +132,8 @@ final class NoteEntity {
         self.endsAt = endsAt
         self.place = place
         self.rsvpsJSON = rsvpsJSON
+        self.mentionsJSON = mentionsJSON
+        self.itemsJSON = itemsJSON
         self.x = x
         self.y = y
         self.createdAt = createdAt
@@ -138,6 +150,22 @@ extension NoteEntity {
         RsvpCodec.decode(rsvpsJSON)
     }
 
+    /// The members this note names, decoded — empty when it names nobody.
+    var mentionList: [MentionDTO] {
+        MentionCodec.decode(mentionsJSON)
+    }
+
+    /// The things to do, decoded — empty on a list nobody has written into
+    /// and on every note that is not a list.
+    var taskList: [TaskItemDTO] {
+        TaskCodec.decode(itemsJSON)
+    }
+
+    /// How many of them are done, for the line under the title.
+    var tasksDone: Int {
+        taskList.count { $0.done }
+    }
+
     /// What this reader answered, if anything.
     func myAnswer(_ userID: Int64) -> String? {
         rsvpList.first { $0.userID == userID }?.answer
@@ -146,6 +174,46 @@ extension NoteEntity {
     /// How many said each thing, for the line under an event's title.
     func answerCount(_ answer: String) -> Int {
         rsvpList.count { $0.answer == answer }
+    }
+}
+
+/// The same, for the members a note names — stored verbatim for the same
+/// reason: the store holds what the server said, and the highlight is drawn
+/// from it rather than guessed at (docs/protocol.md, "Board").
+enum MentionCodec {
+    static func encode(_ mentions: [MentionDTO]) -> String? {
+        guard !mentions.isEmpty, let data = try? JSONEncoder().encode(mentions) else {
+            return nil
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func decode(_ raw: String?) -> [MentionDTO] {
+        guard let raw, let data = raw.data(using: .utf8),
+              let list = try? JSONDecoder().decode([MentionDTO].self, from: data)
+        else { return [] }
+        return list
+    }
+}
+
+/// The same for a task list's lines: stored verbatim, so a tick and the
+/// server's own ids are kept rather than re-derived (docs/protocol.md,
+/// "Board").
+///
+/// An EMPTY list still encodes, unlike a mention list: `[]` means "a list
+/// with nothing on it" and nil means "not a list at all", and the two are
+/// different notes.
+enum TaskCodec {
+    static func encode(_ items: [TaskItemDTO]) -> String? {
+        guard let data = try? JSONEncoder().encode(items) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func decode(_ raw: String?) -> [TaskItemDTO] {
+        guard let raw, let data = raw.data(using: .utf8),
+              let list = try? JSONDecoder().decode([TaskItemDTO].self, from: data)
+        else { return [] }
+        return list
     }
 }
 

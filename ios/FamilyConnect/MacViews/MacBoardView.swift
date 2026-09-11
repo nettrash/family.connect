@@ -69,7 +69,7 @@ struct MacBoardView: View {
             let wall = BoardWall.size(visible: geometry.size)
             ScrollView(.vertical) {
                 ZStack(alignment: .topLeading) {
-                    Color(nsColor: .underPageBackgroundColor)
+                    BoardGround()
                     ForEach(notes) { note in
                         sticker(for: note, board: wall)
                     }
@@ -148,7 +148,8 @@ struct MacBoardView: View {
                 text: $draftText, color: $draftColor, size: $draftSize, font: $draftFont,
                 event: $draftEvent,
                 kind: composingKind,
-                title: composingKind == .event ? "New Event" : "New Note"
+                title: composingKind == .event ? "New Event" : "New Note",
+                mentionCandidates: mentionCandidates(matching:)
             ) {
                 let isEvent = composingKind == .event
                 let event = draftEvent
@@ -178,6 +179,18 @@ struct MacBoardView: View {
     /// being rewritten, and on nothing else. A drag changes no part of it.
     private var boardMark: BoardBadge.Marks {
         BoardBadge.marksAfterShowing(notes: notes, marks: .zero)
+    }
+
+    /// What the editor's strip offers for a half-typed name: the live
+    /// roster, never the reader themself, never the blocked — the chat's
+    /// own rule (docs/protocol.md, "Mentioning a member").
+    private func mentionCandidates(matching query: String) -> [MentionDTO] {
+        let roster = members
+            .filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+        return MemberMentions.candidates(
+            in: roster, matching: query,
+            excluding: coordinator.blockedUserIDs.union([coordinator.currentUserID]))
     }
 
     /// One sticker. Its own function for the reason BoardView's drafts are:
@@ -319,7 +332,13 @@ fileprivate struct MacNoteView: View {
                     maybe: note.answerCount(RsvpAnswer.maybe.name))
             }
             if !isBarePicture {
-            (isHidden ? Text("Hidden — blocked member") : Text(note.text))
+            // The names, bold and in the note's own ink — and not doors on
+            // the wall, for the reason BoardView gives (docs/protocol.md,
+            // "Board").
+            (isHidden
+                ? Text("Hidden — blocked member")
+                : Text(MemberMentions.noteText(
+                    note.text, mentions: note.mentionList, linking: false)))
                 // The hand the author chose (docs/protocol.md, "Board").
                 .font(NoteFont(name: note.font).font(for: noteSize))
                 // Forced ink, matching BoardView: the pastels are fixed
@@ -350,6 +369,9 @@ fileprivate struct MacNoteView: View {
         // gives, and the only feedback a cursor drag has.
         .shadow(color: .black.opacity(isDragging ? 0.28 : 0.12),
                 radius: isDragging ? 10 : 3, y: 2)
+        // The pin, over the card's top edge — an overlay, so the words
+        // keep all their room (docs/protocol.md, "Board").
+        .overlay(alignment: .top) { NotePin().offset(y: -4) }
         .scaleEffect(isDragging ? 1.04 : 1)
         .animation(.easeOut(duration: 0.12), value: isDragging)
         // Asks first, as the phone does: one menu click used to take a
@@ -491,6 +513,10 @@ private struct MacNoteEditor: View {
     /// A key, not a String: `Text(title)` then goes through the catalog
     /// ("New Note" / "Edit Note") instead of shipping English verbatim.
     let title: LocalizedStringKey
+    /// The members a half-typed `@` could mean (docs/protocol.md,
+    /// "Board"). Empty where nobody is offered, which is what a board with
+    /// no roster loaded yet has.
+    var mentionCandidates: (String) -> [MentionDTO] = { _ in [] }
     let onSave: () -> Void
 
     private var canSave: Bool {
@@ -511,6 +537,17 @@ private struct MacNoteEditor: View {
                     let capped = NoteText.capped(new)
                     if capped != new { text = capped }
                 }
+            // The names a half-typed `@` could mean — the chat's own strip,
+            // under the words (docs/protocol.md, "Board").
+            if let query = MemberMentions.query(in: text) {
+                let offered = mentionCandidates(query)
+                if !offered.isEmpty {
+                    MentionSuggestions(candidates: offered) { name in
+                        text = MemberMentions.accept(draft: text, name: name)
+                    }
+                    .frame(width: 320)
+                }
+            }
             if NoteText.shouldShowCounter(text) {
                 Text("\(NoteText.remaining(text)) characters left")
                     .font(.caption)
@@ -627,6 +664,7 @@ private struct MacNoteEditorForExisting: View {
 
     @Environment(ChatSyncCoordinator.self) private var coordinator
     @Environment(\.dismiss) private var dismiss
+    @Query private var members: [MemberEntity]
     @State private var text: String = ""
     @State private var color: String = "yellow"
     @State private var size: NoteSize = .medium
@@ -635,11 +673,22 @@ private struct MacNoteEditorForExisting: View {
 
     private var kind: NoteKind { NoteKind(name: note.kind) }
 
+    /// The same strip the new-note editor gets (docs/protocol.md, "Board").
+    private func mentionCandidates(matching query: String) -> [MentionDTO] {
+        let roster = members
+            .filter { !$0.hasLeft && !$0.accountDeleted }
+            .map { MentionDTO(userID: $0.userID, name: $0.resolvedDisplayName) }
+        return MemberMentions.candidates(
+            in: roster, matching: query,
+            excluding: coordinator.blockedUserIDs.union([coordinator.currentUserID]))
+    }
+
     var body: some View {
         MacNoteEditor(
             text: $text, color: $color, size: $size, font: $font, event: $event,
             kind: kind,
-            title: kind == .event ? "Edit Event" : "Edit Note"
+            title: kind == .event ? "Edit Event" : "Edit Note",
+            mentionCandidates: mentionCandidates(matching:)
         ) {
             let isEvent = kind == .event
             let event = event

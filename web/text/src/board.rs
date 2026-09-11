@@ -21,6 +21,15 @@ pub const MAX_TEXT_CHARS: usize = 280;
 /// The longest an event's place may be, counted the same way.
 pub const MAX_PLACE_CHARS: usize = 200;
 
+/// The longest one line of a task list may be, counted the same way — a
+/// thing to do, not a paragraph about it.
+pub const MAX_TASK_ITEM_CHARS: usize = 100;
+
+/// The most lines one list may hold. The server's own `max_task_items`
+/// default: a client that lets somebody type a twenty-first line is a
+/// client whose save fails for a reason nobody can see.
+pub const MAX_TASK_ITEMS: usize = 20;
+
 /// The counter under the editor shows only in the last 40, so an ordinary
 /// note is written without a number counting down at it (NoteText).
 pub const COUNTER_FROM: usize = 40;
@@ -299,6 +308,7 @@ pub enum Kind {
     Text,
     Photo,
     Event,
+    Tasks,
 }
 
 impl Kind {
@@ -308,6 +318,7 @@ impl Kind {
         match name {
             Some("photo") => Kind::Photo,
             Some("event") => Kind::Event,
+            Some("tasks") => Kind::Tasks,
             _ => Kind::Text,
         }
     }
@@ -317,6 +328,7 @@ impl Kind {
             Kind::Text => "text",
             Kind::Photo => "photo",
             Kind::Event => "event",
+            Kind::Tasks => "tasks",
         }
     }
 }
@@ -411,6 +423,21 @@ pub fn wall_height(visible: f64) -> f64 {
     (visible * WALL_SCREENS).max(visible)
 }
 
+/// How many lines of a task list a STICKER draws before it says how many
+/// more there are (docs/protocol.md, "Board").
+///
+/// One number for all four clients, for the reason `WALL_SCREENS` is one:
+/// a list that ran to a different point on the phone and on the Mac would
+/// be a different list. The note itself always has them all.
+pub const WALL_TASK_LINES: usize = 5;
+
+/// The lines a sticker draws, and how many it had to leave — `(shown,
+/// left)`, where `left` is 0 on a list that fits.
+pub fn wall_task_lines(total: usize) -> (usize, usize) {
+    let shown = total.min(WALL_TASK_LINES);
+    (shown, total - shown)
+}
+
 /// Below this width a wall takes the phone's square stickers: the Mac's
 /// landscape cards would cover most of a narrow board between them.
 pub const COMPACT_BELOW: f64 = 640.0;
@@ -503,6 +530,17 @@ pub fn later(a: Marks, b: Marks) -> Marks {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_sticker_draws_the_first_lines_of_a_list_and_says_how_many_are_left() {
+        assert_eq!(WALL_TASK_LINES, 5);
+        assert_eq!(wall_task_lines(0), (0, 0));
+        assert_eq!(wall_task_lines(3), (3, 0));
+        // A list of exactly the cap says nothing extra.
+        assert_eq!(wall_task_lines(5), (5, 0));
+        assert_eq!(wall_task_lines(6), (5, 1));
+        assert_eq!(wall_task_lines(20), (5, 15));
+    }
+
     #[test]
     fn the_wall_is_taller_than_the_window_and_never_shorter() {
         // Taller, so there is room to pin something without taking

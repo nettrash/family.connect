@@ -885,6 +885,7 @@ class FakeBoardApi : BoardApi {
         startsAt: String?,
         endsAt: String?,
         place: String?,
+        mentions: List<MentionDto>,
     ): ApiResult<NoteResponse> {
         val kind = when {
             startsAt != null -> "event"
@@ -898,6 +899,9 @@ class FakeBoardApi : BoardApi {
             startsAt = startsAt,
             endsAt = endsAt,
             place = place,
+            // Absent when nobody is named, as the wire has it: the
+            // client sends names only when there are some.
+            mentions = mentions.takeIf { it.isNotEmpty() },
         )
         val note = noteDto(
             id = nextSeq, text = text, color = color, size = size, font = font,
@@ -908,6 +912,7 @@ class FakeBoardApi : BoardApi {
             endsAt = endsAt,
             place = place,
             rsvps = if (kind == "event") emptyList() else null,
+            mentions = mentions.takeIf { it.isNotEmpty() },
         )
         nextSeq++
         return createResult?.invoke(note) ?: ApiResult.Ok(NoteResponse(note))
@@ -921,8 +926,9 @@ class FakeBoardApi : BoardApi {
         font: String?,
         x: Double?,
         y: Double?,
+        mentions: List<MentionDto>?,
     ): ApiResult<NoteResponse> {
-        patched += id to PatchNoteRequest(text, color, size, x, y, font)
+        patched += id to PatchNoteRequest(text, color, size, x, y, font, mentions = mentions)
         val note = noteDto(
             id = id,
             text = text ?: "note $id",
@@ -931,6 +937,7 @@ class FakeBoardApi : BoardApi {
             x = x ?: 0.0,
             y = y ?: 0.0,
             boardSeq = nextSeq++,
+            mentions = mentions,
         )
         return ApiResult.Ok(NoteResponse(note))
     }
@@ -984,6 +991,8 @@ fun noteDto(
     endsAt: String? = null,
     place: String? = null,
     rsvps: List<RsvpDto>? = null,
+    /** The members the text names (docs/protocol.md, "Board"). */
+    mentions: List<MentionDto>? = null,
 ) = NoteDto(
     id = id,
     authorId = if (deleted == true) null else authorId,
@@ -1003,6 +1012,7 @@ fun noteDto(
     endsAt = if (deleted == true) null else endsAt,
     place = if (deleted == true) null else place,
     rsvps = if (deleted == true) null else rsvps,
+    mentions = if (deleted == true) null else mentions,
     deleted = deleted,
 )
 

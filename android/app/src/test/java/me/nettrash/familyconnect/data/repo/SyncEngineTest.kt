@@ -160,6 +160,7 @@ class SyncEngineTest {
         val boardRepository = BoardRepository(
             boardApi = boardApi,
             noteDao = db.noteDao(),
+            memberDao = db.memberDao(),
             settings = settings,
             socket = socket,
             scope = repoScope,

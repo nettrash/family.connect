@@ -36,7 +36,7 @@ use crate::auth::AuthUser;
 use crate::error::{ApiError, AppJson, codes};
 use crate::events;
 use crate::handlers_chat::{clamp_limit, parse_pagination_param};
-use crate::models::{Attachment, Note, Rsvp};
+use crate::models::{Attachment, Mention, Note, Rsvp, TaskItem};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -65,8 +65,35 @@ pub struct CreateNoteRequest {
     pub ends_at: Option<String>,
     #[serde(default)]
     pub place: Option<String>,
+    /// The members this note names (docs/protocol.md, "Board"): the same
+    /// shape, the same grammar and the same limits as a message's.
+    #[serde(default)]
+    pub mentions: Option<Vec<Mention>>,
+    /// The lines of a `tasks` note and nowhere else. Absent there means an
+    /// empty list: pinning "Saturday" and filling it in later is how a
+    /// list gets made (docs/protocol.md, "Board").
+    #[serde(default)]
+    pub items: Option<Vec<TaskItemRequest>>,
     pub x: f64,
     pub y: f64,
+}
+
+/// One line the AUTHOR is writing. `id` says "this is the item you already
+/// have", which is what carries its TICK through a rewrite; absent, the
+/// line is new. `done` is deliberately not here: ticking is not authorship
+/// (docs/protocol.md, "Board").
+#[derive(Debug, Clone, Deserialize)]
+pub struct TaskItemRequest {
+    #[serde(default)]
+    pub id: Option<i64>,
+    pub text: String,
+}
+
+/// `PUT /families/mine/board/notes/{id}/tasks/{item_id}` — a state, not a
+/// toggle.
+#[derive(Debug, Deserialize)]
+pub struct TaskDoneRequest {
+    pub done: bool,
 }
 
 /// Every field optional: a move sends only `x`/`y`, an edit any of `text`,
@@ -91,10 +118,112 @@ pub struct PatchNoteRequest {
     pub ends_at: Option<Option<String>>,
     #[serde(default)]
     pub place: Option<String>,
+    /// REPLACES the list: a note's names are re-decided on every edit,
+    /// because an edit to a note notifies nobody and so cannot wake anyone
+    /// twice (docs/protocol.md, "Board"). Sending `text` without this
+    /// clears them, the names being part of what the note says.
+    #[serde(default)]
+    pub mentions: Option<Vec<Mention>>,
+    /// REPLACES a task list's lines, and the author's like its title: an
+    /// entry whose `id` the note holds is that item rewritten and moved
+    /// (and KEEPS ITS TICK), one without an id is new, and an item left
+    /// out is gone (docs/protocol.md, "Board").
+    #[serde(default)]
+    pub items: Option<Vec<TaskItemRequest>>,
     #[serde(default)]
     pub x: Option<f64>,
     #[serde(default)]
     pub y: Option<f64>,
+}
+
+/// At most this many members on one note — the message's number, for the
+/// same reason: a note that names everybody names nobody.
+const MAX_MENTIONS_PER_NOTE: usize = 20;
+
+/// The longest `name` a mention may carry, which is the display-name cap.
+const MAX_MENTION_NAME_CHARS: usize = 64;
+
+/// The names a note may carry (docs/protocol.md, "Board"): members of THIS
+/// family, each once, each a name the text actually says after an `@`.
+///
+/// The same rules `handlers_chat::validate_mentions` applies to a message,
+/// and the same grammar (`crate::mentions::names_member`) — a highlight the
+/// clients draw and a list the server stores must agree about what a name
+/// is. What is NOT here is the chat's family-only check: a board belongs to
+/// a family by construction.
+async fn validate_note_mentions(
+    state: &AppState,
+    family_id: i64,
+    text: &str,
+    mentions: &[Mention],
+) -> Result<(), ApiError> {
+    if mentions.len() > MAX_MENTIONS_PER_NOTE {
+        return Err(ApiError::validation("a note names at most 20 members"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for mention in mentions {
+        if !seen.insert(mention.user_id) {
+            return Err(ApiError::validation("the same member is named twice"));
+        }
+        let name = mention.name.as_str();
+        if name.is_empty() || name.chars().count() > MAX_MENTION_NAME_CHARS {
+            return Err(ApiError::validation(
+                "a mention's name is empty or too long",
+            ));
+        }
+        if !crate::mentions::names_member(text, name) {
+            return Err(ApiError::validation(
+                "the note does not say @ followed by that name",
+            ));
+        }
+    }
+    let ids: Vec<i64> = mentions.iter().map(|mention| mention.user_id).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let members: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM users
+         WHERE id = ANY($1) AND family_id IS NOT NULL AND family_id = $2",
+    )
+    .bind(&ids)
+    .bind(family_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if members as usize != ids.len() {
+        return Err(ApiError::validation(
+            "a mention names somebody who is not a member of this family",
+        ));
+    }
+    Ok(())
+}
+
+/// Write one note's names, replacing whatever it had.
+///
+/// Inside the caller's transaction, so the list and the text land together:
+/// a note whose words name somebody the list does not is a note with a
+/// highlight nobody can tap.
+async fn write_note_mentions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    note_id: i64,
+    mentions: &[Mention],
+) -> Result<(), ApiError> {
+    sqlx::query("DELETE FROM note_mentions WHERE note_id = $1")
+        .bind(note_id)
+        .execute(&mut **tx)
+        .await?;
+    for (position, mention) in mentions.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO note_mentions (note_id, user_id, name, position)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(note_id)
+        .bind(mention.user_id)
+        .bind(&mention.name)
+        .bind(position as i32)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }
 
 /// The family the caller belongs to, or `not_in_family`.
@@ -356,19 +485,257 @@ async fn attach_rsvps(state: &AppState, note: &mut Note) -> Result<(), ApiError>
     Ok(())
 }
 
-/// Everything a note carries beside its own row.
+/// The members a note NAMES, in the author's order — and ABSENT rather than
+/// `[]` when it names nobody, so a client that predates note mentions reads
+/// exactly what it read before (docs/protocol.md, "Board").
+async fn attach_mentions(state: &AppState, note: &mut Note) -> Result<(), ApiError> {
+    if note.deleted {
+        return Ok(());
+    }
+    let rows =
+        sqlx::query("SELECT user_id, name FROM note_mentions WHERE note_id = $1 ORDER BY position")
+            .bind(note.id)
+            .fetch_all(&state.pool)
+            .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    note.mentions = Some(
+        rows.iter()
+            .map(|row| Mention {
+                user_id: row.get("user_id"),
+                name: row.get("name"),
+            })
+            .collect(),
+    );
+    Ok(())
+}
+
+/// The things to do on a task list, in the author's order — and `[]`
+/// rather than absent on a list nothing has been written into yet, because
+/// an empty list is a list (docs/protocol.md, "Board").
+async fn attach_tasks(state: &AppState, note: &mut Note) -> Result<(), ApiError> {
+    if note.deleted || note.kind.as_deref() != Some(Note::KIND_TASKS) {
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT id, text, done_by, done_at FROM note_task_items
+         WHERE note_id = $1 ORDER BY position, id",
+    )
+    .bind(note.id)
+    .fetch_all(&state.pool)
+    .await?;
+    note.items = Some(rows.iter().map(TaskItem::from_row).collect());
+    Ok(())
+}
+
+/// [`attach_tasks`] for a page: one query for every list on it.
+async fn attach_tasks_to_page(state: &AppState, notes: &mut [Note]) -> Result<(), ApiError> {
+    let ids: Vec<i64> = notes
+        .iter()
+        .filter(|note| !note.deleted && note.kind.as_deref() == Some(Note::KIND_TASKS))
+        .map(|note| note.id)
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT note_id, id, text, done_by, done_at FROM note_task_items
+         WHERE note_id = ANY($1) ORDER BY note_id, position, id",
+    )
+    .bind(&ids)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut by_note: HashMap<i64, Vec<TaskItem>> = HashMap::new();
+    for row in &rows {
+        by_note
+            .entry(row.get("note_id"))
+            .or_default()
+            .push(TaskItem::from_row(row));
+    }
+    for note in notes.iter_mut() {
+        // Every list gets a list, empty or not — the `ids` filter above is
+        // what decides which notes are lists at all.
+        if ids.contains(&note.id) {
+            note.items = Some(by_note.remove(&note.id).unwrap_or_default());
+        }
+    }
+    Ok(())
+}
+
+/// Everything a note carries beside its own row. One note at a time —
+/// what a create, a patch or an answer needs; a PAGE of them goes through
+/// [`attach_pictures`], whose names are read in one query.
 async fn hydrate(state: &AppState, note: &mut Note) -> Result<(), ApiError> {
     attach_picture(state, note).await?;
     attach_rsvps(state, note).await?;
+    attach_tasks(state, note).await?;
+    attach_mentions(state, note).await?;
     Ok(())
 }
 
 /// The same, for a page of them.
 async fn attach_pictures(state: &AppState, notes: &mut [Note]) -> Result<(), ApiError> {
     for note in notes.iter_mut() {
-        hydrate(state, note).await?;
+        attach_picture(state, note).await?;
+        attach_rsvps(state, note).await?;
+    }
+    // The names and the lists for the WHOLE page in one read each, not one
+    // read per note: a wall holds up to `max_board_notes` of them, and a
+    // board that opens is already two queries a note without adding two
+    // more (see the note on `hydrate`).
+    attach_tasks_to_page(state, notes).await?;
+    attach_mentions_to_page(state, notes).await
+}
+
+/// [`attach_mentions`] for a page: one query for every note on it.
+async fn attach_mentions_to_page(state: &AppState, notes: &mut [Note]) -> Result<(), ApiError> {
+    let ids: Vec<i64> = notes
+        .iter()
+        .filter(|note| !note.deleted)
+        .map(|note| note.id)
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT note_id, user_id, name FROM note_mentions
+         WHERE note_id = ANY($1) ORDER BY note_id, position",
+    )
+    .bind(&ids)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut by_note: HashMap<i64, Vec<Mention>> = HashMap::new();
+    for row in &rows {
+        by_note
+            .entry(row.get("note_id"))
+            .or_default()
+            .push(Mention {
+                user_id: row.get("user_id"),
+                name: row.get("name"),
+            });
+    }
+    for note in notes.iter_mut() {
+        // ABSENT rather than `[]` for a note that names nobody, exactly as
+        // the single-note path has it.
+        if let Some(named) = by_note.remove(&note.id) {
+            note.mentions = Some(named);
+        }
     }
     Ok(())
+}
+
+/// The lines a task list may carry (docs/protocol.md, "Board"): at most
+/// `max_task_items`, each trimmed, non-empty and at most 100 characters,
+/// and every `id` one of THIS note's.
+///
+/// The id check is the one that matters. An id a client invented, or one
+/// belonging to another note, would otherwise be treated as a new line and
+/// quietly lose whatever the client thought it was editing. So an unknown
+/// id is `validation`, not a silent insert.
+fn validate_task_items(
+    items: &[TaskItemRequest],
+    held: &[i64],
+    max_items: usize,
+) -> Result<Vec<(Option<i64>, String)>, ApiError> {
+    if items.len() > max_items {
+        return Err(ApiError::validation(format!(
+            "a task list holds at most {max_items} items"
+        )));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut lines = Vec::with_capacity(items.len());
+    for item in items {
+        let text = item.text.trim();
+        if text.is_empty() {
+            return Err(ApiError::validation("a task item cannot be empty"));
+        }
+        if text.chars().count() > TaskItem::MAX_TEXT_CHARS {
+            return Err(ApiError::validation(format!(
+                "a task item is at most {} characters",
+                TaskItem::MAX_TEXT_CHARS
+            )));
+        }
+        if let Some(id) = item.id {
+            if !held.contains(&id) {
+                return Err(ApiError::validation(
+                    "a task item id that is not one of this note's",
+                ));
+            }
+            if !seen.insert(id) {
+                return Err(ApiError::validation("the same task item twice"));
+            }
+        }
+        lines.push((item.id, text.to_string()));
+    }
+    Ok(lines)
+}
+
+/// Write the author's list: the items they kept, in the order they put
+/// them, and nothing else.
+///
+/// An item that keeps its id keeps its row — and therefore its tick, which
+/// is the whole reason ids travel: fixing a typo in "Bred" must not untick
+/// it (docs/protocol.md, "Board").
+async fn write_task_items(
+    tx: &mut sqlx::PgConnection,
+    note_id: i64,
+    lines: &[(Option<i64>, String)],
+) -> Result<(), ApiError> {
+    let kept: Vec<i64> = lines.iter().filter_map(|(id, _)| *id).collect();
+    // Gone first, so a list that shrank does not keep rows nothing points
+    // at — and by NOT id, so an empty `kept` deletes the lot.
+    sqlx::query("DELETE FROM note_task_items WHERE note_id = $1 AND NOT (id = ANY($2))")
+        .bind(note_id)
+        .bind(&kept)
+        .execute(&mut *tx)
+        .await?;
+    for (position, (id, text)) in lines.iter().enumerate() {
+        let position = position as i32;
+        match id {
+            Some(id) => {
+                sqlx::query(
+                    "UPDATE note_task_items SET text = $3, position = $4, updated_at = now()
+                     WHERE id = $1 AND note_id = $2",
+                )
+                .bind(id)
+                .bind(note_id)
+                .bind(text)
+                .bind(position)
+                .execute(&mut *tx)
+                .await?;
+            }
+            None => {
+                sqlx::query(
+                    "INSERT INTO note_task_items (note_id, position, text) VALUES ($1, $2, $3)",
+                )
+                .bind(note_id)
+                .bind(position)
+                .bind(text)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The items this note holds, in the author's order — read inside the
+/// transaction that is writing them, which is why this exists beside
+/// [`attach_tasks`]: the rows a `POST` just inserted are not visible
+/// anywhere else yet, and their ids are what the answer has to carry.
+async fn read_task_items(
+    tx: &mut sqlx::PgConnection,
+    note_id: i64,
+) -> Result<Vec<TaskItem>, ApiError> {
+    let rows = sqlx::query(
+        "SELECT id, text, done_by, done_at FROM note_task_items
+         WHERE note_id = $1 ORDER BY position, id",
+    )
+    .bind(note_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    Ok(rows.iter().map(TaskItem::from_row).collect())
 }
 
 /// `GET /families/mine/board` — the whole board, tombstones excluded.
@@ -452,6 +819,21 @@ pub async fn create_note(
     };
     let is_photo = kind == Note::KIND_PHOTO;
     let is_event = kind == Note::KIND_EVENT;
+    let is_tasks = kind == Note::KIND_TASKS;
+    // The lines belong to a list and to nothing else: a text note with
+    // `items` is a client that thinks it sent a task list, and drawing it
+    // as a sticker with the lines dropped would hide that.
+    if !is_tasks && req.items.is_some() {
+        return Err(ApiError::validation(
+            "items is only accepted on a tasks note",
+        ));
+    }
+    // Ids are the SERVER's: a created item cannot already have one, and a
+    // client that sent one is talking about a note that does not exist yet.
+    let lines = match &req.items {
+        Some(items) => validate_task_items(items, &[], state.cfg.limits.max_task_items as usize)?,
+        None => Vec::new(),
+    };
     // A photo note IS its picture, so it must have one; an event may have
     // a backdrop and need not; a text note has nowhere to put one
     // (protocol.md, "Board").
@@ -492,6 +874,11 @@ pub async fn create_note(
         Some(font) => validate_font(font)?,
         None => Note::DEFAULT_FONT.to_string(),
     };
+    // Against the text as it will be STORED — the trimmed one — so the
+    // grammar the clients draw with and the grammar checked here are
+    // looking at the same string.
+    let mentions = req.mentions.clone().unwrap_or_default();
+    validate_note_mentions(&state, family_id, &text, &mentions).await?;
 
     let mut tx = state.pool.begin().await?;
     lock_board(&mut tx, family_id).await?;
@@ -551,6 +938,20 @@ pub async fn create_note(
     if is_event {
         note.rsvps = Some(Vec::new());
     }
+    // The names, in the same transaction as the note for the same reason
+    // the picture is: a note whose words name somebody the list does not is
+    // a highlight nobody can tap.
+    if !mentions.is_empty() {
+        write_note_mentions(&mut tx, note.id, &mentions).await?;
+        note.mentions = Some(mentions.clone());
+    }
+    // A list is born with the ids the server just made, and with `[]`
+    // when nothing has been written into it — an empty list is a list
+    // (protocol.md, "Board").
+    if is_tasks {
+        write_task_items(&mut tx, note.id, &lines).await?;
+        note.items = Some(read_task_items(&mut tx, note.id).await?);
+    }
     tx.commit().await?;
     // Creation is the one board event that notifies (protocol.md, "Board").
     events::log_fanout_error(
@@ -609,6 +1010,15 @@ pub async fn patch_note(
     let locked_kind: String = locked.get("kind");
     let is_photo = locked_kind == Note::KIND_PHOTO;
     let is_event = locked_kind == Note::KIND_EVENT;
+    let is_tasks = locked_kind == Note::KIND_TASKS;
+    // The lines belong to a list, here as at creation: the kind is fixed,
+    // so a client sending `items` to anything else is confused about which
+    // note it is patching.
+    if !is_tasks && req.items.is_some() {
+        return Err(ApiError::validation(
+            "items is only accepted on a tasks note",
+        ));
+    }
     // The event's three, against the note's OWN kind — they are refused on
     // anything else, exactly as at creation.
     let (patch_starts, patch_ends, patch_place) = validate_event_fields(
@@ -632,14 +1042,22 @@ pub async fn patch_note(
         || font.is_some()
         || req.starts_at.is_some()
         || req.ends_at.is_some()
-        || req.place.is_some();
+        || req.place.is_some()
+        // The names are part of what the note SAYS, so they are the
+        // author's too (docs/protocol.md, "Board").
+        || req.mentions.is_some()
+        // And the LINES of a task list, like its title: ticking one is the
+        // shared act and has its own request, but writing them is the
+        // author's (docs/protocol.md, "Board").
+        || req.items.is_some();
     if touches_content && locked.get::<i64, _>("author_id") != auth.user_id {
         return Err(ApiError::forbidden(
             codes::NOT_NOTE_AUTHOR,
-            "only the author can change this note's text, colour, size, font, times or place",
+            "only the author can change this note's text, colour, size, font, times, place or mentions",
         ));
     }
 
+    let sent_text = text.is_some();
     let next_text = text.unwrap_or_else(|| locked.get("text"));
     let next_color = color.unwrap_or_else(|| locked.get("color"));
     let next_size = size.unwrap_or_else(|| locked.get("size"));
@@ -674,13 +1092,70 @@ pub async fn patch_note(
         .map(Note::clamp_position)
         .unwrap_or_else(|| locked.get("y"));
 
+    // The names a note will hold once this patch lands. A text edit with no
+    // `mentions` CLEARS them — the names are part of what the note says,
+    // and an author who rewrote the words never to name anybody should not
+    // be left with a highlight pointing at the old ones (docs/protocol.md,
+    // "Board"). A move leaves them exactly as they are.
+    let next_mentions: Option<Vec<Mention>> = match (&req.mentions, sent_text) {
+        (Some(sent), _) => Some(sent.clone()),
+        (None, true) => Some(Vec::new()),
+        (None, false) => None,
+    };
+    if let Some(mentions) = &next_mentions {
+        validate_note_mentions(&state, family_id, &next_text, mentions).await?;
+    }
+    let held_mentions: Vec<i64> = sqlx::query_scalar(
+        "SELECT user_id FROM note_mentions WHERE note_id = $1 ORDER BY position",
+    )
+    .bind(note_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mentions_changed = next_mentions.as_ref().is_some_and(|next| {
+        next.iter()
+            .map(|mention| mention.user_id)
+            .collect::<Vec<_>>()
+            != held_mentions
+    });
+
+    // The author's lines, if they sent any: the ids the note already holds
+    // are what a replacement may keep, and an entry keeping one keeps its
+    // TICK (protocol.md, "Board").
+    let held_items = read_task_items(&mut tx, note_id).await?;
+    let next_lines = match &req.items {
+        Some(items) => Some(validate_task_items(
+            items,
+            &held_items.iter().map(|item| item.id).collect::<Vec<_>>(),
+            state.cfg.limits.max_task_items as usize,
+        )?),
+        None => None,
+    };
+    let items_changed = next_lines.as_ref().is_some_and(|next| {
+        next.iter()
+            .map(|(id, text)| (*id, text.as_str()))
+            .collect::<Vec<_>>()
+            != held_items
+                .iter()
+                .map(|item| (Some(item.id), item.text.as_str()))
+                .collect::<Vec<_>>()
+    });
+
     // The TEXT is the only field a badge speaks for: a note that was moved,
     // resized or recoloured says exactly what it said before, and telling
     // somebody there is something to read would be a lie (protocol.md,
     // "Board"). Hence two comparisons, not one — `changed` decides whether
-    // anything happened at all, `text_changed` whether it is worth a badge.
+    // anything happened at all, `says_something_new` whether it is worth a
+    // badge. A LINE the author wrote counts: adding "bread" to the
+    // shopping list is something to read, and it is the one thing on a
+    // task list worth a badge — a tick, which is not the author's, is not.
     let text_changed = next_text != locked.get::<String, _>("text");
+    let says_something_new = text_changed || items_changed;
     let changed = text_changed
+        || items_changed
+        // A highlight that appeared is a change every other device has to
+        // learn — like a colour, and like a colour it moves no badge: the
+        // note says what it said, it just says one of the words louder.
+        || mentions_changed
         || next_color != locked.get::<String, _>("color")
         || next_size != locked.get::<String, _>("size")
         || next_font != locked.get::<String, _>("font")
@@ -698,7 +1173,7 @@ pub async fn patch_note(
         // carries the old `content_seq` forward untouched, which is what
         // makes the pair survive the change feed's collapsing (an edit
         // followed by five drags still reports the edit's seq).
-        let next_content_seq = if text_changed {
+        let next_content_seq = if says_something_new {
             seq
         } else {
             locked.get::<i64, _>("content_seq")
@@ -725,6 +1200,12 @@ pub async fn patch_note(
         .fetch_one(&mut *tx)
         .await?;
         advance_family_seq(&mut tx, family_id, seq).await?;
+        if let Some(mentions) = &next_mentions {
+            write_note_mentions(&mut tx, note_id, mentions).await?;
+        }
+        if let Some(lines) = &next_lines {
+            write_task_items(&mut tx, note_id, lines).await?;
+        }
         row
     } else {
         // A no-op takes no sequence value and raises no fan-out, exactly
@@ -904,6 +1385,131 @@ pub async fn delete_rsvp(
     Path(note_id): Path<i64>,
 ) -> Result<Response, ApiError> {
     set_rsvp(auth, state, note_id, None).await
+}
+
+/// `PUT /families/mine/board/notes/{id}/tasks/{item_id}` — "this one is
+/// done", from anyone in the family.
+///
+/// TICKING IS NOT AUTHORSHIP. A chore list only its author may tick is not
+/// a list the family can use — so this is the shared act, like moving a
+/// note and like answering an event (docs/protocol.md, "Board").
+///
+/// A state-set, not a toggle: two phones tapping the same line must not
+/// undo each other, and a client that has been offline is asking for a
+/// state rather than for a flip. Re-sending the state already held is a
+/// no-op that burns no seq and fans nothing out.
+pub async fn put_task_done(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((note_id, item_id)): Path<(i64, i64)>,
+    AppJson(req): AppJson<TaskDoneRequest>,
+) -> Result<Response, ApiError> {
+    let family_id = caller_family(&state, auth.user_id).await?;
+
+    let mut tx = state.pool.begin().await?;
+    lock_board(&mut tx, family_id).await?;
+    let locked = sqlx::query(
+        "SELECT kind, deleted_at FROM notes WHERE id = $1 AND family_id = $2 FOR UPDATE",
+    )
+    .bind(note_id)
+    .bind(family_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(locked) = locked else {
+        return Err(ApiError::not_found(
+            codes::NOTE_NOT_FOUND,
+            "no such note on this board",
+        ));
+    };
+    if locked
+        .get::<Option<time::OffsetDateTime>, _>("deleted_at")
+        .is_some()
+    {
+        return Err(ApiError::not_found(
+            codes::NOTE_NOT_FOUND,
+            "no such note on this board",
+        ));
+    }
+    // Only a list has anything to tick.
+    if locked.get::<String, _>("kind") != Note::KIND_TASKS {
+        return Err(ApiError::bad_request(
+            codes::INVALID_TASK,
+            "only a task list can be ticked",
+        ));
+    }
+    // The item must be one of THIS note's lines — an id from another note
+    // is `invalid_task` and not a 404, and it must never reach the UPDATE:
+    // `WHERE id = $1` alone would let a member tick a line on a list in
+    // somebody else's family.
+    let held: Option<Option<time::OffsetDateTime>> = sqlx::query_scalar(
+        "SELECT done_at FROM note_task_items WHERE id = $1 AND note_id = $2 FOR UPDATE",
+    )
+    .bind(item_id)
+    .bind(note_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(held) = held else {
+        return Err(ApiError::bad_request(
+            codes::INVALID_TASK,
+            "no such item on this task list",
+        ));
+    };
+
+    if held.is_some() == req.done {
+        // Nothing happened: the same state, set again. No seq, no fan-out.
+        let row = sqlx::query(&format!("SELECT {NOTE_COLS} FROM notes WHERE id = $1"))
+            .bind(note_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        let mut note = Note::from_row(&row);
+        hydrate(&state, &mut note).await?;
+        return Ok((StatusCode::OK, Json(json!({"note": note}))).into_response());
+    }
+
+    // Who ticked it travels with the tick; unticking forgets both, because
+    // an item nobody has done has nobody who did it.
+    sqlx::query(
+        "UPDATE note_task_items
+         SET done_at = CASE WHEN $3 THEN now() ELSE NULL END,
+             done_by = CASE WHEN $3 THEN $4::bigint ELSE NULL END,
+             updated_at = now()
+         WHERE id = $1 AND note_id = $2",
+    )
+    .bind(item_id)
+    .bind(note_id)
+    .bind(req.done)
+    .bind(auth.user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    // A new seq, so the tick reaches the other devices through the one
+    // feed — and `content_seq` untouched, because the list says exactly
+    // what it said before: a badge claiming there is something to READ
+    // would be a lie (protocol.md, "Board").
+    let seq: i64 = sqlx::query_scalar("SELECT nextval('family_board_seq')")
+        .fetch_one(&mut *tx)
+        .await?;
+    let row = sqlx::query(&format!(
+        "UPDATE notes SET board_seq = $2, updated_at = now() WHERE id = $1
+         RETURNING {NOTE_COLS}"
+    ))
+    .bind(note_id)
+    .bind(seq)
+    .fetch_one(&mut *tx)
+    .await?;
+    advance_family_seq(&mut tx, family_id, seq).await?;
+    tx.commit().await?;
+
+    let mut note = Note::from_row(&row);
+    hydrate(&state, &mut note).await?;
+    // Fanned out, never pushed: only creation notifies, and nobody should
+    // be woken because somebody else bought the milk.
+    events::log_fanout_error(
+        "board_note",
+        events::deliver_board_note(&state, family_id, &note).await,
+    );
+    Ok((StatusCode::OK, Json(json!({"note": note}))).into_response())
 }
 
 async fn set_rsvp(
